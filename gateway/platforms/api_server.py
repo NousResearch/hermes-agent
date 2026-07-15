@@ -13,6 +13,7 @@ Exposes an HTTP server with endpoints:
 - GET/PATCH/DELETE /api/sessions/{session_id} — read/update/delete a session
 - GET  /api/sessions/{session_id}/messages — read session message history
 - POST /api/sessions/{session_id}/fork — branch a session using SessionDB lineage
+- POST /api/sessions/{session_id}/compress — compact persisted session history
 - POST /api/sessions/{session_id}/chat[/stream] — chat with a persisted session
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}           — retrieve current run status
@@ -1666,6 +1667,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat": True,
                 "session_chat_streaming": True,
                 "session_fork": True,
+                "session_compress": True,
                 "admin_config_rw": False,
                 "jobs_admin": False,
                 "memory_write_api": False,
@@ -1696,6 +1698,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_delete": {"method": "DELETE", "path": "/api/sessions/{session_id}"},
                 "session_messages": {"method": "GET", "path": "/api/sessions/{session_id}/messages"},
                 "session_fork": {"method": "POST", "path": "/api/sessions/{session_id}/fork"},
+                "session_compress": {"method": "POST", "path": "/api/sessions/{session_id}/compress"},
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
             },
@@ -2039,6 +2042,135 @@ class APIServerAdapter(BasePlatformAdapter):
             return web.json_response(_openai_error(str(exc), code="invalid_title"), status=400)
         fork = db.get_session(fork_id) or {"id": fork_id, "parent_session_id": source_id}
         return web.json_response({"object": "hermes.session", "session": self._session_response(fork)}, status=201)
+
+    @_admit_api_agent_request
+    async def _handle_compress_session(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/compress — compact persisted history."""
+        gateway_session_key, key_err = self._parse_session_key_header(request)
+        if key_err is not None:
+            return key_err
+
+        requested_id = request.match_info["session_id"]
+        _, err = self._get_existing_session_or_404(requested_id)
+        if err:
+            return err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+
+        focus_topic_raw = body.get("focus_topic")
+        if focus_topic_raw is not None and not isinstance(focus_topic_raw, str):
+            return web.json_response(_openai_error("focus_topic must be a string", code="invalid_focus_topic"), status=400)
+        focus_topic = (focus_topic_raw or "").strip() or None
+        force = _coerce_request_bool(body.get("force"), default=True)
+
+        db = self._ensure_session_db()
+        if db is None:
+            return web.json_response(_openai_error("Session database unavailable", code="session_db_unavailable"), status=503)
+        source_id = db.resolve_resume_session_id(requested_id)
+        if not db.get_session(source_id):
+            return web.json_response(_openai_error(f"Session not found: {source_id}", code="session_not_found"), status=404)
+        history = db.get_messages_as_conversation(source_id)
+        before_count = len(history)
+        if before_count < 4:
+            return web.json_response({
+                "object": "hermes.session.compression",
+                "status": "skipped",
+                "reason": "not_enough_messages",
+                "session_id": source_id,
+                "previous_session_id": source_id,
+                "before_messages": before_count,
+                "after_messages": before_count,
+                "removed": 0,
+            })
+
+        loop = asyncio.get_running_loop()
+
+        def _compress() -> Dict[str, Any]:
+            from agent.manual_compression_feedback import summarize_manual_compression
+            from agent.model_metadata import estimate_request_tokens_rough
+            from gateway.session_context import clear_session_vars, set_session_vars
+
+            tokens = set_session_vars(
+                platform="api_server",
+                chat_id=source_id,
+                session_key=gateway_session_key or source_id,
+                session_id=source_id,
+            )
+            try:
+                agent = self._create_agent(session_id=source_id, gateway_session_key=gateway_session_key)
+                try:
+                    agent._print_fn = lambda *a, **kw: None
+                except Exception:
+                    pass
+
+                system_prompt = getattr(agent, "_cached_system_prompt", "") or ""
+                tools = getattr(agent, "tools", None) or None
+                before_tokens = estimate_request_tokens_rough(history, system_prompt=system_prompt, tools=tools)
+                compressor = getattr(agent, "context_compressor", None)
+                if compressor is not None and hasattr(compressor, "has_content_to_compress"):
+                    try:
+                        if not compressor.has_content_to_compress(history):
+                            return {
+                                "status": "skipped", "reason": "nothing_to_compress",
+                                "session_id": source_id, "previous_session_id": source_id,
+                                "before_messages": before_count, "after_messages": before_count,
+                                "before_tokens": before_tokens, "after_tokens": before_tokens, "removed": 0,
+                            }
+                    except Exception:
+                        logger.debug("has_content_to_compress failed for %s", source_id, exc_info=True)
+
+                compressed, _ = agent._compress_context(
+                    history, None, approx_tokens=before_tokens, focus_topic=focus_topic, force=force,
+                )
+                if compressed == history:
+                    return {
+                        "status": "skipped", "reason": "no_progress",
+                        "session_id": source_id, "previous_session_id": source_id,
+                        "before_messages": before_count, "after_messages": before_count,
+                        "before_tokens": before_tokens, "after_tokens": before_tokens, "removed": 0,
+                    }
+
+                new_session_id = getattr(agent, "session_id", None) or source_id
+                in_place = bool(getattr(agent, "_last_compaction_in_place", False))
+                # In-place compression already persists atomically through
+                # SessionDB.archive_and_compact(), preserving inactive rows for
+                # search and recovery. Only rotated continuations need writing.
+                if not in_place:
+                    db.replace_messages(new_session_id, compressed)
+
+                system_prompt_after = getattr(agent, "_cached_system_prompt", "") or system_prompt
+                tools_after = getattr(agent, "tools", None) or tools
+                after_tokens = estimate_request_tokens_rough(compressed, system_prompt=system_prompt_after, tools=tools_after)
+                return {
+                    "status": "compressed", "session_id": new_session_id,
+                    "previous_session_id": source_id, "before_messages": before_count,
+                    "after_messages": len(compressed), "before_tokens": before_tokens,
+                    "after_tokens": after_tokens, "removed": before_count - len(compressed),
+                    "summary": summarize_manual_compression(history, compressed, before_tokens, after_tokens),
+                    "usage": {
+                        "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                        "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                        "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                    },
+                }
+            finally:
+                clear_session_vars(tokens)
+
+        try:
+            payload = await loop.run_in_executor(None, _compress)
+        except Exception as exc:
+            logger.exception("POST /api/sessions/%s/compress failed", requested_id)
+            return web.json_response(
+                _openai_error(f"Session compression failed: {exc}", err_type="server_error", code="session_compression_failed"),
+                status=500,
+            )
+
+        payload = {"object": "hermes.session.compression", **payload}
+        headers = {"X-Hermes-Session-Id": payload.get("session_id", source_id)}
+        if gateway_session_key:
+            headers["X-Hermes-Session-Key"] = gateway_session_key
+        return web.json_response(payload, headers=headers)
 
     @_admit_api_agent_request
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
@@ -4988,6 +5120,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_delete("/api/sessions/{session_id}", self._handle_delete_session)
             self._app.router.add_get("/api/sessions/{session_id}/messages", self._handle_session_messages)
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
+            self._app.router.add_post("/api/sessions/{session_id}/compress", self._handle_compress_session)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)

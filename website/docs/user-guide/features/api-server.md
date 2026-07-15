@@ -342,6 +342,7 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `DELETE` | `/api/sessions/{id}` | Delete a session |
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
+| `POST` | `/api/sessions/{id}/compress` | Compact persisted history using the same context compression path as `/compress`; returns the continuation `session_id` |
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
 | `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `tool.started`, `tool.completed`, `run.completed` events |
 
@@ -352,6 +353,11 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 curl -X POST http://localhost:8642/api/sessions/$ID/fork \
   -H "Authorization: Bearer $API_SERVER_KEY" \
   -d '{"title": "explore alt path"}'
+
+# compact a long session; continue with the returned session_id / header
+curl -X POST http://localhost:8642/api/sessions/$ID/compress \
+  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -d '{"focus_topic": "mobile client handoff"}'
 
 # stream a turn over SSE
 curl -N -X POST http://localhost:8642/api/sessions/$ID/chat/stream \

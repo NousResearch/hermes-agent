@@ -46,6 +46,7 @@ def _create_session_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_delete("/api/sessions/{session_id}", adapter._handle_delete_session)
     app.router.add_get("/api/sessions/{session_id}/messages", adapter._handle_session_messages)
     app.router.add_post("/api/sessions/{session_id}/fork", adapter._handle_fork_session)
+    app.router.add_post("/api/sessions/{session_id}/compress", adapter._handle_compress_session)
     app.router.add_post("/api/sessions/{session_id}/chat", adapter._handle_session_chat)
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
     return app
@@ -64,6 +65,7 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert features["session_chat"] is True
     assert features["session_chat_streaming"] is True
     assert features["session_fork"] is True
+    assert features["session_compress"] is True
     assert features["admin_config_rw"] is False
     assert features["memory_write_api"] is False
     assert features["skills_api"] is True
@@ -72,6 +74,10 @@ async def test_capabilities_advertises_session_control_surface(adapter):
     assert data["endpoints"]["session_chat_stream"] == {
         "method": "POST",
         "path": "/api/sessions/{session_id}/chat/stream",
+    }
+    assert data["endpoints"]["session_compress"] == {
+        "method": "POST",
+        "path": "/api/sessions/{session_id}/compress",
     }
 
 
@@ -187,6 +193,180 @@ async def test_session_messages_follow_compression_tip(adapter, session_db):
     assert messages["object"] == "list"
     assert messages["session_id"] == "tip-session"
     assert [m["content"] for m in messages["data"]] == ["after compression"]
+
+
+@pytest.mark.asyncio
+async def test_session_compress_rotates_and_rewrites_tip(adapter, session_db, monkeypatch):
+    session_id = session_db.create_session("api-compress-source", "api_server", model="test-model")
+    session_db.set_session_title(session_id, "API Compress")
+    for role, content in [
+        ("user", "first question"),
+        ("assistant", "first answer"),
+        ("user", "second question"),
+        ("assistant", "second answer"),
+    ]:
+        session_db.append_message(session_id, role, content)
+
+    class FakeCompressor:
+        def has_content_to_compress(self, messages):
+            return True
+
+    class FakeAgent:
+        session_prompt_tokens = 11
+        session_completion_tokens = 3
+        session_total_tokens = 14
+        _cached_system_prompt = ""
+        tools = None
+        context_compressor = FakeCompressor()
+
+        def __init__(self, session_id):
+            self.session_id = session_id
+
+        def _compress_context(self, messages, system_message, approx_tokens=None, focus_topic=None, force=False):
+            assert system_message is None
+            assert focus_topic == "YUI handoff"
+            assert force is True
+            old_id = self.session_id
+            self.session_id = "api-compress-tip"
+            session_db.end_session(old_id, "compression")
+            session_db.create_session(
+                self.session_id,
+                "api_server",
+                model="test-model",
+                parent_session_id=old_id,
+            )
+            return [
+                {"role": "user", "content": "compressed summary"},
+                {"role": "assistant", "content": "latest answer"},
+            ], None
+
+    monkeypatch.setattr(adapter, "_create_agent", lambda **kwargs: FakeAgent(kwargs["session_id"]))
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(
+            f"/api/sessions/{session_id}/compress",
+            json={"focus_topic": "YUI handoff"},
+        )
+        assert resp.status == 200
+        payload = await resp.json()
+
+    assert payload["object"] == "hermes.session.compression"
+    assert payload["status"] == "compressed"
+    assert payload["previous_session_id"] == session_id
+    assert payload["session_id"] == "api-compress-tip"
+    assert payload["before_messages"] == 4
+    assert payload["after_messages"] == 2
+    assert payload["removed"] == 2
+    assert payload["usage"] == {"input_tokens": 11, "output_tokens": 3, "total_tokens": 14}
+    assert session_db.get_session(session_id)["end_reason"] == "compression"
+    assert [m["content"] for m in session_db.get_messages("api-compress-tip")] == [
+        "compressed summary",
+        "latest answer",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_compress_preserves_archived_rows_for_in_place_compaction(adapter, session_db, monkeypatch):
+    session_id = session_db.create_session("api-compress-in-place", "api_server")
+    original = [
+        ("user", "first question"), ("assistant", "first answer"),
+        ("user", "second question"), ("assistant", "second answer"),
+    ]
+    for role, content in original:
+        session_db.append_message(session_id, role, content)
+
+    class FakeCompressor:
+        def has_content_to_compress(self, messages):
+            return True
+
+    class FakeAgent:
+        session_prompt_tokens = session_completion_tokens = session_total_tokens = 0
+        _cached_system_prompt = ""
+        tools = None
+        context_compressor = FakeCompressor()
+
+        def __init__(self, session_id):
+            self.session_id = session_id
+            self._last_compaction_in_place = False
+
+        def _compress_context(self, messages, system_message, **kwargs):
+            compacted = [{"role": "user", "content": "compressed summary"}]
+            session_db.archive_and_compact(self.session_id, compacted)
+            self._last_compaction_in_place = True
+            return compacted, None
+
+    monkeypatch.setattr(adapter, "_create_agent", lambda **kwargs: FakeAgent(kwargs["session_id"]))
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(f"/api/sessions/{session_id}/compress", json={})
+        assert resp.status == 200
+        payload = await resp.json()
+
+    assert payload["status"] == "compressed"
+    assert payload["session_id"] == session_id
+    assert session_db.has_archived_messages(session_id)
+    assert [m["content"] for m in session_db.get_messages(session_id)] == ["compressed summary"]
+    assert {m["content"] for m in session_db.get_messages(session_id, include_inactive=True)} >= {
+        "first question", "first answer", "second question", "second answer", "compressed summary",
+    }
+
+
+@pytest.mark.asyncio
+async def test_session_compress_skips_when_compressor_makes_no_progress(adapter, session_db, monkeypatch):
+    session_id = session_db.create_session("api-compress-no-progress", "api_server")
+    for role, content in [("user", "one"), ("assistant", "two"), ("user", "three"), ("assistant", "four")]:
+        session_db.append_message(session_id, role, content)
+
+    class FakeCompressor:
+        def has_content_to_compress(self, messages):
+            return True
+
+    class FakeAgent:
+        _cached_system_prompt = ""
+        tools = None
+        context_compressor = FakeCompressor()
+
+        def __init__(self, session_id):
+            self.session_id = session_id
+
+        def _compress_context(self, messages, system_message, **kwargs):
+            return messages, None
+
+    monkeypatch.setattr(adapter, "_create_agent", lambda **kwargs: FakeAgent(kwargs["session_id"]))
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(f"/api/sessions/{session_id}/compress", json={})
+        assert resp.status == 200
+        payload = await resp.json()
+
+    assert payload["status"] == "skipped"
+    assert payload["reason"] == "no_progress"
+    assert [m["content"] for m in session_db.get_messages(session_id)] == ["one", "two", "three", "four"]
+
+
+@pytest.mark.asyncio
+async def test_session_compress_skips_short_history(adapter, session_db, monkeypatch):
+    session_id = session_db.create_session("short-session", "api_server")
+    session_db.append_message(session_id, "user", "hello")
+    monkeypatch.setattr(adapter, "_create_agent", lambda **kwargs: pytest.fail("agent should not be created"))
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        resp = await cli.post(f"/api/sessions/{session_id}/compress", json={})
+        assert resp.status == 200
+        payload = await resp.json()
+
+    assert payload == {
+        "object": "hermes.session.compression",
+        "status": "skipped",
+        "reason": "not_enough_messages",
+        "session_id": session_id,
+        "previous_session_id": session_id,
+        "before_messages": 1,
+        "after_messages": 1,
+        "removed": 0,
+    }
 
 
 @pytest.mark.asyncio

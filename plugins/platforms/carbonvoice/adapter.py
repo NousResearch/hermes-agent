@@ -320,6 +320,14 @@ class CarbonVoiceAdapter(BasePlatformAdapter):
             logger.error("carbonvoice: CARBONVOICE_PAT not set")
             return False
 
+        # Credential-scoped lock: prevent two gateways (e.g. different
+        # HERMES_HOME dirs) from claiming the same PAT at once. Same-pid
+        # re-acquire is allowed, so reconnect retries don't self-block.
+        if not self._acquire_platform_lock(
+            "carbonvoice-pat", self._pat, "Carbon Voice PAT"
+        ):
+            return False
+
         await self._api.open()
 
         try:
@@ -392,6 +400,7 @@ class CarbonVoiceAdapter(BasePlatformAdapter):
         await self._cursor.stop()
         if self._api is not None:
             await self._api.close()
+        self._release_platform_lock()
         self._mark_disconnected()
 
     # ── Outbound (Hermes → Carbon Voice) ─────────────────────────────────

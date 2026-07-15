@@ -266,6 +266,90 @@ class TestSendMessageTool:
             force_document=False,
         )
 
+    def test_no_target_no_session_origin_is_rejected(self):
+        """Bare send_message(message=...) with no session origin still errors."""
+        with patch.dict(os.environ, {}, clear=True):
+            result = json.loads(
+                send_message_tool({"action": "send", "message": "hello"})
+            )
+
+        assert "error" in result
+        assert "target" in result["error"]
+
+    def test_no_target_falls_back_to_session_origin(self):
+        """Bare send_message(message=...) resolves to the forwarded origin
+        session (platform + chat_id + thread_id) when no explicit target is
+        given — see gateway.session_context.build_session_subprocess_env."""
+        config, telegram_cfg = _make_config()
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_SESSION_PLATFORM": "telegram",
+                "HERMES_SESSION_CHAT_ID": "-1001",
+                "HERMES_SESSION_THREAD_ID": "17585",
+            },
+            clear=True,
+        ), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool({"action": "send", "message": "hello"})
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "-1001",
+            "hello",
+            thread_id="17585",
+            media_files=[],
+            force_document=False,
+        )
+
+    def test_explicit_target_overrides_session_origin(self):
+        """An explicit target always wins over the session-origin fallback."""
+        config, telegram_cfg = _make_config()
+
+        with patch.dict(
+            os.environ,
+            {
+                "HERMES_SESSION_PLATFORM": "telegram",
+                "HERMES_SESSION_CHAT_ID": "-1001",
+                "HERMES_SESSION_THREAD_ID": "17585",
+            },
+            clear=True,
+        ), \
+             patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})) as send_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True):
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:-2002",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        send_mock.assert_awaited_once_with(
+            Platform.TELEGRAM,
+            telegram_cfg,
+            "-2002",
+            "hello",
+            thread_id=None,
+            media_files=[],
+            force_document=False,
+        )
+
     def test_cron_duplicate_target_is_skipped_and_explained(self):
         home = SimpleNamespace(chat_id="-1001")
         config, _telegram_cfg = _make_config()

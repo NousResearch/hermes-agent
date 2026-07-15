@@ -295,15 +295,28 @@ def _handle_react(args, remove=False):
     return json.dumps({"success": bool(result)})
 
 
+def _has_session_origin() -> bool:
+    """True if HERMES_SESSION_PLATFORM/CHAT_ID are available as an origin-reply
+    fallback (see build_session_subprocess_env forwarding)."""
+    from gateway.session_context import get_session_env
+    return bool(get_session_env("HERMES_SESSION_PLATFORM", "")) and bool(
+        get_session_env("HERMES_SESSION_CHAT_ID", "")
+    )
+
+
 def _handle_send(args):
     """Send a message to a platform target."""
     target = args.get("target", "")
     message = args.get("message", "")
-    if not target or not message:
-        return tool_error("Both 'target' and 'message' are required when action='send'")
+    if not message:
+        return tool_error("'message' is required when action='send'")
+    if not target and not _has_session_origin():
+        return tool_error(
+            "'target' is required when action='send' (no session origin to fall back to)"
+        )
 
-    parts = target.split(":", 1)
-    platform_name = parts[0].strip().lower()
+    parts = target.split(":", 1) if target else []
+    platform_name = parts[0].strip().lower() if parts else ""
     target_ref = parts[1].strip() if len(parts) > 1 else None
     chat_id = None
     thread_id = None
@@ -312,6 +325,20 @@ def _handle_send(args):
         chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
     else:
         is_explicit = False
+        # No target at all (bare send_message(message=...)): if this call is
+        # running in a subprocess/worker that inherited session-origin env
+        # (see gateway.session_context.build_session_subprocess_env), resolve
+        # to that originating chat/thread on the SAME platform so the reply
+        # lands back in the thread that dispatched the work, instead of
+        # falling through to the platform's home channel as a new root post.
+        # An explicit target (handled above) always wins over this.
+        if not target:
+            from gateway.session_context import get_session_env
+            origin_platform = get_session_env("HERMES_SESSION_PLATFORM", "")
+            if origin_platform:
+                platform_name = origin_platform.lower()
+                chat_id = get_session_env("HERMES_SESSION_CHAT_ID", "") or None
+                thread_id = get_session_env("HERMES_SESSION_THREAD_ID", "") or None
 
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:

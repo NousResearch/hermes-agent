@@ -2120,7 +2120,12 @@ def list_boards(include_archived: bool = Query(False)):
     for b in boards:
         b["is_current"] = (b["slug"] == current)
         b["counts"] = _board_counts(b["slug"])
-        b["total"] = sum(b["counts"].values())
+        # Live cards only — archived tasks are hidden from every default
+        # board view, so advertising them in the switcher badge makes the
+        # two counts visibly disagree.
+        b["total"] = sum(
+            n for status, n in b["counts"].items() if status != "archived"
+        )
         b["default_workspace_kind"] = _default_workspace_kind(b)
     return {"boards": boards, "current": current}
 

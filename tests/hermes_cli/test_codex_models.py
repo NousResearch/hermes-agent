@@ -101,7 +101,7 @@ def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
 
     class _FakeHttpx:
         @staticmethod
-        def get(url, headers=None, timeout=None):
+        def get(url, headers=None, timeout=None, proxy=None):
             return _FakeResp()
 
     monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
@@ -111,6 +111,35 @@ def test_fetch_from_api_keeps_supported_in_api_false_models(monkeypatch):
     assert "gpt-5.5" in models
     assert "gpt-5.3-codex-spark" in models
     assert "gpt-5-internal" not in models
+
+
+def test_fetch_from_api_uses_env_proxy(monkeypatch):
+    """Codex model discovery should route through HTTPS_PROXY/ALL_PROXY."""
+    import sys
+    from hermes_cli import codex_models
+
+    captured = {}
+
+    class _FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"models": [{"slug": "gpt-5.5", "priority": 0}]}
+
+    class _FakeHttpx:
+        @staticmethod
+        def get(url, headers=None, timeout=None, proxy=None):
+            captured["proxy"] = proxy
+            return _FakeResp()
+
+    monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
+    monkeypatch.setenv("HTTPS_PROXY", "http://127.0.0.1:2080")
+    for key in ("HTTP_PROXY", "ALL_PROXY", "http_proxy", "all_proxy"):
+        monkeypatch.delenv(key, raising=False)
+
+    codex_models._fetch_models_from_api(access_token="tok")
+
+    assert captured.get("proxy") == "http://127.0.0.1:2080"
 
 
 def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):

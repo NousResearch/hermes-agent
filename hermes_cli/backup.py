@@ -258,7 +258,23 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
 
     Handles WAL mode — produces a consistent snapshot even while
     the DB is being written to.  Falls back to raw copy on failure.
+
+    For very large databases (e.g. a multi-GB state.db) the backup() API
+    performs page-by-page I/O that can saturate a slow disk for hours and
+    make ``hermes update`` appear hung.  Use a fast sequential raw copy for
+    those files instead; the snapshot is best-effort insurance and a torn
+    copy of a regeneratable cache is preferable to an update that never
+    finishes.
     """
+    LARGE_DB_THRESHOLD = 100 * 1024 * 1024  # 100 MB
+    try:
+        if src.stat().st_size > LARGE_DB_THRESHOLD:
+            logger.debug("Large DB %s (>%s), using raw copy for snapshot.", src, _format_size(LARGE_DB_THRESHOLD))
+            shutil.copy2(src, dst)
+            return True
+    except Exception as exc:
+        logger.warning("Size check failed for %s: %s", src, exc)
+
     try:
         conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
         backup_conn = sqlite3.connect(str(dst))
@@ -813,6 +829,27 @@ def create_quick_snapshot(
 
     manifest: Dict[str, int] = {}  # rel_path -> file size
 
+    # Quick snapshots are best-effort insurance.  If a single file has grown
+    # enormous (most commonly state.db on long-lived installs), copying it can
+    # saturate a slow disk for an hour and make ``hermes update`` appear hung.
+    # Skip those files rather than block the update; the user can still create
+    # a full backup with ``hermes backup`` when disk I/O is less contended.
+    SKIP_FILE_THRESHOLD = 500 * 1024 * 1024  # 500 MB
+
+    def _should_skip_large(path: Path) -> bool:
+        try:
+            size = path.stat().st_size
+        except OSError:
+            return False
+        if size > SKIP_FILE_THRESHOLD:
+            logger.warning(
+                "Skipping large file from quick snapshot (%s, %s)",
+                path.relative_to(home).as_posix(),
+                _format_size(size),
+            )
+            return True
+        return False
+
     for rel in _QUICK_STATE_FILES:
         src = home / rel
         if not src.exists():
@@ -831,6 +868,8 @@ def create_quick_snapshot(
                 # the board databases + their metadata to restore a board.
                 if "/workspaces/" in f"/{sub_rel}/" or "/attachments/" in f"/{sub_rel}/":
                     continue
+                if _should_skip_large(sub):
+                    continue
                 dst = snap_dir / sub_rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 try:
@@ -848,6 +887,9 @@ def create_quick_snapshot(
             continue
 
         if not src.is_file():
+            continue
+
+        if _should_skip_large(src):
             continue
 
         dst = snap_dir / rel

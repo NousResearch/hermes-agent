@@ -6049,6 +6049,30 @@ def _classify_worker_exit(pid: int) -> "tuple[str, Optional[int]]":
     return ("unknown", None)
 
 
+_RESUMABLE_WORKER_EXIT_MARKERS = (
+    "Resume this session with:",
+    "Iteration budget reached",
+    "Session compressed",
+    "Session compacted",
+    "compacting context",
+)
+
+
+def _clean_exit_looks_resumable(task_id: str, *, board: Optional[str] = None) -> bool:
+    """Return True when a clean worker exit is a resumable Hermes stop.
+
+    A worker process can exit rc=0 without a kanban terminal transition
+    because the Hermes wrapper hit a context/iteration budget and printed a
+    resume command. That is not a completed answer and should not trip the
+    protocol-violation breaker; the dispatcher can safely release the task so
+    it is spawned again with prior-run context.
+    """
+    log_tail = read_worker_log(task_id, tail_bytes=64 * 1024, board=board)
+    if not log_tail:
+        return False
+    return any(marker in log_tail for marker in _RESUMABLE_WORKER_EXIT_MARKERS)
+
+
 def reap_worker_zombies() -> "list[int]":
     """Reap all zombie children of this process without blocking.
 
@@ -6638,7 +6662,11 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(
+    conn: sqlite3.Connection,
+    *,
+    board: Optional[str] = None,
+) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Appends a ``crashed`` event and drops the task back to ``ready``.
@@ -6668,6 +6696,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     """
     crashed: list[str] = []
     rate_limited: list[str] = []
+    resumable: list[str] = []
     # Per-crash details collected inside the main txn, used after it
     # closes to run ``_record_task_failure`` (which needs its own
     # write_txn so can't nest). ``protocol_violation`` flags the
@@ -6701,33 +6730,47 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
             pid = int(row["worker_pid"])
             kind, code = _classify_worker_exit(pid)
             rate_limited_exit = False
+            resumable_exit = False
             if kind == "clean_exit":
-                # Worker subprocess returned 0 but its task is still
-                # ``running`` in the DB — it exited without calling
-                # ``kanban_complete`` / ``kanban_block``. Overwhelmingly the
-                # work itself succeeded and only the paperwork was skipped, so
-                # a retry usually completes; the corrective sentence below is
-                # surfaced to the retry worker via the prior-attempt error in
-                # ``build_worker_context`` (guidance approach from #61817).
-                protocol_violation = True
-                error_text = (
-                    "worker exited cleanly (rc=0) without calling "
-                    "kanban_complete or kanban_block — protocol violation. "
-                    "If the prior run already did the work, verify it and "
-                    "report the result via kanban_complete; a run that ends "
-                    "without a terminal kanban call counts as failed no "
-                    "matter what it did."
-                )
-                event_kind = "protocol_violation"
-                event_payload = {
-                    "pid": pid,
-                    "claimer": row["claim_lock"],
-                    "exit_code": code,
-                    # Durable marker for _protocol_violation_streak: _end_run
-                    # copies this payload into the run metadata, which is how
-                    # the violation-only retry budget is derived later.
-                    "protocol_violation": True,
-                }
+                if _clean_exit_looks_resumable(row["id"], board=board):
+                    # Hermes can stop cleanly at a context/iteration budget
+                    # boundary after printing a resume command. That is not a
+                    # terminal kanban answer, so release it for another spawn
+                    # without counting a task failure.
+                    protocol_violation = False
+                    resumable_exit = True
+                    error_text = (
+                        "worker exited cleanly (rc=0) at a resumable Hermes "
+                        "budget/context boundary; requeued without counting a failure"
+                    )
+                    event_kind = "resumable_exit"
+                    event_payload = {
+                        "pid": pid,
+                        "claimer": row["claim_lock"],
+                        "exit_code": code,
+                    }
+                else:
+                    # A plain clean exit without a terminal transition is a
+                    # protocol violation. Most complete on a bounded retry; the
+                    # corrective guidance is surfaced via prior-attempt context.
+                    protocol_violation = True
+                    error_text = (
+                        "worker exited cleanly (rc=0) without calling "
+                        "kanban_complete or kanban_block — protocol violation. "
+                        "If the prior run already did the work, verify it and "
+                        "report the result via kanban_complete; a run that ends "
+                        "without a terminal kanban call counts as failed no "
+                        "matter what it did."
+                    )
+                    event_kind = "protocol_violation"
+                    event_payload = {
+                        "pid": pid,
+                        "claimer": row["claim_lock"],
+                        "exit_code": code,
+                        # Durable marker consumed by
+                        # ``_protocol_violation_streak``.
+                        "protocol_violation": True,
+                    }
             elif kind == "rate_limited":
                 # Worker bailed because the provider rate-limited / exhausted
                 # quota (EX_TEMPFAIL sentinel). This is NOT a task failure —
@@ -6773,10 +6816,18 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 # Rate-limited requeues are a clean release, not a crash —
                 # record the run outcome as ``rate_limited`` so the board
                 # history doesn't show a phantom crash for a quota wall.
-                _run_outcome = "rate_limited" if rate_limited_exit else "crashed"
+                if rate_limited_exit:
+                    _run_outcome = "rate_limited"
+                    _run_status = "rate_limited"
+                elif resumable_exit:
+                    _run_outcome = "released"
+                    _run_status = "released"
+                else:
+                    _run_outcome = "crashed"
+                    _run_status = "crashed"
                 run_id = _end_run(
                     conn, row["id"],
-                    outcome=_run_outcome, status=_run_outcome,
+                    outcome=_run_outcome, status=_run_status,
                     error=error_text,
                     metadata=dict(event_payload),
                 )
@@ -6796,6 +6847,12 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                         (error_text[:500], row["id"]),
                     )
                     rate_limited.append(row["id"])
+                elif resumable_exit:
+                    conn.execute(
+                        "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                        (error_text[:500], row["id"]),
+                    )
+                    resumable.append(row["id"])
                 else:
                     if protocol_violation:
                         # Stamp the failure error now: a below-budget
@@ -6905,6 +6962,7 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # Same side-channel for rate-limited requeues — these did NOT count a
     # failure and are NOT crashes, so they stay out of the ``crashed`` return.
     detect_crashed_workers._last_rate_limited = rate_limited  # type: ignore[attr-defined]
+    detect_crashed_workers._last_resumable = resumable  # type: ignore[attr-defined]
     return crashed
 
 
@@ -7442,7 +7500,7 @@ def _dispatch_once_locked(
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
     )
-    result.crashed = detect_crashed_workers(conn)
+    result.crashed = detect_crashed_workers(conn, board=board)
     # detect_crashed_workers stashes protocol-violation auto-blocks on
     # itself so the public list-return stays stable. Pull them into the
     # DispatchResult here so telemetry / tests see the trip.

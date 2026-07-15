@@ -6,7 +6,6 @@ import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@nous-research/ui/ui/components/input";
 import { Label } from "@nous-research/ui/ui/components/label";
-import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
 import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
@@ -189,6 +188,28 @@ export default function ProfileBuilderPage() {
   };
   const removeMcp = (n: string) =>
     setMcpServers((prev) => prev.filter((s) => s.name !== n));
+
+  const setMcpTransport = (transport: McpTransport) => {
+    setMcpDraft((draft) =>
+      transport === "http"
+        ? { ...draft, transport, command: "", args: "", env: "" }
+        : {
+            ...draft,
+            transport,
+            url: "",
+            httpAuth: "none",
+            bearerToken: "",
+          },
+    );
+  };
+
+  const setMcpHttpAuth = (httpAuth: McpHttpAuth) => {
+    setMcpDraft((draft) => ({
+      ...draft,
+      httpAuth,
+      bearerToken: httpAuth === "header" ? draft.bearerToken : "",
+    }));
+  };
 
   const filteredModels = useMemo(() => {
     if (!modelChoices) return [];
@@ -498,19 +519,34 @@ export default function ProfileBuilderPage() {
           )}
 
           {step === "mcp" && (
-            <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                Add MCP servers for this profile. HTTP servers can use Bearer
-                tokens or OAuth; stdio servers can receive command arguments and
-                environment variables.
-              </p>
-              <div className="grid gap-4">
-                <div className="grid grid-cols-2 gap-2">
+            <div className="space-y-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="space-y-1">
+                  <h3 className="font-expanded text-base font-bold tracking-[0.04em]">
+                    MCP servers
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    Add MCP servers to give this profile access to external
+                    tools and data.
+                  </p>
+                </div>
+                <span
+                  className="text-xs text-muted-foreground"
+                  aria-live="polite"
+                >
+                  {mcpServers.length} configured
+                </span>
+              </div>
+
+              <div className="space-y-4 border border-border bg-background/20 p-4 md:p-5">
+                <h4 className="font-medium">Add server</h4>
+
+                <div className="grid gap-4 md:grid-cols-2">
                   <div className="grid gap-1.5">
                     <Label htmlFor="pb-mcp-name">Server name</Label>
                     <Input
                       id="pb-mcp-name"
-                      placeholder="my-server"
+                      placeholder="Enter server name"
                       value={mcpDraft.name}
                       onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
                         setMcpDraft({ ...mcpDraft, name: e.target.value })
@@ -518,34 +554,34 @@ export default function ProfileBuilderPage() {
                     />
                   </div>
                   <div className="grid gap-1.5">
-                    <Label htmlFor="pb-mcp-transport">Transport</Label>
-                    <Select
-                      id="pb-mcp-transport"
-                      value={mcpDraft.transport}
-                      onValueChange={(value) => {
-                        const transport = value as McpTransport;
-                        setMcpDraft(
-                          transport === "http"
-                            ? {
-                                ...mcpDraft,
-                                transport,
-                                command: "",
-                                args: "",
-                                env: "",
-                              }
-                            : {
-                                ...mcpDraft,
-                                transport,
-                                url: "",
-                                httpAuth: "none",
-                                bearerToken: "",
-                              },
-                        );
-                      }}
+                    <Label>Transport</Label>
+                    <div
+                      className="grid grid-cols-2 border border-border bg-background/30 p-0.5"
+                      role="group"
+                      aria-label="MCP transport"
                     >
-                      <SelectOption value="http">HTTP/SSE</SelectOption>
-                      <SelectOption value="stdio">stdio</SelectOption>
-                    </Select>
+                      {(
+                        [
+                          ["http", "HTTP/SSE"],
+                          ["stdio", "stdio"],
+                        ] as const
+                      ).map(([value, label]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          aria-pressed={mcpDraft.transport === value}
+                          className={cn(
+                            "px-3 py-2 text-sm font-medium transition-colors",
+                            mcpDraft.transport === value
+                              ? "bg-primary text-primary-foreground"
+                              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                          )}
+                          onClick={() => setMcpTransport(value)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
                   </div>
                 </div>
 
@@ -563,24 +599,35 @@ export default function ProfileBuilderPage() {
                       />
                     </div>
                     <div className="grid gap-1.5">
-                      <Label htmlFor="pb-mcp-auth">Authentication</Label>
-                      <Select
-                        id="pb-mcp-auth"
-                        value={mcpDraft.httpAuth}
-                        onValueChange={(value) => {
-                          const httpAuth = value as McpHttpAuth;
-                          setMcpDraft({
-                            ...mcpDraft,
-                            httpAuth,
-                            bearerToken:
-                              httpAuth === "header" ? mcpDraft.bearerToken : "",
-                          });
-                        }}
+                      <Label>Authentication</Label>
+                      <div
+                        className="grid grid-cols-3 border border-border bg-background/30 p-0.5 md:max-w-md"
+                        role="group"
+                        aria-label="HTTP authentication"
                       >
-                        <SelectOption value="none">None</SelectOption>
-                        <SelectOption value="header">Bearer token</SelectOption>
-                        <SelectOption value="oauth">OAuth</SelectOption>
-                      </Select>
+                        {(
+                          [
+                            ["none", "None"],
+                            ["header", "Bearer token"],
+                            ["oauth", "OAuth"],
+                          ] as const
+                        ).map(([value, label]) => (
+                          <button
+                            key={value}
+                            type="button"
+                            aria-pressed={mcpDraft.httpAuth === value}
+                            className={cn(
+                              "px-2 py-2 text-sm font-medium transition-colors",
+                              mcpDraft.httpAuth === value
+                                ? "bg-primary text-primary-foreground"
+                                : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                            )}
+                            onClick={() => setMcpHttpAuth(value)}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                     {mcpDraft.httpAuth === "header" && (
                       <div className="grid gap-1.5">
@@ -615,7 +662,7 @@ export default function ProfileBuilderPage() {
                   </>
                 ) : (
                   <>
-                    <div className="grid grid-cols-2 gap-2">
+                    <div className="grid gap-4 md:grid-cols-2">
                       <div className="grid gap-1.5">
                         <Label htmlFor="pb-mcp-command">Command</Label>
                         <Input
@@ -648,7 +695,7 @@ export default function ProfileBuilderPage() {
                       </Label>
                       <textarea
                         id="pb-mcp-env"
-                        className="flex min-h-[80px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
+                        className="flex min-h-[80px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:border-foreground/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30"
                         placeholder={"API_KEY=secret\nDEBUG=1"}
                         value={mcpDraft.env}
                         onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
@@ -658,42 +705,50 @@ export default function ProfileBuilderPage() {
                     </div>
                   </>
                 )}
+
+                <div className="flex justify-end">
+                  <Button onClick={addMcpDraft}>Add server</Button>
+                </div>
               </div>
-              <Button outlined onClick={addMcpDraft}>
-                Add server
-              </Button>
+
               {mcpServers.length > 0 && (
-                <div className="space-y-1">
+                <div className="space-y-2">
                   {mcpServers.map((s) => (
                     <div
                       key={s.name}
-                      className="flex items-center justify-between rounded bg-muted px-3 py-1.5 text-sm"
+                      className="flex items-center justify-between gap-4 border border-border bg-muted/40 p-4 text-sm"
                     >
                       <span className="min-w-0">
-                        <span className="font-medium">{s.name}</span>{" "}
-                        <Badge tone="outline">{s.url ? "HTTP" : "stdio"}</Badge>
-                        {s.auth && (
-                          <Badge tone="outline" className="ml-1">
-                            auth: {s.auth === "header" ? "bearer" : s.auth}
+                        <span className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium">{s.name}</span>
+                          <Badge tone="outline">
+                            {s.url ? "HTTP" : "stdio"}
                           </Badge>
-                        )}
-                        <span className="block truncate text-xs text-muted-foreground">
+                          {s.auth && (
+                            <Badge tone="outline">
+                              auth: {s.auth === "header" ? "bearer" : s.auth}
+                            </Badge>
+                          )}
+                        </span>
+                        <span className="mt-1 block break-all text-xs text-muted-foreground">
                           {s.url || [s.command, ...(s.args || [])].join(" ")}
                         </span>
                       </span>
-                      <button
-                        className="text-xs text-destructive"
+                      <Button
+                        size="sm"
+                        ghost
+                        destructive
+                        className="shrink-0"
                         onClick={() => removeMcp(s.name)}
                       >
                         Remove
-                      </button>
+                      </Button>
                     </div>
                   ))}
                 </div>
               )}
             </div>
           )}
-
           {step === "review" && (
             <div className="space-y-3 text-sm">
               <ReviewRow label="Name" value={name.trim() || "—"} />

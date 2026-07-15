@@ -91,6 +91,11 @@ function withManagementProfile(url: string): string {
   return `${url}${sep}profile=${encodeURIComponent(_managementProfile)}`;
 }
 
+/** Same profile injection as fetchJSON; exported for unit tests. */
+export function managementScopedRequestUrl(url: string): string {
+  return withManagementProfile(url);
+}
+
 export async function fetchJSON<T>(
   url: string,
   init?: RequestInit,

@@ -10,7 +10,10 @@ import {
   setPetActionCenterActionStatus
 } from './pet-action-center'
 import {
+  appendPetLiveSessionReply,
+  beginPetLiveSessionReply,
   completePetLiveSession,
+  completePetLiveSessionReply,
   resetPetLiveSessions,
   setPetLiveSessionActivity,
   syncPetLiveSessionState
@@ -458,6 +461,45 @@ describe('pet action center projection', () => {
     expect(serialized).not.toContain('args')
     expect(serialized).not.toContain('output')
     expect(serialized).not.toContain('reasoningText')
+    expect(serialized).not.toContain('toolOutput')
+    expect(serialized).not.toContain('token')
+  })
+
+  it('projects reply text from a pet-started live session turn without leaking private fields', () => {
+    syncPetLiveSessionState(
+      {
+        profile: 'default',
+        runtimeSessionId: 'runtime',
+        storedSessionId: 'stored',
+        busy: true,
+        needsInput: false,
+        awaitingResponse: true,
+        turnStartedAt: 10
+      },
+      null
+    )
+
+    // Simulate a pet-originated reply capture
+    beginPetLiveSessionReply('default', 'runtime', 'stored')
+    appendPetLiveSessionReply('default', 'runtime', 'Hello from the assistant')
+    completePetLiveSessionReply('default', 'runtime', 'Hello from the assistant')
+
+    const item = $petActionCenter.get().items.find(candidate => candidate.kind === 'live-turn')
+
+    expect(item).toEqual(
+      expect.objectContaining({
+        kind: 'live-turn',
+        reply: { streaming: false, text: 'Hello from the assistant' }
+      })
+    )
+
+    const serialized = JSON.stringify($petActionCenter.get())
+
+    expect(serialized).toContain('Hello from the assistant')
+    expect(serialized).not.toContain('messages')
+    expect(serialized).not.toContain('reasoningText')
+    expect(serialized).not.toContain('toolOutput')
+    expect(serialized).not.toContain('token')
   })
 
   it('counts working as actionable but not attention, while waiting and outcomes require attention', () => {

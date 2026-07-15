@@ -2461,7 +2461,8 @@ export const zhHant = defineLocale({
       steered: '已傳送指示',
       queued: '訊息已排入佇列',
       stopped: '工作階段已停止',
-      acknowledged: '已關閉'
+      acknowledged: '已關閉',
+      replyLabel: '回覆'
     }
   }
 })

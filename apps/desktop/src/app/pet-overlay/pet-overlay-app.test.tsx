@@ -120,6 +120,7 @@ function makeWorkingActionCenterState(): PetActionCenterState {
         profileLabel: 'Default',
         queuedCount: 0,
         receivedAt: 1,
+        reply: null,
         sessionId: 'runtime-1',
         sessionTitle: 'Working session',
         status: 'working',

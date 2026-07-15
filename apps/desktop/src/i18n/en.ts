@@ -2602,7 +2602,8 @@ export const en: Translations = {
       steered: 'Instruction sent',
       queued: 'Message queued',
       stopped: 'Session stopped',
-      acknowledged: 'Dismissed'
+      acknowledged: 'Dismissed',
+      replyLabel: 'Reply'
     }
   }
 }

@@ -49,6 +49,7 @@ import {
   setPetOverlayScaleHandler,
   setPetOverlaySubmitHandler
 } from '../store/pet-overlay'
+import { submitPetOverlayPrompt } from '../store/pet-overlay-submit'
 import { $filePreviewTarget, $previewTarget, closeActiveRightRailTab } from '../store/preview'
 import {
   $activeGatewayProfile,
@@ -861,7 +862,14 @@ export function DesktopController() {
       return
     }
 
-    setPetOverlaySubmitHandler(text => void submitTextRef.current(text))
+    setPetOverlaySubmitHandler(text => {
+      void submitPetOverlayPrompt({
+        profile: normalizeProfileKey($activeGatewayProfile.get()),
+        runtimeSessionId: activeSessionIdRef.current,
+        submitText: value => submitTextRef.current(value),
+        text
+      })
+    })
 
     const actionCenter = createPetActionCenterActions({
       ensureProfile: ensureGatewayProfile,
@@ -891,7 +899,7 @@ export function DesktopController() {
       setPetOverlayOpenAppHandler(null)
       setPetOverlayScaleHandler(null)
     }
-  }, [])
+  }, [activeSessionIdRef])
 
   // Mirror "a session is blocked on the user" (clarify/approval) into the pet's
   // awaitingInput flag so it shows the `waiting` pose. Lives on $petActivity so

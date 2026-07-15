@@ -21,6 +21,7 @@ import {
 } from '@/lib/generated-images'
 import { parseTodos } from '@/lib/todos'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import { appendPetLiveSessionReply } from '@/store/pet-live-session'
 import { getProfileSessionValue, profileSessionKey } from '@/store/session-identity'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
@@ -163,6 +164,7 @@ export function useMessageStream({
         queue.delete(key)
 
         if (queued.assistant) {
+          appendPetLiveSessionReply(queued.profile, queued.sessionId, queued.assistant)
           mutateStream(
             queued.profile,
             queued.sessionId,

@@ -4,9 +4,17 @@ import { $petUnread } from './pet'
 import {
   $petLiveSessions,
   acknowledgePetLiveSession,
+  appendPetLiveSessionReply,
+  armNextReplyForProfile,
+  armPetLiveSessionReply,
   beginPetLiveSession,
+  beginPetLiveSessionReply,
   clearPetLiveSessionActivity,
   completePetLiveSession,
+  completePetLiveSessionReply,
+  consumePetReplyArm,
+  disarmNextReplyForProfile,
+  disarmPetReplyArm,
   reconcilePetLiveSessionFocus,
   replacePetLiveSessionRuntime,
   resetPetLiveSessions,
@@ -102,6 +110,121 @@ describe('pet live-session snapshots', () => {
       runtimeSessionId: 'runtime'
     })
     expect($petLiveSessions.get()[0]).toEqual(expect.objectContaining({ busy: true, outcome: null }))
+  })
+
+  it('consumes an exact session reply arm only once', () => {
+    armPetLiveSessionReply(' default ', ' runtime ')
+
+    expect(consumePetReplyArm('work', 'runtime')).toBe(false)
+    expect(consumePetReplyArm('default', 'runtime')).toBe(true)
+    expect(consumePetReplyArm('default', 'runtime')).toBe(false)
+  })
+
+  it('consumes a profile-level next-session reply arm only once', () => {
+    armNextReplyForProfile(' work ')
+
+    expect(consumePetReplyArm('default', 'new-runtime')).toBe(false)
+    expect(consumePetReplyArm('work', 'new-runtime')).toBe(true)
+    expect(consumePetReplyArm('work', 'another-runtime')).toBe(false)
+  })
+
+  it('consumes an exact arm before preserving a separate next-session arm for the same profile', () => {
+    armPetLiveSessionReply('work', 'exact-runtime')
+    armNextReplyForProfile('work')
+
+    expect(consumePetReplyArm('work', 'exact-runtime')).toBe(true)
+    expect(consumePetReplyArm('work', 'new-runtime')).toBe(true)
+  })
+
+  it('disarms failed exact-session and next-session captures without touching siblings', () => {
+    armPetLiveSessionReply('default', 'runtime')
+    armPetLiveSessionReply('default', 'sibling')
+    armNextReplyForProfile('work')
+
+    disarmPetReplyArm('default', 'runtime')
+    disarmNextReplyForProfile('work')
+
+    expect(consumePetReplyArm('default', 'runtime')).toBe(false)
+    expect(consumePetReplyArm('work', 'new-runtime')).toBe(false)
+    expect(consumePetReplyArm('default', 'sibling')).toBe(true)
+  })
+
+  it('preserves streamed text when a fast message.start re-begins an armed pet reply', () => {
+    beginPetLiveSessionReply('default', 'runtime', 'stored')
+    appendPetLiveSessionReply('default', 'runtime', 'Already streamed')
+
+    beginPetLiveSessionReply('default', 'runtime', 'stored')
+
+    expect($petLiveSessions.get()[0]).toEqual(
+      expect.objectContaining({ reply: { streaming: true, text: 'Already streamed' } })
+    )
+  })
+
+  it('uses streamed text when the terminal payload has no final text', () => {
+    beginPetLiveSessionReply('default', 'runtime', 'stored')
+    appendPetLiveSessionReply('default', 'runtime', 'streamed fallback')
+
+    completePetLiveSessionReply('default', 'runtime', '   ')
+
+    expect($petLiveSessions.get()[0]?.reply).toEqual({ streaming: false, text: 'streamed fallback' })
+  })
+
+  it('drops an unfinished pet reply when the next turn is not pet-armed', () => {
+    beginPetLiveSessionReply('default', 'runtime', 'stored')
+    appendPetLiveSessionReply('default', 'runtime', 'stale partial')
+
+    beginPetLiveSession('default', 'runtime', 'stored')
+    appendPetLiveSessionReply('default', 'runtime', 'ordinary reply')
+
+    expect($petLiveSessions.get()[0]?.reply).toBeNull()
+  })
+
+  it('clears pending reply arms when live sessions reset', () => {
+    armPetLiveSessionReply('default', 'runtime')
+    armNextReplyForProfile('work')
+
+    resetPetLiveSessions()
+
+    expect(consumePetReplyArm('default', 'runtime')).toBe(false)
+    expect(consumePetReplyArm('work', 'new-runtime')).toBe(false)
+  })
+
+  it('clears reply arming when a turn completes', () => {
+    beginPetLiveSessionReply('default', 'runtime', 'stored')
+
+    completePetLiveSession('default', 'runtime', 'done')
+
+    expect($petLiveSessions.get()[0]).toEqual(expect.objectContaining({ replyArmed: false }))
+  })
+
+  it('captures only the exact pet-started turn reply and clears it on the next ordinary turn', () => {
+    syncPetLiveSessionState(state(), { profile: 'default', runtimeSessionId: 'runtime' })
+    syncPetLiveSessionState(state({ profile: 'work' }), null)
+
+    beginPetLiveSessionReply('default', 'runtime', 'stored')
+    appendPetLiveSessionReply('work', 'runtime', 'wrong profile')
+    appendPetLiveSessionReply('default', 'different-runtime', 'wrong runtime')
+    appendPetLiveSessionReply('default', 'runtime', 'Hello ')
+    appendPetLiveSessionReply('default', 'runtime', 'from Nox')
+
+    expect($petLiveSessions.get().find(item => item.profile === 'default')).toEqual(
+      expect.objectContaining({ reply: { streaming: true, text: 'Hello from Nox' } })
+    )
+    expect(JSON.stringify($petLiveSessions.get())).not.toContain('wrong profile')
+    expect(JSON.stringify($petLiveSessions.get())).not.toContain('wrong runtime')
+
+    completePetLiveSessionReply('default', 'runtime', 'Final answer')
+    completePetLiveSession('default', 'runtime', 'done')
+
+    expect($petLiveSessions.get().find(item => item.profile === 'default')).toEqual(
+      expect.objectContaining({ reply: { streaming: false, text: 'Final answer' } })
+    )
+
+    beginPetLiveSession('default', 'runtime', 'stored')
+
+    expect($petLiveSessions.get().find(item => item.profile === 'default')).toEqual(
+      expect.objectContaining({ reply: null })
+    )
   })
 
   it('begins with a verified stored id and atomically rotates the focused runtime', () => {

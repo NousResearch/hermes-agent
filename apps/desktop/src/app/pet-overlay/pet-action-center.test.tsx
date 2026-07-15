@@ -114,6 +114,7 @@ function makeLiveTurnItem(
     profileLabel: 'Work',
     queuedCount: 0,
     receivedAt: 3000,
+    reply: null,
     sessionId: 'runtime-secret-id',
     sessionTitle: 'Release prep',
     status: 'working',
@@ -1182,6 +1183,48 @@ describe('PetActionCenter — Pet-6C2 live actions', () => {
 })
 
 describe('PetActionCenter — Pet-6C2 live feedback', () => {
+  it('renders a reply preview for live-turn items with non-empty reply text', () => {
+    const item = makeLiveTurnItem({
+      reply: { streaming: false, text: 'Here is the answer to your question.' }
+    })
+
+    render(<PetActionCenter state={makeState([item], { attentionCount: 0 })} />)
+    fireEvent.click(screen.getByRole('button'))
+
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText(ac.replyLabel)).not.toBeNull()
+    expect(within(dialog).getByText('Here is the answer to your question.')).not.toBeNull()
+    expect(within(dialog).getByRole('region', { name: ac.replyLabel }).tabIndex).toBe(0)
+  })
+
+  it('renders the complete reply in a scrollable bounded region instead of truncating it', () => {
+    const longText = `${'A'.repeat(600)} END-OF-REPLY`
+
+    const item = makeLiveTurnItem({
+      reply: { streaming: false, text: longText }
+    })
+
+    render(<PetActionCenter state={makeState([item], { attentionCount: 0 })} />)
+    fireEvent.click(screen.getByRole('button'))
+
+    const dialog = screen.getByRole('dialog')
+    const replySection = within(dialog).getByText(ac.replyLabel).parentElement!
+
+    expect(replySection.textContent).toContain(longText)
+    expect(replySection.style.overflowY).toBe('auto')
+    expect(replySection.style.maxHeight).toBeTruthy()
+  })
+
+  it('does not render a reply section when reply is null or empty', () => {
+    const item = makeLiveTurnItem({ reply: null })
+
+    render(<PetActionCenter state={makeState([item], { attentionCount: 0 })} />)
+    fireEvent.click(screen.getByRole('button'))
+
+    const dialog = screen.getByRole('dialog')
+    expect(within(dialog).queryByText(ac.replyLabel)).toBeNull()
+  })
+
   it.each([
     ['success', 'Done'],
     ['stale', 'No longer pending'],

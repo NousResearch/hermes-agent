@@ -7,6 +7,11 @@ import { profileSessionKey } from './session-identity'
 export type PetLiveSessionActivityKind = 'reasoning' | 'tool'
 export type PetLiveSessionOutcome = 'done' | 'failed'
 
+export interface PetLiveSessionReply {
+  streaming: boolean
+  text: string
+}
+
 export interface PetLiveSessionSnapshot {
   profile: string
   runtimeSessionId: string
@@ -18,6 +23,8 @@ export interface PetLiveSessionSnapshot {
   activityKind: PetLiveSessionActivityKind | null
   activityName: string | null
   outcome: PetLiveSessionOutcome | null
+  reply: PetLiveSessionReply | null
+  replyArmed: boolean
   updatedAt: number
 }
 
@@ -39,6 +46,43 @@ export interface PetLiveSessionFocus {
 export const $petLiveSessions = atom<PetLiveSessionSnapshot[]>([])
 
 let focusedIdentity: { profile: string; runtimeSessionId: string } | null = null
+const pendingReplyArms = new Set<string>()
+const pendingProfileReplyArms = new Set<string>()
+
+export function armPetLiveSessionReply(profile: string, runtimeSessionId: string): void {
+  const sessionId = runtimeSessionId.trim()
+
+  if (sessionId) {
+    pendingReplyArms.add(profileSessionKey(profile, sessionId))
+  }
+}
+
+export function armNextReplyForProfile(profile: string): void {
+  pendingProfileReplyArms.add(normalizeProfileKey(profile))
+}
+
+export function consumePetReplyArm(profile: string, runtimeSessionId: string): boolean {
+  const normalizedProfile = normalizeProfileKey(profile)
+  const sessionKey = profileSessionKey(normalizedProfile, runtimeSessionId.trim())
+
+  if (pendingReplyArms.delete(sessionKey)) {
+    return true
+  }
+
+  return pendingProfileReplyArms.delete(normalizedProfile)
+}
+
+export function disarmPetReplyArm(profile: string, runtimeSessionId: string): void {
+  const sessionId = runtimeSessionId.trim()
+
+  if (sessionId) {
+    pendingReplyArms.delete(profileSessionKey(profile, sessionId))
+  }
+}
+
+export function disarmNextReplyForProfile(profile: string): void {
+  pendingProfileReplyArms.delete(normalizeProfileKey(profile))
+}
 
 const boundedActivityName = (value: string | null | undefined): string | null => {
   const trimmed = value?.trim() ?? ''
@@ -70,7 +114,10 @@ const sameSnapshot = (left: PetLiveSessionSnapshot, right: Omit<PetLiveSessionSn
   left.turnStartedAt === right.turnStartedAt &&
   left.activityKind === right.activityKind &&
   left.activityName === right.activityName &&
-  left.outcome === right.outcome
+  left.outcome === right.outcome &&
+  left.replyArmed === right.replyArmed &&
+  left.reply?.streaming === right.reply?.streaming &&
+  left.reply?.text === right.reply?.text
 
 const shouldRetain = (snapshot: Omit<PetLiveSessionSnapshot, 'updatedAt'>): boolean =>
   snapshot.busy || snapshot.needsInput || snapshot.outcome !== null || isFocused(snapshot.profile, snapshot.runtimeSessionId)
@@ -126,7 +173,9 @@ function emptySnapshot(
     turnStartedAt: null,
     activityKind: null,
     activityName: null,
-    outcome: null
+    outcome: null,
+    reply: null,
+    replyArmed: false
   }
 }
 
@@ -143,7 +192,9 @@ function startedSnapshot(
     turnStartedAt: snapshot.turnStartedAt ?? Date.now(),
     activityKind: null,
     activityName: null,
-    outcome: null
+    outcome: null,
+    reply: null,
+    replyArmed: false
   }
 }
 
@@ -178,7 +229,73 @@ export function syncPetLiveSessionState(
     turnStartedAt: input.turnStartedAt,
     activityKind: busy ? (previous?.activityKind ?? null) : null,
     activityName: busy ? (previous?.activityName ?? null) : null,
-    outcome: busy ? null : (previous?.outcome ?? null)
+    outcome: busy ? null : (previous?.outcome ?? null),
+    reply: previous?.reply ?? null,
+    replyArmed: previous?.replyArmed ?? false
+  })
+}
+
+const MAX_PET_REPLY_LENGTH = 24_000
+
+function boundedReplyText(value: string): string {
+  return value.length <= MAX_PET_REPLY_LENGTH ? value : `${value.slice(0, MAX_PET_REPLY_LENGTH - 1)}…`
+}
+
+export function beginPetLiveSessionReply(
+  profile: string,
+  runtimeSessionId: string,
+  storedSessionId?: string | null
+): void {
+  const previous = existingSnapshot(profile, runtimeSessionId)
+  const next = previous ? unstamped(previous) : emptySnapshot(profile, runtimeSessionId)
+
+  writeSnapshot({
+    ...startedSnapshot(next, storedSessionId),
+    reply: next.reply?.streaming ? next.reply : { streaming: true, text: '' },
+    replyArmed: true
+  })
+}
+
+export function appendPetLiveSessionReply(profile: string, runtimeSessionId: string, delta: string): void {
+  const previous = existingSnapshot(profile, runtimeSessionId)
+
+  if (!previous?.reply?.streaming || !delta) {
+    return
+  }
+
+  writeSnapshot({
+    ...previous,
+    reply: { streaming: true, text: boundedReplyText(previous.reply.text + delta) }
+  })
+}
+
+export function completePetLiveSessionReply(profile: string, runtimeSessionId: string, finalText: string): void {
+  const previous = existingSnapshot(profile, runtimeSessionId)
+
+  if (!previous?.reply?.streaming) {
+    return
+  }
+
+  const text = finalText.trim() || previous.reply.text
+
+  writeSnapshot({
+    ...previous,
+    reply: { streaming: false, text: boundedReplyText(text) },
+    replyArmed: false
+  })
+}
+
+export function failPetLiveSessionReply(profile: string, runtimeSessionId: string): void {
+  const previous = existingSnapshot(profile, runtimeSessionId)
+
+  if (!previous?.reply?.streaming) {
+    return
+  }
+
+  writeSnapshot({
+    ...previous,
+    reply: { streaming: false, text: previous.reply.text },
+    replyArmed: false
   })
 }
 
@@ -232,10 +349,21 @@ export function replacePetLiveSessionRuntime(
       ? { ...unstamped(previous), runtimeSessionId: recoveredRuntime }
       : emptySnapshot(normalizedProfile, recoveredRuntime)
 
-  const next = startedSnapshot(
-    { ...base, profile: normalizedProfile, runtimeSessionId: recoveredRuntime },
-    storedSessionId
+  const recoveredIsAuthoritative = Boolean(
+    recovered && (recovered.busy || recovered.needsInput || recovered.outcome !== null)
   )
+
+  const next = recoveredIsAuthoritative
+    ? {
+        ...base,
+        storedSessionId: storedSessionId?.trim() || base.storedSessionId,
+        profile: normalizedProfile,
+        runtimeSessionId: recoveredRuntime
+      }
+    : startedSnapshot(
+        { ...base, profile: normalizedProfile, runtimeSessionId: recoveredRuntime },
+        storedSessionId
+      )
 
   const firstRotatedIndex = current.findIndex(matchesRotatedRuntime)
   const retained = current.filter(snapshot => !matchesRotatedRuntime(snapshot))
@@ -309,7 +437,8 @@ export function completePetLiveSession(
     turnStartedAt: null,
     activityKind: null,
     activityName: null,
-    outcome
+    outcome,
+    replyArmed: false
   })
 }
 
@@ -351,5 +480,7 @@ export function reconcilePetLiveSessionFocus(
 
 export function resetPetLiveSessions(): void {
   focusedIdentity = null
+  pendingReplyArms.clear()
+  pendingProfileReplyArms.clear()
   $petLiveSessions.set([])
 }

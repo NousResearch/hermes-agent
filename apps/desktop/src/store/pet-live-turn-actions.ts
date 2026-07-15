@@ -13,7 +13,9 @@ import {
 import {
   $petLiveSessions,
   acknowledgePetLiveSession,
-  beginPetLiveSession,
+  armPetLiveSessionReply,
+  beginPetLiveSessionReply,
+  disarmPetReplyArm,
   type PetLiveSessionSnapshot,
   replacePetLiveSessionRuntime
 } from './pet-live-session'
@@ -137,14 +139,12 @@ function exactLiveSnapshot(profile: string, runtimeSessionId: string): PetLiveSe
   )
 }
 
+function isQuiescentSnapshot(snapshot: PetLiveSessionSnapshot): boolean {
+  return !snapshot.busy && !snapshot.needsInput && !snapshot.awaitingResponse && snapshot.outcome === null
+}
+
 function isIdleSnapshot(snapshot: PetLiveSessionSnapshot, storedSessionId: string): boolean {
-  return (
-    snapshot.storedSessionId === storedSessionId &&
-    !snapshot.busy &&
-    !snapshot.needsInput &&
-    !snapshot.awaitingResponse &&
-    snapshot.outcome === null
-  )
+  return snapshot.storedSessionId === storedSessionId && isQuiescentSnapshot(snapshot)
 }
 
 function actionLockKey(item: PetActionCenterLiveTurnItem): string {
@@ -207,10 +207,19 @@ async function send(
   start(item.id)
 
   try {
+    armPetLiveSessionReply(item.profile, item.sessionId)
     await gateway.request('prompt.submit', { session_id: item.sessionId, text })
-    beginPetLiveSession(item.profile, item.sessionId, item.storedSessionId)
+
+    const submittedSnapshot = exactLiveSnapshot(item.profile, item.sessionId)
+
+    if (!submittedSnapshot || isQuiescentSnapshot(submittedSnapshot)) {
+      beginPetLiveSessionReply(item.profile, item.sessionId, item.storedSessionId)
+    }
+
     finish(item.id, 'success')
   } catch (error) {
+    disarmPetReplyArm(item.profile, item.sessionId)
+
     if (!isSessionNotFoundError(error) && !isGatewayTimeoutError(error)) {
       finishError(item.id, 'rpc-failed')
 
@@ -231,6 +240,8 @@ async function send(
 
       return
     }
+
+    let armedRecoveredId: string | null = null
 
     try {
       const resumed = await gateway.request<{ session_id?: unknown }>('session.resume', {
@@ -281,10 +292,25 @@ async function send(
         return
       }
 
+      armedRecoveredId = recoveredId
+      armPetLiveSessionReply(item.profile, recoveredId)
       await gateway.request('prompt.submit', { session_id: recoveredId, text })
+
+      const submittedRecoveredSnapshot = exactLiveSnapshot(item.profile, recoveredId)
+      const needsReplyFallback = !submittedRecoveredSnapshot || isQuiescentSnapshot(submittedRecoveredSnapshot)
+
       replacePetLiveSessionRuntime(item.profile, item.sessionId, recoveredId, storedSessionId)
+
+      if (needsReplyFallback) {
+        beginPetLiveSessionReply(item.profile, recoveredId, storedSessionId)
+      }
+
       finish(item.id, 'success')
     } catch (retryError) {
+      if (armedRecoveredId) {
+        disarmPetReplyArm(item.profile, armedRecoveredId)
+      }
+
       finishError(
         item.id,
         isSessionNotFoundError(retryError) || isGatewayTimeoutError(retryError) ? 'stale-runtime' : 'rpc-failed'

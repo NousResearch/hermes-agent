@@ -6,7 +6,7 @@ import type { ProfileInfo, SessionInfo } from '@/types/hermes'
 import { $clarifyRequests, type ClarifyRequest } from './clarify'
 import { $queuedPromptsBySession, type QueueState } from './composer-queue'
 import { $gatewayStatesByProfile } from './gateway'
-import { $petLiveSessions, type PetLiveSessionSnapshot } from './pet-live-session'
+import { $petLiveSessions, type PetLiveSessionReply, type PetLiveSessionSnapshot } from './pet-live-session'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from './profile'
 import type { StoredPromptRequest } from './prompt-identity'
 import {
@@ -76,6 +76,7 @@ export interface PetActionCenterClarifyItem extends PetActionCenterItemBase {
 
 export interface PetActionCenterLiveTurnItem extends PetActionCenterItemBase, PetActionCenterLiveStatus {
   kind: 'live-turn'
+  reply: PetLiveSessionReply | null
 }
 
 export type PetActionCenterItem = PetActionCenterApprovalItem | PetActionCenterClarifyItem | PetActionCenterLiveTurnItem
@@ -379,6 +380,7 @@ function liveTurnItem(
     profile,
     profileLabel: profileLabel(profile, context.profiles),
     receivedAt: snapshot.updatedAt,
+    reply: snapshot.reply,
     sessionId: snapshot.runtimeSessionId,
     sessionTitle: stored?.title?.trim() || null,
     storedSessionId: snapshot.storedSessionId,

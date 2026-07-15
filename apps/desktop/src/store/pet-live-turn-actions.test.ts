@@ -12,7 +12,11 @@ import {
 } from './pet-action-center-actions'
 import {
   $petLiveSessions,
+  appendPetLiveSessionReply,
+  beginPetLiveSessionReply,
   completePetLiveSession,
+  completePetLiveSessionReply,
+  consumePetReplyArm,
   reconcilePetLiveSessionFocus,
   resetPetLiveSessions,
   syncPetLiveSessionState
@@ -154,7 +158,61 @@ describe('pet live-turn main-renderer actions', () => {
     )
   })
 
+  it('disarms reply capture after a terminal submit failure', async () => {
+    const request = vi.fn().mockRejectedValue(new Error('provider failed'))
+    gateways.set('work', gateway(request))
+    $activeGatewayProfile.set('work')
+    snapshot('work', { busy: false, awaitingResponse: false, turnStartedAt: null })
+    const item = liveItem('work')
+
+    await createPetActionCenterActions(dependencies).handle({
+      type: 'action-center-submit',
+      itemId: item.id,
+      text: 'hello'
+    })
+
+    expect(consumePetReplyArm('work', 'runtime')).toBe(false)
+    expect($petActionCenter.get().action).toEqual(
+      expect.objectContaining({ status: 'error', errorCode: 'rpc-failed' })
+    )
+  })
+
+  it('does not reopen a pet turn that completes before prompt.submit resolves', async () => {
+    const request = vi.fn(async (method: string) => {
+      if (method === 'prompt.submit') {
+        expect(consumePetReplyArm('work', 'runtime')).toBe(true)
+        beginPetLiveSessionReply('work', 'runtime', 'stored')
+        appendPetLiveSessionReply('work', 'runtime', 'fast answer')
+        completePetLiveSessionReply('work', 'runtime', 'fast answer')
+        completePetLiveSession('work', 'runtime', 'done')
+      }
+
+      return {}
+    })
+
+    gateways.set('work', gateway(request))
+    $activeGatewayProfile.set('work')
+    snapshot('work', { busy: false, awaitingResponse: false, turnStartedAt: null })
+    const item = liveItem('work')
+
+    await createPetActionCenterActions(dependencies).handle({
+      type: 'action-center-submit',
+      itemId: item.id,
+      text: 'hello'
+    })
+
+    expect($petLiveSessions.get()).toEqual([
+      expect.objectContaining({
+        busy: false,
+        outcome: 'done',
+        reply: { streaming: false, text: 'fast answer' }
+      })
+    ])
+  })
+
   it('recovers idle send once on the same profile with a verified stored id and never switches foreground', async () => {
+    let recoveredArmSeen = false
+
     const request = vi.fn(async (method: string, params?: Record<string, unknown>) => {
       if (method === 'prompt.submit' && params?.session_id === 'runtime') {
         throw new Error('session not found')
@@ -162,6 +220,13 @@ describe('pet live-turn main-renderer actions', () => {
 
       if (method === 'session.resume') {
         return { session_id: 'fresh-runtime' }
+      }
+
+      if (method === 'prompt.submit' && params?.session_id === 'fresh-runtime') {
+        recoveredArmSeen = consumePetReplyArm('work', 'fresh-runtime')
+        beginPetLiveSessionReply('work', 'fresh-runtime', 'stored')
+        completePetLiveSessionReply('work', 'fresh-runtime', 'recovered answer')
+        completePetLiveSession('work', 'fresh-runtime', 'done')
       }
 
       return {}
@@ -183,14 +248,17 @@ describe('pet live-turn main-renderer actions', () => {
       ['session.resume', { session_id: 'stored', source: 'desktop' }],
       ['prompt.submit', { session_id: 'fresh-runtime', text: 'continue' }]
     ])
+    expect(recoveredArmSeen).toBe(true)
     expect(ensureProfile).not.toHaveBeenCalled()
     expect(resumeSession).not.toHaveBeenCalled()
     expect($petActionCenter.get().action).toEqual({ status: 'success', itemId: item.id })
     expect($petLiveSessions.get()).toEqual([
       expect.objectContaining({
-        awaitingResponse: true,
-        busy: true,
+        awaitingResponse: false,
+        busy: false,
+        outcome: 'done',
         profile: 'work',
+        reply: { streaming: false, text: 'recovered answer' },
         runtimeSessionId: 'fresh-runtime',
         storedSessionId: 'stored'
       })

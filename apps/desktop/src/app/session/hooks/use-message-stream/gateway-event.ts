@@ -23,8 +23,12 @@ import { requestDesktopOnboarding } from '@/store/onboarding'
 import { flashPetActivity, markPetUnread, setPetActivity } from '@/store/pet'
 import {
   beginPetLiveSession,
+  beginPetLiveSessionReply,
   clearPetLiveSessionActivity,
   completePetLiveSession,
+  completePetLiveSessionReply,
+  consumePetReplyArm,
+  failPetLiveSessionReply,
   setPetLiveSessionActivity
 } from '@/store/pet-live-session'
 import { $activeGatewayProfile, normalizeProfileKey } from '@/store/profile'
@@ -300,7 +304,13 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         flushQueuedDeltas(profile, sessionId)
-        beginPetLiveSession(profile, sessionId)
+
+        if (consumePetReplyArm(profile, sessionId)) {
+          beginPetLiveSessionReply(profile, sessionId)
+        } else {
+          beginPetLiveSession(profile, sessionId)
+        }
+
         clearSessionSubagents(sessionId)
         setSessionCompacting(sessionId, false)
         compactedTurnRef.current.delete(eventSessionKey!)
@@ -388,8 +398,16 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
           return
         }
 
-        // Publish the exact terminal outcome before transcript/cache completion.
-        // The later terminal cache sync keeps this outcome until explicit ack.
+        const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
+
+        if (consumePetReplyArm(profile, sessionId)) {
+          beginPetLiveSessionReply(profile, sessionId)
+        }
+
+        // Flush the same coalesced assistant delta batch to both transcript and
+        // pet before terminal state freezes the reply capture.
+        flushQueuedDeltas(profile, sessionId)
+        completePetLiveSessionReply(profile, sessionId, finalText)
         completePetLiveSession(profile, sessionId, 'done')
 
         // Turn ended — drop any blocking prompt still open for THIS session
@@ -404,11 +422,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         clearActiveSessionTodos(sessionId)
         setSessionCompacting(sessionId, false)
 
-        flushQueuedDeltas(profile, sessionId)
-
         playCompletionSound()
 
-        const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
         completeAssistantMessage(profile, sessionId, finalText)
 
         if (isActiveEvent) {
@@ -691,6 +706,12 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         const looksLikeProviderSetup = isProviderSetupErrorMessage(errorMessage)
 
         if (sessionId) {
+          if (consumePetReplyArm(profile, sessionId)) {
+            beginPetLiveSessionReply(profile, sessionId)
+          }
+
+          flushQueuedDeltas(profile, sessionId)
+          failPetLiveSessionReply(profile, sessionId)
           completePetLiveSession(profile, sessionId, 'failed')
 
           if (typeof document !== 'undefined' && !document.hasFocus()) {
@@ -738,7 +759,6 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
         }
 
         if (sessionId) {
-          flushQueuedDeltas(profile, sessionId)
           failAssistantMessage(profile, sessionId, errorMessage)
         }
 

@@ -2746,7 +2746,8 @@ export const zh: Translations = {
       steered: '已发送指令',
       queued: '消息已加入队列',
       stopped: '会话已停止',
-      acknowledged: '已关闭'
+      acknowledged: '已关闭',
+      replyLabel: '回复'
     }
   }
 }

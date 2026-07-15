@@ -2558,7 +2558,8 @@ export const ja = defineLocale({
       steered: '指示を送信しました',
       queued: 'メッセージをキューに追加しました',
       stopped: 'セッションを停止しました',
-      acknowledged: '閉じました'
+      acknowledged: '閉じました',
+      replyLabel: '返信'
     }
   }
 })

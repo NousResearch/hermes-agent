@@ -584,6 +584,31 @@ export function PetActionCenter({ state, onOpenChange }: PetActionCenterProps) {
             />
           )}
 
+          {/* Reply preview — only for live-turn items with non-empty reply text */}
+          {item && isLiveTurnItem(item) && item.reply?.text && (
+            <div
+              aria-label={ac.replyLabel}
+              role="region"
+              style={{
+                borderTop: '1px solid var(--stroke-nous)',
+                marginTop: 4,
+                paddingTop: 4,
+                fontSize: 11,
+                color: 'var(--ui-text-secondary)',
+                maxHeight: 180,
+                overflowX: 'hidden',
+                overflowY: 'auto',
+                whiteSpace: 'pre-wrap',
+                wordBreak: 'break-word',
+                userSelect: 'text'
+              }}
+              tabIndex={0}
+            >
+              <div style={{ fontWeight: 600, marginBottom: 2 }}>{ac.replyLabel}</div>
+              {item.reply.text}
+            </div>
+          )}
+
           {/* Item detail */}
           {item && isApprovalItem(item) && <ApprovalDetail ac={ac} item={item} />}
           {item && isClarifyItem(item) && <ClarifyDetail ac={ac} item={item} />}

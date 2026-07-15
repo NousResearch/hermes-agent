@@ -2191,6 +2191,7 @@ export interface Translations {
       queued: string
       stopped: string
       acknowledged: string
+      replyLabel: string
     }
   }
 }

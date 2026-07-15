@@ -7,7 +7,12 @@ import type { ClientSessionState } from '@/app/types'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
 import { $petUnread } from '@/store/pet'
-import { $petLiveSessions, resetPetLiveSessions } from '@/store/pet-live-session'
+import {
+  $petLiveSessions,
+  armPetLiveSessionReply,
+  consumePetReplyArm,
+  resetPetLiveSessions
+} from '@/store/pet-live-session'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $currentModel, setCurrentModel } from '@/store/session'
 import { getProfileSessionValue, setProfileSessionValue } from '@/store/session-identity'
@@ -71,6 +76,7 @@ describe('live session.info approval mode reconciliation', () => {
   afterEach(() => {
     cleanup()
     vi.restoreAllMocks()
+    vi.useRealTimers()
     resetPetLiveSessions()
     $petUnread.set(false)
   })
@@ -191,6 +197,62 @@ describe('live session.info approval mode reconciliation', () => {
     act(() => handleEvent!({ profile: 'work', type: 'message.start' }))
 
     expect(getProfileSessionValue(cachedStates!, 'work', ACTIVE_SID)).toBeUndefined()
+  })
+
+  it('batches pet reply deltas with the transcript stream and finalizes the complete answer', async () => {
+    await mountStream()
+    vi.useFakeTimers()
+    armPetLiveSessionReply('work', ACTIVE_SID)
+
+    act(() => {
+      handleEvent!({ profile: 'work', session_id: ACTIVE_SID, type: 'message.start' })
+      handleEvent!({ payload: { text: 'Hello ' }, profile: 'work', session_id: ACTIVE_SID, type: 'message.delta' })
+      handleEvent!({ payload: { text: 'from Nox' }, profile: 'work', session_id: ACTIVE_SID, type: 'message.delta' })
+    })
+
+    expect($petLiveSessions.get()[0]?.reply).toEqual({ streaming: true, text: '' })
+
+    act(() => vi.advanceTimersByTime(100))
+
+    expect($petLiveSessions.get()[0]?.reply).toEqual({ streaming: true, text: 'Hello from Nox' })
+
+    act(() =>
+      handleEvent!({
+        payload: { text: 'Complete answer' },
+        profile: 'work',
+        session_id: ACTIVE_SID,
+        type: 'message.complete'
+      })
+    )
+
+    expect($petLiveSessions.get()[0]?.reply).toEqual({ streaming: false, text: 'Complete answer' })
+    vi.useRealTimers()
+  })
+
+  it('captures terminal text without message.start and finalizes partial replies on error', async () => {
+    await mountStream()
+    armPetLiveSessionReply('work', ACTIVE_SID)
+
+    act(() =>
+      handleEvent!({
+        payload: { text: 'terminal-only reply' },
+        profile: 'work',
+        session_id: ACTIVE_SID,
+        type: 'message.complete'
+      })
+    )
+
+    expect($petLiveSessions.get()[0]?.reply).toEqual({ streaming: false, text: 'terminal-only reply' })
+
+    armPetLiveSessionReply('work', ACTIVE_SID)
+    act(() => {
+      handleEvent!({ profile: 'work', session_id: ACTIVE_SID, type: 'message.start' })
+      handleEvent!({ payload: { text: 'partial' }, profile: 'work', session_id: ACTIVE_SID, type: 'message.delta' })
+      handleEvent!({ payload: { message: 'failed' }, profile: 'work', session_id: ACTIVE_SID, type: 'error' })
+    })
+
+    expect($petLiveSessions.get()[0]?.reply).toEqual({ streaming: false, text: 'partial' })
+    expect(consumePetReplyArm('work', ACTIVE_SID)).toBe(false)
   })
 
   it('projects only bounded direct activity metadata and clears matching tool activity', async () => {

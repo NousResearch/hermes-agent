@@ -2934,7 +2934,13 @@ class TestSchemaInit:
         }
         assert "telegram_dm_topic_mode" in tables
         assert "telegram_dm_topic_bindings" in tables
-        assert db.get_meta("telegram_dm_topic_schema_version") == "2"
+        binding_columns = {
+            row[1]
+            for row in db._conn.execute("PRAGMA table_info('telegram_dm_topic_bindings')").fetchall()
+        }
+        assert "delivery_enabled" in binding_columns
+        assert "last_synced_message_id" in binding_columns
+        assert db.get_meta("telegram_dm_topic_schema_version") == "4"
         db.close()
 
     def test_telegram_topic_binding_roundtrip_requires_explicit_schema(self, tmp_path):
@@ -2962,7 +2968,9 @@ class TestSchemaInit:
         assert binding["user_id"] == "208214988"
         assert binding["session_key"] == "telegram:dm:208214988:thread:17585"
         assert binding["session_id"] == "topic-session"
-        assert db.get_meta("telegram_dm_topic_schema_version") == "2"
+        assert binding["delivery_enabled"] == 1
+        assert binding["last_synced_message_id"] is None
+        assert db.get_meta("telegram_dm_topic_schema_version") == "4"
         db.close()
 
     def test_telegram_topic_binding_refuses_to_relink_session_to_another_topic(self, tmp_path):

@@ -5684,6 +5684,9 @@ class SessionDB:
           v1 — initial shape (no ON DELETE CASCADE on session_id FK)
           v2 — session_id FK gets ON DELETE CASCADE so session pruning
                automatically clears bindings.
+          v3 — persistent delivery_enabled flag for WebUI -> Telegram delivery.
+          v4 — durable last_synced_message_id checkpoint for incremental
+               WebUI transcript delivery.
         """
         def _do(conn):
             conn.executescript(
@@ -5708,6 +5711,8 @@ class SessionDB:
                     session_key TEXT NOT NULL,
                     session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
                     managed_mode TEXT NOT NULL DEFAULT 'auto',
+                    delivery_enabled INTEGER NOT NULL DEFAULT 1,
+                    last_synced_message_id INTEGER,
                     linked_at REAL NOT NULL,
                     updated_at REAL NOT NULL,
                     PRIMARY KEY (chat_id, thread_id)
@@ -5747,13 +5752,15 @@ class SessionDB:
                             session_key TEXT NOT NULL,
                             session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
                             managed_mode TEXT NOT NULL DEFAULT 'auto',
+                            delivery_enabled INTEGER NOT NULL DEFAULT 1,
+                            last_synced_message_id INTEGER,
                             linked_at REAL NOT NULL,
                             updated_at REAL NOT NULL,
                             PRIMARY KEY (chat_id, thread_id)
                         );
                         INSERT INTO telegram_dm_topic_bindings_new
                             SELECT chat_id, thread_id, user_id, session_key,
-                                   session_id, managed_mode, linked_at, updated_at
+                                   session_id, managed_mode, 1, NULL, linked_at, updated_at
                             FROM telegram_dm_topic_bindings;
                         DROP TABLE telegram_dm_topic_bindings;
                         ALTER TABLE telegram_dm_topic_bindings_new
@@ -5765,10 +5772,42 @@ class SessionDB:
                         """
                     )
 
+            # v2 → v3: adding a NOT NULL column with a constant default is
+            # SQLite-safe and preserves every existing topic mapping. Legacy
+            # bindings deliberately default to enabled for compatibility.
+            binding_columns = {
+                row[1] for row in conn.execute("PRAGMA table_info('telegram_dm_topic_bindings')").fetchall()
+            }
+            if "delivery_enabled" not in binding_columns:
+                conn.execute(
+                    "ALTER TABLE telegram_dm_topic_bindings "
+                    "ADD COLUMN delivery_enabled INTEGER NOT NULL DEFAULT 1"
+                )
+
+            # v3 → v4: the durable row id checkpoint lets a paused binding
+            # resume without replaying already delivered transcript rows.
+            if "last_synced_message_id" not in binding_columns:
+                conn.execute(
+                    "ALTER TABLE telegram_dm_topic_bindings "
+                    "ADD COLUMN last_synced_message_id INTEGER"
+                )
+                # Existing topics may already contain transcript deliveries
+                # from the pre-checkpoint implementation. Baseline each legacy
+                # binding at its current persisted tail so the first v4 toggle
+                # cannot replay the whole conversation. Brand-new v4 bindings
+                # are inserted later with NULL and therefore sync all history.
+                conn.execute(
+                    "UPDATE telegram_dm_topic_bindings "
+                    "SET last_synced_message_id = ("
+                    "SELECT MAX(id) FROM messages "
+                    "WHERE messages.session_id = telegram_dm_topic_bindings.session_id"
+                    ")"
+                )
+
             conn.execute(
                 "INSERT INTO state_meta (key, value) VALUES (?, ?) "
                 "ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-                ("telegram_dm_topic_schema_version", "2"),
+                ("telegram_dm_topic_schema_version", "4"),
             )
         self._execute_write(_do)
 
@@ -6023,6 +6062,7 @@ class SessionDB:
         session_key: str,
         session_id: str,
         managed_mode: str = "auto",
+        delivery_enabled: bool = True,
     ) -> None:
         """Bind one Telegram DM topic thread to one Hermes session.
 
@@ -6056,8 +6096,8 @@ class SessionDB:
                 """
                 INSERT INTO telegram_dm_topic_bindings (
                     chat_id, thread_id, user_id, session_key, session_id,
-                    managed_mode, linked_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    managed_mode, delivery_enabled, last_synced_message_id, linked_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(chat_id, thread_id) DO UPDATE SET
                     user_id = excluded.user_id,
                     session_key = excluded.session_key,
@@ -6072,11 +6112,77 @@ class SessionDB:
                     session_key,
                     session_id,
                     managed_mode,
+                    1 if delivery_enabled else 0,
+                    None,
                     now,
                     now,
                 ),
             )
         self._execute_write(_do)
+
+    def set_telegram_topic_delivery_enabled(self, *, session_id: str, delivery_enabled: bool) -> bool:
+        """Persist WebUI -> Telegram delivery state without changing a binding."""
+        updated = False
+
+        def _do(conn):
+            nonlocal updated
+            try:
+                cursor = conn.execute(
+                    "UPDATE telegram_dm_topic_bindings "
+                    "SET delivery_enabled = ?, updated_at = ? WHERE session_id = ?",
+                    (1 if delivery_enabled else 0, time.time(), str(session_id)),
+                )
+                updated = cursor.rowcount > 0
+            except sqlite3.OperationalError:
+                updated = False
+
+        self._execute_write(_do)
+        return updated
+
+    def advance_telegram_topic_sync_checkpoint(self, *, session_id: str, message_id: int) -> bool:
+        """Record delivery through one persisted message row, monotonically.
+
+        A caller must invoke this only after a row was safely skipped or its
+        Telegram send succeeded.  Keeping this individual and monotonic makes
+        a failed later send retryable after a process restart.
+        """
+        updated = False
+
+        def _do(conn):
+            nonlocal updated
+            try:
+                cursor = conn.execute(
+                    "UPDATE telegram_dm_topic_bindings "
+                    "SET last_synced_message_id = CASE "
+                    "WHEN last_synced_message_id IS NULL OR last_synced_message_id < ? "
+                    "THEN ? ELSE last_synced_message_id END, updated_at = ? "
+                    "WHERE session_id = ?",
+                    (int(message_id), int(message_id), time.time(), str(session_id)),
+                )
+                updated = cursor.rowcount > 0
+            except sqlite3.OperationalError:
+                updated = False
+
+        self._execute_write(_do)
+        return updated
+
+    def unbind_telegram_topic(self, *, chat_id: str, thread_id: str) -> bool:
+        """Remove one Telegram topic binding without touching its session transcript."""
+        deleted = False
+
+        def _do(conn):
+            nonlocal deleted
+            try:
+                cursor = conn.execute(
+                    "DELETE FROM telegram_dm_topic_bindings WHERE chat_id = ? AND thread_id = ?",
+                    (str(chat_id), str(thread_id)),
+                )
+                deleted = cursor.rowcount > 0
+            except sqlite3.OperationalError:
+                deleted = False
+
+        self._execute_write(_do)
+        return deleted
 
     def is_telegram_session_linked_to_topic(self, *, session_id: str) -> bool:
         """Return True if a Hermes session is already bound to any Telegram DM topic.

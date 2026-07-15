@@ -1,12 +1,8 @@
 ---
 name: game-development
-description: |
-  End-to-end game development — from a blank page to a shipped game. Covers
-  concept and design, engine selection, core architecture, gameplay
-  programming, art/audio pipelines, polish, optimization, building, and
-  publishing across Unity, Unreal, Godot, and web/custom engines.
+description: Build and ship games in Unity, Unreal, or Godot.
 version: 0.1.0
-author: HeLLGURD
+author: Burak Koç (@HeLLGURD), Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
 category: gaming
@@ -30,286 +26,81 @@ metadata:
     related_skills: [code-wiki, git-workflow, explain-error, pixel-art]
 ---
 
-# Game Development
+# Game Development Skill
 
-A complete, engine-agnostic guide to building a game from the first idea to a
-shipped product. This skill is the **orchestrator** for the whole lifecycle: it
-helps you scope a concept, pick the right engine, architect the project,
-implement gameplay, build the art/audio pipeline, polish, optimize, and
-publish — without needing any other tool to fill the gaps.
-
-Deep, engine-specific detail lives in `references/`. The main flow below tells
-you *what* to do at each stage and *which reference* to open for the *how*.
-
----
+Guides a game from a blank page to a shipped build across Unity, Unreal, Godot,
+and web or custom engines. It orchestrates the whole lifecycle — concept, engine
+choice, architecture, gameplay, art and audio, polish, optimization, and release
+— and defers engine-specific detail to the files in `references/`. It does not
+play or run existing games, and it is not a general software-architecture guide.
 
 ## When to Use
 
-- User wants to make a game and doesn't know where to start
-- User is mid-project and needs help with a specific system or stage
-- User is choosing between Unity, Unreal, Godot, or building from scratch
-- User wants to take a prototype to a shippable, published game
+- The user wants to make a game and doesn't know where to start.
+- The user is mid-project and needs help with a specific system or stage.
+- The user is choosing between Unity, Unreal, Godot, or building from scratch.
+- The user wants to take a prototype to a shippable, published game.
 
 Do NOT use for:
-- Playing or running existing games — see `gaming/pokemon-player`,
-  `gaming/minecraft-modpack-server`
-- Pure 2D asset creation in isolation — see `creative/pixel-art`
-- Generic software architecture unrelated to games — see `code-wiki`
 
----
+- Playing or running existing games — see `gaming/pokemon-player`,
+  `gaming/minecraft-modpack-server`.
+- Pure 2D asset creation in isolation — see `creative/pixel-art`.
+- Generic software architecture unrelated to games — see `code-wiki`.
 
 ## Prerequisites
 
-- `git` for version control (game projects need it from day one).
-- An engine installed once chosen (Unity Hub, Unreal/Epic Launcher, or
-  Godot — Godot needs no account and is the lightest to start).
-- `web` toolset for fetching engine docs / asset store info when needed.
-- For builds: platform SDKs (covered per-platform in `references/shipping.md`).
+- `git` for version control from day one: add the engine's `.gitignore` and use
+  Git LFS for binary assets (textures, audio, models).
+- One engine installed once chosen — Unity Hub, Unreal/Epic Launcher, or Godot
+  (Godot needs no account and is the lightest to start).
+- The `terminal` toolset to scaffold projects, run the engine, and make builds.
+- The `web` toolset to fetch engine docs and asset-store info when needed.
+- Platform SDKs for each target at build time (see `references/shipping.md`).
 
----
+## How to Run
 
-## The Lifecycle (and which reference to read)
+1. Identify the user's current stage from the Quick Reference — most sessions
+   target one stage, not the whole list.
+2. Work that stage, opening the matching reference for the engine-specific how.
+3. Use `terminal` to scaffold, run, and build; `read_file` and `search_files`
+   to navigate the project; `patch` to edit scripts; `web` to pull engine docs.
+4. End every session with something runnable — code that compiles or a concrete
+   artifact (design doc, system, or build).
+
+Write the one-page design doc to a profile-safe path such as
+`~/.hermes/gamedev/<project>/design.md` (or a project-relative `docs/design.md`)
+— never a hardcoded absolute path.
+
+## Quick Reference
+
+Lifecycle and the reference to open at each stage:
 
 ```
-1. CONCEPT & DESIGN ........... define the game, scope it, write it down
-2. ENGINE SELECTION ........... pick the right tool → references/engine-selection.md
-3. PROJECT ARCHITECTURE ....... structure, version control, build pipeline
-4. CORE SYSTEMS ............... game loop, input, state, save → references/core-systems.md
-5. GAMEPLAY PROGRAMMING ....... engine-specific → references/{unity,unreal,godot}.md
-6. ART & AUDIO PIPELINE ....... import, animate, integrate assets
-7. POLISH & GAME FEEL ......... juice, VFX, UI/UX
-8. OPTIMIZATION ............... profiling, frame budget, memory
-9. TESTING & QA ............... playtesting, bug tracking, builds for testers
-10. BUILD & PUBLISH ........... platforms, stores → references/shipping.md
-11. POST-LAUNCH .............. patches, analytics, community
+1.  Concept & design ....... define, scope, and write down the game
+2.  Engine selection ....... references/engine-selection.md
+3.  Project architecture ... structure, version control, build pipeline
+4.  Core systems ........... references/core-systems.md
+5.  Gameplay programming ... references/{unity,unreal,godot}.md
+6.  Art & audio pipeline ... import, animate, integrate assets
+7.  Polish & game feel ..... juice, VFX, UI/UX
+8.  Optimization ........... profile, frame budget, memory
+9.  Testing & QA ........... playtest, bug tracking, test builds
+10. Build & publish ........ references/shipping.md
+11. Post-launch ............ patches, analytics, community
 ```
 
-Most users won't go top-to-bottom in one session. Identify which stage they're
-at, work that stage, and point at the next.
-
----
-
-## Stage 1 — Concept & Design
-
-Before any code, lock down what the game *is*. A vague concept is the #1 reason
-projects die.
-
-Ask the user (or help them answer):
-1. **Core fantasy** — what does the player *feel* like? ("a nimble ninja", "a
-   tycoon building an empire")
-2. **Core loop** — the 30-second action repeated: e.g. *explore → fight →
-   loot → upgrade → explore*. If you can't state it in one sentence, the
-   design isn't ready.
-3. **Genre + references** — 2–3 existing games it's like, and the one thing it
-   does differently.
-4. **Scope reality check** — solo/small team? First game? Then it must be
-   *small*. Steer away from MMOs, open-worlds, and "the next Skyrim."
-5. **Win/lose + progression** — how does a session start, succeed, fail, and
-   what carries over?
-
-Produce a one-page design doc (write to
-`~/.hermes/gamedev/<project>/design.md`):
-
-```markdown
-# <Title> — Design Doc
-
-**Core fantasy:** ...
-**Core loop:** ... (one sentence)
-**Genre / references:** ... (X meets Y, but with Z)
-**Platform target:** PC / mobile / web
-**Scope:** solo, ~N months, vertical slice first
-**MVP feature list:** (5-8 items max — everything else is "later")
-**Win / lose / progression:** ...
-```
-
-**Scope discipline is the whole game here.** Cut features ruthlessly. The MVP
-list is what ships; everything else is a wish list.
-
----
-
-## Stage 2 — Engine Selection
-
-The biggest early decision. Don't default to "whatever's popular" — match the
-engine to the game and the developer.
-
-→ **Read `references/engine-selection.md`** for the full decision matrix.
-
-Quick guide:
+Engine at a glance:
 
 | If… | Use |
 |---|---|
-| 2D, solo/indie, want fast iteration, free & open | **Godot** |
-| 3D, want huge ecosystem + asset store + mobile | **Unity** |
-| High-end 3D visuals, AAA fidelity, large team | **Unreal** |
-| Tiny web game, full control, learning fundamentals | **Web (HTML5 canvas / JS / TS)** |
+| 2D, solo/indie, fast iteration, free & open | **Godot** |
+| 3D, large ecosystem + asset store + mobile | **Unity** |
+| High-end 3D visuals, big team | **Unreal** |
+| Tiny web game, full control, learning fundamentals | **Web (HTML5/JS/TS)** |
 | Pure logic prototype, no graphics yet | **Python + Pygame** |
 
-Once chosen, scaffold the project (engine-specific in the reference) and
-**initialize git immediately** with a proper engine `.gitignore`.
-
----
-
-## Stage 3 — Project Architecture
-
-Set up for maintainability before the codebase grows:
-
-- **Version control** — `git init`, add the engine's `.gitignore` (Unity,
-  Unreal, and Godot each have a canonical one on github.com/github/gitignore).
-  Use Git LFS for binary assets (textures, audio, models) — they bloat history
-  fast. See the `git-workflow` skill for branching.
-- **Folder structure** — separate `scripts/`, `assets/` (art/audio/models),
-  `scenes/`/`levels/`, and `prefabs/`/`blueprints/`. Keep a flat, predictable
-  layout.
-- **Naming conventions** — pick one (PascalCase for scripts, snake_case for
-  assets) and stay consistent.
-- **Build pipeline** — even early, know how to produce a runnable build (Stage
-  10). A game you can't build is a game you can't share.
-
----
-
-## Stage 4 — Core Systems
-
-The engine-agnostic foundations every game needs.
-
-→ **Read `references/core-systems.md`** for implementation patterns.
-
-Covers: the game loop (fixed vs variable timestep), input handling and
-rebinding, the scene/state machine (menu → play → pause → game-over), an
-event/signal bus for decoupling, save/load and serialization, and a simple
-data-driven design approach (stats in data files, not hardcoded).
-
-Build these once, reuse them across every project.
-
----
-
-## Stage 5 — Gameplay Programming
-
-Now the actual game. This is engine-specific:
-
-- **Unity (C#)** → **`references/unity.md`** — MonoBehaviour lifecycle,
-  prefabs, the new Input System, physics, coroutines, ScriptableObjects,
-  common player-controller and enemy-AI patterns.
-- **Unreal (C++ / Blueprints)** → **`references/unreal.md`** — Actors &
-  Components, the Gameplay Framework, Blueprints vs C++, the reflection/UPROPERTY
-  system, Enhanced Input, and when to drop from Blueprint to C++.
-- **Godot (GDScript / C#)** → **`references/godot.md`** — nodes & scenes,
-  signals, the `_process`/`_physics_process` split, `@export` vars,
-  groups, and resource-based data.
-
-Each reference includes ready-to-adapt patterns for the systems most games
-need: player movement, camera, collision/damage, spawning, and a basic enemy
-AI state machine.
-
----
-
-## Stage 6 — Art & Audio Pipeline
-
-Getting assets into the game correctly matters as much as making them.
-
-- **2D:** sprite import settings (filter mode — point for pixel art!), atlases,
-  sprite sheets, frame-based animation. Pair with `creative/pixel-art` for
-  creation.
-- **3D:** model formats (glTF/FBX), scale and orientation conventions, import
-  settings, materials/PBR textures, rigging and animation retargeting.
-- **Animation:** state machines / animation trees, blending, root motion vs
-  in-place, triggering from gameplay code.
-- **Audio:** SFX (one-shots, pooling to avoid cutoff), music (looping, layered
-  stems, ducking under SFX), spatial/3D audio, a simple audio manager with
-  volume buses (master/music/SFX).
-
-Keep an asset budget — track texture sizes and poly counts early; they're the
-first thing that wrecks performance and build size.
-
----
-
-## Stage 7 — Polish & Game Feel
-
-The difference between "a prototype" and "a game." This is where players feel it.
-
-- **Juice:** screen shake, hit-stop/freeze frames, particle bursts, squash &
-  stretch, tweened scale/position (easing, not linear).
-- **Feedback:** every action needs an audible + visual response. Damage flashes,
-  pickup pops, button hover/press states.
-- **Game feel:** input buffering, coyote time (jump grace after leaving a
-  ledge), acceleration/deceleration curves instead of instant velocity.
-- **UI/UX:** clear menus, readable HUD, controller + keyboard support,
-  resolution/aspect handling, accessibility (remappable controls, colorblind-
-  safe palettes, text size).
-- **Game juice rule:** add feedback until it feels *slightly* too much, then
-  pull back 10%.
-
----
-
-## Stage 8 — Optimization
-
-Only after it works — premature optimization wastes the early game.
-
-- **Profile first** — use the engine profiler (Unity Profiler, Unreal Insights,
-  Godot's monitor) to find the *actual* bottleneck. Never guess.
-- **Frame budget** — 16.6 ms for 60 FPS. Know where your milliseconds go (CPU
-  vs GPU vs render).
-- **Common wins:** object pooling (don't instantiate/destroy in loops), draw-call
-  batching, texture atlasing, LODs for 3D, culling off-screen work, caching
-  component lookups, avoiding per-frame allocations (GC spikes).
-- **Memory:** watch texture/audio memory and load/unload by level. Profile build
-  size before it balloons.
-
----
-
-## Stage 9 — Testing & QA
-
-- **Playtest early and with real people** — you're blind to your own game's
-  problems. Watch silently; don't explain — if they're confused, the game is.
-- **Bug tracking** — even a simple `bugs.md` or a GitHub issues board. Repro
-  steps, severity, platform.
-- **Test builds** — produce a build for testers (not just play-in-editor; bugs
-  hide in builds). itch.io draft pages or direct zips work for early testing.
-- **Edge cases** — alt-tab, window resize, controller unplug, save mid-action,
-  rapid input.
-
----
-
-## Stage 10 — Build & Publish
-
-Turn the project into a real, distributable game.
-
-→ **Read `references/shipping.md`** for per-platform build + store details.
-
-Covers: building for Windows/macOS/Linux, web (WASM/HTML5), and mobile
-(iOS/Android); store setup for **Steam** (Steamworks, depots, store page,
-wishlists), **itch.io** (butler, pages, the indie-friendly path), and the
-**mobile stores**; plus signing, age ratings, capsule art/trailers, and launch
-checklist.
-
----
-
-## Stage 11 — Post-Launch
-
-Shipping is the start, not the end.
-
-- **Patches** — hotfix critical bugs fast; batch smaller fixes.
-- **Analytics** — track where players drop off, what they do, crash reports.
-- **Community** — Discord/forums, respond to feedback, communicate roadmap.
-- **Content updates** — if it has traction, plan updates around player data,
-  not assumptions.
-
----
-
-## Working Style for This Skill
-
-- **Meet the user at their stage.** Don't force a beginner through Unreal C++;
-  don't re-explain the game loop to a veteran. Read their level from how they
-  ask.
-- **Always produce something runnable.** Each session should end with code that
-  compiles/runs or a concrete artifact (design doc, system, build).
-- **Scope is the enemy.** Repeatedly steer toward a *finishable* game. A shipped
-  small game beats an abandoned big one — every time.
-- **Use the engine's idioms.** Don't write Unity code that fights MonoBehaviour,
-  or Godot code that ignores nodes/signals. The references show the idiomatic way.
-
----
-
-## Reference Index
+Reference index:
 
 | File | Read it when… |
 |---|---|
@@ -319,3 +110,84 @@ Shipping is the start, not the end.
 | `references/unreal.md` | Implementing gameplay in Unreal (C++/Blueprints) |
 | `references/godot.md` | Implementing gameplay in Godot (GDScript/C#) |
 | `references/shipping.md` | Building and publishing to any platform/store |
+
+## Procedure
+
+**1 — Concept & design.** Lock down what the game *is* before any code. Nail the
+core fantasy (what the player feels), the core loop (the 30-second action, in one
+sentence), 2–3 reference games plus the one thing it does differently, an honest
+scope check (solo or first game means *small*), and the win/lose/progression arc.
+Produce a one-page design doc; cut features to a 5–8 item MVP.
+
+**2 — Engine selection.** Match the engine to the game and the developer, not to
+hype. See `references/engine-selection.md` for the full matrix. Once chosen,
+scaffold the project and initialize `git` immediately with the engine's
+`.gitignore`.
+
+**3 — Project architecture.** Set up for maintainability before the codebase
+grows: version control with Git LFS for binaries, a flat and predictable folder
+layout (`scripts/`, `assets/`, `scenes/`, `prefabs/`), one naming convention, and
+a known path to a runnable build.
+
+**4 — Core systems.** Build the engine-agnostic foundations — game loop (fixed vs
+variable timestep), input handling, the scene/state machine, an event/signal bus,
+save/load, and data-driven stats. See `references/core-systems.md`. Build once,
+reuse across projects.
+
+**5 — Gameplay programming.** The engine-specific layer: Unity (C#) →
+`references/unity.md`; Unreal (C++/Blueprints) → `references/unreal.md`; Godot
+(GDScript/C#) → `references/godot.md`. Each reference ships ready-to-adapt
+patterns for movement, camera, collision/damage, spawning, and enemy AI.
+
+**6 — Art & audio pipeline.** Getting assets in correctly matters as much as
+making them: sprite import settings and atlases for 2D; glTF/FBX, scale, and PBR
+for 3D; animation state machines; and an audio manager with volume buses. Keep an
+asset budget (texture sizes, poly counts) from the start.
+
+**7 — Polish & game feel.** The gap between a prototype and a game: juice (screen
+shake, hit-stop, particles, easing), feedback on every action, input buffering
+and coyote time, and accessible UI/UX. Add feedback until it feels slightly too
+much, then pull back.
+
+**8 — Optimization.** Only after it works. Profile first with the engine's
+profiler to find the real bottleneck, hold a frame budget (16.6 ms for 60 FPS),
+and reach for object pooling, batching, atlasing, LODs, culling, and cached
+lookups. Watch texture/audio memory and build size.
+
+**9 — Testing & QA.** Playtest early with real people and watch silently. Track
+bugs with repro steps and severity. Test *builds*, not just play-in-editor — bugs
+hide in builds. Cover edge cases (alt-tab, resize, controller unplug, save
+mid-action).
+
+**10 — Build & publish.** Turn the project into a distributable game. See
+`references/shipping.md` for per-platform builds (desktop, web, mobile) and store
+setup (Steam, itch.io, mobile stores), signing, ratings, and the launch checklist.
+
+**11 — Post-launch.** Hotfix critical bugs fast, track analytics for drop-off and
+crashes, engage the community, and plan content updates from real player data
+rather than assumptions.
+
+## Pitfalls
+
+- **Scope is the #1 killer.** Steer relentlessly toward a *finishable* game; a
+  shipped small game beats an abandoned big one. Avoid MMOs and open worlds for a
+  first project.
+- **No version control from day one.** Add `git` and Git LFS immediately; binary
+  assets bloat history fast and are painful to retrofit.
+- **Premature optimization.** Don't optimize before it works or before you
+  profile — you will spend the early game guessing at the wrong bottleneck.
+- **Not playtesting with real people.** You are blind to your own game; if a
+  tester is confused, the game is, not them.
+- **Skipping test builds.** Bugs hide in builds that never appear in the editor.
+- **Fighting the engine's idioms.** Use nodes/signals in Godot, MonoBehaviour in
+  Unity, the Gameplay Framework in Unreal — don't reinvent them.
+
+## Verification
+
+- The game **runs from a build**, not just play-in-editor, on a target platform.
+- The **core loop is playable start to finish** (start → succeed/fail → repeat).
+- It has been **playtested by someone else** without you guiding them.
+- The project is under **version control** with the engine's `.gitignore` and Git
+  LFS for binaries.
+- The profiler shows the frame is **within budget** for the target frame rate
+  before shipping.

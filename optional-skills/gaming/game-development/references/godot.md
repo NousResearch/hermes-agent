@@ -46,7 +46,8 @@ extends CharacterBody2D
 
 var _coyote_timer: float = 0.0
 const COYOTE_TIME := 0.1
-var _jump_buffered: bool = false
+var _jump_buffer_timer: float = 0.0
+const JUMP_BUFFER_TIME := 0.1  # seconds an early jump press stays valid
 
 func _physics_process(delta: float) -> void:
     # Gravity
@@ -60,12 +61,18 @@ func _physics_process(delta: float) -> void:
     var dir := Input.get_axis("move_left", "move_right")
     velocity.x = dir * move_speed
 
-    # Jump with buffer + coyote time (game feel)
+    # Jump buffering (game feel): a press opens a short window that counts
+    # down every frame. Consume it only while the window is still open, so a
+    # jump pressed slightly too early is honored on landing but discarded once
+    # it expires — an unbounded flag would fire a stale jump on a later landing.
     if Input.is_action_just_pressed("jump"):
-        _jump_buffered = true
-    if _jump_buffered and _coyote_timer > 0.0:
+        _jump_buffer_timer = JUMP_BUFFER_TIME
+    else:
+        _jump_buffer_timer = max(_jump_buffer_timer - delta, 0.0)
+
+    if _jump_buffer_timer > 0.0 and _coyote_timer > 0.0:
         velocity.y = -jump_force
-        _jump_buffered = false
+        _jump_buffer_timer = 0.0
         _coyote_timer = 0.0
 
     move_and_slide()  # built-in: handles collision response

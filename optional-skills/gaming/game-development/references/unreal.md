@@ -46,11 +46,16 @@ Unreal's macros expose C++ to the editor, Blueprints, serialization, and
 networking. You must use them for anything the engine should "see":
 
 ```cpp
+// AEnemy.h
+#include "Net/UnrealNetwork.h"   // DOREPLIFETIME
+
 UCLASS()
 class MYGAME_API AEnemy : public ACharacter
 {
     GENERATED_BODY()
 public:
+    AEnemy();
+
     // Editable in editor + Blueprint, replicated to clients
     UPROPERTY(EditAnywhere, BlueprintReadWrite, Replicated, Category="Stats")
     float Health = 100.f;
@@ -58,11 +63,37 @@ public:
     // Callable from Blueprints
     UFUNCTION(BlueprintCallable, Category="Combat")
     void TakeDamageAmount(float Amount);
+
+protected:
+    // Required: without this override a Replicated property never syncs.
+    virtual void GetLifetimeReplicatedProps(
+        TArray<FLifetimeProperty>& OutProps) const override;
 };
+```
+
+```cpp
+// AEnemy.cpp
+#include "AEnemy.h"
+#include "Net/UnrealNetwork.h"
+
+AEnemy::AEnemy()
+{
+    bReplicates = true;   // the actor itself must replicate first
+}
+
+void AEnemy::GetLifetimeReplicatedProps(
+    TArray<FLifetimeProperty>& OutProps) const
+{
+    Super::GetLifetimeReplicatedProps(OutProps);
+    DOREPLIFETIME(AEnemy, Health);   // register the property for replication
+}
 ```
 
 - `UPROPERTY` — exposes a variable (Inspector, GC tracking, networking).
 - `UFUNCTION` — exposes a function (Blueprint-callable, RPCs).
+- **`Replicated` alone does nothing.** The actor must set `bReplicates = true`
+  and register every replicated property in `GetLifetimeReplicatedProps` with
+  `DOREPLIFETIME`, or the value silently never reaches clients.
 - **Forgetting `UPROPERTY` on a `UObject*` pointer = it can be garbage
   collected out from under you.** Common beginner crash.
 

@@ -936,6 +936,96 @@ async def test_gateway_create_autosubscribes_on_explicit_board(kanban_home):
         conn.close()
 
 
+@pytest.mark.parametrize(
+    "chat_type,thread_id,thread_sessions_per_user",
+    [
+        # Isolated group/channel: no thread, so the participant id is appended
+        # to the key when group_sessions_per_user is on.
+        ("channel", None, False),
+        # Thread with per-user isolation on: the participant id is still
+        # appended, so the alt id must survive the round-trip here too.
+        ("group", "th-42", True),
+    ],
+)
+@pytest.mark.asyncio
+async def test_gateway_autosubscribe_roundtrips_user_id_alt_for_session_key(
+    kanban_home, chat_type, thread_id, thread_sessions_per_user,
+):
+    """The gateway `/kanban create` auto-subscribe must persist ``user_id_alt``
+    so a replayed wake rebuilds the *same* session key as the original event.
+
+    ``build_session_key`` keys the participant on ``user_id_alt or user_id``
+    (Signal UUID / Feishu union_id carry the canonical participant in the alt
+    slot). If the subscription row drops ``user_id_alt``, the replayed source
+    falls back to ``user_id`` and lands in a different session — the woken turn
+    answers into a parallel conversation. Drive the real handler and compare the
+    key built from the original source with the key rebuilt from the persisted
+    row.
+    """
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+    from gateway.session import SessionSource, build_session_key
+
+    runner = object.__new__(GatewayRunner)
+    # user_id != user_id_alt is the whole point: the alt id is the canonical
+    # participant, so dropping it silently corrupts the session key.
+    source = SimpleNamespace(
+        platform=Platform.TELEGRAM,
+        chat_id="chat1",
+        chat_type=chat_type,
+        thread_id=thread_id,
+        user_id="open-id",
+        user_id_alt="union-id",
+    )
+    event = SimpleNamespace(
+        text='/kanban create "hello" --assignee alice',
+        source=source,
+    )
+
+    out = await GatewayRunner._handle_kanban_command(runner, event)
+    assert "subscribed" in out.lower()
+
+    conn = kb.connect()
+    try:
+        subs = kb.list_notify_subs(conn)
+    finally:
+        conn.close()
+    assert len(subs) == 1
+    row = subs[0]
+    assert row["user_id"] == "open-id"
+    assert row["user_id_alt"] == "union-id"
+
+    original = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="chat1",
+        chat_type=chat_type,
+        thread_id=thread_id,
+        user_id="open-id",
+        user_id_alt="union-id",
+    )
+    # Reconstruct exactly as the wake path does: from the persisted row.
+    replayed = SessionSource(
+        platform=Platform(row["platform"]),
+        chat_id=row["chat_id"],
+        chat_type=row["chat_type"],
+        thread_id=row["thread_id"] or None,
+        user_id=row["user_id"],
+        user_id_alt=row["user_id_alt"],
+    )
+
+    original_key = build_session_key(
+        original, thread_sessions_per_user=thread_sessions_per_user
+    )
+    replayed_key = build_session_key(
+        replayed, thread_sessions_per_user=thread_sessions_per_user
+    )
+    assert original_key == replayed_key
+    # Regression guard: the canonical alt id — not the raw user_id — is what
+    # keys the participant. Proves the alt id actually reached the key.
+    assert "union-id" in replayed_key
+    assert "open-id" not in replayed_key
+
+
 @pytest.mark.asyncio
 async def test_notifier_uploads_artifacts_on_completion(kanban_home, tmp_path, monkeypatch):
     """When a completed event carries ``artifacts`` in its payload, the

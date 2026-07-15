@@ -1,3 +1,4 @@
+import asyncio
 from pathlib import Path
 import subprocess
 
@@ -7,6 +8,7 @@ from gateway.run import (
     GatewayRunner,
     _ensure_gateway_session_worktree,
     _ensure_gateway_session_worktree_map,
+    _prepare_gateway_session_worktrees_async,
 )
 
 
@@ -22,7 +24,7 @@ def _git(repo: Path, *args: str) -> str:
 
 def _repo(tmp_path: Path) -> Path:
     repo = tmp_path / "project"
-    repo.mkdir()
+    repo.mkdir(parents=True)
     _git(repo, "init")
     _git(repo, "config", "user.email", "test@example.com")
     _git(repo, "config", "user.name", "Test User")
@@ -104,6 +106,44 @@ def test_worktree_map_materializes_configured_repo_even_when_base_cwd_elsewhere(
     assert worktree != repo
     assert worktree.parent == repo / ".worktrees"
     assert _git(worktree, "branch", "--show-current").startswith("hermes/gateway/")
+
+
+def test_concurrent_session_setup_keeps_event_loop_responsive_and_isolates_worktrees(tmp_path):
+    repo = _repo(tmp_path)
+    cfg = {"gateway": {"auto_worktrees": {"enabled": True, "sync_base": False}}}
+
+    async def run_setups():
+        loop_advanced = asyncio.Event()
+
+        async def prove_loop_is_responsive():
+            await asyncio.sleep(0)
+            loop_advanced.set()
+
+        setup_a, setup_b, _ = await asyncio.gather(
+            _prepare_gateway_session_worktrees_async(
+                base_cwd=str(repo),
+                user_config=cfg,
+                session_key="agent:main:slack:dm:U1",
+                session_id="session-a",
+            ),
+            _prepare_gateway_session_worktrees_async(
+                base_cwd=str(repo),
+                user_config=cfg,
+                session_key="agent:main:slack:dm:U2",
+                session_id="session-b",
+            ),
+            prove_loop_is_responsive(),
+        )
+        assert loop_advanced.is_set()
+        return setup_a, setup_b
+
+    (cwd_a, map_a), (cwd_b, map_b) = asyncio.run(run_setups())
+
+    assert cwd_a != cwd_b
+    assert Path(cwd_a).parent == repo / ".worktrees"
+    assert Path(cwd_b).parent == repo / ".worktrees"
+    assert map_a[str(repo.resolve())] == cwd_a
+    assert map_b[str(repo.resolve())] == cwd_b
 
 
 def test_set_session_env_pins_gateway_session_cwd(monkeypatch, tmp_path):

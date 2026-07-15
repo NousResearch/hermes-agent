@@ -341,6 +341,52 @@ def _ensure_gateway_session_worktree_map(
             mapping[str(repo_path)] = str(worktree_path)
     return mapping
 
+
+def _prepare_gateway_session_worktrees(
+    *,
+    base_cwd: str,
+    user_config: Optional[dict],
+    session_key: str,
+    session_id: str,
+) -> tuple[str, dict[str, str]]:
+    """Synchronously materialize all worktrees needed by one gateway session."""
+    worktree_map = _ensure_gateway_session_worktree_map(
+        user_config=user_config,
+        session_key=session_key,
+        session_id=session_id,
+    )
+    session_cwd = _ensure_gateway_session_worktree(
+        base_cwd=base_cwd,
+        session_key=session_key,
+        session_id=session_id,
+        user_config=user_config,
+    )
+    try:
+        base_root = _git_repo_root_for_cwd(base_cwd)
+        session_path = Path(session_cwd).expanduser().resolve()
+        if base_root is not None and session_path != base_root:
+            worktree_map[str(base_root)] = str(session_path)
+    except Exception:
+        pass
+    return session_cwd, worktree_map
+
+
+async def _prepare_gateway_session_worktrees_async(
+    *,
+    base_cwd: str,
+    user_config: Optional[dict],
+    session_key: str,
+    session_id: str,
+) -> tuple[str, dict[str, str]]:
+    """Materialize session worktrees without blocking the gateway event loop."""
+    return await asyncio.to_thread(
+        _prepare_gateway_session_worktrees,
+        base_cwd=base_cwd,
+        user_config=user_config,
+        session_key=session_key,
+        session_id=session_id,
+    )
+
 _TELEGRAM_NOISY_STATUS_RE = re.compile(
     r"("  # transient/auxiliary status that should stay in logs, not gateway chats
     r"auxiliary\s+.+\s+failed"
@@ -11338,24 +11384,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             _base_cwd = str(resolve_agent_cwd())
         except Exception:
             _base_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-        _worktree_map = _ensure_gateway_session_worktree_map(
-            user_config=_pcfg if isinstance(_pcfg, dict) else {},
-            session_key=session_key,
-            session_id=session_entry.session_id,
-        )
-        _session_cwd = _ensure_gateway_session_worktree(
+        _session_cwd, _worktree_map = await _prepare_gateway_session_worktrees_async(
             base_cwd=_base_cwd,
+            user_config=_pcfg if isinstance(_pcfg, dict) else {},
             session_key=session_key,
             session_id=session_entry.session_id,
-            user_config=_pcfg if isinstance(_pcfg, dict) else {},
         )
-        try:
-            _base_root = _git_repo_root_for_cwd(_base_cwd)
-            _session_path = Path(_session_cwd).expanduser().resolve()
-            if _base_root is not None and _session_path != _base_root:
-                _worktree_map[str(_base_root)] = str(_session_path)
-        except Exception:
-            pass
         # Set session context variables for tools (task-local, concurrency-safe)
         _session_env_tokens = self._set_session_env(
             context,

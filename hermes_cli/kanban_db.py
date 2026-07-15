@@ -3497,6 +3497,8 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        if is_block_loop_frozen(conn, task_id):
+            return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -3626,6 +3628,8 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        if is_block_loop_frozen(conn, task_id):
+            return None
         cur = conn.execute(
             """
             UPDATE tasks
@@ -5160,7 +5164,7 @@ def promote_task(
 
 
 def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
-    """Transition ``blocked``/``scheduled`` -> ready or todo.
+    """Transition ``blocked``/``scheduled`` or a frozen triage task.
 
     Defensively closes any stale ``current_run_id`` pointer before flipping
     status. In the common path (``block_task`` closed the run already) this
@@ -5170,10 +5174,12 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     state) holds for the rest of this function's lifetime.
     """
     now = int(time.time())
+    frozen_triage = is_block_loop_frozen(conn, task_id)
     with write_txn(conn):
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
-            (task_id,),
+            "SELECT current_run_id FROM tasks WHERE id = ? "
+            "AND (status IN ('blocked', 'scheduled') OR (status = 'triage' AND ?))",
+            (task_id, int(frozen_triage)),
         ).fetchone()
         if stale and stale["current_run_id"]:
             conn.execute(
@@ -5213,8 +5219,9 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
         cur = conn.execute(
             "UPDATE tasks SET status = ?, current_run_id = NULL, "
             "consecutive_failures = 0, last_failure_error = NULL "
-            "WHERE id = ? AND status IN ('blocked', 'scheduled')",
-            (new_status, task_id),
+            "WHERE id = ? AND (status IN ('blocked', 'scheduled') "
+            "OR (status = 'triage' AND ?))",
+            (new_status, task_id, int(frozen_triage)),
         )
         if cur.rowcount != 1:
             return False
@@ -5233,6 +5240,7 @@ def specify_triage_task(
     body: Optional[str] = None,
     assignee: Optional[str] = None,
     author: Optional[str] = None,
+    respect_block_loop_freeze: bool = False,
 ) -> bool:
     """Flesh out a triage task and promote it to ``todo``.
 
@@ -5254,6 +5262,8 @@ def specify_triage_task(
         raise ValueError("title cannot be blank")
     assignee = _canonical_assignee(assignee)
     with write_txn(conn):
+        if respect_block_loop_freeze and is_block_loop_frozen(conn, task_id):
+            return False
         existing = conn.execute(
             "SELECT title, body, assignee FROM tasks WHERE id = ? AND status = 'triage'",
             (task_id,),
@@ -5324,6 +5334,7 @@ def decompose_triage_task(
     children: list[dict],
     author: Optional[str] = None,
     auto_promote: bool = True,
+    respect_block_loop_freeze: bool = False,
 ) -> Optional[list[str]]:
     """Fan a triage task out into child tasks and promote the root to ``todo``.
 
@@ -5408,6 +5419,8 @@ def decompose_triage_task(
     now = int(time.time())
     child_ids: list[str] = []
     with write_txn(conn):
+        if respect_block_loop_freeze and is_block_loop_frozen(conn, task_id):
+            return None
         root_row = conn.execute(
             "SELECT id, status, tenant, workspace_kind, workspace_path "
             "FROM tasks WHERE id = ?",
@@ -7244,6 +7257,29 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
+def is_block_loop_frozen(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return whether the block-loop breaker still forbids automation.
+
+    ``block_loop_detected`` is a circuit breaker, not merely another triage
+    reason. Once emitted, automation must not recycle the task. Only a later
+    authoritative ``unblocked`` event releases it; comments and cosmetic
+    status/body/specification events deliberately do not.
+    """
+    loop = conn.execute(
+        "SELECT MAX(id) AS event_id FROM task_events "
+        "WHERE task_id = ? AND kind = 'block_loop_detected'",
+        (task_id,),
+    ).fetchone()
+    loop_event_id = int(loop["event_id"] or 0) if loop else 0
+    if not loop_event_id:
+        return False
+    rearm = conn.execute(
+        "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'unblocked' "
+        "AND id > ? LIMIT 1",
+        (task_id, loop_event_id),
+    ).fetchone()
+    return rearm is None
+
 def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
@@ -7284,14 +7320,14 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
 
     ``"active_pr"``
         A GitHub PR URL appears in a recent task comment (within
-        ``_RESPAWN_GUARD_PR_WINDOW`` seconds).  A prior worker already
+        ``_RESPAWN_GUARD_PR_WINDOW`` seconds). A prior worker already
         opened a PR; re-spawning risks a duplicate PR on the same task.
 
-    Stale / dead claim locks are NOT a guard reason — they are handled
-    by ``release_stale_claims`` and ``detect_crashed_workers`` which
-    reset the task to ``ready`` only after verifying the lock is
-    genuinely dead (no live PID on this host).
+    Stale / dead claim locks are handled separately by the dispatcher.
     """
+    if is_block_loop_frozen(conn, task_id):
+        return "block_loop_frozen"
+
     row = conn.execute(
         "SELECT last_failure_error FROM tasks WHERE id = ?",
         (task_id,),
@@ -7840,6 +7876,16 @@ def _dispatch_once_locked(
             break
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
+            continue
+        guard_reason = check_respawn_guard(conn, row["id"])
+        if guard_reason is not None:
+            result.respawn_guarded.append((row["id"], guard_reason))
+            if not dry_run:
+                with write_txn(conn):
+                    _append_event(
+                        conn, row["id"], "respawn_guarded",
+                        {"reason": guard_reason},
+                    )
             continue
         try:
             from hermes_cli.profiles import profile_exists

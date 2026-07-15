@@ -1809,6 +1809,111 @@ def test_dispatch_reclaims_stale_before_spawning(kanban_home):
 # Respawn guard (check_respawn_guard + dispatch_once integration)
 # ---------------------------------------------------------------------------
 
+def test_respawn_guard_freezes_block_loop_even_if_task_is_forced_ready(kanban_home):
+    """A cosmetic promotion cannot cause a third identical worker launch."""
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="looping", assignee="alice")
+        conn.execute("UPDATE tasks SET block_recurrences = 2 WHERE id = ?", (t,))
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'block_loop_detected', '{}', 100)",
+            (t,),
+        )
+        assert kb.check_respawn_guard(conn, t) == "block_loop_frozen"
+
+
+def test_respawn_guard_explicit_rearm_releases_block_loop(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="looping", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET status = 'triage', block_recurrences = 2 WHERE id = ?",
+            (t,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'block_loop_detected', '{}', 100)",
+            (t,),
+        )
+        assert kb.unblock_task(conn, t) is True
+        assert kb.check_respawn_guard(conn, t) is None
+
+
+def test_respawn_guard_worker_cannot_self_rearm_block_loop(kanban_home):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="looping", assignee="dev")
+        conn.execute("UPDATE tasks SET block_recurrences = 2 WHERE id = ?", (t,))
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'block_loop_detected', '{}', 100)",
+            (t,),
+        )
+        kb.add_comment(conn, t, "dev", "rearm-approved: trust me")
+        assert kb.check_respawn_guard(conn, t) == "block_loop_frozen"
+
+
+def test_dispatch_does_not_spawn_block_loop_after_cosmetic_promotion(
+    kanban_home, all_assignees_spawnable
+):
+    spawned = []
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="looping", assignee="alice")
+        conn.execute("UPDATE tasks SET block_recurrences = 2 WHERE id = ?", (t,))
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'block_loop_detected', '{}', 100)",
+            (t,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'specified', '{}', 101)",
+            (t,),
+        )
+        result = kb.dispatch_once(
+            conn, spawn_fn=lambda task, workspace: spawned.append(task.id)
+        )
+
+    assert spawned == []
+    assert (t, "block_loop_frozen") in result.respawn_guarded
+
+
+def test_dispatch_does_not_spawn_frozen_review_task(
+    kanban_home, all_assignees_spawnable
+):
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="looping review", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET status = 'review', block_recurrences = 2 WHERE id = ?",
+            (t,),
+        )
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'block_loop_detected', '{}', 100)",
+            (t,),
+        )
+        result = kb.dispatch_once(conn, dry_run=True)
+
+    assert all(spawned[0] != t for spawned in result.spawned)
+    assert (t, "block_loop_frozen") in result.respawn_guarded
+
+def test_claim_primitives_refuse_frozen_tasks(kanban_home):
+    with kb.connect() as conn:
+        ready = kb.create_task(conn, title="ready loop", assignee="alice")
+        review = kb.create_task(conn, title="review loop", assignee="alice")
+        conn.execute("UPDATE tasks SET status='review' WHERE id=?", (review,))
+        for task_id in (ready, review):
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                "VALUES (?, 'block_loop_detected', '{}', 100)",
+                (task_id,),
+            )
+
+        assert kb.claim_task(conn, ready) is None
+        assert kb.claim_review_task(conn, review) is None
+
+        assert kb.get_task(conn, ready).status == "ready"
+        assert kb.get_task(conn, review).status == "review"
+
+
 def test_respawn_guard_none_on_fresh_task(kanban_home):
     """A fresh task with no failures or runs is not guarded."""
     with kb.connect() as conn:

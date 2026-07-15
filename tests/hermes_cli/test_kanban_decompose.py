@@ -311,6 +311,58 @@ def test_decompose_handles_malformed_llm_json(kanban_home):
     assert "malformed JSON" in outcome.reason
 
 
+def test_auto_triage_list_skips_block_loop_until_explicit_rearm(kanban_home):
+    """Gateway auto-decompose must not undo the block-loop circuit breaker."""
+    with kb.connect() as conn:
+        fresh = kb.create_task(conn, title="fresh", triage=True)
+        frozen = kb.create_task(conn, title="looping", triage=True)
+        conn.execute(
+            "INSERT INTO task_events (task_id, kind, payload, created_at) "
+            "VALUES (?, 'block_loop_detected', '{}', 100)",
+            (frozen,),
+        )
+
+    assert decomp.list_triage_ids(auto_only=True) == [fresh]
+
+    with kb.connect() as conn:
+        assert kb.unblock_task(conn, frozen) is True
+        assert kb.is_block_loop_frozen(conn, frozen) is False
+
+    assert decomp.list_triage_ids(auto_only=True) == [fresh]
+
+
+def test_auto_decompose_rechecks_freeze_after_llm_call(kanban_home):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="race", triage=True, assignee="dev")
+
+    payload = jsonlib.dumps({"fanout": False, "title": "rewritten", "body": "body"})
+    client = _mock_client_returning(payload)
+
+    def freeze_then_return(*args, **kwargs):
+        with kb.connect() as conn:
+            conn.execute(
+                "INSERT INTO task_events (task_id, kind, payload, created_at) "
+                "VALUES (?, 'block_loop_detected', '{}', 100)",
+                (tid,),
+            )
+        return _fake_aux_response(payload)
+
+    client.chat.completions.create.side_effect = freeze_then_return
+    with (
+        patch(
+            "agent.auxiliary_client.get_text_auxiliary_client",
+            return_value=(client, "test-model"),
+        ),
+        _patch_extra_body(),
+    ):
+        outcome = decomp.decompose_task(tid, author="auto-decomposer", automatic=True)
+
+    assert outcome.ok is False
+    assert "block-loop" in outcome.reason
+    with kb.connect() as conn:
+        assert kb.get_task(conn, tid).status == "triage"
+
+
 def test_decompose_returns_false_when_task_not_triage(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="x")  # ready, not triage

@@ -6,6 +6,7 @@ import base64
 import io
 import json
 import os
+import stat
 import subprocess
 import sys
 import time
@@ -87,6 +88,57 @@ def _foundation_inputs() -> dict[str, object]:
     return {
         **unsigned,
         "inputs_sha256": __import__("hashlib").sha256(
+            launcher._canonical_bytes(unsigned)
+        ).hexdigest(),
+    }
+
+
+def _full_canary_terminal_receipt() -> dict[str, object]:
+    unsigned = {
+        "schema": launcher.FULL_CANARY_TERMINAL_RECEIPT_SCHEMA,
+        "ok": True,
+        "state": "verified_stopped_and_credentials_retired",
+        "release_sha": "a" * 40,
+        "coordinator_input_sha256": "1" * 64,
+        "full_canary_plan_sha256": "2" * 64,
+        "owner_approval_sha256": "3" * 64,
+        "phase_b_readiness_anchor_sha256": "4" * 64,
+        "api_session_key_sha256": "5" * 64,
+        "fixture_sha256": "6" * 64,
+        "discord_token_install_receipt_sha256": "7" * 64,
+        "coordinator_receipt_sha256": "8" * 64,
+        "live_driver_receipt_sha256": "9" * 64,
+        "services_stopped": True,
+        "discord_token_retired": True,
+        "temporary_admin_created": False,
+        "bootstrap_credential_created": False,
+        "completed_at_unix": 1_900_000_000,
+    }
+    return {
+        **unsigned,
+        "receipt_sha256": __import__("hashlib").sha256(
+            launcher._canonical_bytes(unsigned)
+        ).hexdigest(),
+    }
+
+
+def _producer_bootstrap_receipt() -> dict[str, object]:
+    unsigned = {
+        "schema": launcher.CAPABILITY_PRODUCER_BOOTSTRAP_RECEIPT_SCHEMA,
+        "revision": "a" * 40,
+        "capability_plan_sha256": "b" * 64,
+        "full_canary_plan_sha256": "2" * 64,
+        "preparation_sha256": "c" * 64,
+        "foundation_sha256": "d" * 64,
+        "install_receipt_sha256": "e" * 64,
+        "unit_bundle_manifest_sha256": "f" * 64,
+        "preflight_ready": True,
+        "private_key_loaded_by_launcher": False,
+        "secret_material_recorded": False,
+    }
+    return {
+        **unsigned,
+        "receipt_sha256": __import__("hashlib").sha256(
             launcher._canonical_bytes(unsigned)
         ).hexdigest(),
     }
@@ -269,6 +321,7 @@ def test_transport_exposes_only_the_fixed_packaged_lifecycle_actions():
     expected = {
         "contract",
         "storage-preflight",
+        "collect-plan-authoring-context",
         "bootstrap-bitrix-foundation",
         "prepare-producer-foundation",
         "install-producer-foundation",
@@ -296,6 +349,7 @@ def test_transport_exposes_only_the_fixed_packaged_lifecycle_actions():
     assert transport._ACTIONS == expected
     for action in expected - {
         "storage-preflight",
+        "collect-plan-authoring-context",
         "publish-live-fixture",
         "run-live",
         "prepare-producer-foundation",
@@ -355,6 +409,25 @@ def test_transport_exposes_only_the_fixed_packaged_lifecycle_actions():
     assert "os.remove" not in storage[-2]
     assert "shutil.rmtree" not in storage[-2]
 
+    authoring = transport._remote_command(
+        revision, "collect-plan-authoring-context"
+    )
+    assert authoring[-6:] == (
+        f"/opt/muncho-canary-releases/{revision}/venv/bin/python",
+        "-B",
+        "-I",
+        "-c",
+        launcher._REMOTE_PLAN_AUTHORING_CONTEXT,
+        revision,
+    )
+    assert launcher.FULL_CANARY_STAGED_PLAN_PATH in authoring[-2]
+    assert "sys.stdin.buffer" in authoring[-2]
+    compile(
+        launcher._REMOTE_PLAN_AUTHORING_CONTEXT,
+        "<fixed capability plan authoring collector>",
+        "exec",
+    )
+
     with pytest.raises(Exception, match="capability_canary_command_invalid"):
         transport._remote_command(revision, "restart")
     with pytest.raises(Exception, match="capability_canary_command_invalid"):
@@ -391,6 +464,192 @@ def test_plan_publication_requires_private_exact_inputs_and_explicit_digest(
         match="capability_plan_input_source_invalid",
     ):
         launcher.read_plan_publication_inputs(path.resolve())
+
+
+def test_plan_authoring_collects_fixed_staged_plan_and_publishes_owner_file(
+    tmp_path,
+):
+    terminal = _full_canary_terminal_receipt()
+    terminal_path = tmp_path / "full-terminal.json"
+    terminal_path.write_bytes(launcher._canonical_bytes(terminal) + b"\n")
+    terminal_path.chmod(0o600)
+    output = tmp_path / "capability-plan-inputs.json"
+    full_unsigned = {
+        "schema": launcher.FULL_CANARY_STAGED_PLAN_SCHEMA,
+        "revision": "a" * 40,
+        "proof": "mechanical-test",
+    }
+    full_plan = {
+        **full_unsigned,
+        "full_canary_plan_sha256": __import__("hashlib").sha256(
+            launcher._canonical_bytes(full_unsigned)
+        ).hexdigest(),
+    }
+    terminal["full_canary_plan_sha256"] = full_plan[
+        "full_canary_plan_sha256"
+    ]
+    terminal_unsigned = {
+        key: value for key, value in terminal.items() if key != "receipt_sha256"
+    }
+    terminal["receipt_sha256"] = __import__("hashlib").sha256(
+        launcher._canonical_bytes(terminal_unsigned)
+    ).hexdigest()
+    terminal_path.write_bytes(launcher._canonical_bytes(terminal) + b"\n")
+    full_payload = launcher._canonical_bytes(full_plan)
+    captured = {}
+
+    class Transport:
+        def invoke(self, revision, action, *, frame=None):
+            assert revision == "a" * 40
+            assert action == "collect-plan-authoring-context"
+            inputs = json.loads(frame)
+            captured["inputs"] = inputs
+            unsigned = {
+                "schema": launcher.CAPABILITY_PLAN_AUTHORING_CONTEXT_SCHEMA,
+                "revision": revision,
+                "staged_plan_path": launcher.FULL_CANARY_STAGED_PLAN_PATH,
+                "staged_plan_b64": base64.b64encode(full_payload).decode(),
+                "staged_plan_bytes": len(full_payload),
+                "staged_plan_file_sha256": __import__("hashlib").sha256(
+                    full_payload
+                ).hexdigest(),
+                "staged_plan_identity": {
+                    "device": 1,
+                    "inode": 2,
+                    "uid": 0,
+                    "gid": 0,
+                    "mode": "0400",
+                    "size": len(full_payload),
+                    "mtime_ns": 3,
+                },
+                "full_canary_plan_sha256": full_plan[
+                    "full_canary_plan_sha256"
+                ],
+                "capability_inputs_sha256": inputs["inputs_sha256"],
+                "capability_plan_sha256": "a" * 64,
+                "mutation_performed": False,
+            }
+            return {
+                **unsigned,
+                "receipt_sha256": __import__("hashlib").sha256(
+                    launcher._canonical_bytes(unsigned)
+                ).hexdigest(),
+            }
+
+    inputs = _plan_inputs()
+    result = launcher.author_capability_plan_inputs(
+        Transport(),
+        revision="a" * 40,
+        terminal_receipt_file=terminal_path.resolve(),
+        output_file=output.resolve(),
+        identities=inputs["identities"],
+        connector_bot_user_id=inputs["discord"]["connector_bot_user_id"],
+        routeback_bot_user_id=inputs["discord"]["routeback_bot_user_id"],
+        artifacts=inputs["artifacts"],
+    )
+
+    assert result["capability_plan_sha256"] == "a" * 64
+    assert result["cloud_mutation_performed"] is False
+    assert stat.S_IMODE(output.stat().st_mode) == 0o600
+    assert output.read_bytes() == launcher._canonical_bytes(captured["inputs"])
+    assert captured["inputs"]["discord"]["allowed_channel_ids"] == [
+        launcher.PRODUCTION_CANARY_PUBLIC_CHANNEL_ID
+    ]
+    with pytest.raises(Exception, match="output_path_invalid"):
+        launcher.author_capability_plan_inputs(
+            Transport(),
+            revision="a" * 40,
+            terminal_receipt_file=terminal_path.resolve(),
+            output_file=output.resolve(),
+            identities=inputs["identities"],
+            connector_bot_user_id=inputs["discord"]["connector_bot_user_id"],
+            routeback_bot_user_id=inputs["discord"]["routeback_bot_user_id"],
+            artifacts=inputs["artifacts"],
+        )
+
+
+def test_fixture_authoring_signs_fixed_public_target_and_is_create_only(
+    tmp_path,
+):
+    terminal = _full_canary_terminal_receipt()
+    producer = _producer_bootstrap_receipt()
+    terminal_path = tmp_path / "full-terminal.json"
+    producer_path = tmp_path / "producer.json"
+    output = tmp_path / "fixture-authority.json"
+    terminal_path.write_bytes(launcher._canonical_bytes(terminal))
+    producer_path.write_bytes(launcher._canonical_bytes(producer) + b"\n")
+    terminal_path.chmod(0o600)
+    producer_path.chmod(0o600)
+    signed = {}
+
+    class Authority:
+        def to_mapping(self):
+            return {"key_id": "1" * 64}
+
+    authority = Authority()
+
+    class Signer:
+        def inspect(self):
+            return authority
+
+        def sign(self, payload, *, expected_authority):
+            assert expected_authority is authority
+            signed["payload"] = payload
+            return "opaque-sshsig"
+
+    result = launcher.author_live_fixture_authority(
+        revision="a" * 40,
+        terminal_receipt_file=terminal_path.resolve(),
+        producer_receipt_file=producer_path.resolve(),
+        output_file=output.resolve(),
+        run_id="capability-live-1",
+        valid_for_seconds=900,
+        now_unix_ms=1_900_000_000_000,
+        signer=Signer(),
+    )
+    value = json.loads(output.read_bytes())
+
+    assert stat.S_IMODE(output.stat().st_mode) == 0o600
+    assert value["public_discord_target"] == {
+        "target_type": "public_channel",
+        "guild_id": launcher.PRODUCTION_CANARY_PUBLIC_GUILD_ID,
+        "channel_id": launcher.PRODUCTION_CANARY_PUBLIC_CHANNEL_ID,
+    }
+    assert value["owner_id"] == launcher.PRODUCTION_OWNER_USER_ID
+    assert value["valid_until_unix_ms"] - value["valid_from_unix_ms"] == 900_000
+    assert value["owner_signature"] == "opaque-sshsig"
+    assert signed["payload"] == launcher._canonical_bytes(
+        {key: item for key, item in value.items() if key != "owner_signature"}
+    )
+    assert result["cloud_mutation_performed"] is False
+    assert result["producer_foundation_sha256"] == producer["foundation_sha256"]
+    with pytest.raises(
+        launcher.OwnerLauncherError,
+        match="capability_fixture_authoring_request_invalid",
+    ):
+        launcher.build_live_fixture_authority(
+            producer_receipt=producer,
+            signer=Signer(),
+            run_id="capability/live-1",
+            valid_for_seconds=900,
+            now_unix_ms=1_900_000_000_000,
+        )
+
+
+def test_full_canary_terminal_receipt_requires_terminal_stopped_truth():
+    receipt = _full_canary_terminal_receipt()
+    receipt["services_stopped"] = False
+    unsigned = {
+        key: item for key, item in receipt.items() if key != "receipt_sha256"
+    }
+    receipt["receipt_sha256"] = __import__("hashlib").sha256(
+        launcher._canonical_bytes(unsigned)
+    ).hexdigest()
+    with pytest.raises(Exception, match="full_canary_receipt_invalid"):
+        launcher.validate_full_canary_terminal_receipt(
+            receipt,
+            revision="a" * 40,
+        )
 
 
 def test_bitrix_foundation_authority_precedes_and_never_binds_capability_plan(

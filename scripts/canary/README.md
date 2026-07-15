@@ -278,8 +278,8 @@ existing `/opt/muncho-canary-source/<revision>` source namespace, and
 `/opt/muncho-canary-releases/<revision>`. It first obtains a deterministic
 read-only `muncho-canary-stopped-release-plan.v1`, then returns that exact plan
 digest to the root/Linux `apply` entry point. `apply` re-observes the dedicated
-GCE/host/boot identity, all 17 fixed activation paths, and the three stopped
-service states before writing. It builds only a clean root-owned checkout whose
+GCE/host/boot identity, the complete fixed activation inventory, and the
+stopped service states before writing. It builds only a clean root-owned checkout whose
 HEAD and origin are exact, validates the sealed result, and publishes or
 same-boot revalidates the trusted host receipt at
 `/etc/muncho/full-canary/host-identity.json` as root-owned mode `0400`. The
@@ -458,6 +458,11 @@ launcher reads a stable owner-only mode-`0600` file, consumes it once, and
 sends the bounded `MFA1` frame. The approval window is 30–900 seconds,
 bounded by fixture expiry, and reserves its final five seconds for delivery.
 A stale, early, late, mismatched, or reused approval is rejected.
+The 30–900 second window is deliberately session-bound. There is no offline
+approval-renewal artifact: once the request window closes, retry the fixed
+full-canary launch so the coordinator emits a fresh request bound to the new
+live session. Re-signing or extending an old receipt would sever that binding
+and is therefore unsupported.
 
 Success requires the real complex API turn, Canonical Task Workspace
 transitions, model-authored `max` escalation, writer readback, public Discord
@@ -484,6 +489,46 @@ other and from the fixed production Muncho bot user ID. These are public
 Discord snowflakes only. The two canary credentials remain separate leases and
 never enter the plan or its receipt.
 
+Create the input with the supported owner action; do not hand-assemble it or
+guess the plan digest. The action validates the completed terminal full-canary
+receipt, reads only the fixed root-owned staged plan through the sealed IAP
+transport, validates its canonical bytes and self-digest, and uses the sealed
+release planner to compute the capability-plan SHA. It then creates one local
+mode-`0600` file without replacement and emits the exact plan SHA in its
+self-digested receipt:
+
+```bash
+capability_canary_owner_launcher.py \
+  <exact-40-character-release-sha> author-plan-inputs \
+  --full-canary-receipt-file /absolute/owner-only/full-canary-terminal.json \
+  --output-file /absolute/owner-only/capability-plan-inputs.json \
+  --connector-bot-user-id <public-connector-bot-id> \
+  --routeback-bot-user-id <public-routeback-bot-id> \
+  --mac-ops-uid <uid> --mac-ops-gid <gid> \
+  --connector-uid <uid> --connector-gid <gid> \
+  --bitrix-operational-edge-uid <uid> \
+  --bitrix-operational-edge-gid <gid> \
+  --bitrix-operational-edge-client-gid <gid> \
+  --browser-uid <uid> --browser-gid <gid> \
+  --worker-uid <uid> --worker-gid <gid> --worker-client-gid <gid> \
+  --browser-node-sha256 <sha256> --browser-wrapper-sha256 <sha256> \
+  --browser-native-sha256 <sha256> --browser-executable-sha256 <sha256> \
+  --agent-browser-config-sha256 <sha256> \
+  --worker-bwrap-sha256 <sha256> --worker-shell-sha256 <sha256> \
+  --runtime-dependency-manifest-sha256 <sha256> \
+  --bitrix-operational-edge-asset-manifest-sha256 <sha256> \
+  --bitrix-operational-edge-rendered-unit-sha256 <sha256> \
+  --bitrix-operational-edge-rendered-config-sha256 <sha256> \
+  --bitrix-operational-edge-rendered-trust-sha256 <sha256> \
+  --bitrix-operational-edge-identity-bootstrap-receipt-sha256 <sha256> \
+  --bitrix-operational-edge-receipt-public-key-id <sha256> \
+  --bitrix-operational-edge-key-bootstrap-receipt-sha256 <sha256>
+```
+
+All arguments above are public IDs, numeric service identities, or artifact
+digests. No credential is accepted on argv. Save the emitted authoring receipt
+as an owner-only file and pass its `capability_plan_sha256` to `publish-plan`.
+
 Run the sealed publication through the local owner launcher:
 
 ```bash
@@ -508,18 +553,40 @@ append-only below `/var/lib/muncho-capability-canary-control/plan-publications/`
 A retry succeeds only when both existing plan and receipt are byte-identical;
 an absent half, changed authority, changed plan, or tampered receipt blocks.
 
-After stopped preflight, credential provisioning, approval installation,
-`start`, and live preflight have all succeeded, the fixed `run-live` action
-invokes only the sealed release module
-`gateway.canonical_capability_canary_live_driver run`. It accepts no caller
-arguments or stdin. Always follow it with the packaged reverse-order `stop` and
-`retire-secrets` gates; a partial live result is never promotion evidence.
+After `bootstrap-producer-foundation`, save its canonical stdout receipt as a
+mode-`0600` owner file and create the exact live-fixture authority with the
+pinned owner sshsig key:
 
-For the production-observation gate, invoke the owner launcher's
-`run-live-observed` action instead of invoking `run-live` directly. The owner
-launcher keeps the live command attached while it waits for the exact before
-and after markers, collects and signs the pinned read-only production state,
-and stages both envelopes through fixed packaged runtime actions. Its terminal
-receipt is valid only when the live evidence binds the staged before
-observation and the published no-change diff. The internal marker-wait and
-observation-staging actions are not exposed as standalone owner CLI choices.
+```bash
+capability_canary_owner_launcher.py \
+  <exact-40-character-release-sha> author-live-fixture \
+  --full-canary-receipt-file /absolute/owner-only/full-canary-terminal.json \
+  --producer-receipt-file /absolute/owner-only/producer-bootstrap.json \
+  --output-file /absolute/owner-only/live-fixture-authority.json \
+  --run-id <fixed-public-run-id> --valid-for-seconds 900
+```
+
+The action fixes the owner and Discord target to the approved public canary
+channel, binds the producer foundation back to the terminal full-canary
+receipt, signs the canonical authority with namespace
+`muncho-production-capability-canary-owner-v1`, and creates the local file
+without replacement. Pipe that file to `publish-live-fixture`; it contains no
+secret or secret digest.
+
+After fixture publication, provision all six required credential leases, run
+the stopped preflight, install the exact fresh owner approval, and then invoke
+the owner launcher's `run-live-observed` action directly. Do not run the
+standalone `start`, `preflight-live`, or `run-live` actions first: the sealed
+live driver owns startup and live preflight and always runs reverse-order stop
+and secret retirement in its `finally` boundary. A pre-started service is
+contract drift, not a shortcut.
+
+`run-live-observed` keeps the live command attached while it waits for the
+exact before and after markers, collects and signs the pinned read-only
+production state, and stages both envelopes through fixed packaged runtime
+actions. Its terminal receipt is valid only when the live evidence binds the
+staged before observation and the published no-change diff. The internal
+marker-wait and observation-staging actions are not exposed as standalone owner
+CLI choices. Run the explicit `stop`, `retire-secrets`, and stopped-preflight
+actions afterward as terminal verification/idempotent cleanup; a partial live
+result is never promotion evidence.

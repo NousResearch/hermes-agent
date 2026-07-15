@@ -361,10 +361,13 @@ class WeComAdapter(BasePlatformAdapter):
 
     async def _read_events(self) -> None:
         """Read websocket frames until the connection closes."""
-        if not self._ws:
-            raise RuntimeError("WebSocket not connected")
+        if not self._running:
+            return
 
-        while self._running and self._ws and not self._ws.closed:
+        while self._running:
+            if not self._ws or self._ws.closed:
+                raise RuntimeError("WeCom websocket closed")
+
             msg = await self._ws.receive()
             if msg.type == aiohttp.WSMsgType.TEXT:
                 payload = self._parse_json(msg.data)

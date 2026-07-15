@@ -1,9 +1,10 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { cleanup, fireEvent, render } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DropdownMenu, DropdownMenuContent } from '@/components/ui/dropdown-menu'
 import { $activeSessionId, $currentModel, $currentProvider } from '@/store/session'
+import { $collapsedProviders } from '@/store/provider-collapse'
 
 import { ModelMenuPanel } from './model-menu-panel'
 
@@ -25,11 +26,26 @@ vi.mock('@/hermes', () => ({
 // REST config.
 const MOA_PROVIDER = { models: ['default', 'BeastMode'], name: 'Mixture of Agents', slug: 'moa' }
 
+const DEEPSEEK_PROVIDER = {
+  models: ['deepseek-v4-pro', 'deepseek-chat', 'deepseek-reasoner'],
+  name: 'DeepSeek',
+  slug: 'deepseek'
+}
+
+const GOOGLE_PROVIDER = {
+  models: ['gemini-3.1-pro', 'gemini-2.5-flash', 'gemini-2.5-pro'],
+  name: 'Google',
+  slug: 'google'
+}
+
+const MOCK_PROVIDERS = [DEEPSEEK_PROVIDER, GOOGLE_PROVIDER, MOA_PROVIDER]
+
 beforeEach(() => {
   $activeSessionId.set('runtime-1')
   $currentModel.set('')
   $currentProvider.set('')
-  getGlobalModelOptions.mockResolvedValue({ providers: [MOA_PROVIDER] })
+  $collapsedProviders.set([])
+  getGlobalModelOptions.mockResolvedValue({ providers: MOCK_PROVIDERS })
 })
 
 afterEach(() => {
@@ -104,5 +120,80 @@ describe('ModelMenuPanel MoA presets', () => {
     // Pre-session picks are UI state shipped on the next session.create — the
     // row must not be disabled and must still route through onSelectModel.
     expect(onSelectModel).toHaveBeenCalledWith({ model: 'BeastMode', provider: 'moa' })
+  })
+})
+
+describe('ModelMenuPanel provider collapse', () => {
+  it('shows all provider models by default (none collapsed)', async () => {
+    const { content } = renderPanel()
+
+    await content.findByText('DeepSeek')
+    expect(content.queryByText('Deepseek V4 Pro')).not.toBeNull()
+    expect(content.queryByText('Deepseek Chat')).not.toBeNull()
+  })
+
+  it('collapses provider models when header is clicked', async () => {
+    const { content } = renderPanel()
+
+    const header = await content.findByText('DeepSeek')
+    fireEvent.click(header)
+
+    // Models should disappear but header stays
+    expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+    expect(content.queryByText('DeepSeek')).not.toBeNull()
+  })
+
+  it('expands provider models when header is clicked again', async () => {
+    const { content } = renderPanel()
+
+    const header = await content.findByText('DeepSeek')
+    // Collapse
+    fireEvent.click(header)
+    expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+    // Expand
+    fireEvent.click(header)
+    await vi.waitFor(() => {
+      expect(content.queryByText('Deepseek V4 Pro')).not.toBeNull()
+    })
+  })
+
+  it('auto-expands the active provider even when collapsed', async () => {
+    $currentProvider.set('deepseek')
+    $currentModel.set('deepseek-v4-pro')
+    const { content } = renderPanel()
+
+    const header = await content.findByText('DeepSeek')
+    fireEvent.click(header)
+
+    // Should still show models because it's the active provider
+    expect(content.queryByText('Deepseek V4 Pro')).not.toBeNull()
+  })
+
+  it('bypasses collapse when search is active', async () => {
+    const { content } = renderPanel()
+
+    const header = await content.findByText('DeepSeek')
+    fireEvent.click(header)
+    expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
+
+    // Type in the search bar (auto-focused by DropdownMenuSearch)
+    const input = screen.getByRole('textbox', { name: 'Search models' })
+    expect(input).not.toBeNull()
+    fireEvent.change(input, { target: { value: 'deepseek' } })
+
+    // Should show models — search bypasses collapse
+    await vi.waitFor(() => {
+      expect(content.queryByText('Deepseek V4 Pro')).not.toBeNull()
+    })
+  })
+
+  it('toggles collapse via keyboard Enter on header', async () => {
+    const { content } = renderPanel()
+
+    const header = await content.findByText('DeepSeek')
+    // Radix DropdownMenuItem fires onSelect on Enter from the onKeyDown handler
+    fireEvent.keyDown(header.closest('[role="menuitem"]') ?? header, { key: 'Enter' })
+
+    expect(content.queryByText('Deepseek V4 Pro')).toBeNull()
   })
 })

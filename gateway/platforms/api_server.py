@@ -1868,6 +1868,13 @@ class APIServerAdapter(BasePlatformAdapter):
         # callers only need to know whether those snapshots exist.
         payload["has_system_prompt"] = bool(session.get("system_prompt"))
         payload["has_model_config"] = bool(session.get("model_config"))
+
+        # Convert seconds since epoch to milliseconds for client Javascript Date constructor compatibility
+        if "started_at" in session and session["started_at"] is not None:
+            payload["created_at"] = int(session["started_at"] * 1000)
+        if "last_active" in session and session["last_active"] is not None:
+            payload["updated_at"] = int(session["last_active"] * 1000)
+
         return payload
 
     @staticmethod
@@ -1936,12 +1943,13 @@ class APIServerAdapter(BasePlatformAdapter):
         offset = self._parse_nonnegative_int(request.query.get("offset"), default=0, maximum=1_000_000)
         source = request.query.get("source") or None
         include_children = _coerce_request_bool(request.query.get("include_children"), default=False)
+        order_by_last_active = _coerce_request_bool(request.query.get("order_by_last_active"), default=False)
         sessions = db.list_sessions_rich(
             source=source,
             limit=limit,
             offset=offset,
             include_children=include_children,
-            order_by_last_active=True,
+            order_by_last_active=order_by_last_active,
         )
         return web.json_response({
             "object": "list",

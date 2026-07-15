@@ -35,7 +35,7 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
+const REPO_ROOT = path.resolve(__dirname, '..')
 const ROOT_PKG = path.join(REPO_ROOT, 'package.json')
 const ROOT_LOCK = path.join(REPO_ROOT, 'package-lock.json')
 
@@ -72,6 +72,7 @@ test('root lockfile has no camofox entries', () => {
     // Some CI matrix shards skip lockfile materialization.
     return
   }
+
   const text = fs.readFileSync(ROOT_LOCK, 'utf-8')
   assert.ok(
     !text.includes('@askjo/camofox-browser'),

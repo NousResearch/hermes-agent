@@ -26,6 +26,30 @@ let
   packageJson = builtins.fromJSON (builtins.readFile (npm.src + "/apps/desktop/package.json"));
   version = packageJson.version;
 
+  electronHeaders = pkgs.fetchurl {
+    url = "https://artifacts.electronjs.org/headers/dist/v${electron.version}/node-v${electron.version}-headers.tar.gz";
+    sha256 = "sha256-zi/QMwRZ0+FwE9XTE+DiSIeJXAwxmLKEaBWD5W3pMOI=";
+  };
+
+  # node-pty ships no Electron-tagged prebuild we can trust to match this
+  # exact nixpkgs electron version, so it's always compiled from source
+  # against Electron's own headers (not whatever Node ran `npm`).
+  targetPlatform =
+    if stdenv.hostPlatform.isDarwin then
+      "darwin"
+    else if stdenv.hostPlatform.isLinux then
+      "linux"
+    else
+      throw "hermes-desktop: unsupported host platform for node-pty staging";
+
+  targetArch =
+    if stdenv.hostPlatform.isAarch64 then
+      "arm64"
+    else if stdenv.hostPlatform.isx86_64 then
+      "x64"
+    else
+      throw "hermes-desktop: unsupported host arch for node-pty staging";
+
   # Build the renderer (dist/ + electron/ + package.json).
   renderer = pkgs.buildNpmPackage (
     npm
@@ -37,23 +61,40 @@ let
       buildPhase = ''
         runHook preBuild
 
-        # write-build-stamp.cjs replacement.  Packaged Electron reads this
-        # at first-launch to pin the install.ps1 git ref; informational in
-        # nix builds (the backend comes from the derivation directly).
         mkdir -p apps/desktop/build
-        echo '{"schemaVersion":1,"commit":"nix","branch":"nix","dirty":false,"source":"nix"}' > apps/desktop/build/install-stamp.json
 
-        # patch shebangs in node_modules/.bin so npm exec can find the
-        # nix-store equivalents of /usr/bin/env (which doesn't exist in the sandbox)
         patchShebangs .
 
         pushd apps/desktop
-          # stage node-pty native binaries into build/native-deps for the final nix output
-          npm rebuild node-pty --build-from-source
-          node scripts/stage-native-deps.cjs
-          
+          # typecheck :3
           npm exec tsc -b
+
+          # build the renderer bundle
+          # vite's emptyOutDir wipes dist/ on every run
+          # so it has to be first
           npm exec vite build
+
+          # build the electron bundle
+          node scripts/bundle-electron-main.mjs
+
+          # Compile node-pty against Electron's actual ABI (the nixpkgs
+          # `electron` we ship). Headers come from a pinned fetchurl input
+          # since the sandbox has no network here, so node-gyp's
+          # normal --disturl download path can't run.
+          mkdir -p "$TMPDIR/electron-headers"
+          tar -xzf ${electronHeaders} -C "$TMPDIR/electron-headers" --strip-components=1
+
+          npm rebuild node-pty \
+            --build-from-source \
+            --runtime=electron \
+            --target=${electron.version} \
+            --nodedir="$TMPDIR/electron-headers" \
+            --disturl="" \
+            --offline
+
+          # Target platform/arch come from stdenv.hostPlatform, not the
+          # build host's own process.platform/arch.
+          node scripts/stage-native-deps.mjs ${targetPlatform} ${targetArch}
         popd
 
         runHook postBuild
@@ -66,9 +107,9 @@ let
 
           npm run postbuild
 
-          # validate staged node-pty native binary is present
-          STAGED_PTY_NODE="./build/native-deps/node-pty/build/Release/pty.node"
-          
+          # validate staged node-pty native binary is present.
+          STAGED_PTY_NODE="./dist/node_modules/node-pty/build/Release/pty.node"
+
           if [ ! -f "$STAGED_PTY_NODE" ]; then
             echo "FATAL: Missing staged node-pty native binary at $STAGED_PTY_NODE"
             echo "node-pty must be compiled natively"
@@ -84,15 +125,13 @@ let
         runHook preInstall
         mkdir -p $out
         # vite writes to apps/desktop/dist/ (we cd'd there in buildPhase).
-        # apps/desktop/build was created before the cd.  electron/ is source.
+        # stage-native-deps.mjs stages node-pty into dist/node_modules/node-pty,
+        # so copying dist/ wholesale carries the native dep along with the
+        # esbuild bundle that require()s it. apps/desktop/build was created
+        # before the cd.
         cp -rn apps/desktop/dist $out/
-        cp -rn apps/desktop/electron $out/
 
-        # flatten native-deps and install-stamp.json to the root level, exactly like
-        # electron-builder's extraResources does ("from": "build/native-deps", "to": "native-deps")
-        # so main.cjs can find it at process.resourcesPath + '/native-deps/node-pty'
-        cp -rn apps/desktop/build/native-deps $out/
-        cp -n apps/desktop/build/install-stamp.json $out/
+        echo '{"schemaVersion":1,"commit":"nix-dummy-commit","branch":"nix","dirty":false,"source":"nix"}' > $out/install-stamp.json
 
         cp -n apps/desktop/package.json $out/
         runHook postInstall
@@ -120,7 +159,7 @@ stdenv.mkDerivation {
     # Standard nixpkgs pattern for electron-builder apps: patch process.resourcesPath
     # to point to the app's directory. In Nix, unpackaged electron defaults this
     # to the electron distribution's resources path, breaking extraResources lookups.
-    substituteInPlace $out/share/hermes-desktop/electron/main.cjs \
+    substituteInPlace $out/share/hermes-desktop/dist/electron-main.mjs \
       --replace-fail "process.resourcesPath" "'$out/share/hermes-desktop'"
 
     # Wrap the nixpkgs electron binary to launch our app.  Set

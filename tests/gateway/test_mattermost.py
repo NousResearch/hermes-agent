@@ -6,7 +6,11 @@ import pytest
 from unittest.mock import MagicMock, patch, AsyncMock
 
 from gateway.config import Platform, PlatformConfig
-from gateway.run import _resolve_progress_thread_id
+from gateway.platforms.base import MessageType
+from gateway.run import (
+    _resolve_gateway_display_bool,
+    _resolve_progress_thread_id,
+)
 
 
 class TestMattermostProgressThreadRouting:
@@ -30,6 +34,97 @@ class TestMattermostProgressThreadRouting:
             source_thread_id=None,
             event_message_id="12345",
         ) is None
+
+
+class TestMattermostDisplayHygiene:
+    def test_mattermost_requires_platform_opt_in_for_interim_assistant_messages(self):
+        """Global interim commentary must not make Mattermost leak scratch notes."""
+        user_config = {"display": {"interim_assistant_messages": True}}
+
+        assert _resolve_gateway_display_bool(
+            user_config,
+            "mattermost",
+            "interim_assistant_messages",
+            default=True,
+            platform=Platform.MATTERMOST,
+            require_platform_override_for={Platform.MATTERMOST},
+        ) is False
+
+    def test_mattermost_platform_opt_in_can_enable_interim_assistant_messages(self):
+        """Mattermost can still opt into commentary explicitly per platform."""
+        user_config = {
+            "display": {
+                "interim_assistant_messages": False,
+                "platforms": {
+                    "mattermost": {"interim_assistant_messages": True},
+                },
+            }
+        }
+
+        assert _resolve_gateway_display_bool(
+            user_config,
+            "mattermost",
+            "interim_assistant_messages",
+            default=True,
+            platform=Platform.MATTERMOST,
+            require_platform_override_for={Platform.MATTERMOST},
+        ) is True
+
+    def test_mattermost_requires_platform_opt_in_for_thinking_progress(self):
+        """Global thinking_progress must not surface internal analysis in Mattermost."""
+        user_config = {"display": {"thinking_progress": True}}
+
+        assert _resolve_gateway_display_bool(
+            user_config,
+            "mattermost",
+            "thinking_progress",
+            default=False,
+            platform=Platform.MATTERMOST,
+            require_platform_override_for={Platform.MATTERMOST},
+        ) is False
+
+    def test_mattermost_requires_platform_opt_in_for_show_reasoning(self):
+        """Global show_reasoning must not prepend scratch reasoning in Mattermost."""
+        user_config = {"display": {"show_reasoning": True}}
+
+        assert _resolve_gateway_display_bool(
+            user_config,
+            "mattermost",
+            "show_reasoning",
+            default=False,
+            platform=Platform.MATTERMOST,
+            require_platform_override_for={Platform.MATTERMOST},
+        ) is False
+
+    def test_mattermost_platform_opt_in_can_enable_show_reasoning(self):
+        user_config = {
+            "display": {
+                "show_reasoning": False,
+                "platforms": {"mattermost": {"show_reasoning": True}},
+            }
+        }
+
+        assert _resolve_gateway_display_bool(
+            user_config,
+            "mattermost",
+            "show_reasoning",
+            default=False,
+            platform=Platform.MATTERMOST,
+            require_platform_override_for={Platform.MATTERMOST},
+        ) is True
+
+    def test_global_thinking_progress_still_applies_to_other_platforms(self):
+        """The Mattermost guard must not silently neuter Telegram/other chats."""
+        user_config = {"display": {"thinking_progress": True}}
+
+        assert _resolve_gateway_display_bool(
+            user_config,
+            "telegram",
+            "thinking_progress",
+            default=False,
+            platform=Platform.TELEGRAM,
+            require_platform_override_for={Platform.MATTERMOST},
+        ) is True
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +443,24 @@ class TestMattermostSend:
         assert payload["root_id"] == "root_post"
 
     @pytest.mark.asyncio
+    async def test_progress_send_with_invalid_thread_root_never_falls_back_flat(self):
+        """Tool/status/progress bubbles must stay quiet when the thread is broken."""
+        self.adapter._reply_mode = "thread"
+        self.adapter._api_get = AsyncMock(return_value={"id": "bad_root", "root_id": ""})
+        self.adapter._api_post = AsyncMock(return_value={})
+
+        result = await self.adapter.send(
+            "channel_1",
+            "⚙️ terminal...",
+            metadata={"thread_id": "bad_root"},
+        )
+
+        assert result.success is False
+        assert self.adapter._api_post.call_count == 1
+        payload = self.adapter._api_post.call_args_list[0][0][1]
+        assert payload["root_id"] == "bad_root"
+
+    @pytest.mark.asyncio
     async def test_send_api_failure(self):
         """When API returns error, send should return failure."""
         mock_resp = AsyncMock()
@@ -475,6 +588,55 @@ class TestMattermostWebSocketParsing:
         assert self.adapter.handle_message.called
         msg_event = self.adapter.handle_message.call_args[0][0]
         assert msg_event.source.chat_type == "dm"
+
+    @pytest.mark.asyncio
+    async def test_leading_space_slash_command_is_command(self):
+        """Mattermost mobile suggests leading-space slash commands."""
+        post_data = {
+            "id": "post_cmd",
+            "user_id": "user_123",
+            "channel_id": "chan_dm",
+            "message": " /new",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "D",
+                "sender_name": "@bob",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "/new"
+        assert msg_event.message_type is MessageType.COMMAND
+        assert msg_event.get_command() == "new"
+
+    @pytest.mark.asyncio
+    async def test_leading_space_normal_text_is_preserved(self):
+        """Only command-shaped mobile messages should be normalized."""
+        post_data = {
+            "id": "post_text",
+            "user_id": "user_123",
+            "channel_id": "chan_dm",
+            "message": " hello",
+        }
+        event = {
+            "event": "posted",
+            "data": {
+                "post": json.dumps(post_data),
+                "channel_type": "D",
+                "sender_name": "@bob",
+            },
+        }
+
+        await self.adapter._handle_ws_event(event)
+        assert self.adapter.handle_message.called
+        msg_event = self.adapter.handle_message.call_args[0][0]
+        assert msg_event.text == " hello"
+        assert msg_event.message_type is MessageType.TEXT
 
     @pytest.mark.asyncio
     async def test_thread_id_from_root_id(self):

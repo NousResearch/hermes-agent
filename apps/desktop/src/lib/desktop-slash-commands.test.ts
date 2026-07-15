@@ -52,6 +52,39 @@ describe('desktop slash command curation', () => {
     expect(desktopSlashUnavailableMessage('/personality')).toBeNull()
   })
 
+  it('routes /pet through the desktop action handler and drops /pets', () => {
+    expect(resolveDesktopCommand('/pet')?.surface).toEqual({ kind: 'action', action: 'pet' })
+    expect(resolveDesktopCommand('/pet')?.args).toBe(true)
+    expect(isDesktopSlashSuggestion('/pet')).toBe(true)
+    expect(isDesktopSlashCommand('/pet')).toBe(true)
+    expect(resolveDesktopCommand('/pets')?.surface).toEqual({ kind: 'unavailable', reason: 'settings' })
+    expect(isDesktopSlashSuggestion('/pets')).toBe(false)
+    expect(isDesktopSlashCommand('/pets')).toBe(false)
+  })
+
+  it('treats /browser as an executable action command (local-gateway connect)', () => {
+    // /browser used to be terminal-only; it now resolves to a desktop action
+    // handler that routes browser.manage RPC when the gateway is local.
+    expect(isDesktopSlashCommand('/browser')).toBe(true)
+    expect(isDesktopSlashSuggestion('/browser')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/browser')).toBeNull()
+    expect(resolveDesktopCommand('/browser')?.surface).toEqual({ kind: 'action', action: 'browser' })
+    // Bare /browser expands to its sub-action options in the popover.
+    expect(resolveDesktopCommand('/browser')?.args).toBe(true)
+  })
+
+  it('routes /journey (and aliases) to the memory graph overlay action', () => {
+    expect(resolveDesktopCommand('/journey')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(resolveDesktopCommand('/memory-graph')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(resolveDesktopCommand('/learning')?.surface).toEqual({ kind: 'action', action: 'journey' })
+    expect(isDesktopSlashCommand('/journey')).toBe(true)
+    expect(isDesktopSlashCommand('/memory-graph')).toBe(true)
+    expect(isDesktopSlashSuggestion('/journey')).toBe(true)
+    // Aliases execute but stay out of the popover.
+    expect(isDesktopSlashSuggestion('/memory-graph')).toBe(false)
+    expect(desktopSlashUnavailableMessage('/journey')).toBeNull()
+  })
+
   it('allows aliases to execute without cluttering the popover', () => {
     expect(isDesktopSlashSuggestion('/reset')).toBe(false)
     expect(isDesktopSlashCommand('/reset')).toBe(true)

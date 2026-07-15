@@ -1,31 +1,25 @@
 'use client'
 
-import { TextMessagePartProvider, useMessagePartText } from '@assistant-ui/react'
+import { type SmoothOptions, TextMessagePartProvider, useMessagePartText } from '@assistant-ui/react'
 import {
   parseMarkdownIntoBlocks,
   type StreamdownTextComponents,
   StreamdownTextPrimitive,
-  type SyntaxHighlighterProps
+  type SyntaxHighlighterProps,
+  tailBoundedRemend
 } from '@assistant-ui/react-streamdown'
 import { code } from '@streamdown/code'
-import {
-  type ComponentProps,
-  memo,
-  type ReactNode,
-  useDeferredValue,
-  useEffect,
-  useMemo,
-  useRef,
-  useState
-} from 'react'
+import { type ComponentProps, memo, useEffect, useMemo, useState } from 'react'
 
+import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
-import { SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
+import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
+  downloadGatewayMediaFile,
   filePathFromMediaPath,
   gatewayMediaDataUrl,
   isRemoteGateway,
@@ -36,8 +30,9 @@ import {
   mediaStreamUrl
 } from '@/lib/media'
 import { previewTargetFromMarkdownHref } from '@/lib/preview-targets'
-import { tailBoundedRemend } from '@/lib/remend-tail'
 import { cn } from '@/lib/utils'
+
+import { detectEmbed, extractAlert, MarkdownAlert, RichCodeBlock, UrlEmbed } from './embeds'
 
 // Math rendering plugin (KaTeX). Configured once at module scope — the
 // plugin is stateless beyond its internal cache so re-creating per-render
@@ -54,17 +49,20 @@ import { cn } from '@/lib/utils'
 const mathPlugin = createMemoizedMathPlugin({ singleDollarTextMath: true })
 
 // Replaces Streamdown's `parseIncompleteMarkdown` (full-text remend per
-// flush) with a tail-bounded repair — see lib/remend-tail.ts. Must stay
-// module-scope so the prop identity is stable across renders.
+// flush) with a tail-bounded repair. Must stay module-scope so the prop
+// identity is stable across renders.
 function preprocessWithTailRepair(text: string): string {
-  return tailBoundedRemend(preprocessMarkdown(text))
+  try {
+    return tailBoundedRemend(preprocessMarkdown(text))
+  } catch {
+    return text
+  }
 }
 
 // Memoized block splitter. Streamdown calls `parseMarkdownIntoBlocks` (a full
 // `marked` lex of the entire message, ~1.6ms per 28KB) inside a useMemo keyed
 // on the text — but the same text is re-lexed every time a message REMOUNTS
-// (virtualizer scroll, session switch) and whenever multiple surfaces render
-// the same content (deferred + smooth reveal republish). A small module-level
+// (virtualizer scroll, session switch). A small module-level
 // LRU keyed by the exact source string removes all of those repeat parses
 // with zero correctness risk (same input → same output). Streaming tail
 // growth misses the cache by design (every flush is a new string) — that
@@ -122,21 +120,50 @@ async function mediaSrc(path: string): Promise<string> {
   return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
 }
 
-function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string }) {
+function useOpenMediaFile(path: string) {
+  const [openFailed, setOpenFailed] = useState(false)
+
+  const open = () => {
+    if (window.hermesDesktop && isRemoteGateway()) {
+      setOpenFailed(false)
+      void downloadGatewayMediaFile(path).catch(() => setOpenFailed(true))
+    } else {
+      openExternalLink(mediaExternalUrl(path))
+    }
+  }
+
+  return { open, openFailed }
+}
+
+function OpenMediaFailedNote({ name }: { name: string }) {
   return (
-    <button
-      className="mt-2 bg-transparent text-xs font-medium text-muted-foreground underline underline-offset-4 decoration-current/20 hover:text-foreground"
-      onClick={() => void window.hermesDesktop?.openExternal(mediaExternalUrl(path))}
-      type="button"
-    >
-      Open {kind} file
-    </button>
+    <span className="mt-1 block text-xs text-muted-foreground">
+      Couldn&apos;t fetch {name} from the gateway (missing, unreadable, or too large).
+    </span>
+  )
+}
+
+function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string }) {
+  const { open, openFailed } = useOpenMediaFile(path)
+
+  return (
+    <span className="block">
+      <button
+        className="mt-2 bg-transparent text-xs font-medium text-muted-foreground underline underline-offset-4 decoration-current/20 hover:text-foreground"
+        onClick={open}
+        type="button"
+      >
+        Open {kind} file
+      </button>
+      {openFailed && <OpenMediaFailedNote name={mediaName(path)} />}
+    </span>
   )
 }
 
 function MediaAttachment({ path }: { path: string }) {
   const [src, setSrc] = useState('')
   const [failed, setFailed] = useState(false)
+  const { open, openFailed } = useOpenMediaFile(path)
   const kind = mediaKind(path)
   const name = mediaName(path)
 
@@ -146,6 +173,15 @@ function MediaAttachment({ path }: { path: string }) {
 
     setFailed(false)
     setSrc('')
+
+    if (kind === 'file') {
+      setFailed(true)
+
+      return () => {
+        cancelled = true
+      }
+    }
+
     void mediaSrc(path)
       .then(value => {
         if (value.startsWith('blob:')) {
@@ -171,7 +207,7 @@ function MediaAttachment({ path }: { path: string }) {
         URL.revokeObjectURL(objectUrl)
       }
     }
-  }, [path])
+  }, [kind, path])
 
   if (kind === 'image' && src) {
     return (
@@ -207,16 +243,19 @@ function MediaAttachment({ path }: { path: string }) {
   }
 
   return (
-    <a
-      className="font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
-      href="#"
-      onClick={event => {
-        event.preventDefault()
-        openExternalLink(mediaExternalUrl(path))
-      }}
-    >
-      {failed ? `Open ${name}` : `Loading ${name}...`}
-    </a>
+    <span className="wrap-anywhere">
+      <a
+        className="font-semibold text-foreground underline underline-offset-4 decoration-current/20 wrap-anywhere"
+        href="#"
+        onClick={event => {
+          event.preventDefault()
+          open()
+        }}
+      >
+        {failed ? `Open ${name}` : `Loading ${name}...`}
+      </a>
+      {openFailed && <OpenMediaFailedNote name={name} />}
+    </span>
   )
 }
 
@@ -265,6 +304,17 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   }
 
   const text = childrenToText(children)
+
+  // Bare autolink → inline rich embed when a provider matches. Labeled links
+  // (`[watch](url)`) stay plain. Desktop only (webview / iframe renderers).
+  if (window.hermesDesktop && text && normalizeExternalUrl(text) === target) {
+    const embed = detectEmbed(target)
+
+    if (embed) {
+      return <UrlEmbed descriptor={embed} />
+    }
+  }
+
   const fallbackLabel = text && normalizeExternalUrl(text) !== target ? text : undefined
 
   return (
@@ -288,150 +338,11 @@ function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>)
   )
 }
 
-// Steady character-reveal for streaming text: decouples visible cadence from
-// bursty arrival so text flows instead of popping (cf. assistant-ui's useSmooth,
-// reimplemented for a tunable rate). Proportional drain — each frame reveals a
-// slice of the backlog so the reveal converges within ~REVEAL_DRAIN_MS whatever
-// the size; the per-frame cap stops a huge dump rendering as one slab. The loop
-// is gated on backlog, not isRunning, so a stream that completes mid-reveal
-// keeps draining its tail instead of snapping.
-const REVEAL_DRAIN_MS = 500
-const REVEAL_MAX_CHARS_PER_FRAME = 30
-// Floor between reveal commits. Each commit republishes the text context and
-// re-runs the whole Streamdown pipeline (preprocess → remend → lex → micromark
-// on the open block) over the full accumulated text — at raw rAF cadence
-// that's 60 full parses/second and was the dominant streaming cost for
-// reasoning text. ~33ms keeps the reveal visually fluid (2 frames) while
-// halving the parse work.
-const REVEAL_MIN_COMMIT_MS = 33
-
-function useSmoothReveal(text: string, isRunning: boolean): string {
-  const [displayed, setDisplayed] = useState(isRunning ? '' : text)
-  const targetRef = useRef(text)
-  const shownRef = useRef(displayed)
-  const frameRef = useRef<number | null>(null)
-  const lastTickRef = useRef(0)
-
-  shownRef.current = displayed
-  targetRef.current = text
-
-  useEffect(() => {
-    if (typeof window === 'undefined') {
-      return
-    }
-
-    // Non-extending change (regenerate / branch / history swap): restart from
-    // empty while streaming, else snap to the replacement.
-    if (!text.startsWith(shownRef.current)) {
-      shownRef.current = isRunning ? '' : text
-      setDisplayed(shownRef.current)
-    }
-
-    if (shownRef.current.length >= text.length || frameRef.current !== null) {
-      return
-    }
-
-    lastTickRef.current = performance.now()
-
-    const tick = () => {
-      const now = performance.now()
-      const dt = now - lastTickRef.current
-
-      // Skip this frame if the floor hasn't elapsed — the backlog math below
-      // is dt-proportional, so delayed commits reveal proportionally more.
-      if (dt < REVEAL_MIN_COMMIT_MS) {
-        frameRef.current = requestAnimationFrame(tick)
-
-        return
-      }
-
-      lastTickRef.current = now
-
-      const remaining = targetRef.current.length - shownRef.current.length
-
-      const add = Math.min(
-        remaining,
-        // dt-scaled so the per-commit cap stays equivalent to the old
-        // per-frame cap at any commit cadence.
-        Math.ceil((REVEAL_MAX_CHARS_PER_FRAME * dt) / 16.7),
-        Math.max(1, Math.ceil((remaining * dt) / REVEAL_DRAIN_MS))
-      )
-
-      shownRef.current = targetRef.current.slice(0, shownRef.current.length + add)
-      setDisplayed(shownRef.current)
-
-      frameRef.current = shownRef.current.length < targetRef.current.length ? requestAnimationFrame(tick) : null
-    }
-
-    frameRef.current = requestAnimationFrame(tick)
-  }, [text, isRunning])
-
-  useEffect(
-    () => () => {
-      if (frameRef.current !== null && typeof window !== 'undefined') {
-        cancelAnimationFrame(frameRef.current)
-      }
-    },
-    []
-  )
-
-  return displayed
-}
-
-// Re-publish the part context with a smooth character-reveal, above
-// DeferStreamingText so the reveal feeds the deferred markdown pipeline. Status
-// stays running while revealing so the caret persists past the underlying part
-// settling.
-function SmoothStreamingText({ children }: { children: ReactNode }) {
-  const { text, status } = useMessagePartText()
-  const isRunning = status.type === 'running'
-  const revealed = useSmoothReveal(text, isRunning)
-
-  return (
-    <TextMessagePartProvider isRunning={isRunning || revealed !== text} text={revealed}>
-      {children}
-    </TextMessagePartProvider>
-  )
-}
-
-/**
- * Re-publish the active message-part context with React's `useDeferredValue`
- * applied to the streaming text and status. The outer wrapper still re-renders
- * on every token, but the work it does is trivial (one hook, one provider).
- *
- * The expensive subtree (Streamdown → micromark → mdast → hast → React) lives
- * inside `<TextMessagePartProvider>` and reads the deferred text via the
- * normal `useMessagePartText` hook. React's concurrent scheduler then has
- * permission to:
- *   - skip intermediate token states when the next token arrives mid-render
- *     (it abandons the in-flight deferred render and starts over)
- *   - deprioritize the markdown render when the main thread is busy with an
- *     urgent task (typing, scrolling, layout work elsewhere)
- *
- * Net effect: per-token CPU is unchanged but the *blocking* part of that work
- * goes away — typing-while-streaming stays a single-frame paint, scroll
- * stutter disappears, and the longtask histogram tightens because long
- * commits can be interrupted and discarded.
- *
- * Industry standard (Streamdown's own block-array setState already uses
- * `useTransition`); this just lifts the deferral up to the consumer text
- * boundary so it covers the whole pipeline, not just the inner setState.
- */
-function DeferStreamingText({ children }: { children: ReactNode }) {
-  const { text, status } = useMessagePartText()
-  const deferredText = useDeferredValue(text)
-  const isRunning = status.type === 'running'
-
-  return (
-    <TextMessagePartProvider isRunning={isRunning} text={deferredText}>
-      {children}
-    </TextMessagePartProvider>
-  )
-}
-
 interface MarkdownTextSurfaceProps {
   containerClassName?: string
   containerProps?: ComponentProps<'div'>
+  defer?: boolean
+  smooth?: boolean | SmoothOptions
 }
 
 // Headings shrink to chat scale rather than the prose default (h1≈xl). Kept
@@ -453,8 +364,35 @@ const MARKDOWN_CONTAINER_CLASS_NAME = cn(
   '[&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&>*+*]:mt-(--paragraph-gap)'
 )
 
-function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTextSurfaceProps) {
-  const { status } = useMessagePartText()
+const MAX_MARKDOWN_CHARS = 200_000
+
+function HugeTextFallback({ containerClassName, text }: { containerClassName?: string; text: string }) {
+  const chunks = useMemo(() => chunkByLines(text, 200), [text])
+
+  return (
+    <div
+      className={cn(
+        'aui-md w-full max-w-none overflow-hidden rounded-[0.625rem] border border-border font-mono text-[0.7rem] leading-relaxed text-foreground/90',
+        containerClassName
+      )}
+    >
+      <ExpandableBlock className="p-2">
+        {chunks.map((chunk, index) => (
+          <div
+            className="[content-visibility:auto]"
+            key={index}
+            style={{ containIntrinsicSize: `auto ${chunk.lines * 16}px` }}
+          >
+            {chunk.text}
+          </div>
+        ))}
+      </ExpandableBlock>
+    </div>
+  )
+}
+
+function MarkdownTextSurface({ containerClassName, containerProps, defer, smooth }: MarkdownTextSurfaceProps) {
+  const { status, text } = useMessagePartText()
   const isStreaming = status.type === 'running'
 
   // Keep code parsing enabled while streaming so incomplete fenced blocks still
@@ -484,19 +422,49 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
           <p className={cn('wrap-anywhere leading-(--dt-line-height)', className)} {...props} />
         ),
         a: MarkdownLink,
+        // Inline code must not vote when an ancestor resolves `dir="auto"`
+        // (HTML's algorithm skips descendants that carry their own dir),
+        // mirroring the CSS isolate that already keeps it out of the
+        // plaintext scan. Fenced code never reaches this override; it goes
+        // through the code plugin's CodeCard path.
+        inlineCode: ({ className, ...props }: ComponentProps<'code'>) => (
+          <code className={className} dir="ltr" {...props} />
+        ),
         // `---` as quiet spacing, not a heavy full-width rule.
         hr: (_props: ComponentProps<'hr'>) => <div aria-hidden className="my-3" />,
-        blockquote: ({ className, ...props }: ComponentProps<'blockquote'>) => (
-          <blockquote
-            className={cn('border-l-2 border-border pl-3 text-muted-foreground italic', className)}
-            {...props}
-          />
-        ),
+        // Lists and blockquotes have chrome that sits *beside* the text
+        // (markers, the quote border), and that side is driven by the CSS
+        // `direction` of the box, which `unicode-bidi: plaintext` never
+        // touches — an RTL list otherwise renders its numbers stranded at
+        // the far left. `dir="auto"` lets the browser resolve the box
+        // direction from content; the plaintext rules in styles.css keep
+        // owning per-line text direction. Inline code carries `dir="ltr"`
+        // (see the `code` override) so it doesn't vote here either, same
+        // contract as the CSS isolate.
+        // A `> [!NOTE]`/`[!WARNING]`/... blockquote renders as a GFM alert
+        // callout; everything else stays a plain quote.
+        blockquote: ({ children, className, ...props }: ComponentProps<'blockquote'>) => {
+          const alert = extractAlert(children)
+
+          if (alert) {
+            return <MarkdownAlert type={alert.type}>{alert.body}</MarkdownAlert>
+          }
+
+          return (
+            <blockquote
+              className={cn('border-s-2 border-border ps-3 text-muted-foreground italic', className)}
+              dir="auto"
+              {...props}
+            >
+              {children}
+            </blockquote>
+          )
+        },
         ul: ({ className, ...props }: ComponentProps<'ul'>) => (
-          <ul className={cn('my-1 gap-0', className)} {...props} />
+          <ul className={cn('my-1 gap-0', className)} dir="auto" {...props} />
         ),
         ol: ({ className, ...props }: ComponentProps<'ol'>) => (
-          <ol className={cn('my-1 gap-0', className)} {...props} />
+          <ol className={cn('my-1 gap-0', className)} dir="auto" {...props} />
         ),
         li: ({ className, ...props }: ComponentProps<'li'>) => (
           <li className={cn('leading-(--dt-line-height)', className)} {...props} />
@@ -528,34 +496,50 @@ function MarkdownTextSurface({ containerClassName, containerProps }: MarkdownTex
           <td className={cn('px-2.5 py-1.5 align-top text-[0.8125rem] leading-snug', className)} {...props} />
         ),
         img: MarkdownImage,
-        SyntaxHighlighter: (props: SyntaxHighlighterProps) => <SyntaxHighlighter {...props} defer={isStreaming} />
+        // ```mermaid / ```svg fences route to their lazy renderers; every other
+        // language falls back to the Shiki-highlighted code block.
+        SyntaxHighlighter: (props: SyntaxHighlighterProps) => (
+          <RichCodeBlock
+            code={props.code}
+            fallback={<SyntaxHighlighter {...props} defer={isStreaming} />}
+            language={props.language}
+            streaming={isStreaming}
+          />
+        )
       }) as StreamdownTextComponents,
     [isStreaming]
   )
+
+  if (text.length > MAX_MARKDOWN_CHARS) {
+    return <HugeTextFallback containerClassName={containerClassName} text={text} />
+  }
 
   return (
     <StreamdownTextPrimitive
       components={components}
       containerClassName={cn(MARKDOWN_CONTAINER_CLASS_NAME, containerClassName)}
       containerProps={containerProps}
+      defer={defer}
       lineNumbers={false}
       mode="streaming"
-      // Incomplete-markdown repair is handled by `preprocessWithTailRepair`
-      // below (tail-bounded remend) instead of Streamdown's built-in pass,
-      // which re-runs remend over the ENTIRE message on every flush — ~18%
-      // of streaming script time on 50KB+ messages. The repair itself stays
-      // always-on (even between flushes / for completed messages): an
-      // unclosed ```python ... ``` whose body contains `$` (shell snippets,
-      // JS template strings, dollar amounts) would otherwise leak those
-      // dollars to the math parser and render broken inline math. Shiki is
-      // independently deferred via `defer={isStreaming}` on the
-      // SyntaxHighlighter component.
+      // Incomplete-markdown repair runs in preprocessWithTailRepair on the
+      // full accumulated text; the built-in tail-bounded remend is disabled
+      // because a custom parseMarkdownIntoBlocksFn is supplied, and
+      // parseIncompleteMarkdown stays false to avoid a second full-text
+      // remend pass.
       parseIncompleteMarkdown={false}
       parseMarkdownIntoBlocksFn={parseMarkdownIntoBlocksCached}
       plugins={plugins}
       preprocess={preprocessWithTailRepair}
+      smooth={smooth}
     />
   )
+}
+
+const SMOOTH_OPTIONS: SmoothOptions = {
+  drainMs: 500,
+  maxCharsPerFrame: 30,
+  minCommitMs: 33
 }
 
 interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
@@ -564,23 +548,18 @@ interface MarkdownTextContentProps extends MarkdownTextSurfaceProps {
 }
 
 export function MarkdownTextContent({ isRunning, text, ...surfaceProps }: MarkdownTextContentProps) {
+  // Same path as the assistant answer. A reasoning-only smoothing wrapper used
+  // to sit here but stalled its char-reveal at empty (the part stays running
+  // the whole message), blanking the Thinking widget.
   return (
     <TextMessagePartProvider isRunning={isRunning} text={text}>
-      <SmoothStreamingText>
-        <DeferStreamingText>
-          <MarkdownTextSurface {...surfaceProps} />
-        </DeferStreamingText>
-      </SmoothStreamingText>
+      <MarkdownTextSurface defer smooth={SMOOTH_OPTIONS} {...surfaceProps} />
     </TextMessagePartProvider>
   )
 }
 
 const MarkdownTextImpl = () => {
-  return (
-    <DeferStreamingText>
-      <MarkdownTextSurface />
-    </DeferStreamingText>
-  )
+  return <MarkdownTextSurface defer />
 }
 
 export const MarkdownText = memo(MarkdownTextImpl)

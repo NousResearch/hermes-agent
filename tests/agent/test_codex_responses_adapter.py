@@ -3,8 +3,11 @@ from types import SimpleNamespace
 import pytest
 
 from agent.codex_responses_adapter import (
+    _chat_messages_to_responses_input,
     _format_responses_error,
     _normalize_codex_response,
+    _preflight_codex_api_kwargs,
+    _preflight_codex_input_items,
 )
 
 
@@ -66,6 +69,258 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
     assert assistant_message.content == ""
     assert assistant_message.reasoning == "still thinking"
     assert assistant_message.codex_reasoning_items is None
+
+
+# ---------------------------------------------------------------------------
+# Server-side built-in tool calls (xAI native web_search, code interpreter,
+# etc.) come back as discrete ``*_call`` output items that xAI's
+# /v1/responses surface routinely leaves at ``status="in_progress"`` even
+# when the overall ``response.status == "completed"``.  These must NOT mark
+# the turn incomplete — otherwise grok-composer-2.5-fast research queries
+# (which invoke server-side web_search) get misclassified as
+# ``finish_reason="incomplete"`` and burn 3 fruitless continuation retries
+# before failing with "Codex response remained incomplete after 3
+# continuation attempts".  Observed live against grok-composer-2.5-fast on
+# SuperGrok OAuth (2026-06).
+# ---------------------------------------------------------------------------
+
+
+def test_normalize_codex_response_ignores_in_progress_server_side_tool_calls():
+    """A completed response with a final message + lingering in_progress
+    server-side web_search_call items resolves to 'stop', not 'incomplete'."""
+    response = SimpleNamespace(
+        status="completed",
+        incomplete_details=None,
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id="rs_1",
+                encrypted_content="opaque",
+                summary=[SimpleNamespace(text="researching blades")],
+            ),
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="completed",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text="Milwaukee M18 blade 49-16-2734, ~$30 OEM.",
+                )],
+            ),
+            SimpleNamespace(type="web_search_call", status="in_progress"),
+            SimpleNamespace(type="web_search_call", status="in_progress"),
+            SimpleNamespace(type="web_search_call", status="in_progress"),
+        ],
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "Milwaukee M18 blade 49-16-2734, ~$30 OEM."
+
+
+def test_normalize_codex_response_in_progress_message_still_incomplete():
+    """Guard scope: an in_progress *message* item (genuine model output that
+    is still streaming) must still mark the turn incomplete — only
+    server-side ``*_call`` items are exempted."""
+    response = SimpleNamespace(
+        status="completed",
+        incomplete_details=None,
+        output=[
+            SimpleNamespace(
+                type="message",
+                role="assistant",
+                status="in_progress",
+                content=[SimpleNamespace(type="output_text", text="partial...")],
+            ),
+        ],
+    )
+
+    _assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+
+
+# ---------------------------------------------------------------------------
+# Replayed assistant message items with an oversized server-assigned ``id``
+# (Codex issues 400+ char base64 blobs) must never reach the API — the
+# Responses endpoint caps input[].id at 64 chars and rejects the whole
+# request with a non-retryable HTTP 400, permanently bricking the session
+# (every subsequent turn replays the same bad id). Short ids (msg_...) are
+# still worth keeping for prefix-cache hits, so this is a length guard, not
+# a blanket strip.
+# ---------------------------------------------------------------------------
+
+_OVERSIZED_ITEM_ID = "x" * 408
+_VALID_ITEM_ID = "msg_abc123"
+
+
+def test_chat_messages_to_responses_input_drops_oversized_message_id():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "pong",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "pong"}],
+                    "id": _OVERSIZED_ITEM_ID,
+                    "phase": "final_answer",
+                }
+            ],
+        }
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    message_item = next(item for item in items if item.get("type") == "message")
+    assert "id" not in message_item
+    assert message_item["phase"] == "final_answer"
+    assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
+
+
+def test_chat_messages_to_responses_input_keeps_short_message_id():
+    messages = [
+        {
+            "role": "assistant",
+            "content": "pong",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "pong"}],
+                    "id": _VALID_ITEM_ID,
+                }
+            ],
+        }
+    ]
+
+    items = _chat_messages_to_responses_input(messages)
+
+    message_item = next(item for item in items if item.get("type") == "message")
+    assert message_item["id"] == _VALID_ITEM_ID
+
+
+def test_preflight_codex_input_items_drops_oversized_message_id():
+    items = _preflight_codex_input_items(
+        [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "pong"}],
+                "id": _OVERSIZED_ITEM_ID,
+                "phase": "final_answer",
+            }
+        ]
+    )
+
+    assert "id" not in items[0]
+    assert items[0]["phase"] == "final_answer"
+
+
+def test_preflight_codex_input_items_keeps_short_message_id():
+    items = _preflight_codex_input_items(
+        [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "pong"}],
+                "id": _VALID_ITEM_ID,
+            }
+        ]
+    )
+
+    assert items[0]["id"] == _VALID_ITEM_ID
+
+
+def test_preflight_codex_input_items_drops_short_id_for_github_responses():
+    items = _preflight_codex_input_items(
+        [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "in_progress",
+                "content": [{"type": "output_text", "text": "pong"}],
+                "id": _VALID_ITEM_ID,
+                "phase": "final_answer",
+            }
+        ],
+        is_github_responses=True,
+    )
+
+    assert "id" not in items[0]
+    assert items[0]["status"] == "in_progress"
+    assert items[0]["phase"] == "final_answer"
+    assert items[0]["content"] == [{"type": "output_text", "text": "pong"}]
+
+
+def test_preflight_codex_api_kwargs_drops_oversized_message_id_end_to_end():
+    kwargs = _preflight_codex_api_kwargs(
+        {
+            "model": "gpt-5.5",
+            "instructions": "You are Hermes.",
+            "input": [
+                {"role": "user", "content": "ping"},
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{"type": "output_text", "text": "pong"}],
+                    "id": _OVERSIZED_ITEM_ID,
+                    "phase": "final_answer",
+                },
+            ],
+            "tools": [],
+            "store": False,
+        }
+    )
+
+    message_item = next(item for item in kwargs["input"] if item.get("type") == "message")
+    assert "id" not in message_item
+
+
+# ---------------------------------------------------------------------------
+# _preflight_codex_api_kwargs — built-in (provider-executed) tools must pass
+# through validation.  Regression guard for the xAI native web_search
+# injection: the preflight validator previously rejected any tool whose
+# ``type != "function"`` with "unsupported type", which would 400 every xAI
+# turn once the native web_search tool is declared.
+# ---------------------------------------------------------------------------
+
+
+def test_preflight_passes_native_web_search_tool_through():
+    kwargs = {
+        "model": "grok-composer-2.5-fast",
+        "instructions": "You are helpful.",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "store": False,
+        "tools": [
+            {"type": "function", "name": "read_file", "description": "Read.",
+             "parameters": {"type": "object", "properties": {}}},
+            {"type": "web_search"},
+        ],
+    }
+    out = _preflight_codex_api_kwargs(kwargs, allow_stream=True)
+    tools = out["tools"]
+    assert {"type": "web_search"} in tools
+    assert any(t.get("type") == "function" and t.get("name") == "read_file" for t in tools)
+
+
+def test_preflight_still_rejects_unknown_tool_type():
+    kwargs = {
+        "model": "grok-composer-2.5-fast",
+        "instructions": "You are helpful.",
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "hi"}]}],
+        "store": False,
+        "tools": [{"type": "totally_made_up_tool"}],
+    }
+    with pytest.raises(ValueError, match="unsupported type"):
+        _preflight_codex_api_kwargs(kwargs, allow_stream=True)
 
 
 # ---------------------------------------------------------------------------

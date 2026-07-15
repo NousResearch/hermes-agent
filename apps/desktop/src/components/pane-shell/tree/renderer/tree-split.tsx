@@ -144,8 +144,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
     // zone). Same largest-tenant basis as the track size — never per-tab.
     const all = shownIds.map(id => (paneFor(id)?.data ?? {}) as PaneSizing)
 
-    const cap = (pick: (s: PaneSizing) => string | undefined) =>
-      all.every(pick) ? cssMax(all.map(pick)) : undefined
+    const cap = (pick: (s: PaneSizing) => string | undefined) => (all.every(pick) ? cssMax(all.map(pick)) : undefined)
 
     return {
       minWidth: cssMax(all.map(s => s.minWidth)),
@@ -457,9 +456,7 @@ export function TreeSplit({ node, root, rootRow }: { node: SplitNode; root?: boo
                       // gracefully on tight windows, floored by min-width);
                       // everything else splits the leftover by weight. In an
                       // all-fixed run the last track grows into the leftover.
-                      flex: track
-                        ? `${i === absorberIndex ? 1 : 0} 1 ${track}`
-                        : `${grow(i)} ${grow(i)} 0px`,
+                      flex: track ? `${i === absorberIndex ? 1 : 0} 1 ${track}` : `${grow(i)} ${grow(i)} 0px`,
                       // Pane-declared clamps apply along THIS split's axis only
                       // (a rail's width clamp shouldn't constrain its height).
                       // The absorber drops its max clamp — it exists to fill

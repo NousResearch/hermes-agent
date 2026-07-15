@@ -177,7 +177,13 @@ export { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 export { Textarea } from '@/components/ui/textarea'
 export { Tip, Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 export type { GatewayEventListener } from '@/contrib/events'
-export type { HermesPlugin, PluginContext, PluginContribution, PluginRestOptions, PluginStorage } from '@/contrib/plugin'
+export type {
+  HermesPlugin,
+  PluginContext,
+  PluginContribution,
+  PluginRestOptions,
+  PluginStorage
+} from '@/contrib/plugin'
 
 // -- contracts ----------------------------------------------------------------
 

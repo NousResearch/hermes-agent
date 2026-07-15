@@ -3157,3 +3157,101 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPerCallCredentialOverride(unittest.TestCase):
+    """Tests for _resolve_per_call_credentials and the per-call override path."""
+
+    def test_resolve_model_only_no_provider(self):
+        """When provider is None, _resolve_per_call_credentials returns model-only
+        with None providers/credentials so _build_child_agent inherits parent."""
+        from tools.delegate_tool import _resolve_per_call_credentials
+
+        result = _resolve_per_call_credentials(model="deepseek-v4-flash")
+        self.assertEqual(result["model"], "deepseek-v4-flash")
+        self.assertIsNone(result["provider"])
+        self.assertIsNone(result["base_url"])
+        self.assertIsNone(result["api_key"])
+        self.assertIsNone(result["api_mode"])
+
+    def test_resolve_model_with_provider_no_profile(self):
+        """When provider is set but profile is None, the function attempts
+        to resolve from the default profile directories and returns whatever
+        it finds (or None values if nothing is configured)."""
+        from tools.delegate_tool import _resolve_per_call_credentials
+
+        result = _resolve_per_call_credentials(
+            model="deepseek-v4-flash",
+            provider="opencode-go",
+        )
+        self.assertEqual(result["model"], "deepseek-v4-flash")
+        self.assertEqual(result["provider"], "opencode-go")
+        # base_url/api_key/api_mode may be None if not configured — that's fine
+
+    def test_resolve_model_with_provider_explicitly(self):
+        """Passing both model and provider should resolve the provider."""
+        from tools.delegate_tool import _resolve_per_call_credentials
+
+        result = _resolve_per_call_credentials(
+            model="mimo-v2-5-pro",
+            provider="opencode-go",
+            profile="default",
+        )
+        self.assertEqual(result["model"], "mimo-v2-5-pro")
+        self.assertEqual(result["provider"], "opencode-go")
+
+    def test_resolve_returns_dict_compatible_with_delegation_creds(self):
+        """The return shape must have all keys that _build_child_agent expects."""
+        from tools.delegate_tool import _resolve_per_call_credentials
+
+        result = _resolve_per_call_credentials(
+            model="test-model",
+            provider="test-provider",
+        )
+        required_keys = {
+            "model", "provider", "base_url", "api_key", "api_mode",
+            "request_overrides", "max_output_tokens", "command", "args",
+        }
+        self.assertEqual(set(result.keys()), required_keys)
+
+    def test_resolve_nonexistent_profile_falls_back(self):
+        """When the named profile doesn't exist, _resolve_per_call_credentials
+        should still work — returning None values from the default profile
+        rather than crashing."""
+        from tools.delegate_tool import _resolve_per_call_credentials
+
+        result = _resolve_per_call_credentials(
+            model="test-model",
+            provider="opencode-go",
+            profile="nonexistent-profile-that-will-never-exist-12345",
+        )
+        self.assertEqual(result["model"], "test-model")
+        self.assertEqual(result["provider"], "opencode-go")
+        # base_url/api_key/api_mode will be None since the profile doesn't
+        # have a config.yaml / .env — graceful degradation, not a crash.
+
+    def test_empty_model_is_not_an_override(self):
+        """An empty string for model should not trigger the override path.
+        The guard ``if model:`` in delegate_task() handles this — empty string
+        is falsy, so the existing delegation config path runs unchanged."""
+        from tools.delegate_tool import _resolve_per_call_credentials
+
+        result = _resolve_per_call_credentials(model="")
+        self.assertEqual(result["model"], "")
+
+    def test_delegate_task_accepts_model_param(self):
+        """delegate_task must accept 'model' in its signature."""
+        import inspect
+        from tools.delegate_tool import delegate_task
+
+        sig = inspect.signature(delegate_task)
+        self.assertIn("model", sig.parameters)
+        self.assertIn("provider", sig.parameters)
+        self.assertIn("profile", sig.parameters)
+
+    def test_DELEGATE_TASK_SCHEMA_has_model_fields(self):
+        """The static schema must advertise model/provider/profile."""
+        schema_props = DELEGATE_TASK_SCHEMA["parameters"]["properties"]
+        self.assertIn("model", schema_props)
+        self.assertIn("provider", schema_props)
+        self.assertIn("profile", schema_props)

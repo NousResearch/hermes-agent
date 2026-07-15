@@ -3208,6 +3208,17 @@ def _resolve_per_call_credentials(
     Returns a dict: {model, provider, base_url, api_key, api_mode}
     Compatible with the shape returned by _resolve_delegation_credentials
     so the caller can swap the result in.
+
+    Examples:
+        >>> _resolve_per_call_credentials(model="deepseek-v4-flash")
+        {...}  # model-only override, inherits parent's provider
+
+        >>> _resolve_per_call_credentials(
+        ...     model="mimo-v2-5-pro",
+        ...     provider="opencode-go",
+        ...     profile="coder",
+        ... )
+        {...}  # full override: model, provider, and profile credentials
     """
     from pathlib import Path
 

@@ -38,18 +38,38 @@ validate_yaml() {
   fi
 }
 
+check_field() {
+  local path="$1" field="$2" label="$3"
+  if $PY "
+import yaml; c=yaml.safe_load(open('$path'))
+keys='$field'.split('.'); v=c
+for k in keys: v=v.get(k,{})
+print('found' if v else 'missing')
+" 2>/dev/null | grep -q found; then
+    ok "${label}: $field present"
+  else
+    err "${label}: $field missing"
+  fi
+}
+
 echo "=== Config Validation ==="
 echo ""
 
 echo "--- Main config ---"
-validate_yaml "${HERMES_HOME}/config.yaml" "config.yaml"
+if validate_yaml "${HERMES_HOME}/config.yaml" "config.yaml"; then
+  check_field "${HERMES_HOME}/config.yaml" "model.default" "config.yaml"
+  check_field "${HERMES_HOME}/config.yaml" "model.provider" "config.yaml"
+fi
 echo ""
 
 echo "--- Profile configs ---"
 for pdir in "${HERMES_HOME}"/profiles/*/; do
   [ -d "$pdir" ] || continue
   name=$(basename "$pdir")
-  validate_yaml "${pdir}config.yaml" "${name}/config.yaml"
+  if validate_yaml "${pdir}config.yaml" "${name}/config.yaml"; then
+    check_field "${pdir}config.yaml" "model.default" "${name}/config.yaml"
+    check_field "${pdir}config.yaml" "model.provider" "${name}/config.yaml"
+  fi
   for f in "profile.yaml" "SOUL.md" "gateway_state.json"; do
     [ -f "${pdir}${f}" ] && ok "${name}: $f exists" || warn "${name}: $f missing"
   done

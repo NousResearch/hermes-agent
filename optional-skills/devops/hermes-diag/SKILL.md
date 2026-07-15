@@ -2,7 +2,7 @@
 name: hermes-diag
 description: One-shot Hermes diagnostics — check profiles, gateways, configs, disk, memory, and recent errors.
 version: 1.0.0
-author: Hermes Agent
+author: Vijay Selvaraj (vijays365), Hermes Agent
 license: MIT
 platforms: [linux]
 metadata:
@@ -39,7 +39,7 @@ Single command to assess overall Hermes system health. Checks gateways, configs,
 ## Usage
 
 ```bash
-bash $HERMES_HOME/skills/optional-skills/devops/hermes-diag/scripts/hermes-diag.sh
+bash $HERMES_HOME/skills/devops/hermes-diag/scripts/hermes-diag.sh
 ```
 
 The script uses `$HERMES_HOME` (defaults to `~/.hermes`).
@@ -94,6 +94,6 @@ Color-coded with emoji indicators:
 
 ## Verification Checklist
 
-- [ ] Run `bash $HERMES_HOME/skills/optional-skills/devops/hermes-diag/scripts/hermes-diag.sh`
+- [ ] Run `bash $HERMES_HOME/skills/devops/hermes-diag/scripts/hermes-diag.sh`
 - [ ] Confirm all checks return ✅ or acceptable ⚠️
 - [ ] Verify the exit code matches the expected system state (0 for clean)

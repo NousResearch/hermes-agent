@@ -5,6 +5,7 @@ CONFIGURATION — edit these values at the top of the file before first use.
 """
 
 import json
+import os
 import subprocess
 import urllib.request
 
@@ -86,7 +87,6 @@ def send_email(subject, body):
 
 
 def main():
-    import os  # noqa — used inside send_email
 
     nproc = get_nproc()
     load_1, load_5, load_15 = get_cpu_load()

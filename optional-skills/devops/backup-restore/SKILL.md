@@ -2,7 +2,7 @@
 name: backup-restore
 description: Create dated tarball backups of Hermes configs, profiles, and skills, pushed to git.
 version: 1.0.0
-author: Hermes Agent
+author: Vijay Selvaraj (vijays365), Hermes Agent
 license: MIT
 platforms: [linux, macos]
 metadata:
@@ -46,13 +46,13 @@ Create dated tarball backups of your Hermes setup and push them to a git remote.
 ### Manual run
 
 ```bash
-bash $HERMES_HOME/skills/optional-skills/devops/backup-restore/scripts/backup.sh
+bash $HERMES_HOME/skills/devops/backup-restore/scripts/backup.sh
 ```
 
 ### Weekly cron
 
 ```bash
-cronjob(action='create', script='$HERMES_HOME/skills/optional-skills/devops/backup-restore/scripts/backup.sh', no_agent=True, schedule='0 2 * * 0')
+cronjob(action='create', script='$HERMES_HOME/skills/devops/backup-restore/scripts/backup.sh', no_agent=True, schedule='0 2 * * 0')
 ```
 
 ## What the script does

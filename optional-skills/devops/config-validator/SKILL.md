@@ -2,7 +2,7 @@
 name: config-validator
 description: Validate all Hermes YAML config files — syntax, structure, profiles, gateway states, skills.
 version: 1.0.0
-author: Hermes Agent
+author: Vijay Selvaraj (vijays365), Hermes Agent
 license: MIT
 platforms: [linux, macos]
 metadata:
@@ -38,7 +38,7 @@ Validate all Hermes configuration YAML files for structural and semantic correct
 ## Usage
 
 ```bash
-bash $HERMES_HOME/skills/optional-skills/devops/config-validator/scripts/validate-config.sh
+bash $HERMES_HOME/skills/devops/config-validator/scripts/validate-config.sh
 ```
 
 Uses `$HERMES_HOME` (defaults to `~/.hermes`).
@@ -86,7 +86,7 @@ Exit codes: 0 (clean), 1 (warnings), 2 (errors).
 
 ## Verification Checklist
 
-- [ ] Run `bash $HERMES_HOME/skills/optional-skills/devops/config-validator/scripts/validate-config.sh`
+- [ ] Run `bash $HERMES_HOME/skills/devops/config-validator/scripts/validate-config.sh`
 - [ ] Confirm exit code is 0 (all clean)
 - [ ] Verify all profiles are listed and pass
 - [ ] Break a config file intentionally and confirm the error is caught

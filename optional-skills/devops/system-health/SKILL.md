@@ -2,7 +2,7 @@
 name: system-health
 description: VPS system health monitoring — collect memory, CPU, disk stats and optionally email reports.
 version: 1.0.0
-author: Hermes Agent
+author: Vijay Selvaraj (vijays365), Hermes Agent
 license: MIT
 platforms: [linux]
 metadata:
@@ -37,7 +37,7 @@ ps aux --sort=-%mem | head -6
 
 ## Automated reporting script
 
-A standalone Python script at `$HERMES_HOME/skills/optional-skills/devops/system-health/scripts/system-health-report.py` collects all stats and sends an email report.
+A standalone Python script at `$HERMES_HOME/skills/devops/system-health/scripts/system-health-report.py` collects all stats and sends an email report.
 
 ### Metrics and thresholds
 
@@ -62,7 +62,7 @@ Edit the top of the script to set:
 ### Cron usage
 
 ```bash
-cronjob(action='create', script='$HERMES_HOME/skills/optional-skills/devops/system-health/scripts/system-health-report.py', no_agent=True, schedule='0 8 * * 2,5')
+cronjob(action='create', script='$HERMES_HOME/skills/devops/system-health/scripts/system-health-report.py', no_agent=True, schedule='0 8 * * 2,5')
 ```
 
 The script is self-contained — no LLM tokens needed on each run.
@@ -98,6 +98,6 @@ USER       PID %CPU %MEM ...
 
 ## Verification Checklist
 
-- [ ] Run `python3 $HERMES_HOME/skills/optional-skills/devops/system-health/scripts/system-health-report.py` and confirm stats are printed
+- [ ] Run `python3 $HERMES_HOME/skills/devops/system-health/scripts/system-health-report.py` and confirm stats are printed
 - [ ] Check an email arrives at the configured recipient
 - [ ] Verify the subject line includes ✅ (normal) or ⚠️ (warning)

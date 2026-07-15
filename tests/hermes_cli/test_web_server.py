@@ -1370,6 +1370,172 @@ class TestWebServerEndpoints:
         restored = self.client.get("/api/sessions").json()
         assert any(s["id"] == "arch-me" for s in restored["sessions"])
 
+    def test_bulk_archive_endpoint_preserves_ids_and_recent_live_sessions(self):
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        def _seed(db, sid: str, last_active: float, *, ended: bool = True):
+            db.create_session(session_id=sid, source="cli")
+            db.append_message(session_id=sid, role="user", content=f"hello {sid}")
+            if ended:
+                db.end_session(sid, end_reason="done")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (last_active - 10, last_active if ended else None, sid),
+            )
+            db._conn.execute(
+                "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+                (last_active, sid),
+            )
+
+        now = _time.time()
+        db = SessionDB()
+        try:
+            _seed(db, "pinned", now - 500)
+            _seed(db, "current", now - 400)
+            _seed(db, "recent-live", now, ended=False)
+            _seed(db, "old-a", now - 300)
+            _seed(db, "old-b", now - 200)
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.post(
+            "/api/sessions/bulk-archive",
+            json={
+                "preserve_ids": ["pinned", "current"],
+                "min_messages": 1,
+                "active_grace_seconds": 300,
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "archived": 2}
+
+        listed = self.client.get("/api/sessions?limit=10").json()["sessions"]
+        listed_ids = {s["id"] for s in listed}
+        assert {"pinned", "current", "recent-live"}.issubset(listed_ids)
+        assert "old-a" not in listed_ids
+        assert "old-b" not in listed_ids
+
+        archived = self.client.get(
+            "/api/sessions?archived=only&limit=10"
+        ).json()["sessions"]
+        archived_ids = {s["id"] for s in archived}
+        assert {"old-a", "old-b"}.issubset(archived_ids)
+        assert "pinned" not in archived_ids
+        assert "current" not in archived_ids
+        assert "recent-live" not in archived_ids
+
+    def test_bulk_archive_endpoint_archives_open_ended_rows_by_default(self):
+        import time as _time
+
+        from hermes_state import SessionDB
+
+        now = _time.time()
+        db = SessionDB()
+        try:
+            db.create_session(session_id="stale-open", source="cli")
+            db.append_message(session_id="stale-open", role="user", content="hello")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (now - 10, None, "stale-open"),
+            )
+            db._conn.execute(
+                "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+                (now, "stale-open"),
+            )
+            db._conn.commit()
+        finally:
+            db.close()
+
+        resp = self.client.post(
+            "/api/sessions/bulk-archive",
+            json={"preserve_ids": [], "min_messages": 1},
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "archived": 1}
+
+        listed = self.client.get("/api/sessions?limit=10").json()["sessions"]
+        assert "stale-open" not in {s["id"] for s in listed}
+
+        archived = self.client.get(
+            "/api/sessions?archived=only&limit=10"
+        ).json()["sessions"]
+        assert "stale-open" in {s["id"] for s in archived}
+
+    def test_bulk_archive_endpoint_archives_all_profile_scope(self):
+        import time as _time
+
+        from hermes_constants import get_hermes_home
+        from hermes_cli.profiles import get_profile_dir
+        from hermes_state import SessionDB
+
+        def _seed(db, sid: str, last_active: float):
+            db.create_session(session_id=sid, source="cli")
+            db.append_message(session_id=sid, role="user", content=f"hello {sid}")
+            db.end_session(sid, end_reason="done")
+            db._conn.execute(
+                "UPDATE sessions SET started_at = ?, ended_at = ? WHERE id = ?",
+                (last_active - 10, last_active, sid),
+            )
+            db._conn.execute(
+                "UPDATE messages SET timestamp = ? WHERE session_id = ?",
+                (last_active, sid),
+            )
+
+        def _archived_ids(db_path=None):
+            kwargs = {"db_path": db_path} if db_path is not None else {}
+            db = SessionDB(**kwargs)
+            try:
+                rows = db.list_sessions_rich(
+                    limit=20,
+                    min_message_count=1,
+                    include_archived=False,
+                    archived_only=True,
+                )
+                return {row["id"] for row in rows}
+            finally:
+                db.close()
+
+        now = _time.time()
+        get_hermes_home().mkdir(parents=True, exist_ok=True)
+        profile_dir = get_profile_dir("research")
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        profile_db = profile_dir / "state.db"
+
+        default_db = SessionDB()
+        try:
+            _seed(default_db, "default-old", now - 500)
+            _seed(default_db, "default-keep", now - 400)
+            default_db._conn.commit()
+        finally:
+            default_db.close()
+
+        named_db = SessionDB(db_path=profile_db)
+        try:
+            _seed(named_db, "research-old", now - 300)
+            _seed(named_db, "research-keep", now - 200)
+            named_db._conn.commit()
+        finally:
+            named_db.close()
+
+        resp = self.client.post(
+            "/api/sessions/bulk-archive",
+            json={
+                "preserve_ids": ["default-keep", "research-keep"],
+                "min_messages": 1,
+                "profile": "__all__",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "archived": 2}
+        assert _archived_ids() == {"default-old"}
+        assert _archived_ids(profile_db) == {"research-old"}
+
     def test_patch_session_without_fields_is_400(self):
         """An existing session + empty body is a bad request, not a 404."""
         from hermes_state import SessionDB

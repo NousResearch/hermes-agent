@@ -256,6 +256,27 @@ export async function listAllProfileSessions(
   }
 }
 
+export function bulkArchiveSessions(
+  preserveIds: string[] = [],
+  profile?: null | string
+): Promise<{ ok: boolean; archived: number }> {
+  const body: { preserve_ids: string[]; profile?: string } = {
+    preserve_ids: Array.from(new Set(preserveIds.filter(Boolean))).slice(0, 5000)
+  }
+
+  const scopedProfile = profile?.trim()
+
+  if (scopedProfile) {
+    body.profile = scopedProfile
+  }
+
+  return window.hermesDesktop.api<{ ok: boolean; archived: number }>({
+    path: '/api/sessions/bulk-archive',
+    method: 'POST',
+    body
+  })
+}
+
 // Mutations take the owning `profile` so Electron routes them to that profile's
 // backend (remote pool or local primary) via request.profile — matching the
 // read path. A remote session's row lives only on its remote host, so a mutation

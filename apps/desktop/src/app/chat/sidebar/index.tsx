@@ -7,6 +7,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { PlatformAvatar } from '@/app/messaging/platform-icon'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle
+} from '@/components/ui/dialog'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { KbdGroup } from '@/components/ui/kbd'
 import { SearchField } from '@/components/ui/search-field'
@@ -19,6 +27,7 @@ import {
   SidebarMenuButton,
   SidebarMenuItem
 } from '@/components/ui/sidebar'
+import { Tip } from '@/components/ui/tooltip'
 import { searchSessions, type SessionInfo, type SessionSearchResult } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { comboTokens } from '@/lib/keybinds/combo'
@@ -204,6 +213,7 @@ interface ChatSidebarProps extends React.ComponentProps<typeof Sidebar> {
   onLoadMoreSessions: () => Promise<void> | void
   onLoadMoreProfileSessions?: (profile: string) => Promise<void> | void
   onLoadMoreMessaging?: (platform: string) => Promise<void> | void
+  onArchiveAllSessions: () => Promise<void> | void
   onResumeSession: (sessionId: string) => void
   onDeleteSession: (sessionId: string) => void
   onArchiveSession: (sessionId: string) => void
@@ -219,6 +229,7 @@ export function ChatSidebar({
   onLoadMoreSessions,
   onLoadMoreProfileSessions,
   onLoadMoreMessaging,
+  onArchiveAllSessions,
   onResumeSession,
   onDeleteSession,
   onArchiveSession,
@@ -285,6 +296,8 @@ export function ChatSidebar({
   // Per-platform count of rows currently revealed (starts at NON_SESSION_INITIAL_ROWS).
   const [messagingVisible, setMessagingVisible] = useState<Record<string, number>>({})
   const searchInputRef = useRef<HTMLInputElement>(null)
+  const [archiveAllOpen, setArchiveAllOpen] = useState(false)
+  const [archiveAllSubmitting, setArchiveAllSubmitting] = useState(false)
   const trimmedQuery = searchQuery.trim()
 
   // Hotkey (session.focusSearch) → focus the field once it's mounted.
@@ -914,6 +927,25 @@ export function ChatSidebar({
   const hasMoreSessions = knownSessionTotal > loadedSessionCount
 
   const recentsMeta = countLabel(displayAgentSessions.length, knownSessionTotal)
+  const archiveAllDisabled = sessionsLoading || agentSessions.length === 0 || archiveAllSubmitting
+
+  const handleArchiveAll = async () => {
+    if (archiveAllSubmitting) {
+      return
+    }
+
+    setArchiveAllSubmitting(true)
+
+    try {
+      await onArchiveAllSessions()
+      setArchiveAllOpen(false)
+    } catch {
+      // The caller owns the error toast/rollback; keep the dialog open.
+    } finally {
+      setArchiveAllSubmitting(false)
+    }
+  }
+
   const displayRecentsCountRef = useRef(0)
   const loadedRecentsCountRef = useRef(0)
   displayRecentsCountRef.current = displayAgentSessions.length
@@ -1247,6 +1279,30 @@ export function ChatSidebar({
                     </div>
                   ) : (
                     <div className="flex shrink-0 items-center gap-0.5">
+                      <div className="grid size-6 shrink-0 place-items-center">
+                        {!showAllProfiles && agentSessions.length > 0 ? (
+                          <Tip label="Archive all sessions">
+                            <Button
+                              aria-label="Archive all unpinned sessions"
+                              className="text-(--ui-text-tertiary) opacity-70 hover:bg-(--ui-control-hover-background) hover:text-foreground hover:opacity-100 focus-visible:opacity-100"
+                              disabled={archiveAllDisabled}
+                              onClick={event => {
+                                event.stopPropagation()
+                                setSidebarRecentsOpen(true)
+                                setArchiveAllOpen(true)
+                              }}
+                              size="icon-xs"
+                              variant="ghost"
+                            >
+                              <Codicon
+                                name={archiveAllSubmitting ? 'loading' : 'archive'}
+                                size="0.75rem"
+                                spinning={archiveAllSubmitting}
+                              />
+                            </Button>
+                          </Tip>
+                        ) : null}
+                      </div>
                       {!showAllProfiles ? (
                         <Button
                           aria-label={agentsGrouped ? s.projects.newButton : s.nav['new-session']}
@@ -1401,7 +1457,49 @@ export function ChatSidebar({
         )}
       </SidebarContent>
       <ProjectDialog />
+      <ArchiveAllSessionsDialog
+        count={knownSessionTotal}
+        onConfirm={handleArchiveAll}
+        onOpenChange={setArchiveAllOpen}
+        open={archiveAllOpen}
+        submitting={archiveAllSubmitting}
+      />
     </Sidebar>
+  )
+}
+
+interface ArchiveAllSessionsDialogProps {
+  count: number
+  open: boolean
+  onConfirm: () => void | Promise<void>
+  onOpenChange: (open: boolean) => void
+  submitting: boolean
+}
+
+function ArchiveAllSessionsDialog({ count, open, onConfirm, onOpenChange, submitting }: ArchiveAllSessionsDialogProps) {
+  return (
+    <Dialog onOpenChange={onOpenChange} open={open}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle>Archive all sessions</DialogTitle>
+          <DialogDescription>
+            Archive unpinned sessions from the sidebar. Pinned chats, the current chat, and running sessions stay
+            visible.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="rounded-md border border-(--ui-stroke-tertiary) bg-(--ui-control-background) px-3 py-2 text-xs text-(--ui-text-secondary)">
+          {count > 0 ? `${count} visible session${count === 1 ? '' : 's'} will be checked.` : 'No sessions to archive.'}
+        </div>
+        <DialogFooter>
+          <Button disabled={submitting} onClick={() => onOpenChange(false)} type="button" variant="ghost">
+            Cancel
+          </Button>
+          <Button disabled={submitting} onClick={() => void onConfirm()} type="button" variant="destructive">
+            {submitting ? 'Archiving...' : 'Archive all'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 

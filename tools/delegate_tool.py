@@ -1076,6 +1076,48 @@ def _inherit_parent_base_url(parent_agent, fallback_base_url: Optional[str]) -> 
     return fallback_base_url or None
 
 
+def _apply_schema_trim(child, trim_level: str) -> None:
+    """Trim child agent's tool schema in-place based on profile trim level.
+
+    'aggressive': keep only essential tools (terminal, file, read/write/patch/search/delegate)
+    'moderate': keep common tools, remove media/UI/vision/image tools
+    'none': no trimming (default)
+    """
+    if not trim_level or trim_level == "none":
+        return
+
+    # Essential tool names — always keep
+    ESSENTIAL = {
+        "read_file", "search_files", "write_file", "patch",
+        "terminal", "delegate_task",
+    }
+
+    # Moderate trim: keep common tools, remove heavy/rare ones
+    MODERATE_REMOVE = {
+        "image_generate", "vision_analyze", "computer_use",
+        "text_to_speech", "cronjob", "x_search", "session_search",
+    }
+
+    try:
+        tools = getattr(child, "tools", None) or []
+        if not tools:
+            return
+
+        if trim_level == "aggressive":
+            child.tools = [t for t in tools if t.get("name") in ESSENTIAL]
+        elif trim_level == "moderate":
+            child.tools = [t for t in tools if t.get("name") not in MODERATE_REMOVE]
+
+        # Rebuild valid_tool_names so the tool dispatcher sees trimmed set
+        child.valid_tool_names = [t["name"] for t in child.tools]
+        logger.debug(
+            "Schema trimmed (%s): %d → %d tools",
+            trim_level, len(tools), len(child.tools),
+        )
+    except Exception as exc:
+        logger.debug("Schema trim failed (%s): %s", trim_level, exc)
+
+
 def _build_child_agent(
     task_index: int,
     goal: str,
@@ -1380,6 +1422,9 @@ def _build_child_agent(
     child._delegate_role = effective_role
     # Stash profile-driven settings for schema trimming
     child._delegate_schema_trim = _profile_schema_trim
+    # Apply schema trimming — reduce tool surface sent to child every turn
+    if _profile_schema_trim and _profile_schema_trim != "none":
+        _apply_schema_trim(child, _profile_schema_trim)
     # Stash subagent identity for nested-delegation event propagation and
     # for _run_single_child / interrupt_subagent to look up by id.
     child._subagent_id = subagent_id

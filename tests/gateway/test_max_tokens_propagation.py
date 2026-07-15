@@ -254,12 +254,12 @@ def test_resolve_configured_max_tokens_helper(isolated_home, monkeypatch):
     write_cfg("model:\n  default: glm-5.1\n  provider: openrouter\n")
     grun = fresh_gateway()
 
-    assert grun._resolve_configured_max_tokens(12000) == 12000
-    assert grun._resolve_configured_max_tokens(None) is None
-    assert grun._resolve_configured_max_tokens(0) is None
-    assert grun._resolve_configured_max_tokens("x") is None
+    assert grun.resolve_configured_max_tokens(12000) == 12000
+    assert grun.resolve_configured_max_tokens(None) is None
+    assert grun.resolve_configured_max_tokens(0) is None
+    assert grun.resolve_configured_max_tokens("x") is None
     monkeypatch.setenv("HERMES_MAX_TOKENS", "2048")
-    assert grun._resolve_configured_max_tokens(12000) == 2048
+    assert grun.resolve_configured_max_tokens(12000) == 2048
 
 
 def test_cli_credential_resolution_lifts_provider_cap(isolated_home, monkeypatch):

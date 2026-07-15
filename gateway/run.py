@@ -2065,37 +2065,7 @@ _CONVERSATION_SCOPED_STATE: tuple = (
 _UNSET = object()
 
 
-def _resolve_configured_max_tokens(runtime_max_output_tokens=None) -> Optional[int]:
-    """Resolve the global output-token cap for gateway-created agents.
-
-    Priority: ``HERMES_MAX_TOKENS`` env > ``model.max_tokens`` (config.yaml)
-    > the resolved provider's ``max_output_tokens`` (``providers:`` /
-    ``custom_providers:`` block). Returns None when nothing is configured —
-    the transport then falls back to the provider *profile* default, which
-    for the ``custom`` profile is a generous 65536 floor. Every agent-creation
-    path must route through this resolution; paths that dropped it handed
-    custom-endpoint sessions that 65536 floor regardless of the operator's
-    configured cap.
-    """
-    max_tokens = None
-    _env_mt = os.environ.get("HERMES_MAX_TOKENS")
-    if _env_mt:
-        try:
-            max_tokens = int(_env_mt)
-        except (ValueError, TypeError):
-            max_tokens = None
-    else:
-        from hermes_cli.runtime_provider import _get_model_config
-
-        model_cfg = _get_model_config()
-        if isinstance(model_cfg, dict):
-            mt = model_cfg.get("max_tokens")
-            if isinstance(mt, int):
-                max_tokens = mt
-    if max_tokens is None:
-        if isinstance(runtime_max_output_tokens, int) and runtime_max_output_tokens > 0:
-            max_tokens = runtime_max_output_tokens
-    return max_tokens
+from hermes_cli.runtime_provider import resolve_configured_max_tokens
 
 
 def _resolve_runtime_agent_kwargs() -> dict:
@@ -2135,7 +2105,7 @@ def _resolve_runtime_agent_kwargs() -> dict:
     except Exception as exc:
         raise RuntimeError(format_runtime_provider_error(exc)) from exc
 
-    max_tokens = _resolve_configured_max_tokens(runtime.get("max_output_tokens"))
+    max_tokens = resolve_configured_max_tokens(runtime.get("max_output_tokens"))
 
     return {
         "api_key": runtime.get("api_key"),
@@ -2169,7 +2139,7 @@ def _resolve_runtime_agent_kwargs_for_provider(provider: str) -> dict:
         "credential_pool": runtime.get("credential_pool"),
         # Without this, channel-override and /model-rehydrated sessions drop
         # the configured output cap and fall to the custom-profile 65536 floor.
-        "max_tokens": _resolve_configured_max_tokens(runtime.get("max_output_tokens")),
+        "max_tokens": resolve_configured_max_tokens(runtime.get("max_output_tokens")),
     }
 
 
@@ -4209,7 +4179,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "max_tokens": (
                     override.get("max_tokens")
                     if override.get("max_tokens") is not None
-                    else _resolve_configured_max_tokens(None)
+                    else resolve_configured_max_tokens(None)
                 ),
                 "credential_pool": override.get("credential_pool"),
             }

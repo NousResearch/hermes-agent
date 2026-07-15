@@ -5104,6 +5104,7 @@ def _make_agent(
         return synthetic
 
     from run_agent import AIAgent
+    from hermes_cli.runtime_provider import resolve_configured_max_tokens
 
     # MCP tool discovery runs in a background daemon thread at startup so a
     # dead server can't freeze the shell.  The agent snapshots its tool list
@@ -5221,6 +5222,7 @@ def _make_agent(
     _pr = _load_provider_routing()
     return AIAgent(
         model=model,
+        max_tokens=resolve_configured_max_tokens(runtime.get("max_output_tokens")),
         max_iterations=_cfg_max_turns(cfg, 90),
         provider=runtime.get("provider"),
         base_url=runtime.get("base_url"),

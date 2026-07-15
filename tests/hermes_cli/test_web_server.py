@@ -1469,6 +1469,45 @@ class TestWebServerEndpoints:
         assert row["is_default_profile"] is True
         assert isinstance(data.get("errors"), list)
 
+    def test_profiles_sessions_filters_to_requested_profile(self):
+        """The Desktop sidebar's profile-scoped slices must not leak rows from
+        sibling profiles when callers pass /api/profiles/sessions?profile=name."""
+        from hermes_state import SessionDB
+        from hermes_cli import profiles as profiles_mod
+
+        telegram_home = profiles_mod.get_profile_dir("telegram")
+        telegram_home.mkdir(parents=True)
+
+        default_db = SessionDB()
+        try:
+            default_db.create_session(session_id="default-chat", source="cli")
+            default_db.append_message("default-chat", role="user", content="default")
+        finally:
+            default_db.close()
+
+        telegram_db = SessionDB(db_path=telegram_home / "state.db")
+        try:
+            telegram_db.create_session(session_id="telegram-chat", source="telegram")
+            telegram_db.append_message("telegram-chat", role="user", content="telegram")
+        finally:
+            telegram_db.close()
+
+        default_resp = self.client.get("/api/profiles/sessions?profile=default&limit=20&min_messages=0")
+        assert default_resp.status_code == 200
+        default_ids = {s["id"] for s in default_resp.json()["sessions"]}
+        assert "default-chat" in default_ids
+        assert "telegram-chat" not in default_ids
+
+        telegram_resp = self.client.get("/api/profiles/sessions?profile=telegram&limit=20&min_messages=0")
+        assert telegram_resp.status_code == 200
+        telegram_rows = telegram_resp.json()["sessions"]
+        telegram_ids = {s["id"] for s in telegram_rows}
+        assert "telegram-chat" in telegram_ids
+        assert "default-chat" not in telegram_ids
+        row = next(s for s in telegram_rows if s["id"] == "telegram-chat")
+        assert row["profile"] == "telegram"
+        assert row["is_default_profile"] is False
+
     def test_profiles_sessions_rejects_unknown_archived_value(self):
         resp = self.client.get("/api/profiles/sessions?archived=bogus")
         assert resp.status_code == 400

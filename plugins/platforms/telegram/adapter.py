@@ -8259,9 +8259,13 @@ class TelegramAdapter(BasePlatformAdapter):
         """Return the resolved root directory guest media staging is confined to.
 
         The delivery-constraint prompt tells the LLM to stage downloads under
-        ``/cache/<subdir>/`` (translated to ``HERMES_HOME/cache/<subdir>`` on the
-        host by ``_translate_docker_path``), but that is only a prompt-level
-        instruction — nothing enforced it. A guest-triggered turn that is
+        ``HERMES_HOME/cache/<subdir>/`` — the same path on the sandbox and the
+        host, per the note in ``_handle_guest_message_update`` — but a sandbox
+        that instead exposes it as a container-relative cache path (e.g.
+        ``/root/.hermes/cache/<subdir>``) is translated back via
+        ``from_agent_visible_cache_path`` before this check runs. Either way,
+        that's only a prompt-level instruction — nothing enforced it. A
+        guest-triggered turn that is
         coerced (directly asked, or prompt-injected) into emitting
         ``MEDIA: /home/hermes/.hermes/auth.json`` or any other host path would
         otherwise have it staged and made deliverable to the guest chat with no
@@ -8295,7 +8299,19 @@ class TelegramAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="guest_no_staging: TELEGRAM_HOME_CHANNEL is not a valid chat id")
 
         _is_url = local_path.startswith("http://") or local_path.startswith("https://")
-        _resolved_path = local_path if _is_url else self._translate_docker_path(local_path)
+        if _is_url:
+            _resolved_path = local_path
+        else:
+            from tools.credential_files import from_agent_visible_cache_path
+            # Same translate-then-contain pattern tools/image_source.py's
+            # _permitted_host_read_target() already uses for agent-visible
+            # cache paths: a no-op passthrough when the backend isn't Docker
+            # or the path isn't under a mounted cache dir (TERMINAL_ENV !=
+            # "docker", or an already-host-visible path some deployments
+            # write directly per the delivery-constraint note above) — the
+            # hard containment check below still gates the final result
+            # either way, so an unresolved passthrough just fails there.
+            _resolved_path = from_agent_visible_cache_path(local_path)
 
         if not _is_url:
             # Hard containment: reject anything outside the guest media root

@@ -128,9 +128,15 @@ else
   printf 'WARN %-28s ตรวจรุ่นล่าสุดจาก GitHub ไม่ได้\n' "shortcut_version"
 fi
 
+# เช็ค "กติกาสัญญา" ไม่เช็คเลขรุ่นตายตัว (บทเรียน 2026-07-15: pin 2.6 ค้างหลังไฟล์อัปเป็น 2.7
+# → RESULT: FAIL แบบเงียบทุกเครื่องทีม · ความสดของรุ่นมีด่าน shortcut_version เทียบ GitHub อยู่แล้ว)
 if [ -f "$REFS/use-new-chat.md" ]; then
-  grep -q 'version: "2.6"' "$REFS/use-new-chat.md" || pass=false
-  grep -q 'ห้ามเรียกรอบที่ 3' "$REFS/use-new-chat.md" || pass=false
+  if grep -q 'ห้ามเรียกรอบที่ 3' "$REFS/use-new-chat.md"; then
+    printf 'PASS %-28s %s\n' "new_chat_contract" "กติกาหยุด 2 รอบครบ"
+  else
+    printf 'FAIL %-28s %s\n' "new_chat_contract" "ไม่พบกติกาหยุด 2 รอบใน use-new-chat.md"
+    pass=false
+  fi
 fi
 
 echo ""

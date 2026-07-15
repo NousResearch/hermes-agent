@@ -555,4 +555,7 @@ def test_parse_session_key_too_short():
 
 def test_parse_session_key_wrong_prefix():
     assert _parse_session_key("cron:main:telegram:dm:123") is None
-    assert _parse_session_key("agent:cron:telegram:dm:123") is None
+    assert _parse_session_key("foo:bar:baz:dm:123") is None
+    # Named profiles are valid — "agent:coder:..." parses just like "agent:main:..."
+    result = _parse_session_key("agent:coder:telegram:dm:123")
+    assert result == {"platform": "telegram", "chat_type": "dm", "chat_id": "123"}

@@ -2571,8 +2571,16 @@ def terminal_tool(
                             _gw_user_id = _gse("HERMES_SESSION_USER_ID", "")
                             _gw_user_name = _gse("HERMES_SESSION_USER_NAME", "")
                             _gw_message_id = _gse("HERMES_SESSION_MESSAGE_ID", "")
+                            # Extract chat_type from session_key for routing.
+                            # Format: agent:<ns>:<platform>:<chat_type>:<chat_id>[:...]
+                            _gw_chat_type = ""
+                            if session_key:
+                                _parts = session_key.split(":")
+                                if len(_parts) >= 5 and _parts[0] == "agent" and _parts[1]:
+                                    _gw_chat_type = _parts[3]
                             proc_session.watcher_platform = _gw_platform
                             proc_session.watcher_chat_id = _gw_chat_id
+                            proc_session.watcher_chat_type = _gw_chat_type
                             proc_session.watcher_user_id = _gw_user_id
                             proc_session.watcher_user_name = _gw_user_name
                             proc_session.watcher_thread_id = _gw_thread_id
@@ -2610,6 +2618,7 @@ def terminal_tool(
                             "session_key": session_key,
                             "platform": proc_session.watcher_platform,
                             "chat_id": proc_session.watcher_chat_id,
+                            "chat_type": proc_session.watcher_chat_type,
                             "user_id": proc_session.watcher_user_id,
                             "user_name": proc_session.watcher_user_name,
                             "thread_id": proc_session.watcher_thread_id,

@@ -1,0 +1,62 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+#
+# Schema version 1.
+manifest_version: 1
+
+name: piprail
+description: Pay x402 "402 Payment Required" URLs autonomously with a budget-bound, self-custodial
+  crypto wallet across many chains (EVM, Solana, TON, Tron, NEAR, Sui, Aptos, Algorand, Stellar,
+  XRPL). No fee, no hosted facilitator — funds settle straight to the merchant, verified locally
+  against your own RPC.
+source: https://github.com/piprail/piprail
+
+transport:
+  type: stdio
+  command: "npx"
+  # Pinned, reviewed release — the catalog never floats a package (a bare
+  # `@piprail/mcp` would `npx` whatever is latest, i.e. unreviewed, at install
+  # time). Bumping the pin is a new reviewed PR, exactly like any transport ref.
+  args: ["-y", "@piprail/mcp@0.9.0"]
+  version: "0.9.0"
+  # Explicit subprocess env mapping. Hermes writes this into
+  # mcp_servers.piprail.env verbatim; the ${PIPRAIL_PRIVATE_KEY} reference is
+  # resolved at connect time from ~/.hermes/.env, so the wallet key stays in
+  # .env and never lands in config.yaml. Without this mapping the prompted key
+  # would sit in .env but never reach the (stdio) server process — leaving the
+  # install permanently read-only.
+  env:
+    PIPRAIL_PRIVATE_KEY: "${PIPRAIL_PRIVATE_KEY}"
+
+# PIPRAIL_PRIVATE_KEY is a self-custodial WALLET key, NOT an API key. It is OPTIONAL:
+# @piprail/mcp boots KEY-LESS in read-only mode (discover/quote/register/budget/guide all
+# work). pay/plan require the key (else they return WALLET_REQUIRED). The auth block below
+# prompts for it and saves it to ~/.hermes/.env; the transport.env mapping above is what
+# actually forwards it into the server process.
+auth:
+  type: api_key
+  env:
+    - name: PIPRAIL_PRIVATE_KEY
+      prompt: "PipRail wallet private key (self-custodial; leave blank for read-only — discover/quote work, pay/plan disabled)"
+      required: false
+      secret: true
+
+tools:
+  default_enabled:
+    - piprail_discover
+    - piprail_quote_payment
+    - piprail_plan_payment
+    - piprail_pay_request
+    - piprail_register
+    - piprail_budget
+    - piprail_guide
+    - piprail_verify_receipt
+
+post_install: |
+  PipRail pays x402 URLs from a self-custodial wallet you control — funds go straight to the
+  merchant, verified locally against your own RPC. No hosted facilitator, no fee.
+
+  PIPRAIL_PRIVATE_KEY is a WALLET key, never an API key. With no key, PipRail runs read-only
+  (discover/quote work; pay/plan return WALLET_REQUIRED). Set the key to let the agent pay —
+  every payment is bounded by a spend policy (PIPRAIL_MAX_AMOUNT / PIPRAIL_MAX_TOTAL) the model
+  cannot exceed. Start a new Hermes session to load the tools.

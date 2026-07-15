@@ -2819,6 +2819,30 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
                     )
                     _is_stream_parse_err = agent._is_provider_stream_parse_error(e)
                     _is_empty_stream = isinstance(e, EmptyStreamError)
+                    if (
+                        agent.api_mode == "anthropic_messages"
+                        and _is_empty_stream
+                        and not deltas_were_sent["yes"]
+                    ):
+                        from agent.anthropic_adapter import _is_oci_anthropic_endpoint
+
+                        if _is_oci_anthropic_endpoint(agent.base_url):
+                            agent._disable_streaming = True
+                            agent._safe_print(
+                                "\n⚠  This Anthropic-compatible endpoint returned "
+                                "data-only SSE that the Anthropic SDK could not parse. "
+                                "Switching to non-streaming for this session.\n"
+                            )
+                            logger.warning(
+                                "Anthropic SDK parsed zero events from OCI "
+                                "stream; disabling streaming for this session "
+                                "provider=%s model=%s base_url=%s",
+                                agent.provider,
+                                agent.model,
+                                agent.base_url,
+                            )
+                            result["error"] = e
+                            return
 
                     # If the stream died AFTER some tokens were delivered:
                     # normally we don't retry (the user already saw text,

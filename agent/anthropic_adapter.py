@@ -439,6 +439,17 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     return True  # Any other endpoint is a third-party proxy
 
 
+def _is_oci_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for OCI Generative AI's Anthropic-compatible endpoint."""
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    parsed = urlparse(normalized)
+    host = (parsed.hostname or "").lower().rstrip(".")
+    path = (parsed.path or "").lower().rstrip("/")
+    return host.endswith(".oci.oraclecloud.com") and path.endswith("/anthropic")
+
+
 def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
     """Return True for Kimi's /coding endpoint that requires claude-code UA."""
     normalized = _normalize_base_url_text(base_url)
@@ -2749,6 +2760,26 @@ def _is_stream_unavailable_error(exc: Exception) -> bool:
     return False
 
 
+def is_empty_anthropic_stream_assertion(exc: Exception) -> bool:
+    """Return whether the Anthropic SDK received no parseable stream events.
+
+    Some Anthropic-compatible endpoints emit valid SSE ``data:`` frames but
+    omit the accompanying ``event:`` lines. The SDK then reaches
+    ``get_final_message()`` without a message snapshot and raises a blank
+    ``AssertionError``. Keep the check narrow so application assertions are
+    never hidden.
+    """
+    return isinstance(exc, AssertionError) and not str(exc)
+
+
+def _is_empty_anthropic_final_message(message: Any) -> bool:
+    """Return whether a stream produced no usable final-message snapshot."""
+    return message is None or (
+        not getattr(message, "content", None)
+        and getattr(message, "stop_reason", None) is None
+    )
+
+
 def create_anthropic_message(
     client: Any,
     api_kwargs: dict,
@@ -2774,7 +2805,20 @@ def create_anthropic_message(
         stream_kwargs.pop("stream", None)
         try:
             with stream_fn(**stream_kwargs) as stream:
-                return stream.get_final_message()
+                try:
+                    final_message = stream.get_final_message()
+                except Exception as exc:
+                    if not is_empty_anthropic_stream_assertion(exc):
+                        raise
+                else:
+                    if not _is_empty_anthropic_final_message(final_message):
+                        return final_message
+                logger.warning(
+                    "%sAnthropic SDK produced no usable final stream message; "
+                    "retrying this request with messages.create(). The endpoint "
+                    "may emit data-only SSE frames without event names.",
+                    log_prefix,
+                )
         except Exception as exc:
             if not _is_stream_unavailable_error(exc):
                 raise

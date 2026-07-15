@@ -144,14 +144,11 @@ def auto_title_session(
         return
 
     try:
-        latest = session_db.get_session_title(session_id)
-        if latest:
+        if not session_db.set_auto_title_if_empty(session_id, title):
             logger.debug(
-                "Skipping auto-generated session title because a title was set while generation was in flight: %s",
-                latest,
+                "Skipping auto-generated session title because a title was set while generation was in flight"
             )
             return
-        session_db.set_session_title(session_id, title)
         logger.debug("Auto-generated session title: %s", title)
         if title_callback is not None:
             try:

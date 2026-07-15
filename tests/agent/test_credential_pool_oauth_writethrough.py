@@ -213,6 +213,7 @@ def test_global_write_through_preserves_concurrent_root_update(
     )
 
     helper_loaded = threading.Event()
+    helper_has_target_lock = threading.Event()
     allow_helper_save = threading.Event()
     writer_started = threading.Event()
     writer_done = threading.Event()
@@ -221,11 +222,17 @@ def test_global_write_through_preserves_concurrent_root_update(
     def paused_helper_load(path=None):
         store = real_auth_load(path)
         if threading.current_thread().name == "profile-write-through":
+            target_holder = A._auth_lock_holder_for(root_path)
+            if getattr(target_holder, "depth", 0) > 0:
+                helper_has_target_lock.set()
             helper_loaded.set()
             assert allow_helper_save.wait(timeout=5)
         return store
 
     monkeypatch.setattr(A, "_load_auth_store", paused_helper_load)
+    # The pre-fix implementation imported the loader directly; patch both
+    # bindings so reverting the safe helper still exercises the stale ordering.
+    monkeypatch.setattr(CP, "_load_auth_store", paused_helper_load)
 
     def profile_write_through():
         CP._write_through_provider_state_to_global_root(
@@ -255,9 +262,12 @@ def test_global_write_through_preserves_concurrent_root_update(
     writer = threading.Thread(target=concurrent_codex_login, name="concurrent-login")
     writer.start()
     assert writer_started.wait(timeout=5)
-    # Before the fix the writer completes while the stale helper is paused.
-    # After the fix it blocks on the root lock until the helper saves and exits.
-    writer_done.wait(timeout=0.2)
+    # A fixed helper already owns the target lock, so the writer will merge
+    # after release. A reverted unlocked helper must first let the competing
+    # login finish; only then do we release its stale save. This makes the
+    # losing pre-fix ordering deterministic rather than scheduler-dependent.
+    if not helper_has_target_lock.is_set():
+        assert writer_done.wait(timeout=5)
     allow_helper_save.set()
     helper.join(timeout=5)
     writer.join(timeout=5)

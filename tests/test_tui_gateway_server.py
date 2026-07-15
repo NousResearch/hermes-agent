@@ -7896,6 +7896,36 @@ def test_notification_poller_skips_consumed(monkeypatch):
             process_registry.completion_queue.get_nowait()
 
 
+def test_notification_poller_does_not_wake_agent_for_failed_completion(monkeypatch):
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    turns = []
+    sess = _session(agent=type("Agent", (), {
+        "run_conversation": lambda self, prompt, **kwargs: turns.append(prompt)
+    })())
+    server._sessions["sid_failed"] = sess
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    isolated_queue.put({
+        "type": "completion",
+        "session_id": "proc_failed_tui",
+        "command": "false",
+        "exit_code": 1,
+        "completion_reason": "exited",
+        "output": "boom",
+    })
+    stop = threading.Event()
+    stop.set()
+
+    try:
+        server._notification_poller_loop(stop, "sid_failed", sess)
+        assert turns == []
+    finally:
+        server._sessions.pop("sid_failed", None)
+
+
 def test_notification_poller_requeues_when_busy(monkeypatch):
     """When the agent is busy, the poller requeues the event."""
     import queue as _queue_mod

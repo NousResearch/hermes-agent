@@ -35,7 +35,8 @@ import {
   setGroupHeaderHidden as setGroupHeaderHiddenOp,
   setGroupMinimized,
   setSplitWeights as setSplitWeightsOp,
-  splitGroupZone as splitGroupZoneOp
+  splitGroupZone as splitGroupZoneOp,
+  type SplitNode
 } from './model'
 import { rootChildSide } from './renderer/track-model'
 
@@ -357,18 +358,52 @@ export function removeTreePane(paneId: string) {
   }
 }
 
+/** The layout's root ROW — the split that contains main + the side columns.
+ *  Usually the root itself (Default, Focus); in a column-root layout (Terminal
+ *  deck, Quad) it's the row child that holds sessions/workspace/files. Returns
+ *  null when the tree has no row split with side-eligible panes. */
+function rootRow(): SplitNode | null {
+  const tree = $layoutTree.get()
+
+  if (!tree || tree.type !== 'split') {
+    return null
+  }
+
+  if (tree.orientation === 'row') {
+    return tree
+  }
+
+  // Column root: find the row child that contains the main pane — that's the
+  // row the side-collapse system operates on (sessions left, files right).
+  const panes = registry.getArea('panes')
+
+  const hasMain = (node: LayoutNode): boolean => {
+    if (node.type === 'group') {
+      return node.panes.some(id =>
+        (panes.find(p => p.id === id)?.data as { placement?: string } | undefined)?.placement === 'main'
+      )
+    }
+
+    return node.children.some(hasMain)
+  }
+
+  return tree.children.find(child => child.type === 'split' && child.orientation === 'row' && hasMain(child)) as
+    | SplitNode
+    | undefined ?? null
+}
+
 /** Which root-row side a pane currently lives in, or null when it's nested
  *  with main (dragged into the middle) — where a side collapse can't hide it.
  *  Lets side-bound closers (files/sessions) fall back to dismissal. */
 export function paneRootSide(paneId: string): null | TreeSide {
-  const tree = $layoutTree.get()
+  const row = rootRow()
 
-  if (tree?.type !== 'split' || tree.orientation !== 'row') {
+  if (!row) {
     return null
   }
 
   const panes = registry.getArea('panes')
-  const child = tree.children.find(c => allPaneIds(c).includes(paneId))
+  const child = row.children.find(c => allPaneIds(c).includes(paneId))
 
   return child ? rootChildSide(child, id => panes.find(p => p.id === id)) : null
 }
@@ -453,15 +488,15 @@ export function setTreeSideCollapsed(side: TreeSide, collapsed: boolean) {
  * reuses `rootChildSide`, so it tracks a ⌘\ flip / drag like the toggles do.
  */
 export function layoutHasRootSide(side: TreeSide): boolean {
-  const tree = $layoutTree.get()
+  const row = rootRow()
 
-  if (tree?.type !== 'split' || tree.orientation !== 'row') {
+  if (!row) {
     return false
   }
 
   const panes = registry.getArea('panes')
 
-  return tree.children.some(child => rootChildSide(child, id => panes.find(p => p.id === id)) === side)
+  return row.children.some(child => rootChildSide(child, id => panes.find(p => p.id === id)) === side)
 }
 
 /**
@@ -515,13 +550,13 @@ export function bindTreeSideVisibility(
  *  panes) wherever it sits, ⌘J ⇔ the other side columns. Null for the main
  *  column (never side-collapsed). */
 export function treeSideOfPane(paneId: string): TreeSide | null {
-  const tree = $layoutTree.get()
+  const row = rootRow()
 
-  if (!tree || tree.type !== 'split' || tree.orientation !== 'row') {
+  if (!row) {
     return null
   }
 
-  const child = tree.children.find(node => allPaneIds(node).includes(paneId))
+  const child = row.children.find(node => allPaneIds(node).includes(paneId))
 
   if (!child) {
     return null
@@ -574,8 +609,26 @@ export function revealTreePane(paneId: string) {
   const tree = $layoutTree.get()
   const group = tree ? findGroupOfPane(tree, paneId) : null
 
-  if (tree && group && group.active !== paneId) {
-    commit(setActivePaneOp(tree, group.id, paneId))
+  if (tree && group) {
+    // A minimized zone must be restored — "reveal" means show the pane, not
+    // just front its tab behind a collapsed rail. Without this, a tool panel
+    // (terminal/logs) in a shared zone stays minimized after its toggle opens
+    // it: setPaneCollapsed's shared-zone branch calls revealTreePane instead
+    // of toggleTreeGroupMinimized, so the zone never un-minimizes and the
+    // pane appears to "close but not open" on ctrl-` / tab click.
+    let next = tree
+
+    if (group.minimized) {
+      next = setGroupMinimized(next, group.id, false)
+    }
+
+    if (group.active !== paneId) {
+      next = setActivePaneOp(next, group.id, paneId)
+    }
+
+    if (next !== tree) {
+      commit(next)
+    }
   }
 }
 
@@ -1038,6 +1091,18 @@ export function restoreTreePane(paneId: string) {
 
   if (open) {
     open()
+
+    // The opener may be a no-op — the store was already true (zone minimized
+    // via the zone menu, not the toggle). nanostores don't fire listeners on
+    // a same-value .set(), so the bindPaneCollapse listener never runs and
+    // the zone stays minimized. Un-minimize directly when that happens.
+    const group = paneGroup(paneId)
+
+    if (group?.minimized) {
+      toggleTreeGroupMinimized(group.id, false)
+    }
+
+    revealTreePane(paneId)
 
     return
   }

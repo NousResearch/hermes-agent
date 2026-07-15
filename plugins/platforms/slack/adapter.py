@@ -3101,7 +3101,10 @@ class SlackAdapter(BasePlatformAdapter):
                 return
 
             original_message_ts = str(updated_message.get("ts") or "")
-            if original_message_ts and original_message_ts in self._processed_message_ts:
+            if (
+                original_message_ts
+                and original_message_ts in self._processed_message_ts
+            ):
                 return
             edited = updated_message.get("edited")
             edited_ts = ""
@@ -3109,7 +3112,11 @@ class SlackAdapter(BasePlatformAdapter):
                 edited_ts = str(edited.get("ts") or "")
             outer_event_ts = str(event.get("ts") or "")
             changed_event_ts = str(event.get("event_ts") or edited_ts or "")
-            if not changed_event_ts and outer_event_ts and outer_event_ts != original_message_ts:
+            if (
+                not changed_event_ts
+                and outer_event_ts
+                and outer_event_ts != original_message_ts
+            ):
                 changed_event_ts = outer_event_ts
             if not changed_event_ts and original_message_ts:
                 changed_event_ts = f"{original_message_ts}:changed"

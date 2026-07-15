@@ -594,10 +594,11 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 and getattr(agent, "_codex_stream_last_event_ts", None) is None
             ):
                 _deadline = min(_deadline, _ttfb_timeout)
+            _deadline_text = "no limit" if _deadline == float("inf") else f"{int(_deadline)}s"
             agent._emit_wait_notice(
                 f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
                 f"{int(_elapsed)}s with no response yet (provider may be slow "
-                f"or overloaded; auto-reconnect at {int(_deadline)}s)"
+                f"or overloaded; auto-reconnect at {_deadline_text})"
             )
 
         _elapsed = time.time() - _call_start

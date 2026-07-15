@@ -1,10 +1,13 @@
 """Tests for gateway service management helpers."""
 
+import importlib.util
+from importlib.machinery import SourceFileLoader
 import os
 import plistlib
 import subprocess
+import sys
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -17,6 +20,46 @@ from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
 )
+
+
+def _load_standalone_gateway_script(monkeypatch):
+    """Load the standalone service entry point without its optional dotenv dependency."""
+    dotenv = ModuleType("dotenv")
+    dotenv.load_dotenv = lambda **_kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", dotenv)
+
+    script_path = Path(__file__).parents[2] / "scripts" / "hermes-gateway"
+    loader = SourceFileLoader("standalone_gateway_script", str(script_path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_standalone_launchd_plist_escapes_dynamic_xml_strings(tmp_path, monkeypatch):
+    standalone_gateway = _load_standalone_gateway_script(monkeypatch)
+    home = tmp_path / "home & workspace"
+    home.mkdir()
+    project = home / "project & tools"
+    project.mkdir()
+
+    monkeypatch.setattr(standalone_gateway, "PROJECT_DIR", project)
+    monkeypatch.setattr(standalone_gateway.Path, "home", lambda: home)
+    monkeypatch.setattr(standalone_gateway, "get_python_path", lambda: "/opt/python & tools/bin/python")
+    monkeypatch.setattr(standalone_gateway, "get_gateway_script_path", lambda: "/opt/hermes & tools/gateway")
+
+    plist = standalone_gateway.generate_launchd_plist()
+
+    assert "&amp;" in plist
+    parsed = plistlib.loads(plist.encode("utf-8"))
+    assert parsed["ProgramArguments"] == [
+        "/opt/python & tools/bin/python",
+        "/opt/hermes & tools/gateway",
+        "run",
+    ]
+    assert parsed["WorkingDirectory"] == str(project)
+    assert parsed["StandardOutPath"] == str(home / ".hermes" / "logs" / "gateway.log")
 
 
 class TestUserSystemdPrivateSocketPreflight:

@@ -175,7 +175,6 @@ def generate_launchd_plist() -> str:
     script_path = get_gateway_script_path()
     working_dir = str(PROJECT_DIR)
     log_dir = Path.home() / ".hermes" / "logs"
-    xml = lambda value: escape(str(value))
     
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -186,13 +185,13 @@ def generate_launchd_plist() -> str:
     
     <key>ProgramArguments</key>
     <array>
-        <string>{xml(python_path)}</string>
-        <string>{xml(script_path)}</string>
+        <string>{escape(python_path)}</string>
+        <string>{escape(script_path)}</string>
         <string>run</string>
     </array>
     
     <key>WorkingDirectory</key>
-    <string>{xml(working_dir)}</string>
+    <string>{escape(working_dir)}</string>
     
     <key>RunAtLoad</key>
     <true/>
@@ -204,10 +203,10 @@ def generate_launchd_plist() -> str:
     </dict>
     
     <key>StandardOutPath</key>
-    <string>{xml(log_dir / 'gateway.log')}</string>
+    <string>{escape(str(log_dir / 'gateway.log'))}</string>
     
     <key>StandardErrorPath</key>
-    <string>{xml(log_dir / 'gateway.error.log')}</string>
+    <string>{escape(str(log_dir / 'gateway.error.log'))}</string>
     
     <key>EnvironmentVariables</key>
     <dict>

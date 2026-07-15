@@ -92,6 +92,11 @@ function detectRemoteDisplay(options: { env?: NodeJS.ProcessEnv; platform?: Node
     if (display.includes(':') && display.split(':')[0]) {
       return `x11-forwarding (DISPLAY=${display})`
     }
+
+    // TigerVNC / TurboVNC sessions use CPU-only llvmpipe rendering; Chromium's
+    // GPU compositor fails with ContextResult::kTransientFailure on the command
+    // buffer because there's no hardware GPU to accelerate with.
+    if (env.VNCDESKTOP) return `vnc (VNCDESKTOP=${env.VNCDESKTOP})`
   }
 
   if (platform === 'win32') {

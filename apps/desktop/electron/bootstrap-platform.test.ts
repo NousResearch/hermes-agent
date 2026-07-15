@@ -65,6 +65,30 @@ test('detectRemoteDisplay flags forwarded X11 displays but not local ones', () =
   assert.equal(detectRemoteDisplay({ env: { DISPLAY: ':1' }, platform: 'linux' }), null)
 })
 
+test('detectRemoteDisplay flags VNC sessions on Linux via VNCDESKTOP', () => {
+  // DISPLAY=:1 alone is local, but with VNCDESKTOP set it's a VNC session.
+  // NOTE: the existing assertion above (DISPLAY=:1 → null) must remain — it
+  // proves that a VNC-free local display is not mistaken for remote.
+  assert.match(
+    String(detectRemoteDisplay({ env: { DISPLAY: ':1', VNCDESKTOP: 'tiger' }, platform: 'linux' })),
+    /^vnc \(VNCDESKTOP=tiger\)/
+  )
+  assert.match(
+    String(detectRemoteDisplay({ env: { DISPLAY: ':2', VNCDESKTOP: 'TurboVNC' }, platform: 'linux' })),
+    /^vnc/
+  )
+  // Empty VNCDESKTOP is falsy — the source uses if (env.VNCDESKTOP) so empty
+  // string does NOT trigger detection. This is the intended behaviour.
+  assert.equal(
+    detectRemoteDisplay({ env: { DISPLAY: ':1', VNCDESKTOP: '' }, platform: 'linux' }),
+    null,
+    'empty-string VNCDESKTOP should not trigger detection'
+  )
+  // VNCDESKTOP is only checked on Linux; non-Linux platforms ignore it.
+  assert.equal(detectRemoteDisplay({ env: { VNCDESKTOP: 'tiger' }, platform: 'darwin' }), null)
+  assert.equal(detectRemoteDisplay({ env: { VNCDESKTOP: 'tiger' }, platform: 'win32' }), null)
+})
+
 test('detectRemoteDisplay flags RDP sessions', () => {
   assert.match(String(detectRemoteDisplay({ env: { SESSIONNAME: 'RDP-Tcp#7' }, platform: 'win32' })), /^rdp/)
 })

@@ -39,8 +39,9 @@ import re
 import shutil
 import tempfile
 import contextvars as _ctxvars
+import threading
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home, display_hermes_home
 from utils import atomic_replace, is_truthy_value
@@ -265,6 +266,63 @@ def _validate_delete_target(skill_dir: Path) -> Optional[str]:
         f"Refusing to delete '{skill_dir}': path does not resolve inside any "
         f"known skills root."
     )
+
+
+_review_protected_skills = threading.local()
+
+
+def set_review_protected_skills(names: Optional[Set[str]]) -> None:
+    """Set the per-thread protected-skills list.
+
+    Only the background self-improvement review fork calls this.
+    Foreground threads never set it, so the guard is inert during
+    normal conversation.
+
+    Pass ``{"*"}`` to deny all skill writes (used when the protection
+    config is malformed and fail-closed behavior is required).
+    """
+    _review_protected_skills.names = names or None
+
+
+def clear_review_protected_skills() -> None:
+    """Clear the per-thread protected-skills list."""
+    _review_protected_skills.names = None
+
+
+# Actions that modify skill content — blocked for protected skills
+# during background review.  Read-only actions (skill_view, skills_list)
+# are separate tools and are never gated.
+_REVIEW_PROTECTED_ACTIONS = frozenset({
+    "create", "edit", "patch", "delete", "write_file", "remove_file",
+})
+
+# Sentinel that blocks ALL skill writes during review (used on config parse error).
+_REVIEW_DENY_ALL = frozenset({"*"})
+
+
+def _review_protected_guard(action: str, name: str) -> Optional[str]:
+    """Return a refusal message if this skill is protected during background review.
+
+    The guard fires only when the calling thread has set the protected list
+    via ``set_review_protected_skills()`` (i.e. the background review fork).
+    On the main conversation thread the threadlocal is never set, so all
+    writes pass through normally.
+    """
+    protected = getattr(_review_protected_skills, "names", None)
+    if not protected:
+        return None
+    if action not in _REVIEW_PROTECTED_ACTIONS:
+        return None
+    if protected == _REVIEW_DENY_ALL or name in protected:
+        logger.info(
+            "Background review blocked from %s on protected skill '%s'",
+            action, name,
+        )
+        return (
+            f"Skill '{name}' is protected from background self-improvement review. "
+            f"Use skill_manage in a foreground turn to modify it."
+        )
+    return None
 
 
 def _pinned_guard(name: str) -> Optional[str]:
@@ -1334,6 +1392,13 @@ def skill_manage(
 
     Returns JSON string with results.
     """
+    # Per-skill background review protection (config-driven).
+    # Runs before upstream's _background_review_preflight and the
+    # write-approval gate so protected skills are never staged.
+    _review_block = _review_protected_guard(action, name)
+    if _review_block:
+        return json.dumps({"success": False, "error": _review_block}, ensure_ascii=False)
+
     preflight = _background_review_preflight(action, name)
     if preflight is not None:
         return json.dumps(preflight, ensure_ascii=False)

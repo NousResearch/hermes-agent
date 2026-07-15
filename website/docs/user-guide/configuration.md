@@ -603,6 +603,29 @@ skills:
 
 When on, skill writes are staged under `~/.hermes/pending/skills/` and reviewed with `/skills pending`, `/skills diff <id>`, `/skills approve <id>`, `/skills reject <id>` — from the CLI or any messaging platform. Toggle at runtime with `/skills approval on|off`. Memory has the same gate (`memory.write_approval`, below). Full walkthrough: [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
 
+### Background review protection (`review_protected`)
+
+Prevent the per-turn self-improvement background review from modifying
+specific skills:
+
+```yaml
+skills:
+  review_protected:
+    - my-custom-skill
+    - project-workflow
+```
+
+Listed skills are blocked from all write actions during the per-turn review
+fork only — foreground turns are unaffected. Read actions (`list`, `view`)
+are always allowed. If the config value is malformed, all skill writes are
+blocked for that review pass (fail-closed).
+
+This is distinct from `write_approval` (which stages every write for human
+approval) and curator pinning (`hermes curator pin`, which is broader — it
+blocks all background-origin mutations and inactivity curation, and also
+prevents foreground deletion). Full description: [Protecting skills from
+background review](/user-guide/features/skills#protecting-skills-from-background-review-review_protected).
+
 ## Memory Configuration
 
 ```yaml

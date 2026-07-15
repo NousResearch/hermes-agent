@@ -508,6 +508,41 @@ in the pending JSON file). Memory writes have the same gate under
 > (dangerous-pattern heuristics), not an approval gate — the two are
 > independent. See [Guard on agent-created skill writes](/user-guide/configuration#guard-on-agent-created-skill-writes).
 
+### Protecting skills from background review (`review_protected`)
+
+The per-turn self-improvement background review can modify skills during its
+review pass. If you have skills you never want the review to touch — custom
+workflows, project-specific conventions, carefully tuned prompts — list them
+under `skills.review_protected`:
+
+```yaml
+skills:
+  review_protected:
+    - my-custom-skill
+    - project-workflow
+```
+
+When the background review fork starts, it reads this list into a thread-local
+set. Any write action (`create` / `edit` / `patch` / `delete` / `write_file` /
+`remove_file`) targeting a listed skill is blocked with a clear error returned
+to the review agent. Read actions (`list`, `view`) are unaffected. Foreground
+turns are never restricted — the protection applies only to the per-turn
+self-improvement review fork.
+
+If the config value is malformed (not a list or JSON-array string), all skill
+writes are blocked for that review pass (fail-closed) and a warning is logged.
+
+#### How this differs from other skill protection mechanisms
+
+| Mechanism | Scope | What it blocks |
+| --- | --- | --- |
+| `skills.review_protected` | Per-turn background review fork only | Write actions on named skills during review |
+| `hermes curator pin` | Broader — all background-origin writes + inactivity curator | Autonomous mutations and curation; also blocks foreground deletion (foreground edits still allowed) |
+| `skills.write_approval` | All skill writes (foreground + background) | Stages writes for human approval instead of blocking them outright |
+
+The read-before-write invariant (#55906) is a separate guard that prevents the
+review from patching any skill it has not loaded via `skill_view` first.
+
 ## Skills Hub
 
 Browse, search, install, and manage skills from online registries, `skills.sh`, direct well-known skill endpoints, and official optional skills.

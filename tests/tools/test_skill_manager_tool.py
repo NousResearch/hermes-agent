@@ -19,6 +19,9 @@ from tools.skill_manager_tool import (
     _write_file,
     _remove_file,
     skill_manage,
+    set_review_protected_skills,
+    clear_review_protected_skills,
+    _review_protected_guard,
     MAX_NAME_LENGTH,
 )
 
@@ -1348,3 +1351,162 @@ class TestCuratorConsolidationDeleteGuard:
             assert allowed["success"] is True, allowed
 
         _reset_background_review_read_marks()
+
+
+# ---------------------------------------------------------------------------
+# Background review protection (_review_protected_guard)
+# ---------------------------------------------------------------------------
+
+class TestReviewProtectedGuard:
+    """Tests for the per-skill background review protection guard."""
+
+    def setup_method(self):
+        clear_review_protected_skills()
+
+    def teardown_method(self):
+        clear_review_protected_skills()
+
+    def test_guard_returns_none_when_threadlocal_unset(self):
+        """No protection when the threadlocal is not set (foreground turns)."""
+        assert _review_protected_guard("patch", "any-skill") is None
+        assert _review_protected_guard("delete", "any-skill") is None
+
+    def test_guard_blocks_patch_on_protected_skill(self):
+        set_review_protected_skills({"my-skill"})
+        result = _review_protected_guard("patch", "my-skill")
+        assert result is not None
+        assert "protected" in result
+
+    def test_guard_blocks_edit_on_protected_skill(self):
+        set_review_protected_skills({"my-skill"})
+        assert _review_protected_guard("edit", "my-skill") is not None
+
+    def test_guard_blocks_delete_on_protected_skill(self):
+        set_review_protected_skills({"my-skill"})
+        assert _review_protected_guard("delete", "my-skill") is not None
+
+    def test_guard_blocks_write_file_on_protected_skill(self):
+        set_review_protected_skills({"my-skill"})
+        assert _review_protected_guard("write_file", "my-skill") is not None
+
+    def test_guard_blocks_remove_file_on_protected_skill(self):
+        set_review_protected_skills({"my-skill"})
+        assert _review_protected_guard("remove_file", "my-skill") is not None
+
+    def test_guard_blocks_create_on_protected_skill(self):
+        set_review_protected_skills({"my-skill"})
+        assert _review_protected_guard("create", "my-skill") is not None
+
+    def test_guard_allows_unprotected_skill(self):
+        """A skill NOT in the protected list is allowed."""
+        set_review_protected_skills({"other-skill"})
+        assert _review_protected_guard("patch", "my-skill") is None
+
+    def test_guard_empty_set_allows_all(self):
+        """Empty protection set = no protection (back-compat)."""
+        set_review_protected_skills(set())
+        assert _review_protected_guard("patch", "any") is None
+
+    def test_guard_read_actions_pass_through(self):
+        """Read-only actions (view, list) are never blocked."""
+        set_review_protected_skills({"my-skill"})
+        assert _review_protected_guard("view", "my-skill") is None
+        assert _review_protected_guard("list", "my-skill") is None
+
+
+class TestReviewProtectedDispatch:
+    """Integration: skill_manage respects the guard end-to-end."""
+
+    def setup_method(self):
+        clear_review_protected_skills()
+
+    def teardown_method(self):
+        clear_review_protected_skills()
+
+    def test_protected_skill_patch_blocked_via_skill_manage(self, tmp_path):
+        """skill_manage(action='patch') on a protected skill returns error."""
+        with _skill_dir(tmp_path):
+            _create_skill("test-protected", VALID_SKILL_CONTENT)
+            set_review_protected_skills({"test-protected"})
+            result_json = skill_manage(
+                action="patch",
+                name="test-protected",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the NEW thing.",
+            )
+            result = json.loads(result_json)
+            assert result["success"] is False
+            assert "protected" in result["error"]
+
+    def test_unprotected_skill_patch_allowed_via_skill_manage(self, tmp_path):
+        """skill_manage(action='patch') on a non-protected skill succeeds."""
+        with _skill_dir(tmp_path):
+            _create_skill("test-free", VALID_SKILL_CONTENT)
+            set_review_protected_skills({"other-skill"})
+            result_json = skill_manage(
+                action="patch",
+                name="test-free",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Do the NEW thing.",
+            )
+            result = json.loads(result_json)
+            assert result["success"] is True
+
+    def test_foreground_patch_always_allowed(self, tmp_path):
+        """Without threadlocal set, patch works normally (foreground)."""
+        with _skill_dir(tmp_path):
+            _create_skill("test-foreground", VALID_SKILL_CONTENT)
+            clear_review_protected_skills()
+            result_json = skill_manage(
+                action="patch",
+                name="test-foreground",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Foreground change.",
+            )
+            result = json.loads(result_json)
+            assert result["success"] is True
+
+
+class TestReviewProtectedDenyAll:
+    """Tests for the fail-closed deny-all mode (config parse error)."""
+
+    def setup_method(self):
+        clear_review_protected_skills()
+
+    def teardown_method(self):
+        clear_review_protected_skills()
+
+    def test_deny_all_blocks_every_skill(self):
+        """Sentinel {"*"} blocks all write actions on any skill."""
+        set_review_protected_skills({"*"})
+        for action in ("patch", "edit", "delete", "create", "write_file", "remove_file"):
+            assert _review_protected_guard(action, "any-skill") is not None
+            assert _review_protected_guard(action, "other-skill") is not None
+
+    def test_deny_all_blocks_via_skill_manage(self, tmp_path):
+        """skill_manage on ANY skill is blocked when deny-all is active."""
+        with _skill_dir(tmp_path):
+            _create_skill("test-skill-a", VALID_SKILL_CONTENT)
+            set_review_protected_skills({"*"})
+            result_json = skill_manage(
+                action="patch",
+                name="test-skill-a",
+                old_string="Step 1: Do the thing.",
+                new_string="Step 1: Changed.",
+            )
+            result = json.loads(result_json)
+            assert result["success"] is False
+            assert "protected" in result["error"]
+
+    def test_deny_all_does_not_affect_reads(self):
+        """Read actions still pass through even in deny-all mode."""
+        set_review_protected_skills({"*"})
+        assert _review_protected_guard("view", "any") is None
+        assert _review_protected_guard("list", "any") is None
+
+    def test_deny_all_cleared_properly(self):
+        """Clearing deny-all restores normal write behavior."""
+        set_review_protected_skills({"*"})
+        assert _review_protected_guard("patch", "any") is not None
+        clear_review_protected_skills()
+        assert _review_protected_guard("patch", "any") is None

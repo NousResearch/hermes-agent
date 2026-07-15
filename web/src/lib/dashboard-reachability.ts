@@ -54,6 +54,10 @@ function setDashboardReachability(next: DashboardReachability): void {
   if (next === reachability) return;
   reachability = next;
   for (const listener of listeners) {
-    listener();
+    try {
+      listener();
+    } catch {
+      // Reachability observers must never alter the request that reported it.
+    }
   }
 }

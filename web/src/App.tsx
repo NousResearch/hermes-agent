@@ -541,7 +541,6 @@ export default function App() {
       <ProfileScopeBanner />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
-        <DashboardOfflineBanner />
         <div className="flex min-h-0 min-w-0 flex-1">
           <aside
             id="app-sidebar"
@@ -728,6 +727,7 @@ export default function App() {
                 isDocsRoute && "min-h-0 flex-1",
               )}
             >
+              <DashboardOfflineBanner />
               <PluginSlot name="pre-main" />
               <div
                 className={cn(

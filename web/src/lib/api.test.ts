@@ -66,7 +66,9 @@ describe("fetchJSON reachability", () => {
     vi.stubGlobal("window", { location: { origin: "http://localhost:3000" } });
     const cause = new TypeError("Failed to fetch");
     vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockRejectedValue(cause));
-    const listener = vi.fn();
+    const listener = vi.fn(() => {
+      throw new Error("observer failed");
+    });
     const unsubscribe = subscribeDashboardReachability(listener);
 
     try {

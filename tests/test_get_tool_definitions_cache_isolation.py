@@ -179,3 +179,42 @@ def test_quiet_tool_selection_diagnostics_are_logged_without_stdout(
     assert capsys.readouterr().out == ""
     assert "Enabled toolset 'web': web_search" in caplog.text
     assert "Final tool selection (1 tools): web_search" in caplog.text
+
+
+def test_quiet_tool_search_activation_is_logged_without_stdout(
+    monkeypatch,
+    caplog,
+    capsys,
+):
+    from tools import tool_search
+
+    _patch_minimal_tool_selection(monkeypatch)
+    caplog.set_level(logging.DEBUG, logger="model_tools")
+
+    config = tool_search.ToolSearchConfig.from_raw({"enabled": "on"})
+    monkeypatch.setattr(tool_search, "load_config", lambda: config)
+    monkeypatch.setattr(model_tools, "_resolve_active_context_length", lambda: 200_000)
+
+    def _activate_tool_search(tool_defs, *, context_length, config):
+        assert context_length == 200_000
+        return tool_search.AssemblyResult(
+            tool_defs=tool_defs,
+            activated=True,
+            deferred_count=2,
+            deferred_tokens=321,
+            threshold_tokens=20_000,
+        )
+
+    monkeypatch.setattr(tool_search, "assemble_tool_defs", _activate_tool_search)
+
+    model_tools.get_tool_definitions(
+        enabled_toolsets=["web"],
+        quiet_mode=True,
+    )
+
+    assert capsys.readouterr().out == ""
+    assert (
+        "Tool Search: 2 MCP/plugin tools deferred (~321 tokens) "
+        "behind tool_search/describe/call. Threshold ~20000 tokens."
+        in caplog.text
+    )

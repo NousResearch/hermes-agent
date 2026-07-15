@@ -5053,38 +5053,73 @@ def resolve_provider_client(
         return None, None
 
     elif pconfig.auth_type == "vertex":
-        # Google Vertex AI — Gemini via the OpenAI-compatible endpoint with an
-        # OAuth2 bearer token (NOT a static key). We build a standard OpenAI
-        # client pointed at the runtime-computed Vertex base_url with a fresh
-        # token; no custom SDK or message translation needed.
-        try:
-            from agent.vertex_adapter import get_vertex_config, has_vertex_credentials
-        except ImportError:
-            logger.warning("resolve_provider_client: vertex requested but "
-                           "google-auth not installed")
-            return None, None
+        # Google Vertex AI — dual-path, mirroring Bedrock's pattern:
+        #   Claude → AnthropicVertex SDK (prompt caching, thinking budgets)
+        #   Gemini → OpenAI-compatible endpoint with OAuth2 bearer token
+        from hermes_cli.runtime_provider import _is_anthropic_vertex_model
 
-        if not has_vertex_credentials():
-            logger.debug("resolve_provider_client: vertex requested but "
-                         "no GCP credentials found")
-            return None, None
-
-        token, base_url = get_vertex_config()
-        if not token or not base_url:
-            logger.warning("resolve_provider_client: vertex requested but "
-                           "could not mint token / resolve project")
-            return None, None
-
-        default_model = "google/gemini-3-flash-preview"
+        default_model = _get_aux_model_for_provider(provider)
         final_model = _normalize_resolved_model(model or default_model, provider)
-        try:
-            from openai import OpenAI
-            client = OpenAI(api_key=token, base_url=base_url)
-        except Exception as exc:
-            logger.warning("resolve_provider_client: cannot create Vertex "
-                           "client: %s", exc)
-            return None, None
-        logger.debug("resolve_provider_client: vertex (%s)", final_model)
+
+        if _is_anthropic_vertex_model(final_model):
+            # Claude on Vertex → AnthropicVertex SDK
+            try:
+                from hermes_cli.auth import AuthError, resolve_vertex_anthropic_runtime_credentials
+                from agent.anthropic_adapter import build_anthropic_vertex_client
+            except ImportError:
+                logger.warning(
+                    "resolve_provider_client: vertex Claude requested but "
+                    "Anthropic Vertex dependencies are not installed"
+                )
+                return None, None
+
+            try:
+                creds = resolve_vertex_anthropic_runtime_credentials()
+                project_id = creds["project_id"]
+                region = creds["region"]
+                real_client = build_anthropic_vertex_client(project_id, region)
+            except (AuthError, ImportError, ValueError) as exc:
+                logger.warning("resolve_provider_client: cannot create Vertex client: %s", exc)
+                return None, None
+
+            client = AnthropicAuxiliaryClient(
+                real_client,
+                final_model,
+                api_key=creds.get("api_key", "gcp-adc"),
+                base_url=creds.get("base_url", "https://aiplatform.googleapis.com"),
+            )
+            client._vertex_project_id = project_id
+            client._vertex_region = region
+            logger.debug("resolve_provider_client: vertex anthropic (%s, %s)", final_model, region)
+        else:
+            # Gemini on Vertex → OpenAI-compatible endpoint with OAuth2 token
+            try:
+                from agent.vertex_adapter import get_vertex_config, has_vertex_credentials
+            except ImportError:
+                logger.warning("resolve_provider_client: vertex requested but "
+                               "google-auth not installed")
+                return None, None
+
+            if not has_vertex_credentials():
+                logger.debug("resolve_provider_client: vertex requested but "
+                             "no GCP credentials found")
+                return None, None
+
+            token, base_url = get_vertex_config()
+            if not token or not base_url:
+                logger.warning("resolve_provider_client: vertex requested but "
+                               "could not mint token / resolve project")
+                return None, None
+
+            try:
+                from openai import OpenAI
+                client = OpenAI(api_key=token, base_url=base_url)
+            except Exception as exc:
+                logger.warning("resolve_provider_client: cannot create Vertex "
+                               "client: %s", exc)
+                return None, None
+            logger.debug("resolve_provider_client: vertex gemini (%s)", final_model)
+
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
@@ -5131,40 +5166,6 @@ def resolve_provider_client(
             logger.debug("resolve_provider_client: bedrock converse (%s, %s)",
                          final_model, region)
 
-        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
-                else (client, final_model))
-
-    elif pconfig.auth_type == "gcp_adc":
-        try:
-            from hermes_cli.auth import AuthError, resolve_vertex_anthropic_runtime_credentials
-            from agent.anthropic_adapter import build_anthropic_vertex_client
-        except ImportError:
-            logger.warning(
-                "resolve_provider_client: vertex requested but "
-                "Anthropic Vertex dependencies are not installed"
-            )
-            return None, None
-
-        try:
-            creds = resolve_vertex_anthropic_runtime_credentials()
-            project_id = creds["project_id"]
-            region = creds["region"]
-            real_client = build_anthropic_vertex_client(project_id, region)
-        except (AuthError, ImportError, ValueError) as exc:
-            logger.warning("resolve_provider_client: cannot create Vertex client: %s", exc)
-            return None, None
-
-        default_model = _get_aux_model_for_provider(provider)
-        final_model = _normalize_resolved_model(model or default_model, provider)
-        client = AnthropicAuxiliaryClient(
-            real_client,
-            final_model,
-            api_key=creds.get("api_key", "gcp-adc"),
-            base_url=creds.get("base_url", "https://aiplatform.googleapis.com"),
-        )
-        client._vertex_project_id = project_id
-        client._vertex_region = region
-        logger.debug("resolve_provider_client: vertex (%s, %s)", final_model, region)
         return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 

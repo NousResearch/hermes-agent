@@ -453,7 +453,17 @@ def init_agent(
         agent.api_mode = "codex_responses"
         agent.provider = "xai"
     elif agent.provider == "vertex":
-        agent.api_mode = "anthropic_messages"
+        # Vertex is a dual-path provider: Claude → AnthropicVertex SDK
+        # (anthropic_messages), Gemini → OpenAI-compatible endpoint
+        # (chat_completions).  When api_mode was already set explicitly
+        # (by runtime_provider), the top-of-chain check at line 440
+        # accepted it; this branch only fires for direct AIAgent()
+        # construction without an explicit api_mode.
+        from hermes_cli.runtime_provider import _is_anthropic_vertex_model
+        if _is_anthropic_vertex_model(agent.model):
+            agent.api_mode = "anthropic_messages"
+        else:
+            agent.api_mode = "chat_completions"
     elif agent.provider == "anthropic" or (provider_name is None and agent._base_url_hostname == "api.anthropic.com"):
         agent.api_mode = "anthropic_messages"
         agent.provider = "anthropic"

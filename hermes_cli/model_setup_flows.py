@@ -2435,6 +2435,8 @@ def _model_flow_vertex(config, current_model=""):
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
     ]
+    # Preview URL for confirmation — Gemini uses the OpenAI-compatible endpoint;
+    # Claude uses the AnthropicVertex SDK (no user-facing URL).
     base_url_preview = (
         "https://aiplatform.googleapis.com/v1beta1/projects/<project>/"
         f"locations/{region}/endpoints/openapi"
@@ -2473,7 +2475,10 @@ def _model_flow_vertex(config, current_model=""):
         save_config(cfg)
         deactivate_provider()
 
-        print(f"  Default model set to: {selected} (via Google Vertex AI, {region})")
+        # Show the correct SDK path in the confirmation message.
+        _is_claude = "claude" in selected.lower()
+        _sdk_hint = "AnthropicVertex SDK" if _is_claude else "OpenAI-compatible endpoint"
+        print(f"  Default model set to: {selected} (via Google Vertex AI, {region}, {_sdk_hint})")
     else:
         print("  No change.")
 

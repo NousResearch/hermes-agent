@@ -2951,6 +2951,51 @@ class TestVertexRuntimeResolution:
         assert creds["project_id"] == "env-project"
         assert creds["region"] == "us-central1"
 
+    def test_vertex_gemini_routes_to_chat_completions(self, monkeypatch):
+        """Gemini models on Vertex should get api_mode=chat_completions, not anthropic_messages."""
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "vertex")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {
+            "default": "google/gemini-3-flash-preview", "provider": "vertex",
+        })
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        mock_token = "ya29.test-token"
+        mock_base_url = "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+
+        import agent.vertex_adapter as va_mod
+        monkeypatch.setattr(va_mod, "get_vertex_config", lambda **kw: (mock_token, mock_base_url))
+
+        resolved = rp.resolve_runtime_provider(
+            requested="vertex",
+            target_model="google/gemini-3-flash-preview",
+        )
+
+        assert resolved["provider"] == "vertex"
+        assert resolved["api_mode"] == "chat_completions"
+        assert resolved["api_key"] == mock_token
+        assert "vertex_anthropic" not in resolved
+
+    def test_vertex_claude_routes_to_anthropic_messages(self, monkeypatch):
+        """Claude models on Vertex should get api_mode=anthropic_messages with vertex_anthropic=True."""
+        monkeypatch.setenv("ANTHROPIC_VERTEX_PROJECT_ID", "test-project")
+        monkeypatch.setenv("CLOUD_ML_REGION", "us-east5")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "vertex")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {
+            "default": "claude-sonnet-4-6", "provider": "vertex",
+        })
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(
+            requested="vertex",
+            target_model="claude-sonnet-4-6",
+        )
+
+        assert resolved["provider"] == "vertex"
+        assert resolved["api_mode"] == "anthropic_messages"
+        assert resolved["vertex_anthropic"] is True
+        assert resolved["project_id"] == "test-project"
+        assert resolved["region"] == "us-east5"
+
 
 # ----------------------------------------------------------------------
 # GitHub #27132 — provider aliases (ollama/vllm/llamacpp/llama-cpp) must

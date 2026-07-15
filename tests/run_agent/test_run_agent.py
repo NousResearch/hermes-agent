@@ -7000,6 +7000,129 @@ class TestVertexClientSelection:
         assert agent._anthropic_client is new_client
 
 
+class TestVertexGeminiInit:
+    """Tests for Vertex + Gemini model-based routing (chat_completions path)."""
+
+    def test_vertex_gemini_init_uses_chat_completions_mode(self, monkeypatch):
+        """When provider=vertex and model is Gemini, api_mode must be chat_completions."""
+        monkeypatch.setenv("VERTEX_PROJECT_ID", "test-project")
+        monkeypatch.setenv("VERTEX_REGION", "global")
+
+        mock_openai = MagicMock()
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI", return_value=mock_openai),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_vertex_client",
+                side_effect=AssertionError("gemini should not use build_anthropic_vertex_client"),
+                create=True,
+            ),
+        ):
+            agent = AIAgent(
+                provider="vertex",
+                model="google/gemini-3-flash-preview",
+                api_key="ya29.test-token",
+                base_url="https://aiplatform.googleapis.com/v1beta1/projects/test-project/locations/global/endpoints/openapi",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent.api_mode == "chat_completions"
+        assert agent._anthropic_client is None
+
+    def test_vertex_gemini_init_does_not_set_anthropic_messages(self, monkeypatch):
+        """Regression: vertex + gemini model must NOT get anthropic_messages api_mode."""
+        monkeypatch.setenv("VERTEX_PROJECT_ID", "test-project")
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                provider="vertex",
+                model="google/gemini-2.5-pro",
+                api_key="ya29.test-token",
+                base_url="https://us-central1-aiplatform.googleapis.com/v1beta1/projects/test-project/locations/us-central1/endpoints/openapi",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent.api_mode == "chat_completions"
+        assert agent.provider == "vertex"
+
+    def test_vertex_claude_init_uses_anthropic_messages(self, monkeypatch):
+        """When provider=vertex and model is Claude, api_mode must be anthropic_messages."""
+        monkeypatch.setenv("ANTHROPIC_VERTEX_PROJECT_ID", "vertex-project")
+        monkeypatch.setenv("CLOUD_ML_REGION", "us-east5")
+
+        vertex_client = MagicMock()
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=_make_tool_defs("web_search")),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "agent.anthropic_adapter.build_anthropic_vertex_client",
+                return_value=vertex_client,
+                create=True,
+            ) as mock_build_vertex,
+        ):
+            agent = AIAgent(
+                provider="vertex",
+                model="claude-sonnet-4-6",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        assert agent.api_mode == "anthropic_messages"
+        mock_build_vertex.assert_called_once()
+        assert agent._anthropic_client is vertex_client
+
+
+class TestVertexAuxiliaryResolution:
+    """Tests for Vertex auxiliary client model-based routing."""
+
+    def test_auxiliary_vertex_claude_returns_anthropic_client(self, monkeypatch):
+        """Vertex + Claude model should resolve to an AnthropicAuxiliaryClient."""
+        monkeypatch.setenv("ANTHROPIC_VERTEX_PROJECT_ID", "aux-project")
+        monkeypatch.setenv("CLOUD_ML_REGION", "global")
+
+        mock_vertex_client = MagicMock()
+        with (
+            patch(
+                "agent.anthropic_adapter.build_anthropic_vertex_client",
+                return_value=mock_vertex_client,
+                create=True,
+            ),
+        ):
+            from agent.auxiliary_client import resolve_provider_client
+            client, model = resolve_provider_client("vertex", model="claude-sonnet-4-6")
+
+        assert client is not None
+        assert "claude" in model.lower()
+
+    def test_auxiliary_vertex_gemini_returns_openai_client(self, monkeypatch):
+        """Vertex + Gemini model should resolve to an OpenAI client."""
+        mock_token = "ya29.test-token-for-aux"
+        mock_base_url = "https://aiplatform.googleapis.com/v1beta1/projects/p/locations/global/endpoints/openapi"
+
+        with (
+            patch("agent.vertex_adapter.has_vertex_credentials", return_value=True),
+            patch("agent.vertex_adapter.get_vertex_config", return_value=(mock_token, mock_base_url)),
+        ):
+            from agent.auxiliary_client import resolve_provider_client
+            client, model = resolve_provider_client("vertex", model="google/gemini-3-flash-preview")
+
+        assert client is not None
+        assert "gemini" in model.lower()
+
+
 class TestAnthropicCredentialRefresh:
     def test_try_refresh_anthropic_client_credentials_rebuilds_client(self):
         with (

@@ -295,11 +295,6 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
         f"Refusing to write to sensitive system path: {filepath}\n"
         "Use the terminal tool with sudo if you need to modify system files."
     )
-    if _is_within_active_tempdir(resolved) or _is_within_active_tempdir(normalized):
-        return None
-    for prefix in _SENSITIVE_PATH_PREFIXES:
-        if resolved.startswith(prefix) or normalized.startswith(prefix):
-            return _err
     if resolved in _SENSITIVE_EXACT_PATHS or normalized in _SENSITIVE_EXACT_PATHS:
         return _err
     # Prevent agents from modifying the Hermes config file directly.
@@ -313,6 +308,16 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
             "Agent cannot modify security-sensitive configuration. "
             "Edit ~/.hermes/config.yaml directly or use 'hermes config' instead."
         )
+    # Allow writes under the active OS temp dir even though macOS resolves it
+    # under /private/var/folders/... (which the prefix loop below blocks). This
+    # is ordered AFTER the exact-path and Hermes-config checks so a sensitive
+    # file or a relocated Hermes config living under the temp dir is still
+    # refused; only the /private/var prefix false-positive is lifted here.
+    if _is_within_active_tempdir(resolved) or _is_within_active_tempdir(normalized):
+        return None
+    for prefix in _SENSITIVE_PATH_PREFIXES:
+        if resolved.startswith(prefix) or normalized.startswith(prefix):
+            return _err
     return None
 
 

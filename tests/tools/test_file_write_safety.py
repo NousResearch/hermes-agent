@@ -112,6 +112,32 @@ class TestCheckSensitivePathMacOSBypass:
         from tools.file_tools import _check_sensitive_path
         assert _check_sensitive_path(str(tmp_path / "safe.txt")) is None
 
+    def test_active_tempdir_exception_is_narrowly_scoped(self, monkeypatch):
+        # Mock the temp root to a /private/var/folders/... path (the macOS shape)
+        # so the assertion holds on Linux CI too, where the real tempdir is /tmp.
+        import tools.file_tools as ft
+        temp_root = "/private/var/folders/ab/cdef1234/T"
+        monkeypatch.setattr(ft.tempfile, "gettempdir", lambda: temp_root)
+        # A child of the active temp dir is allowed despite living under
+        # /private/var (which the prefix guard blocks on macOS).
+        assert ft._check_sensitive_path(temp_root + "/work/out.txt") is None
+        # A sibling under /private/var that is NOT in the temp dir stays blocked:
+        # the exception is scoped to the temp root, not all of /private/var.
+        assert ft._check_sensitive_path("/private/var/db/secret") is not None
+
+    def test_hermes_config_under_active_tempdir_still_blocked(self, monkeypatch):
+        # A relocated Hermes config living under the active temp dir must remain
+        # refused: the exact-path and config checks run BEFORE the tempdir
+        # exception, so the tempdir allow-list can't be used to disable exec
+        # approval by rewriting config.yaml.
+        import tools.file_tools as ft
+        temp_root = "/private/var/folders/ab/cdef1234/T"
+        config_path = temp_root + "/relocated-hermes/config.yaml"
+        monkeypatch.setattr(ft.tempfile, "gettempdir", lambda: temp_root)
+        monkeypatch.setattr(ft, "_get_hermes_config_resolved", lambda: os.path.normpath(config_path))
+        err = ft._check_sensitive_path(config_path)
+        assert err is not None and "config" in err.lower()
+
 
 class TestAtomicWrite:
     """write_file / patch land via a temp-file + atomic rename.

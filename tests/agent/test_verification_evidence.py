@@ -4,6 +4,7 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+import agent.verification_evidence as verification_evidence
 from agent.verification_evidence import (
     classify_verification_command,
     mark_workspace_edited,
@@ -191,6 +192,40 @@ def test_temp_script_records_ad_hoc_evidence_without_canonical_suite(tmp_path, m
     assert evidence.kind == "ad_hoc"
     assert evidence.scope == "targeted"
     assert evidence.status == "passed"
+
+
+def test_windows_temp_script_parser_falls_back_to_non_posix_tokens(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    (tmp_path / "package.json").write_text("{}", encoding="utf-8")
+    script = r"C:\Users\agent\AppData\Local\Temp\hermes-verify-abc123.py"
+    target = r"tests\agent\test_widget.py"
+    seen_tokens: list[str] = []
+
+    def fake_is_temp_script_path(token: str, root: str | Path | None) -> bool:
+        seen_tokens.append(token)
+        return token == script
+
+    monkeypatch.setattr(
+        verification_evidence,
+        "_is_temp_script_path",
+        fake_is_temp_script_path,
+    )
+
+    evidence = classify_verification_command(
+        f"python {script} {target}",
+        cwd=tmp_path,
+        session_id="s1",
+        exit_code=0,
+        output="ok",
+    )
+
+    assert evidence is not None
+    assert evidence.canonical_command == "ad-hoc verification script"
+    assert evidence.kind == "ad_hoc"
+    assert evidence.scope == "targeted"
+    assert evidence.status == "passed"
+    assert "C:UsersagentAppDataLocalTemphermes-verify-abc123.py" in seen_tokens
+    assert script in seen_tokens
 
 
 def test_unprefixed_temp_script_is_not_ad_hoc_evidence(tmp_path, monkeypatch):

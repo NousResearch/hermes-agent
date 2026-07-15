@@ -926,6 +926,26 @@ class TestHealthDetailedEndpoint:
              patch("tools.async_delegation.active_count", return_value=2):
             assert adapter._readiness_work_counts() == (3, 4, 2)
 
+    def test_readiness_work_counts_include_stopping_runs(self, adapter):
+        """Regression: _handle_stop_run() sets status="stopping" and holds it
+        there — cooperatively, with no hard timeout — until the agent notices
+        the interrupt and the task actually exits. A run in that window is
+        still doing real executor-thread work and must count as active,
+        the same as "running"; excluding it undercounts active_api_runs for
+        the whole (now-unbounded) cooperative-stop duration."""
+        adapter._run_statuses = {
+            "queued": {"status": "queued"},
+            "running": {"status": "running"},
+            "approval": {"status": "waiting_for_approval"},
+            "stopping": {"status": "stopping"},
+            "done": {"status": "completed"},
+            "cancelled": {"status": "cancelled"},
+        }
+
+        with patch("tools.process_registry.process_registry.completion_queue.qsize", return_value=0), \
+             patch("tools.async_delegation.active_count", return_value=0):
+            assert adapter._readiness_work_counts() == (4, 0, 0)
+
 
 # ---------------------------------------------------------------------------
 # /v1/models endpoint

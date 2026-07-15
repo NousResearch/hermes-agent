@@ -626,6 +626,7 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
+    output_cap_reductions = 0  # consecutive parseable output-cap 400s this turn (overflow-spiral guard)
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
     # Last composed answer intentionally held back by a verification gate. If
     # that continuation consumes the remaining budget, this is the best
@@ -1043,7 +1044,7 @@ def run_conversation(
         if (
             agent.compression_enabled
             and len(messages) > 1
-            and compression_attempts < 3
+            and compression_attempts < 30
             and not _defer_preflight(request_pressure_tokens)
             and not _compression_cooldown
             and _compressor.should_compress(request_pressure_tokens)
@@ -1051,7 +1052,7 @@ def run_conversation(
             compression_attempts += 1
             logger.info(
                 "Pre-API compression: ~%s request tokens >= %s threshold "
-                "(context=%s, attempt=%s/3)",
+                "(context=%s, attempt=%s/30)",
                 f"{request_pressure_tokens:,}",
                 f"{int(getattr(_compressor, 'threshold_tokens', 0) or 0):,}",
                 f"{int(getattr(_compressor, 'context_length', 0) or 0):,}"
@@ -1125,7 +1126,7 @@ def run_conversation(
         retry_count = 0
         max_retries = agent._api_max_retries
         _retry = TurnRetryState()
-        max_compression_attempts = 3
+        max_compression_attempts = 30
 
         finish_reason = "stop"
         response = None  # Guard against UnboundLocalError if all retries fail
@@ -3519,26 +3520,46 @@ def run_conversation(
                     #       context_length = total window (input + output combined).
                     available_out = parse_available_output_tokens_from_error(error_msg)
                     if available_out is not None:
+                        output_cap_reductions += 1
+                    if available_out is not None and output_cap_reductions >= 2:
+                        # A reduction did NOT converge → the PROMPT itself overflows
+                        # the window. A strict endpoint (vLLM) reports the input as a
+                        # DERIVED bound (= context_length + 1 − max_tokens), so
+                        # ``available_out`` just tracks our shrinking cap and never
+                        # opens real headroom — the 8192→450 spiral that ends in an
+                        # auto-blocked task. Stop shrinking the OUTPUT; reduce the
+                        # INPUT via real compression instead (reset the spiralled cap
+                        # and fall through — do NOT break — past the output-cap
+                        # fail-fast into the compression block below).
+                        agent._ephemeral_max_output_tokens = None
+                        agent._buffer_vprint(
+                            "⚠️  Output-cap reduction did not converge — the prompt "
+                            "itself overflows the window; compressing the input instead."
+                        )
+                    elif available_out is not None:
                         # This is an output-cap error, not input overflow.
                         # The provider's available_tokens is the authoritative
                         # cap for the failed request, so keep it as an upper
                         # bound.  Also estimate the current API request shape
                         # (system prompt, injected context, tool schemas) because
                         # Hermes may add API-only content not present in persisted
-                        # messages.  Use the smaller budget and apply a small
-                        # safety margin.  Do not alter context_length.
+                        # messages.  Use the smaller budget and apply a safety
+                        # margin that absorbs input drift between retries (a
+                        # truncated-tool-call retry can GROW the prompt, so a tiny
+                        # margin fails once more before the spiral guard fires).
+                        # Do not alter context_length.
                         request_input_estimate = estimate_request_tokens_rough(
                             api_messages, tools=agent.tools or None,
                         )
                         local_available_out = old_ctx - request_input_estimate
                         if local_available_out > 0:
-                            safe_out = max(1, min(available_out, local_available_out) - 64)
+                            safe_out = max(1, min(available_out, local_available_out) - 512)
                         else:
                             # The rough local estimate can overshoot the real
                             # request size.  Fall back to the provider-reported
                             # budget, which is authoritative for the failed
                             # request.
-                            safe_out = max(1, available_out - 64)
+                            safe_out = max(1, available_out - 512)
                         agent._ephemeral_max_output_tokens = safe_out
                         agent._buffer_vprint(
                             f"⚠️  Output cap too large for current prompt — "
@@ -3577,8 +3598,11 @@ def run_conversation(
                     # on the oversized max_tokens.  Routing it into compression
                     # re-sends the same max_tokens, gets the identical 400, and
                     # death-loops until "cannot compress further" (#55546).
-                    # Fail fast with an actionable message instead of looping.
-                    if is_output_cap_error(error_msg):
+                    # Fail fast with an actionable message instead of looping —
+                    # UNLESS a prior reduction already failed to converge
+                    # (output_cap_reductions >= 2), meaning the prompt itself
+                    # overflows and we've already routed to compression above.
+                    if is_output_cap_error(error_msg) and output_cap_reductions < 2:
                         agent._flush_status_buffer()
                         agent._vprint(
                             f"{agent.log_prefix}❌ The provider rejected the request because "

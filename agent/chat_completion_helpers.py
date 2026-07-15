@@ -1025,6 +1025,12 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
             anthropic_max_output=_ant_max,
             supports_reasoning=agent._supports_reasoning_extra_body(),
             qwen_session_metadata=_qwen_meta,
+            context_length=(
+                getattr(getattr(agent, "context_compressor", None), "context_length", None)
+            ),
+            estimated_input_tokens=estimate_request_context_tokens(
+                {"messages": api_messages, "tools": tools_for_api}
+            ),
         )
 
     # ── Legacy flag path ────────────────────────────────────────────

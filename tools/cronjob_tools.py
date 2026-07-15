@@ -598,6 +598,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         result["enabled_toolsets"] = job["enabled_toolsets"]
     if job.get("workdir"):
         result["workdir"] = job["workdir"]
+    if job.get("inline_keyboard"):
+        result["inline_keyboard"] = job["inline_keyboard"]
     return result
 
 
@@ -677,6 +679,7 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    buttons: Optional[List[str]] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -750,6 +753,7 @@ def cronjob(
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
                 attach_to_session=attach_to_session,
+                buttons=buttons,
             )
             _notify_provider_jobs_changed_safe()
             _create_message = f"Cron job '{job['name']}' created."
@@ -923,6 +927,10 @@ def cronjob(
                 updates["enabled_toolsets"] = enabled_toolsets or None
             if attach_to_session is not None:
                 updates["attach_to_session"] = bool(attach_to_session)
+            if buttons is not None:
+                from cron.jobs import normalize_inline_buttons
+
+                updates["inline_keyboard"] = normalize_inline_buttons(buttons)
             if workdir is not None:
                 # Empty string clears the field (restores old behaviour);
                 # otherwise pass raw — update_job() validates / normalizes.

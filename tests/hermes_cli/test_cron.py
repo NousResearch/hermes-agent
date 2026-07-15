@@ -381,6 +381,44 @@ def test_cron_create_success_prints_job_details(monkeypatch, capsys):
     assert "Next run: 2026-06-01T00:00:00Z" in out
 
 
+def test_cron_create_forwards_inline_buttons(monkeypatch):
+    captured = {}
+
+    def _capture(**kwargs):
+        captured.update(kwargs)
+        return {
+            "success": True,
+            "job_id": "job-1",
+            "name": "Daily Radar",
+            "schedule": "every day",
+            "next_run_at": "2026-07-17T18:00:00Z",
+            "job": {},
+        }
+
+    monkeypatch.setattr(cron_cli, "_cron_api", _capture)
+    monkeypatch.setattr(cron_cli, "_warn_if_gateway_not_running", lambda: None)
+    args = SimpleNamespace(
+        schedule="0 18 * * 1-5",
+        prompt=None,
+        name="Daily Radar",
+        deliver="telegram",
+        repeat=None,
+        skill=None,
+        skills=None,
+        script="brain-news-publish.py",
+        workdir=None,
+        no_agent=True,
+        buttons=[
+            "Relevant=zbr:relevant",
+            "Zu technisch=zbr:technical",
+            "Bezug fehlt=zbr:missing",
+        ],
+    )
+
+    assert cron_cli.cron_create(args) == 0
+    assert captured["buttons"] == args.buttons
+
+
 def test_cron_create_failure_returns_nonzero(monkeypatch, capsys):
     monkeypatch.setattr(cron_cli, "_cron_api", lambda **kwargs: {"success": False, "error": "boom"})
 

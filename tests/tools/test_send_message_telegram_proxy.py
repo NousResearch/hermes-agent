@@ -155,3 +155,38 @@ class TestSendTelegramStandaloneProxy:
         assert "get_updates_request" not in call_kwargs
         httpx_request_factory.assert_not_called()
         bot.send_message.assert_awaited_once()
+
+    def test_inline_keyboard_reaches_standalone_telegram_send(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tools.send_message_tool import _send_telegram
+
+        for var in (
+            "TELEGRAM_PROXY", "HTTPS_PROXY", "https_proxy", "HTTP_PROXY",
+            "http_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy",
+        ):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setattr(sys, "platform", "linux")
+        bot = _make_bot()
+        _install_telegram_mock_with_request(
+            monkeypatch,
+            MagicMock(return_value=bot),
+            MagicMock(),
+        )
+        markup = object()
+        monkeypatch.setattr(
+            "plugins.platforms.telegram.adapter.TelegramAdapter._plugin_callback_keyboard",
+            staticmethod(lambda _rows: markup),
+        )
+
+        result = asyncio.run(
+            _send_telegram(
+                "tok",
+                "123",
+                "Daily Radar",
+                inline_keyboard=[[{"text": "Relevant", "callback_data": "zbr:relevant"}]],
+            )
+        )
+
+        assert result["success"] is True
+        assert bot.send_message.await_args.kwargs["reply_markup"] is markup

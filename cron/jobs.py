@@ -1036,6 +1036,29 @@ def _normalized_inference_axes(job: Dict[str, Any]) -> Tuple[Optional[str], Opti
     )
 
 
+def normalize_inline_buttons(buttons: Optional[List[str]]) -> Optional[List[List[Dict[str, str]]]]:
+    """Normalize repeatable ``LABEL=CALLBACK_DATA`` values for Telegram."""
+    if buttons is None:
+        return None
+    if not isinstance(buttons, list) or not 1 <= len(buttons) <= 8:
+        raise ValueError("buttons must contain between 1 and 8 LABEL=CALLBACK_DATA values")
+    row: List[Dict[str, str]] = []
+    seen = set()
+    for raw in buttons:
+        if not isinstance(raw, str) or "=" not in raw:
+            raise ValueError("each button must use LABEL=CALLBACK_DATA")
+        label, callback_data = (part.strip() for part in raw.split("=", 1))
+        if not label or len(label) > 64:
+            raise ValueError("button labels must contain 1 to 64 characters")
+        if not callback_data or len(callback_data.encode("utf-8")) > 64:
+            raise ValueError("button callback data must contain 1 to 64 bytes")
+        if callback_data in seen:
+            raise ValueError("button callback data must be unique within a job")
+        seen.add(callback_data)
+        row.append({"text": label, "callback_data": callback_data})
+    return [row]
+
+
 def create_job(
     prompt: Optional[str],
     schedule: str,
@@ -1054,6 +1077,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    buttons: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1130,6 +1154,7 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_inline_keyboard = normalize_inline_buttons(buttons)
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1220,6 +1245,8 @@ def create_job(
         "enabled_toolsets": normalized_toolsets,
         "workdir": normalized_workdir,
     }
+    if normalized_inline_keyboard is not None:
+        job["inline_keyboard"] = normalized_inline_keyboard
     # Only persist attach_to_session when explicitly set, so existing jobs and
     # the common case stay byte-identical (absent key => fall back to the
     # global cron.mirror_delivery config, default off).

@@ -776,7 +776,16 @@ async def _send_via_adapter(
     }
 
 
-async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
+async def _send_to_platform(
+    platform,
+    pconfig,
+    chat_id,
+    message,
+    thread_id=None,
+    media_files=None,
+    force_document=False,
+    inline_keyboard=None,
+):
     """Route a message to the appropriate platform sender.
 
     Long messages are automatically chunked to fit within platform limits
@@ -856,6 +865,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             thread_id=thread_id,
             disable_link_previews=disable_link_previews,
             force_document=force_document,
+            inline_keyboard=inline_keyboard,
         )
 
     # --- Discord: chunked delivery via the registry's standalone_sender_fn.
@@ -1113,7 +1123,16 @@ def _is_telegram_thread_not_found(error: Exception) -> bool:
     return "thread not found" in str(error).lower()
 
 
-async def _send_telegram(token, chat_id, message, media_files=None, thread_id=None, disable_link_previews=False, force_document=False):
+async def _send_telegram(
+    token,
+    chat_id,
+    message,
+    media_files=None,
+    thread_id=None,
+    disable_link_previews=False,
+    force_document=False,
+    inline_keyboard=None,
+):
     """Send via Telegram Bot API (one-shot, no polling needed).
 
     Applies markdown→MarkdownV2 formatting (same as the gateway adapter)
@@ -1205,8 +1224,17 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
         if disable_link_previews:
             text_kwargs["disable_web_page_preview"] = True
 
+        reply_markup = None
+        if inline_keyboard is not None:
+            from plugins.platforms.telegram.adapter import TelegramAdapter
+
+            reply_markup = TelegramAdapter._plugin_callback_keyboard(inline_keyboard)
+            if reply_markup is None:
+                return {"error": "invalid inline_keyboard metadata"}
+
         last_msg = None
         warnings = []
+        keyboard_sent = False
 
         # MEDIA:<path> caption: when a single captionable file is accompanied
         # by short text, attach the text to the media bubble as its native
@@ -1237,12 +1265,17 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
             text_chunks = BasePlatformAdapter.truncate_message(
                 formatted, 4096, len_fn=utf16_len
             )
-            for chunk in text_chunks:
+            for chunk_index, chunk in enumerate(text_chunks):
+                action_kwargs = (
+                    {"reply_markup": reply_markup}
+                    if reply_markup is not None and chunk_index == len(text_chunks) - 1
+                    else {}
+                )
                 try:
                     last_msg = await _send_telegram_message_with_retry(
                         bot,
                         chat_id=int_chat_id, text=chunk,
-                        parse_mode=send_parse_mode, **text_kwargs
+                        parse_mode=send_parse_mode, **text_kwargs, **action_kwargs
                     )
                 except Exception as md_error:
                     # Thread not found — retry without message_thread_id so the
@@ -1257,7 +1290,7 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         last_msg = await _send_telegram_message_with_retry(
                             bot,
                             chat_id=int_chat_id, text=chunk,
-                            parse_mode=send_parse_mode, **text_kwargs
+                            parse_mode=send_parse_mode, **text_kwargs, **action_kwargs
                         )
                     elif "parse" in str(md_error).lower() or "markdown" in str(md_error).lower() or "html" in str(md_error).lower():
                         logger.warning(
@@ -1276,12 +1309,14 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                         last_msg = await _send_telegram_message_with_retry(
                             bot,
                             chat_id=int_chat_id, text=plain,
-                            parse_mode=None, **text_kwargs
+                            parse_mode=None, **text_kwargs, **action_kwargs
                         )
                     else:
                         raise
+                if action_kwargs:
+                    keyboard_sent = True
 
-        for media_path, is_voice in media_files:
+        for media_index, (media_path, is_voice) in enumerate(media_files):
             if not os.path.exists(media_path):
                 warning = f"Media file not found, skipping: {media_path}"
                 logger.warning(warning)
@@ -1314,6 +1349,12 @@ async def _send_telegram(token, chat_id, message, media_files=None, thread_id=No
                     if _tg_caption is not None and not (ext in _VOICE_EXTS and is_voice):
                         media_kwargs["caption"] = _tg_caption
                         media_kwargs["parse_mode"] = send_parse_mode
+                    if (
+                        reply_markup is not None
+                        and not keyboard_sent
+                        and media_index == len(media_files) - 1
+                    ):
+                        media_kwargs["reply_markup"] = reply_markup
                     try:
                         if ext in _IMAGE_EXTS and not force_document:
                             last_msg = await bot.send_photo(

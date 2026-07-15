@@ -4896,9 +4896,9 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             encoding = getattr(sys.stdout, "encoding", None) or "ascii"
             print(text.encode(encoding, errors="replace").decode(encoding, errors="replace"))
 
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_constants import with_hermes_node_path
 
-    npm = find_node_executable("npm")
+    npm = _resolve_node_runtime_npm()
     if not npm:
         if fatal:
             _say("Web UI frontend not built and npm is not available.")
@@ -5636,7 +5636,7 @@ def cmd_gui(args: argparse.Namespace):
     except Exception:
         pass
 
-    from hermes_constants import find_node_executable, with_hermes_node_path
+    from hermes_constants import with_hermes_node_path
 
     # with_hermes_node_path() copies os.environ when called with no arg.
     env = with_hermes_node_path()
@@ -5666,7 +5666,7 @@ def cmd_gui(args: argparse.Namespace):
     packaged_executable = _desktop_packaged_executable(desktop_dir)
 
     if source_mode or not skip_build:
-        npm = find_node_executable("npm")
+        npm = _resolve_node_runtime_npm()
         if not npm:
             print("Desktop GUI requires Node.js/npm, but npm was not found on PATH.")
             print("Install Node.js, then run:  hermes gui")
@@ -6400,7 +6400,7 @@ def _update_via_zip(args):
             )
         _install_python_dependencies_with_optional_fallback(pip_cmd)
 
-    _update_node_dependencies()
+    node_failures = _update_node_dependencies()
     _build_web_ui(PROJECT_ROOT / "web")
 
     # Sync skills
@@ -6439,7 +6439,15 @@ def _update_via_zip(args):
         logger.debug("Model catalog seed during zip update failed: %s", e)
 
     print()
-    print("✓ Update complete!")
+    if node_failures:
+        print(
+            "⚠ Update partially complete — Node.js dependencies for "
+            f"{', '.join(node_failures)} did not refresh."
+        )
+        print("  Code and Python deps are updated, but the dashboard/TUI may")
+        print("  be in a mixed state until the Node deps are rebuilt.")
+    else:
+        print("✓ Update complete!")
     try:
         _print_curator_first_run_notice()
     except Exception as e:
@@ -6448,7 +6456,14 @@ def _update_via_zip(args):
         _print_curator_recent_run_notice()
     except Exception as e:
         logger.debug("Curator recent-run notice failed: %s", e)
-    _kill_stale_dashboard_processes()
+    # Don't stop a working dashboard when the Node refresh failed — see the
+    # git-update path for rationale (#30271).
+    if node_failures:
+        print()
+        print("  ℹ Leaving running dashboard process(es) untouched because the")
+        print("    Node.js dependency refresh did not complete.")
+    else:
+        _kill_stale_dashboard_processes()
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -8210,15 +8225,94 @@ def _record_npm_lockfile_hash(hermes_root: Path) -> None:
         logger.debug("Could not write npm lockfile hash cache")
 
 
-def _update_node_dependencies() -> None:
-    from hermes_constants import find_node_executable, with_hermes_node_path
+def _is_windows_npm_path(npm_path: str) -> bool:
+    """Return True if ``npm_path`` points at a Windows npm shim.
+
+    On WSL the Windows install dir is exposed through the ``/mnt/c`` drive
+    mount and PATH interop, so ``shutil.which("npm")`` can hand back
+    ``/mnt/c/Program Files/nodejs/npm`` (or the ``npm.cmd`` / ``npm.exe``
+    shim). Those are detected here by their ``.exe``/``.cmd``/``.bat``
+    suffix, a ``/mnt/`` drive-mount prefix, or an embedded backslash (a UNC
+    path). Callers use this only on a POSIX host — on native Windows an
+    ``npm.cmd`` shim is the correct executable.
+    """
+    low = npm_path.lower()
+    return (
+        low.endswith((".exe", ".cmd", ".bat"))
+        or low.startswith("/mnt/")
+        or "\\" in npm_path
+    )
+
+
+def _resolve_node_runtime_npm() -> str | None:
+    """Resolve an npm executable that belongs to the host's Node runtime.
+
+    On WSL/Linux ``shutil.which("npm")`` may resolve a Windows npm exposed
+    through PATH interop. Running that Windows npm against the Linux checkout
+    operates over ``\\wsl.localhost\\...`` UNC paths and fails with EISDIR /
+    symlink errors in symlink-heavy trees like ``ui-tui`` (#30271). Refuse a
+    Windows npm on a POSIX host and re-scan PATH (skipping ``/mnt/*`` interop
+    entries) for a Linux-native npm. Returns the npm path, or ``None`` when
+    no suitable npm is reachable.
+    """
+    from hermes_constants import find_node_executable
 
     npm = find_node_executable("npm")
-    if not npm:
-        return
 
+    # On native Windows the platform npm (``npm.cmd``) is exactly what we
+    # want — only reject Windows shims when we're a POSIX/WSL process.
+    if _is_windows():
+        return npm
+
+    if not npm:
+        return None
+
+    if not _is_windows_npm_path(npm):
+        return npm
+
+    # The first resolution was a Windows npm. Re-scan PATH skipping the
+    # ``/mnt/*`` Windows drive mounts WSL injects, so a Linux-native npm that
+    # came later on PATH is still found.
+    for directory in os.environ.get("PATH", "").split(os.pathsep):
+        if not directory or directory.lower().startswith("/mnt/"):
+            continue
+        candidate = shutil.which("npm", path=directory)
+        if candidate and not _is_windows_npm_path(candidate):
+            return candidate
+    return None
+
+
+def _update_node_dependencies() -> list[str]:
+    """Refresh Node deps in the repo root and update workspaces.
+
+    Returns the list of labels whose npm install failed (empty on success),
+    so the caller can treat a Node refresh failure as a partial update rather
+    than silently reporting ``Update complete!`` (#30271).
+    """
     if not (PROJECT_ROOT / "package.json").exists():
-        return
+        return []
+
+    npm = _resolve_node_runtime_npm()
+    if not npm:
+        # If the only npm reachable inside this WSL shell is the Windows one,
+        # flag it loudly: silently skipping leaves ui-tui deps stale while the
+        # rest of the update proceeds, and running it would corrupt the tree.
+        from hermes_constants import is_wsl
+
+        path_npm = shutil.which("npm")
+        if is_wsl() and path_npm and _is_windows_npm_path(path_npm):
+            print("→ Updating Node.js dependencies...")
+            print("  ⚠ Skipped: only a Windows npm is reachable from this WSL shell.")
+            print("    Install Node.js inside the WSL distro (nvm, or your distro's")
+            print("    package manager), then re-run `hermes update`.")
+            failed = ["repo root"]
+            if any(
+                (PROJECT_ROOT / workspace / "package.json").exists()
+                for workspace in ("ui-tui", "web")
+            ):
+                failed.append("ui-tui, web workspaces")
+            return failed
+        return []
 
     from hermes_constants import get_default_hermes_root
 
@@ -8228,7 +8322,7 @@ def _update_node_dependencies() -> None:
     shared_hermes_root = get_default_hermes_root()
     if not _npm_lockfile_changed(shared_hermes_root):
         logger.info("npm lockfile unchanged, skipping npm install")
-        return
+        return []
 
     # With a single workspace lockfile the root install would cover ALL
     # workspaces — but apps/desktop pulls in Electron as a devDependency,
@@ -8238,7 +8332,17 @@ def _update_node_dependencies() -> None:
     # Desktop deps are installed on demand by the desktop launcher
     # (see _desktop_build_needed).
     print("→ Updating Node.js dependencies...")
+
+    def _partial_update_failure(*labels: str) -> list[str]:
+        print()
+        print("  ⚠ Node.js dependency refresh did not complete cleanly; the")
+        print("    installation may be in a mixed state (updated code, stale Node")
+        print("    deps). Fix npm and re-run `hermes update`.")
+        return list(labels)
+
     extra_args = ["--no-fund", "--no-audit", "--progress=false"]
+
+    from hermes_constants import with_hermes_node_path
 
     nixos_env = with_hermes_node_path(_nixos_build_env())
 
@@ -8261,7 +8365,7 @@ def _update_node_dependencies() -> None:
         stderr = (root_result.stderr or "").strip() if root_result.stderr else ""
         if stderr:
             print(f"    {stderr.splitlines()[-1]}")
-        return
+        return _partial_update_failure("repo root")
 
     # Step 2: install only the workspaces update needs (ui-tui, web).
     # --workspace selects specific workspaces; the rest (desktop) are skipped.
@@ -8276,11 +8380,13 @@ def _update_node_dependencies() -> None:
     if ws_result.returncode == 0:
         _record_npm_lockfile_hash(shared_hermes_root)
         print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
-    else:
-        print("  ⚠ npm workspace install failed")
-        stderr = (ws_result.stderr or "").strip() if ws_result.stderr else ""
-        if stderr:
-            print(f"    {stderr.splitlines()[-1]}")
+        return []
+
+    print("  ⚠ npm workspace install failed")
+    stderr = (ws_result.stderr or "").strip() if ws_result.stderr else ""
+    if stderr:
+        print(f"    {stderr.splitlines()[-1]}")
+    return _partial_update_failure("ui-tui, web workspaces")
 
 
 class _UpdateOutputStream:
@@ -10074,7 +10180,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         _refresh_active_lazy_features()
 
-        _update_node_dependencies()
+        node_failures = _update_node_dependencies()
         _build_web_ui(PROJECT_ROOT / "web")
 
         # Rebuild the desktop app if the source tree changed since the last
@@ -10086,9 +10192,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # Electron build by ``hermes update``.
         desktop_dir = PROJECT_ROOT / "apps" / "desktop"
         has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
-        from hermes_constants import find_node_executable
-
-        if (desktop_dir / "package.json").exists() and find_node_executable("npm") and has_desktop_app:
+        if (desktop_dir / "package.json").exists() and _resolve_node_runtime_npm() and has_desktop_app:
             print("→ Checking if desktop app needs rebuilding...")
             _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
             # Capture the (very loud) Electron/vite build output into
@@ -10376,7 +10480,15 @@ def _cmd_update_impl(args, gateway_mode: bool):
             logger.debug("Cron jobs auto-restore check failed: %s", exc)
 
         print()
-        print("✓ Update complete!")
+        if node_failures:
+            print(
+                "⚠ Update partially complete — Node.js dependencies for "
+                f"{', '.join(node_failures)} did not refresh."
+            )
+            print("  Code and Python deps are updated, but the dashboard/TUI may")
+            print("  be in a mixed state until the Node deps are rebuilt.")
+        else:
+            print("✓ Update complete!")
 
         # Curator first-run heads-up. Only prints when curator is enabled AND
         # has never run — i.e. the window where the ticker would otherwise
@@ -11134,7 +11246,17 @@ def _cmd_update_impl(args, gateway_mode: bool):
         # silent frontend/backend mismatch.  We can't auto-restart it
         # (no saved launch args) but we can stop it, and a hint is
         # printed for the user to re-launch.
-        _kill_stale_dashboard_processes()
+        #
+        # Exception: if the Node dependency refresh failed, the rebuilt
+        # frontend the new backend expects may not exist, so stopping a
+        # working dashboard would leave the user with nothing running
+        # rather than a usable (if mixed) state (#30271). Leave it alone.
+        if node_failures:
+            print()
+            print("  ℹ Leaving running dashboard process(es) untouched because the")
+            print("    Node.js dependency refresh did not complete.")
+        else:
+            _kill_stale_dashboard_processes()
 
         print()
         print("Tip: You can now select a provider and model:")

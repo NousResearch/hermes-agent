@@ -18,6 +18,10 @@ SECTION_MIN_CHARS = 20
 DEFAULT_MODEL = "all-minilm"
 
 
+class PersistedEmbeddingDimensionChanged(Exception):
+    """A reindex observed a new embedding dimension for an existing namespace."""
+
+
 def log(message: str) -> None:
     print(f"[wiki-search] {message}", file=sys.stderr)
 
@@ -164,7 +168,14 @@ def _file_changed(info: object, path: Path, force: bool) -> bool:
     return info.get("mtime_ns") != stat.st_mtime_ns or info.get("size") != stat.st_size
 
 
-def _index_file(path: Path, relative_path: str, index: dict[str, Any], model: str) -> dict[str, object] | None:
+def _index_file(
+    path: Path,
+    relative_path: str,
+    index: dict[str, Any],
+    model: str,
+    *,
+    rebuild_on_dimension_change: bool = False,
+) -> dict[str, object] | None:
     text = path.read_text(encoding="utf-8", errors="replace")
     sections = parse_md_sections(text)
     if not sections:
@@ -182,6 +193,8 @@ def _index_file(path: Path, relative_path: str, index: dict[str, Any], model: st
                 dimension = len(embedding)
                 metadata["dimension"] = dimension
             if len(embedding) != dimension:
+                if rebuild_on_dimension_change:
+                    raise PersistedEmbeddingDimensionChanged
                 log(f"incompatible embedding dimension for {relative_path}; keeping keyword-only")
                 embedding = None
         embedded_sections.append({**section, "embedding": embedding})
@@ -209,26 +222,42 @@ def cmd_index(
     markdown_files = [
         path for path in sorted(root.rglob("*.md")) if not path.relative_to(root).parts[0] == "raw"
     ]
-    present_paths = {str(path.relative_to(root)) for path in markdown_files}
-    files: dict[str, Any] = index["files"]
-    removed = sum(1 for relative_path in list(files) if relative_path not in present_paths)
-    for relative_path in list(files):
-        if relative_path not in present_paths:
-            del files[relative_path]
+    rebuild_on_dimension_change = index["metadata"]["dimension"] is not None
+    while True:
+        present_paths = {str(path.relative_to(root)) for path in markdown_files}
+        files: dict[str, Any] = index["files"]
+        removed = sum(1 for relative_path in list(files) if relative_path not in present_paths)
+        for relative_path in list(files):
+            if relative_path not in present_paths:
+                del files[relative_path]
 
-    indexed = 0
-    skipped = 0
-    for path in markdown_files:
-        relative_path = str(path.relative_to(root))
-        if not _file_changed(files.get(relative_path), path, force):
-            skipped += 1
+        indexed = 0
+        skipped = 0
+        try:
+            for path in markdown_files:
+                relative_path = str(path.relative_to(root))
+                if not _file_changed(files.get(relative_path), path, force):
+                    skipped += 1
+                    continue
+                entry = _index_file(
+                    path,
+                    relative_path,
+                    index,
+                    model,
+                    rebuild_on_dimension_change=rebuild_on_dimension_change,
+                )
+                if entry is None:
+                    files.pop(relative_path, None)
+                else:
+                    files[relative_path] = entry
+                    indexed += 1
+        except PersistedEmbeddingDimensionChanged:
+            log("embedding dimension changed; rebuilding this index namespace")
+            index = fresh_index(root, model)
+            rebuild_on_dimension_change = False
+            force = True
             continue
-        entry = _index_file(path, relative_path, index, model)
-        if entry is None:
-            files.pop(relative_path, None)
-        else:
-            files[relative_path] = entry
-            indexed += 1
+        break
 
     save_index(cache_dir, root, model, index)
     sections = sum(len(file_info["sections"]) for file_info in files.values())

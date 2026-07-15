@@ -169,6 +169,31 @@ def test_indexing_rejects_sections_with_incompatible_vector_dimension(
     assert sections[1]["embedding"] is None
 
 
+def test_reindex_rebuilds_a_persisted_namespace_after_embedding_dimension_change(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = load_module()
+    cache_dir = tmp_path / "cache"
+    root = tmp_path / "wiki"
+    root.mkdir()
+    (root / "entry.md").write_text("# Entry\n\nA durable note that is long enough to embed.", encoding="utf-8")
+
+    monkeypatch.setattr(module, "ollama_embed", lambda text, model: [1.0, 0.0])
+    module.cmd_index(root, model="all-minilm", cache_dir=cache_dir)
+
+    monkeypatch.setattr(module, "ollama_embed", lambda text, model: [1.0, 0.0, 0.0])
+    module.cmd_index(root, model="all-minilm", cache_dir=cache_dir, force=True)
+
+    rebuilt = module.load_index(cache_dir, root, "all-minilm")
+    embedding = rebuilt["files"]["entry.md"]["sections"][0]["embedding"]
+
+    assert rebuilt["metadata"]["dimension"] == 3
+    assert embedding == [1.0, 0.0, 0.0]
+    results, semantic_available = module.semantic_search("durable note", rebuilt, "all-minilm")
+    assert semantic_available is True
+    assert results[0]["file"] == "entry.md"
+
+
 def test_cosine_similarity_rejects_mismatched_vectors_and_ollama_errors(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

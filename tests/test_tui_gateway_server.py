@@ -2284,6 +2284,170 @@ def test_prompt_submit_rejects_negative_truncate_ordinal(monkeypatch):
         server._sessions.pop("trunc-sid", None)
 
 
+class _StopAfterOneNotificationPoll:
+    def __init__(self):
+        self._checks = 0
+
+    def is_set(self):
+        self._checks += 1
+        return self._checks > 1
+
+
+def test_notification_poller_live_loop_requeues_foreign_completion_for_owner(
+    monkeypatch,
+):
+    """A foreign live-loop dequeue is handed back to its proven owner."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    delivered = {"a": [], "b": []}
+    emitted = []
+    session_a = _session(session_key="session-a-live-handoff")
+    session_b = _session(session_key="session-b-live-handoff")
+    event = {
+        "type": "completion",
+        "session_id": "proc-live-handoff",
+        "session_key": "session-a-live-handoff",
+        "command": "echo owner",
+        "exit_code": 0,
+        "output": "owner",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **_kwargs: emitted.append(args))
+
+    def _deliver(_rid, sid, session, text):
+        delivered["a" if sid == "sid-a-live-handoff" else "b"].append(text)
+        session["running"] = False
+
+    monkeypatch.setattr(server, "_run_prompt_submit", _deliver)
+    server._sessions.update(
+        {
+            "sid-a-live-handoff": session_a,
+            "sid-b-live-handoff": session_b,
+        }
+    )
+    process_registry._completion_consumed.discard(event["session_id"])
+
+    try:
+        server._notification_poller_loop(
+            _StopAfterOneNotificationPoll(), "sid-b-live-handoff", session_b
+        )
+
+        assert delivered["b"] == []
+        assert emitted == []
+        assert isolated_queue.qsize() == 1
+        assert isolated_queue.queue[0] is event
+
+        server._notification_poller_loop(
+            _StopAfterOneNotificationPoll(), "sid-a-live-handoff", session_a
+        )
+
+        assert len(delivered["a"]) == 1
+        assert "proc-live-handoff completed normally" in delivered["a"][0]
+        assert delivered["b"] == []
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("sid-a-live-handoff", None)
+        server._sessions.pop("sid-b-live-handoff", None)
+        process_registry._completion_consumed.discard(event["session_id"])
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
+
+
+def test_completion_ownership_lineage_lookup_failure_fails_closed(monkeypatch):
+    """A provenance lookup failure cannot turn an addressed event into ours."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    class _BrokenDB:
+        def resolve_resume_session_id(self, _session_key):
+            raise RuntimeError("lineage database unavailable")
+
+    session = _session(session_key="unrelated-live-session")
+    event = {
+        "type": "completion",
+        "session_id": "proc-unknown-lineage",
+        "session_key": "unknown-parent",
+        "command": "echo unknown",
+        "exit_code": 0,
+        "output": "unknown",
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_get_db", lambda: _BrokenDB())
+
+    drained = process_registry.drain_notifications(
+        session_key="unrelated-live-session",
+        owns_event=lambda candidate: server._session_owns_notification_event(
+            "sid-unrelated-live", session, candidate
+        ),
+    )
+
+    assert drained == []
+    assert isolated_queue.qsize() == 1
+    assert isolated_queue.get_nowait() is event
+
+
+@pytest.mark.parametrize(
+    "routing",
+    [
+        {"session_key": "missing-owner-key"},
+        {"origin_ui_session_id": "missing-owner-sid"},
+    ],
+)
+def test_notification_poller_live_loop_drops_addressed_orphan(
+    monkeypatch, routing
+):
+    """A live poll never injects an addressed event whose owner is gone."""
+    import queue as _queue_mod
+
+    from tools.process_registry import process_registry
+
+    delivered = []
+    emitted = []
+    session = _session(session_key="unrelated-live-key")
+    event = {
+        "type": "completion",
+        "session_id": "proc-live-orphan",
+        "command": "echo orphan",
+        "exit_code": 0,
+        "output": "orphan",
+        **routing,
+    }
+    isolated_queue: _queue_mod.Queue = _queue_mod.Queue()
+    isolated_queue.put(event)
+    monkeypatch.setattr(process_registry, "completion_queue", isolated_queue)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **_kwargs: emitted.append(args))
+    monkeypatch.setattr(
+        server,
+        "_run_prompt_submit",
+        lambda _rid, _sid, _session, text: delivered.append(text),
+    )
+    server._sessions["sid-live-orphan"] = session
+    process_registry._completion_consumed.discard(event["session_id"])
+
+    try:
+        server._notification_poller_loop(
+            _StopAfterOneNotificationPoll(), "sid-live-orphan", session
+        )
+
+        assert delivered == []
+        assert emitted == []
+        assert isolated_queue.empty()
+    finally:
+        server._sessions.pop("sid-live-orphan", None)
+        process_registry._completion_consumed.discard(event["session_id"])
+        while not isolated_queue.empty():
+            isolated_queue.get_nowait()
+
+
 @pytest.mark.parametrize(
     "routing",
     [

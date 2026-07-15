@@ -5409,6 +5409,84 @@ _EMPTY_MODEL_INFO: dict = {
 }
 
 
+def _custom_provider_model_capabilities(
+    cfg: Dict[str, Any], provider: str, model: str
+) -> Dict[str, Any]:
+    """Resolve per-model capability metadata from a named custom provider."""
+    provider_key = str(provider or "").strip()
+    if provider_key.lower().startswith("custom:"):
+        provider_key = provider_key.split(":", 1)[1]
+    provider_key = provider_key.lower()
+    if not provider_key or not model:
+        return {}
+
+    try:
+        from hermes_cli.config import get_compatible_custom_providers
+
+        providers = get_compatible_custom_providers(cfg)
+    except Exception:
+        return {}
+
+    for entry in providers:
+        names = {
+            str(entry.get("name") or "").strip().lower(),
+            str(entry.get("provider_key") or "").strip().lower(),
+        }
+        if provider_key not in names:
+            continue
+
+        models = entry.get("models")
+        if not isinstance(models, dict):
+            return {}
+        metadata = models.get(model)
+        if not isinstance(metadata, dict):
+            model_lower = model.lower()
+            metadata = next(
+                (
+                    value
+                    for model_id, value in models.items()
+                    if str(model_id).lower() == model_lower and isinstance(value, dict)
+                ),
+                None,
+            )
+        if not isinstance(metadata, dict):
+            return {}
+
+        efforts = metadata.get("reasoning_efforts")
+        if not isinstance(efforts, list):
+            efforts = []
+        efforts = [
+            str(effort).strip().lower()
+            for effort in efforts
+            if isinstance(effort, str) and effort.strip()
+        ]
+
+        context_window = metadata.get("context_length")
+        max_output_tokens = metadata.get("max_output_tokens")
+        return {
+            "supports_tools": bool(metadata.get("supports_tools", False)),
+            "supports_vision": bool(metadata.get("supports_vision", False)),
+            "supports_reasoning": bool(
+                metadata.get("supports_reasoning", False) or efforts
+            ),
+            "reasoning_efforts": efforts,
+            "context_window": (
+                int(context_window)
+                if isinstance(context_window, (int, float)) and context_window > 0
+                else 0
+            ),
+            "max_output_tokens": (
+                int(max_output_tokens)
+                if isinstance(max_output_tokens, (int, float))
+                and max_output_tokens > 0
+                else 0
+            ),
+            "model_family": str(metadata.get("model_family") or ""),
+        }
+
+    return {}
+
+
 @app.get("/api/model/info")
 def get_model_info(profile: Optional[str] = None):
     """Return resolved model metadata for the currently configured model.
@@ -5457,22 +5535,25 @@ def get_model_info(profile: Optional[str] = None):
         # Effective is what the agent actually uses
         effective_ctx = config_ctx_int if config_ctx_int > 0 else auto_ctx
 
-        # Try to get model capabilities from models.dev
-        caps = {}
-        try:
-            from agent.models_dev import get_model_capabilities
-            mc = get_model_capabilities(provider=provider, model=model_name)
-            if mc is not None:
-                caps = {
-                    "supports_tools": mc.supports_tools,
-                    "supports_vision": mc.supports_vision,
-                    "supports_reasoning": mc.supports_reasoning,
-                    "context_window": mc.context_window,
-                    "max_output_tokens": mc.max_output_tokens,
-                    "model_family": mc.model_family,
-                }
-        except Exception:
-            pass
+        # Named custom providers carry their own per-model metadata. Prefer it
+        # because models.dev cannot resolve private provider slugs such as
+        # ``custom:vllm-cwb101``.
+        caps = _custom_provider_model_capabilities(cfg, provider, model_name)
+        if not caps:
+            try:
+                from agent.models_dev import get_model_capabilities
+                mc = get_model_capabilities(provider=provider, model=model_name)
+                if mc is not None:
+                    caps = {
+                        "supports_tools": mc.supports_tools,
+                        "supports_vision": mc.supports_vision,
+                        "supports_reasoning": mc.supports_reasoning,
+                        "context_window": mc.context_window,
+                        "max_output_tokens": mc.max_output_tokens,
+                        "model_family": mc.model_family,
+                    }
+            except Exception:
+                pass
 
         return {
             "model": model_name,

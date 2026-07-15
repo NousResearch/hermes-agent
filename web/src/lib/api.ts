@@ -2268,6 +2268,7 @@ export interface ModelInfoResponse {
     supports_tools?: boolean;
     supports_vision?: boolean;
     supports_reasoning?: boolean;
+    reasoning_efforts?: string[];
     context_window?: number;
     max_output_tokens?: number;
     model_family?: string;

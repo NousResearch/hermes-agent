@@ -1190,18 +1190,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     # (preserves old DISCORD_IGNORE_NO_MENTION=true behavior)
                     # EXCEPT in free-response channels where the bot should
                     # answer regardless of who is mentioned.
-                    _ignore_no_mention = os.getenv(
-                        "DISCORD_IGNORE_NO_MENTION", "true"
-                    ).lower() in {"true", "1", "yes"}
-                    if _ignore_no_mention and not _self_mentioned and not _other_bots_mentioned:
-                        _channel_id = str(message.channel.id)
-                        _parent_id = None
-                        if hasattr(message.channel, "parent_id") and message.channel.parent_id:
-                            _parent_id = str(message.channel.parent_id)
-                        _free_channels = adapter_self._discord_free_response_channels()
-                        _channel_keys = adapter_self._discord_channel_keys(message, _parent_id)
-                        if "*" not in _free_channels and not (_channel_keys & _free_channels):
-                            return
+                    if adapter_self._discord_should_ignore_human_mentions(message):
+                        return
 
                 await self._handle_message(message, role_authorized=_role_authorized)
 
@@ -4815,16 +4805,8 @@ class DiscordAdapter(BasePlatformAdapter):
             and getattr(att, "waveform", None) is not None
         )
 
-    def _discord_free_response_channels(self) -> set:
-        """Return Discord channel IDs/names where no bot mention is required.
-
-        A single ``"*"`` entry (either from a list or a comma-separated
-        string) is preserved in the returned set so callers can short-circuit
-        on wildcard membership, consistent with ``allowed_channels``.
-        """
-        raw = self.config.extra.get("free_response_channels")
-        if raw is None:
-            raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
+    @staticmethod
+    def _discord_channel_id_set(raw: Any) -> set:
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         # Coerce non-list scalars (str/int/float) to str before splitting.
@@ -4837,6 +4819,45 @@ class DiscordAdapter(BasePlatformAdapter):
         if s:
             return {part.strip() for part in s.split(",") if part.strip()}
         return set()
+
+    def _discord_free_response_channels(self) -> set:
+        """Return channels where no bot mention or auto-thread is required."""
+        raw = self.config.extra.get("free_response_channels")
+        if raw is None:
+            raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
+        return self._discord_channel_id_set(raw)
+
+    def _discord_free_response_thread_channels(self) -> set:
+        """Return mention-free channels that retain automatic threading."""
+        raw = self.config.extra.get("free_response_thread_channels")
+        if raw is None:
+            raw = os.getenv("DISCORD_FREE_RESPONSE_THREAD_CHANNELS", "")
+        return self._discord_channel_id_set(raw)
+
+    def _discord_should_ignore_human_mentions(self, message: Any) -> bool:
+        """Gate messages addressed to another human outside free-response channels."""
+        ignore = os.getenv("DISCORD_IGNORE_NO_MENTION", "true").lower() in {
+            "true",
+            "1",
+            "yes",
+        }
+        if not ignore or self._self_is_explicitly_mentioned(message):
+            return False
+
+        mentions = getattr(message, "mentions", []) or []
+        if not mentions or any(getattr(user, "bot", False) for user in mentions):
+            return False
+
+        parent_id = getattr(getattr(message, "channel", None), "parent_id", None)
+        free_channels = (
+            self._discord_free_response_channels()
+            | self._discord_free_response_thread_channels()
+        )
+        channel_keys = self._discord_channel_keys(
+            message,
+            str(parent_id) if parent_id else None,
+        )
+        return "*" not in free_channels and not (channel_keys & free_channels)
 
     def _raw_mentioned_user_ids(self, message: Any) -> set:
         """Extract Discord user-mention IDs directly from raw message content.
@@ -6133,6 +6154,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Config (all settable via discord.* in config.yaml or DISCORD_* env vars):
         #   discord.require_mention: Require @mention in server channels (default: true)
         #   discord.free_response_channels: Channel IDs where bot responds without mention
+        #   discord.free_response_thread_channels: Like free-response, but keeps auto-threading
         #   discord.ignored_channels: Channel IDs where bot NEVER responds (even when mentioned)
         #   discord.allowed_channels: If set, bot ONLY responds in these channels (whitelist)
         #   discord.no_thread_channels: Channel IDs where bot responds directly without creating thread
@@ -6170,9 +6192,6 @@ class DiscordAdapter(BasePlatformAdapter):
                 normalized_content = normalized_content.replace(f"<@!{self._client.user.id}>", "").strip()
             message.content = normalized_content
         if not isinstance(message.channel, discord.DMChannel):
-            channel_ids = {str(message.channel.id)}
-            if parent_channel_id:
-                channel_ids.add(parent_channel_id)
             channel_keys = self._discord_channel_keys(message, parent_channel_id)
 
             # Check allowed channels - if set, only respond in these channels
@@ -6191,6 +6210,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 return
 
             free_channels = self._discord_free_response_channels()
+            free_thread_channels = self._discord_free_response_thread_channels()
 
             require_mention = self._discord_require_mention()
             # Voice-linked text channels act as free-response while voice is active.
@@ -6198,11 +6218,16 @@ class DiscordAdapter(BasePlatformAdapter):
             voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
             current_channel_id = str(message.channel.id)
             is_voice_linked_channel = current_channel_id in voice_linked_ids
-            is_free_channel = (
+            is_inline_free_channel = (
                 "*" in free_channels
                 or bool(channel_keys & free_channels)
                 or is_voice_linked_channel
             )
+            is_threaded_free_channel = (
+                "*" in free_thread_channels
+                or bool(channel_keys & free_thread_channels)
+            )
+            is_free_channel = is_inline_free_channel or is_threaded_free_channel
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in)
@@ -6226,7 +6251,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_keys & no_thread_channels) or is_free_channel
+            skip_thread = bool(channel_keys & no_thread_channels) or is_inline_free_channel
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in {"true", "1", "yes"}
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
@@ -8249,9 +8274,10 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     The DiscordAdapter reads its runtime configuration via ``os.getenv()``
     throughout the connect / handle code paths (``DISCORD_ALLOWED_USERS``,
     ``DISCORD_REQUIRE_MENTION``, ``DISCORD_FREE_RESPONSE_CHANNELS``,
-    ``DISCORD_AUTO_THREAD``, ``DISCORD_REACTIONS``,
-    ``DISCORD_IGNORED_CHANNELS``, ``DISCORD_ALLOWED_CHANNELS``,
-    ``DISCORD_NO_THREAD_CHANNELS``, ``DISCORD_HISTORY_BACKFILL``,
+    ``DISCORD_FREE_RESPONSE_THREAD_CHANNELS``, ``DISCORD_AUTO_THREAD``,
+    ``DISCORD_REACTIONS``, ``DISCORD_IGNORED_CHANNELS``,
+    ``DISCORD_ALLOWED_CHANNELS``, ``DISCORD_NO_THREAD_CHANNELS``,
+    ``DISCORD_HISTORY_BACKFILL``,
     ``DISCORD_HISTORY_BACKFILL_LIMIT``, ``DISCORD_ALLOW_MENTION_*``,
     ``DISCORD_REPLY_TO_MODE``, ``DISCORD_THREAD_REQUIRE_MENTION``,
     ``DISCORD_BOTS_REQUIRE_INLINE_MENTION``).
@@ -8298,6 +8324,11 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
         if isinstance(frc, list):
             frc = ",".join(str(v) for v in frc)
         os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
+    frtc = discord_cfg.get("free_response_thread_channels")
+    if frtc is not None and not os.getenv("DISCORD_FREE_RESPONSE_THREAD_CHANNELS"):
+        if isinstance(frtc, list):
+            frtc = ",".join(str(v) for v in frtc)
+        os.environ["DISCORD_FREE_RESPONSE_THREAD_CHANNELS"] = str(frtc)
     if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
         os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
     if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
@@ -8398,8 +8429,9 @@ def register(ctx) -> None:
         setup_fn=interactive_setup,
         # YAML→env config bridge — owns the translation of ``config.yaml``
         # ``discord:`` keys (require_mention, free_response_channels,
-        # auto_thread, reactions, ignored_channels, allowed_channels,
-        # no_thread_channels, allow_mentions.*, reply_to_mode,
+        # free_response_thread_channels, auto_thread, reactions,
+        # ignored_channels, allowed_channels, no_thread_channels,
+        # allow_mentions.*, reply_to_mode,
         # thread_require_mention) into ``DISCORD_*`` env vars that the
         # adapter reads via ``os.getenv()``.  Replaces the hardcoded block
         # that used to live in ``gateway/config.py``.  Hook contract: #24836.

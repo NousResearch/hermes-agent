@@ -1880,11 +1880,13 @@ Configure Discord-specific behavior for the messaging gateway:
 discord:
   require_mention: true          # Require @mention to respond in server channels
   free_response_channels: ""     # Comma-separated channel IDs where bot responds without @mention
+  free_response_thread_channels: [] # Mention-free channels that still auto-thread
   auto_thread: true              # Auto-create threads on @mention in channels
 ```
 
 - `require_mention` — when `true` (default), the bot only responds in server channels when mentioned with `@BotName`. DMs always work without mention.
 - `free_response_channels` — comma-separated list of channel IDs where the bot responds to every message without requiring a mention.
+- `free_response_thread_channels` — channel IDs where mention is not required, but the first message still creates an auto-thread.
 - `auto_thread` — when `true` (default), mentions in channels automatically create a thread for the conversation, keeping channels clean (similar to Slack threading).
 
 ## Security

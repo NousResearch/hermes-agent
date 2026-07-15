@@ -151,6 +151,34 @@ class AchievementEngineTests(unittest.TestCase):
         stats = plugin_api.analyze_messages("s2", "Real config", [{"content": "edited config.yaml, manifest.json, and .env.local"}])
         self.assertGreaterEqual(stats["config_events"], 3)
 
+    def test_kagi_mcp_tools_count_as_web_search_and_extract(self):
+        messages = [
+            {"role": "assistant", "tool_calls": [{"function": {"name": "mcp__kagi__kagi_search_fetch"}}]},
+            {"role": "tool", "tool_name": "mcp__kagi__kagi_search_fetch", "content": "[results]"},
+            {"role": "assistant", "tool_calls": [{"function": {"name": "mcp__kagi__kagi_extract"}}]},
+            {"role": "tool", "tool_name": "mcp__kagi__kagi_extract", "content": "[markdown]"},
+        ]
+
+        stats = plugin_api.analyze_messages("s1", "Kagi research spiral", messages)
+
+        # Kagi calls should be normalized to the canonical web tool names.
+        self.assertEqual(stats["web_calls"], 2)
+        self.assertEqual(stats["web_extract_calls"], 1)
+        self.assertIn("web_search", stats["tool_names"])
+        self.assertIn("web_extract", stats["tool_names"])
+        self.assertNotIn("mcp__kagi__kagi_search_fetch", stats["tool_names"])
+        self.assertNotIn("mcp__kagi__kagi_extract", stats["tool_names"])
+
+        # Aggregate and achievement evaluation should credit the Kagi calls.
+        aggregate = plugin_api.aggregate_stats([stats])
+        self.assertEqual(aggregate["total_web_calls"], 2)
+        self.assertEqual(aggregate["total_web_extract_calls"], 1)
+
+        rabbit_hole = next(a for a in plugin_api.ACHIEVEMENTS if a["id"] == "rabbit_hole_certified")
+        citation_goblin = next(a for a in plugin_api.ACHIEVEMENTS if a["id"] == "citation_goblin")
+        self.assertTrue(plugin_api.evaluate_definition(rabbit_hole, aggregate)["discovered"])
+        self.assertTrue(plugin_api.evaluate_definition(citation_goblin, aggregate)["discovered"])
+
 
 if __name__ == "__main__":
     unittest.main()

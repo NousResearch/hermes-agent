@@ -52,6 +52,15 @@ FILE_RE = re.compile(r"(?:/home/|~/?|\./|/mnt/)[\w./-]+\.(?:py|js|ts|tsx|jsx|css
 
 TIER_NAMES = ["Copper", "Silver", "Gold", "Diamond", "Olympian"]
 
+# Some web-search/extract capabilities arrive via MCP servers whose tool names
+# do not contain the literal strings "web_search" or "web_extract". Map those
+# known aliases to the canonical built-in names so the research achievements
+# count behavior, not tool-prefix happenstance.
+_WEB_TOOL_ALIASES: Dict[str, str] = {
+    "mcp__kagi__kagi_search_fetch": "web_search",
+    "mcp__kagi__kagi_extract": "web_extract",
+}
+
 
 def tiers(values: List[int]) -> List[Dict[str, Any]]:
     return [{"name": name, "threshold": threshold} for name, threshold in zip(TIER_NAMES, values)]
@@ -270,6 +279,13 @@ def _tool_name_from_call(call: Any) -> Optional[str]:
     return call.get("name") or fn.get("name")
 
 
+def _normalized_tool_name(name: Optional[str]) -> Optional[str]:
+    """Return the canonical tool name for a known web-tool alias, else the original."""
+    if not name:
+        return name
+    return _WEB_TOOL_ALIASES.get(name, name)
+
+
 def _content(msg: Dict[str, Any]) -> str:
     content = msg.get("content")
     if content is None:
@@ -318,14 +334,15 @@ def analyze_messages(session_id: str, title: str, messages: List[Dict[str, Any]]
         text = _content(msg)
         full_text_parts.append(text)
         if msg.get("tool_name"):
-            name = str(msg["tool_name"])
-            tool_names.add(name)
-            # Tool result rows name the tool that already appeared in the assistant tool_calls.
-            # Keep it for distinct-tool detection, but do not double-count it as a new call.
-            if msg.get("role") != "tool":
-                tool_sequence.append(name)
+            name = _normalized_tool_name(str(msg["tool_name"]))
+            if name:
+                tool_names.add(name)
+                # Tool result rows name the tool that already appeared in the assistant tool_calls.
+                # Keep it for distinct-tool detection, but do not double-count it as a new call.
+                if msg.get("role") != "tool":
+                    tool_sequence.append(name)
         for call in msg.get("tool_calls") or []:
-            name = _tool_name_from_call(call)
+            name = _normalized_tool_name(_tool_name_from_call(call))
             if name:
                 tool_names.add(name)
                 tool_sequence.append(name)

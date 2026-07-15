@@ -1,7 +1,7 @@
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
-import { completionToApplyOnSubmit, looksLikeSlashCommand } from '../domain/slash.js'
+import { looksLikeSlashCommand, valueToDispatchOnSubmit } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { SessionSteerResponse, ShellExecResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
@@ -299,16 +299,15 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   const submit = useCallback(
     (value: string) => {
-      if (composerState.completions.length) {
-        const row = composerState.completions[composerState.compIdx]
-        const next = completionToApplyOnSubmit(value, row?.text, composerState.compReplace)
+      const submitValue = composerState.completions.length
+        ? valueToDispatchOnSubmit(
+            value,
+            composerState.completions[composerState.compIdx]?.text,
+            composerState.compReplace
+          )
+        : value
 
-        if (next !== null) {
-          return composerActions.setInput(next)
-        }
-      }
-
-      if (!value.trim() && !composerState.inputBuf.length) {
+      if (!submitValue.trim() && !composerState.inputBuf.length) {
         const live = getUiState()
         const now = Date.now()
         const doubleTap = now - lastEmptyAt.current < DOUBLE_ENTER_MS
@@ -338,13 +337,13 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       lastEmptyAt.current = 0
 
-      if (value.endsWith('\\')) {
-        composerActions.setInputBuf(prev => [...prev, value.slice(0, -1)])
+      if (submitValue.endsWith('\\')) {
+        composerActions.setInputBuf(prev => [...prev, submitValue.slice(0, -1)])
 
         return composerActions.setInput('')
       }
 
-      dispatchSubmission([...composerState.inputBuf, value].join('\n'))
+      dispatchSubmission([...composerState.inputBuf, submitValue].join('\n'))
     },
     [appendMessage, composerActions, composerRefs, composerState, dispatchSubmission, gw, sys]
   )

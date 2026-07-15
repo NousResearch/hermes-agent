@@ -1040,8 +1040,30 @@ def fetch_endpoint_model_metadata(
                         gen_settings = props.get("default_generation_settings", {})
                         n_ctx = gen_settings.get("n_ctx")
                         model_alias = props.get("model_alias", "")
-                        if n_ctx and model_alias and model_alias in cache:
-                            cache[model_alias]["context_length"] = n_ctx
+                        if n_ctx and isinstance(n_ctx, (int, float)) and n_ctx > 0:
+                            n_ctx = int(n_ctx)
+                            if model_alias and model_alias in cache:
+                                cache[model_alias]["context_length"] = n_ctx
+                            elif model_alias:
+                                # model_alias didn't match any cache key exactly.
+                                # Try fuzzy matching: model_alias may be a
+                                # truncated or alias form of the id returned
+                                # by /models (e.g. /models returns
+                                # "llama-3.2-3b-instruct-Q4_K_M.gguf" but
+                                # /props model_alias is "llama-3.2-3b").
+                                for ck in cache:
+                                    if model_alias.lower() in ck.lower() or ck.lower() in model_alias.lower():
+                                        cache[ck]["context_length"] = n_ctx
+                                        break
+                                else:
+                                    # Last resort: no key matched model_alias
+                                    # at all.  Apply n_ctx to every entry that
+                                    # lacks a context_length — llama.cpp's
+                                    # /models endpoint never includes one, so
+                                    # *all* entries are candidates.
+                                    for ck in cache:
+                                        if "context_length" not in cache[ck]:
+                                            cache[ck]["context_length"] = n_ctx
                 except Exception:
                     pass
 
@@ -1773,6 +1795,23 @@ def _query_local_context_length_uncached(model: str, base_url: str, api_key: str
                                 if ctx and isinstance(ctx, (int, float)):
                                     return int(ctx)
                             break
+
+            # llama.cpp: query /props for actual allocated context (n_ctx).
+            # The OpenAI-compat /v1/models endpoint does NOT include
+            # context_length for llama.cpp, so neither the per-model
+            # endpoint above nor the model-list endpoint below would
+            # return it.  The /props endpoint is llama.cpp's proprietary
+            # interface that exposes the runtime KV-cache limit.
+            if server_type == "llamacpp":
+                try:
+                    r = client.get(f"{server_url}/props")
+                    if r.status_code == 200:
+                        props = r.json()
+                        n_ctx = props.get("default_generation_settings", {}).get("n_ctx")
+                        if n_ctx and isinstance(n_ctx, int) and n_ctx > 0:
+                            return int(n_ctx)
+                except Exception:
+                    pass
 
             # LM Studio / vLLM / llama.cpp: try /v1/models/{model}
             resp = client.get(f"{server_url}/v1/models/{model}")

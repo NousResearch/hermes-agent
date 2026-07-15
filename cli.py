@@ -9729,7 +9729,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         which would otherwise early-return before any credits showed.
         """
         if not self.agent:
-            if not self._print_nous_credits_block():
+            shown = self._show_persisted_session_usage()
+            credits_shown = self._print_nous_credits_block()
+            if not shown and not credits_shown:
                 print("(._.) No active agent -- send a message first.")
             return
 
@@ -9823,6 +9825,70 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             # into stream-retry events, credential rotations, etc.
             # Console quietness is enforced by hermes_logging not
             # installing a console StreamHandler in non-verbose mode.
+
+    def _show_persisted_session_usage(self) -> bool:
+        """Render persisted session usage when /usage runs without a live agent.
+
+        Desktop/TUI slash commands may run in a worker process that resumes the
+        session but does not construct or share the active ``AIAgent``.  The
+        live-agent path above remains authoritative for context-window details;
+        this fallback shows the best persisted DB snapshot instead of the
+        misleading "No active agent" message after a real turn completed.
+        """
+        session_id = getattr(self, "session_id", None)
+        session_db = getattr(self, "_session_db", None)
+        if not session_id or session_db is None:
+            return False
+        try:
+            row = session_db.get_session(session_id)
+        except Exception:
+            logger.debug("Failed to load persisted usage for session %s", session_id, exc_info=True)
+            return False
+        if not row:
+            return False
+
+        input_tokens = int(row.get("input_tokens") or 0)
+        output_tokens = int(row.get("output_tokens") or 0)
+        cache_read_tokens = int(row.get("cache_read_tokens") or 0)
+        cache_write_tokens = int(row.get("cache_write_tokens") or 0)
+        reasoning_tokens = int(row.get("reasoning_tokens") or 0)
+        calls = int(row.get("api_call_count") or 0)
+        total = input_tokens + output_tokens
+        if calls <= 0 and total <= 0:
+            return False
+
+        model = row.get("model") or getattr(self, "model", None) or "unknown"
+        msg_count = int(row.get("message_count") or len(getattr(self, "conversation_history", []) or []))
+        cost_status = row.get("cost_status")
+        cost_source = row.get("cost_source")
+        actual_cost = row.get("actual_cost_usd")
+        estimated_cost = row.get("estimated_cost_usd")
+
+        print("  📊 Persisted Session Token Usage")
+        print(f"  {'─' * 40}")
+        print(f"  Model:                     {model}")
+        print(f"  Input tokens:              {input_tokens:>10,}")
+        print(f"  Cache read tokens:         {cache_read_tokens:>10,}")
+        print(f"  Cache write tokens:        {cache_write_tokens:>10,}")
+        print(f"  Output tokens:             {output_tokens:>10,}")
+        if reasoning_tokens:
+            print(f"  ↳ Reasoning (subset):      {reasoning_tokens:>10,}")
+        print(f"  Total tokens:              {total:>10,}")
+        print(f"  API calls:                 {calls:>10,}")
+        if cost_status:
+            print(f"  Cost status:              {str(cost_status):>10}")
+        if cost_source:
+            print(f"  Cost source:              {str(cost_source):>10}")
+        if actual_cost is not None:
+            print(f"  Total cost:               ${float(actual_cost):>10.4f}")
+        elif estimated_cost is not None:
+            print(f"  Total cost:              ~${float(estimated_cost):>10.4f}")
+        else:
+            print(f"  Total cost:              {'n/a':>10}")
+        print(f"  {'─' * 40}")
+        print(f"  Messages:         {msg_count}")
+        print("  Note:             persisted DB snapshot; live context details unavailable")
+        return True
 
     def _print_nous_credits_block(self) -> bool:
         """Print the Nous credits magnitudes + monthly-grant gauge when a Nous account

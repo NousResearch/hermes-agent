@@ -710,8 +710,8 @@ def _brief_frame(
     """
     goal = ""
     for msg in messages:
-        if msg.get("role") == "user" and isinstance(msg.get("content"), str) and msg["content"].strip():
-            goal = msg["content"].strip()
+        if msg.get("role") == "user" and flatten_message_text(msg.get("content")).strip():
+            goal = flatten_message_text(msg.get("content")).strip()
             break
     caps: list[str] = []
     for t in tools or []:
@@ -763,10 +763,14 @@ def _brief_reference_messages(
     for msg in messages:
         role = msg.get("role")
         content = msg.get("content")
-        text = content if isinstance(content, str) else ""
+        text = flatten_message_text(content)
         if role == "system":
             continue
         if role == "user":
+            if not text.strip() and isinstance(content, list) and content:
+                text = "[user sent non-text content (e.g. an image attachment)]"
+            if not text.strip():
+                continue
             if text.strip():
                 last_user_content = text
             events.append({"kind": "user", "text": text})
@@ -813,7 +817,11 @@ def _brief_reference_messages(
 
     rendered_events: list[dict[str, Any]] = []
     for i, e in enumerate(events):
-        r = render(e, hot=(i >= hot_from))
+        # Render every event with one byte-stable compact representation from
+        # its first appearance. Aging across the recent-window boundary may
+        # change drop priority, but must not rewrite an already-cacheable
+        # advisor prefix.
+        r = render(e, hot=False)
         if r is not None:
             cold = i < hot_from
             rendered_events.append({**r, "_cold": cold, "_salient": cold and _has_signal(r["content"])})

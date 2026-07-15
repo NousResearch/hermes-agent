@@ -102,6 +102,12 @@ Default preset:
 
 ### Tuning advisor speed with `reference_max_tokens`
 
+Presets can also opt into a bounded advisory transcript with
+`reference_brief: true`. `reference_recent_turns` and
+`reference_context_budget` must be positive integers; `reference_constraints`
+pins a short durable constraint into the advisor task frame. These fields are
+preserved by Dashboard and Desktop preset edits.
+
 Each turn, MoA runs the reference models (advisors) in parallel and then the
 aggregator acts. Advisor generation is the dominant per-turn latency — turn
 wall time correlates strongly with how many tokens the advisors emit, because

@@ -133,3 +133,31 @@ def test_brief_preserves_recent_state_fidelity():
     assert f"result {depth - 1}" in blob            # latest step present
     # an early step is either elided or gisted, never present at full 6000 width
     assert "result 0\n" + ("X" * 6000) not in blob
+
+
+def test_brief_flattens_decorated_content_and_keeps_image_only_turn():
+    messages = [
+        {
+            "role": "user",
+            "content": [{"type": "text", "text": "cached goal", "cache_control": {"type": "ephemeral"}}],
+        },
+        {"role": "assistant", "content": [{"type": "text", "text": "working"}]},
+        {"role": "user", "content": [{"type": "image_url", "image_url": {"url": "data:image/png;base64,x"}}]},
+    ]
+    brief = _brief_reference_messages(messages, recent_turns=1)
+    blob = "\n".join(message["content"] for message in brief)
+    assert "cached goal" in blob
+    assert "working" in blob
+    assert "non-text content" in blob
+
+
+def test_brief_event_text_is_stable_when_it_ages_out_of_recent_window():
+    messages = _transcript(2, result_chars=1200)
+    before = _brief_reference_messages(messages, recent_turns=2, total_budget=50000)
+    before_blob = "\n".join(message["content"] for message in before)
+    messages.extend(_transcript(3, result_chars=1200)[2:])
+    after = _brief_reference_messages(messages, recent_turns=2, total_budget=50000)
+    after_blob = "\n".join(message["content"] for message in after)
+    before_result = before_blob.split("[tool result: result 0", 1)[1].split("]", 1)[0]
+    after_result = after_blob.split("[tool result: result 0", 1)[1].split("]", 1)[0]
+    assert before_result == after_result

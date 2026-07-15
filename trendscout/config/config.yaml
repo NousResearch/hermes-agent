@@ -1,0 +1,47 @@
+# trendscout configuration
+
+paths:
+  db: ~/.hermes/trendscout/trendscout.db
+  chroma: ~/.hermes/trendscout/chroma
+  subreddits_file: config/subreddits.txt
+  urls_file: config/urls.txt
+
+reddit:
+  enabled: true
+
+firecrawl:
+  enabled: true
+  api_url: http://localhost:3002
+
+# Social media trending topics (no platform accounts/auth involved)
+social_trends:
+  enabled: true
+  top_n: 10
+  # X/Twitter trending topics via trends24.in
+  x:
+    regions:
+      - australia
+      - worldwide
+      - united-states
+  # TikTok Creative Center popular hashtags (geo defaults to Firecrawl's egress IP)
+  tiktok:
+    enabled: true
+
+# Term-frequency emergence detection
+terms:
+  rolling_window_days: 14
+  min_acceleration: 1.0    # min positive 2nd-derivative to flag a term
+  max_absolute_frequency: 10  # only flag low-volume terms (pre-emergence)
+
+# Semantic clustering (ChromaDB)
+clusters:
+  collection_name: trendscout_posts
+  new_cluster_min_size: 3       # min members for a cluster to be reportable
+  growth_window_days: 7
+
+# Telegram digest
+digest:
+  bot: Athena_spectrum_bot
+  chat_id: "8773964882"
+  top_terms: 5
+  top_clusters: 3

@@ -1,0 +1,9 @@
+# One subreddit per line, no "r/" prefix. Lines starting with # are ignored.
+technology
+artificial
+MachineLearning
+investing
+stocks
+cryptocurrency
+gadgets
+Futurology

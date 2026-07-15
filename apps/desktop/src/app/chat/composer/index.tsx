@@ -208,7 +208,7 @@ export function ChatBar({
 
   const statusStackVisible = queuedPrompts.length > 0 || statusPresent
 
-  const { stacked } = useComposerMetrics({ composerRef, composerSurfaceRef, editorRef, poppedOut })
+  const { compactPill, stacked } = useComposerMetrics({ composerRef, composerSurfaceRef, editorRef, poppedOut })
   const hasComposerPayload = hasText || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
   const busyAction = busy && hasComposerPayload ? 'queue' : 'stop'
@@ -704,7 +704,7 @@ export function ChatBar({
       busyAction={busyAction}
       canSteer={canSteer}
       canSubmit={canSubmit}
-      compactModelPill={poppedOut}
+      compactModelPill={poppedOut || compactPill}
       conversation={{
         active: voiceConversationActive,
         level: conversation.level,

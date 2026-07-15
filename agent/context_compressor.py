@@ -47,6 +47,11 @@ _SUMMARY_PERMANENT_QUOTA_MARKERS: tuple[str, ...] = (
     "out of extra usage",
 )
 
+_SUMMARY_MISSING_CREDENTIAL_MARKERS: tuple[str, ...] = (
+    "no api key was found",
+    "no api key found",
+)
+
 
 def _is_summary_access_or_quota_error(exc: Exception) -> bool:
     """Return True for non-retryable summary auth, permission, or quota errors."""
@@ -57,13 +62,16 @@ def _is_summary_access_or_quota_error(exc: Exception) -> bool:
     if classified.reason in {FailoverReason.auth, FailoverReason.auth_permanent}:
         return True
 
+    err_text = str(exc).lower()
+    if any(marker in err_text for marker in _SUMMARY_MISSING_CREDENTIAL_MARKERS):
+        return True
+
     status = getattr(exc, "status_code", None) or getattr(
         getattr(exc, "response", None), "status_code", None
     )
     if status in {401, 402, 403}:
         return True
 
-    err_text = str(exc).lower()
     if classified.reason is FailoverReason.billing:
         return any(marker in err_text for marker in _SUMMARY_PERMANENT_QUOTA_MARKERS)
     return any(marker in err_text for marker in _SUMMARY_PERMANENT_QUOTA_MARKERS)

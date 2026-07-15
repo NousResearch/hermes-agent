@@ -116,6 +116,55 @@ export const rankByText = <T extends { id: string; preview?: string; title?: str
 export const clampSessionSel = (sel: number, matchCount: number, filtering: boolean): number =>
   Math.max(filtering ? 1 : 0, Math.min(sel, matchCount))
 
+/**
+ * Preserve the selected session across a live-status poll while filtering.
+ * Matching rows can be inserted, removed, or re-ranked as their metadata
+ * changes, so clamping the old numeric index is not enough: re-anchor by id,
+ * just like the unfiltered quiet-poll path does.
+ */
+export function reanchorFilteredSessionSelection(
+  sel: number,
+  previousLive: readonly SessionSearchRow[],
+  previousHistory: readonly SessionSearchRow[],
+  nextLive: readonly SessionSearchRow[],
+  nextHistory: readonly SessionSearchRow[],
+  query: string
+): number {
+  const previousRows = [...rankByText(previousLive, query), ...rankByText(previousHistory, query)]
+  const nextRows = [...rankByText(nextLive, query), ...rankByText(nextHistory, query)]
+  const selectedId = previousRows[sel - 1]?.id
+  const nextIndex = selectedId ? nextRows.findIndex(row => row.id === selectedId) : -1
+
+  return nextIndex >= 0 ? nextIndex + 1 : clampSessionSel(sel, nextRows.length, true)
+}
+
+/** Map a filtered row back to its position in the full session list. */
+export function fullSessionSelectionForId(
+  id: string | undefined,
+  live: readonly SessionSearchRow[],
+  history: readonly SessionSearchRow[]
+): number {
+  const liveIndex = id ? live.findIndex(row => row.id === id) : -1
+
+  if (liveIndex >= 0) {
+    return liveIndex + 1
+  }
+
+  const historyIndex = id ? history.findIndex(row => row.id === id) : -1
+
+  if (historyIndex >= 0) {
+    return live.length + historyIndex + 1
+  }
+
+  return live.length + history.length > 0 ? 1 : 0
+}
+
+interface SessionSearchRow {
+  id: string
+  preview?: string
+  title?: string
+}
+
 /** Subset of the Ink key flags the Sessions handler inspects. */
 export interface SessionsKeyFlags {
   backspace?: boolean
@@ -554,15 +603,20 @@ export function ActiveSessionSwitcher({
             return next.length ? Math.min(currentSessionSelectionIndex(next, currentSessionId) + 1, maxSel) : 0
           }
 
-          // While filtering, `s` indexes the display list (query-stable across
-          // status-only polls); just clamp it to the filtered bounds rather than
-          // re-anchoring against the full live/history lists. The floor of 1
-          // keeps the cursor off the new row so keystrokes stay with the filter.
-          if (filterRef.current.trim() !== '') {
-            const dNext = rankByText(next, filterRef.current)
-            const dHist = rankByText(hist, filterRef.current)
+          // Filtering can reorder the display list as live metadata changes or
+          // matching sessions appear/disappear. Preserve the selected session
+          // by id instead of letting the old numeric index drift to another row.
+          const activeFilter = filterRef.current
 
-            return clampSessionSel(s, dNext.length + dHist.length, true)
+          if (activeFilter.trim() !== '') {
+            return reanchorFilteredSessionSelection(
+              s,
+              itemsRef.current,
+              historyDisplayRef.current,
+              next,
+              hist,
+              activeFilter
+            )
           }
 
           if (s <= 0) {
@@ -775,6 +829,13 @@ export function ActiveSessionSwitcher({
         return onCancel()
 
       case 'clearFilter':
+        setSel(
+          fullSessionSelectionForId(
+            selectedKind === 'live' ? displayItems[sel - 1]?.id : displayHistory[sel - 1 - liveCount]?.id,
+            items,
+            history
+          )
+        )
         setFilter('')
 
         return

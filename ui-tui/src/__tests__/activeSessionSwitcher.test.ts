@@ -12,6 +12,7 @@ import {
   draftModelDisplayLabel,
   draftTitleFromPrompt,
   fixedSessionColumnStyle,
+  fullSessionSelectionForId,
   isNewSessionRow,
   newSessionMarkerColor,
   newSessionRowIndex,
@@ -23,6 +24,7 @@ import {
   orchestratorRowClickAction,
   orchestratorVisibleRowIndexes,
   rankByText,
+  reanchorFilteredSessionSelection,
   relativeSessionAge,
   resumableHistory,
   selectedSessionRowStyle,
@@ -323,5 +325,45 @@ describe('Sessions overlay selection clamp (clampSessionSel)', () => {
     expect(clampSessionSel(9, 3, true)).toBe(3)
     expect(clampSessionSel(9, 3, false)).toBe(3)
     expect(clampSessionSel(2, 3, true)).toBe(2)
+  })
+})
+
+describe('Sessions overlay filtered poll selection', () => {
+  const row = (id: string, title: string) => ({ id, title })
+
+  it('keeps the same session selected when a new match is inserted ahead of it', () => {
+    const previous = [row('a', 'auth cleanup'), row('b', 'auth tests')]
+    const next = [row('c', 'auth api'), ...previous]
+
+    expect(reanchorFilteredSessionSelection(2, previous, [], next, [], 'auth')).toBe(3)
+  })
+
+  it('maps a filtered selection back to the same row when the filter clears', () => {
+    const live = [row('a', 'auth cleanup'), row('b', 'billing tests')]
+    const history = [row('c', 'parser cleanup'), row('d', 'billing follow-up')]
+
+    expect(fullSessionSelectionForId('b', live, history)).toBe(2)
+    expect(fullSessionSelectionForId('d', live, history)).toBe(4)
+    expect(fullSessionSelectionForId(undefined, live, history)).toBe(1)
+    expect(fullSessionSelectionForId(undefined, [], [])).toBe(0)
+  })
+
+  it('tracks a selected session that moves between live and history matches', () => {
+    const selected = row('b', 'billing follow-up')
+
+    expect(reanchorFilteredSessionSelection(1, [selected], [], [], [selected], 'billing')).toBe(1)
+  })
+
+  it('clamps safely when the selected session no longer matches', () => {
+    expect(
+      reanchorFilteredSessionSelection(
+        2,
+        [row('a', 'auth cleanup'), row('b', 'auth tests')],
+        [],
+        [row('a', 'auth cleanup')],
+        [],
+        'auth'
+      )
+    ).toBe(1)
   })
 })

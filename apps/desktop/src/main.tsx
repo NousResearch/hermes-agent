@@ -1,5 +1,7 @@
 import './styles.css'
-// Side-effect: applies the persisted window translucency on load.
+// Side-effects: apply persisted renderer-owned presentation preferences before
+// the first app render so chat geometry never flashes through its defaults.
+import './store/table-layout'
 import './store/translucency'
 
 import { QueryClientProvider } from '@tanstack/react-query'

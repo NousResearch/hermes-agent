@@ -296,6 +296,10 @@ export const ja = defineLocale({
       uiScaleTitle: 'UI スケール',
       uiScaleDesc: (percent: number) =>
         `アプリ全体の文字と UI を拡大縮小します。Cmd/Ctrl と +、-、0 でも変更できます。現在: ${percent}%`,
+      tableLayoutTitle: 'Markdown テーブル',
+      tableLayoutDesc: '「合わせる」はチャット内で折り返し、「スクロール」は列幅を保って横スクロールできます。',
+      tableLayoutFit: '合わせる',
+      tableLayoutScroll: 'スクロール',
       translucencyTitle: 'ウィンドウの透過',
       translucencyDesc: 'ウィンドウ全体を透過させてデスクトップを表示します。macOS と Windows のみ。',
       backdropTitle: 'チャット背景',

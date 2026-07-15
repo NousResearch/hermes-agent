@@ -288,6 +288,10 @@ export const zhHant = defineLocale({
       uiScaleTitle: '介面縮放',
       uiScaleDesc: (percent: number) =>
         `縮放整個應用程式的文字與介面。也可使用 Cmd/Ctrl 加 +、- 或 0 調整。目前：${percent}%`,
+      tableLayoutTitle: 'Markdown 表格',
+      tableLayoutDesc: '「符合」會在聊天區域內換行；「捲動」會保留合適的欄寬並支援橫向捲動。',
+      tableLayoutFit: '符合',
+      tableLayoutScroll: '捲動',
       translucencyTitle: '視窗透明',
       translucencyDesc: '讓整個視窗透出桌面。僅支援 macOS 與 Windows。',
       backdropTitle: '聊天背景',

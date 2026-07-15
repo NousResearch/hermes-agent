@@ -325,6 +325,10 @@ export interface Translations {
       toolViewDesc: string
       uiScaleTitle: string
       uiScaleDesc: (percent: number) => string
+      tableLayoutTitle: string
+      tableLayoutDesc: string
+      tableLayoutFit: string
+      tableLayoutScroll: string
       translucencyTitle: string
       translucencyDesc: string
       backdropTitle: string

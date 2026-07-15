@@ -1299,6 +1299,38 @@ text-* variant utilities. */ .btn-arc {
   border-bottom-color: var(--dt-border) !important;
 }
 
+/* Scroll mode keeps the table viewport inside the transcript gutters while
+   allowing the table itself to grow to a useful intrinsic width. */
+:root[data-hermes-table-layout='scroll']
+  [data-slot='aui_assistant-message-content']
+  .aui-md
+  .aui-md-table
+  > table {
+  width: max-content;
+  min-width: 100%;
+}
+
+:root[data-hermes-table-layout='scroll']
+  [data-slot='aui_assistant-message-content']
+  .aui-md
+  .aui-md-table
+  :where(th, td) {
+  min-width: 6rem;
+  max-width: 24rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+:root[data-hermes-table-layout='scroll']
+  [data-slot='aui_assistant-message-content']
+  .aui-md
+  .aui-md-table
+  :where(a, code) {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
 /* Tool / thinking blocks are scaffolding around the model's reply, so we
    keep them transparent and fade them slightly. The reading column (prose)
    stays at full strength; scaffolding lifts back to full opacity on

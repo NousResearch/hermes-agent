@@ -409,6 +409,10 @@ export const en: Translations = {
       uiScaleTitle: 'UI Scale',
       uiScaleDesc: (percent: number) =>
         `Scales text and controls across the whole app. Cmd/Ctrl with +, - and 0 also works. Current: ${percent}%.`,
+      tableLayoutTitle: 'Markdown Tables',
+      tableLayoutDesc: 'Fit wraps tables inside the chat; Scroll preserves useful column widths with horizontal scrolling.',
+      tableLayoutFit: 'Fit',
+      tableLayoutScroll: 'Scroll',
       translucencyTitle: 'Window Translucency',
       translucencyDesc: 'See your desktop through the whole window. macOS and Windows only.',
       backdropTitle: 'Chat Backdrop',

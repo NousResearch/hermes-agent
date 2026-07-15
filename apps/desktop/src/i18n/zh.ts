@@ -398,6 +398,10 @@ export const zh: Translations = {
       uiScaleTitle: '界面缩放',
       uiScaleDesc: (percent: number) =>
         `缩放整个应用的文字和界面。也可使用 Cmd/Ctrl 加 +、- 或 0 调整。当前：${percent}%`,
+      tableLayoutTitle: 'Markdown 表格',
+      tableLayoutDesc: '“适应”会在聊天区域内换行；“滚动”会保留合适的列宽并支持横向滚动。',
+      tableLayoutFit: '适应',
+      tableLayoutScroll: '滚动',
       translucencyTitle: '窗口透明',
       translucencyDesc: '让整个窗口透出桌面。仅支持 macOS 和 Windows。',
       backdropTitle: '聊天背景',

@@ -39,6 +39,10 @@ class TestUserSystemdPrivateSocketPreflight:
 
 
 class TestSystemdServiceRefresh:
+    @pytest.fixture(autouse=True)
+    def _skip_user_systemd_preflight(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *args, **kwargs: None)
+
     def test_systemd_install_repairs_outdated_unit_without_force(self, tmp_path, monkeypatch):
         unit_path = tmp_path / "hermes-gateway.service"
         unit_path.write_text("old unit\n", encoding="utf-8")
@@ -1531,6 +1535,10 @@ class TestGatewayServiceDetection:
         assert gateway_cli._is_service_running() is False
 
 class TestGatewaySystemServiceRouting:
+    @pytest.fixture(autouse=True)
+    def _skip_user_systemd_preflight(self, monkeypatch):
+        monkeypatch.setattr(gateway_cli, "_preflight_user_systemd", lambda *args, **kwargs: None)
+
     def test_systemd_restart_gracefully_restarts_running_service_and_waits(self, monkeypatch, capsys):
         calls = []
 
@@ -3548,6 +3556,34 @@ class TestServiceWorkingDirIsStable:
         assert m, "plist has no WorkingDirectory entry"
         assert Path(m.group(1)).resolve() == home.resolve()
         assert "/.worktrees/" not in m.group(1)
+
+    def test_launchd_external_volume_uses_boot_volume_logs_without_machine_launcher(self, tmp_path, monkeypatch):
+        """External-volume HERMES_HOME keeps launchd-owned artifacts on boot volume."""
+        external_home = Path("/Volumes/Diver Pro/hermes")
+        machine_home = tmp_path / "machine-home"
+        launcher = machine_home / "bin" / "hermes-gateway-launch.sh"
+        launcher.parent.mkdir(parents=True)
+        launcher.write_text("#!/bin/bash\n", encoding="utf-8")
+        (machine_home / "Library" / "Logs").mkdir(parents=True)
+
+        monkeypatch.setattr(gateway_cli, "get_hermes_home", lambda: external_home)
+        monkeypatch.setattr(pwd, "getpwuid", lambda uid: SimpleNamespace(pw_dir=str(machine_home)))
+
+        plist = gateway_cli.generate_launchd_plist()
+
+        assert f"<string>{gateway_cli.get_python_path()}</string>" in plist
+        assert "<string>-m</string>" in plist
+        assert "<string>hermes_cli.main</string>" in plist
+        assert "<string>/bin/bash</string>" not in plist
+        assert f"<string>{launcher}</string>" not in plist
+        assert "<string>gateway</string>" in plist
+        assert "<string>run</string>" in plist
+        assert "<string>--replace</string>" in plist
+        assert f"<string>{machine_home}</string>" in plist
+        assert f"<string>{external_home}</string>" in plist
+        assert f"<string>{machine_home}/Library/Logs/Hermes/gateway.launchd.out.log</string>" in plist
+        assert f"<string>{machine_home}/Library/Logs/Hermes/gateway.launchd.err.log</string>" in plist
+        assert "/Volumes/Diver Pro/hermes/logs/gateway" not in plist
 
     def test_launchd_plist_keepalive_unconditional(self, tmp_path, monkeypatch):
         """KeepAlive must be unconditional <true/> so the gateway restarts on clean exits.

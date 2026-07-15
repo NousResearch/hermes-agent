@@ -764,9 +764,24 @@ class TestCrossSessionApprovalIsolation:
 
     def setup_method(self):
         _clear_approval_state()
+        # These tests bind the gateway session-context ContextVars via
+        # set_session_vars() and deliberately call clear_session_vars(), which
+        # leaves _SESSION_KEY (and its siblings) at the "" ("explicitly
+        # cleared") sentinel rather than the _UNSET ("never bound") one. That
+        # value is process-global and context-persistent, so without an explicit
+        # reset it leaks into every later test in a large selection:
+        # get_session_env("HERMES_SESSION_KEY") then returns "" and suppresses
+        # the os.environ fallback, so get_current_session_key() can no longer
+        # resolve the env-pinned key a downstream test set (e.g.
+        # tests/tools/test_approval.py::TestApprovalTimeoutIsNotConsent). Reset
+        # to _UNSET on both edges so the mutation never escapes this class.
+        from gateway.session_context import reset_session_vars
+        reset_session_vars()
         os.environ.pop("HERMES_SESSION_KEY", None)
 
     def teardown_method(self):
+        from gateway.session_context import reset_session_vars
+        reset_session_vars()
         os.environ.pop("HERMES_SESSION_KEY", None)
 
     def test_contextvar_wins_over_clobbered_environ(self):

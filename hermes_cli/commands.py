@@ -225,6 +225,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]"),
+    CommandDef("menu", "Open the Hermes Control Deck quick menu", "Info",
+               gateway_only=True, aliases=("deck", "control")),
     CommandDef("help", "Show available commands", "Info"),
     CommandDef("restart", "Gracefully restart the gateway after draining active runs", "Session",
                gateway_only=True),
@@ -373,6 +375,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "commands",
         "deny",
         "help",
+        "menu",
         "new",
         "profile",
         "queue",
@@ -554,6 +557,7 @@ _TELEGRAM_PRIORITY_MODES = {"prepend", "append", "replace"}
 
 _TELEGRAM_MENU_PRIORITY = (
     # Most-typed everyday commands first.
+    "menu",
     "help",
     "new",
     "stop",

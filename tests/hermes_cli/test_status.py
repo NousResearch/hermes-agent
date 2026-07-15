@@ -1,6 +1,15 @@
 from types import SimpleNamespace
 
-from hermes_cli.status import show_status
+from hermes_cli.status import redact_key, show_status
+
+
+def test_redact_key_keeps_only_last_four_chars():
+    assert redact_key("sk-ant-api03-test-value-UwAA") == "***UwAA"
+    assert "sk-ant" not in redact_key("sk-ant-api03-test-value-UwAA")
+    assert redact_key("AIzaSyExampleSecretwHEE") == "***wHEE"
+    assert "AIza" not in redact_key("AIzaSyExampleSecretwHEE")
+    assert redact_key("abcd") == "***"
+    assert redact_key("x") == "***"
 
 
 def test_show_status_all_does_not_print_tavily_key_value(monkeypatch, capsys, tmp_path):

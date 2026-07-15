@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#efe9dd" />
+    <title>Hermes Control Deck</title>
+    <script>
+      // Apply the stored theme before first paint so Telegram/browser chrome
+      // and CSS agree from the very first frame (no light flash for dark
+      // users, no dark chrome for the light default). Storage key must match
+      // STORAGE_KEYS.theme in src/appModel.ts.
+      (function () {
+        try {
+          var theme = localStorage.getItem("hermes-miniapp:theme") === "dark" ? "dark" : "light";
+          document.documentElement.dataset.theme = theme;
+          var meta = document.querySelector('meta[name="theme-color"]');
+          if (meta) meta.setAttribute("content", theme === "dark" ? "#20160f" : "#efe9dd");
+        } catch (error) {
+          /* localStorage is optional in Telegram WebView/private contexts. */
+        }
+      })();
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

@@ -30,15 +30,17 @@ def check_mark(ok: bool) -> str:
     return color("✗", Colors.RED)
 
 def redact_key(key: str) -> str:
-    """Redact an API key for display.
+    """Redact an API key for display, preserving only the last 4 chars.
 
-    Thin wrapper over :func:`agent.redact.mask_secret`. Preserves the
-    "(not set)" placeholder in dim color to match ``hermes config``'s
-    output (previously this variant was missing the DIM color —
-    consolidated via PR that also introduced ``mask_secret``).
+    ``agent.redact.mask_secret`` intentionally keeps a small prefix for
+    debugging, but ``hermes status`` is routinely shared in chats/logs. Keep
+    this view stricter: never expose provider-specific key prefixes.
     """
-    from agent.redact import mask_secret
-    return mask_secret(key, empty=color("(not set)", Colors.DIM))
+    if not key:
+        return color("(not set)", Colors.DIM)
+    if len(key) <= 4:
+        return "***"
+    return f"***{key[-4:]}"
 
 
 def _format_iso_timestamp(value) -> str:

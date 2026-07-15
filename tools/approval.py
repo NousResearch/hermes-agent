@@ -1491,9 +1491,9 @@ _permanent_approved: set = set()
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason")
+    __slots__ = ("event", "data", "result", "reason", "nonce")
 
-    def __init__(self, data: dict):
+    def __init__(self, data: dict, nonce: Optional[str] = None):
         self.event = threading.Event()
         self.data = data          # command, description, pattern_keys, …
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
@@ -1501,6 +1501,11 @@ class _ApprovalEntry:
         # (``/deny <reason>``) so the agent can adapt instead of only
         # hearing "denied". Ported from qwibitai/nanoclaw#2832.
         self.reason: Optional[str] = None
+        # Per-instance Mini App action-gate discriminator. Kept ON THE ENTRY, not
+        # in `data`, so it is never copied into approval notify payloads (TUI /
+        # API / SSE emit a shallow copy of `data`) — it must stay an internal
+        # bridge field, never client-facing protocol surface.
+        self.nonce: Optional[str] = nonce
 
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
@@ -1530,6 +1535,52 @@ def unregister_gateway_notify(session_key: str) -> None:
         entries = _gateway_queues.pop(session_key, [])
     for entry in entries:
         entry.event.set()
+
+
+def resolve_gateway_approval_cas(session_key: str, choice: str, *,
+                                 expected_approval_id: str, bridge_key: bytes) -> int:
+    """Atomic compare-and-pop resolver for the Telegram Mini App action gate.
+
+    Resolves the session's FIFO-head approval ONLY if its opaque id still equals
+    *expected_approval_id*; otherwise resolves nothing and returns 0. The check
+    and the pop happen under the same ``_lock``, so the head cannot change
+    between them — a decision signed for one approval can never unblock a
+    different (possibly more dangerous) command if the queue shifted after the
+    snapshot was exported.
+
+    ``expected_approval_id`` is keyword-only on purpose: this is the signature
+    ``bridge.process_pending_decisions`` calls, and keyword-only prevents it
+    being mis-wired to ``resolve_gateway_approval``'s positional ``resolve_all``.
+    """
+    from hermes_cli.telegram_miniapp.bridge import opaque_approval_id
+
+    with _lock:
+        queue = _gateway_queues.get(session_key)
+        if not queue:
+            return 0
+        head = queue[0]
+        command = str((head.data or {}).get("command", ""))
+        # Recompute the head's opaque id from ITS OWN per-instance nonce (a slot on
+        # the entry, assigned at enqueue), never a positional index — otherwise
+        # only whichever session sat at export index 0 could be resolved, and a
+        # stale decision for a timed-out / re-issued identical command could match
+        # a fresh instance. Absent nonce (never enqueued through the gateway) →
+        # None, which the id helper folds back to the head's FIFO seq 0, matching
+        # the projection.
+        head_nonce = getattr(head, "nonce", None)
+        head_id = opaque_approval_id(
+            bridge_key, session_key=session_key, command=command,
+            nonce=head_nonce if head_nonce is None else str(head_nonce),
+        )
+        if head_id != expected_approval_id:
+            return 0
+        queue.pop(0)
+        if not queue:
+            _gateway_queues.pop(session_key, None)
+
+    head.result = choice
+    head.event.set()
+    return 1
 
 
 def resolve_gateway_approval(session_key: str, choice: str,
@@ -2537,7 +2588,15 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
     primary_key = approval_data.get("pattern_key", "")
     all_keys = approval_data.get("pattern_keys", [primary_key])
 
-    entry = _ApprovalEntry(approval_data)
+    # Stamp a unique, unguessable per-instance nonce onto the entry. The Mini App
+    # action gate folds it into the opaque approval id, binding each id to THIS
+    # specific approval instance. A re-requested identical command — whether in a
+    # later turn, after the queue drained, or after a full gateway restart — gets
+    # a brand-new nonce, so a stale signed decision for the old instance can never
+    # resolve the new one. Being random (not a counter) it needs no persistence
+    # and survives process restarts without collision. It lives on the entry (not
+    # in `approval_data`) so it is never echoed to approval notify clients.
+    entry = _ApprovalEntry(approval_data, nonce=os.urandom(16).hex())
     with _lock:
         _gateway_queues.setdefault(session_key, []).append(entry)
 

@@ -1363,6 +1363,52 @@ class GatewaySlashCommandsMixin:
             getattr(getattr(event, "source", None), "platform", None),
         )
 
+    def _control_deck_text(self) -> str:
+        """Return a compact cross-platform Control Deck menu."""
+        return (
+            "## ☤ Hermes Control Deck\n\n"
+            "**🚀 Кодинг**\n"
+            "`/cc-codex <задача>` — Claude Code пишет, Codex ревьюит, Playwright проверяет\n"
+            "`/background <задача>` — длинная задача в фоне\n"
+            "`/agents` — активные агенты и процессы\n\n"
+            "**🛡 Ревью и качество**\n"
+            "`/status` — состояние текущей сессии\n"
+            "`/usage` — токены, контекст, лимиты\n"
+            "`/commands` — полный список команд\n\n"
+            "**🧠 Память и навыки**\n"
+            "`/memory` — pending memory writes\n"
+            "`/skills` — skills и skill approval\n"
+            "`/sessions` — прошлые сессии\n\n"
+            "**⚙️ Управление**\n"
+            "`/model` — модель\n"
+            "`/fast` — fast mode\n"
+            "`/reasoning` — reasoning effort\n"
+            "`/platform` — gateway platform control\n"
+            "`/restart` — graceful gateway restart\n\n"
+            "Подсказка: для кода почти всегда начинай с `/cc-codex ...`."
+        )
+
+    async def _handle_menu_command(self, event: MessageEvent) -> str:
+        """Handle /menu — a Telegram-first Control Deck with safe fallbacks."""
+        source = event.source
+        adapters = getattr(self, "adapters", {}) or {}
+        adapter = adapters.get(source.platform)
+        sender = getattr(adapter, "send_control_deck", None)
+        if callable(sender):
+            try:
+                metadata_fn = getattr(self, "_thread_metadata_for_source")
+                metadata = metadata_fn(source)
+            except Exception:
+                metadata = None
+            try:
+                maybe_result = sender(str(source.chat_id), metadata=metadata)
+                result = await maybe_result if inspect.isawaitable(maybe_result) else maybe_result
+                if getattr(result, "success", False):
+                    return ""
+            except Exception:
+                logger.debug("Telegram Control Deck send failed; falling back to text", exc_info=True)
+        return self._control_deck_text()
+
     async def _handle_commands_command(self, event: MessageEvent) -> str:
         from gateway.run import _telegramize_command_mentions
         from hermes_cli.commands import gateway_help_lines

@@ -868,6 +868,62 @@ def _rewrite_compound_background(command: str) -> str:
     return result
 
 
+# ── SSH remote command detection ──
+# SSH remote commands should not trigger local sudo password prompts.
+# Case-sensitive: only `ssh` (not SSH, sshd, ./ssh, ssh-keygen).
+_SSH_CMD_RE = re.compile(
+    r'(?:^|(?<=[;&|&(]))\s*(?:/usr/bin/)?ssh\s+'
+)
+
+
+def _has_chained_local_sudo(command: str) -> bool:
+    """True if command has a non-quoted ``&& sudo`` or ``|| sudo`` after SSH host.
+
+    Uses shlex (quote-aware) to avoid false positives on ``&&`` inside the
+    remote command string (e.g. ``ssh host 'sudo a && sudo b'``).
+    """
+    try:
+        import shlex
+        tokens = shlex.split(command)
+    except (ValueError, ImportError):
+        return False  # malformed quoting or no shlex → fail closed
+
+    in_ssh = False
+    past_host = False
+
+    for i, tok in enumerate(tokens):
+        if tok == "ssh" and not in_ssh:
+            in_ssh = True
+            continue
+        if in_ssh and not past_host:
+            if tok.startswith("-"):
+                continue  # SSH option (-p, -o, -J, etc.)
+            past_host = True  # This token is the [user@]host
+            continue
+        if past_host and tok in ("&&", "||"):
+            if i + 1 < len(tokens) and tokens[i + 1] == "sudo":
+                return True
+    return False
+
+
+def _is_ssh_remote_command(command: str) -> bool:
+    """Check if `command` is an SSH remote invocation.
+
+    Returns True only when the command invokes SSH with a remote command
+    and there is no chained local sudo (``&& sudo`` / ``|| sudo``) after
+    the SSH segment.
+
+    When True, the sudo password prompt is skipped — sudo runs on the
+    remote host, not locally.
+    """
+    if not _SSH_CMD_RE.search(command):
+        return False
+    # Fail-close: if a chained local sudo coexists with SSH, don't skip
+    if _has_chained_local_sudo(command):
+        return False
+    return True
+
+
 def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None]:
     """
     Transform sudo commands to use -S flag if SUDO_PASSWORD is available.
@@ -905,6 +961,12 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     """
     if command is None:
         return None, None
+
+    # SSH remote command: sudo is on the remote host, not local.
+    # Skip local sudo password prompt entirely.
+    if _is_ssh_remote_command(command):
+        return command, None
+
     transformed, sudo_count = _rewrite_real_sudo_invocations(command)
     if sudo_count == 0:
         return command, None

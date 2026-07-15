@@ -102,7 +102,6 @@ OpenAI = _OpenAIProxy()  # module-level name, resolves lazily on call/isinstance
 
 from agent.credential_pool import load_pool
 from agent.model_metadata import MINIMUM_CONTEXT_LENGTH, get_model_context_length
-from agent.process_bootstrap import build_keepalive_http_client
 from hermes_cli.config import get_hermes_home
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches, base_url_hostname, env_float, model_forces_max_completion_tokens, normalize_proxy_env_vars
@@ -156,21 +155,46 @@ def _resolve_aux_verify(base_url: Optional[str]) -> Any:
         return True
 
 
+_WARNED_KEEPALIVE_IMPORT_SKEW = False
+
+
 def _openai_http_client_kwargs(
     base_url: Optional[str],
     *,
     async_mode: bool = False,
 ) -> Dict[str, Any]:
     """Inject keepalive httpx client with env-only proxy (not macOS system proxy)."""
-    client = build_keepalive_http_client(
-        str(base_url or ""),
-        async_mode=async_mode,
-        verify=_resolve_aux_verify(base_url),
-    )
+    try:
+        from agent.process_bootstrap import build_keepalive_http_client
+        client = build_keepalive_http_client(
+            str(base_url or ""),
+            async_mode=async_mode,
+            verify=_resolve_aux_verify(base_url),
+        )
+    except (ImportError, AttributeError):
+        # Version-skewed installs (#64333): a process whose sys.path resolves
+        # an older agent/process_bootstrap.py without this helper — seen when
+        # the Desktop app's bundled runtime lags a git-installed source tree
+        # that newer callers (cron scheduler) were written against. Every cron
+        # job died on this ImportError before any agent logic ran. Degrade
+        # gracefully to the OpenAI SDK's default httpx client (respects macOS
+        # system proxy, no pool-level keepalive expiry) instead of failing the
+        # whole job, and say so once — silent version skew is how this bug
+        # went unnoticed until jobs were already dead on arrival.
+        global _WARNED_KEEPALIVE_IMPORT_SKEW
+        if not _WARNED_KEEPALIVE_IMPORT_SKEW:
+            _WARNED_KEEPALIVE_IMPORT_SKEW = True
+            logger.warning(
+                "agent.process_bootstrap.build_keepalive_http_client is "
+                "unavailable — mixed/stale install detected (#64333). Falling "
+                "back to the SDK default HTTP client. Run `hermes update` (or "
+                "reinstall the Desktop app) to resync the runtime."
+            )
+        client = None
+
     if client is None:
         return {}
     return {"http_client": client}
-
 
 def _create_openai_client(*, api_key: str, base_url: str, **kwargs: Any) -> Any:
     kwargs = {**_openai_http_client_kwargs(base_url), **kwargs}

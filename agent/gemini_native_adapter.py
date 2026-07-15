@@ -260,8 +260,11 @@ def _translate_tool_call_to_gemini(tool_call: Dict[str, Any]) -> Dict[str, Any]:
         }
     }
     thought_signature = _tool_call_extra_signature(tool_call)
-    if thought_signature:
-        part["thoughtSignature"] = thought_signature
+    # Fallback sentinel for tool_calls without a Gemini thoughtSignature
+    # (e.g. cross-provider history or serialization that dropped it).
+    # Without this, Gemini 3 thinking models reject replayed history with
+    # 400 INVALID_ARGUMENT on the missing thoughtSignature.
+    part["thoughtSignature"] = thought_signature or "skip_thought_signature_validator"
     return part
 
 

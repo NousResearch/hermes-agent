@@ -52,6 +52,40 @@ def test_build_native_request_preserves_thought_signature_on_tool_replay():
     assert parts[0]["thoughtSignature"] == "sig-123"
 
 
+def test_tool_call_without_thought_signature_emits_sentinel():
+    """Tool calls without extra_content must still emit thoughtSignature
+    (the skip_thought_signature_validator sentinel) so Gemini 3 thinking
+    models don't reject the request with 400 INVALID_ARGUMENT."""
+    from agent.gemini_native_adapter import build_gemini_request
+
+    request = build_gemini_request(
+        messages=[
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "arguments": '{"city": "Paris"}',
+                        },
+                        # No extra_content — cross-provider or deserialized
+                        # from a source that didn't preserve it.
+                    }
+                ],
+            },
+        ],
+        tools=[],
+        tool_choice=None,
+    )
+
+    parts = request["contents"][0]["parts"]
+    assert parts[0]["functionCall"]["name"] == "get_weather"
+    assert parts[0]["thoughtSignature"] == "skip_thought_signature_validator"
+
+
 def test_build_native_request_uses_original_function_name_for_tool_result():
     from agent.gemini_native_adapter import build_gemini_request
 

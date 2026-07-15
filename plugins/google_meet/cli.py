@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 from pathlib import Path
 from typing import Optional
@@ -159,7 +158,7 @@ def _cmd_setup() -> int:
     print("---------------------")
 
     system = _p.system()
-    system_ok = system in ("Linux", "Darwin")
+    system_ok = system in {"Linux", "Darwin"}
     print(f"  platform       : {system}  [{'ok' if system_ok else 'unsupported'}]")
 
     try:
@@ -231,7 +230,7 @@ def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
     import subprocess as _sp
 
     system = _p.system()
-    if system not in ("Linux", "Darwin"):
+    if system not in {"Linux", "Darwin"}:
         print(f"google_meet install: {system} is not supported (linux/macos only)")
         return 1
 
@@ -242,7 +241,7 @@ def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
             ans = input(f"{prompt} [y/N] ").strip().lower()
         except EOFError:
             return False
-        return ans in ("y", "yes")
+        return ans in {"y", "yes"}
 
     print("google_meet install")
     print("-------------------")
@@ -251,10 +250,9 @@ def _cmd_install(*, realtime: bool, assume_yes: bool) -> int:
     pip_pkgs = ["playwright", "websockets"]
     print(f"\n[1/3] pip install: {' '.join(pip_pkgs)}")
     try:
-        res = _sp.run(
-            [sys.executable, "-m", "pip", "install", "--upgrade", *pip_pkgs],
-            check=False,
-        )
+        from hermes_cli.tools_config import _pip_install
+
+        res = _pip_install(["--upgrade", *pip_pkgs], capture_output=False)
         if res.returncode != 0:
             print("  pip install failed")
             return 1
@@ -348,7 +346,7 @@ def _cmd_auth() -> int:
     path = _auth_state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
 
-    print(f"opening Chromium — sign in to Google, then return here and press Enter.")
+    print("opening Chromium — sign in to Google, then return here and press Enter.")
     print(f"saving storage state to: {path}")
     try:
         with sync_playwright() as pw:

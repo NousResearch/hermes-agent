@@ -10,6 +10,7 @@
  *   POST /send           - Send a message { chatId, message, replyTo? }
  *   POST /edit           - Edit a sent message { chatId, messageId, message }
  *   POST /send-media     - Send media natively { chatId, filePath, mediaType?, caption?, fileName? }
+ *   POST /send-location  - Send location pin { chatId, latitude, longitude, name?, address? }
  *   POST /typing         - Send typing indicator { chatId }
  *   GET  /chat/:id       - Get chat info
  *   GET  /health         - Health check
@@ -18,17 +19,31 @@
  *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
  */
 
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
 import path from 'path';
-import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
-import { randomBytes } from 'crypto';
-import { execSync } from 'child_process';
+import { mkdirSync, readFileSync, existsSync, readdirSync, unlinkSync } from 'fs';
+import { fileURLToPath } from 'url';
+import { randomBytes, createHash } from 'crypto';
+import { execFileSync } from 'child_process';
 import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
+import { createOutboundIdTracker } from './outbound_ids.js';
+import { classifyOwnerMessageGate } from './owner_message_gate.js';
+import {
+  buildPollPayload,
+  buildLocationPayload,
+  buildTextSendPayload,
+  createBoundedMessageStore,
+  extractBridgeEvent,
+  inferMediaType,
+  mediaPayloadForFile,
+  pollCreationMessageFromPayload,
+  pollUpdateForAggregation,
+} from './bridge_helpers.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -43,13 +58,51 @@ const WHATSAPP_DEBUG =
   typeof process.env.WHATSAPP_DEBUG === 'string' &&
   ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_DEBUG.toLowerCase());
 
+// Opt-in: when true (and WHATSAPP_MODE === 'bot'), fromMe inbound messages
+// that are NOT echoes of our own /send or /send-media calls are forwarded
+// to the Python adapter with `fromOwner: true`. This lets plugins detect
+// "owner just typed in this customer chat" — needed for handover / sliding
+// TTL flows. Default OFF: existing deployments see no behavior change.
+//
+// Heuristic limitation: we distinguish bot-API-sent from owner-typed by
+// looking up `key.id` in `recentlySentIds` (populated when /send returns).
+// On bridge restart that set is empty, so a few in-flight bot replies may
+// briefly look like owner-typed until they age out. Acceptable; we don't
+// persist the set.
+const FORWARD_OWNER_MESSAGES =
+  typeof process !== 'undefined' &&
+  process.env &&
+  typeof process.env.WHATSAPP_FORWARD_OWNER_MESSAGES === 'string' &&
+  ['1', 'true', 'yes', 'on'].includes(process.env.WHATSAPP_FORWARD_OWNER_MESSAGES.toLowerCase());
+
 const PORT = parseInt(getArg('port', '3000'), 10);
 const SESSION_DIR = getArg('session', path.join(process.env.HOME || '~', '.hermes', 'whatsapp', 'session'));
-const IMAGE_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'image_cache');
-const DOCUMENT_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'document_cache');
-const AUDIO_CACHE_DIR = path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
+// Cache directories: the Python gateway passes the profile-aware paths via
+// env (HERMES_HOME-aware, new cache/ layout).  Fall back to the legacy
+// hardcoded locations for bridges launched outside the gateway.
+const IMAGE_CACHE_DIR = process.env.HERMES_IMAGE_CACHE_DIR
+  || path.join(process.env.HOME || '~', '.hermes', 'image_cache');
+const DOCUMENT_CACHE_DIR = process.env.HERMES_DOCUMENT_CACHE_DIR
+  || path.join(process.env.HOME || '~', '.hermes', 'document_cache');
+const AUDIO_CACHE_DIR = process.env.HERMES_AUDIO_CACHE_DIR
+  || path.join(process.env.HOME || '~', '.hermes', 'audio_cache');
+
+// Self-hash of this script file.  Reported in /health so the Python gateway
+// can detect a running bridge that predates the current bridge.js and
+// restart it instead of silently reusing stale code (stale-bridge trap:
+// `hermes update` updates bridge.js on disk but a long-lived bridge process
+// keeps serving the old behavior forever).
+let SCRIPT_HASH = '';
+try {
+  SCRIPT_HASH = createHash('sha256')
+    .update(readFileSync(fileURLToPath(import.meta.url)))
+    .digest('hex')
+    .slice(0, 16);
+} catch {}
 const PAIR_ONLY = args.includes('--pair-only');
+const PAIR_JSON = args.includes('--pair-json');
 const WHATSAPP_MODE = getArg('mode', process.env.WHATSAPP_MODE || 'self-chat'); // "bot" or "self-chat"
+const WHATSAPP_DM_POLICY = String(process.env.WHATSAPP_DM_POLICY || 'open').trim().toLowerCase();
 const ALLOWED_USERS = parseAllowedUsers(process.env.WHATSAPP_ALLOWED_USERS || '');
 const DEFAULT_REPLY_PREFIX = '⚕ *Hermes Agent*\n────────────\n';
 const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
@@ -57,9 +110,41 @@ const REPLY_PREFIX = process.env.WHATSAPP_REPLY_PREFIX === undefined
   : process.env.WHATSAPP_REPLY_PREFIX.replace(/\\n/g, '\n');
 const MAX_MESSAGE_LENGTH = parseInt(process.env.WHATSAPP_MAX_MESSAGE_LENGTH || '4096', 10);
 const CHUNK_DELAY_MS = parseInt(process.env.WHATSAPP_CHUNK_DELAY_MS || '300', 10);
+// Per-call timeout for sock.sendMessage(). Baileys occasionally hangs forever
+// when uploading media to WhatsApp servers (and, less often, on text sends),
+// which pins the bridge's HTTP handler until the upstream aiohttp timeout
+// fires. Fail fast instead so the gateway can surface a real error and retry.
+const SEND_TIMEOUT_MS = parseInt(process.env.WHATSAPP_SEND_TIMEOUT_MS || '60000', 10);
+
+// --- Send queue: serialise all sock.sendMessage() calls across concurrent
+//     HTTP handlers so a single Baileys socket never has overlapping sends.
+//     Overlapping sends are the root cause of cross-chat contamination
+//     (#33360) — the WhatsApp protocol-level routing can misdeliver when
+//     two sendMessage() Promises race on the same socket. ---
+let _sendQueue = Promise.resolve();
+
+function enqueueSend(fn) {
+  const task = _sendQueue.then(() => fn(), () => fn());
+  _sendQueue = task.catch(() => {});
+  return task;
+}
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function sendWithTimeout(chatId, payload, options = {}, timeoutMs = SEND_TIMEOUT_MS) {
+  let timer;
+  const timeoutPromise = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`sendMessage timed out after ${timeoutMs / 1000}s`)),
+      timeoutMs,
+    );
+  });
+  return enqueueSend(() =>
+    Promise.race([sock.sendMessage(chatId, payload, options), timeoutPromise])
+      .finally(() => clearTimeout(timer))
+  );
 }
 
 function formatOutgoingMessage(message) {
@@ -93,18 +178,42 @@ function splitLongMessage(message, maxLength = MAX_MESSAGE_LENGTH) {
   return chunks;
 }
 
-function trackSentMessageId(sent) {
-  if (sent?.key?.id) {
-    recentlySentIds.add(sent.key.id);
-    if (recentlySentIds.size > MAX_RECENT_IDS) {
-      recentlySentIds.delete(recentlySentIds.values().next().value);
-    }
+function rememberSentMessage(sent, payload) {
+  if (!sent?.key?.id) return;
+  if (sent.message) {
+    messageStore.remember(sent);
+    return;
   }
+  const syntheticMessage = pollCreationMessageFromPayload(payload);
+  if (syntheticMessage) {
+    messageStore.remember({ ...sent, message: syntheticMessage });
+  }
+}
+
+function trackSentMessageId(sent) {
+  rememberSentId(sent?.key?.id);
 }
 
 function normalizeWhatsAppId(value) {
   if (!value) return '';
   return String(value).replace(':', '@');
+}
+
+function redactWhatsAppId(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const [userPart, domainPart = ''] = raw.split('@', 2);
+  const bare = userPart.split(':', 1)[0];
+  const digits = bare.replace(/\D/g, '');
+  const suffix = digits ? digits.slice(-4) : bare.slice(-4);
+  return `${suffix ? `…${suffix}` : '…'}${domainPart ? `@${domainPart}` : ''}`;
+}
+
+function emitDebugEvent(payload) {
+  if (!WHATSAPP_DEBUG) return;
+  try {
+    console.log(JSON.stringify({ event: 'debug', ...payload }));
+  } catch {}
 }
 
 function getMessageContent(msg) {
@@ -153,12 +262,129 @@ const logger = pino({ level: 'warn' });
 const messageQueue = [];
 const MAX_QUEUE_SIZE = 100;
 
-// Track recently sent message IDs to prevent echo-back loops with media
-const recentlySentIds = new Set();
-const MAX_RECENT_IDS = 50;
+// Track recently sent message IDs.  Two purposes:
+//   1. Prevent echo-back loops with media in self-chat mode.
+//   2. (When WHATSAPP_FORWARD_OWNER_MESSAGES=true) distinguish our own
+//      bot-API outbound messages from owner-typed messages on the linked
+//      device so we can forward only the latter.
+// Capacity bounded (see outbound_ids.js) to keep memory flat under
+// sustained sending.
+const recentlySentIds = createOutboundIdTracker(512);
+const recentlyProcessedPollUpdates = createOutboundIdTracker(512);
+const messageStore = createBoundedMessageStore(512);
+
+function normalizePollUpdateOptions(aggregation, pollUpdateMessage, meId) {
+  const selected = [];
+  for (const option of aggregation || []) {
+    if ((option.voters || []).length > 0 && option.name && option.name !== 'Unknown') {
+      selected.push(option.name);
+    }
+  }
+  if (selected.length > 0) return selected;
+
+  // Fallback for already-decrypted pollUpdateMessage payloads where Baileys did
+  // not have the creation message available. This may only yield hashes, but
+  // keeping them in metadata is still better than dropping the vote entirely.
+  const raw = pollUpdateMessage?.vote?.selectedOptions || [];
+  return raw.map(option => String(option)).filter(Boolean);
+}
+
+function pollAggregationSummary(aggregation) {
+  return (aggregation || []).map(option => ({
+    name: option?.name || '',
+    voterCount: (option?.voters || []).length,
+  }));
+}
+
+function logPollUpdateDiagnostic({ sourcePath, pollId, pollCreation, pollUpdates, selectedOptions, aggregation }) {
+  const firstUpdate = pollUpdates?.[0] || {};
+  try {
+    console.log(JSON.stringify({
+      event: 'poll_update_decode',
+      sourcePath,
+      pollId: pollId || '',
+      pollCreationFound: !!pollCreation,
+      updateKeys: Object.keys(firstUpdate),
+      hasVote: !!firstUpdate.vote,
+      selectedOptionsLength: selectedOptions?.length || 0,
+      aggregation: pollAggregationSummary(aggregation),
+    }));
+  } catch {}
+}
+
+function enqueuePollUpdateEvent({ key, update, selectedOptions, aggregation }) {
+  const chatId = normalizeWhatsAppId(key?.remoteJid || update?.pollUpdates?.[0]?.pollUpdateMessageKey?.remoteJid || '');
+  const senderId = normalizeWhatsAppId(
+    key?.participant
+    || update?.pollUpdates?.[0]?.pollUpdateMessageKey?.participant
+    || chatId
+  );
+  const pollId = key?.id
+    || update?.pollUpdates?.[0]?.pollCreationMessageKey?.id
+    || update?.pollUpdates?.[0]?.pollUpdateMessageKey?.id
+    || '';
+  // Only surface votes on polls Hermes itself created (tracked when
+  // /send-poll returns). Arbitrary human polls in a group chat must not
+  // inject agent-visible messages on every vote.
+  if (!pollId || !recentlySentIds.has(pollId)) {
+    if (WHATSAPP_DEBUG) {
+      try { console.log(JSON.stringify({ event: 'ignored', reason: 'foreign_poll_update', pollId })); } catch {}
+    }
+    return;
+  }
+  const chosenText = selectedOptions.length ? selectedOptions.join(', ') : `[Poll update${pollId ? `: ${pollId}` : ''}]`;
+  const dedupeId = `poll:${pollId}:${senderId}:${selectedOptions.join('|')}`;
+  if (recentlyProcessedPollUpdates.has(dedupeId)) return;
+  recentlyProcessedPollUpdates.remember(dedupeId);
+  const event = {
+    messageId: `${pollId || 'poll'}:update:${Date.now()}`,
+    chatId,
+    senderId,
+    senderName: senderId.replace(/@.*/, ''),
+    chatName: chatId.replace(/@.*/, ''),
+    isGroup: chatId.endsWith('@g.us'),
+    body: chosenText,
+    hasMedia: false,
+    mediaType: 'poll_update',
+    mime: '',
+    fileName: '',
+    nativeType: 'pollUpdateMessage',
+    nativeMetadata: {
+      pollUpdate: {
+        pollId,
+        selectedOptions,
+        aggregation,
+      },
+    },
+    mediaUrls: [],
+    mentionedIds: [],
+    quotedMessageId: pollId,
+    quotedParticipant: '',
+    quotedRemoteJid: chatId,
+    quotedText: '',
+    hasQuotedMessage: !!pollId,
+    botIds: [],
+    timestamp: Math.floor(Date.now() / 1000),
+  };
+  messageQueue.push(event);
+  if (messageQueue.length > MAX_QUEUE_SIZE) {
+    messageQueue.shift();
+  }
+}
+
+function rememberSentId(id) {
+  recentlySentIds.remember(id);
+}
 
 let sock = null;
 let connectionState = 'disconnected';
+
+function emitPairEvent(event) {
+  if (!PAIR_JSON) return;
+  try {
+    console.log(JSON.stringify({ ts: Date.now(), ...event }));
+  } catch {}
+}
 
 async function startSocket() {
   const { state, saveCreds } = await useMultiFileAuthState(SESSION_DIR);
@@ -187,9 +413,13 @@ async function startSocket() {
     const { connection, lastDisconnect, qr } = update;
 
     if (qr) {
-      console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
-      qrcode.generate(qr, { small: true });
-      console.log('\nWaiting for scan...\n');
+      if (PAIR_JSON) {
+        emitPairEvent({ event: 'qr', qr });
+      } else {
+        console.log('\n📱 Scan this QR code with WhatsApp on your phone:\n');
+        qrcode.generate(qr, { small: true });
+        console.log('\nWaiting for scan...\n');
+      }
     }
 
     if (connection === 'close') {
@@ -197,25 +427,93 @@ async function startSocket() {
       connectionState = 'disconnected';
 
       if (reason === DisconnectReason.loggedOut) {
-        console.log('❌ Logged out. Delete session and restart to re-authenticate.');
+        emitPairEvent({ event: 'error', error: 'logged_out', reason });
+        if (!PAIR_JSON) {
+          console.log('❌ Logged out. Delete session and restart to re-authenticate.');
+        }
         process.exit(1);
       } else {
         // 515 = restart requested (common after pairing). Always reconnect.
-        if (reason === 515) {
-          console.log('↻ WhatsApp requested restart (code 515). Reconnecting...');
-        } else {
-          console.log(`⚠️  Connection closed (reason: ${reason}). Reconnecting in 3s...`);
+        emitPairEvent({ event: 'disconnected', reason });
+        if (!PAIR_JSON) {
+          if (reason === 515) {
+            console.log('↻ WhatsApp requested restart (code 515). Reconnecting...');
+          } else {
+            console.log(`⚠️  Connection closed (reason: ${reason}). Reconnecting in 3s...`);
+          }
         }
         setTimeout(startSocket, reason === 515 ? 1000 : 3000);
       }
     } else if (connection === 'open') {
       connectionState = 'connected';
-      console.log('✅ WhatsApp connected!');
+      const connectedUser = sock?.user
+        ? {
+            id: sock.user.id || null,
+            name: sock.user.name || sock.user.verifiedName || null,
+          }
+        : null;
+      emitPairEvent({ event: 'connected', user: connectedUser });
+      if (!PAIR_JSON) {
+        console.log('✅ WhatsApp connected!');
+      }
       if (PAIR_ONLY) {
-        console.log('✅ Pairing complete. Credentials saved.');
+        if (!PAIR_JSON) {
+          console.log('✅ Pairing complete. Credentials saved.');
+        }
         // Give Baileys a moment to flush creds, then exit cleanly
         setTimeout(() => process.exit(0), 2000);
       }
+    }
+  });
+
+  sock.ev.on('messages.update', async (updates) => {
+    for (const { key, update } of updates || []) {
+      if (!update?.pollUpdates) continue;
+      const pollCreationId = key?.id || update.pollUpdates?.[0]?.pollCreationMessageKey?.id;
+      const pollCreation = messageStore.get(pollCreationId);
+      let aggregation = [];
+      let pollUpdates = update.pollUpdates;
+      try {
+        if (pollCreation) {
+          const meId = jidNormalizedUser(sock.user?.id || 'me');
+          pollUpdates = update.pollUpdates.map(pollUpdate => (
+            pollUpdateForAggregation({
+              pollUpdateMessage: pollUpdate,
+              pollUpdateMessageKey: pollUpdate.pollUpdateMessageKey,
+              pollCreation,
+              decryptPollVote,
+              getKeyAuthor,
+              meId,
+              pollCreatorJids: [
+                jidNormalizedUser(sock.user?.lid || ''),
+                jidNormalizedUser(sock.user?.id || ''),
+                getKeyAuthor(pollUpdate.pollCreationMessageKey || key, jidNormalizedUser(sock.user?.lid || '')),
+                getKeyAuthor(pollUpdate.pollCreationMessageKey || key, jidNormalizedUser(sock.user?.id || '')),
+              ],
+              voterJids: [
+                normalizeWhatsAppId(pollUpdate.pollUpdateMessageKey?.participant || ''),
+                normalizeWhatsAppId(pollUpdate.pollUpdateMessageKey?.remoteJid || key?.remoteJid || ''),
+              ],
+            }) || pollUpdate
+          ));
+          aggregation = getAggregateVotesInPollMessage({
+            message: pollCreation.message,
+            pollUpdates,
+          });
+        }
+      } catch (err) {
+        console.warn('[bridge] failed to aggregate poll update:', err.message);
+      }
+      const selectedOptions = normalizePollUpdateOptions(aggregation, pollUpdates?.[0]);
+      logPollUpdateDiagnostic({
+        sourcePath: 'messages.update',
+        pollId: pollCreationId,
+        pollCreation,
+        pollUpdates,
+        selectedOptions,
+        aggregation,
+      });
+      enqueuePollUpdateEvent({ key, update: { ...update, pollUpdates }, selectedOptions, aggregation });
     }
   });
 
@@ -233,38 +531,90 @@ async function startSocket() {
       if (!msg.message) continue;
 
       const chatId = msg.key.remoteJid;
-      if (WHATSAPP_DEBUG) {
-        try {
-          console.log(JSON.stringify({
-            event: 'upsert', type,
-            fromMe: !!msg.key.fromMe, chatId,
-            senderId: msg.key.participant || chatId,
-            messageKeys: Object.keys(msg.message || {}),
-          }));
-        } catch {}
-      }
       const senderId = msg.key.participant || chatId;
       const isGroup = chatId.endsWith('@g.us');
       const senderNumber = senderId.replace(/@.*/, '');
+      emitDebugEvent({
+        stage: 'upsert',
+        type,
+        fromMe: !!msg.key.fromMe,
+        chatId: redactWhatsAppId(chatId),
+        senderId: redactWhatsAppId(senderId),
+        messageKeys: Object.keys(msg.message || {}),
+      });
 
       // Handle fromMe messages based on mode
+      let fromOwner = false;
       if (msg.key.fromMe) {
-        if (isGroup || chatId.includes('status')) continue;
-
-        if (WHATSAPP_MODE === 'bot') {
-          // Bot mode: separate number. ALL fromMe are echo-backs of our own replies — skip.
+        if (isGroup || chatId.includes('status')) {
+          emitDebugEvent({
+            stage: 'ignored',
+            reason: isGroup ? 'from_me_group' : 'from_me_status',
+            chatId: redactWhatsAppId(chatId),
+          });
           continue;
         }
 
-        // Self-chat mode: only allow messages in the user's own self-chat
-        // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid
-        // AND classic format: 34652029134@s.whatsapp.net
-        // sock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
-        const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
-        const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
-        const chatNumber = chatId.replace(/@.*/, '');
-        const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
-        if (!isSelfChat) continue;
+        if (WHATSAPP_MODE === 'bot') {
+          // Bot mode: separate bot number. fromMe inbound is either
+          //   (a) an echo of our own /send (recentlySentIds will catch it), or
+          //   (b) a message the owner typed from their own phone using the
+          //       linked-device session.
+          //
+          // We always drop (a). We drop (b) too unless the operator opts in
+          // via WHATSAPP_FORWARD_OWNER_MESSAGES so existing deployments see
+          // no behavior change. When opted in, we still gate on the
+          // customer chatId allowlist — without that gate, any contact
+          // the owner replied to would leak into Hermes and trigger
+          // implicit handover. See `owner_message_gate.js`.
+          const decision = classifyOwnerMessageGate({
+            fromMe: true,
+            fromOwnerEnabled: FORWARD_OWNER_MESSAGES,
+            recentlySent: recentlySentIds,
+            allowlistMatches: (id) => matchesAllowedUser(id, ALLOWED_USERS, SESSION_DIR),
+            messageId: msg.key.id,
+            chatId,
+          });
+          if (decision.action === 'drop_echo') continue;
+          if (decision.action === 'drop_disabled') continue;
+          if (decision.action === 'drop_allowlist') {
+            try {
+              console.log(JSON.stringify({
+                event: 'ignored',
+                reason: 'allowlist_mismatch_owner_chat',
+                chatId,
+                senderId,
+              }));
+            } catch {}
+            continue;
+          }
+          fromOwner = true;
+        } else {
+          // Self-chat mode: only allow messages in the user's own self-chat.
+          // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid
+          // AND classic format: 34652029134@s.whatsapp.net
+          // sock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
+          const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
+          const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
+          const chatNumber = chatId.replace(/@.*/, '');
+          const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
+          emitDebugEvent({
+            stage: 'self_chat_check',
+            matched: !!isSelfChat,
+            chatId: redactWhatsAppId(chatId),
+            accountId: redactWhatsAppId(sock.user?.id),
+            accountLid: redactWhatsAppId(sock.user?.lid),
+          });
+          if (!isSelfChat) {
+            emitDebugEvent({
+              stage: 'ignored',
+              reason: 'self_chat_mismatch',
+              chatId: redactWhatsAppId(chatId),
+              senderId: redactWhatsAppId(senderId),
+            });
+            continue;
+          }
+        }
       }
 
       // Handle !fromMe messages (from other people) based on mode.
@@ -284,7 +634,7 @@ async function startSocket() {
           } catch {}
           continue;
         }
-        if (!matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',
@@ -298,132 +648,117 @@ async function startSocket() {
       }
 
       const messageContent = getMessageContent(msg);
-      const contextInfo = getContextInfo(messageContent);
-      const mentionedIds = Array.from(new Set((contextInfo?.mentionedJid || []).map(normalizeWhatsAppId).filter(Boolean)));
-      const quotedMessageId = contextInfo?.stanzaId || null;
-      const quotedParticipant = normalizeWhatsAppId(contextInfo?.participant || '') || null;
-      const quotedRemoteJid = normalizeWhatsAppId(contextInfo?.remoteJid || '') || null;
-      const hasQuotedMessage = !!contextInfo?.quotedMessage;
-
-      // Extract message body
-      let body = '';
-      let hasMedia = false;
-      let mediaType = '';
-      const mediaUrls = [];
-
-      if (messageContent.conversation) {
-        body = messageContent.conversation;
-      } else if (messageContent.extendedTextMessage?.text) {
-        body = messageContent.extendedTextMessage.text;
-      } else if (messageContent.imageMessage) {
-        body = messageContent.imageMessage.caption || '';
-        hasMedia = true;
-        mediaType = 'image';
+      if (messageContent.pollUpdateMessage) {
+        const pollUpdateMessage = messageContent.pollUpdateMessage;
+        const pollKey = pollUpdateMessage.pollCreationMessageKey || {
+          id: pollUpdateMessage.key?.id || msg.key.id,
+          remoteJid: chatId,
+          participant: senderId,
+        };
+        const pollCreation = messageStore.get(pollKey.id);
+        let aggregation = [];
+        let pollUpdates = [pollUpdateMessage];
         try {
-          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-          const mime = messageContent.imageMessage.mimetype || 'image/jpeg';
-          const extMap = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'image/gif': '.gif' };
-          const ext = extMap[mime] || '.jpg';
-          mkdirSync(IMAGE_CACHE_DIR, { recursive: true });
-          const filePath = path.join(IMAGE_CACHE_DIR, `img_${randomBytes(6).toString('hex')}${ext}`);
-          writeFileSync(filePath, buf);
-          mediaUrls.push(filePath);
+          if (pollCreation) {
+            const meId = jidNormalizedUser(sock.user?.id || 'me');
+            const pollUpdate = pollUpdateForAggregation({
+              pollUpdateMessage,
+              pollUpdateMessageKey: msg.key,
+              pollCreation,
+              decryptPollVote,
+              getKeyAuthor,
+              meId,
+              pollCreatorJids: [
+                jidNormalizedUser(sock.user?.lid || ''),
+                jidNormalizedUser(sock.user?.id || ''),
+                getKeyAuthor(pollUpdateMessage.pollCreationMessageKey || pollKey, jidNormalizedUser(sock.user?.lid || '')),
+                getKeyAuthor(pollUpdateMessage.pollCreationMessageKey || pollKey, jidNormalizedUser(sock.user?.id || '')),
+              ],
+              voterJids: [
+                normalizeWhatsAppId(msg.key?.participant || ''),
+                normalizeWhatsAppId(msg.key?.remoteJid || chatId || ''),
+                normalizeWhatsAppId(senderId || ''),
+              ],
+            });
+            if (pollUpdate) pollUpdates = [pollUpdate];
+            aggregation = getAggregateVotesInPollMessage({
+              message: pollCreation.message,
+              pollUpdates,
+            });
+          }
         } catch (err) {
-          console.error('[bridge] Failed to download image:', err.message);
+          console.warn('[bridge] failed to aggregate poll upsert:', err.message);
         }
-      } else if (messageContent.videoMessage) {
-        body = messageContent.videoMessage.caption || '';
-        hasMedia = true;
-        mediaType = 'video';
-        try {
-          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-          const mime = messageContent.videoMessage.mimetype || 'video/mp4';
-          const ext = mime.includes('mp4') ? '.mp4' : '.mkv';
-          mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
-          const filePath = path.join(DOCUMENT_CACHE_DIR, `vid_${randomBytes(6).toString('hex')}${ext}`);
-          writeFileSync(filePath, buf);
-          mediaUrls.push(filePath);
-        } catch (err) {
-          console.error('[bridge] Failed to download video:', err.message);
-        }
-      } else if (messageContent.audioMessage || messageContent.pttMessage) {
-        hasMedia = true;
-        mediaType = messageContent.pttMessage ? 'ptt' : 'audio';
-        try {
-          const audioMsg = messageContent.pttMessage || messageContent.audioMessage;
-          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-          const mime = audioMsg.mimetype || 'audio/ogg';
-          const ext = mime.includes('ogg') ? '.ogg' : mime.includes('mp4') ? '.m4a' : '.ogg';
-          mkdirSync(AUDIO_CACHE_DIR, { recursive: true });
-          const filePath = path.join(AUDIO_CACHE_DIR, `aud_${randomBytes(6).toString('hex')}${ext}`);
-          writeFileSync(filePath, buf);
-          mediaUrls.push(filePath);
-        } catch (err) {
-          console.error('[bridge] Failed to download audio:', err.message);
-        }
-      } else if (messageContent.documentMessage) {
-        body = messageContent.documentMessage.caption || '';
-        hasMedia = true;
-        mediaType = 'document';
-        const fileName = messageContent.documentMessage.fileName || 'document';
-        try {
-          const buf = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-          mkdirSync(DOCUMENT_CACHE_DIR, { recursive: true });
-          const safeFileName = path.basename(fileName).replace(/[^a-zA-Z0-9._-]/g, '_');
-          const filePath = path.join(DOCUMENT_CACHE_DIR, `doc_${randomBytes(6).toString('hex')}_${safeFileName}`);
-          writeFileSync(filePath, buf);
-          mediaUrls.push(filePath);
-        } catch (err) {
-          console.error('[bridge] Failed to download document:', err.message);
-        }
+        const selectedOptions = normalizePollUpdateOptions(aggregation, pollUpdates[0]);
+        logPollUpdateDiagnostic({
+          sourcePath: 'messages.upsert',
+          pollId: pollKey.id,
+          pollCreation,
+          pollUpdates,
+          selectedOptions,
+          aggregation,
+        });
+        enqueuePollUpdateEvent({
+          key: { ...pollKey, remoteJid: pollKey.remoteJid || chatId, participant: pollKey.participant || senderId },
+          update: { pollUpdates },
+          selectedOptions,
+          aggregation,
+        });
+        continue;
       }
 
-      // For media without caption, use a placeholder so the API message is never empty
-      if (hasMedia && !body) {
-        body = `[${mediaType} received]`;
-      }
+      const event = await extractBridgeEvent({
+        msg,
+        chatId,
+        senderId,
+        senderNumber,
+        botIds,
+        isGroup,
+        downloadMedia: async (mediaMsg) => downloadMediaMessage(mediaMsg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage }),
+        cacheDirs: {
+          image: IMAGE_CACHE_DIR,
+          document: DOCUMENT_CACHE_DIR,
+          audio: AUDIO_CACHE_DIR,
+        },
+      });
+      event.fromOwner = fromOwner;
 
       // Ignore Hermes' own reply messages in self-chat mode to avoid loops.
-      if (msg.key.fromMe && ((REPLY_PREFIX && body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
+      if (msg.key.fromMe && ((REPLY_PREFIX && event.body.startsWith(REPLY_PREFIX)) || recentlySentIds.has(msg.key.id))) {
         if (WHATSAPP_DEBUG) {
-          try { console.log(JSON.stringify({ event: 'ignored', reason: 'agent_echo', chatId, messageId: msg.key.id })); } catch {}
+          emitDebugEvent({
+            stage: 'ignored',
+            reason: 'agent_echo',
+            chatId: redactWhatsAppId(chatId),
+            messageId: msg.key.id,
+          });
         }
         continue;
       }
 
       // Skip empty messages
-      if (!body && !hasMedia) {
-        if (WHATSAPP_DEBUG) {
-          try { 
-            console.log(JSON.stringify({ event: 'ignored', reason: 'empty', chatId, messageKeys: Object.keys(msg.message || {}) })); 
-          } catch (err) {
-            console.error('Failed to log empty message event:', err);
-          }
-        }
+      if (!event.body && !event.hasMedia) {
+        emitDebugEvent({
+          stage: 'ignored',
+          reason: 'empty',
+          chatId: redactWhatsAppId(chatId),
+          messageKeys: Object.keys(msg.message || {}),
+        });
         continue;
       }
 
-      const event = {
-        messageId: msg.key.id,
-        chatId,
-        senderId,
-        senderName: msg.pushName || senderNumber,
-        chatName: isGroup ? (chatId.split('@')[0]) : (msg.pushName || senderNumber),
-        isGroup,
-        body,
-        hasMedia,
-        mediaType,
-        mediaUrls,
-        mentionedIds,
-        quotedMessageId,
-        quotedParticipant,
-        quotedRemoteJid,
-        hasQuotedMessage,
-        botIds,
-        timestamp: msg.messageTimestamp,
-      };
-
+      messageStore.remember(msg);
       messageQueue.push(event);
+      emitDebugEvent({
+        stage: 'queued',
+        chatId: redactWhatsAppId(chatId),
+        senderId: redactWhatsAppId(senderId),
+        fromOwner: !!fromOwner,
+        bodyLength: event.body.length,
+        hasMedia: event.hasMedia,
+        mediaType: event.mediaType,
+        queueLength: messageQueue.length,
+      });
       if (messageQueue.length > MAX_QUEUE_SIZE) {
         messageQueue.shift();
       }
@@ -487,8 +822,14 @@ app.post('/send', async (req, res) => {
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
     for (let i = 0; i < chunks.length; i += 1) {
-      const sent = await sock.sendMessage(chatId, { text: chunks[i] });
+      const { content: payload, options } = buildTextSendPayload(chunks[i], {
+        chatId,
+        replyTo: i === 0 ? replyTo : undefined,
+        messageStore,
+      });
+      const sent = await sendWithTimeout(chatId, payload, options);
       trackSentMessageId(sent);
+      messageStore.remember(sent);
       if (sent?.key?.id) messageIds.push(sent.key.id);
       if (chunks.length > 1 && i < chunks.length - 1) {
         await sleep(CHUNK_DELAY_MS);
@@ -521,10 +862,10 @@ app.post('/edit', async (req, res) => {
     const chunks = splitLongMessage(formatOutgoingMessage(message));
     const messageIds = [];
 
-    await sock.sendMessage(chatId, { text: chunks[0], edit: key });
+    await sendWithTimeout(chatId, { text: chunks[0], edit: key });
     if (chunks.length > 1) {
       for (let i = 1; i < chunks.length; i += 1) {
-        const sent = await sock.sendMessage(chatId, { text: chunks[i] });
+        const sent = await sendWithTimeout(chatId, { text: chunks[i] });
         trackSentMessageId(sent);
         if (sent?.key?.id) messageIds.push(sent.key.id);
         if (i < chunks.length - 1) {
@@ -538,25 +879,6 @@ app.post('/edit', async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
-
-// MIME type map and media type inference for /send-media
-const MIME_MAP = {
-  jpg: 'image/jpeg', jpeg: 'image/jpeg', png: 'image/png',
-  webp: 'image/webp', gif: 'image/gif',
-  mp4: 'video/mp4', mov: 'video/quicktime', avi: 'video/x-msvideo',
-  mkv: 'video/x-matroska', '3gp': 'video/3gpp',
-  pdf: 'application/pdf',
-  doc: 'application/msword',
-  docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-  xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-};
-
-function inferMediaType(ext) {
-  if (['jpg', 'jpeg', 'png', 'webp', 'gif'].includes(ext)) return 'image';
-  if (['mp4', 'mov', 'avi', 'mkv', '3gp'].includes(ext)) return 'video';
-  if (['ogg', 'opus', 'mp3', 'wav', 'm4a'].includes(ext)) return 'audio';
-  return 'document';
-}
 
 // Send media (image, video, document) natively
 app.post('/send-media', async (req, res) => {
@@ -581,10 +903,37 @@ app.post('/send-media', async (req, res) => {
 
     switch (type) {
       case 'image':
-        msgPayload = { image: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'image/jpeg' };
+        if (ext === 'gif') {
+          // WhatsApp's native animated-GIF UX is an MP4 video payload with
+          // gifPlayback=true. Convert when ffmpeg is available; otherwise fall
+          // back to a truthful image/gif send instead of mislabeling GIF bytes
+          // as video/mp4.
+          let tmpGifMp4 = null;
+          try {
+            tmpGifMp4 = path.join(tmpdir(), `hermes_gif_${randomBytes(6).toString('hex')}.mp4`);
+            execFileSync(
+              'ffmpeg',
+              ['-y', '-i', filePath, '-movflags', 'faststart', '-pix_fmt', 'yuv420p', '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2', tmpGifMp4],
+              { timeout: 30000, stdio: 'pipe' }
+            );
+            msgPayload = {
+              video: readFileSync(tmpGifMp4),
+              caption: caption || undefined,
+              mimetype: 'video/mp4',
+              gifPlayback: true,
+            };
+          } catch (gifErr) {
+            console.warn('[bridge] gif conversion failed, sending as image/gif:', gifErr.message);
+            msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: type, caption, fileName });
+          } finally {
+            try { if (tmpGifMp4 && existsSync(tmpGifMp4)) unlinkSync(tmpGifMp4); } catch (_) {}
+          }
+        } else {
+          msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: type, caption, fileName });
+        }
         break;
       case 'video':
-        msgPayload = { video: buffer, caption: caption || undefined, mimetype: MIME_MAP[ext] || 'video/mp4' };
+        msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: type, caption, fileName });
         break;
       case 'audio': {
         // WhatsApp only renders a native voice bubble (ptt) when the file is ogg/opus.
@@ -597,8 +946,9 @@ app.post('/send-media', async (req, res) => {
         if (needsConversion) {
           tmpPath = path.join(tmpdir(), `hermes_voice_${randomBytes(6).toString('hex')}.ogg`);
           try {
-            execSync(
-              `ffmpeg -y -i ${JSON.stringify(filePath)} -ar 48000 -ac 1 -c:a libopus ${JSON.stringify(tmpPath)}`,
+            execFileSync(
+              'ffmpeg',
+              ['-y', '-i', filePath, '-ar', '48000', '-ac', '1', '-c:a', 'libopus', tmpPath],
               { timeout: 30000, stdio: 'pipe' }
             );
             audioBuffer = readFileSync(tmpPath);
@@ -616,22 +966,62 @@ app.post('/send-media', async (req, res) => {
       }
       case 'document':
       default:
-        msgPayload = {
-          document: buffer,
-          fileName: fileName || path.basename(filePath),
-          caption: caption || undefined,
-          mimetype: MIME_MAP[ext] || 'application/octet-stream',
-        };
+        msgPayload = mediaPayloadForFile({ buffer, filePath, mediaType: 'document', caption, fileName });
         break;
     }
 
-    const sent = await sock.sendMessage(chatId, msgPayload);
-
+    const sent = await sendWithTimeout(chatId, msgPayload);
     trackSentMessageId(sent);
-
+    messageStore.remember(sent);
     res.json({ success: true, messageId: sent?.key?.id });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Send poll primitive. Approval UX is intentionally not wired here; gateway
+// approvals need text fallback and explicit confirmation semantics above this
+// low-level transport helper.
+app.post('/send-poll', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, question, options, selectableCount } = req.body;
+  if (!chatId || !question || !Array.isArray(options)) {
+    return res.status(400).json({ error: 'chatId, question, and options are required' });
+  }
+
+  try {
+    const payload = buildPollPayload({ question, options, selectableCount });
+    const sent = await sendWithTimeout(chatId, payload);
+    trackSentMessageId(sent);
+    rememberSentMessage(sent, payload);
+    res.json({ success: true, messageId: sent?.key?.id });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
+  }
+});
+
+// Send native WhatsApp location pin
+app.post('/send-location', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, latitude, longitude, name, address } = req.body;
+  if (!chatId || latitude === undefined || longitude === undefined) {
+    return res.status(400).json({ error: 'chatId, latitude, and longitude are required' });
+  }
+
+  try {
+    const payload = buildLocationPayload({ latitude, longitude, name, address });
+    const sent = await sendWithTimeout(chatId, payload);
+    trackSentMessageId(sent);
+    messageStore.remember(sent);
+    res.json({ success: true, messageId: sent?.key?.id });
+  } catch (err) {
+    res.status(400).json({ error: err.message });
   }
 });
 
@@ -683,16 +1073,27 @@ app.get('/health', (req, res) => {
     status: connectionState,
     queueLength: messageQueue.length,
     uptime: process.uptime(),
+    scriptHash: SCRIPT_HASH,
   });
 });
 
 // Start
 if (PAIR_ONLY) {
   // Pair-only mode: just connect, show QR, save creds, exit. No HTTP server.
-  console.log('📱 WhatsApp pairing mode');
-  console.log(`📁 Session: ${SESSION_DIR}`);
-  console.log();
-  startSocket();
+  if (PAIR_JSON) {
+    emitPairEvent({ event: 'started', session: SESSION_DIR });
+  } else {
+    console.log('📱 WhatsApp pairing mode');
+    console.log(`📁 Session: ${SESSION_DIR}`);
+    console.log();
+  }
+  startSocket().catch((err) => {
+    emitPairEvent({ event: 'error', error: err?.message || String(err) });
+    if (!PAIR_JSON) {
+      console.error(err);
+    }
+    process.exit(1);
+  });
 } else {
   app.listen(PORT, '127.0.0.1', () => {
     console.log(`🌉 WhatsApp bridge listening on port ${PORT} (mode: ${WHATSAPP_MODE})`);
@@ -701,10 +1102,15 @@ if (PAIR_ONLY) {
       console.log(`🔒 Allowed users: ${Array.from(ALLOWED_USERS).join(', ')}`);
     } else if (WHATSAPP_MODE === 'self-chat') {
       console.log(`🔒 Self-chat mode — only your own messages to yourself are processed.`);
+    } else if (WHATSAPP_MODE === 'bot' && WHATSAPP_DM_POLICY === 'pairing') {
+      console.log(`🤝 WHATSAPP_DM_POLICY=pairing — unknown DMs are forwarded for gateway pairing.`);
     } else {
       console.log(`🔒 No WHATSAPP_ALLOWED_USERS set — incoming messages are rejected.`);
       console.log(`   Set WHATSAPP_ALLOWED_USERS=<phone> to authorize specific users,`);
       console.log(`   or WHATSAPP_ALLOWED_USERS=* for an explicit open bot.`);
+    }
+    if (WHATSAPP_MODE === 'bot' && FORWARD_OWNER_MESSAGES) {
+      console.log(`👤 WHATSAPP_FORWARD_OWNER_MESSAGES=true — owner-typed messages will be forwarded with fromOwner:true`);
     }
     console.log();
     startSocket();

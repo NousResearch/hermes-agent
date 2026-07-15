@@ -66,6 +66,11 @@ metadata:
         description: "What this setting controls"
         default: "sensible-default"
         prompt: "Display prompt for setup"
+    blueprint:                              # Optional — marks this skill a runnable automation
+      schedule: "0 9 * * *"              #   cron expr / "every 2h" / ISO timestamp
+      deliver: origin                    #   optional (default origin)
+      prompt: "Task instruction for each run"  # optional
+      no_agent: false                    # optional
 required_environment_variables:          # Optional — env vars the skill needs
   - name: MY_API_KEY
     prompt: "Enter your API key"
@@ -173,7 +178,7 @@ required_environment_variables:
 The user can skip setup and keep loading the skill. Hermes never exposes the raw secret value to the model. Gateway and messaging sessions show local setup guidance instead of collecting secrets in-band.
 
 :::tip Sandbox Passthrough
-When your skill is loaded, any declared `required_environment_variables` that are set are **automatically passed through** to `execute_code` and `terminal` sandboxes — including remote backends like Docker and Modal. Your skill's scripts can access `$TENOR_API_KEY` (or `os.environ["TENOR_API_KEY"]` in Python) without the user needing to configure anything extra. See [Environment Variable Passthrough](/docs/user-guide/security#environment-variable-passthrough) for details.
+When your skill is loaded, any declared `required_environment_variables` that are set are **automatically passed through** to `execute_code` and `terminal` sandboxes — including remote backends like Docker and Modal. Your skill's scripts can access `$TENOR_API_KEY` (or `os.environ["TENOR_API_KEY"]` in Python) without the user needing to configure anything extra. See [Environment Variable Passthrough](/user-guide/security#environment-variable-passthrough) for details.
 :::
 
 Legacy `prerequisites.env_vars` remains supported as a backward-compatible alias.
@@ -272,6 +277,10 @@ Put the most common workflow first. Edge cases and advanced usage go at the bott
 
 For XML/JSON parsing or complex logic, include helper scripts in `scripts/` — don't expect the LLM to write parsers inline every time.
 
+### Deliver media as documents (`[[as_document]]`)
+
+If your skill produces a high-resolution screenshot, chart, or any image where lossy preview compression would hurt — emit the literal directive `[[as_document]]` somewhere in the response (commonly the last line). The gateway strips the directive and delivers every extracted media path in that response as a downloadable file attachment instead of an inline image bubble. See [Skill output and media delivery](../user-guide/features/skills.md#skill-output-and-media-delivery) for the full semantics.
+
 #### Referencing bundled scripts from SKILL.md
 
 When a skill is loaded, the activation message exposes the absolute skill directory as `[Skill directory: /abs/path]` and also substitutes two template tokens anywhere in the SKILL.md body:
@@ -326,9 +335,67 @@ Bundled skills (in `skills/`) ship with every Hermes install. They should be **b
 - Document handling, web research, common dev workflows, system administration
 - Used regularly by a wide range of people
 
-If your skill is official and useful but not universally needed (e.g., a paid service integration, a heavyweight dependency), put it in **`optional-skills/`** — it ships with the repo, is discoverable via `hermes skills browse` (labeled "official"), and installs with builtin trust.
+If your skill is official and useful but not universally needed (e.g., a paid service integration, a heavyweight dependency), put it in **`optional-skills/`** — it ships with the repo, is discoverable via `hermes skills browse` (labeled "official"), and installs with built-in trust.
 
 If your skill is specialized, community-contributed, or niche, it's better suited for a **Skills Hub** — upload it to a registry and share it via `hermes skills install`.
+
+## Blueprints: skills that are also automations
+
+A **blueprint** is an ordinary skill that additionally declares a schedule in its frontmatter. Add a `metadata.hermes.blueprint` block and the skill becomes a shareable, runnable automation:
+
+```yaml
+metadata:
+  hermes:
+    tags: [blueprint, email]
+    blueprint:
+      schedule: "0 8 * * *"     # presence of `blueprint:` marks it runnable
+      deliver: telegram          # optional (default: origin)
+      prompt: "Summarize my unread email and today's calendar."  # optional
+      no_agent: false            # optional
+```
+
+Because a blueprint **is** a skill, it flows through the entire skills pipeline unchanged — search, inspect, install, security scan, provenance, taps, the centralized index, and `hermes skills publish` for sharing. Nothing new to learn.
+
+**Installing a blueprint.** When you install a skill that carries a `blueprint:` block, Hermes registers it as a **suggested cron job** rather than scheduling it. Scheduling is **opt-in** — installing never silently creates a recurring job. You review and accept it via `/suggestions`:
+
+```bash
+hermes skills install owner/morning-brief
+# → Blueprint: 'morning-brief' is an automation (schedule 0 8 * * *).
+#   Added to your suggestions — run /suggestions to schedule or dismiss it.
+
+# then, in a session:
+/suggestions             # lists pending suggestions, numbered
+/suggestions accept 1    # creates the cron job
+/suggestions dismiss 1   # never offer it again
+```
+
+Blueprints are one **source** of the unified Suggested Cron Jobs surface — the same place curated starter automations and (later) usage-pattern and integration suggestions appear. See [Suggested Cron Jobs](#suggested-cron-jobs) below.
+
+**Sharing an automation you built.** A blueprint loaded by a cron job (`hermes cron create --skill <name> ...`) can be exported back to a SKILL.md and published like any other skill, so an automation you tuned for yourself becomes a one-command install for someone else.
+
+The blueprint layer adds no new object type, store, or transport — the blueprint is a skill, the schedule is a cron job, and sharing is the existing publish/tap/index path.
+
+## Suggested Cron Jobs
+
+Hermes can *propose* automations and let you accept them with one tap, instead of making you assemble cron jobs by hand. Every proposal flows through one surface — the `/suggestions` command — regardless of where it came from:
+
+| Source | Trigger |
+|--------|---------|
+| `catalog` | Curated starter automations (`/suggestions catalog`) — daily briefing, important-mail monitor, weekly review, workday-start reminder |
+| `blueprint` | You installed a skill carrying a `blueprint:` block |
+| `usage` | The background review noticed a recurring ask a schedule would serve |
+| `integration` | You connected an account (Gmail, GitHub, ...) and the obvious automations are offered |
+
+```bash
+/suggestions             # list pending
+/suggestions accept N    # schedule suggestion N (creates the cron job)
+/suggestions dismiss N   # dismiss it — latched, never re-offered
+/suggestions catalog     # add the curated starter automations
+```
+
+Accepting a suggestion calls the same `cron.jobs.create_job` the `cronjob` tool uses — there is no second job engine. Suggestions **never** auto-create jobs; acceptance is always explicit. Dismissed suggestions latch by a stable key so the same proposal is never re-offered. The pending list is capped so it never becomes a nag wall.
+
+The **important-mail monitor** catalog entry is the poll→classify→surface pattern: it scores inbox items with a cheap classifier model (`auxiliary.monitor` in `config.yaml`) and delivers only the ones above an urgency threshold, staying silent otherwise.
 
 ## Publishing Skills
 
@@ -359,8 +426,8 @@ All hub-installed skills go through a security scanner that checks for:
 
 Trust levels:
 - `builtin` — ships with Hermes (always trusted)
-- `official` — from `optional-skills/` in the repo (builtin trust, no third-party warning)
-- `trusted` — from openai/skills, anthropics/skills
+- `official` — from `optional-skills/` in the repo (built-in trust, no third-party warning)
+- `trusted` — from openai/skills, anthropics/skills, huggingface/skills
 - `community` — non-dangerous findings can be overridden with `--force`; `dangerous` verdicts remain blocked
 
 Hermes can now consume third-party skills from multiple external discovery models:

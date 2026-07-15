@@ -35,13 +35,18 @@ class TestHierarchicalSummary:
         messages = _messages(12, chars_per_message=1800)
         responses = [_response(f"segment summary {i}") for i in range(1, 20)]
 
-        with patch("agent.context_compressor.call_llm", side_effect=responses) as mock_call:
+        with (
+            patch("agent.context_compressor.call_llm", side_effect=responses) as mock_call,
+            patch("agent.context_compressor.aux_interrupt_protection") as interrupt_guard,
+        ):
             summary = compressor._generate_summary(messages)
 
         assert summary is not None
         assert summary.startswith(SUMMARY_PREFIX)
         assert "segment summary" in summary
         assert mock_call.call_count >= 3  # at least two map calls plus one reduce call
+        assert interrupt_guard.call_count == mock_call.call_count
+        assert all("max_tokens" not in call.kwargs for call in mock_call.call_args_list)
 
         map_prompts = [
             call.kwargs["messages"][0]["content"]
@@ -53,6 +58,29 @@ class TestHierarchicalSummary:
         assert "SEGMENT SUMMARIES TO MERGE" in reduce_prompt
         assert "segment summary 1" in reduce_prompt
         assert "segment summary 2" in reduce_prompt
+
+    def test_hierarchical_calls_accept_dict_messages_and_strip_reasoning(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=200000):
+            compressor = ContextCompressor(
+                model="test/model",
+                quiet_mode=True,
+                hierarchical_chunk_tokens=700,
+                hierarchical_min_serialized_chars=0,
+                hierarchical_min_chunks=2,
+            )
+
+        response = MagicMock()
+        response.choices = [MagicMock()]
+        response.choices[0].message = {
+            "content": "<think>transient reasoning</think>usable summary"
+        }
+
+        with patch("agent.context_compressor.call_llm", return_value=response):
+            summary = compressor._generate_summary(_messages(8, chars_per_message=1600))
+
+        assert summary is not None
+        assert "usable summary" in summary
+        assert "transient reasoning" not in summary
 
     def test_failed_large_segment_is_split_instead_of_whole_summary_fallback(self):
         with patch("agent.context_compressor.get_model_context_length", return_value=200000):

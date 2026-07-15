@@ -18,7 +18,6 @@ together at the end. Script exits 0 iff every scenario passed or was
 cleanly SKIPPED (with reason).
 """
 
-import json
 import multiprocessing as mp
 import os
 import shutil
@@ -122,11 +121,11 @@ def _(home, kb):
             metadata=meta,
         )
         run = kb.latest_run(conn, tid)
-        assert run.summary == "完成了 📝 résumé", f"summary round-trip failed"
+        assert run.summary == "完成了 📝 résumé", "summary round-trip failed"
         assert run.metadata == meta, (
             f"metadata round-trip failed: {run.metadata} != {meta}"
         )
-        print(f"  metadata with CJK + emoji round-tripped")
+        print("  metadata with CJK + emoji round-tripped")
     finally:
         conn.close()
 
@@ -154,7 +153,7 @@ def _(home, kb):
         run = kb.latest_run(conn, tid)
         assert run.summary == huge_summary
         assert run.metadata == meta
-        print(f"  1 MB body + 1 MB summary + 50-deep metadata OK")
+        print("  1 MB body + 1 MB summary + 50-deep metadata OK")
     finally:
         conn.close()
 
@@ -342,7 +341,7 @@ def _(home, kb):
             f"leaf should promote with both parents done, got "
             f"{kb.get_task(conn, leaf).status}"
         )
-        print(f"  diamond dependency resolved correctly")
+        print("  diamond dependency resolved correctly")
     finally:
         conn.close()
 
@@ -402,7 +401,7 @@ def _(home, kb):
         kb.complete_task(conn, parents[-1])
         kb.recompute_ready(conn)
         assert kb.get_task(conn, child).status == "ready"
-        print(f"  500 parents → 1 child promotion works")
+        print("  500 parents → 1 child promotion works")
     finally:
         conn.close()
 
@@ -442,7 +441,7 @@ def _(home, kb):
                 # This is escaping the home dir. Whether that's actually
                 # a problem depends on the threat model. Flag for attention.
                 print(f"  ⚠ workspace resolved OUTSIDE hermes_home: {resolved}")
-                print(f"    (not necessarily a bug — dir: workspaces are intentionally arbitrary, but worth documenting)")
+                print("    (not necessarily a bug — dir: workspaces are intentionally arbitrary, but worth documenting)")
         except Exception as e:
             print(f"  resolve_workspace rejected: {e}")
     finally:
@@ -516,7 +515,7 @@ def _(home, kb):
             # doesn't produce "-1800s" elapsed.
             elapsed = run.ended_at - run.started_at
             print(f"  clock-skewed run: elapsed = {elapsed}s (negative)")
-            print(f"  ⚠ kernel stores this; UI should clamp to 0 or handle")
+            print("  ⚠ kernel stores this; UI should clamp to 0 or handle")
             # Don't fail — document the behavior.
         else:
             print("  kernel normalized ended_at >= started_at")
@@ -876,7 +875,7 @@ def _(home, kb):
         elapsed = (time.monotonic() - t0) * 1000
         print(f"  1000 comments: list in {elapsed:.0f}ms, context size = {len(ctx)} chars")
         if len(ctx) > 200_000:
-            print(f"  ⚠ comment thread unbounded in worker context")
+            print("  ⚠ comment thread unbounded in worker context")
     finally:
         conn.close()
 
@@ -902,13 +901,13 @@ def _(home, kb):
             pass
         # Empty body → accept (legitimate: just title says it all)
         tid = kb.create_task(conn, title="empty body ok", body="", assignee="w")
-        assert kb.get_task(conn, tid).body in ("", None)
+        assert kb.get_task(conn, tid).body in {"", None}
         # Empty summary on complete → accept
         kb.claim_task(conn, tid)
         kb.complete_task(conn, tid, summary="")
         run = kb.latest_run(conn, tid)
         # Empty summary falls back to result; both empty → None on run
-        print(f"  empty body accepted, empty-title rejected")
+        print("  empty body accepted, empty-title rejected")
     finally:
         conn.close()
 
@@ -927,7 +926,7 @@ def _(home, kb):
         assert back.tenant == weird_tenant
         # board_stats groups by tenant — verify it doesn't fall over
         stats = kb.board_stats(conn)
-        print(f"  multiline tenant stored and stats still work")
+        print("  multiline tenant stored and stats still work")
     finally:
         conn.close()
 
@@ -994,7 +993,7 @@ def _(home, kb):
 
     # Empty title
     r = client.post("/api/plugins/kanban/tasks", json={"title": ""})
-    assert r.status_code in (400, 422), f"empty title should 4xx, got {r.status_code}"
+    assert r.status_code in {400, 422}, f"empty title should 4xx, got {r.status_code}"
 
     # Title only
     r = client.post("/api/plugins/kanban/tasks", json={"title": "x"})
@@ -1019,7 +1018,7 @@ def _(home, kb):
     r = client.post("/api/plugins/kanban/tasks", json={
         "title": "fine", "nonexistent_field": "whatever",
     })
-    assert r.status_code in (200, 422)
+    assert r.status_code in {200, 422}
 
     # Priority as non-int
     r = client.post("/api/plugins/kanban/tasks", json={"title": "prio", "priority": "high"})
@@ -1028,7 +1027,7 @@ def _(home, kb):
     # PATCH with empty body (no changes requested)
     r = client.patch(f"/api/plugins/kanban/tasks/{tid}", json={})
     # Accept either success-no-op or 400
-    assert r.status_code in (200, 400)
+    assert r.status_code in {200, 400}
     print("  dashboard REST handles weird inputs correctly")
 
 # =============================================================================

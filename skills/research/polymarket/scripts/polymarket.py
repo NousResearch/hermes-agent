@@ -233,7 +233,7 @@ def cmd_trades(limit: int = 10, market: str = None):
 
 def main():
     args = sys.argv[1:]
-    if not args or args[0] in ("-h", "--help", "help"):
+    if not args or args[0] in {"-h", "--help", "help"}:
         print(__doc__)
         return
 

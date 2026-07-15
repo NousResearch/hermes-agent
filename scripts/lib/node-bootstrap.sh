@@ -44,6 +44,32 @@ _nb_is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
 }
 
+# Where to symlink node/npm/npx so they land on PATH.
+# Mirrors get_command_link_dir() from install.sh: root FHS → /usr/local/bin,
+# Termux → $PREFIX/bin, otherwise ~/.local/bin.
+_nb_get_link_dir() {
+    if _nb_is_termux && [ -n "${PREFIX:-}" ]; then
+        echo "$PREFIX/bin"
+    elif [ "$(id -u)" = 0 ] && [ "$(uname -s)" = "Linux" ]; then
+        echo "/usr/local/bin"
+    else
+        echo "$HOME/.local/bin"
+    fi
+}
+
+# Redirect a Hermes-managed Node's `npm install -g` to the command link dir
+# (already on PATH) instead of the default $HERMES_HOME/node/bin, which is off
+# PATH and wiped on every Node upgrade. Scoped to the managed Node via its
+# prefix-local global npmrc; the user's other Node installs / ~/.npmrc are
+# untouched. Idempotent no-op when there's no managed npm.
+_nb_configure_npm_prefix() {
+    [ -x "$HERMES_HOME/node/bin/npm" ] || return 0
+    local _link_dir
+    _link_dir="$(_nb_get_link_dir)"
+    mkdir -p "$HERMES_HOME/node/etc"
+    printf 'prefix=%s\n' "$(dirname "$_link_dir")" > "$HERMES_HOME/node/etc/npmrc"
+}
+
 _nb_node_major() {
     local v
     v=$(node --version 2>/dev/null | sed 's/^v//' | cut -d. -f1)
@@ -187,10 +213,15 @@ _nb_install_bundled_node() {
     mv "$extracted" "$HERMES_HOME/node"
     rm -rf "$tmp"
 
-    mkdir -p "$HOME/.local/bin"
-    ln -sf "$HERMES_HOME/node/bin/node" "$HOME/.local/bin/node"
-    ln -sf "$HERMES_HOME/node/bin/npm"  "$HOME/.local/bin/npm"
-    ln -sf "$HERMES_HOME/node/bin/npx"  "$HOME/.local/bin/npx"
+    local _link_dir
+    _link_dir="$(_nb_get_link_dir)"
+    mkdir -p "$_link_dir"
+    ln -sf "$HERMES_HOME/node/bin/node" "$_link_dir/node"
+    ln -sf "$HERMES_HOME/node/bin/npm"  "$_link_dir/npm"
+    ln -sf "$HERMES_HOME/node/bin/npx"  "$_link_dir/npx"
+
+    _nb_configure_npm_prefix
+
     export PATH="$HERMES_HOME/node/bin:$PATH"
 
     _nb_have_modern_node || return 1
@@ -199,11 +230,58 @@ _nb_install_bundled_node() {
 }
 
 # ---------------------------------------------------------------------------
+# Heal a broken Hermes-managed Node tree (partial upgrade / missing lib/)
+# ---------------------------------------------------------------------------
+
+_nb_managed_tool_broken() {
+    local tool="$1"
+    local probe
+    for probe in \
+        "$HERMES_HOME/node/bin/$tool" \
+        "$HERMES_HOME/node/${tool}.exe" \
+        "$HERMES_HOME/node/$tool"; do
+        if [ -x "$probe" ] || [ -f "$probe" ]; then
+            if ! "$probe" --version >/dev/null 2>&1; then
+                return 0
+            fi
+        fi
+    done
+    return 1
+}
+
+_nb_managed_node_needs_heal() {
+    local tool
+    for tool in node npm npx; do
+        if _nb_managed_tool_broken "$tool"; then
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Redownload the pinned nodejs.org tarball when a managed tree exists but
+# node/npm/npx fail a --version probe. No-op when the tree is healthy or
+# absent. Used by hermes_constants.find_hermes_node_executable() and safe
+# to call from install reruns.
+heal_managed_node() {
+    [ -d "$HERMES_HOME/node" ] || return 1
+    if ! _nb_managed_node_needs_heal; then
+        return 0
+    fi
+    _nb_log "Hermes-managed Node is broken — redownloading to $HERMES_HOME/node/..."
+    _nb_install_bundled_node
+}
+
+# ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
 
 ensure_node() {
     HERMES_NODE_AVAILABLE=false
+
+    # Repair pre-existing managed installs where `npm install -g` lands off
+    # PATH. No-op when there's no managed Node, so it's safe to run first.
+    _nb_configure_npm_prefix
 
     if _nb_have_modern_node; then
         _nb_ok "Node $(node --version) found"

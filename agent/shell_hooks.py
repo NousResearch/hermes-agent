@@ -49,6 +49,58 @@ Wire protocol
 
     # Silent no-op:
     <empty or any non-matching JSON object>
+
+Per-event ``extra`` keys
+~~~~~~~~~~~~~~~~~~~~~~~~
+
+The ``extra`` object contains every kwarg that is **not** one of the
+top-level payload keys (``tool_name``, ``args``, ``session_id``,
+``parent_session_id``).  The tables below list the ``extra`` keys
+emitted by each built-in hook site.
+
+``post_tool_call`` (emitted from ``model_tools.py``)::
+
+    result          – tool return value (serialised string)
+    status          – "ok" | "error" | "blocked"
+    error_type      – error category (e.g. "ValueError"), or None
+    error_message   – human-readable error text, or None
+    duration_ms     – wall-clock time in milliseconds
+    task_id         – current task id (empty string if none)
+    tool_call_id    – provider tool-call id
+    turn_id         – current turn id
+    api_request_id  – current API request id
+    middleware_trace – list of dicts from tool middleware chain
+
+``pre_tool_call`` (emitted from ``model_tools.py``)::
+
+    task_id         – current task id (empty string if none)
+    tool_call_id    – provider tool-call id
+    turn_id         – current turn id
+    api_request_id  – current API request id
+    middleware_trace – list of dicts from tool middleware chain
+
+``on_session_start`` (emitted from ``agent/conversation_loop.py``)::
+
+    model           – model name (e.g. "claude-sonnet-4-20250514")
+    platform        – platform identifier (e.g. "cli", "whatsapp")
+
+``on_session_end`` (emitted from ``agent/turn_finalizer.py``)::
+
+    task_id         – current task id
+    turn_id         – current turn id
+    completed       – bool, True when the turn produced a final response
+    interrupted     – bool, True when the user interrupted
+    model           – model name
+    platform        – platform identifier
+
+``subagent_stop`` (emitted from ``tools/delegate_tool.py``)::
+
+    parent_turn_id  – parent agent's current turn id
+    child_session_id – child (subagent) session id
+    child_role      – role string of the child agent
+    child_summary   – summary of the child's work
+    child_status    – exit status string (e.g. "success", "error")
+    duration_ms     – wall-clock time of the child run in milliseconds
 """
 
 from __future__ import annotations
@@ -70,6 +122,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Set, Tuple
 
+from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+
 try:
     import fcntl  # POSIX only; Windows falls back to best-effort without flock.
 except ImportError:  # pragma: no cover
@@ -83,6 +137,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_TIMEOUT_SECONDS = 60
 MAX_TIMEOUT_SECONDS = 300
 ALLOWLIST_FILENAME = "shell-hooks-allowlist.json"
+_DEFAULT_BLOCK_MESSAGE = "Blocked by shell hook."
 
 # (event, matcher, command) triples that have been wired to the plugin
 # manager in the current process.  Matcher is part of the key because
@@ -169,6 +224,15 @@ def register_from_config(
     if not isinstance(cfg, dict):
         return []
 
+    # Safe mode (--safe-mode / HERMES_SAFE_MODE=1): shell hooks are user
+    # customizations too — skip registration entirely so a troubleshooting
+    # run fires zero user-configured code (plugins, MCP, AND hooks).
+    from utils import env_var_enabled
+
+    if env_var_enabled("HERMES_SAFE_MODE"):
+        logger.info("HERMES_SAFE_MODE=1 — shell-hook registration skipped")
+        return []
+
     effective_accept = _resolve_effective_accept(cfg, accept_hooks)
 
     specs = _parse_hooks_block(cfg.get("hooks"))
@@ -252,6 +316,11 @@ def _parse_hooks_block(hooks_cfg: Any) -> List[ShellHookSpec]:
     specs: List[ShellHookSpec] = []
 
     for event_name, entries in hooks_cfg.items():
+        # Reserved sub-keys that aren't event names — skip silently. These
+        # are config sub-sections nested under `hooks:` for related
+        # functionality (e.g. output-spill budgets).
+        if event_name in ("output_spill",):
+            continue
         if event_name not in VALID_HOOKS:
             suggestion = difflib.get_close_matches(
                 str(event_name), VALID_HOOKS, n=1, cutoff=0.6,
@@ -388,6 +457,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
         return result
 
     t0 = time.monotonic()
+    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
         proc = subprocess.run(
             argv,
@@ -396,6 +466,7 @@ def _spawn(spec: ShellHookSpec, stdin_json: str) -> Dict[str, Any]:
             timeout=spec.timeout,
             text=True,
             shell=False,
+            **_popen_kwargs,
         )
     except subprocess.TimeoutExpired:
         result["timed_out"] = True
@@ -481,6 +552,17 @@ def _serialize_payload(event: str, kwargs: Dict[str, Any]) -> str:
     return json.dumps(payload, ensure_ascii=False, default=str)
 
 
+def _block_message(primary: Any, secondary: Any) -> str:
+    """Return a validated string block message, falling back to the default.
+
+    Accepts two candidate fields (primary wins over secondary) so callers
+    can express field-priority differences between the two hook wire formats
+    without duplicating the type-check logic.
+    """
+    raw = primary or secondary
+    return raw if isinstance(raw, str) and raw else _DEFAULT_BLOCK_MESSAGE
+
+
 def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
     """Translate stdout JSON into a Hermes wire-shape dict.
 
@@ -515,13 +597,20 @@ def _parse_response(event: str, stdout: str) -> Optional[Dict[str, Any]]:
 
     if event == "pre_tool_call":
         if data.get("action") == "block":
-            message = data.get("message") or data.get("reason") or ""
-            if isinstance(message, str) and message:
-                return {"action": "block", "message": message}
+            return {"action": "block", "message": _block_message(data.get("message"), data.get("reason"))}
         if data.get("decision") == "block":
-            message = data.get("reason") or data.get("message") or ""
-            if isinstance(message, str) and message:
-                return {"action": "block", "message": message}
+            return {"action": "block", "message": _block_message(data.get("reason"), data.get("message"))}
+        return None
+
+    if event == "pre_verify":
+        # "continue" (Hermes) / "block" (Claude-Code Stop: block the stop) both
+        # mean keep going; the message/reason is the follow-up for the model. A
+        # continue with no message is a no-op — let the turn finish.
+        action = str(data.get("action") or data.get("decision") or "").strip().lower()
+        if action in {"continue", "block"}:
+            message = data.get("message") or data.get("reason")
+            if isinstance(message, str) and message.strip():
+                return {"action": "continue", "message": message.strip()}
         return None
 
     context = data.get("context")
@@ -624,7 +713,10 @@ def _locked_update_approvals() -> Iterator[Dict[str, Any]]:
             yield data
             save_allowlist(data)
         finally:
-            fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            try:
+                fcntl.flock(lock_fh.fileno(), fcntl.LOCK_UN)
+            except (OSError, IOError):
+                pass
 
 
 def _prompt_and_record(

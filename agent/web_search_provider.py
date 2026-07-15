@@ -52,7 +52,33 @@ On failure (either capability)::
 from __future__ import annotations
 
 import abc
-from typing import Any, Dict, List
+import os
+from typing import Any, Dict, List, Optional
+
+
+def get_provider_env(name: str) -> str:
+    """Config-aware env lookup for web providers.
+
+    Resolves *name* via :func:`hermes_cli.config.get_env_value` (checks
+    ``os.environ`` first, then ``~/.hermes/.env``) so credentials set
+    through Hermes' config layer are visible even when they were never
+    exported into the process environment — gateway sessions, delegate
+    children, and subprocess agent runs (issue #40190). Falls back to a
+    bare ``os.getenv`` when the config module is unavailable (stripped
+    installs, early import contexts).
+
+    Returns the stripped value, or ``""`` when unset.
+    """
+    val: Optional[str] = None
+    try:
+        from hermes_cli.config import get_env_value
+
+        val = get_env_value(name)
+    except Exception:  # noqa: BLE001 — config layer optional here
+        val = None
+    if val is None:
+        val = os.getenv(name, "")
+    return (val or "").strip()
 
 
 # ---------------------------------------------------------------------------
@@ -61,14 +87,14 @@ from typing import Any, Dict, List
 
 
 class WebSearchProvider(abc.ABC):
-    """Abstract base class for a web search/extract/crawl backend.
+    """Abstract base class for a web search/extract backend.
 
     Subclasses must implement :meth:`is_available` and at least one of
-    :meth:`search` / :meth:`extract` / :meth:`crawl`. The
-    :meth:`supports_search` / :meth:`supports_extract` / :meth:`supports_crawl`
-    capability flags let the registry route each tool call to the right
-    provider, and let multi-capability providers (Firecrawl, Tavily, Exa,
-    …) advertise multiple capabilities from a single class.
+    :meth:`search` / :meth:`extract`. The :meth:`supports_search` /
+    :meth:`supports_extract` capability flags let the registry route each
+    tool call to the right provider, and let multi-capability providers
+    (Firecrawl, Tavily, Exa, …) advertise multiple capabilities from a
+    single class.
     """
 
     @property
@@ -110,22 +136,6 @@ class WebSearchProvider(abc.ABC):
         ideally wrap in :func:`asyncio.to_thread` at the call site; small
         providers can keep their sync shape and let the dispatcher handle
         threading.
-        """
-        return False
-
-    def supports_crawl(self) -> bool:
-        """Return True if this provider implements :meth:`crawl`.
-
-        Crawl differs from extract in that the agent provides a *seed URL*
-        and the provider walks linked pages on its own — useful for
-        documentation sites where the agent doesn't know all relevant
-        URLs upfront. Tavily is the only built-in backend that natively
-        crawls today; Firecrawl provides a similar capability that we
-        don't currently surface as a tool.
-
-        Providers that don't crawl should leave this as False; the
-        dispatcher in :func:`tools.web_tools.web_crawl_tool` will fall
-        back to its auxiliary-model summarization path.
         """
         return False
 
@@ -171,26 +181,6 @@ class WebSearchProvider(abc.ABC):
         """
         raise NotImplementedError(
             f"{self.name} does not support extract (override supports_extract)"
-        )
-
-    def crawl(self, url: str, **kwargs: Any) -> Any:
-        """Crawl a seed URL and return results.
-
-        Override when :meth:`supports_crawl` returns True. The default
-        raises NotImplementedError; callers should gate on
-        :meth:`supports_crawl` before calling.
-
-        Return shape: ``{"results": [{"url": str, "title": str,
-        "content": str, ...}, ...]}`` matching what
-        :func:`tools.web_tools.web_crawl_tool` post-processing expects.
-
-        Implementations MAY be ``async def``.
-
-        ``kwargs`` may carry forward-compat fields (e.g. ``max_depth``,
-        ``include_domains``) — implementations should ignore unknown keys.
-        """
-        raise NotImplementedError(
-            f"{self.name} does not support crawl (override supports_crawl)"
         )
 
     def get_setup_schema(self) -> Dict[str, Any]:

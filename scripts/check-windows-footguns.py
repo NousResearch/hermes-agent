@@ -551,6 +551,14 @@ def print_rules() -> None:
 
 
 def main(argv: list[str]) -> int:
+    # Windows terminals default to cp1252, which can't encode the ✓/✗
+    # characters used in the output. Reconfigure streams to UTF-8 so the
+    # script works correctly on the very platform it is designed to help.
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
+
     args = parse_args(argv)
 
     if args.list:

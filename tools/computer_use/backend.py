@@ -24,6 +24,13 @@ class UIElement:
     pid: int = 0                     # owning process PID
     window_id: int = 0               # SkyLight / CG window ID
     attributes: Dict[str, Any] = field(default_factory=dict)
+    # Opaque per-snapshot element handle from cua-driver
+    # (trycua/cua#1961 — Surface 6 of NousResearch/hermes-agent#47072).
+    # When set, downstream calls can pass it alongside `index` for
+    # explicit stale-detection: a stale token returns an error from
+    # cua-driver rather than silently re-resolving to a different
+    # element. None for pre-#1961 drivers that didn't carry the field.
+    element_token: Optional[str] = None
 
     def center(self) -> Tuple[int, int]:
         x, y, w, h = self.bounds
@@ -52,6 +59,12 @@ class CaptureResult:
     window_title: str = ""
     # Raw bytes we sent to Anthropic, for token estimation.
     png_bytes_len: int = 0
+    # Explicit MIME type for `png_b64` when the backend supplied it
+    # (cua-driver-rs emits `mimeType` on every image part as of
+    # trycua/cua#1961 — Surface 7 of NousResearch/hermes-agent#47072).
+    # When None, downstream consumers fall back to base64-prefix
+    # sniffing for back-compat with older drivers.
+    image_mime_type: Optional[str] = None
 
 
 @dataclass
@@ -141,6 +154,14 @@ class ComputerUseBackend(ABC):
     @abstractmethod
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         """Route input to `app` (by name or bundle ID). Default: focus without raise."""
+
+    # ── Native-value mutation ────────────────────────────────────────
+    @abstractmethod
+    def set_value(self, value: str, element: Optional[int] = None) -> ActionResult:
+        """Set a native value on an element (e.g. AXPopUpButton selection).
+
+        `element` is the 1-based SOM index returned by a prior capture call.
+        """
 
     # ── Timing ──────────────────────────────────────────────────────
     def wait(self, seconds: float) -> ActionResult:

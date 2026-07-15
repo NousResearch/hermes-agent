@@ -1,15 +1,19 @@
 ---
 title: Provider Routing
-description: Configure OpenRouter provider preferences to optimize for cost, speed, or quality.
+description: Configure OpenRouter or Nous Portal provider preferences to optimize for cost, speed, or quality.
 sidebar_label: Provider Routing
 sidebar_position: 7
 ---
 
 # Provider Routing
 
-When using [OpenRouter](https://openrouter.ai) as your LLM provider, Hermes Agent supports **provider routing** — fine-grained control over which underlying AI providers handle your requests and how they're prioritized.
+When using [OpenRouter](https://openrouter.ai) or [Nous Portal](/integrations/nous-portal) as your LLM provider, Hermes Agent supports **provider routing** — fine-grained control over which underlying AI providers handle your requests and how they're prioritized.
 
 OpenRouter routes requests to many providers (e.g., Anthropic, Google, AWS Bedrock, Together AI). Provider routing lets you optimize for cost, speed, quality, or enforce specific provider requirements.
+
+:::tip
+Traffic routed through Nous Portal respects the same provider preferences — and Portal subscribers get 10% off token-billed providers.
+:::
 
 ## Configuration
 
@@ -26,7 +30,7 @@ provider_routing:
 ```
 
 :::info
-Provider routing only applies when using OpenRouter. It has no effect with direct provider connections (e.g., connecting directly to the Anthropic API).
+Provider routing only applies when using OpenRouter or Nous Portal. It has no effect with direct provider connections (e.g., connecting directly to the Anthropic API).
 :::
 
 ## Options
@@ -48,13 +52,13 @@ provider_routing:
 
 ### `only`
 
-Whitelist of provider names. When set, **only** these providers will be used. All others are excluded.
+Whitelist of provider slugs. When set, **only** these providers will be used. All others are excluded. Use the lowercase slug shown by OpenRouter for each provider.
 
 ```yaml
 provider_routing:
   only:
-    - "Anthropic"
-    - "Google"
+    - "anthropic"
+    - "google"
 ```
 
 ### `ignore`
@@ -64,8 +68,8 @@ Blacklist of provider names. These providers will **never** be used, even if the
 ```yaml
 provider_routing:
   ignore:
-    - "Together"
-    - "DeepInfra"
+    - "together"
+    - "deepinfra"
 ```
 
 ### `order`
@@ -75,9 +79,9 @@ Explicit priority order. Providers listed first are preferred. Unlisted provider
 ```yaml
 provider_routing:
   order:
-    - "Anthropic"
-    - "Google"
-    - "AWS Bedrock"
+    - "anthropic"
+    - "google"
+    - "amazon-bedrock"
 ```
 
 ### `require_parameters`
@@ -134,7 +138,7 @@ Ensure all requests go through a specific provider for consistency:
 ```yaml
 provider_routing:
   only:
-    - "Anthropic"
+    - "anthropic"
 ```
 
 ### Avoid Specific Providers
@@ -144,8 +148,8 @@ Exclude providers you don't want to use (e.g., for data privacy):
 ```yaml
 provider_routing:
   ignore:
-    - "Together"
-    - "Lepton"
+    - "together"
+    - "lepton"
   data_collection: "deny"
 ```
 
@@ -156,14 +160,14 @@ Try your preferred providers first, fall back to others if unavailable:
 ```yaml
 provider_routing:
   order:
-    - "Anthropic"
-    - "Google"
+    - "anthropic"
+    - "google"
   require_parameters: true
 ```
 
 ## How It Works
 
-Provider routing preferences are passed to the OpenRouter API via the `extra_body.provider` field on every API call. This applies to both:
+Provider routing preferences are passed to OpenRouter or Nous Portal on agent chat requests and iteration-limit summaries via the `extra_body.provider` field. (`extra_body` is the OpenAI Python SDK argument; it becomes the top-level `provider` object in the JSON request.) Auxiliary tasks such as compression and title generation are configured independently under `auxiliary.<task>.extra_body`.
 
 - **CLI mode** — configured in `~/.hermes/config.yaml`, loaded at startup
 - **Gateway mode** — same config file, loaded when the gateway starts
@@ -185,7 +189,7 @@ You can combine multiple options. For example, sort by price but exclude certain
 ```yaml
 provider_routing:
   sort: "price"
-  ignore: ["Together"]
+  ignore: ["together"]
   require_parameters: true
   data_collection: "deny"
 ```
@@ -193,8 +197,8 @@ provider_routing:
 
 ## Default Behavior
 
-When no `provider_routing` section is configured (the default), OpenRouter uses its own default routing logic, which generally balances cost and availability automatically.
+When no `provider_routing` section is configured (the default), the aggregator uses its own default routing logic, which generally balances cost and availability automatically.
 
 :::tip Provider Routing vs. Fallback Models
-Provider routing controls which **sub-providers within OpenRouter** handle your requests. For automatic failover to an entirely different provider when your primary model fails, see [Fallback Providers](/docs/user-guide/features/fallback-providers).
+Provider routing controls which **sub-providers behind OpenRouter or Nous Portal** handle your requests. For automatic failover to an entirely different provider when your primary model fails, see [Fallback Providers](/user-guide/features/fallback-providers).
 :::

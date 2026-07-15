@@ -23,24 +23,37 @@ _OPTION_ID_TO_HERMES = {
     "allow_session": "session",
     "allow_always": "always",
     "deny": "deny",
+    "deny_always": "deny",
 }
 
 _PERMISSION_REQUEST_IDS = count(1)
 
 
-def _build_permission_options(*, allow_permanent: bool) -> list[PermissionOption]:
+def _permission_option_supports_kind(kind: str) -> bool:
+    """Return whether the installed ACP SDK accepts a permission option kind."""
+    try:
+        PermissionOption(option_id="__probe__", kind=kind, name="probe")
+    except Exception:
+        return False
+    return True
+
+
+def _build_permission_options(
+    *, allow_permanent: bool, smart_denied: bool = False,
+) -> list[PermissionOption]:
     """Return ACP options that match Hermes approval semantics."""
-    options = [
-        PermissionOption(option_id="allow_once", kind="allow_once", name="Allow once"),
-        PermissionOption(
+    options = [PermissionOption(
+        option_id="allow_once", kind="allow_once", name="Allow once",
+    )]
+    if not smart_denied:
+        options.append(PermissionOption(
             option_id="allow_session",
             # ACP has no session-scoped kind, so use the closest persistent
             # hint while keeping Hermes semantics in the option id.
             kind="allow_always",
             name="Allow for session",
-        ),
-    ]
-    if allow_permanent:
+        ))
+    if allow_permanent and not smart_denied:
         options.append(
             PermissionOption(
                 option_id="allow_always",
@@ -49,6 +62,14 @@ def _build_permission_options(*, allow_permanent: bool) -> list[PermissionOption
             ),
         )
     options.append(PermissionOption(option_id="deny", kind="reject_once", name="Deny"))
+    if not smart_denied and _permission_option_supports_kind("reject_always"):
+        options.append(
+            PermissionOption(
+                option_id="deny_always",
+                kind="reject_always",
+                name="Deny always",
+            ),
+        )
     return options
 
 
@@ -62,12 +83,14 @@ def _build_permission_tool_call(command: str, description: str):
     import acp as _acp
 
     tool_call_id = f"perm-check-{next(_PERMISSION_REQUEST_IDS)}"
+    title = f"{description}: {command}" if description else command
+    content_text = f"{description}\n$ {command}" if description else f"$ {command}"
     return _acp.update_tool_call(
         tool_call_id,
-        title=description,
+        title=title,
         kind="execute",
         status="pending",
-        content=[_acp.tool_content(_acp.text_block(f"$ {command}"))],
+        content=[_acp.tool_content(_acp.text_block(content_text))],
         raw_input={"command": command, "description": description},
     )
 
@@ -109,23 +132,34 @@ def make_approval_callback(
         description: str,
         *,
         allow_permanent: bool = True,
+        smart_denied: bool = False,
         **_: object,
     ) -> str:
-        options = _build_permission_options(allow_permanent=allow_permanent)
+        from agent.async_utils import safe_schedule_threadsafe
 
-        future = None
+        options = _build_permission_options(
+            allow_permanent=allow_permanent,
+            smart_denied=smart_denied,
+        )
+
+        tool_call = _build_permission_tool_call(command, description)
+        coro = request_permission_fn(
+            session_id=session_id,
+            tool_call=tool_call,
+            options=options,
+        )
+        future = safe_schedule_threadsafe(
+            coro, loop,
+            logger=logger,
+            log_message="Permission request: failed to schedule on loop",
+        )
+        if future is None:
+            return "deny"
+
         try:
-            tool_call = _build_permission_tool_call(command, description)
-            coro = request_permission_fn(
-                session_id=session_id,
-                tool_call=tool_call,
-                options=options,
-            )
-            future = asyncio.run_coroutine_threadsafe(coro, loop)
             response = future.result(timeout=timeout)
         except (FutureTimeout, Exception) as exc:
-            if future is not None:
-                future.cancel()
+            future.cancel()
             logger.warning("Permission request timed out or failed: %s", exc)
             return "deny"
 

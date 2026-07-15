@@ -16,7 +16,27 @@ auth:
   type: oauth
   # Native MCP OAuth. Browser flow on first connect.
 
+# Tool selection at install time:
+# xmemory-admin exposes the full control plane. Mutating ops (create / delete /
+# update / patch instances and their schemas) are pruned from the default so a
+# casual install gets a read-only observability surface. Users see the full list
+# in the install-time checklist and opt into the destructive tools per their
+# threat model via `hermes mcp configure xmemory-admin`.
+tools:
+  default_enabled:
+    - admin_list_clusters
+    - admin_get_cluster
+    - admin_list_instances
+    - admin_list_own_instances
+    - admin_get_instance
+    - admin_get_instance_by_id
+    - admin_get_instance_schema_by_id
+
 post_install: |
   Admin (control-plane) connection. On first connection, Hermes opens a browser
   to authenticate with xmemory. This surface includes destructive operations
   such as deleting an instance — use with care.
+
+  Only read-only tools (list / get instances, clusters, and schemas) are enabled
+  by default. To opt into instance create/delete or schema updates, run
+  `hermes mcp configure xmemory-admin`.

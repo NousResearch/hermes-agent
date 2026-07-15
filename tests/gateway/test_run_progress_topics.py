@@ -567,17 +567,27 @@ def _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0):
     return adapter, result
 
 
-def test_all_mode_default_truncation_40_chars(monkeypatch, tmp_path):
-    """When tool_preview_length is 0 (default), all/new mode truncates to 40 chars."""
+def test_all_mode_zero_means_unlimited(monkeypatch, tmp_path):
+    """tool_preview_length: 0 means NO limit (documented contract, #51067).
+
+    Regression guard: previously the gateway applied a zero-to-40 fallback
+    (``_cap = _pl if _pl > 0 else 40``), so an explicit 0 wrongly truncated to
+    40 chars. Zero must now preserve the full preview. This exercises the real
+    gateway progress-delivery path via _run_long_preview_helper, so it fails if
+    gateway/run.py reintroduces the falsy-check fallback.
+    """
     adapter, result = _run_long_preview_helper(monkeypatch, tmp_path, preview_length=0)
     assert result["final_response"] == "done"
     assert adapter.sent
     content = adapter.sent[0]["content"]
-    # The long command should be truncated — the preview portion <= 40 chars.
-    assert "..." in content
     preview_text = _extract_progress_preview(content)
     assert preview_text is not None, f"No preview found in: {content}"
-    assert len(preview_text) <= 40, f"Preview too long ({len(preview_text)}): {preview_text}"
+    # The full command (165 chars) must survive untruncated when preview=0.
+    assert len(preview_text) == len(LongPreviewAgent.LONG_CMD), (
+        f"Preview was truncated at zero ({len(preview_text)} chars): {preview_text}"
+    )
+    assert preview_text == LongPreviewAgent.LONG_CMD
+    assert "..." not in content, f"Zero must not truncate, but got ellipsis: {content}"
 
 
 def test_all_mode_respects_custom_preview_length(monkeypatch, tmp_path):
@@ -1411,13 +1421,21 @@ class TerminalCommandAgent:
         "npm install -g hyperframes@latest"
     )
 
-    def __init__(self, **kwargs):
+    # A single long line (no newlines): used to verify explicit
+    # tool_preview_length: 0 does NOT truncate the fenced terminal preview.
+    LONG_LINE = (
+        "find /usr/local/share -type f -name '*.py' "
+        "-exec grep -l 'import asyncio' {} + | sort -u | head -n 50"
+    )
+
+    def __init__(self, command=None, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self._command = command if command is not None else self.CMD
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
         self.tool_progress_callback(
-            "tool.started", "terminal", self.CMD, {"command": self.CMD}
+            "tool.started", "terminal", self._command, {"command": self._command}
         )
         # Let the async progress task drain the queue and send before returning.
         time.sleep(0.35)
@@ -1477,6 +1495,72 @@ async def test_terminal_progress_renders_fenced_code_block(monkeypatch, tmp_path
     assert "node --version" not in all_content
     # No truncated quoted preview for the terminal command.
     assert 'terminal: "' not in all_content
+
+
+@pytest.mark.asyncio
+async def test_terminal_progress_long_single_line_not_truncated_at_zero(monkeypatch, tmp_path):
+    """With explicit tool_preview_length: 0, a long single-line terminal command
+    is rendered in full inside the fenced code block — no truncation, no ellipsis.
+
+    Regression guard for #51067 on the terminal (code-block) delivery path:
+    previously the zero-to-40 fallback capped the single-line preview at 40
+    chars. This exercises the real gateway progress path, so it fails if
+    gateway/run.py reintroduces the falsy-check fallback for _cmd_short.
+    """
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    # Emit the long SINGLE-LINE command (no newlines → no multiline suffix).
+    class _LongLineTerminalAgent(TerminalCommandAgent):
+        def __init__(self, **kw):
+            kw.pop("command", None)
+            super().__init__(command=TerminalCommandAgent.LONG_LINE, **kw)
+
+    fake_run_agent.AIAgent = _LongLineTerminalAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+    import tools.terminal_tool  # noqa: F401 - register terminal emoji
+
+    # Explicit zero = unlimited.
+    import yaml
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"tool_preview_length": 0}}), encoding="utf-8"
+    )
+
+    adapter = CodeBlockProgressAdapter(platform=Platform.TELEGRAM)
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-terminal-longline-zero",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    all_content = " ".join(call["content"] for call in adapter.sent)
+    all_content += " ".join(call["content"] for call in adapter.edits)
+    assert "```" in all_content
+    # The full single-line command must appear untruncated — no ellipsis.
+    assert TerminalCommandAgent.LONG_LINE in all_content, (
+        f"Long single line was truncated at zero: {all_content}"
+    )
+    assert "..." not in all_content, f"Zero must not truncate terminal preview: {all_content}"
 
 
 @pytest.mark.asyncio

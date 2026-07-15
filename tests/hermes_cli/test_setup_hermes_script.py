@@ -11,6 +11,10 @@ def test_setup_hermes_script_is_valid_shell():
     assert result.returncode == 0, result.stderr
 
 
+def test_setup_hermes_script_uses_env_bash_shebang():
+    assert SETUP_SCRIPT.read_text(encoding="utf-8").splitlines()[0] == "#!/usr/bin/env bash"
+
+
 def test_setup_hermes_script_has_termux_path():
     content = SETUP_SCRIPT.read_text(encoding="utf-8")
 

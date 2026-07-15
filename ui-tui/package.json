@@ -20,6 +20,7 @@
   "dependencies": {
     "@hermes/ink": "file:./packages/hermes-ink",
     "@nanostores/react": "^1.1.0",
+    "esbuild": "^0.28.1",
     "ink": "^6.8.0",
     "ink-text-input": "^6.0.0",
     "nanostores": "^1.2.0",
@@ -33,7 +34,6 @@
     "@types/react": "^19.2.14",
     "@typescript-eslint/eslint-plugin": "^8",
     "@typescript-eslint/parser": "^8",
-    "esbuild": "^0.28.1",
     "eslint": "^9",
     "eslint-plugin-perfectionist": "^5",
     "eslint-plugin-react": "^7",

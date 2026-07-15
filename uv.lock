@@ -2,9 +2,12 @@ version = 1
 revision = 3
 requires-python = ">=3.11, <3.14"
 resolution-markers = [
-    "python_full_version >= '3.13'",
-    "python_full_version == '3.12.*'",
-    "python_full_version < '3.12'",
+    "(python_full_version >= '3.13' and platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or (python_full_version >= '3.13' and sys_platform != 'linux')",
+    "(python_full_version >= '3.13' and platform_machine == 'i386' and sys_platform == 'linux') or (python_full_version >= '3.13' and platform_machine == 'i486' and sys_platform == 'linux') or (python_full_version >= '3.13' and platform_machine == 'i586' and sys_platform == 'linux') or (python_full_version >= '3.13' and platform_machine == 'i686' and sys_platform == 'linux')",
+    "(python_full_version == '3.12.*' and platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or (python_full_version == '3.12.*' and sys_platform != 'linux')",
+    "(python_full_version == '3.12.*' and platform_machine == 'i386' and sys_platform == 'linux') or (python_full_version == '3.12.*' and platform_machine == 'i486' and sys_platform == 'linux') or (python_full_version == '3.12.*' and platform_machine == 'i586' and sys_platform == 'linux') or (python_full_version == '3.12.*' and platform_machine == 'i686' and sys_platform == 'linux')",
+    "(python_full_version < '3.12' and platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or (python_full_version < '3.12' and sys_platform != 'linux')",
+    "(python_full_version < '3.12' and platform_machine == 'i386' and sys_platform == 'linux') or (python_full_version < '3.12' and platform_machine == 'i486' and sys_platform == 'linux') or (python_full_version < '3.12' and platform_machine == 'i586' and sys_platform == 'linux') or (python_full_version < '3.12' and platform_machine == 'i686' and sys_platform == 'linux')",
 ]
 
 [[package]]
@@ -699,7 +702,7 @@ name = "concurrent-log-handler"
 version = "0.9.29"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "portalocker" },
+    { name = "portalocker", marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/9c/2c/ba185acc438cff6b58cd8f8dec27e7f4fcabf6968a1facbb6d0cacbde7fe/concurrent_log_handler-0.9.29.tar.gz", hash = "sha256:bc37a76d3f384cbf4a98f693ebd770543edc0f4cd5c6ab6bc70e9e1d7d582265", size = 42114, upload-time = "2026-02-22T18:18:25.758Z" }
 wheels = [
@@ -1522,7 +1525,6 @@ dependencies = [
     { name = "certifi" },
     { name = "concurrent-log-handler", marker = "sys_platform == 'win32'" },
     { name = "croniter" },
-    { name = "cryptography" },
     { name = "fastapi" },
     { name = "fire" },
     { name = "httpx", extra = ["socks"] },
@@ -1536,7 +1538,7 @@ dependencies = [
     { name = "psutil" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'" },
     { name = "pydantic" },
-    { name = "pyjwt", extra = ["crypto"] },
+    { name = "pyjwt" },
     { name = "python-dotenv" },
     { name = "python-multipart" },
     { name = "pywinpty", marker = "sys_platform == 'win32'" },
@@ -1547,7 +1549,7 @@ dependencies = [
     { name = "tenacity" },
     { name = "tzdata", marker = "sys_platform == 'win32'" },
     { name = "urllib3" },
-    { name = "uvicorn", extra = ["standard"] },
+    { name = "uvicorn" },
     { name = "websockets" },
 ]
 
@@ -1558,15 +1560,18 @@ acp = [
 all = [
     { name = "agent-client-protocol" },
     { name = "aiohttp" },
+    { name = "cryptography", marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
     { name = "fastapi" },
-    { name = "google-api-python-client" },
-    { name = "google-auth-httplib2" },
-    { name = "google-auth-oauthlib" },
-    { name = "mcp" },
+    { name = "google-api-python-client", marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
+    { name = "google-auth-httplib2", marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
+    { name = "google-auth-oauthlib", marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
+    { name = "mcp", marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
+    { name = "pyjwt", extra = ["crypto"], marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
     { name = "python-multipart" },
     { name = "simple-term-menu" },
     { name = "starlette" },
-    { name = "uvicorn", extra = ["standard"] },
+    { name = "uvicorn" },
+    { name = "uvicorn", extra = ["standard"], marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686') or sys_platform != 'linux'" },
     { name = "youtube-transcript-api" },
 ]
 anthropic = [
@@ -1584,6 +1589,10 @@ cli = [
 computer-use = [
     { name = "mcp" },
     { name = "starlette" },
+]
+crypto = [
+    { name = "cryptography" },
+    { name = "pyjwt", extra = ["crypto"] },
 ]
 daytona = [
     { name = "daytona" },
@@ -1632,6 +1641,16 @@ homeassistant = [
 ]
 honcho = [
     { name = "honcho-ai" },
+]
+linux-i686 = [
+    { name = "agent-client-protocol" },
+    { name = "aiohttp" },
+    { name = "fastapi" },
+    { name = "python-multipart" },
+    { name = "simple-term-menu" },
+    { name = "starlette" },
+    { name = "uvicorn" },
+    { name = "youtube-transcript-api" },
 ]
 matrix = [
     { name = "aiohttp" },
@@ -1704,10 +1723,13 @@ termux-all = [
     { name = "python-telegram-bot", extra = ["webhooks"] },
     { name = "simple-term-menu" },
     { name = "starlette" },
-    { name = "uvicorn", extra = ["standard"] },
+    { name = "uvicorn" },
 ]
 tts-premium = [
     { name = "elevenlabs" },
+]
+uvicorn-standard = [
+    { name = "uvicorn", extra = ["standard"] },
 ]
 vertex = [
     { name = "google-auth" },
@@ -1721,7 +1743,7 @@ web = [
     { name = "fastapi" },
     { name = "python-multipart" },
     { name = "starlette" },
-    { name = "uvicorn", extra = ["standard"] },
+    { name = "uvicorn" },
 ]
 wecom = [
     { name = "defusedxml" },
@@ -1750,7 +1772,7 @@ requires-dist = [
     { name = "certifi", specifier = "==2026.5.20" },
     { name = "concurrent-log-handler", marker = "sys_platform == 'win32'", specifier = "==0.9.29" },
     { name = "croniter", specifier = "==6.0.0" },
-    { name = "cryptography", specifier = "==46.0.7" },
+    { name = "cryptography", marker = "extra == 'crypto'", specifier = "==46.0.7" },
     { name = "daytona", marker = "extra == 'daytona'", specifier = "==0.155.0" },
     { name = "debugpy", marker = "extra == 'dev'", specifier = "==1.8.20" },
     { name = "defusedxml", marker = "extra == 'wecom'", specifier = "==0.7.1" },
@@ -1770,26 +1792,36 @@ requires-dist = [
     { name = "google-auth-httplib2", marker = "extra == 'google'", specifier = "==0.3.1" },
     { name = "google-auth-oauthlib", marker = "extra == 'google'", specifier = "==1.3.1" },
     { name = "hermes-agent", extras = ["acp"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["acp"], marker = "extra == 'linux-i686'" },
     { name = "hermes-agent", extras = ["acp"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["cli"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["cli"], marker = "extra == 'linux-i686'" },
     { name = "hermes-agent", extras = ["cli"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["cron"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["cron"], marker = "extra == 'linux-i686'" },
     { name = "hermes-agent", extras = ["cron"], marker = "extra == 'termux'" },
-    { name = "hermes-agent", extras = ["google"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["crypto"], marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686' and extra == 'all') or (sys_platform != 'linux' and extra == 'all')" },
+    { name = "hermes-agent", extras = ["google"], marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686' and extra == 'all') or (sys_platform != 'linux' and extra == 'all')" },
     { name = "hermes-agent", extras = ["google"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["homeassistant"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["homeassistant"], marker = "extra == 'linux-i686'" },
     { name = "hermes-agent", extras = ["homeassistant"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["honcho"], marker = "extra == 'termux'" },
-    { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["mcp"], marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686' and extra == 'all') or (sys_platform != 'linux' and extra == 'all')" },
     { name = "hermes-agent", extras = ["mcp"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["pty"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["pty"], marker = "extra == 'linux-i686'" },
     { name = "hermes-agent", extras = ["pty"], marker = "extra == 'termux'" },
     { name = "hermes-agent", extras = ["sms"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["sms"], marker = "extra == 'linux-i686'" },
     { name = "hermes-agent", extras = ["sms"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["termux"], marker = "extra == 'termux-all'" },
+    { name = "hermes-agent", extras = ["uvicorn-standard"], marker = "(platform_machine != 'i386' and platform_machine != 'i486' and platform_machine != 'i586' and platform_machine != 'i686' and extra == 'all') or (sys_platform != 'linux' and extra == 'all')" },
     { name = "hermes-agent", extras = ["web"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["web"], marker = "extra == 'linux-i686'" },
     { name = "hermes-agent", extras = ["web"], marker = "extra == 'termux-all'" },
     { name = "hermes-agent", extras = ["youtube"], marker = "extra == 'all'" },
+    { name = "hermes-agent", extras = ["youtube"], marker = "extra == 'linux-i686'" },
     { name = "hindsight-client", marker = "extra == 'hindsight'", specifier = "==0.6.1" },
     { name = "honcho-ai", marker = "extra == 'honcho'", specifier = "==2.0.1" },
     { name = "httpx", extras = ["socks"], specifier = "==0.28.1" },
@@ -1815,7 +1847,8 @@ requires-dist = [
     { name = "psutil", specifier = "==7.2.2" },
     { name = "ptyprocess", marker = "sys_platform != 'win32'", specifier = ">=0.7.0,<1" },
     { name = "pydantic", specifier = "==2.13.4" },
-    { name = "pyjwt", extras = ["crypto"], specifier = "==2.13.0" },
+    { name = "pyjwt", specifier = "==2.13.0" },
+    { name = "pyjwt", extras = ["crypto"], marker = "extra == 'crypto'", specifier = "==2.13.0" },
     { name = "pytest", marker = "extra == 'dev'", specifier = "==9.0.2" },
     { name = "pytest-asyncio", marker = "extra == 'dev'", specifier = "==1.3.0" },
     { name = "python-dotenv", specifier = "==1.2.2" },
@@ -1848,12 +1881,13 @@ requires-dist = [
     { name = "ty", marker = "extra == 'dev'", specifier = "==0.0.21" },
     { name = "tzdata", marker = "sys_platform == 'win32'", specifier = "==2025.3" },
     { name = "urllib3", specifier = ">=2.7.0,<3" },
-    { name = "uvicorn", extras = ["standard"], specifier = ">=0.24.0,<1" },
-    { name = "uvicorn", extras = ["standard"], marker = "extra == 'web'", specifier = "==0.41.0" },
+    { name = "uvicorn", specifier = ">=0.24.0,<1" },
+    { name = "uvicorn", marker = "extra == 'web'", specifier = "==0.41.0" },
+    { name = "uvicorn", extras = ["standard"], marker = "extra == 'uvicorn-standard'", specifier = "==0.41.0" },
     { name = "websockets", specifier = "==15.0.1" },
     { name = "youtube-transcript-api", marker = "extra == 'youtube'", specifier = "==1.2.4" },
 ]
-provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "supermemory", "mem0", "vision", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all"]
+provides-extras = ["anthropic", "exa", "firecrawl", "parallel-web", "fal", "edge-tts", "modal", "daytona", "hindsight", "dev", "crypto", "uvicorn-standard", "messaging", "cron", "slack", "matrix", "wecom", "cli", "tts-premium", "voice", "pty", "honcho", "supermemory", "mem0", "vision", "mcp", "nemo-relay", "homeassistant", "sms", "teams", "computer-use", "acp", "mistral", "bedrock", "vertex", "azure-identity", "termux", "termux-all", "dingtalk", "feishu", "google", "youtube", "web", "all", "linux-i686"]
 
 [[package]]
 name = "hf-xet"

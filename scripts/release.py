@@ -686,6 +686,7 @@ AUTHOR_MAP = {
     "kevyan1998@gmail.com": "kyan12",
     "rylen.anil@gmail.com": "rylena",
     "godnanijatin@gmail.com": "jatingodnani",
+    "adybag14-cyber@users.noreply.github.com": "adybag14-cyber",  # PR #40120
     "252811164+adybag14-cyber@users.noreply.github.com": "adybag14-cyber",
     "14046872+tmimmanuel@users.noreply.github.com": "tmimmanuel",
     "112875006+donramon77@users.noreply.github.com": "donramon77",

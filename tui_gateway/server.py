@@ -2592,7 +2592,17 @@ def _load_service_tier() -> str | None:
         return None
     if raw in {"fast", "priority", "on"}:
         return "priority"
+    if raw == "auto":
+        return "auto"
     return None
+
+
+def _load_fast_auto_on_seconds() -> float:
+    from agent.fast_mode import normalize_fast_auto_on_seconds
+
+    return normalize_fast_auto_on_seconds(
+        (_load_cfg().get("agent") or {}).get("fast_auto_on_seconds", 60)
+    )
 
 
 def _load_provider_routing() -> dict:
@@ -4656,6 +4666,7 @@ def _make_agent(
             if service_tier_override is not None
             else _load_service_tier()
         ),
+        fast_auto_on_seconds=_load_fast_auto_on_seconds(),
         enabled_toolsets=_load_enabled_toolsets(),
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same
@@ -10360,28 +10371,36 @@ def _(rid, params: dict) -> dict:
     if key == "fast":
         raw = str(value or "").strip().lower()
         agent = session.get("agent") if session else None
-        if agent is not None:
-            current_fast = getattr(agent, "service_tier", None) == "priority"
-        else:
-            current_fast = _load_service_tier() == "priority"
+        current_tier = (
+            getattr(agent, "service_tier", None)
+            if agent is not None
+            else _load_service_tier()
+        )
+        current_mode = (
+            "auto" if current_tier == "auto"
+            else "fast" if current_tier == "priority"
+            else "normal"
+        )
 
         if raw in {"status"}:
             return _ok(
                 rid,
-                {"key": key, "value": "fast" if current_fast else "normal"},
+                {"key": key, "value": current_mode},
             )
 
         if raw in {"", "toggle"}:
-            nv = "normal" if current_fast else "fast"
+            nv = "normal" if current_mode in {"fast", "auto"} else "fast"
         elif raw in {"fast", "on"}:
             nv = "fast"
+        elif raw == "auto":
+            nv = "auto"
         elif raw in {"normal", "off"}:
             nv = "normal"
         else:
             return _err(rid, 4002, f"unknown fast mode: {value}")
 
         overrides = None
-        if nv == "fast":
+        if nv in {"fast", "auto"}:
             from hermes_cli.models import resolve_fast_mode_overrides
 
             target_model = (
@@ -10403,7 +10422,9 @@ def _(rid, params: dict) -> dict:
 
         _write_config_key("agent.service_tier", nv)
         if agent is not None:
-            agent.service_tier = "priority" if nv == "fast" else None
+            agent.service_tier = (
+                "priority" if nv == "fast" else "auto" if nv == "auto" else None
+            )
             current_overrides = dict(getattr(agent, "request_overrides", {}) or {})
             current_overrides.pop("service_tier", None)
             current_overrides.pop("speed", None)
@@ -13201,6 +13222,8 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             mode = arg.lower()
             if mode in {"fast", "on"}:
                 agent.service_tier = "priority"
+            elif mode == "auto":
+                agent.service_tier = "auto"
             elif mode in {"normal", "off"}:
                 agent.service_tier = None
             _emit("session.info", sid, _session_info(agent, session))

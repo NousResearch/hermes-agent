@@ -354,6 +354,8 @@ def _parse_service_tier_config(raw: str) -> str | None:
         return None
     if value in {"fast", "priority", "on"}:
         return "priority"
+    if value == "auto":
+        return "auto"
     logger.warning("Unknown service_tier '%s', ignoring", raw)
     return None
 
@@ -428,6 +430,7 @@ def load_cli_config() -> Dict[str, Any]:
             "prefill_messages_file": "",
             "reasoning_effort": "",
             "service_tier": "",
+            "fast_auto_on_seconds": 60,
             "personalities": {
                 "helpful": "You are a helpful, friendly AI assistant.",
                 "concise": "You are a concise assistant. Keep responses brief and to the point.",
@@ -3923,6 +3926,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self.reasoning_config = resolve_reasoning_config(CLI_CONFIG, self.model)
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
+        )
+        from agent.fast_mode import normalize_fast_auto_on_seconds
+        self.fast_auto_on_seconds = normalize_fast_auto_on_seconds(
+            CLI_CONFIG["agent"].get("fast_auto_on_seconds", 60)
         )
         
         # OpenRouter provider routing preferences

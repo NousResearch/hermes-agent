@@ -29,6 +29,9 @@ class TestParseServiceTierConfig(unittest.TestCase):
         self.assertEqual(self._parse("fast"), "priority")
         self.assertEqual(self._parse("priority"), "priority")
 
+    def test_auto_is_preserved_as_policy(self):
+        self.assertEqual(self._parse("auto"), "auto")
+
     def test_normal_disables_service_tier(self):
         self.assertIsNone(self._parse("normal"))
         self.assertIsNone(self._parse("off"))
@@ -85,6 +88,19 @@ class TestHandleFastCommand(unittest.TestCase):
 
         mock_save.assert_called_once_with("agent.service_tier", "normal")
         self.assertIsNone(stub.service_tier)
+        self.assertIsNone(stub.agent)
+
+    def test_auto_argument_persists_policy(self):
+        cli_mod = _import_cli()
+        stub = self._make_cli(service_tier=None)
+        with (
+            patch.object(cli_mod, "_cprint"),
+            patch.object(cli_mod, "save_config_value", return_value=True) as mock_save,
+        ):
+            cli_mod.HermesCLI._handle_fast_command(stub, "/fast auto")
+
+        mock_save.assert_called_once_with("agent.service_tier", "auto")
+        self.assertEqual(stub.service_tier, "auto")
         self.assertIsNone(stub.agent)
 
     def test_unsupported_model_does_not_expose_fast(self):
@@ -483,3 +499,4 @@ class TestConfigDefault(unittest.TestCase):
         agent = DEFAULT_CONFIG.get("agent", {})
         self.assertIn("service_tier", agent)
         self.assertEqual(agent["service_tier"], "")
+        self.assertEqual(agent["fast_auto_on_seconds"], 60)

@@ -2857,6 +2857,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._ephemeral_system_prompt = self._load_ephemeral_system_prompt()
         self._reasoning_config = self._load_reasoning_config()
         self._service_tier = self._load_service_tier()
+        self._fast_auto_on_seconds = self._load_fast_auto_on_seconds()
         self._show_reasoning = self._load_show_reasoning()
         self._busy_input_mode = self._load_busy_input_mode()
         self._busy_text_mode = self._load_busy_text_mode()
@@ -3959,7 +3960,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         }
 
         service_tier = getattr(self, "_service_tier", None)
-        if not service_tier:
+        if not service_tier or service_tier == "auto":
             route["request_overrides"] = {}
             return route
 
@@ -4941,7 +4942,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Load Priority Processing setting from config.yaml.
 
         Reads agent.service_tier from config.yaml. Accepted values mirror the CLI:
-        "fast"/"priority"/"on" => "priority", while "normal"/"off" disables it.
+        "fast"/"priority"/"on" => "priority", "auto" enables the turn-local
+        policy, while "normal"/"off" disables it.
         Returns None when unset or unsupported.
         """
         cfg = _load_gateway_runtime_config()
@@ -4952,8 +4954,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
         if value in {"fast", "priority", "on"}:
             return "priority"
+        if value == "auto":
+            return "auto"
         logger.warning("Unknown service_tier '%s', ignoring", raw)
         return None
+
+    @staticmethod
+    def _load_fast_auto_on_seconds() -> float:
+        """Load and normalize the per-turn auto-fast cutoff."""
+        from agent.fast_mode import normalize_fast_auto_on_seconds
+
+        cfg = _load_gateway_runtime_config()
+        return normalize_fast_auto_on_seconds(
+            cfg_get(cfg, "agent", "fast_auto_on_seconds", default=60)
+        )
 
     @staticmethod
     def _load_show_reasoning() -> bool:
@@ -13534,6 +13548,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
+            self._fast_auto_on_seconds = self._load_fast_auto_on_seconds()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
             # Enrich the prompt with image descriptions so the background
@@ -13564,6 +13579,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     disabled_toolsets=disabled_toolsets,
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
+                    fast_auto_on_seconds=self._fast_auto_on_seconds,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),
                     providers_ignored=pr.get("ignore"),
@@ -18309,6 +18325,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
+            self._fast_auto_on_seconds = self._load_fast_auto_on_seconds()
             # Set up stream consumer for token streaming or interim commentary.
             _stream_consumer = None
             _stream_delta_cb = None
@@ -18574,6 +18591,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     prefill_messages=self._prefill_messages or None,
                     reasoning_config=reasoning_config,
                     service_tier=self._service_tier,
+                    fast_auto_on_seconds=self._fast_auto_on_seconds,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),
                     providers_ignored=pr.get("ignore"),
@@ -18664,6 +18682,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.event_callback = _event_callback_sync
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
+            agent.fast_auto_on_seconds = self._fast_auto_on_seconds
             agent.request_overrides = turn_route.get("request_overrides") or {}
 
             _bg_review_release = threading.Event()

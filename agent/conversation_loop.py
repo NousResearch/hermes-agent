@@ -31,6 +31,7 @@ from agent.codex_responses_adapter import _summarize_user_message_for_log
 from agent.conversation_compression import conversation_history_after_compression
 from agent.display import KawaiiSpinner
 from agent.error_classifier import FailoverReason, classify_api_error
+from agent.fast_mode import begin_fast_mode_turn
 from agent.iteration_budget import IterationBudget
 from agent.turn_context import build_turn_context
 from agent.turn_retry_state import TurnRetryState
@@ -551,6 +552,11 @@ def run_conversation(
     Returns:
         Dict: Complete conversation result with final response and message history
     """
+    # Auto fast mode is turn-local.  Start the clock at ingress so prompt
+    # assembly, hooks, and preflight work count toward the same cutoff as the
+    # provider calls they precede.
+    begin_fast_mode_turn(agent)
+
     if moa_config is None:
         try:
             from hermes_cli.moa_config import decode_moa_turn

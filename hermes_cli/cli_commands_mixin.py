@@ -1651,6 +1651,7 @@ class CLICommandsMixin:
                     session_db=self._session_db,
                     reasoning_config=self.reasoning_config,
                     service_tier=self.service_tier,
+                    fast_auto_on_seconds=getattr(self, "fast_auto_on_seconds", 60.0),
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=self._providers_only,
                     providers_ignored=self._providers_ignore,
@@ -2607,9 +2608,13 @@ class CLICommandsMixin:
 
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or parts[1].strip().lower() == "status":
-            status = "fast" if self.service_tier == "priority" else "normal"
+            status = (
+                "auto" if self.service_tier == "auto"
+                else "fast" if self.service_tier == "priority"
+                else "normal"
+            )
             _cprint(f"  {_ACCENT}{feature_name}: {status}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|auto|status]{_RST}")
             return
 
         arg = parts[1].strip().lower()
@@ -2618,13 +2623,17 @@ class CLICommandsMixin:
             self.service_tier = "priority"
             saved_value = "fast"
             label = "FAST"
+        elif arg == "auto":
+            self.service_tier = "auto"
+            saved_value = "auto"
+            label = "AUTO"
         elif arg in {"normal", "off"}:
             self.service_tier = None
             saved_value = "normal"
             label = "NORMAL"
         else:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Usage: /fast [normal|fast|status]{_RST}")
+            _cprint(f"  {_DIM}Usage: /fast [normal|fast|auto|status]{_RST}")
             return
 
         self.agent = None  # Force agent re-init with new service-tier config

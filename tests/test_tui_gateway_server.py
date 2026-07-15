@@ -2974,6 +2974,46 @@ def test_config_set_fast_status_is_non_mutating(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_config_set_fast_auto_updates_live_agent_without_static_override(monkeypatch):
+    writes = []
+    agent = types.SimpleNamespace(
+        model="openai/gpt-5.4",
+        request_overrides={"foo": "bar", "service_tier": "priority"},
+        service_tier="priority",
+    )
+    server._sessions["sid"] = _session(agent=agent)
+
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+    monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "x"})
+    monkeypatch.setattr(server, "_emit", lambda *args: None)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "fast", "value": "auto"},
+            }
+        )
+        assert resp["result"]["value"] == "auto"
+        assert agent.service_tier == "auto"
+        assert agent.request_overrides == {"foo": "bar"}
+        assert ("agent.service_tier", "auto") in writes
+
+        status = server.handle_request(
+            {
+                "id": "2",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "fast", "value": "status"},
+            }
+        )
+        assert status["result"]["value"] == "auto"
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_fast_rejects_unsupported_model(monkeypatch):
     writes = []
     agent = types.SimpleNamespace(

@@ -322,6 +322,7 @@ def init_agent(
     max_tokens: int = None,
     reasoning_config: Dict[str, Any] = None,
     service_tier: str = None,
+    fast_auto_on_seconds: float = 60.0,
     request_overrides: Dict[str, Any] = None,
     prefill_messages: List[Dict[str, Any]] = None,
     platform: str = None,
@@ -629,6 +630,9 @@ def init_agent(
     agent.max_tokens = max_tokens  # None = use model default
     agent.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
     agent.service_tier = service_tier
+    from agent.fast_mode import normalize_fast_auto_on_seconds
+    agent.fast_auto_on_seconds = normalize_fast_auto_on_seconds(fast_auto_on_seconds)
+    agent._fast_mode_turn_started_at = None
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False

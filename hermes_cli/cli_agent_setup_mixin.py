@@ -204,7 +204,7 @@ class CLIAgentSetupMixin:
         }
 
         service_tier = getattr(self, "service_tier", None)
-        if not service_tier:
+        if not service_tier or service_tier == "auto":
             route["request_overrides"] = None
             return route
 
@@ -360,6 +360,7 @@ class CLIAgentSetupMixin:
                 prefill_messages=self.prefill_messages or None,
                 reasoning_config=self.reasoning_config,
                 service_tier=self.service_tier,
+                fast_auto_on_seconds=getattr(self, "fast_auto_on_seconds", 60.0),
                 request_overrides=request_overrides,
                 providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore,

@@ -130,14 +130,16 @@ gateway:
     denied_reason_plural:  "❌ Commands denied ({count} commands). Reason relayed to the agent: \"{reason}\""
 
   fast:
-    not_supported:         "⚡ /fast is only available for OpenAI models that support Priority Processing."
-    status:                "⚡ Priority Processing\n\nCurrent mode: `{mode}`\n\n_Usage:_ `/fast <normal|fast|status>`"
-    unknown_arg:           "⚠️ Unknown argument: `{arg}`\n\n**Valid options:** normal, fast, status"
+    not_supported:         "⚡ /fast is only available for models that support OpenAI Priority Processing or Anthropic Fast Mode."
+    status:                "⚡ Priority Processing\n\nCurrent mode: `{mode}`\n\n_Usage:_ `/fast <normal|fast|auto|status>`"
+    unknown_arg:           "⚠️ Unknown argument: `{arg}`\n\n**Valid options:** normal, fast, auto, status"
     saved:                 "⚡ ✓ Priority Processing: **{label}** (saved to config)\n_(takes effect on next message)_"
     session_only:          "⚡ ✓ Priority Processing: **{label}** (this session only)"
     label_fast:            "FAST"
+    label_auto:            "AUTO"
     label_normal:          "NORMAL"
     status_fast:           "fast"
+    status_auto:           "auto"
     status_normal:         "normal"
 
   footer:

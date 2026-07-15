@@ -59,6 +59,7 @@ def _make_runner():
     runner._prefill_messages = []
     runner._reasoning_config = None
     runner._service_tier = None
+    runner._fast_auto_on_seconds = 60.0
     runner._provider_routing = {}
     runner._fallback_model = None
     runner._running_agents = {}
@@ -142,6 +143,26 @@ def test_turn_route_skips_priority_processing_for_unsupported_models():
     assert route["request_overrides"] == {}
 
 
+def test_turn_route_leaves_auto_policy_for_request_time_resolution():
+    runner = _make_runner()
+    runner._service_tier = "auto"
+    runtime_kwargs = {
+        "api_key": "***",
+        "base_url": "https://openrouter.ai/api/v1",
+        "provider": "openrouter",
+        "api_mode": "chat_completions",
+        "command": None,
+        "args": [],
+        "credential_pool": None,
+    }
+
+    route = gateway_run.GatewayRunner._resolve_turn_agent_config(
+        runner, "hi", "gpt-5.4", runtime_kwargs
+    )
+
+    assert route["request_overrides"] == {}
+
+
 @pytest.mark.asyncio
 async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
     runner = _make_runner()
@@ -157,6 +178,22 @@ async def test_handle_fast_command_persists_config(monkeypatch, tmp_path):
 
     saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
     assert saved["agent"]["service_tier"] == "fast"
+
+
+@pytest.mark.asyncio
+async def test_handle_fast_command_persists_auto_policy(monkeypatch, tmp_path):
+    runner = _make_runner()
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "_resolve_gateway_model", lambda config=None: "gpt-5.4")
+
+    response = await runner._handle_fast_command(_make_event("/fast auto"))
+
+    assert "AUTO" in response
+    assert runner._service_tier == "auto"
+    saved = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+    assert saved["agent"]["service_tier"] == "auto"
 
 
 @pytest.mark.asyncio

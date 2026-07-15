@@ -263,6 +263,9 @@ def _sync_dir(src: Path, dst: Path) -> None:
         rel = item.relative_to(src)
         target = dst / rel
         if item.is_dir():
+            # Remove conflicting file/symlink so mkdir succeeds
+            if target.is_symlink() or (target.exists() and not target.is_dir()):
+                target.unlink()
             target.mkdir(parents=True, exist_ok=True)
         elif item.is_file():
             try:
@@ -278,10 +281,18 @@ def _sync_dir(src: Path, dst: Path) -> None:
 
             if should_copy:
                 target.parent.mkdir(parents=True, exist_ok=True)
+                # Remove conflicting dir/symlink so copy2 replaces correctly
+                if target.is_symlink():
+                    target.unlink()
+                elif target.is_dir():
+                    shutil.rmtree(target, ignore_errors=True)
                 shutil.copy2(str(item), str(target))
 
     # 2. Clean up removed or symlinked files in destination
     for item in list(dst.rglob("*")):
+        if item.is_symlink():
+            item.unlink(missing_ok=True)
+            continue
         if not item.exists():
             continue
         rel = item.relative_to(dst)

@@ -46,11 +46,13 @@ export type GatewayEventPayload = {
   reasoning_effort?: string
   service_tier?: string
   fast?: boolean
+  approval_mode?: string
   yolo?: boolean
   running?: boolean
   cwd?: string
   branch?: string
   credential_warning?: string
+  install_warning?: string
   personality?: string
   usage?: Partial<UsageStats>
   // agent.terminal.output — live chunk for a read-only agent terminal tab
@@ -65,6 +67,7 @@ export type GatewayEventPayload = {
   description?: string
   // False when a tirith content-security warning forbids a permanent allow.
   allow_permanent?: boolean
+  smart_denied?: boolean
   // secret.request (skill credential capture)
   env_var?: string
   prompt?: string

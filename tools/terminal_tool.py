@@ -134,6 +134,10 @@ def _check_disk_usage_warning():
                 if f.is_file():
                     try:
                         total_bytes += f.stat().st_size
+                        # Short-circuit: once the threshold is crossed, stop walking
+                        # remaining files. This intentionally skips stat() and OSError
+                        # logging for files after the threshold, trading visibility for
+                        # I/O savings on large scratch trees.
                         if total_bytes > threshold_bytes:
                             total_gb = total_bytes / (1024 ** 3)
                             logger.warning(

@@ -47,6 +47,20 @@ class TestRegisterAndDispatch:
         result = json.loads(reg.dispatch("echo", {"msg": "hi"}))
         assert result == {"msg": "hi"}
 
+    def test_reprs_are_concise_and_do_not_expose_handler_or_schema(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="alpha",
+            toolset="core",
+            schema=_make_schema("alpha"),
+            handler=_dummy_handler,
+        )
+
+        assert repr(reg) == "ToolRegistry(tools=1, generation=1)"
+        assert repr(reg.get_entry("alpha")) == (
+            "ToolEntry(name='alpha', toolset='core', is_async=False)"
+        )
+
     def test_dispatch_preserves_supported_multimodal_result(self):
         reg = ToolRegistry()
         multimodal = {

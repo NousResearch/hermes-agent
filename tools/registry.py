@@ -22,7 +22,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Set
+from typing import Any, Callable, Dict, List, Optional, Set
 
 logger = logging.getLogger(__name__)
 
@@ -87,15 +87,38 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
 class ToolEntry:
     """Metadata for a single registered tool."""
 
+    name: str
+    toolset: str
+    schema: Dict[str, Any]
+    handler: Callable[..., Any]
+    check_fn: Optional[Callable[[], bool]]
+    requires_env: List[str]
+    is_async: bool
+    description: str
+    emoji: str
+    max_result_size_chars: Optional[int | float]
+    dynamic_schema_overrides: Optional[Callable[[], Dict[str, Any]]]
+
     __slots__ = (
         "name", "toolset", "schema", "handler", "check_fn",
         "requires_env", "is_async", "description", "emoji",
         "max_result_size_chars", "dynamic_schema_overrides",
     )
 
-    def __init__(self, name, toolset, schema, handler, check_fn,
-                 requires_env, is_async, description, emoji,
-                 max_result_size_chars=None, dynamic_schema_overrides=None):
+    def __init__(
+        self,
+        name: str,
+        toolset: str,
+        schema: Dict[str, Any],
+        handler: Callable[..., Any],
+        check_fn: Optional[Callable[[], bool]],
+        requires_env: List[str],
+        is_async: bool,
+        description: str,
+        emoji: str,
+        max_result_size_chars: Optional[int | float] = None,
+        dynamic_schema_overrides: Optional[Callable[[], Dict[str, Any]]] = None,
+    ) -> None:
         self.name = name
         self.toolset = toolset
         self.schema = schema
@@ -114,6 +137,12 @@ class ToolEntry:
         # on every get_definitions() call; results are merged shallow on top
         # of the base schema before the {"type": "function", ...} wrap.
         self.dynamic_schema_overrides = dynamic_schema_overrides
+
+    def __repr__(self) -> str:
+        return (
+            f"ToolEntry(name={self.name!r}, toolset={self.toolset!r}, "
+            f"is_async={self.is_async})"
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -237,6 +266,13 @@ class ToolRegistry:
         # against it: a cache entry keyed on the generation is valid for as
         # long as the generation hasn't changed.
         self._generation: int = 0
+
+    def __repr__(self) -> str:
+        with self._lock:
+            return (
+                f"ToolRegistry(tools={len(self._tools)}, "
+                f"generation={self._generation})"
+            )
 
     def _snapshot_state(self) -> tuple[List[ToolEntry], Dict[str, Callable]]:
         """Return a coherent snapshot of registry entries and toolset checks."""

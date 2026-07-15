@@ -284,9 +284,48 @@ def configure_recovery_actions(service_name: str | None = None):
         logging.warning("Could not configure RecoveryActions: %s", exc)
 
 
+def _consume_arg(argv: list[str], flag: str) -> str | None:
+    """Pop ``flag <value>`` from ``argv`` and return the value, or None."""
+    i = 0
+    while i < len(argv):
+        if argv[i] == flag and i + 1 < len(argv):
+            value = argv[i + 1]
+            del argv[i : i + 2]
+            return value
+        if argv[i].startswith(flag + "="):
+            value = argv[i].split("=", 1)[1]
+            del argv[i]
+            return value
+        i += 1
+    return None
+
+
 def main():
-    """Entry point for sc.exe."""
+    """Entry point for sc.exe / SCM."""
     global SERVICE_NAME
+
+    # Restore HERMES_HOME / profile from the SCM binPath BEFORE any
+    # hermes_cli.hermes_constants import. PR #50200 review: the
+    # wrapper used to fall back to APPDATA/home when HERMES_HOME was
+    # absent, which silently used the wrong config/session state and
+    # wrote planned-stop markers into the wrong profile directory.
+    # install_service passes --hermes-home and (for named profiles)
+    # --profile via subprocess.list2cmdline in the service binPath,
+    # so we can recover them here without depending on any env var
+    # that the SCM service account might not propagate.
+    hermes_home_arg = _consume_arg(sys.argv, "--hermes-home")
+    if hermes_home_arg:
+        os.environ["HERMES_HOME"] = hermes_home_arg
+    profile_arg = _consume_arg(sys.argv, "--profile")
+    if profile_arg:
+        # hermes_cli's _apply_profile_override() also accepts --profile
+        # on sys.argv and would set HERMES_HOME from it. We do not
+        # rely on that here: we are already past argparse entry, but
+        # setting HERMES_PROFILE too keeps profile-scoped code paths
+        # (kanban, etc.) consistent. _profile_arg() prefers HERMES_HOME
+        # for the service name and SCM binPath is the source of truth
+        # for both home and profile.
+        os.environ["HERMES_PROFILE"] = profile_arg
 
     # Allow service name override via command-line argument
     # Usage: python _hermes_gateway_service.py --name HermesGateway-Profile install

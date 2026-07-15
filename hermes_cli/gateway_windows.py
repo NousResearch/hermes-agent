@@ -1264,6 +1264,149 @@ def get_service_name() -> str:
     return f"HermesGateway-{suffix}"
 
 
+def get_service_name_for_hermes_home(hermes_home: str) -> str:
+    """Service name for an arbitrary HERMES_HOME, not just the active one.
+
+    Used by update pause/resume, which iterates over profiles whose
+    homes may differ from the active profile's home. Mirrors the
+    profile-suffix logic from ``get_service_name`` but parameterized
+    so a caller doesn't accidentally bind to the running process's
+    Hermes home.
+    """
+    # ``_profile_suffix`` reads the active ``HERMES_HOME`` from
+    # hermes_constants. Re-derive it directly so a caller can ask
+    # "what would the service name be for THIS path?" without
+    # disturbing the process's actual profile binding.
+    import hashlib
+    import re
+
+    from hermes_constants import get_default_hermes_root
+
+    target = Path(hermes_home).resolve()
+    default = get_default_hermes_root().resolve()
+    if target == default:
+        return "HermesGateway"
+    profiles_root = (default / "profiles").resolve()
+    try:
+        rel = target.relative_to(profiles_root)
+        parts = rel.parts
+        if len(parts) == 1 and re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", parts[0]):
+            return f"HermesGateway-{parts[0]}"
+    except ValueError:
+        pass
+    suffix = hashlib.sha256(str(target).encode()).hexdigest()[:8]
+    return f"HermesGateway-{suffix}"
+
+
+def is_service_registered_for_hermes_home(hermes_home: str) -> bool:
+    """True iff a Windows Service is registered for the given HERMES_HOME.
+
+    Lets the update pause/resume path ask "is THIS profile's gateway
+    SCM-managed?" without depending on the active Hermes profile.
+    """
+    name = get_service_name_for_hermes_home(hermes_home)
+    try:
+        import win32service
+
+        scm = win32service.OpenSCManager(
+            None, None, win32service.SC_MANAGER_CONNECT
+        )
+        try:
+            svc = win32service.OpenService(
+                scm, name, win32service.SERVICE_QUERY_STATUS
+            )
+            win32service.CloseServiceHandle(svc)
+            return True
+        except Exception:
+            return False
+        finally:
+            win32service.CloseServiceHandle(scm)
+    except Exception:
+        return False
+
+
+def stop_service_for_hermes_home(hermes_home: str) -> bool:
+    """Stop the SCM service for a specific HERMES_HOME (not the active one).
+
+    Used by the update pause path so we stop the service whose
+    pythonw.exe child is the gateway PID we discovered — not
+    whichever service happens to match the active process profile.
+
+    Returns True iff SCM accepted the STOP control (or the service was
+    already stopped). False if the service is not registered, an
+    unexpected error occurred, or pywin32 is unavailable.
+    """
+    _assert_windows()
+    name = get_service_name_for_hermes_home(hermes_home)
+    try:
+        import win32service
+    except ImportError:
+        return False
+    if not is_service_registered_for_hermes_home(hermes_home):
+        return False
+    try:
+        scm = win32service.OpenSCManager(
+            None, None, win32service.SC_MANAGER_CONNECT
+        )
+        try:
+            svc = win32service.OpenService(
+                scm, name, win32service.SERVICE_STOP
+            )
+            try:
+                win32service.ControlService(
+                    svc, win32service.SERVICE_CONTROL_STOP
+                )
+                return True
+            finally:
+                win32service.CloseServiceHandle(svc)
+        finally:
+            win32service.CloseServiceHandle(scm)
+    except Exception as exc:
+        # ERROR_SERVICE_NOT_ACTIVE is benign — already stopped.
+        try:
+            import pywintypes
+
+            if isinstance(exc, pywintypes.error) and exc.winerror == 1062:
+                return True
+        except Exception:
+            pass
+        return False
+
+
+def start_service_for_hermes_home(hermes_home: str) -> bool:
+    """Start the SCM service for a specific HERMES_HOME.
+
+    Used by the update resume path so we route to the same SCM unit
+    that we paused, instead of spawning a parallel detached gateway.
+    Returns True iff StartService was accepted by SCM.
+    """
+    _assert_windows()
+    name = get_service_name_for_hermes_home(hermes_home)
+    try:
+        import win32service
+    except ImportError:
+        return False
+    if not is_service_registered_for_hermes_home(hermes_home):
+        return False
+    try:
+        scm = win32service.OpenSCManager(
+            None, None, win32service.SC_MANAGER_CONNECT
+        )
+        try:
+            svc = win32service.OpenService(
+                scm, name, win32service.SERVICE_START
+            )
+            try:
+                win32service.StartService(svc, None)
+                return True
+            finally:
+                win32service.CloseServiceHandle(svc)
+        finally:
+            win32service.CloseServiceHandle(scm)
+    except Exception:
+        return False
+
+
 def is_service_registered() -> bool:
     """Check if the Windows Service is registered with SCM."""
     try:
@@ -1310,8 +1453,35 @@ def install_service(force: bool = False, allow_fallback: bool = True) -> None:
     script_path = _write_service_script()
     python_exe = _resolve_service_python()
 
-    # Build binPath: pythonw.exe _hermes_gateway_service.py --name <service_name>
-    bin_path = f'"{python_exe}" "{script_path}" --name {service_name}'
+    # Persist the active HERMES_HOME / profile into the service launch
+    # configuration so the SCM-launched wrapper restores the SAME home
+    # the user picked at install time. Without this, the wrapper falls
+    # back to APPDATA/home and a named-profile service silently uses
+    # the wrong config/session/state/log directory (PR review #50200).
+    from hermes_cli.config import get_hermes_home
+    from hermes_cli.gateway import _profile_arg
+
+    hermes_home = str(Path(get_hermes_home()).resolve())
+    profile_arg = _profile_arg(hermes_home)
+
+    # Build binPath: pythonw.exe _hermes_gateway_service.py --name X
+    #                 --hermes-home "<abs path>" [--profile X]
+    # subprocess.list2cmdline applies the same quoting rules that
+    # CreateService uses internally — handles spaces, quotes, and
+    # trailing backslashes consistently for both plain Python args
+    # and SCM's registry ImagePath.
+    bin_argv = [
+        python_exe,
+        str(script_path),
+        "--name",
+        service_name,
+        "--hermes-home",
+        hermes_home,
+    ]
+    profile_name = profile_arg.split()[-1] if profile_arg else ""
+    if profile_arg:
+        bin_argv.extend(["--profile", profile_name])
+    bin_path = subprocess.list2cmdline(bin_argv)
 
     try:
         scm = win32service.OpenSCManager(
@@ -1389,6 +1559,9 @@ def install_service(force: bool = False, allow_fallback: bool = True) -> None:
             win32service.CloseServiceHandle(scm)
 
         print(f"✓ Windows Service registered: {service_name}")
+        print(f"  HERMES_HOME: {hermes_home}")
+        if profile_name:
+            print(f"  Profile: {profile_name}")
         print(f"  RecoveryActions: quadratic backoff restart on failure")
         print(f"  Start type: AUTO_START (starts at boot)")
     except Exception as exc:

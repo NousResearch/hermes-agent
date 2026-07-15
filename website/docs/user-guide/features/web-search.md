@@ -249,6 +249,21 @@ web:
 
 With this config, Hermes uses SearXNG for all search queries and Firecrawl for URL extraction — combining free search with high-quality extraction.
 
+#### Add runtime search fallbacks
+
+A configured provider can be available at startup and still fail later because of a quota, rate limit, or outage. Add ordered fallback providers for `web_search`:
+
+```yaml
+# ~/.hermes/config.yaml
+web:
+  search_backend: "tavily"
+  search_fallback_backends:
+    - "ddgs"
+    - "brave-free"
+```
+
+Hermes tries these providers only after the primary search returns a failure or raises an error. Successful fallback responses include `metadata.fallback_from` and `metadata.fallback_backend`. Providers must be installed, enabled, support search, and report themselves available. The setting also accepts a comma-separated string.
+
 ---
 
 ### Tavily

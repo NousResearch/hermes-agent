@@ -308,6 +308,39 @@ def _get_capability_backend(capability: str) -> str:
     return _get_backend()
 
 
+def _get_capability_fallback_backends(capability: str) -> list[str]:
+    """Return ordered runtime fallback providers for a web capability.
+
+    ``web.<capability>_fallback_backends`` takes precedence over the shared
+    ``web.fallback_backends`` setting. Both accept a YAML sequence or a
+    comma-separated string. Names are resolved by the provider registry at
+    dispatch time so plugin-contributed providers work without a core
+    allowlist.
+    """
+    cfg = _load_web_config()
+    raw = cfg.get(f"{capability}_fallback_backends")
+    if raw is None:
+        raw = cfg.get("fallback_backends")
+
+    if isinstance(raw, str):
+        candidates = raw.split(",")
+    elif isinstance(raw, (list, tuple)):
+        candidates = raw
+    else:
+        return []
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        if not isinstance(item, str):
+            continue
+        name = item.strip().lower()
+        if name and name not in seen:
+            seen.add(name)
+            result.append(name)
+    return result
+
+
 def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable.
 
@@ -716,11 +749,76 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                     ),
                 }
         else:
-            logger.info(
-                "Web search via %s: '%s' (limit: %d)",
-                provider.name, query, limit,
-            )
-            response_data = provider.search(query, limit)
+            providers_to_try = [provider]
+            for fallback_name in _get_capability_fallback_backends("search"):
+                fallback_provider = _wsp_get_provider(fallback_name)
+                if fallback_provider is None or fallback_provider.name == provider.name:
+                    continue
+                try:
+                    if (
+                        fallback_provider.supports_search()
+                        and fallback_provider.is_available()
+                    ):
+                        providers_to_try.append(fallback_provider)
+                except Exception as exc:  # noqa: BLE001 — skip broken fallbacks
+                    logger.debug(
+                        "Web fallback provider %r is unavailable: %s",
+                        fallback_name,
+                        exc,
+                    )
+
+            primary_response = None
+            primary_exception = None
+            for index, candidate in enumerate(providers_to_try):
+                logger.info(
+                    "Web search via %s: '%s' (limit: %d)",
+                    candidate.name,
+                    query,
+                    limit,
+                )
+                try:
+                    candidate_response = candidate.search(query, limit)
+                except Exception as exc:  # noqa: BLE001 — provider boundary
+                    if index == 0:
+                        primary_exception = exc
+                    logger.warning(
+                        "Web search via %s raised: %s",
+                        candidate.name,
+                        str(exc)[:200],
+                    )
+                    continue
+
+                if index == 0:
+                    primary_response = candidate_response
+                if not candidate_response.get("success"):
+                    logger.warning(
+                        "Web search via %s returned failure: %s",
+                        candidate.name,
+                        str(candidate_response.get("error", "search failed"))[:200],
+                    )
+                    continue
+
+                response_data = dict(candidate_response)
+                if index > 0:
+                    metadata = dict(response_data.get("metadata") or {})
+                    metadata.update(
+                        {
+                            "fallback_from": provider.name,
+                            "fallback_backend": candidate.name,
+                        }
+                    )
+                    response_data["metadata"] = metadata
+                break
+            else:
+                if primary_response is not None:
+                    response_data = primary_response
+                elif primary_exception is not None:
+                    raise primary_exception
+                else:  # Defensive: providers_to_try always includes the primary.
+                    response_data = {
+                        "success": False,
+                        "error": "No web search provider attempted.",
+                    }
 
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)

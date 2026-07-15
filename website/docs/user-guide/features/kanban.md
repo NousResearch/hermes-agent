@@ -500,7 +500,9 @@ The decomposer's routing decisions depend on profile descriptions, which is a pe
 
 `kanban.orchestrator_profile` does not load that profile's prompt, skills, or custom logic into the decomposition call. It controls who owns the root/orchestration task after fan-out. To change the decomposer's model/provider, configure `auxiliary.kanban_decomposer`. To use a profile's custom task-splitting logic instead of the built-in decomposer, switch to Manual mode and have that profile create or decompose tasks explicitly.
 
-Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
+Config knobs (all under `kanban:` in the active profile's `config.yaml`; the
+default profile uses `~/.hermes/config.yaml`, while named workers use their
+isolated profile config):
 
 | Key | Default | Purpose |
 |---|---|---|
@@ -509,6 +511,22 @@ Config knobs (all under `kanban:` in `~/.hermes/config.yaml`):
 | `orchestrator_profile` | `""` | Profile assigned to the root/orchestration task after decomposition. Empty = fall back to active default profile. |
 | `default_assignee` | `""` | Where a child task lands when the LLM picks an unknown profile. Empty = fall back to active default. |
 | `auto_subscribe_on_create` | `true` | When a worker calls `kanban_create` from inside a session with a persistent delivery channel (messaging gateway or TUI), the originating session is auto-subscribed to the new task's completion/block events. The dispatcher still drives the delivery — this only changes whether the caller's chat/key shows up in the notify-sub table. Set to `false` to require explicit `kanban_notify-subscribe` calls per task. |
+| `guidance_override.mode` | `append` | `append` keeps the built-in worker lifecycle and adds the profile's text; `replace` substitutes the complete block. |
+| `guidance_override.text` | `""` | Profile-local worker guidance. Empty or invalid values preserve the built-in guidance. |
+
+For a named profile, put the override in that profile's own `config.yaml`:
+
+```yaml
+kanban:
+  guidance_override:
+    mode: append
+    text: |
+      Create an explicit verification task after every implementation task.
+```
+
+The dispatcher launches named workers with that profile's `HERMES_HOME`, so a
+profile never reads another profile's override. The text is resolved once at
+worker initialization and remains session-static across prompt rebuilds.
 
 And the two auxiliary LLM slots:
 

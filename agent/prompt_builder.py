@@ -280,24 +280,16 @@ KANBAN_GUIDANCE = (
 
 
 def resolve_kanban_guidance(
-    profile_name: Optional[str] = None,
     config: Optional[dict] = None,
 ) -> str:
-    """Return kanban worker guidance for *profile_name*.
+    """Return the active profile's configured kanban worker guidance.
 
-    ``kanban.guidance_override.<profile>`` may append to or replace the built-in
-    guidance. Malformed config is ignored so existing prompt behavior remains
-    unchanged unless a profile has a valid inline override.
+    Each profile owns an isolated ``config.yaml``, so
+    ``kanban.guidance_override`` applies only to the worker whose
+    ``HERMES_HOME`` loaded that config.  It may append to or replace the
+    built-in guidance. Malformed config is ignored so existing prompt behavior
+    remains unchanged unless the active profile has a valid inline override.
     """
-    if profile_name is None:
-        try:
-            from hermes_cli.profiles import get_active_profile_name
-
-            profile_name = get_active_profile_name()
-        except Exception as exc:
-            logger.debug("Could not resolve active profile for kanban guidance: %s", exc)
-            profile_name = "default"
-
     if config is None:
         try:
             from hermes_cli.config import load_config
@@ -307,8 +299,6 @@ def resolve_kanban_guidance(
             logger.debug("Could not read kanban guidance override config: %s", exc)
             return KANBAN_GUIDANCE
 
-    if not isinstance(profile_name, str) or not profile_name.strip():
-        return KANBAN_GUIDANCE
     if not isinstance(config, dict):
         return KANBAN_GUIDANCE
 
@@ -316,11 +306,7 @@ def resolve_kanban_guidance(
     if not isinstance(kanban_config, dict):
         return KANBAN_GUIDANCE
 
-    overrides = kanban_config.get("guidance_override", {})
-    if not isinstance(overrides, dict):
-        return KANBAN_GUIDANCE
-
-    override = overrides.get(profile_name.strip())
+    override = kanban_config.get("guidance_override", {})
     if not isinstance(override, dict):
         return KANBAN_GUIDANCE
 

@@ -1491,10 +1491,15 @@ def _normalize_main_model_assignment(provider: str, model: str) -> tuple[str, st
     # mismatch, entry missing from custom_providers/providers) must still
     # not be treated as a stray vendor prefix -- it isn't a known Hermes
     # provider/alias, but it also isn't the analytics-vendor case this
-    # fallback exists for.
+    # fallback exists for. Match only the durable named-custom syntax
+    # (bare "custom" bucket, or "custom:<name>" per
+    # ``providers.custom_provider_slug``) -- a bare ``startswith("custom")``
+    # would also swallow unrelated unconfigured vendor names that merely
+    # happen to start with "custom" (e.g. "customproxy").
+    is_custom_provider_slug = canonical == "custom" or canonical.startswith("custom:")
     if (
         canonical not in _KNOWN_PROVIDER_NAMES
-        and not canonical.startswith("custom")
+        and not is_custom_provider_slug
         and "/" in model_in
     ):
         # Vendor prefix posing as a provider (analytics fallback). Resolve

@@ -46,13 +46,55 @@ from __future__ import annotations
 
 import inspect
 import json
-import keyword
 import logging
 import os
 import sys
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
+
+# JSON Schema type -> Python type mapping for signature generation
+_JSON_TO_PY = {
+    "string": str,
+    "integer": int,
+    "number": float,
+    "boolean": bool,
+    "array": list,
+    "object": dict,
+}
+
+
+def _signature_from_schema(schema: dict | None) -> tuple[inspect.Signature, dict[str, type]]:
+    """Build a Python function signature and annotations from a JSON schema.
+
+    Args:
+        schema: JSON Schema dict with "properties" and "required" keys.
+
+    Returns:
+        (signature, annotations_dict) where signature has KEYWORD_ONLY params
+        and annotations maps param names to Python types.
+    """
+    props = (schema or {}).get("properties") or {}
+    required = set((schema or {}).get("required") or [])
+    params, annots = [], {}
+
+    for pname, pspec in props.items():
+        if pname.startswith("_"):
+            continue
+        py = _JSON_TO_PY.get((pspec or {}).get("type"), Any)
+        ann, default = (
+            (py, inspect.Parameter.empty)
+            if pname in required
+            else (Optional[py], None)
+        )
+        annots[pname] = ann
+        params.append(
+            inspect.Parameter(
+                pname, inspect.Parameter.KEYWORD_ONLY, annotation=ann, default=default
+            )
+        )
+
+    return inspect.Signature(params, return_annotation=str), annots
 
 
 # Tools we expose. Each name MUST match a registered Hermes tool that
@@ -164,6 +206,8 @@ def _build_server() -> Any:
             tool_description: str,
             schema: dict[str, Any],
         ):
+            signature, annotations = _signature_from_schema(schema)
+
             def _dispatch(**kwargs: Any) -> str:
                 try:
                     # Optional signature parameters default to None. Omit them
@@ -177,45 +221,20 @@ def _build_server() -> Any:
                     logger.exception("tool %s raised", tool_name)
                     return json.dumps({"error": str(exc), "tool": tool_name})
 
-            properties = schema.get("properties") or {}
-            required = set(schema.get("required") or [])
-            signature_params: list[inspect.Parameter] = []
-            for param_name in properties:
-                if (
-                    not isinstance(param_name, str)
-                    or not param_name.isidentifier()
-                    or keyword.iskeyword(param_name)
-                ):
-                    raise ValueError(
-                        f"tool {tool_name!r} has an MCP-incompatible parameter "
-                        f"name: {param_name!r}"
-                    )
-                signature_params.append(
-                    inspect.Parameter(
-                        param_name,
-                        kind=inspect.Parameter.KEYWORD_ONLY,
-                        default=(
-                            inspect.Parameter.empty if param_name in required else None
-                        ),
-                        annotation=Any,
-                    )
-                )
-
             _dispatch.__name__ = tool_name
             _dispatch.__doc__ = tool_description
-            _dispatch.__signature__ = inspect.Signature(  # type: ignore[attr-defined]
-                signature_params,
-                return_annotation=str,
-            )
+            _dispatch.__signature__ = signature  # type: ignore[attr-defined]
+            _dispatch.__annotations__ = {**annotations, "return": str}
             return _dispatch
 
         try:
             handler = _make_handler(name, description, params_schema)
-            mcp.add_tool(
-                handler,
-                name=name,
-                description=description,
-            )
+            try:
+                mcp.add_tool(handler, name=name, description=description)
+            except TypeError:
+                # Older MCP SDKs expose decorator-style registration only.
+                mcp.tool(name=name, description=description)(handler)
+
             manager = getattr(mcp, "_tool_manager", None)
             registered = manager.get_tool(name) if manager is not None else None
             if registered is None:

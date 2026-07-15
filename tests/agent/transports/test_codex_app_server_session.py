@@ -39,6 +39,9 @@ class FakeClient:
         self._initialized = False
         self._closed = False
         self._notifications: list[dict] = []
+        self._compaction_notifications: list[dict] = []
+        self._notification_sequences: dict[int, int] = {}
+        self._receive_sequence = 0
         self._server_requests: list[dict] = []
         self._request_handler = None  # Optional[Callable[[str, dict], dict]]
 
@@ -50,6 +53,10 @@ class FakeClient:
 
     def request(self, method: str, params: Optional[dict] = None, timeout: float = 30.0):
         self.requests.append((method, params or {}))
+        if method == "thread/compact/start" and self._compaction_notifications:
+            for note in self._compaction_notifications:
+                self._enqueue_notification(note)
+            self._compaction_notifications.clear()
         if self._request_handler is not None:
             return self._request_handler(method, params or {})
         # Sensible defaults for protocol methods used by the session
@@ -62,6 +69,29 @@ class FakeClient:
             return {}
         return {}
 
+    def request_with_response_sequence(
+        self, method: str, params: Optional[dict] = None, timeout: float = 30.0
+    ):
+        self.requests.append((method, params or {}))
+        if self._request_handler is not None:
+            result = self._request_handler(method, params or {})
+        elif method == "thread/start":
+            result = {
+                "thread": {"id": "thread-fake-001"},
+                "activePermissionProfile": {"id": "workspace-write"},
+            }
+        elif method == "turn/start":
+            result = {"turn": {"id": "turn-fake-001"}}
+        else:
+            result = {}
+        self._receive_sequence += 1
+        response_sequence = self._receive_sequence
+        if method == "thread/compact/start" and self._compaction_notifications:
+            for note in self._compaction_notifications:
+                self._enqueue_notification(note)
+            self._compaction_notifications.clear()
+        return result, response_sequence
+
     def notify(self, method: str, params=None):
         pass
 
@@ -72,8 +102,13 @@ class FakeClient:
         self.error_responses.append((request_id, code, message))
 
     def take_notification(self, timeout: float = 0.0):
+        received = self.take_notification_with_sequence(timeout)
+        return received[1] if received is not None else None
+
+    def take_notification_with_sequence(self, timeout: float = 0.0):
         if self._notifications:
-            return self._notifications.pop(0)
+            note = self._notifications.pop(0)
+            return self._notification_sequences.pop(id(note)), note
         # Honor a tiny sleep so the loop doesn't hot-spin; the real client
         # blocks on a queue. For tests we want determinism.
         if timeout > 0:
@@ -84,6 +119,9 @@ class FakeClient:
         if self._server_requests:
             return self._server_requests.pop(0)
         return None
+
+    def pending_notification_count(self):
+        return len(self._notifications)
 
     def pending_server_request_count(self):
         return len(self._server_requests)
@@ -100,11 +138,23 @@ class FakeClient:
         return list(getattr(self, "_stderr_tail", []))[-n:]
 
     # Test helpers
+    def _enqueue_notification(self, note: dict) -> None:
+        self._receive_sequence += 1
+        self._notification_sequences[id(note)] = self._receive_sequence
+        self._notifications.append(note)
+
     def queue_notification(self, method: str, **params):
         if method.startswith("item/"):
             params.setdefault("threadId", "thread-fake-001")
             params.setdefault("turnId", "turn-fake-001")
-        self._notifications.append({"method": method, "params": params})
+        self._enqueue_notification({"method": method, "params": params})
+
+    def queue_compaction_notification(self, method: str, **params):
+        """Queue a notification that arrives after thread/compact/start."""
+        if method.startswith("item/"):
+            params.setdefault("threadId", "thread-fake-001")
+            params.setdefault("turnId", "compact-turn-1")
+        self._compaction_notifications.append({"method": method, "params": params})
 
     def queue_server_request(self, method: str, request_id: Any = "srv-1", **params):
         if method in {
@@ -252,6 +302,7 @@ class TestLifecycle:
             item={
                 "type": "dynamicToolCall",
                 "id": "shared-item",
+                "namespace": "hermes",
                 "tool": "memory",
                 "arguments": {"action": "add"},
                 "success": True,
@@ -1208,6 +1259,61 @@ class TestLifecycle:
             ("dyn-2", {"success": True, "contentItems": [{"type": "inputText", "text": "once"}]}),
         ]
 
+    @pytest.mark.parametrize(
+        "conflicting_overrides",
+        [
+            {"namespace": "other"},
+            {"tool": "memory"},
+            {"arguments": {"todos": [{"id": "conflict"}]}},
+        ],
+    )
+    def test_conflicting_duplicate_dynamic_call_id_is_rejected_without_redispatch(
+        self, conflicting_overrides
+    ):
+        client = FakeClient()
+        seen = []
+        first = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "callId": "call-1",
+            "namespace": "hermes",
+            "tool": "todo",
+            "arguments": {"todos": []},
+        }
+        conflicting = {**first, **conflicting_overrides}
+        client.queue_server_request("item/tool/call", request_id="dyn-1", **first)
+        client.queue_server_request(
+            "item/tool/call", request_id="dyn-2", **conflicting
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        def handler(payload):
+            seen.append(payload)
+            return {
+                "success": True,
+                "contentItems": [{"type": "inputText", "text": "once"}],
+            }
+
+        s = make_session(client, dynamic_tool_handler=handler)
+        s.run_turn("remember", turn_timeout=1.0)
+
+        assert seen == [first]
+        assert client.responses == [
+            ("dyn-1", {
+                "success": True,
+                "contentItems": [{"type": "inputText", "text": "once"}],
+            }),
+        ]
+        assert client.error_responses == [(
+            "dyn-2",
+            -32602,
+            "Conflicting duplicate Hermes dynamic tool payload",
+        )]
+
     def test_close_idempotent(self):
         client = FakeClient()
         s = make_session(client)
@@ -1985,28 +2091,697 @@ class TestRunTurn:
 
         assert r.compacted is True
 
-
-class TestCompactThread:
-    def test_compact_thread_sends_rpc_and_waits_for_completion(self):
+    def test_run_turn_ignores_stale_thread_compacted_notification(self):
         client = FakeClient()
         client.queue_notification(
+            "thread/compacted",
+            threadId="thread-fake-001",
+            turnId="stale-turn",
+        )
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            item={"type": "agentMessage", "id": "m1", "text": "real result"},
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).run_turn("x", turn_timeout=0.05)
+
+        assert result.compacted is False
+        assert result.turn_id == "turn-fake-001"
+        assert result.final_text == "real result"
+        assert result.error is None
+
+    def test_run_turn_drains_request_arriving_with_terminal_notification(self):
+        class TerminalRaceClient(FakeClient):
+            injected = False
+
+            def take_notification(self, timeout: float = 0.0):
+                note = super().take_notification(timeout)
+                if (
+                    not self.injected
+                    and note is not None
+                    and note.get("method") == "turn/completed"
+                ):
+                    self.injected = True
+                    self.queue_server_request(
+                        "item/commandExecution/requestApproval",
+                        request_id="approval-at-terminal",
+                        command="pwd",
+                        cwd="/tmp",
+                    )
+                return note
+
+        client = TerminalRaceClient()
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        result = make_session(
+            client,
+            approval_callback=lambda *args, **kwargs: "once",
+        ).run_turn("x", turn_timeout=1.0)
+
+        assert result.error is None
+        assert client.responses == [
+            ("approval-at-terminal", {"decision": "accept"})
+        ]
+        assert client.pending_server_request_count() == 0
+
+    def test_run_turn_closes_when_interrupt_after_projection_failure_raises(
+        self, monkeypatch
+    ):
+        client = FakeClient()
+        session = make_session(client)
+        session.ensure_started()
+        client.queue_notification(
+            "item/started",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+            item={
+                "type": "commandExecution",
+                "id": "projection-failure",
+                "command": "pwd",
+                "cwd": "/tmp",
+            },
+        )
+
+        original_error = RuntimeError("projection failed")
+
+        def fail_projection(self, note):
+            session._dynamic_tool_responses[("thread", "turn", "stale")] = (
+                "signature",
+                {},
+            )
+            session._request_user_input_responses[("thread", "turn", "stale")] = (
+                "signature",
+                "choice",
+                {},
+            )
+            raise original_error
+
+        interrupt_attempts = []
+
+        def fail_interrupt(turn_id):
+            interrupt_attempts.append(turn_id)
+            raise RuntimeError("interrupt failed")
+
+        monkeypatch.setattr(session_mod.CodexEventProjector, "project", fail_projection)
+        monkeypatch.setattr(session, "_issue_interrupt", fail_interrupt)
+
+        with pytest.raises(RuntimeError, match="projection failed") as exc_info:
+            session.run_turn("x", turn_timeout=1.0)
+
+        assert exc_info.value is original_error
+        assert interrupt_attempts == ["turn-fake-001"]
+        assert client._closed is True
+        assert session._client is None
+        assert session._active_turn_id is None
+        assert session._dynamic_tool_responses == {}
+        assert session._request_user_input_responses == {}
+
+
+class TestCompactThread:
+    def test_compact_thread_ignores_uncorrelated_thread_compacted_notification(self):
+        client = FakeClient()
+        client.queue_compaction_notification(
             "turn/started",
             threadId="thread-fake-001",
             turn={"id": "compact-turn-1"},
         )
+        client.queue_compaction_notification(
+            "thread/compacted",
+            threadId="foreign-thread",
+        )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).compact_thread(turn_timeout=1.0)
+
+        assert result.compacted is False
+        assert result.thread_id == "thread-fake-001"
+        assert result.turn_id == "compact-turn-1"
+        assert result.error is None
+
+    def test_compact_thread_discards_stale_started_turn_before_request_boundary(self):
+        client = FakeClient()
         client.queue_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "stale-turn"},
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "stale-turn", "status": "completed", "error": None},
+        )
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
             "item/completed",
             threadId="thread-fake-001",
             turnId="compact-turn-1",
             item={"type": "contextCompaction", "id": "compact-item-1"},
         )
-        client.queue_notification(
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert result.error is None
+        assert result.turn_id == "compact-turn-1"
+        assert result.compacted is True
+        assert client.pending_notification_count() == 0
+
+    def test_compact_thread_rejects_stale_turn_enqueued_during_request_race(self):
+        class RequestRaceClient(FakeClient):
+            def __init__(self) -> None:
+                super().__init__()
+                self._race_injected = False
+
+            def _inject_stale_turn(self) -> None:
+                if self._race_injected:
+                    return
+                self._race_injected = True
+                self.queue_notification(
+                    "turn/started",
+                    threadId="thread-fake-001",
+                    turn={"id": "stale-race-turn"},
+                )
+                self.queue_notification(
+                    "turn/completed",
+                    threadId="thread-fake-001",
+                    turn={
+                        "id": "stale-race-turn",
+                        "status": "completed",
+                        "error": None,
+                    },
+                )
+
+            def pending_notification_count(self):
+                count = super().pending_notification_count()
+                self._inject_stale_turn()
+                return count
+
+            def request_with_response_sequence(self, method, params=None, timeout=30.0):
+                if method == "thread/compact/start":
+                    self._inject_stale_turn()
+                return super().request_with_response_sequence(method, params, timeout)
+
+        client = RequestRaceClient()
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            item={"type": "contextCompaction", "id": "compact-item-1"},
+        )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert result.error is None
+        assert result.turn_id == "compact-turn-1"
+        assert result.compacted is True
+        assert client.pending_notification_count() == 0
+
+    def test_compact_thread_ignores_stale_items_before_and_after_turn_binding(self):
+        client = FakeClient()
+        seen_events: list[dict] = []
+        stale_item = {
+            "type": "commandExecution",
+            "id": "stale-command",
+            "command": "printf STALE",
+            "cwd": "/tmp",
+            "status": "completed",
+            "aggregatedOutput": "STALE",
+            "exitCode": 0,
+        }
+        client.queue_compaction_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="stale-before-bind",
+            item=stale_item,
+        )
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="stale-after-bind",
+            item={**stale_item, "id": "stale-command-2"},
+        )
+        client.queue_compaction_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            item={"type": "contextCompaction", "id": "compact-item-1"},
+        )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        session = make_session(client, on_event=seen_events.append)
+        result = session.compact_thread(turn_timeout=2.0)
+
+        assert result.error is None
+        assert result.turn_id == "compact-turn-1"
+        assert result.compacted is True
+        assert result.tool_iterations == 0
+        assert all("STALE" not in str(message) for message in result.projected_messages)
+        assert all(
+            (event.get("params") or {}).get("turnId")
+            not in {"stale-before-bind", "stale-after-bind"}
+            for event in seen_events
+        )
+        assert session._active_turn_id is None
+
+    def test_compact_thread_ignores_stale_terminal_before_authoritative_start(self):
+        client = FakeClient()
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "stale-turn", "status": "completed", "error": None},
+        )
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            item={"type": "contextCompaction", "id": "compact-item-1"},
+        )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert result.error is None
+        assert result.turn_id == "compact-turn-1"
+        assert result.compacted is True
+        assert client.pending_notification_count() == 0
+
+    def test_compact_thread_quarantines_post_terminal_notifications(self):
+        client = FakeClient()
+        seen_events: list[dict] = []
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+        client.queue_compaction_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            item={
+                "type": "commandExecution",
+                "id": "post-terminal-command",
+                "command": "printf LEAK",
+                "cwd": "/tmp",
+                "aggregatedOutput": "LEAK",
+                "exitCode": 0,
+            },
+        )
+
+        result = make_session(client, on_event=seen_events.append).compact_thread(
+            turn_timeout=2.0
+        )
+
+        assert result.error is None
+        assert result.tool_iterations == 0
+        assert all("LEAK" not in str(message) for message in result.projected_messages)
+        assert all(
+            (event.get("params") or {}).get("item", {}).get("id")
+            != "post-terminal-command"
+            for event in seen_events
+        )
+        assert client.pending_notification_count() == 0
+
+    def test_compact_thread_drains_terminal_server_requests_without_turn_deadline(self):
+        class TerminalRequestClient(FakeClient):
+            injected = False
+
+            def take_notification_with_sequence(self, timeout: float = 0.0):
+                received = super().take_notification_with_sequence(timeout)
+                note = received[1] if received is not None else None
+                if (
+                    note is not None
+                    and note.get("method") == "turn/completed"
+                    and not self.injected
+                ):
+                    self.injected = True
+                    for index in range(2):
+                        self.queue_server_request(
+                            "item/commandExecution/requestApproval",
+                            request_id=f"approval-{index}",
+                            threadId="thread-fake-001",
+                            turnId="compact-turn-1",
+                            itemId=f"command-{index}",
+                            command="pwd",
+                            cwd="/tmp",
+                        )
+                return received
+
+        client = TerminalRequestClient()
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        def slow_approval(*_args, **_kwargs):
+            time.sleep(0.08)
+            return "once"
+
+        result = make_session(
+            client, approval_callback=slow_approval
+        ).compact_thread(turn_timeout=0.05)
+
+        assert result.error is None
+        assert result.interrupted is False
+        assert client.responses == [
+            ("approval-0", {"decision": "accept"}),
+            ("approval-1", {"decision": "accept"}),
+        ]
+        assert client.pending_server_request_count() == 0
+
+    def test_compact_thread_terminal_server_request_drain_is_bounded(self, monkeypatch):
+        monkeypatch.setattr(session_mod, "_MAX_TERMINAL_SERVER_REQUEST_DRAIN", 2)
+
+        class TerminalRequestClient(FakeClient):
+            injected = False
+
+            def take_notification_with_sequence(self, timeout: float = 0.0):
+                received = super().take_notification_with_sequence(timeout)
+                note = received[1] if received is not None else None
+                if (
+                    note is not None
+                    and note.get("method") == "turn/completed"
+                    and not self.injected
+                ):
+                    self.injected = True
+                    for index in range(4):
+                        self.queue_server_request(
+                            "item/commandExecution/requestApproval",
+                            request_id=f"approval-{index}",
+                            threadId="thread-fake-001",
+                            turnId="compact-turn-1",
+                            itemId=f"command-{index}",
+                            command="pwd",
+                            cwd="/tmp",
+                        )
+                return received
+
+        client = TerminalRequestClient()
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        result = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert client.responses == [
+            ("approval-0", {"decision": "decline"}),
+            ("approval-1", {"decision": "decline"}),
+        ]
+        assert client.error_responses == [
+            (
+                "approval-2",
+                -32000,
+                "Too many server requests pending at codex turn completion",
+            ),
+            (
+                "approval-3",
+                -32000,
+                "Too many server requests pending at codex turn completion",
+            ),
+        ]
+        assert client.pending_server_request_count() == 0
+        assert result.interrupted is True
+        assert result.should_retire is True
+        assert result.error and "more than 2 server requests" in result.error
+
+    def test_compact_thread_rejects_remaining_terminal_requests_after_handler_error(
+        self,
+    ):
+        class TerminalRequestClient(FakeClient):
+            injected = False
+
+            def take_notification_with_sequence(self, timeout: float = 0.0):
+                received = super().take_notification_with_sequence(timeout)
+                note = received[1] if received is not None else None
+                if (
+                    note is not None
+                    and note.get("method") == "turn/completed"
+                    and not self.injected
+                ):
+                    self.injected = True
+                    for index in range(3):
+                        self.queue_server_request(
+                            "item/commandExecution/requestApproval",
+                            request_id=f"approval-{index}",
+                            threadId="thread-fake-001",
+                            turnId="compact-turn-1",
+                            itemId=f"command-{index}",
+                            command="pwd",
+                            cwd="/tmp",
+                        )
+                return received
+
+        client = TerminalRequestClient()
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+        session = make_session(client)
+
+        def fail_request(req, *, deadline=None):
+            raise RuntimeError("reply transport failed")
+
+        session._handle_server_request = fail_request
+        result = session.compact_thread(turn_timeout=2.0)
+
+        assert result.interrupted is True
+        assert result.should_retire is True
+        assert client.pending_server_request_count() == 0
+        assert client.error_responses == [
+            ("approval-0", -32000, "Compaction server request handling aborted"),
+            ("approval-1", -32000, "Compaction server request handling aborted"),
+            ("approval-2", -32000, "Compaction server request handling aborted"),
+        ]
+
+    def test_compact_thread_latches_delayed_terminal_before_slow_request_deadline(self):
+        class RequestAfterStartClient(FakeClient):
+            injected = False
+
+            def take_notification_with_sequence(self, timeout: float = 0.0):
+                received = super().take_notification_with_sequence(timeout)
+                note = received[1] if received is not None else None
+                if (
+                    note is not None
+                    and note.get("method") == "turn/started"
+                    and not self.injected
+                ):
+                    self.injected = True
+                    self.queue_server_request(
+                        "item/commandExecution/requestApproval",
+                        request_id="approval-delayed-terminal",
+                        threadId="thread-fake-001",
+                        turnId="compact-turn-1",
+                        itemId="command-delayed-terminal",
+                        command="pwd",
+                        cwd="/tmp",
+                    )
+                return received
+
+        client = RequestAfterStartClient()
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        for _ in range(8):
+            client.queue_compaction_notification(
+                "turn/tokenUsage/updated",
+                threadId="thread-fake-001",
+                turnId="compact-turn-1",
+            )
+        client.queue_compaction_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1", "status": "completed", "error": None},
+        )
+
+        def slow_approval(*_args, **_kwargs):
+            time.sleep(0.08)
+            return "once"
+
+        result = make_session(
+            client, approval_callback=slow_approval
+        ).compact_thread(turn_timeout=0.05)
+
+        assert client.responses == [
+            ("approval-delayed-terminal", {"decision": "accept"})
+        ]
+        assert result.error is None
+        assert result.interrupted is False
+        assert result.should_retire is False
+        assert result.turn_id == "compact-turn-1"
+        assert client.pending_notification_count() == 0
+
+    def test_compact_thread_cleans_turn_state_when_projection_raises(self, monkeypatch):
+        client = FakeClient()
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        session = make_session(client)
+
+        def seed_replay_caches(_note):
+            session._dynamic_tool_responses[("thread", "turn", "dynamic")] = (
+                "fingerprint",
+                {"ok": True},
+            )
+            session._request_user_input_responses[("thread", "turn", "input")] = (
+                "fingerprint",
+                "question",
+                "yes",
+            )
+
+        def fail_projection(_projector, _note):
+            raise RuntimeError("projection failed")
+
+        session._on_event = seed_replay_caches
+        monkeypatch.setattr(
+            session_mod.CodexEventProjector,
+            "project",
+            fail_projection,
+        )
+
+        with pytest.raises(RuntimeError, match="projection failed"):
+            session.compact_thread(turn_timeout=2.0)
+
+        assert session._active_turn_id is None
+        assert session._dynamic_tool_responses == {}
+        assert session._request_user_input_responses == {}
+        assert (
+            "turn/interrupt",
+            {"threadId": "thread-fake-001", "turnId": "compact-turn-1"},
+        ) in client.requests
+        assert client._closed is True
+        assert session._client is None
+
+    def test_compact_thread_closes_when_interrupt_after_projection_failure_raises(
+        self, monkeypatch
+    ):
+        client = FakeClient()
+        session = make_session(client)
+        session.ensure_started()
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+
+        def fail_projection(_projector, _note):
+            raise RuntimeError("projection failed")
+
+        def fail_interrupt(method, _params):
+            if method == "turn/interrupt":
+                raise RuntimeError("interrupt failed")
+            return {}
+
+        setattr(client, "_request_handler", fail_interrupt)
+        monkeypatch.setattr(
+            session_mod.CodexEventProjector,
+            "project",
+            fail_projection,
+        )
+
+        with pytest.raises(RuntimeError, match="projection failed"):
+            session.compact_thread(turn_timeout=2.0)
+
+        assert client._closed is True
+        assert session._client is None
+
+    def test_compact_thread_sends_rpc_and_waits_for_completion(self):
+        client = FakeClient()
+        client.queue_compaction_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_compaction_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            item={"type": "contextCompaction", "id": "compact-item-1"},
+        )
+        client.queue_compaction_notification(
             "item/completed",
             threadId="thread-fake-001",
             turnId="compact-turn-1",
             item={"type": "agentMessage", "id": "m1", "text": "compacted"},
         )
-        client.queue_notification(
+        client.queue_compaction_notification(
             "thread/tokenUsage/updated",
             threadId="thread-fake-001",
             turnId="compact-turn-1",
@@ -2016,7 +2791,7 @@ class TestCompactThread:
                 "modelContextWindow": 200000,
             },
         )
-        client.queue_notification(
+        client.queue_compaction_notification(
             "turn/completed",
             threadId="thread-fake-001",
             turn={"id": "compact-turn-1", "status": "completed", "error": None},
@@ -2035,12 +2810,12 @@ class TestCompactThread:
 
     def test_compact_thread_interrupted_returns_non_success(self):
         client = FakeClient()
-        client.queue_notification(
+        client.queue_compaction_notification(
             "turn/started",
             threadId="thread-fake-001",
             turn={"id": "compact-turn-1"},
         )
-        client.queue_notification(
+        client.queue_compaction_notification(
             "turn/completed",
             threadId="thread-fake-001",
             turn={"id": "compact-turn-1", "status": "interrupted", "error": None},
@@ -2152,19 +2927,59 @@ class TestServerRequestRouting:
         client = FakeClient()
         client.queue_server_request(
             "mcpServer/elicitation/request", request_id="elic-1",
-            threadId="t", turnId="tu1",
+            threadId="thread-fake-001", turnId="turn-fake-001",
             serverName="hermes-tools",
             mode="form",
             message="confirm",
             requestedSchema={"type": "object", "properties": {}},
         )
         client.queue_notification(
-            "turn/completed", threadId="t",
-            turn={"id": "tu1", "status": "completed", "error": None},
+            "turn/completed", threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
         )
         s = make_session(client)
         s.run_turn("hi", turn_timeout=1.0)
         assert ("elic-1", {"action": "accept", "content": None, "_meta": None}) in client.responses
+
+    @pytest.mark.parametrize(
+        "overrides",
+        [
+            {"threadId": "stale-thread"},
+            {"threadId": ""},
+            {"threadId": None},
+            {"turnId": "stale-turn"},
+            {"turnId": ""},
+            {"turnId": None},
+        ],
+    )
+    def test_mcp_elicitation_for_hermes_tools_declines_unbound_identity(
+        self, overrides
+    ):
+        client = FakeClient()
+        params = {
+            "threadId": "thread-fake-001",
+            "turnId": "turn-fake-001",
+            "serverName": "hermes-tools",
+            "mode": "form",
+            "message": "confirm",
+            "requestedSchema": {"type": "object", "properties": {}},
+        }
+        params.update(overrides)
+        client.queue_server_request(
+            "mcpServer/elicitation/request", request_id="elic-stale", **params
+        )
+        client.queue_notification(
+            "turn/completed", threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        s = make_session(client)
+        s.run_turn("hi", turn_timeout=1.0)
+
+        assert client.responses == [(
+            "elic-stale",
+            {"action": "decline", "content": None, "_meta": None},
+        )]
 
     def test_mcp_elicitation_for_other_servers_declines(self):
         """For third-party MCP servers we decline by default so users
@@ -2336,6 +3151,42 @@ class TestApprovalPromptEnrichment:
             approval_callback=lambda *args, **kwargs: "once",
         ).run_turn("hi", turn_timeout=0.1)
 
+        assert result.error is None
+        assert result.interrupted is False
+        assert result.should_retire is False
+
+    def test_turn_completion_beyond_pre_request_lookahead_is_terminal(self):
+        client = FakeClient()
+        client.queue_server_request(
+            "item/commandExecution/requestApproval",
+            request_id="req-delayed-completion",
+            command="pwd",
+            cwd="/tmp",
+            threadId="thread-fake-001",
+            turnId="turn-fake-001",
+        )
+        for _ in range(8):
+            client.queue_notification(
+                "turn/tokenUsage/updated",
+                threadId="thread-fake-001",
+                turnId="turn-fake-001",
+            )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+
+        def slow_approval(*args, **kwargs):
+            time.sleep(0.08)
+            return "once"
+
+        result = make_session(
+            client,
+            approval_callback=slow_approval,
+        ).run_turn("hi", turn_timeout=0.05)
+
+        assert client.responses == [("req-delayed-completion", {"decision": "accept"})]
         assert result.error is None
         assert result.interrupted is False
         assert result.should_retire is False

@@ -894,7 +894,7 @@ class TestCodexToolProgressBridge:
         assert args == {"p": 1}
 
         dyn = {"method": "item/started", "params": {"item": {
-            "type": "dynamicToolCall", "id": "dyn-map", "tool": "web_search", "arguments": {"q": "x"}}}}
+            "type": "dynamicToolCall", "id": "dyn-map", "namespace": "hermes", "tool": "web_search", "arguments": {"q": "x"}}}}
         assert _codex_note_to_tool_progress(dyn)[0] == "web_search"
 
         assert _codex_note_to_tool_progress({
@@ -905,6 +905,48 @@ class TestCodexToolProgressBridge:
             "method": "item/started",
             "params": {"item": {"type": "dynamicToolCall", "id": "dyn-missing-tool"}},
         }) is None
+
+    def test_dynamic_tool_identity_requires_and_binds_namespace(self):
+        from agent.codex_runtime import _codex_tool_identity
+
+        base = {
+            "type": "dynamicToolCall",
+            "id": "dyn-namespace",
+            "tool": "memory",
+            "arguments": {},
+        }
+        assert _codex_tool_identity(base) is None
+        assert _codex_tool_identity({**base, "namespace": ""}) is None
+        assert _codex_tool_identity({**base, "namespace": "   "}) is None
+
+        hermes = _codex_tool_identity({**base, "namespace": "hermes"})
+        foreign = _codex_tool_identity({**base, "namespace": "foreign"})
+        assert hermes is not None
+        assert foreign is not None
+        assert hermes[0] != foreign[0]
+
+    def test_mcp_tool_identity_encoding_is_collision_free(self):
+        from agent.codex_runtime import _codex_tool_identity
+
+        left = _codex_tool_identity(
+            {
+                "type": "mcpToolCall",
+                "id": "same-provider-id",
+                "server": "a__b",
+                "tool": "c",
+            }
+        )
+        right = _codex_tool_identity(
+            {
+                "type": "mcpToolCall",
+                "id": "same-provider-id",
+                "server": "a",
+                "tool": "b__c",
+            }
+        )
+        assert left is not None
+        assert right is not None
+        assert left[0] != right[0]
 
     @pytest.mark.parametrize(
         "item",
@@ -921,6 +963,7 @@ class TestCodexToolProgressBridge:
             {
                 "type": "dynamicToolCall",
                 "id": "dyn-1",
+                "namespace": "hermes",
                 "tool": "memory",
                 "arguments": {},
             },
@@ -1078,6 +1121,19 @@ class TestCodexToolProgressBridge:
                 "params": {
                     "item": {
                         **dynamic_item,
+                        "namespace": "foreign",
+                        "success": True,
+                        "contentItems": [
+                            {"type": "inputText", "text": "foreign result"}
+                        ],
+                    }
+                },
+            })
+            on_event({
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        **dynamic_item,
                         "success": True,
                         "contentItems": [
                             {"type": "inputText", "text": "memory stored"}
@@ -1129,7 +1185,7 @@ class TestCodexToolProgressBridge:
                 {"command": "pytest -q", "cwd": "/repo"},
             ),
             (
-                "codex_10_dyn_memory_dyn-1",
+                "codex_21_dyn_6_hermes_6_memory_dyn-1",
                 "memory",
                 {"action": "add", "content": "smoke"},
             ),
@@ -1142,11 +1198,121 @@ class TestCodexToolProgressBridge:
                 "1 passed\n",
             ),
             (
-                "codex_10_dyn_memory_dyn-1",
+                "codex_21_dyn_6_hermes_6_memory_dyn-1",
                 "memory",
                 {"action": "add", "content": "smoke"},
                 "memory stored",
             ),
+        ]
+
+    def test_live_lifecycle_rejects_conflicting_same_id_item_starts(
+        self, monkeypatch
+    ):
+        captured_init = {}
+        starts = []
+        completes = []
+
+        def fake_init(self, **kwargs):
+            _capture_correlated_on_event(captured_init, self, kwargs)
+            self._client = None
+            self._thread_id = "th-live-conflict"
+            self._active_turn_id = "turn-live-conflict"
+
+        def fake_run_turn(self, user_input, **kwargs):
+            on_event = captured_init["on_event"]
+            on_event({
+                "method": "turn/started",
+                "params": {
+                    "threadId": "th-live-conflict",
+                    "turn": {"id": "turn-live-conflict"},
+                },
+            })
+            on_event({
+                "method": "item/started",
+                "params": {"item": {"type": "plan", "id": "shared-plan"}},
+            })
+            on_event({
+                "method": "item/started",
+                "params": {
+                    "item": {
+                        "type": "dynamicToolCall",
+                        "id": "shared-plan",
+                        "namespace": "hermes",
+                        "tool": "memory",
+                        "arguments": {},
+                    }
+                },
+            })
+            on_event({
+                "method": "item/completed",
+                "params": {"item": {"type": "plan", "id": "shared-plan"}},
+            })
+
+            command = {
+                "type": "commandExecution",
+                "id": "shared-command",
+                "command": "pwd",
+                "cwd": "/repo",
+            }
+            on_event({"method": "item/started", "params": {"item": command}})
+            on_event({
+                "method": "item/started",
+                "params": {"item": {"type": "plan", "id": "shared-command"}},
+            })
+            on_event({
+                "method": "item/completed",
+                "params": {
+                    "item": {
+                        **command,
+                        "status": "completed",
+                        "aggregatedOutput": "/repo\n",
+                        "exitCode": 0,
+                    }
+                },
+            })
+            return TurnResult(
+                final_text="done",
+                projected_messages=[{"role": "assistant", "content": "done"}],
+                turn_id="turn-live-conflict",
+                thread_id="th-live-conflict",
+            )
+
+        monkeypatch.setattr(CodexAppServerSession, "__init__", fake_init)
+        monkeypatch.setattr(
+            CodexAppServerSession, "ensure_started", lambda self: "th-live-conflict"
+        )
+        monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
+
+        agent = _make_codex_agent()
+        setattr(
+            agent,
+            "tool_start_callback",
+            lambda call_id, name, args: starts.append((call_id, name, args)),
+        )
+        setattr(
+            agent,
+            "tool_complete_callback",
+            lambda call_id, name, args, result: completes.append(
+                (call_id, name, args, result)
+            ),
+        )
+        with patch.object(agent, "_spawn_background_review", return_value=None):
+            agent.run_conversation("inspect")
+
+        assert starts == [
+            (
+                "codex_4_exec_shared-command",
+                "exec_command",
+                {"command": "pwd", "cwd": "/repo"},
+            )
+        ]
+        assert completes == [
+            (
+                "codex_4_exec_shared-command",
+                "exec_command",
+                {"command": "pwd", "cwd": "/repo"},
+                "/repo\n",
+            )
         ]
 
     def test_live_lifecycle_ignores_stale_turn_reset_and_orphan_completion(

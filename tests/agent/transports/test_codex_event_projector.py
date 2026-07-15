@@ -12,6 +12,7 @@ import pytest
 from agent.transports.codex_event_projector import (
     CodexEventProjector,
     _deterministic_call_id,
+    _dynamic_tool_call_id_type,
     _format_tool_args,
 )
 
@@ -70,6 +71,25 @@ class TestProjectionInvariants:
         p = CodexEventProjector()
         r = p.project({"method": "totally/unknown", "params": {}})
         assert r.messages == []
+
+    def test_mcp_tool_identity_encoding_is_collision_free(self) -> None:
+        def projected_call_id(server: str, tool: str) -> str:
+            projected = CodexEventProjector().project(
+                {
+                    "method": "item/completed",
+                    "params": {
+                        "item": {
+                            "type": "mcpToolCall",
+                            "id": "same-provider-id",
+                            "server": server,
+                            "tool": tool,
+                        }
+                    },
+                }
+            )
+            return projected.messages[0]["tool_calls"][0]["id"]
+
+        assert projected_call_id("a__b", "c") != projected_call_id("a", "b__c")
 
 
 class TestCommandExecutionProjection:
@@ -198,6 +218,7 @@ class TestCommandExecutionProjection:
                 "item": {
                     "type": "dynamicToolCall",
                     "id": "shared-1",
+                    "namespace": "hermes",
                     "tool": "memory",
                     "arguments": {"action": "add"},
                     "success": True,
@@ -225,12 +246,55 @@ class TestCommandExecutionProjection:
         assert valid.messages[0]["tool_calls"][0]["id"] == "codex_4_exec_shared-1"
 
     @pytest.mark.parametrize(
+        "conflicting_item",
+        [
+            {
+                "type": "dynamicToolCall",
+                "id": "shared-start",
+                "namespace": "hermes",
+                "tool": "memory",
+            },
+            {
+                "type": "mcpToolCall",
+                "id": "shared-start",
+                "server": "honcho",
+                "tool": "search",
+            },
+        ],
+    )
+    def test_conflicting_tool_start_does_not_mutate_existing_identity(
+        self, conflicting_item: dict
+    ) -> None:
+        projector = CodexEventProjector()
+        projector.project({
+            "method": "item/started",
+            "params": {"item": {"type": "plan", "id": "shared-start"}},
+        })
+
+        conflict = projector.project({
+            "method": "item/started",
+            "params": {"item": conflicting_item},
+        })
+        valid = projector.project({
+            "method": "item/completed",
+            "params": {
+                "item": {"type": "plan", "id": "shared-start", "text": "valid"}
+            },
+        })
+
+        assert conflict.messages == []
+        assert projector._item_types_by_id == {"shared-start": "plan"}
+        assert projector._item_tool_identities_by_id == {}
+        assert len(valid.messages) == 1
+        assert "[codex plan]" in valid.messages[0]["content"]
+
+    @pytest.mark.parametrize(
         "started, conflicting, valid",
         [
             (
-                {"type": "dynamicToolCall", "id": "same-dyn", "tool": "memory"},
-                {"type": "dynamicToolCall", "id": "same-dyn", "tool": "terminal"},
-                {"type": "dynamicToolCall", "id": "same-dyn", "tool": "memory"},
+                {"type": "dynamicToolCall", "id": "same-dyn", "namespace": "hermes", "tool": "memory"},
+                {"type": "dynamicToolCall", "id": "same-dyn", "namespace": "hermes", "tool": "terminal"},
+                {"type": "dynamicToolCall", "id": "same-dyn", "namespace": "hermes", "tool": "memory"},
             ),
             (
                 {
@@ -267,6 +331,36 @@ class TestCommandExecutionProjection:
         accepted = projector.project({
             "method": "item/completed",
             "params": {"item": {**valid, "success": True}},
+        })
+
+        assert conflict.messages == []
+        assert conflict.is_tool_iteration is False
+        assert len(accepted.messages) == 2
+        assert accepted.is_tool_iteration is True
+
+    def test_dynamic_namespace_conflict_does_not_consume_identity(self) -> None:
+        projector = CodexEventProjector()
+        started = {
+            "type": "dynamicToolCall",
+            "id": "same-dyn-namespace",
+            "namespace": "hermes",
+            "tool": "memory",
+        }
+        projector.project({"method": "item/started", "params": {"item": started}})
+
+        conflict = projector.project({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    **started,
+                    "namespace": "foreign",
+                    "success": True,
+                }
+            },
+        })
+        accepted = projector.project({
+            "method": "item/completed",
+            "params": {"item": {**started, "success": True}},
         })
 
         assert conflict.messages == []
@@ -418,6 +512,11 @@ class TestHelpers:
             "dyn_a", "b_c"
         )
 
+    def test_dynamic_identity_type_is_unambiguous_across_components(self) -> None:
+        assert _dynamic_tool_call_id_type("a_b", "c") != _dynamic_tool_call_id_type(
+            "a", "b_c"
+        )
+
     def test_format_tool_args_sorted_keys(self) -> None:
         # Sorted keys = deterministic across replays = prefix cache stays valid
         a = _format_tool_args({"b": 1, "a": 2})
@@ -430,7 +529,16 @@ class TestDynamicToolProjection:
         ("item_type", "incomplete_identity", "valid_identity"),
         [
             ("mcpToolCall", {"server": "srv"}, {"server": "srv", "tool": "search"}),
-            ("dynamicToolCall", {}, {"tool": "memory"}),
+            (
+                "dynamicToolCall",
+                {"namespace": "hermes"},
+                {"namespace": "hermes", "tool": "memory"},
+            ),
+            (
+                "dynamicToolCall",
+                {"tool": "memory"},
+                {"namespace": "hermes", "tool": "memory"},
+            ),
         ],
     )
     @pytest.mark.parametrize("start_incomplete", [False, True])
@@ -452,6 +560,9 @@ class TestDynamicToolProjection:
             projector.project(
                 {"method": "item/started", "params": {"item": incomplete_item}}
             )
+            assert projector._item_types_by_id == {}
+            assert projector._item_tool_identities_by_id == {}
+            assert projector._completed_item_keys == set()
 
         rejected = projector.project(
             {"method": "item/completed", "params": {"item": incomplete_item}}
@@ -479,10 +590,55 @@ class TestDynamicToolProjection:
         assert len(accepted.messages) == 2
         assert accepted.is_tool_iteration is True
 
+    @pytest.mark.parametrize(
+        "malformed_identity",
+        [
+            {"tool": "memory"},
+            {"namespace": "", "tool": "memory"},
+            {"namespace": "   ", "tool": "memory"},
+            {"namespace": "\t", "tool": "memory"},
+            {"namespace": "hermes"},
+            {"namespace": "hermes", "tool": ""},
+        ],
+    )
+    def test_malformed_dynamic_start_does_not_bind_item_type(
+        self, malformed_identity: dict
+    ) -> None:
+        projector = CodexEventProjector()
+        item_id = "reusable-after-malformed-dynamic-start"
+
+        projector.project({
+            "method": "item/started",
+            "params": {
+                "item": {
+                    "type": "dynamicToolCall",
+                    "id": item_id,
+                    **malformed_identity,
+                }
+            },
+        })
+        accepted = projector.project({
+            "method": "item/completed",
+            "params": {
+                "item": {
+                    "type": "commandExecution",
+                    "id": item_id,
+                    "command": "pwd",
+                    "cwd": "/tmp",
+                    "aggregatedOutput": "/tmp\n",
+                    "exitCode": 0,
+                }
+            },
+        })
+
+        assert len(accepted.messages) == 2
+        assert accepted.is_tool_iteration is True
+
     def test_input_text_content_is_projected_without_transport_envelope(self) -> None:
         item = {
             "type": "dynamicToolCall",
             "id": "d-text",
+            "namespace": "hermes",
             "tool": "todo",
             "arguments": {},
             "status": "completed",
@@ -514,7 +670,7 @@ class TestRoleAlternationInvariant:
             {"type": "mcpToolCall", "id": "m1", "server": "s", "tool": "t",
              "status": "completed", "arguments": {}, "result": None,
              "error": None},
-            {"type": "dynamicToolCall", "id": "d1", "tool": "x",
+            {"type": "dynamicToolCall", "id": "d1", "namespace": "hermes", "tool": "x",
              "arguments": {}, "status": "completed",
              "contentItems": [], "success": True},
         ],

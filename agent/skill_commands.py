@@ -329,6 +329,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+        from hermes_cli.commands import resolve_command
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
@@ -374,7 +375,32 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
                         continue
-                    _skill_commands[f"/{cmd_name}"] = {
+                    # Skip if this skill's auto-generated /command collides
+                    # with a core Hermes slash command (name or alias). The
+                    # skill remains fully loadable via /skill <name>.
+                    # Uses resolve_command() so aliases and case variants are
+                    # covered without maintaining a separate cache.
+                    if resolve_command(cmd_name) is not None:
+                        logger.warning(
+                            "Skill %r generates slash command '/%s' which "
+                            "collides with a core Hermes command; skipping "
+                            "auto-registration. Use '/skill %s' instead.",
+                            name, cmd_name, name,
+                        )
+                        continue
+                    # Dedup on the resolved slug, not just the raw name: two
+                    # distinct frontmatter names can normalize to the same
+                    # slug (e.g. "git_helper" vs "git-helper"). First-wins
+                    # preserves local-before-external precedence.
+                    cmd_key = f"/{cmd_name}"
+                    if cmd_key in _skill_commands:
+                        logger.warning(
+                            "Skill %r maps to slash command %s already claimed "
+                            "by %r; keeping the first and skipping this one.",
+                            name, cmd_key, _skill_commands[cmd_key]["name"],
+                        )
+                        continue
+                    _skill_commands[cmd_key] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),

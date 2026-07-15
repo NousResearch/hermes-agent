@@ -138,6 +138,7 @@ class CodexAppServerClient:
         self._next_id = 1
         self._pending: dict[int, _Pending] = {}
         self._pending_lock = threading.Lock()
+        self._receive_sequence = 0
         self._notifications: queue.Queue = queue.Queue()
         self._server_requests: queue.Queue = queue.Queue()
         self._stderr_lines: list[str] = []
@@ -213,13 +214,29 @@ class CodexAppServerClient:
     ) -> dict:
         """Send a JSON-RPC request and block on the response. Returns `result`,
         raises CodexAppServerError on `error`."""
+        result, _response_sequence = self.request_with_response_sequence(
+            method, params, timeout
+        )
+        return result
+
+    def request_with_response_sequence(
+        self,
+        method: str,
+        params: Optional[dict] = None,
+        timeout: float = 30.0,
+    ) -> tuple[dict, int]:
+        """Return the result and its position in the inbound message stream.
+
+        Consumers can reject queued notifications received at or before this
+        response without racing a separate queue-size snapshot.
+        """
         rid = self._take_id()
         q: queue.Queue = queue.Queue(maxsize=1)
         with self._pending_lock:
             self._pending[rid] = _Pending(queue=q, method=method)
         self._send({"id": rid, "method": method, "params": params or {}})
         try:
-            msg = q.get(timeout=timeout)
+            response_sequence, msg = q.get(timeout=timeout)
         except queue.Empty:
             with self._pending_lock:
                 self._pending.pop(rid, None)
@@ -233,7 +250,7 @@ class CodexAppServerClient:
                 message=err.get("message", ""),
                 data=err.get("data"),
             )
-        return msg.get("result", {})
+        return msg.get("result", {}), response_sequence
 
     def notify(self, method: str, params: Optional[dict] = None) -> None:
         """Send a JSON-RPC notification (no id, no response expected)."""
@@ -257,6 +274,13 @@ class CodexAppServerClient:
 
         timeout=0.0 means non-blocking. Use small positive timeouts inside the
         AIAgent turn loop to interleave reads with interrupt checks."""
+        received = self.take_notification_with_sequence(timeout)
+        return received[1] if received is not None else None
+
+    def take_notification_with_sequence(
+        self, timeout: float = 0.0
+    ) -> Optional[tuple[int, dict]]:
+        """Pop a notification with its inbound stream sequence number."""
         try:
             if timeout <= 0:
                 return self._notifications.get_nowait()
@@ -272,6 +296,10 @@ class CodexAppServerClient:
             return self._server_requests.get(timeout=timeout)
         except queue.Empty:
             return None
+
+    def pending_notification_count(self) -> int:
+        """Snapshot how many streaming notifications are currently queued."""
+        return self._notifications.qsize()
 
     def pending_server_request_count(self) -> int:
         """Snapshot how many server requests are currently queued.
@@ -341,13 +369,15 @@ class CodexAppServerClient:
                 self._stderr_lines.append(f"<stdout reader error> {exc}")
 
     def _dispatch(self, msg: dict) -> None:
+        self._receive_sequence += 1
+        receive_sequence = self._receive_sequence
         # Reply (has id + result/error, no method)
         if "id" in msg and ("result" in msg or "error" in msg):
             with self._pending_lock:
                 pending = self._pending.pop(msg["id"], None)
             if pending is not None:
                 try:
-                    pending.queue.put_nowait(msg)
+                    pending.queue.put_nowait((receive_sequence, msg))
                 except queue.Full:  # pragma: no cover - defensive
                     pass
             return
@@ -357,7 +387,7 @@ class CodexAppServerClient:
             return
         # Notification (no id)
         if "method" in msg:
-            self._notifications.put(msg)
+            self._notifications.put((receive_sequence, msg))
 
     def _read_stderr(self) -> None:
         if self._proc.stderr is None:

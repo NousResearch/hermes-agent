@@ -54,6 +54,16 @@ def _format_tool_args(d: dict) -> str:
     return json.dumps(d, ensure_ascii=False, sort_keys=True)
 
 
+def _dynamic_tool_call_id_type(namespace: str, tool: str) -> str:
+    """Encode the full dynamic callable identity without delimiter collisions."""
+    return f"dyn_{len(namespace)}_{namespace}_{len(tool)}_{tool}"
+
+
+def _mcp_tool_call_id_type(server: str, tool: str) -> str:
+    """Encode the full MCP callable identity without delimiter collisions."""
+    return f"mcp_{len(server)}_{server}_{len(tool)}_{tool}"
+
+
 def _provider_tool_identity(item_type: str, item: dict) -> Optional[tuple[str, ...]]:
     """Return the provider-visible tool identity when the item supplies one."""
     if item_type == "commandExecution":
@@ -61,9 +71,15 @@ def _provider_tool_identity(item_type: str, item: dict) -> Optional[tuple[str, .
     if item_type == "fileChange":
         return ("apply_patch",)
     if item_type == "dynamicToolCall":
+        namespace = item.get("namespace")
         tool = item.get("tool")
-        if isinstance(tool, str) and tool.strip():
-            return (tool,)
+        if (
+            isinstance(namespace, str)
+            and namespace.strip()
+            and isinstance(tool, str)
+            and tool.strip()
+        ):
+            return (namespace, tool)
     if item_type == "mcpToolCall":
         server = item.get("server")
         tool = item.get("tool")
@@ -124,8 +140,22 @@ class CodexEventProjector:
                 and isinstance(item_id, str)
                 and item_id.strip()
             ):
-                self._item_types_by_id.setdefault(item_id, item_type)
                 tool_identity = _provider_tool_identity(item_type, item)
+                if (
+                    item_type in {"mcpToolCall", "dynamicToolCall"}
+                    and tool_identity is None
+                ):
+                    return ProjectionResult()
+                expected_item_type = self._item_types_by_id.get(item_id)
+                if expected_item_type is not None and expected_item_type != item_type:
+                    return ProjectionResult()
+                expected_tool_identity = self._item_tool_identities_by_id.get(item_id)
+                if (
+                    expected_tool_identity is not None
+                    and expected_tool_identity != tool_identity
+                ):
+                    return ProjectionResult()
+                self._item_types_by_id.setdefault(item_id, item_type)
                 if tool_identity is not None:
                     self._item_tool_identities_by_id.setdefault(item_id, tool_identity)
             return ProjectionResult()
@@ -300,9 +330,9 @@ class CodexEventProjector:
         if tool_identity is None:
             return ProjectionResult()
         server, tool = tool_identity
-        # Mirror the native MCP tool-name convention (mcp__server__tool) so the
-        # deterministic call_id input stays consistent with registration names.
-        call_id = _deterministic_call_id(f"mcp__{server}__{tool}", item_id)
+        call_id = _deterministic_call_id(
+            _mcp_tool_call_id_type(server, tool), item_id
+        )
         args = item.get("arguments") or {}
         if not isinstance(args, dict):
             args = {"arguments": args}
@@ -346,8 +376,10 @@ class CodexEventProjector:
         tool_identity = _provider_tool_identity("dynamicToolCall", item)
         if tool_identity is None:
             return ProjectionResult()
-        (tool,) = tool_identity
-        call_id = _deterministic_call_id(f"dyn_{tool}", item_id)
+        namespace, tool = tool_identity
+        call_id = _deterministic_call_id(
+            _dynamic_tool_call_id_type(namespace, tool), item_id
+        )
         args = item.get("arguments") or {}
         if not isinstance(args, dict):
             args = {"arguments": args}

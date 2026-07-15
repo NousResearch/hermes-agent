@@ -39,7 +39,11 @@ def _codex_tool_identity(item: dict) -> tuple[str, str, str, dict] | None:
     if not isinstance(item, dict):
         return None
 
-    from agent.transports.codex_event_projector import _deterministic_call_id
+    from agent.transports.codex_event_projector import (
+        _deterministic_call_id,
+        _dynamic_tool_call_id_type,
+        _mcp_tool_call_id_type,
+    )
 
     item_type = item.get("type") or ""
     item_id = item.get("id") or ""
@@ -97,21 +101,29 @@ def _codex_tool_identity(item: dict) -> tuple[str, str, str, dict] | None:
         if not isinstance(args, dict):
             args = {"arguments": args}
         return (
-            _deterministic_call_id(f"mcp__{server}__{tool}", item_id),
+            _deterministic_call_id(_mcp_tool_call_id_type(server, tool), item_id),
             f"mcp.{server}.{tool}",
             tool,
             args,
         )
 
     if item_type == "dynamicToolCall":
+        namespace = item.get("namespace")
         tool = item.get("tool")
-        if not isinstance(tool, str) or not tool.strip():
+        if (
+            not isinstance(namespace, str)
+            or not namespace.strip()
+            or not isinstance(tool, str)
+            or not tool.strip()
+        ):
             return None
         args = item.get("arguments") or {}
         if not isinstance(args, dict):
             args = {"arguments": args}
         return (
-            _deterministic_call_id(f"dyn_{tool}", item_id),
+            _deterministic_call_id(
+                _dynamic_tool_call_id_type(namespace, tool), item_id
+            ),
             tool,
             tool,
             args,
@@ -413,7 +425,14 @@ def _record_codex_app_server_compaction(
         # The app server has already completed a real compaction boundary. Its
         # usage update (when supplied) is therefore the same real-vs-real
         # effectiveness verdict used by the normal compression path.
-        if hasattr(compressor, "_verify_compaction_cleared_threshold"):
+        record_boundary = getattr(
+            type(compressor), "record_completed_compaction", None
+        )
+        if callable(record_boundary):
+            # Codex owns this summary. A prior Hermes deterministic-fallback
+            # flag must not leak into the native boundary's quality verdict.
+            record_boundary(compressor, used_fallback=False)
+        elif hasattr(compressor, "_verify_compaction_cleared_threshold"):
             compressor._verify_compaction_cleared_threshold = True
         if not getattr(turn, "token_usage_last", None):
             compressor.last_prompt_tokens = -1
@@ -537,7 +556,8 @@ def run_codex_app_server_turn(
         live_codex_output_pending: dict[str, str] = {}
         live_codex_output_display: dict[str, str] = {}
         blocked_codex_output: set[str] = set()
-        completed_codex_tools: set[str] = set()
+        live_codex_item_types: dict[str, str] = {}
+        completed_codex_items: set[str] = set()
         live_codex_turn_key: tuple[str, str] | None = None
 
         def _reset_live_codex_state() -> None:
@@ -546,7 +566,8 @@ def run_codex_app_server_turn(
             live_codex_output_pending.clear()
             live_codex_output_display.clear()
             blocked_codex_output.clear()
-            completed_codex_tools.clear()
+            live_codex_item_types.clear()
+            completed_codex_items.clear()
             live_codex_turn_key = None
 
         def _on_codex_event(note: dict) -> None:
@@ -708,14 +729,32 @@ def run_codex_app_server_turn(
             item_id = item.get("id")
             if not isinstance(item_id, str) or not item_id.strip():
                 return
-            identity = _codex_tool_identity(item)
-            if identity is None:
+            item_type = item.get("type")
+            if not isinstance(item_type, str) or not item_type.strip():
                 return
-            call_id, tool_name, preview, args = identity
+            identity = _codex_tool_identity(item)
 
             if method == "item/started":
-                if item_id in live_codex_tools or item_id in completed_codex_tools:
+                if item_id in completed_codex_items:
                     return
+                existing_type = live_codex_item_types.get(item_id)
+                if existing_type is not None:
+                    # The first provider type owns this item ID. Replays and
+                    # cross-type starts cannot create a conflicting live card.
+                    return
+                if item_type in {
+                    "commandExecution",
+                    "fileChange",
+                    "mcpToolCall",
+                    "dynamicToolCall",
+                } and identity is None:
+                    # Malformed tool starts fail before binding provider ID
+                    # state, so a later valid start can still use the ID.
+                    return
+                live_codex_item_types[item_id] = item_type
+                if identity is None:
+                    return
+                call_id, tool_name, preview, args = identity
                 display_args = _redact_codex_live_display_args(args)
                 display_preview = _redact_codex_live_display_text(preview)
                 live_codex_tools[item_id] = (call_id, tool_name, display_args)
@@ -739,7 +778,19 @@ def run_codex_app_server_turn(
                         logger.debug("codex tool-start callback raised", exc_info=True)
                 return
 
-            if item_id in completed_codex_tools:
+            if item_id in completed_codex_items:
+                return
+            if live_codex_item_types.get(item_id) != item_type:
+                return
+            if identity is None:
+                if item_type not in {
+                    "commandExecution",
+                    "fileChange",
+                    "mcpToolCall",
+                    "dynamicToolCall",
+                }:
+                    completed_codex_items.add(item_id)
+                    live_codex_item_types.pop(item_id, None)
                 return
             live_tool = live_codex_tools.get(item_id)
             if live_tool is None:
@@ -757,12 +808,11 @@ def run_codex_app_server_turn(
                 # close the original card or consume its valid completion.
                 return
             result = _redact_codex_live_display_text(_codex_tool_result(item))
-            item_type = item.get("type")
             if item_type == "mcpToolCall":
                 result = result[: 1008 if item.get("error") else 4000]
             elif item_type == "dynamicToolCall":
                 result = result[:4000]
-            completed_codex_tools.add(item_id)
+            completed_codex_items.add(item_id)
             progress_callback = getattr(agent, "tool_progress_callback", None)
             if progress_callback is not None:
                 try:
@@ -783,6 +833,7 @@ def run_codex_app_server_turn(
                 except Exception:
                     logger.debug("codex tool-complete callback raised", exc_info=True)
             live_codex_tools.pop(item_id, None)
+            live_codex_item_types.pop(item_id, None)
             live_codex_output_pending.pop(item_id, None)
             live_codex_output_display.pop(item_id, None)
             blocked_codex_output.discard(item_id)

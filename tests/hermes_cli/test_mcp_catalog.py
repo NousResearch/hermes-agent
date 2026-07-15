@@ -543,6 +543,35 @@ class TestToolSelection:
 # ---------------------------------------------------------------------------
 
 
+
+
+    def test_empty_prior_selection_is_preserved(self, catalog_dir, monkeypatch):
+        """An explicit empty prior ``tools.include: []`` must not fall back
+        to manifest default_enabled or all-on on reinstall."""
+        body = _basic_manifest(
+            tools={"default_enabled": ["alpha"]},
+        )
+        _write_manifest(catalog_dir, "demo", body)
+
+        import hermes_cli.mcp_catalog as mc
+        probed = self._make_probed("alpha", "beta", "gamma")
+        monkeypatch.setattr(mc, "_probe_tools", lambda name: probed)
+        import sys as _sys
+        monkeypatch.setattr(_sys.stdin, "isatty", lambda: False)
+
+        from hermes_cli.mcp_catalog import install_entry
+        from hermes_cli.config import load_config, save_config
+
+        install_entry(_entry("demo"), enable=True)
+        cfg = load_config()
+        cfg["mcp_servers"]["demo"]["tools"] = {"include": []}
+        save_config(cfg)
+
+        install_entry(_entry("demo"), enable=True)
+        server = load_config()["mcp_servers"]["demo"]
+        assert server["tools"]["include"] == [], server
+
+
 class TestCatalogDiagnostics:
     def test_future_manifest_version_skipped_with_diagnostic(self, catalog_dir):
         """A manifest with a newer manifest_version is skipped, but the skip

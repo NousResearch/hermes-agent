@@ -591,8 +591,10 @@ def _apply_tool_selection(
 
     tool_names = [t[0] for t in probed]
 
-    # Build the pre-checked set in priority order
-    if prior_selection:
+    # Build the pre-checked set in priority order.
+    # ``prior_selection is not None`` (including ``[]``) must win over manifest
+    # defaults / all-on — an empty prior means the user chose zero tools.
+    if prior_selection is not None:
         pre_set = {n for n in prior_selection if n in tool_names}
     elif entry.tools.default_enabled:
         pre_set = {n for n in entry.tools.default_enabled if n in tool_names}

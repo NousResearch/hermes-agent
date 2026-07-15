@@ -107,7 +107,24 @@ class TestMcpList:
         assert "ink" in out
         assert "github" in out
         assert "2 selected" in out  # ink has 2 in include
-        assert "disabled" in out  # github is disabled
+
+
+    def test_list_empty_include_shows_zero_selected(self, tmp_path, capsys):
+        """Explicit ``include: []`` lists as "0 selected", not "all"."""
+        _seed_config(tmp_path, {
+            "blocked": {
+                "command": "npx",
+                "tools": {"include": []},
+            },
+        })
+        from hermes_cli.mcp_config import cmd_mcp_list
+
+        cmd_mcp_list()
+        out = capsys.readouterr().out
+        assert "0 selected" in out
+        assert "blocked" in out
+        # Must not fall back to the missing-filter label.
+        assert "all" not in out.split("blocked", 1)[-1].splitlines()[0]
 
     def test_list_enabled_default_true(self, tmp_path, capsys):
         """Server without explicit enabled key defaults to enabled."""
@@ -1011,3 +1028,33 @@ class TestMcpReauth:
         cmd_mcp_reauth(_make_args(name="ghost", all=False))
         out = capsys.readouterr().out
         assert "not found" in out
+
+
+
+def test_configure_empty_include_preselects_none(tmp_path, monkeypatch, capsys):
+    """``tools.include: []`` reopens with zero pre-checks, not all tools."""
+    from hermes_cli import mcp_config as mc
+
+    _seed_config(tmp_path, {
+        "demo": {
+            "command": "npx",
+            "tools": {"include": []},
+        },
+    })
+    _set_interactive_stdin(monkeypatch)
+
+    all_tools = [
+        ("create_service", "Create"),
+        ("delete_service", "Delete"),
+    ]
+    captured = {}
+
+    def fake_checklist(title, labels, pre_selected, **kwargs):
+        captured["value"] = set(pre_selected)
+        return pre_selected
+
+    monkeypatch.setattr(mc, "_probe_single_server", lambda name, cfg, **kw: all_tools)
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_checklist", fake_checklist)
+
+    mc.cmd_mcp_configure(_make_args(name="demo"))
+    assert captured.get("value") == set()

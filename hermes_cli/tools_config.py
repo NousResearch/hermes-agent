@@ -4298,8 +4298,14 @@ def _configure_mcp_tools_interactive(config: dict):
 
         srv_cfg = mcp_servers.get(server_name, {})
         tools_cfg = srv_cfg.get("tools") or {}
-        include_list = tools_cfg.get("include") or []
-        exclude_list = tools_cfg.get("exclude") or []
+        # Keep None vs [] distinction: ``include: []`` blocks all tools;
+        # missing/null include is "no filter". Do not coerce with ``or []``.
+        include_list = tools_cfg.get("include")
+        if include_list is not None and not isinstance(include_list, list):
+            include_list = None
+        exclude_list = tools_cfg.get("exclude")
+        if exclude_list is not None and not isinstance(exclude_list, list):
+            exclude_list = None
 
         # Build checklist labels
         labels = []
@@ -4314,11 +4320,11 @@ def _configure_mcp_tools_interactive(config: dict):
         pre_selected: Set[int] = set()
         tool_names = [t[0] for t in tools]
         for i, tool_name in enumerate(tool_names):
-            if include_list:
-                # Include mode: only included tools are selected
+            if include_list is not None:
+                # Include mode (incl. empty list): only listed tools selected
                 if tool_name in include_list:
                     pre_selected.add(i)
-            elif exclude_list:
+            elif exclude_list is not None:
                 # Exclude mode: everything except excluded
                 if tool_name not in exclude_list:
                     pre_selected.add(i)
@@ -4443,11 +4449,15 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
         print("MCP servers:")
         for srv_name, srv_cfg in mcp_servers.items():
             tools_cfg = srv_cfg.get("tools") or {}
-            exclude = tools_cfg.get("exclude") or []
-            include = tools_cfg.get("include") or []
-            if include:
-                _print_info(f"{srv_name}  [include only: {', '.join(include)}]")
-            elif exclude:
+            exclude = tools_cfg.get("exclude")
+            include = tools_cfg.get("include")
+            if isinstance(include, list):
+                if include:
+                    _print_info(f"{srv_name}  [include only: {', '.join(include)}]")
+                else:
+                    # Explicit empty include — block-all, not "all tools enabled"
+                    _print_info(f"{srv_name}  [include only: (none)]")
+            elif isinstance(exclude, list) and exclude:
                 _print_info(f"{srv_name}  [excluded: {color(', '.join(exclude), Colors.YELLOW)}]")
             else:
                 _print_info(f"{srv_name}  {color('all tools enabled', Colors.DIM)}")

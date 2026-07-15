@@ -293,3 +293,35 @@ def test_empty_tools_server_skipped(capsys):
     assert len(checklist_calls) == 0
     captured = capsys.readouterr()
     assert "no tools found" in captured.out
+
+
+def test_empty_include_list_preselects_none(capsys):
+    """``tools.include: []`` must pre-select zero tools (block all), not all.
+
+    Regression consolidating #13096/#7822 with tools/mcp_tool runtime semantics.
+    """
+    config = {
+        "mcp_servers": {
+            "github": {
+                "command": "npx",
+                "tools": {"include": []},
+            },
+        }
+    }
+    tools = [
+        ("create_issue", "Create"),
+        ("delete_repo", "Delete"),
+        ("search", "Search"),
+    ]
+    captured_pre_selected = {}
+
+    def fake_checklist(title, labels, pre_selected, **kwargs):
+        captured_pre_selected["value"] = set(pre_selected)
+        return pre_selected  # No changes
+
+    with patch(_PROBE, return_value={"github": tools}), \
+         patch(_CHECKLIST, side_effect=fake_checklist), \
+         patch(_SAVE):
+        _configure_mcp_tools_interactive(config)
+
+    assert captured_pre_selected["value"] == set()

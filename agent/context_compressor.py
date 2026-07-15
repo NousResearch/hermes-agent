@@ -2427,6 +2427,125 @@ This compaction should PRIORITISE preserving all information related to the focu
                 return idx, cls._strip_summary_prefix(_content_text_for_contains(content))
         return None, ""
 
+    @classmethod
+    def _strip_context_summary_handoff_message(
+        cls,
+        message: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        """Drop stale handoff data while preserving merged prior-tail content."""
+        if not isinstance(message, dict):
+            return message
+
+        content = message.get("content")
+        is_summary = (
+            cls._is_context_summary_content(content)
+            or cls._has_compressed_summary_metadata(message)
+        )
+        if not is_summary:
+            return message.copy()
+
+        if isinstance(content, str):
+            if _MERGED_SUMMARY_DELIMITER in content:
+                prior = content.split(_MERGED_SUMMARY_DELIMITER, 1)[0].strip()
+                if prior.startswith(_MERGED_PRIOR_CONTEXT_HEADER):
+                    prior = prior[len(_MERGED_PRIOR_CONTEXT_HEADER):].lstrip()
+                if prior:
+                    unwrapped = message.copy()
+                    unwrapped["content"] = prior
+                    unwrapped.pop(COMPRESSED_SUMMARY_METADATA_KEY, None)
+                    return unwrapped
+            else:
+                marker_idx = content.find(_SUMMARY_END_MARKER)
+                if marker_idx >= 0:
+                    remainder = content[marker_idx + len(_SUMMARY_END_MARKER):].lstrip()
+                    if remainder:
+                        unwrapped = message.copy()
+                        unwrapped["content"] = remainder
+                        unwrapped.pop(COMPRESSED_SUMMARY_METADATA_KEY, None)
+                        return unwrapped
+
+        if isinstance(content, list):
+            prior_blocks: list[Any] = []
+            found_delimiter = False
+            for item in content:
+                if isinstance(item, str):
+                    if _MERGED_SUMMARY_DELIMITER in item:
+                        before = item.split(_MERGED_SUMMARY_DELIMITER, 1)[0]
+                        if before.strip():
+                            prior_blocks.append(before)
+                        found_delimiter = True
+                        break
+                    prior_blocks.append(item)
+                    continue
+                if isinstance(item, dict):
+                    text = item.get("text")
+                    if isinstance(text, str) and _MERGED_SUMMARY_DELIMITER in text:
+                        before = text.split(_MERGED_SUMMARY_DELIMITER, 1)[0]
+                        if before.strip():
+                            copied = item.copy()
+                            copied["text"] = before
+                            prior_blocks.append(copied)
+                        found_delimiter = True
+                        break
+                    prior_blocks.append(item.copy())
+                    continue
+                prior_blocks.append(item)
+
+            if not found_delimiter:
+                legacy_blocks: list[Any] = []
+                found_marker = False
+                for index, item in enumerate(content):
+                    text = item if isinstance(item, str) else item.get("text") if isinstance(item, dict) else None
+                    if not isinstance(text, str) or _SUMMARY_END_MARKER not in text:
+                        continue
+                    remainder = text.split(_SUMMARY_END_MARKER, 1)[1].lstrip()
+                    if remainder:
+                        if isinstance(item, dict):
+                            copied = item.copy()
+                            copied["text"] = remainder
+                            legacy_blocks.append(copied)
+                        else:
+                            legacy_blocks.append(remainder)
+                    for later in content[index + 1:]:
+                        legacy_blocks.append(later.copy() if isinstance(later, dict) else later)
+                    found_marker = True
+                    break
+                if found_marker and legacy_blocks:
+                    unwrapped = message.copy()
+                    unwrapped["content"] = legacy_blocks
+                    unwrapped.pop(COMPRESSED_SUMMARY_METADATA_KEY, None)
+                    return unwrapped
+
+            if found_delimiter:
+                for index, item in enumerate(prior_blocks):
+                    if isinstance(item, str):
+                        if item.lstrip().startswith(_MERGED_PRIOR_CONTEXT_HEADER):
+                            leading = item.lstrip()[len(_MERGED_PRIOR_CONTEXT_HEADER):].lstrip()
+                            if leading:
+                                prior_blocks[index] = leading
+                            else:
+                                prior_blocks.pop(index)
+                            break
+                    elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                        text = item["text"]
+                        if text.lstrip().startswith(_MERGED_PRIOR_CONTEXT_HEADER):
+                            leading = text.lstrip()[len(_MERGED_PRIOR_CONTEXT_HEADER):].lstrip()
+                            if leading:
+                                copied = item.copy()
+                                copied["text"] = leading
+                                prior_blocks[index] = copied
+                            else:
+                                prior_blocks.pop(index)
+                            break
+
+                if prior_blocks:
+                    unwrapped = message.copy()
+                    unwrapped["content"] = prior_blocks
+                    unwrapped.pop(COMPRESSED_SUMMARY_METADATA_KEY, None)
+                    return unwrapped
+
+        return None
+
     # ------------------------------------------------------------------
     # Tool-call / tool-result pair integrity helpers
     # ------------------------------------------------------------------
@@ -3168,7 +3287,9 @@ This compaction should PRIORITISE preserving all information related to the focu
                         existing,
                         "\n\n" + _compression_note if isinstance(existing, str) and existing else _compression_note,
                     )
-            compressed.append(msg)
+            stripped = self._strip_context_summary_handoff_message(msg)
+            if stripped is not None:
+                compressed.append(stripped)
 
         # If LLM summary failed, insert a deterministic fallback so the model
         # gets at least locally recoverable continuity anchors instead of a
@@ -3184,9 +3305,16 @@ This compaction should PRIORITISE preserving all information related to the focu
                 reason=self._last_summary_error,
             )
 
+        tail_messages: List[Dict[str, Any]] = []
+        for i in range(compress_end, n_messages):
+            msg = _fresh_compaction_message_copy(messages[i])
+            stripped = self._strip_context_summary_handoff_message(msg)
+            if stripped is not None:
+                tail_messages.append(stripped)
+
         _merge_summary_into_tail = False
-        last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
-        first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
+        last_head_role = compressed[-1].get("role", "user") if compressed else "user"
+        first_tail_role = tail_messages[0].get("role", "user") if tail_messages else None
         # When the only protected head message is the system prompt, the
         # summary becomes the first *visible* message in the API request
         # (most adapters — Anthropic, Bedrock — send the system prompt as
@@ -3214,11 +3342,9 @@ This compaction should PRIORITISE preserving all information related to the focu
         # always has at least one user turn.
         if not _force_user_leading:
             _user_survives = any(
-                messages[i].get("role") == "user"
-                for i in range(0, compress_start)
+                message.get("role") == "user" for message in compressed
             ) or any(
-                messages[i].get("role") == "user"
-                for i in range(compress_end, n_messages)
+                message.get("role") == "user" for message in tail_messages
             )
             if not _user_survives:
                 _force_user_leading = True
@@ -3230,7 +3356,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             summary_role = "assistant"
         # If the chosen role collides with the tail AND flipping wouldn't
         # collide with the head, flip it.
-        if summary_role == first_tail_role:
+        if first_tail_role and summary_role == first_tail_role:
             flipped = "assistant" if summary_role == "user" else "user"
             if flipped != last_head_role and not _force_user_leading:
                 summary_role = flipped
@@ -3239,7 +3365,7 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # (e.g. head=assistant, tail=user — neither role works).
                 # Merge the summary into the first tail message instead
                 # of inserting a standalone message that breaks alternation.
-                _merge_summary_into_tail = True
+                _merge_summary_into_tail = bool(tail_messages)
 
         # When the summary lands as a standalone role="user" message,
         # weak models read the verbatim "## Active Task" quote of a past
@@ -3258,9 +3384,8 @@ This compaction should PRIORITISE preserving all information related to the focu
                 COMPRESSED_SUMMARY_METADATA_KEY: True,
             })
 
-        for i in range(compress_end, n_messages):
-            msg = _fresh_compaction_message_copy(messages[i])
-            if _merge_summary_into_tail and i == compress_end:
+        for tail_idx, msg in enumerate(tail_messages):
+            if _merge_summary_into_tail and tail_idx == 0:
                 # Merge the summary into the first tail message, but place
                 # the END MARKER at the very end so the model sees an
                 # unambiguous boundary. Old tail content is preserved as

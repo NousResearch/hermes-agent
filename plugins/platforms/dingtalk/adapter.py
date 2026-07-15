@@ -124,7 +124,7 @@ def check_dingtalk_requirements() -> bool:
     Lazy-installs dingtalk-stream via ``tools.lazy_deps.ensure("platform.dingtalk")``
     on first call if not present.
     """
-    global DINGTALK_STREAM_AVAILABLE, dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage
+    global DINGTALK_STREAM_AVAILABLE, dingtalk_stream, ChatbotMessage, CallbackMessage, AckMessage, Headers
     global HTTPX_AVAILABLE, httpx
     if not DINGTALK_STREAM_AVAILABLE or not HTTPX_AVAILABLE:
         try:
@@ -135,7 +135,7 @@ def check_dingtalk_requirements() -> bool:
         try:
             import dingtalk_stream as _ds
             from dingtalk_stream import ChatbotMessage as _CM
-            from dingtalk_stream.frames import CallbackMessage as _CBM, AckMessage as _AM
+            from dingtalk_stream.frames import CallbackMessage as _CBM, AckMessage as _AM, Headers as _H
             import httpx as _httpx
         except Exception:
             return False
@@ -143,6 +143,7 @@ def check_dingtalk_requirements() -> bool:
         ChatbotMessage = _CM
         CallbackMessage = _CBM
         AckMessage = _AM
+        Headers = _H
         httpx = _httpx
         DINGTALK_STREAM_AVAILABLE = True
         HTTPX_AVAILABLE = True

@@ -1,5 +1,6 @@
 """Tests for DingTalk platform adapter."""
 import asyncio
+import sys
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -544,6 +545,42 @@ class TestRawProcessAck:
 
         assert ack.code == 500
         assert ack.data == {"response": "error"}
+
+
+class TestLazyInstallBindsHeaders:
+    """The lazy-install path must rebind ``Headers`` alongside the other SDK types.
+
+    When the module is first imported without the SDK, ``Headers`` is ``None``.
+    ``check_dingtalk_requirements()`` lazily installs the SDK and must rebind
+    ``Headers`` too, otherwise ``raw_process()`` raises ``AttributeError`` when
+    setting ``content_type``.
+    """
+
+    def test_headers_rebound_after_lazy_install(self, monkeypatch):
+        import plugins.platforms.dingtalk.adapter as dt
+
+        fake_frames = SimpleNamespace(
+            CallbackMessage=object,
+            AckMessage=SimpleNamespace(STATUS_OK=200, STATUS_SYSTEM_EXCEPTION=500),
+            Headers=SimpleNamespace(CONTENT_TYPE_APPLICATION_JSON="application/json"),
+        )
+        fake_ds = SimpleNamespace(ChatbotMessage=object, frames=fake_frames)
+
+        # Simulate the "SDK absent at import" state.
+        monkeypatch.setattr(dt, "DINGTALK_STREAM_AVAILABLE", False)
+        monkeypatch.setattr(dt, "HTTPX_AVAILABLE", False)
+        monkeypatch.setattr(dt, "Headers", None, raising=False)
+        monkeypatch.setenv("DINGTALK_CLIENT_ID", "id")
+        monkeypatch.setenv("DINGTALK_CLIENT_SECRET", "secret")
+
+        monkeypatch.setattr("tools.lazy_deps.ensure", lambda *a, **k: None)
+        monkeypatch.setitem(sys.modules, "dingtalk_stream", fake_ds)
+        monkeypatch.setitem(sys.modules, "dingtalk_stream.frames", fake_frames)
+        monkeypatch.setitem(sys.modules, "httpx", SimpleNamespace())
+
+        assert dt.check_dingtalk_requirements() is True
+        assert dt.Headers is fake_frames.Headers
+        assert dt.Headers.CONTENT_TYPE_APPLICATION_JSON == "application/json"
 
 
 class TestExtractText:

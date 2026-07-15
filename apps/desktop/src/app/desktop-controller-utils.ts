@@ -1,4 +1,5 @@
 import type { SessionInfo } from '@/hermes'
+import type { PlatformStatus } from '@/types/hermes'
 
 // Cheap signature compare so a poll only swaps the atom (and re-renders the
 // sidebar) when the visible rows actually changed.
@@ -23,4 +24,22 @@ export function sameCronSignature(a: SessionInfo[], b: SessionInfo[]): boolean {
       session.ended_at === other.ended_at
     )
   })
+}
+
+export function shouldPollMessagingSessions({
+  activeIsMessaging,
+  gatewayPlatforms,
+  messagingSessionCount,
+  messagingViewOpen
+}: {
+  activeIsMessaging: boolean
+  gatewayPlatforms?: null | Record<string, PlatformStatus>
+  messagingSessionCount: number
+  messagingViewOpen: boolean
+}): boolean {
+  if (messagingViewOpen || activeIsMessaging || messagingSessionCount > 0) {
+    return true
+  }
+
+  return Object.keys(gatewayPlatforms ?? {}).length > 0
 }

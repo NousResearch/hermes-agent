@@ -86,6 +86,7 @@ import {
 } from './chat/right-rail'
 import { ChatSidebar } from './chat/sidebar'
 import { CommandPalette } from './command-palette'
+import { shouldPollMessagingSessions } from './desktop-controller-utils'
 import { useGatewayBoot } from './gateway/hooks/use-gateway-boot'
 import { useGatewayRequest } from './gateway/hooks/use-gateway-request'
 import { useKeybinds } from './hooks/use-keybinds'
@@ -895,11 +896,24 @@ export function DesktopController() {
     }
   }, [gatewayState, refreshCronJobs])
 
+  // Only keep the broad messaging session poll armed when the user has a
+  // messaging surface or the already-polled status endpoint reports a platform.
+  const activeIsMessaging =
+    !!selectedStoredSessionId &&
+    isMessagingSource(messagingSessions.find(s => sessionMatchesStoredId(s, selectedStoredSessionId))?.source)
+
+  const pollMessagingSessions = shouldPollMessagingSessions({
+    activeIsMessaging,
+    gatewayPlatforms: statusSnapshot?.gateway_platforms,
+    messagingSessionCount: messagingSessions.length,
+    messagingViewOpen: currentView === 'messaging'
+  })
+
   // Keep messaging-platform session lists live: inbound Telegram/WeChat/Discord
   // turns are written by the gateway, not the desktop websocket, so they won't
   // appear without polling.
   useEffect(() => {
-    if (gatewayState !== 'open') {
+    if (gatewayState !== 'open' || !pollMessagingSessions) {
       return
     }
 
@@ -916,14 +930,7 @@ export function DesktopController() {
       window.clearInterval(intervalId)
       document.removeEventListener('visibilitychange', tick)
     }
-  }, [gatewayState, refreshMessagingSessions])
-
-  // Only the open messaging transcript needs a poll — local chats are already
-  // live over the websocket, so arming a timer for them would just no-op every
-  // tick. Gate on the active session actually being a messaging source.
-  const activeIsMessaging =
-    !!selectedStoredSessionId &&
-    isMessagingSource(messagingSessions.find(s => sessionMatchesStoredId(s, selectedStoredSessionId))?.source)
+  }, [gatewayState, pollMessagingSessions, refreshMessagingSessions])
 
   // Keep the currently-viewed messaging transcript live.
   useEffect(() => {

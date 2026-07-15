@@ -998,7 +998,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return True
         return False
 
-    async def _send_with_telegram_media_retries(
+    async def _send_with_dm_topic_reply_anchor_retry(
         self,
         send_fn: Any,
         send_kwargs: Dict[str, Any],
@@ -1039,7 +1039,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     if plain_caption_retry_factory is not None
                     else self._plain_caption_retry_kwargs(send_kwargs)
                 )
-                return await self._send_with_telegram_media_retries(
+                return await self._send_with_dm_topic_reply_anchor_retry(
                     send_fn,
                     retry_kwargs,
                     metadata,
@@ -1072,7 +1072,7 @@ class TelegramAdapter(BasePlatformAdapter):
             retry_kwargs["reply_to_message_id"] = None
             retry_kwargs.pop("message_thread_id", None)
             retry_kwargs.pop("direct_messages_topic_id", None)
-            return await self._send_with_telegram_media_retries(
+            return await self._send_with_dm_topic_reply_anchor_retry(
                 send_fn,
                 retry_kwargs,
                 metadata,
@@ -5519,7 +5519,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=reply_to_id,
                         reply_to_mode=self._reply_to_mode
                     )
-                    msg = await self._send_with_telegram_media_retries(
+                    msg = await self._send_with_dm_topic_reply_anchor_retry(
                         self._bot.send_voice,
                         {
                             "chat_id": normalize_telegram_chat_id(chat_id),
@@ -5545,7 +5545,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         reply_to_message_id=reply_to_id,
                         reply_to_mode=self._reply_to_mode
                     )
-                    msg = await self._send_with_telegram_media_retries(
+                    msg = await self._send_with_dm_topic_reply_anchor_retry(
                         self._bot.send_audio,
                         {
                             "chat_id": normalize_telegram_chat_id(chat_id),
@@ -5715,7 +5715,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     media, opened_files = _build_media_group(plain_captions=True)
                     return _media_group_send_kwargs(media)
 
-                await self._send_with_telegram_media_retries(
+                await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_media_group,
                     _media_group_send_kwargs(media),
                     metadata,
@@ -5768,7 +5768,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_mode=self._reply_to_mode
             )
             with open(image_path, "rb") as image_file:
-                msg = await self._send_with_telegram_media_retries(
+                msg = await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_photo,
                     {
                         "chat_id": normalize_telegram_chat_id(chat_id),
@@ -5864,7 +5864,7 @@ class TelegramAdapter(BasePlatformAdapter):
             )
 
             with open(file_path, "rb") as f:
-                msg = await self._send_with_telegram_media_retries(
+                msg = await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_document,
                     {
                         "chat_id": normalize_telegram_chat_id(chat_id),
@@ -5912,7 +5912,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_mode=self._reply_to_mode
             )
             with open(video_path, "rb") as f:
-                msg = await self._send_with_telegram_media_retries(
+                msg = await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_video,
                     {
                         "chat_id": normalize_telegram_chat_id(chat_id),
@@ -5964,7 +5964,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=reply_to_id,
                 reply_to_mode=self._reply_to_mode
             )
-            msg = await self._send_with_telegram_media_retries(
+            msg = await self._send_with_dm_topic_reply_anchor_retry(
                 self._bot.send_photo,
                 {
                     "chat_id": normalize_telegram_chat_id(chat_id),
@@ -6001,7 +6001,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     reply_to_message_id=reply_to_id,
                     reply_to_mode=self._reply_to_mode
                 )
-                msg = await self._send_with_telegram_media_retries(
+                msg = await self._send_with_dm_topic_reply_anchor_retry(
                     self._bot.send_photo,
                     {
                         "chat_id": normalize_telegram_chat_id(chat_id),
@@ -6048,7 +6048,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 reply_to_message_id=reply_to_id,
                 reply_to_mode=self._reply_to_mode
             )
-            msg = await self._send_with_telegram_media_retries(
+            msg = await self._send_with_dm_topic_reply_anchor_retry(
                 self._bot.send_animation,
                 {
                     "chat_id": normalize_telegram_chat_id(chat_id),

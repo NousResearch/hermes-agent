@@ -1280,7 +1280,7 @@ def profile_env(tmp_path, monkeypatch):
 
 **ALWAYS use `scripts/run_tests.sh`** — do not call `pytest` directly. The script enforces
 hermetic environment parity with CI (unset credential vars, TZ=UTC, LANG=C.UTF-8,
-`-n auto` xdist workers, in-tree subprocess-isolation plugin). Direct `pytest`
+per-file subprocess isolation (one `python -m pytest <file>` per file, no xdist)). Direct `pytest`
 on a 16+ core developer machine with API keys set diverges from CI in ways
 that have caused multiple "works locally, fails in CI" incidents (and the reverse).
 

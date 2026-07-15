@@ -141,9 +141,19 @@ def test_runtime_sha_verification_requires_exact_clean_checkout(tmp_path):
     tracked.write_text("clean\n", encoding="utf-8")
     tracked_module = tmp_path / "tracked_module.py"
     tracked_module.write_text("VALUE = 1\n", encoding="utf-8")
+    tracked_test = tmp_path / "tests" / "test_tracked.py"
+    tracked_test.parent.mkdir()
+    tracked_test.write_text("def test_value():\n    assert 1 == 1\n", encoding="utf-8")
     (tmp_path / ".gitignore").write_text("*.pyc\n", encoding="utf-8")
     subprocess.run(
-        ["git", "add", "tracked.txt", "tracked_module.py", ".gitignore"],
+        [
+            "git",
+            "add",
+            "tracked.txt",
+            "tracked_module.py",
+            "tests/test_tracked.py",
+            ".gitignore",
+        ],
         cwd=tmp_path,
         check=True,
     )
@@ -171,6 +181,16 @@ def test_runtime_sha_verification_requires_exact_clean_checkout(tmp_path):
 
     assert verify_running_runtime_sha(sha, source_root=tmp_path) is True
     assert verify_running_runtime_sha("f" * 40, source_root=tmp_path) is False
+    subprocess.run(
+        [sys.executable, "-m", "pytest", str(tracked_test), "-q"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    pytest_caches = list((tracked_test.parent / "__pycache__").glob("*-pytest-*.pyc"))
+    assert len(pytest_caches) == 1
+    assert verify_running_runtime_sha(sha, source_root=tmp_path) is True
     ordinary_cache = Path(
         py_compile.compile(str(tracked_module), doraise=True)
     )

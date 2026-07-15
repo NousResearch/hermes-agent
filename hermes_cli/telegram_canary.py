@@ -214,6 +214,28 @@ def verify_running_runtime_sha(
             if relative.parts and relative.parts[0] in dependency_roots:
                 continue
             if relative.suffix.lower() == ".pyc" and relative.parent.name == "__pycache__":
+                cache_tag = sys.implementation.cache_tag
+                pytest_match = (
+                    re.fullmatch(
+                        rf"(?P<stem>.+)\.{re.escape(cache_tag)}-pytest-"
+                        r"[A-Za-z0-9][A-Za-z0-9.]*\.pyc",
+                        relative.name,
+                    )
+                    if cache_tag and relative.parts[0] == "tests"
+                    else None
+                )
+                if pytest_match:
+                    pytest_source = (
+                        relative.parent.parent
+                        / f"{pytest_match.group('stem')}.py"
+                    ).as_posix()
+                    # Pytest assertion-rewrite caches use a nonstandard name
+                    # that Python's ordinary import machinery will not load.
+                    # They are test-only artifacts, so tolerate them only under
+                    # tests/ and only when bound to an exact tracked source.
+                    if pytest_source in tracked_files:
+                        continue
+                    return False
                 try:
                     source = Path(
                         importlib.util.source_from_cache(str(root / relative))

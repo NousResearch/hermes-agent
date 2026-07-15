@@ -634,7 +634,16 @@ async function startSocket() {
           } catch {}
           continue;
         }
-        if (WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
+        // The WHATSAPP_ALLOWED_USERS gate applies to DIRECT messages only.
+        // GROUP messages are passed through to the Python gateway, which
+        // authorizes the group via the documented whatsapp.group_policy /
+        // group_allow_from model and applies require_mention gating. Without
+        // this exception a concrete WHATSAPP_ALLOWED_USERS (required for owner
+        // detection — it can't be "*") would drop every non-owner group member
+        // here, before the gateway ever sees them, so only the owner could
+        // trigger the bot in a group. (The pairing DM policy also skips this
+        // gate so the pairing handshake can reach the gateway.)
+        if (!isGroup && WHATSAPP_DM_POLICY !== 'pairing' && !matchesAllowedUser(senderId, ALLOWED_USERS, SESSION_DIR)) {
           try {
             console.log(JSON.stringify({
               event: 'ignored',
@@ -875,6 +884,30 @@ app.post('/edit', async (req, res) => {
     }
 
     res.json({ success: true, messageIds });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// React to a message (progress indicators: 👀 while processing, ✅/❌ when done).
+// Baileys replaces a sender's prior reaction automatically; an empty `emoji`
+// removes it. Targets an INBOUND message, so the key is fromMe:false and carries
+// the original participant (required to key reactions in groups).
+app.post('/send-reaction', async (req, res) => {
+  if (!sock || connectionState !== 'connected') {
+    return res.status(503).json({ error: 'Not connected to WhatsApp' });
+  }
+
+  const { chatId, messageId, participant, emoji } = req.body;
+  if (!chatId || !messageId) {
+    return res.status(400).json({ error: 'chatId and messageId are required' });
+  }
+
+  try {
+    const key = { remoteJid: chatId, id: messageId, fromMe: false };
+    if (participant) key.participant = participant;
+    await sendWithTimeout(chatId, { react: { text: emoji || '', key } });
+    res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

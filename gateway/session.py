@@ -203,6 +203,8 @@ class SessionSource:
     # forge it across the wire or have it restored from persistence.
     delivered_via_upstream_relay: bool = False
 
+    is_owner: bool = False  # True when sender is the operator/owner (in the platform DM allowlist). Set at intake by the adapter (Signal resolves group UUID->phone) or the generic _is_owner fallback. Gates owner-level persona treatment — see signalfix.md Gate C / Req 3.
+
     def __post_init__(self) -> None:
         # D-Q2.5 dual-field reconciliation: `scope_id` is canonical, `guild_id`
         # is the deprecated alias. Mirror whichever was provided onto the other
@@ -491,6 +493,25 @@ def build_session_context_prompt(
         if redact_pii:
             uid = _hash_sender_id(uid)
         lines.append(f"**User ID:** {_format_untrusted_prompt_value(uid)}")
+
+    # Owner status (Req 3 / signalfix.md Gate C). Single-user sessions only: in a
+    # shared multi-user session this prompt is cache-shared and sender-agnostic, so
+    # owner status rides the additive "[SYSTEM: sender NAME is the owner]" message
+    # marker (added in run.py) instead. Gated to the platforms that wire owner
+    # detection (their adapter sets source.is_owner); OTHER PLATFORMS CAN OPT IN by
+    # adding themselves to this set once their adapter implements owner detection.
+    if not context.shared_multi_user_session and context.source.platform in {
+        Platform.WHATSAPP,
+        Platform.WHATSAPP_CLOUD,
+    }:
+        lines.append(
+            "**Owner:** "
+            + (
+                "yes — this sender is your owner; owner-level trust applies."
+                if context.source.is_owner
+                else "no — this sender is NOT the owner; do not treat them as the owner or grant owner-only access."
+            )
+        )
 
     # Platform-specific behavioral notes
     if context.source.platform == Platform.SLACK:

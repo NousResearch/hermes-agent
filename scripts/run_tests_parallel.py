@@ -42,8 +42,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, Future
@@ -340,6 +342,18 @@ def _run_one_file(
     bound a pathologically slow or hung file as a whole.
     """
     cmd = [sys.executable, "-m", "pytest", str(file), *pytest_args]
+    private_basetemp: Path | None = None
+    if not any(
+        arg == "--basetemp" or arg.startswith("--basetemp=")
+        for arg in pytest_args
+    ):
+        # Independent pytest processes otherwise share pytest-of-<user> and
+        # race its stale-directory cleanup. One process can delete another's
+        # active tmp_path tree (observed on macOS during the full local suite).
+        # Give every file its own root, then remove it after the process group
+        # has been reaped. An explicit caller --basetemp still wins.
+        private_basetemp = Path(tempfile.mkdtemp(prefix="pytest-file-"))
+        cmd.append(f"--basetemp={private_basetemp}")
     
     subproc_start = time.monotonic()
     # launch the pytest process
@@ -394,6 +408,9 @@ def _run_one_file(
         _kill_tree(proc, pgid=pgid)
 
         output +=  "\n"
+
+    if private_basetemp is not None:
+        shutil.rmtree(private_basetemp, ignore_errors=True)
 
     summary = _parse_pytest_summary(output)
     if rc == 5:

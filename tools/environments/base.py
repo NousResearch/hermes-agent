@@ -401,35 +401,23 @@ class BaseEnvironment(ABC):
         # source() either sees the old complete snapshot or the new complete
         # one — never a partial/truncated file.
         #
-        # The temp name MUST be unique per concurrent writer.  ``$$`` is the
-        # bash PID, but in ``&``-launched subshells (how concurrent terminal
-        # calls run) ``$$`` stays the *parent* shell's PID — so two concurrent
-        # writers would pick the SAME temp name, clobber each other's temp
-        # mid-write, and mv would then publish a torn file (the corruption is
-        # only narrowed, not closed).  ``$BASHPID`` is the actual subshell PID
-        # and is genuinely unique per writer, which closes the race.  The
-        # static path is shlex-quoted (Windows/Git-Bash drive letters, spaces)
-        # with ``$BASHPID`` left outside the quotes so it still expands.
-        #
-        # CRITICAL (Linux CI 2026-07-10): the temp name must be captured in a
-        # parent-shell variable BEFORE any pipeline uses it.  In
-        # ``export -p | grep ... > path.$BASHPID`` the redirect is performed
-        # by grep's pipeline SUBSHELL, whose $BASHPID differs from the parent
-        # — the dump lands at ``path.<grepPID>`` while the later
-        # ``mv path.<parentPID>`` finds nothing, the ``|| rm`` arm silently
-        # eats the failure, and env persistence dies entirely.  (macOS
-        # /bin/bash 3.2 has no $BASHPID — both expand empty and accidentally
-        # agree — so this only manifests on bash>=4, i.e. Linux CI.)
-        # ``__hermes_snap_tmp`` is assigned once in the parent shell;
-        # subshells inherit the VALUE, so every reference names the same file.
+        # The temp name MUST be unique per concurrent writer. ``$$`` is shared
+        # by ``&``-launched subshells, and macOS's shipped bash 3.2 does not
+        # expose ``$BASHPID`` at all, so PID-derived names cannot satisfy that
+        # contract portably. ``mktemp`` performs an atomic unique-file create
+        # on every supported POSIX/Git-Bash environment. Capture its result in
+        # the parent shell before the export pipeline so the redirect and mv
+        # always refer to the same file.
         _snap_tmp_assign = (
-            "__hermes_snap_tmp=" + shlex.quote(self._snapshot_path + ".tmp.")
-            + '"${BASHPID:-$$}"'
+            "__hermes_snap_tmp=$(mktemp "
+            + shlex.quote(self._snapshot_path + ".tmp.XXXXXX")
+            + " 2>/dev/null) || __hermes_snap_tmp="
         )
         _snap_tmp = '"$__hermes_snap_tmp"'
         bootstrap = (
             f"umask 077\n"
             f"{_snap_tmp_assign}\n"
+            f"[ -n \"$__hermes_snap_tmp\" ] || exit 1\n"
             f"export -p | grep -vE {_SNAPSHOT_EXCLUDE_PATTERN_Q} > {_snap_tmp}\n"
             # Dump function definitions, filtering out private (``_``-prefixed)
             # helpers — mainly bash-completion internals (``_git``, ``_make``…)
@@ -509,21 +497,14 @@ class BaseEnvironment(ABC):
         # Use atomic file replacement for env snapshot updates (issue #38249).
         # Assemble into a per-writer-unique temp file, then mv to atomically
         # replace the snapshot so concurrent source() calls never read a
-        # truncated/half-written file.  ``$BASHPID`` (not ``$$``) is the actual
-        # subshell PID — unique per concurrent ``&``-launched writer — so two
-        # writers never share a temp name and clobber each other before the mv.
-        # Static path shlex-quoted (Windows/spaces).  The temp name is
-        # captured ONCE in a parent-shell variable: in a pipeline like
-        # ``export -p | grep ... > path.$BASHPID`` the redirect runs in
-        # grep's pipeline subshell whose $BASHPID differs from the parent,
-        # so the dump and the subsequent ``mv`` would name DIFFERENT files
-        # and env persistence silently dies (Linux CI 2026-07-10; macOS
-        # bash 3.2 lacks $BASHPID so both expanded empty and agreed).
-        # ${BASHPID:-$$} keeps per-writer uniqueness on bash>=4 (concurrent
-        # ``&`` subshells) with a $$ fallback on bash 3.2.
+        # truncated/half-written file. ``mktemp`` is used rather than a shell
+        # PID: ``$$`` is shared by concurrent subshells and macOS bash 3.2 has
+        # no ``$BASHPID``. The parent-shell variable keeps the pipeline redirect
+        # and subsequent mv on the same atomically-created temp file.
         _snap_tmp_assign = (
-            "__hermes_snap_tmp=" + shlex.quote(self._snapshot_path + ".tmp.")
-            + '"${BASHPID:-$$}"'
+            "__hermes_snap_tmp=$(mktemp "
+            + shlex.quote(self._snapshot_path + ".tmp.XXXXXX")
+            + " 2>/dev/null) || __hermes_snap_tmp="
         )
         _snap_tmp = '"$__hermes_snap_tmp"'
 
@@ -560,6 +541,7 @@ class BaseEnvironment(ABC):
         if self._snapshot_ready:
             parts.append(_snap_tmp_assign)
             parts.append(
+                f"[ -n \"$__hermes_snap_tmp\" ] && "
                 f"{{ export -p | grep -vE {_SNAPSHOT_EXCLUDE_PATTERN_Q} > {_snap_tmp} "
                 f"&& mv -f {_snap_tmp} {_quoted_snap}; }} "
                 f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true"

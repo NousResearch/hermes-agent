@@ -277,3 +277,26 @@ def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:
     # Discovery found the probe file (2 tests), proving the positional path
     # was consumed as a root, not forwarded to pytest as a bad flag.
     assert "test_flagprobe.py" in proc.stdout, proc.stdout
+
+
+def test_each_file_gets_private_basetemp_and_runner_cleans_it(tmp_path: Path) -> None:
+    """Parallel pytest subprocesses must not share tmp_path cleanup state."""
+    probe_dir = tmp_path / "basetemp-probes"
+    probe_dir.mkdir()
+    handoffs = []
+    for index in range(2):
+        handoff = tmp_path / f"basetemp-{index}.txt"
+        handoffs.append(handoff)
+        (probe_dir / f"test_basetemp_{index}.py").write_text(
+            "from pathlib import Path\n\n"
+            "def test_reports_basetemp(request):\n"
+            f"    Path({str(handoff)!r}).write_text(str(request.config.option.basetemp))\n"
+        )
+
+    proc = _run_runner(probe_dir, "-j", "2", "-q")
+
+    assert proc.returncode == 0, proc.stdout
+    basetemps = [Path(path.read_text()) for path in handoffs]
+    assert len(set(basetemps)) == 2
+    assert all(str(path) != "None" for path in basetemps)
+    assert all(not path.exists() for path in basetemps)

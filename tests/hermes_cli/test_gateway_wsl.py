@@ -126,6 +126,7 @@ class TestSupportsSystemdServicesWSL:
         """WSL + working systemd → True."""
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway.shutil, "which", lambda _name: "/usr/bin/systemctl")
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
         monkeypatch.setattr(gateway, "_wsl_systemd_operational", lambda: True)
         assert gateway.supports_systemd_services() is True
@@ -134,6 +135,7 @@ class TestSupportsSystemdServicesWSL:
         """WSL + no systemd → False."""
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway.shutil, "which", lambda _name: "/usr/bin/systemctl")
         monkeypatch.setattr(gateway, "is_wsl", lambda: True)
         monkeypatch.setattr(gateway, "_wsl_systemd_operational", lambda: False)
         assert gateway.supports_systemd_services() is False
@@ -142,6 +144,7 @@ class TestSupportsSystemdServicesWSL:
         """Native Linux (not WSL) → True without checking systemd."""
         monkeypatch.setattr(gateway, "is_linux", lambda: True)
         monkeypatch.setattr(gateway, "is_termux", lambda: False)
+        monkeypatch.setattr(gateway.shutil, "which", lambda _name: "/usr/bin/systemctl")
         monkeypatch.setattr(gateway, "is_wsl", lambda: False)
         assert gateway.supports_systemd_services() is True
 

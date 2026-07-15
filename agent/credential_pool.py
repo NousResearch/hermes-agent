@@ -424,11 +424,11 @@ def _exhausted_until(entry: PooledCredential) -> Optional[float]:
     if reset_at is not None:
         return reset_at
     if is_gemini_daily_quota_error(
-        entry.provider,
-        entry.last_error_code,
+        getattr(entry, "provider", ""),
+        getattr(entry, "last_error_code", None),
         {
-            "reason": entry.last_error_reason,
-            "message": entry.last_error_message,
+            "reason": getattr(entry, "last_error_reason", None),
+            "message": getattr(entry, "last_error_message", None),
         },
     ):
         if entry.last_status_at:

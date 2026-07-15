@@ -166,6 +166,94 @@ def test_utf8_bom_preserves_first_api_key_name(tmp_path, monkeypatch):
     assert os.environ.get("\ufeffANTHROPIC_API_KEY") is None
 
 
+def test_utf8_bom_plus_invalid_utf8_preserves_first_key(tmp_path, monkeypatch):
+    """BOM + non-UTF-8 body must load via latin-1 without mangling the first key.
+
+    utf-8-sig only applies on the primary path. When invalid UTF-8 forces the
+    latin-1 fallback, a leading EF BB BF would otherwise become part of the
+    first key name under latin-1 and drop the canonical name.
+    """
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    # BOM + valid first key + latin-1 é (0xE9) in a later value.
+    env_file.write_bytes(
+        b"\xef\xbb\xbfANTHROPIC_API_KEY=sk-test-123\nBAD=caf\xe9\n"
+    )
+
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+    monkeypatch.delenv("BAD", raising=False)
+    monkeypatch.delenv("\ufeffANTHROPIC_API_KEY", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("ANTHROPIC_API_KEY") == "sk-test-123"
+    assert os.getenv("BAD") == "café"
+    assert os.environ.get("\ufeffANTHROPIC_API_KEY") is None
+
+
+def test_bomless_latin1_env_still_loads(tmp_path, monkeypatch):
+    """BOM-less cp1252/latin-1 .env files must keep loading after the BOM strip."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    env_file.write_bytes(b"LATIN1_VALUE=caf\xe9\nOTHER=ok\n")
+
+    monkeypatch.delenv("LATIN1_VALUE", raising=False)
+    monkeypatch.delenv("OTHER", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("LATIN1_VALUE") == "café"
+    assert os.getenv("OTHER") == "ok"
+
+
+def test_latin1_fallback_stream_honors_override(tmp_path, monkeypatch):
+    """Stream-based latin-1 fallback must honor override= identically to dotenv_path."""
+    from hermes_cli.env_loader import _load_dotenv_with_fallback
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    # Invalid UTF-8 forces the stream/latin-1 path.
+    env_file.write_bytes(b"OVERRIDE_PROBE=from-file\nLATIN1_VALUE=caf\xe9\n")
+
+    monkeypatch.setenv("OVERRIDE_PROBE", "from-shell")
+    monkeypatch.delenv("LATIN1_VALUE", raising=False)
+
+    # override=False: shell value must win (same as dotenv_path form).
+    _load_dotenv_with_fallback(env_file, override=False)
+    assert os.getenv("OVERRIDE_PROBE") == "from-shell"
+    assert os.getenv("LATIN1_VALUE") == "café"
+
+    # override=True: file value must win (user-env path).
+    _load_dotenv_with_fallback(env_file, override=True)
+    assert os.getenv("OVERRIDE_PROBE") == "from-file"
+    assert os.getenv("LATIN1_VALUE") == "café"
+
+
+def test_latin1_fallback_stream_preserves_interpolation(tmp_path, monkeypatch):
+    """Stream/latin-1 path must still expand ${VAR} like the dotenv_path form."""
+    home = tmp_path / "hermes"
+    home.mkdir()
+    env_file = home / ".env"
+    # 0xE9 forces latin-1 fallback; ${FOO} must still expand.
+    env_file.write_bytes(b"FOO=bar\nBAR=${FOO}\nLATIN1_VALUE=caf\xe9\n")
+
+    monkeypatch.delenv("FOO", raising=False)
+    monkeypatch.delenv("BAR", raising=False)
+    monkeypatch.delenv("LATIN1_VALUE", raising=False)
+
+    loaded = load_hermes_dotenv(hermes_home=home)
+
+    assert loaded == [env_file]
+    assert os.getenv("FOO") == "bar"
+    assert os.getenv("BAR") == "bar"
+    assert os.getenv("LATIN1_VALUE") == "café"
+
+
 def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()

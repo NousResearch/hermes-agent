@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import codecs
+import io
 import os
 import sys
 from pathlib import Path
@@ -159,7 +161,11 @@ def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
         # silently drop it from os.environ under its canonical name.
         load_dotenv(dotenv_path=path, override=override, encoding="utf-8-sig")
     except UnicodeDecodeError:
-        load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+        # utf-8-sig can't strip a BOM once we fall back to latin-1 decode.
+        raw = path.read_bytes()
+        if raw.startswith(codecs.BOM_UTF8):
+            raw = raw[len(codecs.BOM_UTF8) :]
+        load_dotenv(stream=io.StringIO(raw.decode("latin-1")), override=override)
     # Strip non-ASCII characters from credential env vars that were just
     # loaded.  API keys must be pure ASCII since they're sent as HTTP
     # header values (httpx encodes headers as ASCII).  Non-ASCII chars

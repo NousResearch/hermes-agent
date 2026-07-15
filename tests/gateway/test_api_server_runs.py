@@ -170,7 +170,7 @@ class TestRunToolSSECallbacks:
         assert event["input"] == {"name": "data-mask"}
 
     @pytest.mark.asyncio
-    async def test_tool_completed_includes_tool_call_id_and_preview(self, adapter):
+    async def test_tool_completed_includes_tool_call_id_without_result_preview(self, adapter):
         loop = asyncio.get_running_loop()
         run_id = "run_tool_sse_complete"
         q: asyncio.Queue = asyncio.Queue()
@@ -186,7 +186,9 @@ class TestRunToolSSECallbacks:
         assert event["event"] == "tool.completed"
         assert event["tool_call_id"] == "call_abc"
         assert event["tool"] == "skill_view"
-        assert event["preview"] == "masked output"
+        # Correlation metadata only — no unbounded tool-result egress.
+        assert "preview" not in event
+        assert "masked output" not in str(event)
         assert "duration" in event
         assert event["error"] is False
 
@@ -250,8 +252,18 @@ class TestRunToolSSECallbacks:
                 assert started_payloads[0]["tool"] == "skill_view"
                 assert "input" in started_payloads[0]
 
-                assert "tool.completed" in body
-                assert "skill body" in body
+                completed_payloads = []
+                for line in body.splitlines():
+                    if not line.startswith("data: "):
+                        continue
+                    payload = json.loads(line[len("data: "):])
+                    if payload.get("event") == "tool.completed":
+                        completed_payloads.append(payload)
+
+                assert completed_payloads, "expected at least one tool.completed SSE event"
+                assert completed_payloads[0]["tool_call_id"] == "call_abc"
+                assert "preview" not in completed_payloads[0]
+                assert "skill body" not in body
 
 
 # ---------------------------------------------------------------------------

@@ -4577,6 +4577,10 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_calls with tool rows.  Matches chat-completions structured
         callback wiring; does not use the camelCase hermes.tool.progress wire
         format.
+
+        ``tool.completed`` carries correlation metadata only (no tool-result
+        ``preview``/body): full outputs belong in the session transcript, not
+        unbounded SSE egress.
         """
         started_tool_call_ids: set[str] = set()
         tool_start_times: Dict[str, float] = {}
@@ -4605,16 +4609,13 @@ class APIServerAdapter(BasePlatformAdapter):
             started_at = tool_start_times.pop(tool_call_id, None)
             duration = round(time.time() - started_at, 3) if started_at else 0.0
             from agent.display import _detect_tool_failure
-            from agent.tool_dispatch_helpers import _multimodal_text_summary
             is_error, _ = _detect_tool_failure(function_name, function_result)
-            preview = _multimodal_text_summary(function_result) or ""
             self._push_run_sse_event(run_id, loop, {
                 "event": "tool.completed",
                 "run_id": run_id,
                 "timestamp": time.time(),
                 "tool": function_name,
                 "tool_call_id": tool_call_id,
-                "preview": preview,
                 "duration": duration,
                 "error": is_error,
             })

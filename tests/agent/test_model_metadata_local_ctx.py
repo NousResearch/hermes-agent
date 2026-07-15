@@ -216,12 +216,17 @@ class TestQueryLocalContextLengthModelsList:
         assert result == 131072
 
     def test_models_list_model_not_found_returns_none(self):
-        """Returns None when model is not in the /v1/models list."""
+        """Returns None when the model is absent from a multi-model /v1/models
+        list. (Single-model servers are accepted even when the configured name
+        doesn't match the reported id — see the llama.cpp tests below.)"""
         from agent.model_metadata import _query_local_context_length
 
         detail_resp = self._make_resp(404, {})
         list_resp = self._make_resp(200, {
-            "data": [{"id": "other-model", "max_model_len": 4096}]
+            "data": [
+                {"id": "other-model", "max_model_len": 4096},
+                {"id": "yet-another-model", "max_model_len": 8192},
+            ]
         })
 
         call_count = [0]
@@ -242,6 +247,73 @@ class TestQueryLocalContextLengthModelsList:
             result = _query_local_context_length("omnicoder-9b", "http://localhost:1234")
 
         assert result is None
+
+    def test_models_list_llamacpp_meta_n_ctx_sole_model(self):
+        """llama.cpp nests the runtime context under meta.n_ctx and serves a
+        single model whose id (a GGUF path) doesn't match the configured name.
+
+        The sole model should be accepted and meta.n_ctx read, instead of
+        returning None and falling back to a family default (e.g. qwen=131072).
+        """
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(404, {})
+        list_resp = self._make_resp(200, {
+            "data": [
+                {
+                    "id": "/app/models/qwen3.6-35b.gguf",
+                    "meta": {"n_ctx": 256000, "n_ctx_train": 262144},
+                }
+            ]
+        })
+
+        call_count = [0]
+        def side_effect(url, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                return detail_resp  # /v1/models/{model}
+            return list_resp  # /v1/models
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.side_effect = side_effect
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("qwen3.6-35b", "http://localhost:8080")
+
+        assert result == 256000
+
+    def test_models_list_llamacpp_prefers_runtime_n_ctx_over_train(self):
+        """Runtime n_ctx (256000) is preferred over n_ctx_train (262144),
+        since the server can only actually serve the runtime value."""
+        from agent.model_metadata import _query_local_context_length
+
+        detail_resp = self._make_resp(404, {})
+        list_resp = self._make_resp(200, {
+            "data": [
+                {"id": "/app/models/m.gguf", "meta": {"n_ctx": 256000, "n_ctx_train": 262144}}
+            ]
+        })
+
+        call_count = [0]
+        def side_effect(url, **kwargs):
+            call_count[0] += 1
+            return detail_resp if call_count[0] == 1 else list_resp
+
+        client_mock = MagicMock()
+        client_mock.__enter__ = lambda s: client_mock
+        client_mock.__exit__ = MagicMock(return_value=False)
+        client_mock.post.return_value = self._make_resp(404, {})
+        client_mock.get.side_effect = side_effect
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("httpx.Client", return_value=client_mock):
+            result = _query_local_context_length("m", "http://localhost:8080")
+
+        assert result == 256000
 
 
 class TestQueryLocalContextLengthLmStudio:

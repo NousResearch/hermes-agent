@@ -179,6 +179,97 @@ async def test_standalone_send_retries_retryable_sidecar_error(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("connect_kind", ["error", "timeout"])
+async def test_standalone_send_retries_connect_error(
+    monkeypatch: pytest.MonkeyPatch,
+    connect_kind: str,
+) -> None:
+    monkeypatch.delenv("PHOTON_MARKDOWN", raising=False)
+    monkeypatch.setenv("PHOTON_SIDECAR_TOKEN", "tok")
+    monkeypatch.setenv("PHOTON_STANDALONE_RETRY_BASE_DELAY_SECONDS", "0")
+
+    posted: List[Tuple[str, Dict[str, Any]]] = []
+
+    class _Resp:
+        status_code = 200
+
+        @staticmethod
+        def json() -> Dict[str, Any]:
+            return {"ok": True, "messageId": "m-connected"}
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url: str, json: Dict[str, Any], headers=None):
+            posted.append((url, json))
+            if len(posted) == 1:
+                request = photon_adapter.httpx.Request("POST", url)
+                if connect_kind == "timeout":
+                    raise photon_adapter.httpx.ConnectTimeout(
+                        "connection timed out", request=request
+                    )
+                raise photon_adapter.httpx.ConnectError("connection refused", request=request)
+            return _Resp()
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _FakeClient)
+
+    cfg = PlatformConfig(enabled=True, token="", extra={})
+    result = await photon_adapter._standalone_send(cfg, "+155****4567", _MD)
+
+    assert result == {"success": True, "message_id": "m-connected"}
+    assert len(posted) == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("timeout_kind", ["read", "write"])
+async def test_standalone_send_does_not_retry_ambiguous_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+    timeout_kind: str,
+) -> None:
+    monkeypatch.delenv("PHOTON_MARKDOWN", raising=False)
+    monkeypatch.setenv("PHOTON_SIDECAR_TOKEN", "tok")
+    monkeypatch.setenv("PHOTON_STANDALONE_RETRY_BASE_DELAY_SECONDS", "0")
+
+    posted: List[Tuple[str, Dict[str, Any]]] = []
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url: str, json: Dict[str, Any], headers=None):
+            posted.append((url, json))
+            request = photon_adapter.httpx.Request("POST", url)
+            if timeout_kind == "read":
+                raise photon_adapter.httpx.ReadTimeout(
+                    "send timed out", request=request
+                )
+            raise photon_adapter.httpx.WriteTimeout(
+                "send timed out", request=request
+            )
+
+    monkeypatch.setattr(photon_adapter.httpx, "AsyncClient", _FakeClient)
+
+    cfg = PlatformConfig(enabled=True, token="", extra={})
+    result = await photon_adapter._standalone_send(cfg, "+155****4567", _MD)
+
+    assert result == {"error": "Photon standalone send failed: send timed out"}
+    assert len(posted) == 1
+
+
+@pytest.mark.asyncio
 async def test_standalone_send_falls_back_to_plain_text_after_markdown_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

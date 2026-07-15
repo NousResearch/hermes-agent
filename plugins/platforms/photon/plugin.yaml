@@ -82,6 +82,14 @@ optional_env:
     description: "Send agent replies as markdown — iMessage renders it natively, other Spectrum platforms degrade to plain text (true/false, default true)"
     prompt: "Render replies as markdown? (true/false)"
     password: false
+  - name: PHOTON_STANDALONE_SEND_RETRIES
+    description: "Retries for standalone text sends after safe transient failures (0-3, default 1)"
+    prompt: "Standalone send retry count"
+    password: false
+  - name: PHOTON_STANDALONE_RETRY_BASE_DELAY_SECONDS
+    description: "Base seconds for standalone-send exponential backoff (0-30, default 2)"
+    prompt: "Standalone send retry base delay (seconds)"
+    password: false
   - name: PHOTON_REACTIONS
     description: "Tapback 👀/👍/👎 on messages as processing status and route tapbacks on bot messages to the agent (true/false, default false)"
     prompt: "Enable reaction tapbacks? (true/false)"

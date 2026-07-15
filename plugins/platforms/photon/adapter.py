@@ -611,9 +611,6 @@ class PhotonAdapter(BasePlatformAdapter):
             await self._dispatch_inbound(event)
         except Exception:
             logger.exception("[photon] inbound dispatch failed")
-            return
-        if msg_id:
-            self._mark_seen(msg_id)
 
     def _is_duplicate(self, msg_id: str) -> bool:
         now = time.time()
@@ -624,18 +621,13 @@ class PhotonAdapter(BasePlatformAdapter):
         # New or expired: record and enforce a HARD size bound (evict oldest,
         # insertion-order) so a burst of unique ids within the window can't grow
         # the dict without limit — not just the expired-only prune.
-        self._mark_seen(msg_id)
-        return False
-
-    def _mark_seen(self, msg_id: str) -> None:
-        now = time.time()
-        seen = self._seen_messages
         if msg_id in seen:
             del seen[msg_id]  # refresh insertion order
         seen[msg_id] = now
         if len(seen) > _DEDUP_MAX_SIZE:
             for old in list(seen.keys())[: len(seen) - _DEDUP_MAX_SIZE]:
                 del seen[old]
+        return False
 
     async def _dispatch_inbound(self, event: Dict[str, Any]) -> None:
         """Normalize a sidecar inbound event and dispatch it to the gateway.
@@ -1728,7 +1720,13 @@ async def _standalone_send(
         path: str,
         body: Dict[str, Any],
     ) -> tuple[Optional[Dict[str, Any]], Optional[str]]:
-        resp = await client.post(f"{base}{path}", json=body, headers=headers)
+        try:
+            resp = await client.post(f"{base}{path}", json=body, headers=headers)
+        except (httpx.ConnectError, httpx.ConnectTimeout) as exc:
+            # The connection was never established, so retrying cannot
+            # duplicate a delivered message. Read/write timeouts deliberately
+            # escape to the outer handler because delivery is ambiguous.
+            return None, f"{type(exc).__name__}: {exc}"
         if resp.status_code != 200:
             return None, f"sidecar returned {resp.status_code}: {resp.text[:200]}"
         data = resp.json() or {}
@@ -1783,8 +1781,8 @@ async def _standalone_send(
             # 1. Text body first (if any), so it leads the conversation.
             if message:
                 data, error = await post_text_with_retry(client, message)
-                if error is not None:
-                    return {"error": error}
+                if error is not None or data is None:
+                    return {"error": error or "sidecar reported failure"}
                 last_message_id = data.get("messageId")
 
             # 2. Each attachment as a separate /send-attachment call.
@@ -1806,8 +1804,8 @@ async def _standalone_send(
                 if guessed:
                     att_body["mimeType"] = guessed
                 data, error = await post_sidecar(client, "/send-attachment", att_body)
-                if error is not None:
-                    return {"error": error}
+                if error is not None or data is None:
+                    return {"error": error or "sidecar reported failure"}
                 last_message_id = data.get("messageId") or last_message_id
 
         return {"success": True, "message_id": last_message_id}

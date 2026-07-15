@@ -123,6 +123,8 @@ All env vars are documented in `plugin.yaml`. The most important:
 | `PHOTON_MAX_INLINE_ATTACHMENT_BYTES` | 20 MB           | Max inbound attachment size the sidecar reads & inlines |
 | `PHOTON_TELEMETRY`        | false                      | Spectrum SDK telemetry — toggle with `hermes photon telemetry on\|off` (restart the gateway to apply) |
 | `PHOTON_MARKDOWN`         | true                       | Send agent replies as markdown (iMessage renders natively). `false` strips formatting to plain text |
+| `PHOTON_STANDALONE_SEND_RETRIES` | 1 (bounded 0-3)      | Retry standalone text sends after safe transient failures |
+| `PHOTON_STANDALONE_RETRY_BASE_DELAY_SECONDS` | 2 (bounded 0-30) | Base seconds for exponential retry backoff |
 | `PHOTON_REACTIONS`        | false                      | Tapback 👀/👍/👎 as processing status; tapbacks on bot messages reach the agent as `reaction:added:<emoji>` |
 
 ## Attachments & limitations

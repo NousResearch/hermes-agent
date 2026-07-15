@@ -112,3 +112,65 @@ class TestPostCommandDualWrite:
         result = self._run(monkeypatch, "sess-a", FakeEnv())
         assert result["exit_code"] == 0
         assert tt.get_session_cwd("sess-a") is None
+
+
+class TestFileToolsReadTheRecord:
+    """Step 2: file-tool path resolution prefers the session's own record."""
+
+    def test_two_sessions_resolve_into_their_own_recorded_cwds(self, tmp_path, monkeypatch):
+        import tools.file_tools as ft
+
+        wt_a = tmp_path / "wt_a"
+        wt_b = tmp_path / "wt_b"
+        for d in (wt_a, wt_b):
+            d.mkdir()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.setattr(ft, "_file_ops_cache", {})
+        monkeypatch.setattr(ft, "_last_known_cwd", {})
+        monkeypatch.setattr(tt, "_active_environments", {})
+
+        # Each session ran commands that recorded its own cwd. No env alive,
+        # no ownership metadata, no registered overrides — just the records.
+        tt.record_session_cwd("sess-a", str(wt_a))
+        tt.record_session_cwd("sess-b", str(wt_b))
+
+        assert ft._resolve_path_for_task("f.py", task_id="sess-a") == (wt_a / "f.py")
+        assert ft._resolve_path_for_task("f.py", task_id="sess-b") == (wt_b / "f.py")
+
+    def test_record_beats_foreign_env_cwd_without_ownership_metadata(self, tmp_path, monkeypatch):
+        """The leak-A scenario, solved structurally: no cwd_owner consulted."""
+        import tools.file_tools as ft
+
+        wt_a = tmp_path / "wt_a"
+        wt_b = tmp_path / "wt_b"
+        for d in (wt_a, wt_b):
+            d.mkdir()
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        monkeypatch.setattr(ft, "_file_ops_cache", {})
+        monkeypatch.setattr(ft, "_last_known_cwd", {})
+
+        class _Env:
+            cwd = str(wt_b)
+            cwd_owner = ""  # unowned — the case the legacy guard let through
+
+        monkeypatch.setattr(tt, "_active_environments", {"default": _Env()})
+        tt.record_session_cwd("sess-a", str(wt_a))
+
+        resolved = ft._resolve_path_for_task("f.py", task_id="sess-a")
+        assert resolved == (wt_a / "f.py")
+        assert not str(resolved).startswith(str(wt_b))
+
+
+class TestDelegateSeedsChildRecord:
+    def test_child_record_seeded_from_parent_then_isolated(self):
+        tt.record_session_cwd("parent-task", "/parent/worktree")
+        # what delegate_tool does at spawn:
+        tt.record_session_cwd("child-1", tt.get_session_cwd("parent-task"))
+
+        assert tt.get_session_cwd("child-1") == "/parent/worktree"
+        # child cds somewhere; parent record must be untouched.
+        tt.record_session_cwd("child-1", "/child/scratch")
+        assert tt.get_session_cwd("parent-task") == "/parent/worktree"
+        assert tt.get_session_cwd("child-1") == "/child/scratch"

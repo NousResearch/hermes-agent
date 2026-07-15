@@ -333,20 +333,36 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
 def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     """Best-effort absolute workspace root for divergence checks.
 
-    Prefers the live terminal cwd (the directory the agent is actually working
-    in). When no terminal command has run yet — so the live registry is empty —
-    falls back to a registered task/session cwd override (TUI/Desktop/ACP
-    sessions register a raw-keyed cwd before any tool runs), then to a
-    sentinel-free absolute ``$TERMINAL_CWD``. This is what lets a worktree or
-    Desktop session warn about (and resolve into) its workspace from the very
-    first ``write_file``/``patch``, before any ``cd`` has populated the live cwd.
+    Resolution (cwd rearch, step 2):
+
+      1. The session's own cwd RECORD (``terminal_tool.get_session_cwd``) —
+         written on every completed terminal command and seeded by workspace
+         registration, keyed by the raw session id. Because the record is
+         per-session, one session's ``cd`` can never leak into another
+         session's resolution — the property the legacy env-side tracking
+         (shared ``env.cwd`` + ownership stamping) could not guarantee.
+      2. A registered task/session cwd override (TUI/Desktop/ACP sessions
+         register a raw-keyed cwd before any tool runs). Normally already
+         mirrored into the record at registration; kept as a direct fallback
+         so a cleared/never-written record still resolves the workspace.
+      3. Legacy shared-env live cwd + preserved anchor (transition-only:
+         single-session flows whose commands ran before this code loaded).
+      4. A sentinel-free absolute ``$TERMINAL_CWD``.
 
     Returns ``None`` only when there is genuinely no reliable anchor, in which
     case callers fall back to the process cwd.
     """
-    live = _get_live_tracking_cwd(task_id)
-    if live:
-        return live
+    try:
+        from tools.terminal_tool import get_session_cwd
+
+        recorded = get_session_cwd(task_id)
+    except Exception:
+        recorded = None
+    if recorded:
+        # Keep the legacy mirror warm for the transition (readers of
+        # _last_known_cwd still exist until step 4 deletes them).
+        _get_live_tracking_cwd(task_id)
+        return recorded
     # A session-specific registered override (TUI/Desktop/ACP workspace cwd)
     # is more authoritative than the shared last-known anchor: it is keyed by
     # the raw session id, so when two worktree sessions share the single
@@ -356,6 +372,9 @@ def _authoritative_workspace_root(task_id: str = "default") -> str | None:
     registered = _registered_task_cwd_override(task_id)
     if registered:
         return registered
+    live = _get_live_tracking_cwd(task_id)
+    if live:
+        return live
     # When the terminal env was cleaned up mid-conversation, the live cwd is
     # gone but the directory the agent navigated to is still recorded in the
     # durable _last_known_cwd registry. Prefer it over the config/process

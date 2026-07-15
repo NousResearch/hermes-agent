@@ -2906,8 +2906,11 @@ async function applyUpdatesPosixInApp(opts: any) {
     }
   }
 
+  const macArch = process.arch === 'x64' ? 'mac-x64' : 'mac-arm64'
+  const alternateMacArch = macArch === 'mac-x64' ? 'mac-arm64' : 'mac-x64'
   const rebuiltApp = [
-    path.join(updateRoot, 'apps', 'desktop', 'release', 'mac-arm64', 'Hermes.app'),
+    path.join(updateRoot, 'apps', 'desktop', 'release', macArch, 'Hermes.app'),
+    path.join(updateRoot, 'apps', 'desktop', 'release', alternateMacArch, 'Hermes.app'),
     path.join(updateRoot, 'apps', 'desktop', 'release', 'mac', 'Hermes.app')
   ].find(directoryExists)
 

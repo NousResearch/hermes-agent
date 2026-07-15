@@ -1,7 +1,7 @@
 ---
 name: github-pr-workflow
 description: "GitHub PR lifecycle: branch, commit, open, CI, merge."
-version: 1.1.0
+version: 1.2.0
 author: Hermes Agent
 license: MIT
 platforms: [linux, macos, windows]
@@ -103,28 +103,112 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `ci`, `chore`, `perf`
 
 ## 2.5. Check Repository PR Template
 
-**Before creating a PR**, check if the target repository has a pull request template in `.github/PULL_REQUEST_TEMPLATE.md` (or `.github/pull_request_template.md`). Many projects require specific sections (description, test plan, checklist). Following the template increases the chance of quick review.
+**Before creating a PR**, check if the target repository has a pull request template. GitHub looks for templates in these locations (in order):
 
-### Check for Template
+- `PULL_REQUEST_TEMPLATE.md` in the repository root, `docs/`, or `.github/`
+- `PULL_REQUEST_TEMPLATE/` directory in any of the above paths — if present, enumerate its `.md` files
 
-**With gh:**
+Many projects require specific sections (description, test plan, checklist). Following the template increases the chance of quick review.
+
+### Check for Template (gh)
 
 ```bash
-gh api repos/$OWNER/$REPO/contents/.github/PULL_REQUEST_TEMPLATE.md --jq '.content' 2>/dev/null | base64 -d 2>/dev/null || echo "No PR template found"
+# Try all possible template locations
+for path in \
+  "PULL_REQUEST_TEMPLATE.md" \
+  "docs/PULL_REQUEST_TEMPLATE.md" \
+  ".github/PULL_REQUEST_TEMPLATE.md"; do
+  content=$(gh api "repos/$OWNER/$REPO/contents/$path" --jq '.content' 2>/dev/null | base64 -d 2>/dev/null)
+  if [ -n "$content" ]; then
+    echo "=== Template found at $path ==="
+    echo "$content"
+    FOUND=1
+    break
+  fi
+done
+
+# Also check for template directories
+if [ -z "$FOUND" ]; then
+  for dir in \
+    "PULL_REQUEST_TEMPLATE" \
+    "docs/PULL_REQUEST_TEMPLATE" \
+    ".github/PULL_REQUEST_TEMPLATE"; do
+    files=$(gh api "repos/$OWNER/$REPO/contents/$dir" --jq '.[].name' 2>/dev/null)
+    if [ -n "$files" ]; then
+      echo "=== Templates in $dir/ ==="
+      echo "$files" | while read -r f; do
+        echo "--- $f ---"
+        gh api "repos/$OWNER/$REPO/contents/$dir/$f" --jq '.content' | base64 -d 2>/dev/null
+      done
+      FOUND=1
+      break
+    fi
+  done
+fi
+
+[ -z "$FOUND" ] && echo "No PR template found"
 ```
 
-**With curl:**
+### Check for Template (curl)
 
 ```bash
-curl -s -H "Authorization: token $GITHUB_TOKEN" \
-  "https://api.github.com/repos/$OWNER/$REPO/contents/.github/PULL_REQUEST_TEMPLATE.md" \
-  | python3 -c "
+FOUND=
+for path in \
+  "PULL_REQUEST_TEMPLATE.md" \
+  "docs/PULL_REQUEST_TEMPLATE.md" \
+  ".github/PULL_REQUEST_TEMPLATE.md"; do
+  content=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+    "https://api.github.com/repos/$OWNER/$REPO/contents/$path" \
+    | python3 -c "
 import sys, json
 try:
-    content = json.load(sys.stdin)['content']
-    print(__import__('base64').b64decode(content).decode())
+    c = json.load(sys.stdin)['content']
+    print(__import__('base64').b64decode(c).decode())
 except:
-    print('No PR template found')"
+    pass")
+  if [ -n "$content" ]; then
+    echo "=== Template found at $path ==="
+    echo "$content"
+    FOUND=1
+    break
+  fi
+done
+
+if [ -z "$FOUND" ]; then
+  for dir in \
+    "PULL_REQUEST_TEMPLATE" \
+    "docs/PULL_REQUEST_TEMPLATE" \
+    ".github/PULL_REQUEST_TEMPLATE"; do
+    files=$(curl -s -H "Authorization: token $GITHUB_TOKEN" \
+      "https://api.github.com/repos/$OWNER/$REPO/contents/$dir" \
+      | python3 -c "
+import sys, json
+try:
+    for f in json.load(sys.stdin):
+        print(f['name'])
+except:
+    pass")
+    if [ -n "$files" ]; then
+      echo "=== Templates in $dir/ ==="
+      echo "$files" | while read -r f; do
+        echo "--- $f ---"
+        curl -s -H "Authorization: token $GITHUB_TOKEN" \
+          "https://api.github.com/repos/$OWNER/$REPO/contents/$dir/$f" \
+          | python3 -c "
+import sys, json
+try:
+    c = json.load(sys.stdin)['content']
+    print(__import__('base64').b64decode(c).decode())
+except:
+    pass"
+      done
+      FOUND=1
+      break
+    fi
+  done
+fi
+
+[ -z "$FOUND" ] && echo "No PR template found"
 ```
 
 If a template exists, **fill your PR body to match its structure** — include all required sections and checkboxes. This ensures the PR meets the project's standards before reviewers even look at it.

@@ -1793,7 +1793,11 @@ class HermesACPAgent(acp.Agent):
             toolsets = _expand_acp_enabled_toolsets(
                 getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"]
             )
-            tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
+            tools = get_tool_definitions(
+                enabled_toolsets=toolsets,
+                disabled_toolsets=getattr(state.agent, "disabled_toolsets", None),
+                quiet_mode=True,
+            )
             tool_view = SimpleNamespace(
                 tools=list(tools or []),
                 valid_tool_names={

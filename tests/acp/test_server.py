@@ -1860,3 +1860,59 @@ class TestRegisterSessionMcpServers:
         with patch("tools.mcp_tool.register_mcp_servers", side_effect=RuntimeError("boom")):
             # Should not raise
             await agent._register_session_mcp_servers(state, [server])
+
+
+# ---------------------------------------------------------------------------
+# disabled_toolsets filter the ACP tool surface (real get_tool_definitions)
+# ---------------------------------------------------------------------------
+
+
+class TestDisabledToolsetsFilterToolSurface:
+    """Config-disabled toolsets must be absent from ACP-generated definitions.
+
+    These run the real ``get_tool_definitions`` (no patching) so they cover
+    the actual filtering behavior, not just which kwargs were forwarded.
+    """
+
+    @staticmethod
+    def _listed_names(listing: str) -> set:
+        return {
+            line.strip().split(":", 1)[0]
+            for line in listing.splitlines()[1:]
+        }
+
+    def test_cmd_tools_strips_configured_disabled_toolsets(self, agent, mock_manager):
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent._memory_manager = None
+
+        state.agent.disabled_toolsets = None
+        baseline = agent._cmd_tools("", state)
+        assert baseline.startswith("Available tools"), baseline
+        assert "todo" in self._listed_names(baseline)
+
+        state.agent.disabled_toolsets = ["todo"]
+        filtered = agent._cmd_tools("", state)
+        assert filtered.startswith("Available tools"), filtered
+        assert "todo" not in self._listed_names(filtered)
+
+    @pytest.mark.asyncio
+    async def test_mcp_tool_rebuild_strips_configured_disabled_toolsets(
+        self, agent, mock_manager
+    ):
+        from acp.schema import McpServerStdio
+
+        state = mock_manager.create_session(cwd="/tmp")
+        state.agent.enabled_toolsets = ["hermes-acp"]
+        state.agent.disabled_toolsets = ["todo"]
+        state.agent.tools = []
+        state.agent.valid_tool_names = set()
+        state.agent._memory_manager = None
+
+        server = McpServerStdio(name="srv", command="/bin/test", args=[], env=[])
+
+        with patch("tools.mcp_tool.register_mcp_servers", return_value=[]):
+            await agent._register_session_mcp_servers(state, [server])
+
+        assert state.agent.valid_tool_names, "tool surface rebuild produced no tools"
+        assert "todo" not in state.agent.valid_tool_names

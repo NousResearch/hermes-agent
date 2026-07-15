@@ -7143,6 +7143,38 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return True
             if not platform_config.enabled:
                 continue
+
+            # #30736 — when the user has explicitly disabled the platform's
+            # plugin (`hermes plugins disable platforms/<name>`), skip it
+            # cleanly here instead of inheriting the legacy code path that
+            # would try to instantiate the adapter, fail noisily ("No bot
+            # token configured" / "No adapter available"), and queue the
+            # platform for endless reconnection attempts. Leaves a single
+            # INFO log so the user can correlate it with their action and
+            # knows how to re-enable.
+            try:
+                from hermes_cli.plugins import is_platform_plugin_disabled
+                _plugin_disabled = is_platform_plugin_disabled(platform.value)
+            except Exception:
+                _plugin_disabled = False
+            if _plugin_disabled:
+                logger.info(
+                    "Skipping platform '%s': its plugin is disabled "
+                    "(run 'hermes plugins enable platforms/%s' to re-enable, "
+                    "or set platforms.%s.enabled=false in config.yaml to "
+                    "silence this notice).",
+                    platform.value,
+                    platform.value,
+                    platform.value,
+                )
+                self._update_platform_runtime_status(
+                    platform.value,
+                    platform_state="disabled",
+                    error_code=None,
+                    error_message="plugin disabled",
+                )
+                continue
+
             enabled_platform_count += 1
             
             adapter = self._create_adapter(platform, platform_config)

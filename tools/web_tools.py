@@ -97,6 +97,7 @@ from tools.tool_backend_helpers import (  # noqa: F401
     nous_tool_gateway_unavailable_message,
     prefers_gateway,
 )
+from tools.agentwiki_routing import maybe_agentwiki_route_search
 from tools.url_safety import async_is_safe_url, normalize_url_for_request, sensitive_query_param_name
 import sys
 
@@ -672,6 +673,19 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
+        web_config = _load_web_config()
+        agentwiki_result = maybe_agentwiki_route_search(query, web_config, limit=limit)
+        decision_record = agentwiki_result.decision.log_record(query)
+        if agentwiki_result.response_data is not None:
+            response_data = agentwiki_result.response_data
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            debug_call_data["agentwiki_decision"] = decision_record
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         # Dispatch through the web search registry. All 7 providers
         # (brave-free, ddgs, searxng, exa, parallel, tavily, firecrawl)
         # now live as plugins; the dispatcher is just a registry lookup +
@@ -722,9 +736,19 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             )
             response_data = provider.search(query, limit)
 
+        response_data.setdefault("source_routing", {
+            "selected_source": "web_search",
+            "selected_wiki_slug": agentwiki_result.decision.selected_wiki_slug,
+            "selection_reason": agentwiki_result.decision.reason,
+            "current_as_used": agentwiki_result.decision.current_as_used,
+            "pages_fetched_count": agentwiki_result.decision.pages_fetched_count,
+            "fallback_occurred": bool(agentwiki_result.decision.fallback_occurred or agentwiki_result.decision.reason != "disabled"),
+        })
+
         debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
         result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
         debug_call_data["final_response_size"] = len(result_json)
+        debug_call_data["agentwiki_decision"] = decision_record
         _debug.log_call("web_search_tool", debug_call_data)
         _debug.save()
         return result_json

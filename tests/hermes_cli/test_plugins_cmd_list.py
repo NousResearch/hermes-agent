@@ -1,5 +1,6 @@
 import argparse
 import json
+from types import SimpleNamespace
 
 from hermes_cli import plugins_cmd
 
@@ -84,5 +85,76 @@ def test_cmd_list_json_output(monkeypatch, capsys):
             "version": "2.2.0",
             "description": "Search",
             "source": "git",
+        }
+    ]
+
+
+def test_discover_all_plugins_includes_entrypoint_plugins(monkeypatch, tmp_path):
+    bundled_dir = tmp_path / "bundled"
+    user_dir = tmp_path / "user"
+    bundled_dir.mkdir()
+    user_dir.mkdir()
+
+    dist = SimpleNamespace(
+        version="0.1.0",
+        metadata={"Summary": "Karpathy-style LLM Wikis for Hermes"},
+    )
+    entry_point = SimpleNamespace(
+        name="wiki",
+        value="adapters.hermes.cli_plugin",
+        group="hermes_agent.plugins",
+        dist=dist,
+    )
+
+    monkeypatch.setattr(plugins_cmd, "_plugins_dir", lambda: user_dir)
+    monkeypatch.setattr(
+        "hermes_cli.plugins.get_bundled_plugins_dir",
+        lambda: bundled_dir,
+    )
+    monkeypatch.setattr(
+        plugins_cmd.importlib.metadata,
+        "entry_points",
+        lambda: [entry_point],
+    )
+
+    entries = plugins_cmd._discover_all_plugins()
+
+    assert entries == [
+        (
+            "wiki",
+            "0.1.0",
+            "Karpathy-style LLM Wikis for Hermes",
+            "entrypoint",
+            "adapters.hermes.cli_plugin",
+            "wiki",
+        )
+    ]
+
+
+def test_cmd_list_json_output_includes_entrypoint_source(monkeypatch, capsys):
+    entries = [
+        (
+            "wiki",
+            "0.1.0",
+            "Karpathy-style LLM Wikis for Hermes",
+            "entrypoint",
+            "adapters.hermes.cli_plugin",
+            "wiki",
+        )
+    ]
+    monkeypatch.setattr(plugins_cmd, "_discover_all_plugins", lambda: entries)
+    monkeypatch.setattr(plugins_cmd, "_get_enabled_set", lambda: {"wiki"})
+    monkeypatch.setattr(plugins_cmd, "_get_disabled_set", lambda: set())
+
+    plugins_cmd.cmd_list(_args(json=True))
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == [
+        {
+            "name": "wiki",
+            "status": "enabled",
+            "version": "0.1.0",
+            "description": "Karpathy-style LLM Wikis for Hermes",
+            "source": "entrypoint",
         }
     ]

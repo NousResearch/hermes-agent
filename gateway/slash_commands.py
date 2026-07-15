@@ -54,6 +54,11 @@ logger = logging.getLogger("gateway.run")
 # its worker thread. (#35994)
 _RESET_CLEANUP_TIMEOUT_S = 30.0
 
+# /status is an interactive command. Model metadata resolution may consult a
+# remote registry, so it must degrade gracefully rather than delay or break the
+# whole status response when that lookup is unavailable.
+_STATUS_CONTEXT_METADATA_TIMEOUT_S = 3.0
+
 
 def _model_switch_skew_guard() -> Optional[str]:
     """Refuse a model switch when the gateway is running stale code.
@@ -604,6 +609,44 @@ class GatewaySlashCommandsMixin:
             configured_context = model_cfg.get("context_length") if isinstance(model_cfg, dict) else None
             if isinstance(configured_context, int) and configured_context > 0:
                 context_total = configured_context
+            elif model_name:
+                from agent.model_metadata import get_model_context_length_async
+
+                if not base_url and isinstance(model_cfg, dict):
+                    base_url = _clean_str(model_cfg.get("base_url"))
+                try:
+                    resolved_context = await asyncio.wait_for(
+                        get_model_context_length_async(
+                            model_name,
+                            base_url=base_url,
+                            provider=provider_name,
+                        ),
+                        timeout=_STATUS_CONTEXT_METADATA_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Timed out resolving context length for /status model %s",
+                        model_name,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to resolve context length for /status model %s: %s",
+                        model_name,
+                        exc,
+                    )
+                else:
+                    if (
+                        isinstance(resolved_context, int)
+                        and not isinstance(resolved_context, bool)
+                        and resolved_context > 0
+                    ):
+                        context_total = resolved_context
+                    else:
+                        logger.warning(
+                            "Ignoring invalid context length for /status model %s: %r",
+                            model_name,
+                            resolved_context,
+                        )
 
         model_line = ""
         if model_name:
@@ -611,6 +654,24 @@ class GatewaySlashCommandsMixin:
                 model_line = t("gateway.status.model_provider", model=model_name, provider=provider_name)
             else:
                 model_line = t("gateway.status.model", model=model_name)
+
+        reasoning_config = None
+        if status_agent is not None and status_agent is not _AGENT_PENDING_SENTINEL:
+            candidate = getattr(status_agent, "reasoning_config", None)
+            if isinstance(candidate, dict):
+                reasoning_config = candidate
+        if reasoning_config is None:
+            reasoning_config = self._resolve_session_reasoning_config(
+                source=source,
+                session_key=session_key,
+            )
+        if reasoning_config is None:
+            reasoning_level = t("gateway.reasoning.level_default")
+        elif reasoning_config.get("enabled") is False:
+            reasoning_level = t("gateway.reasoning.level_disabled")
+        else:
+            reasoning_level = reasoning_config.get("effort", "medium")
+        reasoning_line = t("gateway.status.reasoning", level=reasoning_level)
 
         context_line = ""
         if context_total:
@@ -637,6 +698,7 @@ class GatewaySlashCommandsMixin:
         ])
         if model_line:
             lines.append(model_line)
+        lines.append(reasoning_line)
         if context_line:
             lines.append(context_line)
         lines.extend([

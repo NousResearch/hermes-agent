@@ -288,6 +288,7 @@ Future messages in this room will use that transcript until `/reset` or another 
     last_activity:         "**Letzte Aktivität:** {timestamp}"
     model:                 "**Modell:** `{model}`"
     model_provider:        "**Modell:** `{model}` ({provider})"
+    reasoning:             "**Reasoning:** {level}"
     context:               "**Kontext:** {used} / {total} ({pct}%)"
     context_used:          "**Kontext:** ~{used} Tokens"
     tokens:                "**Kumulierte API-Tokens (bei jedem Aufruf erneut gesendet):** {tokens}"

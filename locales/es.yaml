@@ -285,6 +285,7 @@ gateway:
     last_activity:         "**Última actividad:** {timestamp}"
     model:                 "**Model:** `{model}`"
     model_provider:        "**Model:** `{model}` ({provider})"
+    reasoning:             "**Razonamiento:** {level}"
     context:               "**Context:** {used} / {total} ({pct}%)"
     context_used:          "**Context:** ~{used} tokens"
     tokens:                "**Tokens de API acumulados (reenviados en cada llamada):** {tokens}"

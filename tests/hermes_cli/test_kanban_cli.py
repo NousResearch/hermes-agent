@@ -714,3 +714,56 @@ def test_run_slash_board_override_does_not_change_boards_show_current(kanban_hom
     out = kc.run_slash("--board beta boards show")
 
     assert "Current board: alpha" in out
+
+
+def test_run_slash_create_records_session_provenance(kanban_home, monkeypatch):
+    import re
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(kb, "_test_context_markers", lambda: [])
+    monkeypatch.setenv("HERMES_PROFILE", "sentinel")
+
+    out = kc.run_slash("create 'session provenance'")
+    match = re.search(r"(t_[a-f0-9]+)", out)
+    assert match is not None
+    tid = match.group(1)
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.created_by == "session:sentinel"
+
+
+def test_run_slash_create_records_worker_provenance(kanban_home, monkeypatch):
+    import re
+
+    monkeypatch.delenv("PYTEST_CURRENT_TEST", raising=False)
+    monkeypatch.setattr(kb, "_test_context_markers", lambda: [])
+    monkeypatch.setenv("HERMES_PROFILE", "qa")
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent123")
+
+    out = kc.run_slash("create 'worker provenance'")
+    match = re.search(r"(t_[a-f0-9]+)", out)
+    assert match is not None
+    tid = match.group(1)
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.created_by == "worker:qa:t_parent123"
+
+
+def test_run_slash_create_records_test_provenance(kanban_home, monkeypatch):
+    import re
+
+    monkeypatch.setenv("HERMES_PROFILE", "qa")
+
+    out = kc.run_slash("create 'test provenance' --created-by alice")
+    match = re.search(r"(t_[a-f0-9]+)", out)
+    assert match is not None
+    tid = match.group(1)
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+    assert task is not None
+    assert task.created_by == "test:alice"

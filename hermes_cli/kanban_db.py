@@ -81,6 +81,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import threading
 import logging
 import time
@@ -2777,6 +2778,150 @@ def _canonical_brand(brand: Optional[str], board: Optional[str]) -> Optional[str
         return None
 
 
+_CREATED_BY_PLACEHOLDERS = {"", "user", "worker"}
+
+
+def _login_home_hermes_root() -> Path:
+    """Return the real login user's default Hermes root."""
+    if sys.platform == "win32":
+        local_appdata = os.environ.get("LOCALAPPDATA", "").strip()
+        base = Path(local_appdata) if local_appdata else Path.home() / "AppData" / "Local"
+        return base / "hermes"
+    try:
+        import pwd  # type: ignore
+        return Path(pwd.getpwuid(os.getuid()).pw_dir) / ".hermes"
+    except Exception:
+        return Path(os.path.expanduser("~")) / ".hermes"
+
+
+def _path_variants(path: Path) -> set[Path]:
+    """Return equivalent path variants for robust prefix comparisons."""
+    expanded = path.expanduser()
+    variants: set[Path] = {expanded}
+    try:
+        variants.add(expanded.resolve(strict=False))
+    except OSError:
+        pass
+    extra: set[Path] = set()
+    for candidate in list(variants):
+        raw = str(candidate)
+        if raw.startswith("/private/"):
+            extra.add(Path(raw[len("/private"):]))
+        elif raw.startswith("/var/"):
+            extra.add(Path("/private" + raw))
+    variants.update(extra)
+    return variants
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    for candidate in _path_variants(path):
+        for base in _path_variants(root):
+            try:
+                candidate.relative_to(base)
+                return True
+            except ValueError:
+                continue
+    return False
+
+
+def _path_looks_temporary(path: Path) -> bool:
+    roots = [Path(tempfile.gettempdir())]
+    tmpdir_env = os.environ.get("TMPDIR", "").strip()
+    if tmpdir_env:
+        roots.append(Path(tmpdir_env))
+    return any(_path_is_within(path, root) for root in roots)
+
+
+def _is_live_board_db_path(path: Path) -> bool:
+    live_root = _login_home_hermes_root()
+    boards_root = live_root / "kanban" / "boards"
+    return path == (live_root / "kanban.db") or _path_is_within(path, boards_root)
+
+
+def _test_context_markers() -> list[str]:
+    markers: list[str] = []
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        markers.append("pytest")
+    checks = [
+        ("HERMES_HOME", "temp HERMES_HOME"),
+        ("HOME", "temp HOME"),
+        ("HERMES_KANBAN_WORKSPACE", "temp workspace"),
+    ]
+    for env_name, label in checks:
+        raw = os.environ.get(env_name, "").strip()
+        if raw and _path_looks_temporary(Path(raw)):
+            markers.append(label)
+    try:
+        cwd = Path.cwd()
+    except OSError:
+        cwd = None
+    if cwd is not None and _path_looks_temporary(cwd):
+        markers.append("temp cwd")
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for marker in markers:
+        if marker not in seen:
+            seen.add(marker)
+            deduped.append(marker)
+    return deduped
+
+
+def create_provenance_kind() -> str:
+    """Classify the current create caller for board-visible provenance."""
+    if _test_context_markers():
+        return "test"
+    if os.environ.get("HERMES_KANBAN_TASK", "").strip():
+        return "worker"
+    return "session"
+
+
+def format_created_by(
+    raw_created_by: Optional[str],
+    *,
+    fallback_actor: Optional[str] = None,
+) -> str:
+    """Return a board-visible created_by string with origin provenance."""
+    label = (raw_created_by or "").strip()
+    if label.lower() in _CREATED_BY_PLACEHOLDERS:
+        label = ""
+    if not label:
+        label = (fallback_actor or "").strip()
+    if not label:
+        label = "user"
+    kind = create_provenance_kind()
+    if kind == "worker":
+        task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
+        return f"worker:{label}:{task_id}" if task_id else f"worker:{label}"
+    return f"{kind}:{label}"
+
+
+def _created_by_mentions_actor(created_by: Optional[str], actor: Optional[str]) -> bool:
+    created = (created_by or "").strip()
+    target = (actor or "").strip()
+    if not created or not target:
+        return False
+    if created == target:
+        return True
+    parts = created.split(":")
+    return len(parts) >= 2 and parts[1] == target
+
+
+def _guard_live_board_create_from_test_context(board: Optional[str]) -> None:
+    """Refuse live-board task creation from temp/test contexts."""
+    target = kanban_db_path(board=board)
+    if not _is_live_board_db_path(target):
+        return
+    markers = _test_context_markers()
+    if not markers:
+        return
+    detail = ", ".join(markers)
+    raise ValueError(
+        "refusing to create task on live kanban board "
+        f"{target} from test/temp context ({detail}). "
+        "Use a temp HERMES_HOME / throwaway board instead."
+    )
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2828,6 +2973,7 @@ def create_task(
     translation skill regardless of the profile's default config).
     """
     assignee = _canonical_assignee(assignee)
+    _guard_live_board_create_from_test_context(board)
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -3124,6 +3270,7 @@ def create_task(
                     "created",
                     {
                         "assignee": assignee,
+                        "created_by": created_by,
                         "status": task_status,
                         "parents": list(parents),
                         "tenant": tenant,
@@ -4670,7 +4817,7 @@ def _verify_created_cards(
             phantom.append(cid)
             continue
         # Accept if any of the three trust conditions holds.
-        if completing_assignee and created_by == completing_assignee:
+        if _created_by_mentions_actor(created_by, completing_assignee):
             verified.append(cid)
         elif created_by == completing_task_id:
             verified.append(cid)

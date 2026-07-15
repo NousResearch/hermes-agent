@@ -1156,7 +1156,10 @@ def _handle_create(args: dict, **kw) -> str:
                     int(goal_max_turns) if goal_max_turns is not None else None
                 ),
                 initial_status=str(initial_status),
-                created_by=os.environ.get("HERMES_PROFILE") or "worker",
+                created_by=kb.format_created_by(
+                    args.get("created_by"),
+                    fallback_actor=os.environ.get("HERMES_PROFILE") or "worker",
+                ),
                 session_id=session_id,
                 board=board,
                 workspace_pinned=workspace_pinned,

@@ -5582,3 +5582,37 @@ def test_bare_connect_does_not_close_on_context_exit(tmp_path):
     # Still usable after with-block exit (the leak).
     conn.execute("SELECT 1").fetchone()
     conn.close()  # explicit close to avoid leaking THIS test
+
+
+def test_create_task_rejects_live_board_create_from_temp_context(tmp_path, monkeypatch):
+    live_root = tmp_path / "live-login-home" / ".hermes"
+    live_db = live_root / "kanban" / "boards" / "fleet-infra" / "kanban.db"
+    live_db.parent.mkdir(parents=True, exist_ok=True)
+    temp_home = tmp_path / "pytest-home" / ".hermes"
+    temp_home.mkdir(parents=True, exist_ok=True)
+
+    monkeypatch.setattr(kb, "_login_home_hermes_root", lambda: live_root)
+    monkeypatch.setenv("HERMES_HOME", str(temp_home))
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(live_db))
+
+    kb._INITIALIZED_PATHS.discard(str(live_db.resolve()))
+    conn = kb.connect(db_path=live_db)
+    try:
+        with pytest.raises(ValueError, match="refusing to create task on live kanban board"):
+            kb.create_task(conn, title="fixture repro")
+        row = conn.execute("SELECT COUNT(*) AS n FROM tasks").fetchone()
+        assert row["n"] == 0
+    finally:
+        conn.close()
+
+
+def test_verify_created_cards_accepts_worker_provenance_prefix(kanban_home):
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="parent", assignee="alice")
+        child = kb.create_task(conn, title="child", assignee="reviewer", created_by="worker:alice:t_parent")
+        verified, phantom = kb._verify_created_cards(conn, parent, [child])
+        assert verified == [child]
+        assert phantom == []
+    finally:
+        conn.close()

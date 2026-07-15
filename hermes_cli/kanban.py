@@ -343,8 +343,8 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "durations (90s, 30m, 2h, 1d). When exceeded, "
                                "the dispatcher SIGTERMs (then SIGKILLs) the worker "
                                "and re-queues the task.")
-    p_create.add_argument("--created-by", default="user",
-                          help="Author name recorded on the task (default: user)")
+    p_create.add_argument("--created-by", default=None,
+                          help="Optional author label. Stored with session/worker/test provenance instead of the old anonymous placeholder.")
     p_create.add_argument("--skill", action="append", default=[], dest="skills",
                           help="Skill to force-load into the worker "
                                "(repeatable). The kanban lifecycle is already "
@@ -1015,6 +1015,10 @@ def _profile_author() -> str:
         return "user"
 
 
+def _created_by_for_cli(raw_created_by: Optional[str]) -> str:
+    return kb.format_created_by(raw_created_by, fallback_actor=_profile_author())
+
+
 # ---------------------------------------------------------------------------
 # Boards management (hermes kanban boards …)
 # ---------------------------------------------------------------------------
@@ -1347,7 +1351,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             title=args.title,
             body=args.body,
             assignee=args.assignee,
-            created_by=args.created_by or _profile_author(),
+            created_by=_created_by_for_cli(args.created_by),
             workspace_kind=ws_kind,
             workspace_path=ws_path,
             branch_name=branch_name,
@@ -1403,7 +1407,7 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
             verifier_assignee=args.verifier,
             synthesizer_assignee=args.synthesizer,
             tenant=args.tenant,
-            created_by=args.created_by or _profile_author(),
+            created_by=_created_by_for_cli(args.created_by),
             priority=args.priority,
             idempotency_key=getattr(args, "idempotency_key", None),
         )

@@ -2906,9 +2906,12 @@ class SlackAdapter(BasePlatformAdapter):
             chat_id, team_id=self._metadata_team_id(metadata)
         )
         try:
-            import httpx as _httpx
             from urllib.parse import unquote as _unquote
-            from tools.url_safety import is_safe_url as _is_safe_url
+            from gateway.platforms.base import _ssrf_redirect_guard
+            from tools.url_safety import (
+                create_ssrf_safe_async_client,
+                is_safe_url as _is_safe_url,
+            )
         except Exception:
             await super().send_multiple_images(chat_id, images, metadata, human_delay)
             return
@@ -2925,7 +2928,7 @@ class SlackAdapter(BasePlatformAdapter):
             file_uploads: List[Dict[str, Any]] = []
             initial_comment_parts: List[str] = []
             try:
-                async with _httpx.AsyncClient(
+                async with create_ssrf_safe_async_client(
                     timeout=30.0,
                     follow_redirects=True,
                     event_hooks={"response": [_ssrf_redirect_guard]},

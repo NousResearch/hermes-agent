@@ -219,8 +219,14 @@ class WeComAdapter(BasePlatformAdapter):
         try:
             # Tighter keepalive so idle CLOSE_WAIT drains promptly (#18451).
             from gateway.platforms._http_client_limits import platform_httpx_limits
-            self._http_client = httpx.AsyncClient(
-                timeout=30.0, follow_redirects=True, limits=platform_httpx_limits(),
+            from gateway.platforms.base import _ssrf_redirect_guard
+            from tools.url_safety import create_ssrf_safe_async_client
+
+            self._http_client = create_ssrf_safe_async_client(
+                timeout=30.0,
+                follow_redirects=True,
+                event_hooks={"response": [_ssrf_redirect_guard]},
+                limits=platform_httpx_limits(),
             )
             await self._open_connection()
             self._mark_connected()
@@ -1095,14 +1101,20 @@ class WeComAdapter(BasePlatformAdapter):
         url: str,
         max_bytes: int,
     ) -> Tuple[bytes, Dict[str, str]]:
-        from tools.url_safety import is_safe_url
+        from gateway.platforms.base import _ssrf_redirect_guard
+        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+
         if not is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url[:80]}")
 
         if not HTTPX_AVAILABLE:
             raise RuntimeError("httpx is required for WeCom media download")
 
-        client = self._http_client or httpx.AsyncClient(timeout=30.0, follow_redirects=True)
+        client = self._http_client or create_ssrf_safe_async_client(
+            timeout=30.0,
+            follow_redirects=True,
+            event_hooks={"response": [_ssrf_redirect_guard]},
+        )
         created_client = client is not self._http_client
         try:
             async with client.stream(

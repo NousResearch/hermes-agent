@@ -128,6 +128,7 @@ import { runNativeLogin } from './native-oauth-login'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { createKeepAwake } from './power-save'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import { resolveRemoteConnectionWithRetry } from './remote-connection-retry'
 import * as remoteLifecycle from './remote-lifecycle'
 import { RemoteLivenessTracker, RemoteRevalidationCoordinator, revalidateRemoteConnection } from './remote-liveness'
 import {
@@ -7801,9 +7802,23 @@ async function startHermes() {
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
     // Resolve for the desktop's primary profile so a per-profile remote
     // override on the active profile is honored (falls back to env / global).
+    // A controlled VPS restart can outlive one 8-second OAuth-ticket request.
+    // Keep the boot pending through a bounded transport-only retry window,
+    // minting a fresh single-use ticket on every attempt. Authentication
+    // failures bypass this helper and surface sign-in immediately.
+    const profile = primaryProfileKey()
+    const remoteConfigured = globalRemoteActive() || profileHasRemoteOverride(profile)
+
+    const remote = remoteConfigured
+      ? await resolveRemoteConnectionWithRetry(() => resolveRemoteBackend(profile), {
+          onRetry: (_error, attempt, delayMs) => {
+            rememberLog(`Remote Hermes backend unavailable; retrying connection after ${delayMs}ms (attempt ${attempt}).`)
+          }
+        })
+      : await resolveRemoteBackend(profile)
+
     // Re-read once resolved so the classification tracks the value actually used.
     attemptedRemote = primaryBackendIsRemote()
-    const remote = await resolveRemoteBackend(primaryProfileKey())
 
     if (remote) {
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)

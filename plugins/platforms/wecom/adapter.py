@@ -270,13 +270,26 @@ class WeComAdapter(BasePlatformAdapter):
         logger.info("[%s] Disconnected", self.name)
 
     async def _cleanup_ws(self) -> None:
-        """Close the live websocket/session, if any."""
+        """Close the live websocket/session, if any.
+
+        Defensive against transport-in-closing-state: ``ws.close()`` can raise
+        ``RuntimeError("Cannot write to closing transport")`` when the asyncio
+        transport is mid-close. Without the try/except, the exception skips
+        ``self._ws = None``, leaving a dangling broken transport that blocks
+        every subsequent reconnect attempt (issue #64512).
+        """
         if self._ws and not self._ws.closed:
-            await self._ws.close()
+            try:
+                await self._ws.close()
+            except Exception as exc:
+                logger.debug("[%s] ws.close() raised (already closing): %s", self.name, exc)
         self._ws = None
 
         if self._session and not self._session.closed:
-            await self._session.close()
+            try:
+                await self._session.close()
+            except Exception as exc:
+                logger.debug("[%s] session.close() raised: %s", self.name, exc)
         self._session = None
 
     async def _open_connection(self) -> None:

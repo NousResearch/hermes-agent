@@ -66,6 +66,35 @@ sections in priority order. If any section changes (key, priority, or
 content), the cache is invalidated for the NEXT session — never mid-session.
 This follows the same contract as toolset changes.
 
+### Resume contract
+
+Rendered sections must survive process restarts and session resumes
+byte-identically. This is a hard requirement because the system prompt
+is cache-prefixed — a single byte difference on resume invalidates the
+entire KV-cache and the user pays full token cost for recomputation.
+
+**Persistence:** each rendered section is stored in the session store
+(`state.db`) keyed by `section_id` + session_id. On `hermes --resume`,
+sections are replayed verbatim from the store rather than re-evaluated.
+
+**Acceptance test sketch:**
+1. Start session, register a section → rendered bytes stored in state.db
+2. Exit process, restart, resume session
+3. Assert byte-identical system prompt (no re-evaluation, no cache miss)
+
+### Capacity model
+
+| Parameter | Default | Notes |
+|-----------|---------|-------|
+| Per-section char budget | 2000 | Sections exceeding this are warn-truncated (head-preserving) |
+| Aggregate budget per session | 8000 | Sum of all injected sections across all plugins |
+| Truncation behavior | Head-truncate + warn | Fail-open: never block session start on budget |
+
+Each section must have a stable `section_id` (e.g.
+`hermes:kanban-advanced:worker-guidance`) for dedup across plugin
+reloads and session resumes. Duplicate IDs from different plugins are
+rejected at registration time with a logged warning.
+
 ### Concrete use case (kanban-advanced)
 
 ```python
@@ -140,6 +169,13 @@ for result in plugin_hints:
 Environment hints are built once at session start. Plugin hooks fire during
 that single construction pass. The resulting block is cached for the session
 lifetime — identical to current behavior.
+
+**Mutable hints and cache safety:** hint values that change between sessions
+(cwd, git branch, active profile) must NOT be placed in the cached system
+prompt prefix. Hints are injected into a separate, non-cached block that is
+re-evaluated on every session start and resume. Plugin hooks producing
+potentially-mutable hints should prefer this non-cached block over
+`register_system_prompt_section`.
 
 ---
 

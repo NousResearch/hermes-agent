@@ -27,7 +27,7 @@ import asyncio
 import logging
 import threading
 import time
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Dict, Any, Callable, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
 from toolsets import resolve_toolset, validate_toolset
@@ -1081,6 +1081,7 @@ def handle_function_call(
     tool_request_middleware_trace: Optional[List[Dict[str, Any]]] = None,
     enabled_toolsets: Optional[List[str]] = None,
     disabled_toolsets: Optional[List[str]] = None,
+    clarify_callback: Optional[Callable] = None,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -1090,6 +1091,16 @@ def handle_function_call(
         function_args: Arguments for the function.
         task_id: Unique identifier for terminal/browser session isolation.
         user_task: The user's original task (for browser_snapshot context).
+        clarify_callback: The platform's clarify UI callback
+                       (``callback(question, choices) -> str``), threaded down
+                       from the agent as *framework execution context* — a
+                       dedicated parameter, never sourced from ``function_args``,
+                       so the model cannot spoof it. It is forwarded verbatim
+                       into every registry dispatch (and across the ``tool_call``
+                       bridge) so registry-dispatched tools — notably plugin
+                       handlers — can nested-dispatch ``clarify`` and reach the
+                       real user. ``None`` (the default) keeps clarify failing
+                       closed, exactly as when no platform callback is wired.
         enabled_tools: Tool names enabled for this session.  When provided,
                        execute_code uses this list to determine which sandbox
                        tools to generate.  Falls back to the process-global
@@ -1185,6 +1196,7 @@ def handle_function_call(
                 tool_request_middleware_trace=list(_tool_middleware_trace),
                 enabled_toolsets=enabled_toolsets,
                 disabled_toolsets=disabled_toolsets,
+                clarify_callback=clarify_callback,
             )
 
     _tool_original_args = dict(function_args)
@@ -1319,6 +1331,7 @@ def handle_function_call(
                         task_id=task_id,
                         session_id=session_id,
                         user_task=user_task,
+                        clarify_callback=clarify_callback,
                     )
             from hermes_cli.middleware import run_tool_execution_middleware
 

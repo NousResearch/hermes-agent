@@ -1,6 +1,7 @@
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { KbdCombo } from '@/components/ui/kbd'
+import { Switch } from '@/components/ui/switch'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
@@ -27,6 +28,11 @@ export const PRIMARY_ICON_BTN = cn(
   'disabled:bg-foreground/30 disabled:text-background disabled:opacity-100'
 )
 
+const MODE_PILL = cn(
+  'flex h-(--composer-control-size) shrink-0 items-center gap-1.5 rounded-md px-2 text-[0.6875rem] font-semibold leading-4',
+  'shadow-[inset_0_0_0_1px_currentColor] transition-colors'
+)
+
 interface ConversationProps {
   active: boolean
   level: number
@@ -47,10 +53,14 @@ export function ComposerControls({
   compactModelPill = false,
   conversation,
   disabled,
+  goalActive,
   hasComposerPayload,
+  planMode,
   state,
   voiceStatus,
   onDictate,
+  onGoal,
+  onPlanModeChange,
   onSteer,
   onToggleAutoSpeak
 }: {
@@ -62,10 +72,14 @@ export function ComposerControls({
   compactModelPill?: boolean
   conversation: ConversationProps
   disabled: boolean
+  goalActive: boolean
   hasComposerPayload: boolean
+  planMode: boolean
   state: ChatBarState
   voiceStatus: VoiceStatus
   onDictate: () => void
+  onGoal: () => void
+  onPlanModeChange: (enabled: boolean) => void
   onSteer: () => void
   onToggleAutoSpeak: () => void
 }) {
@@ -89,6 +103,53 @@ export function ComposerControls({
 
   return (
     <div className="ml-auto flex shrink-0 items-center gap-(--composer-control-gap)">
+      <Tip label={planMode ? c.planModeOn : c.planModeOff}>
+        <label
+          aria-label={planMode ? c.planModeOn : c.planModeOff}
+          className={cn(
+            MODE_PILL,
+            'cursor-pointer bg-sky-500/10 text-sky-700 hover:bg-sky-500/15 dark:text-sky-200',
+            disabled && 'pointer-events-none opacity-50',
+            planMode && 'bg-sky-500 text-white shadow-none hover:bg-sky-500/90 dark:bg-sky-400 dark:text-sky-950'
+          )}
+        >
+          <Codicon name="checklist" size="0.82rem" />
+          <span>{c.planModeLabel}</span>
+          <Switch
+            checked={planMode}
+            className={cn(
+              'ml-0.5 border-sky-500/40',
+              planMode && 'data-[state=checked]:bg-white/90 [&_[data-slot=switch-thumb]]:bg-sky-600'
+            )}
+            disabled={disabled}
+            onCheckedChange={checked => {
+              triggerHaptic('selection')
+              onPlanModeChange(Boolean(checked))
+            }}
+            size="xs"
+          />
+        </label>
+      </Tip>
+      <Tip label={goalActive ? c.goalStatus : c.startGoal}>
+        <Button
+          aria-label={goalActive ? c.goalStatus : c.startGoal}
+          aria-pressed={goalActive}
+          className={cn(
+            MODE_PILL,
+            'bg-emerald-500/10 text-emerald-700 hover:bg-emerald-500/15 dark:text-emerald-200',
+            goalActive &&
+              'bg-emerald-500 text-white shadow-none hover:bg-emerald-500/90 dark:bg-emerald-400 dark:text-emerald-950'
+          )}
+          disabled={disabled}
+          onClick={onGoal}
+          size="sm"
+          type="button"
+          variant="ghost"
+        >
+          <Codicon name="target" size="0.86rem" />
+          <span>{c.goalModeLabel}</span>
+        </Button>
+      </Tip>
       <ModelPill compact={compactModelPill} disabled={disabled} model={state.model} />
       {/* While the agent runs and the user is typing, steer takes over the mic's
           slot rather than crowding the row with an extra button. */}

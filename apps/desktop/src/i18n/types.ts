@@ -1380,6 +1380,12 @@ export interface Translations {
     newSessionPlaceholders: readonly string[]
     followUpPlaceholders: readonly string[]
     startVoice: string
+    planModeLabel: string
+    planModeOn: string
+    planModeOff: string
+    goalModeLabel: string
+    startGoal: string
+    goalStatus: string
     queueMessage: string
     steer: string
     stop: string
@@ -1457,6 +1463,17 @@ export interface Translations {
   statusStack: {
     agents: string
     background: (count: number) => string
+    goalActive: string
+    goalPaused: string
+    goalWaiting: string
+    goalDone: string
+    pauseGoal: string
+    resumeGoal: string
+    clearGoal: string
+    planDrafting: string
+    planReady: string
+    runPlan: string
+    cancelPlan: string
     subagents: (count: number) => string
     todos: (done: number, total: number) => string
     running: string

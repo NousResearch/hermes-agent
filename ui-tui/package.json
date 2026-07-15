@@ -4,14 +4,16 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "npm run build --prefix packages/hermes-ink && tsx --watch src/entry.tsx",
+    "dev": "npm run build:ink && tsx --watch src/entry.tsx",
     "start": "tsx src/entry.tsx",
     "build": "node scripts/build.mjs",
+    "build:ink": "npm run build --prefix packages/hermes-ink",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "lint": "eslint src/ packages/",
     "lint:fix": "eslint src/ packages/ --fix",
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'packages/**/*.{ts,tsx}'",
     "fix": "npm run lint:fix && npm run fmt",
+    "check": "npm run build:ink && npm run typecheck && npm run test",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -27,11 +29,11 @@
   },
   "devDependencies": {
     "@eslint/js": "^9",
-    "@types/node": "^24.13.2",
+    "@types/node": "^22.20.0",
     "@types/react": "^19.2.14",
     "@typescript-eslint/eslint-plugin": "^8",
     "@typescript-eslint/parser": "^8",
-    "esbuild": "~0.27.0",
+    "esbuild": "^0.28.1",
     "eslint": "^9",
     "eslint-plugin-perfectionist": "^5",
     "eslint-plugin-react": "^7",
@@ -39,7 +41,7 @@
     "eslint-plugin-unused-imports": "^4",
     "globals": "^16",
     "prettier": "^3",
-    "tsx": "^4.19.0",
+    "tsx": "^4.22.4",
     "typescript": "^6.0.3",
     "vitest": "^4.1.3"
   }

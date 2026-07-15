@@ -47,8 +47,13 @@ export interface OAuthProviderStatus {
 
 export interface OAuthProvider {
   cli_command: string
+  /** Shell command that clears an external provider's credentials, run in the
+   *  embedded terminal. Null when Hermes doesn't know how to remove it. */
+  disconnect_command?: null | string
+  disconnect_hint?: null | string
+  disconnectable?: boolean
   docs_url: string
-  flow: 'device_code' | 'external' | 'loopback' | 'pkce'
+  flow: 'device_code' | 'external' | 'pkce'
   id: string
   name: string
   status: OAuthProviderStatus
@@ -73,12 +78,6 @@ export type OAuthStartResponse =
       user_code: string
       verification_url: string
     }
-  | {
-      auth_url: string
-      expires_in: number
-      flow: 'loopback'
-      session_id: string
-    }
 
 export interface OAuthSubmitResponse {
   message?: string
@@ -93,6 +92,13 @@ export interface OAuthPollResponse {
   status: 'approved' | 'denied' | 'error' | 'expired' | 'pending'
 }
 
+export interface MemoryProviderOAuthStatus {
+  auth: 'apikey' | 'oauth' | null
+  connected: boolean
+  detail: string
+  state: 'connected' | 'error' | 'idle' | 'pending'
+}
+
 export interface EnvVarInfo {
   advanced: boolean
   category: string
@@ -103,9 +109,40 @@ export interface EnvVarInfo {
   description: string
   is_password: boolean
   is_set: boolean
+  // Backend-derived provider grouping hints (from the unified provider catalog
+  // in hermes_cli/provider_catalog.py). When present, the Keys tab groups by
+  // this provider identity — the SAME one `hermes model` uses — instead of
+  // desktop-only env-var prefix guesses. Empty for non-provider env vars.
+  provider?: string
+  provider_label?: string
   redacted_value: null | string
   tools: string[]
   url: null | string
+}
+
+export type MemoryProviderFieldKind = 'secret' | 'select' | 'text'
+
+export interface MemoryProviderFieldOption {
+  description: string
+  label: string
+  value: string
+}
+
+export interface MemoryProviderField {
+  description: string
+  is_set: boolean
+  key: string
+  kind: MemoryProviderFieldKind
+  label: string
+  options: MemoryProviderFieldOption[]
+  placeholder: string
+  value: string
+}
+
+export interface MemoryProviderConfig {
+  fields: MemoryProviderField[]
+  label: string
+  name: string
 }
 
 export interface MessagingEnvVarInfo {
@@ -181,6 +218,7 @@ export interface HermesConfig {
   }
   voice?: {
     max_recording_seconds?: number
+    auto_tts?: boolean
   }
 }
 
@@ -265,6 +303,7 @@ export interface PaginatedSessions {
 
 export interface RpcEvent<T = unknown> {
   payload?: T
+  profile?: string
   session_id?: string
   type: string
 }
@@ -280,6 +319,16 @@ export interface SessionCreateResponse {
 export interface SessionInfo {
   archived?: boolean
   cwd?: null | string
+  /** Git branch checked out in {@link cwd} when the session started/resumed.
+   *  The sidebar groups main-checkout sessions by this so feature-branch work
+   *  doesn't collapse under a single directory-named "main" row. Null for
+   *  non-git workspaces and sessions created before branch capture landed. */
+  git_branch?: null | string
+  /** Git repo root that owns {@link cwd} — the authoritative project key,
+   *  resolved server-side at cwd-set (and backfilled for history). The sidebar
+   *  groups by this instead of probing git in the GUI. Null for non-git
+   *  workspaces and not-yet-backfilled rows. */
+  git_repo_root?: null | string
   ended_at: null | number
   id: string
   /** Original root id of a compression chain, when this entry is a projected
@@ -292,6 +341,8 @@ export interface SessionInfo {
   message_count: number
   model: null | string
   output_tokens: number
+  /** Parent conversation when this row is a /branch fork. */
+  parent_session_id?: null | string
   preview: null | string
   source: null | string
   started_at: number
@@ -343,12 +394,14 @@ export interface SessionResumeResponse {
 }
 
 export interface SessionRuntimeInfo {
+  approval_mode?: 'manual' | 'off' | 'smart'
   branch?: string
   config_warning?: string
   credential_warning?: string
   cwd?: string
   desktop_contract?: number
   fast?: boolean
+  install_warning?: string
   model?: string
   personality?: string
   provider?: string
@@ -371,6 +424,63 @@ export interface UsageStats {
   input: number
   output: number
   total: number
+}
+
+/** One graph node in the star map (learned skill or memory chunk). */
+export interface StarmapNode {
+  id: string
+  label: string
+  kind: 'memory' | 'skill'
+  memorySource?: 'memory' | 'profile'
+  timestamp?: null | number
+  category: string
+  useCount: number
+  state: string
+  createdBy: null | string
+  pinned: boolean
+}
+
+/** A declared `related_skills` link; both endpoints are guaranteed to be nodes. */
+export interface StarmapEdge {
+  source: string
+  target: string
+}
+
+export interface StarmapCluster {
+  category: string
+  count: number
+}
+
+/** Freeform memory rendered as a card — never a graph node. */
+export interface StarmapMemoryCard {
+  source: 'memory' | 'profile'
+  timestamp?: null | number
+  title: string
+  body: string
+}
+
+export interface StarmapGraph {
+  nodes: StarmapNode[]
+  edges: StarmapEdge[]
+  clusters: StarmapCluster[]
+  memory: StarmapMemoryCard[]
+  stats: Record<string, unknown>
+}
+
+export interface ContextUsageCategory {
+  color: string
+  id: string
+  label: string
+  tokens: number
+}
+
+export interface ContextBreakdown {
+  categories: ContextUsageCategory[]
+  context_max: number
+  context_percent: number
+  context_used: number
+  estimated_total: number
+  model?: string
 }
 
 export interface AnalyticsDailyEntry {
@@ -402,7 +512,15 @@ export interface AnalyticsResponse {
     summary: AnalyticsSkillsSummary
     top_skills: AnalyticsSkillEntry[]
   }
+  /** Per-tool-name call counts. Absent on older backends. */
+  tools?: AnalyticsToolEntry[]
   totals: AnalyticsTotals
+}
+
+export interface AnalyticsToolEntry {
+  count: number
+  percentage: number
+  tool: string
 }
 
 export interface AnalyticsSkillEntry {
@@ -440,6 +558,7 @@ export interface CronJob {
   last_run_at?: null | string
   name?: null | string
   next_run_at?: null | string
+  no_agent?: boolean
   prompt?: null | string
   schedule?: CronJobSchedule
   schedule_display?: null | string
@@ -470,7 +589,7 @@ export interface CronJobUpdates {
 
 export interface ProfileCreatePayload {
   clone_all?: boolean
-  clone_from?: string
+  clone_from?: null | string
   clone_from_default?: boolean
   name: string
   no_skills?: boolean
@@ -490,6 +609,35 @@ export interface ProfileSetupCommand {
   command: string
 }
 
+// ── Projects ───────────────────────────────────────────────────────────────
+// A first-class, per-profile, human-named workspace spanning one or more
+// folders. Mirrors hermes_cli/projects_db.Project.to_dict().
+export interface ProjectFolder {
+  path: string
+  label: null | string
+  is_primary: boolean
+  added_at: number
+}
+
+export interface ProjectInfo {
+  id: string
+  slug: string
+  name: string
+  description: null | string
+  icon: null | string
+  color: null | string
+  board_slug: null | string
+  primary_path: null | string
+  archived: boolean
+  created_at: number
+  folders: ProjectFolder[]
+}
+
+export interface ProjectsPayload {
+  projects: ProjectInfo[]
+  active_id: null | string
+}
+
 export interface ProfileSoul {
   content: string
   exists: boolean
@@ -504,6 +652,10 @@ export interface SkillInfo {
   description: string
   enabled: boolean
   name: string
+  /** Total observed activity (use + view + patch). Absent on older backends. */
+  usage?: number
+  /** 'agent' = learned/local (editable), 'bundled' = ships with Hermes, 'hub' = installed. */
+  provenance?: 'agent' | 'bundled' | 'hub'
 }
 
 export interface ToolsetInfo {
@@ -541,6 +693,71 @@ export interface ToolsetConfig {
   providers: ToolProvider[]
   /** Name of the currently active provider, or null if none is configured. */
   active_provider: string | null
+}
+
+/** One model row from a toolset backend's catalog (image/video gen). */
+export interface ToolsetModel {
+  id: string
+  display: string
+  speed: string
+  strengths: string
+  price: string
+}
+
+/** Shape of `GET /api/tools/toolsets/{name}/models`. */
+export interface ToolsetModelsResponse {
+  name: string
+  has_models: boolean
+  provider?: string | null
+  plugin?: string | null
+  models: ToolsetModel[]
+  current: string | null
+  default: string | null
+}
+
+/** Shape of `GET /api/tools/computer-use/status`.
+ *
+ *  cua-driver runs on macOS, Windows, and Linux. `ready` is the single OS-aware
+ *  readiness signal: on macOS both TCC grants (Accessibility + Screen
+ *  Recording, which attach to cua-driver's own `com.trycua.driver` identity,
+ *  not Hermes); elsewhere, driver health from `cua-driver doctor`. `null`
+ *  means unknown (binary missing / probe failed). */
+export interface ComputerUsePermissionSource {
+  attribution?: string
+  executable?: string
+  note?: string
+  pid?: number
+  responsible_ppid?: number
+}
+
+export interface ComputerUseCheck {
+  label: string
+  status: string
+  message: string
+}
+
+export interface ComputerUseStatus {
+  /** `sys.platform`: "darwin" | "win32" | "linux" | ... */
+  platform: string
+  /** cua-driver has a runtime backend for this platform. */
+  platform_supported: boolean
+  /** cua-driver binary resolved on PATH. */
+  installed: boolean
+  /** e.g. "cua-driver 0.5.1", or null when unknown. */
+  version: string | null
+  /** Unified readiness — both TCC grants (macOS) or driver health (else). */
+  ready: boolean | null
+  /** Whether a permission grant flow exists (macOS-only TCC). */
+  can_grant: boolean
+  /** Cross-platform `cua-driver doctor` probes. */
+  checks: ComputerUseCheck[]
+  /** macOS TCC detail — `null` off macOS or when unknown. */
+  accessibility: boolean | null
+  screen_recording: boolean | null
+  screen_recording_capturable: boolean | null
+  source: ComputerUsePermissionSource | null
+  /** Populated when the status probe itself failed. */
+  error: string | null
 }
 
 export interface SessionSearchResult {
@@ -637,6 +854,33 @@ export interface AuxiliaryModelsResponse {
   tasks: AuxiliaryTaskAssignment[]
 }
 
+export interface MoaModelSlot {
+  provider: string
+  model: string
+}
+
+export interface MoaConfigResponse {
+  default_preset: string
+  active_preset: string
+  presets: Record<
+    string,
+    {
+      aggregator: MoaModelSlot
+      aggregator_temperature: number
+      enabled: boolean
+      max_tokens: number
+      reference_models: MoaModelSlot[]
+      reference_temperature: number
+    }
+  >
+  aggregator: MoaModelSlot
+  aggregator_temperature: number
+  enabled: boolean
+  max_tokens: number
+  reference_models: MoaModelSlot[]
+  reference_temperature: number
+}
+
 export interface ModelAssignmentRequest {
   /** Optional API key for a custom/local endpoint. Persisted to model.api_key
    *  (where the runtime reads it) for self-hosted endpoints that require auth.
@@ -657,6 +901,154 @@ export interface StaleAuxAssignment {
   task: string
   provider: string
   model: string
+}
+
+/** One skill-hub source (official index, GitHub, skills.sh, …) as reported by
+ *  `GET /api/skills/hub/sources`. */
+export interface SkillHubSource {
+  id: string
+  label: string
+  available?: boolean
+  rate_limited?: boolean
+  // False when the centralized index already covers this source, so the UI's
+  // per-source search fan-out skips it (avoids redundant external API calls).
+  searchable?: boolean
+}
+
+/** A searchable/installable hub skill from `GET /api/skills/hub/search`. */
+export interface SkillHubResult {
+  name: string
+  description: string
+  source: string
+  identifier: string
+  trust_level: string
+  repo: string | null
+  tags: string[]
+}
+
+export interface SkillHubInstalledEntry {
+  name: string | null
+  trust_level: string | null
+  scan_verdict: string | null
+}
+
+export interface SkillHubSourcesResponse {
+  sources: SkillHubSource[]
+  index_available: boolean
+  featured: SkillHubResult[]
+  installed: Record<string, SkillHubInstalledEntry>
+}
+
+export interface SkillHubSearchResponse {
+  results: SkillHubResult[]
+  source_counts: Record<string, number>
+  timed_out: string[]
+  installed: Record<string, SkillHubInstalledEntry>
+}
+
+/** `GET /api/skills/hub/preview` — SKILL.md + manifest without installing. */
+export interface SkillHubPreview {
+  name: string
+  description: string
+  source: string
+  identifier: string
+  trust_level: string
+  repo: string | null
+  tags: string[]
+  skill_md: string
+  files: string[]
+}
+
+export interface SkillHubScanFinding {
+  severity: string
+  category: string
+  file: string
+  line: number | null
+  description: string
+}
+
+/** `GET /api/skills/hub/scan` — install-time security scan verdict. */
+export interface SkillHubScanResult {
+  name: string
+  identifier: string
+  source: string
+  trust_level: string
+  verdict: string
+  summary: string
+  policy: 'allow' | 'ask' | 'block'
+  policy_reason: string | null
+  findings: SkillHubScanFinding[]
+  severity_counts: Record<string, number>
+}
+
+/** One configured MCP server row from `GET /api/mcp/servers`. */
+export interface McpServerSummary {
+  name: string
+  transport: string
+  command: string | null
+  args: string[]
+  url: string | null
+  enabled: boolean
+  tools: string[] | null
+}
+
+export interface McpServerTestResponse {
+  ok: boolean
+  error?: string
+  tools: { name: string; description: string }[]
+}
+
+/** One Nous-approved MCP catalog entry from `GET /api/mcp/catalog`. */
+export interface McpCatalogEntry {
+  name: string
+  description: string
+  source: string
+  transport: string
+  auth_type: string
+  required_env: { name: string; prompt: string; required: boolean }[]
+  command: string | null
+  args: string[]
+  url: string | null
+  install_url: string | null
+  install_ref: string | null
+  bootstrap: string[]
+  default_enabled: string[] | null
+  post_install: string
+  needs_install: boolean
+  installed: boolean
+  enabled: boolean
+}
+
+export interface McpCatalogResponse {
+  entries: McpCatalogEntry[]
+  diagnostics: { name: string; kind: string; message: string }[]
+}
+
+/** `GET /api/memory` — active provider + built-in memory file sizes. */
+export interface MemoryStatusResponse {
+  active: string
+  providers: { name: string; description: string; configured: boolean }[]
+  builtin_files: { memory: number; user: number }
+}
+
+/** `GET /api/curator` — background skill-curator status. */
+export interface CuratorStatusResponse {
+  enabled: boolean
+  paused: boolean
+  interval_hours: number | null
+  last_run_at: string | null
+  min_idle_hours: number | null
+  stale_after_days: number | null
+  archive_after_days: number | null
+}
+
+/** `POST /api/ops/debug-share` — shareable diagnostics upload result. */
+export interface DebugShareResponse {
+  ok: boolean
+  urls: Record<string, string>
+  failures: Record<string, string>
+  redacted: boolean
+  auto_delete_seconds: number | null
 }
 
 export interface ModelAssignmentResponse {

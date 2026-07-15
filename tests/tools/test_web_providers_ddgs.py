@@ -18,20 +18,30 @@ import pytest
 from tests.tools.conftest import register_all_web_providers
 
 
-def _install_fake_ddgs(monkeypatch, *, text_results=None, text_raises=None):
+def _install_fake_ddgs(monkeypatch, *, text_results=None, text_raises=None, text_sleep=None):
     """Install a stub ``ddgs`` module in sys.modules for the duration of a test.
 
     ``text_results``: iterable of dicts to yield from DDGS().text(...).
     ``text_raises``: if set, DDGS().text raises this exception instead.
+    ``text_sleep``: if set, DDGS().text blocks for this many seconds before
+        yielding — simulates a hung/slow search for the timeout test.
     """
+    import time as _time
+
     fake = types.ModuleType("ddgs")
 
     class _FakeDDGS:
+        def __init__(self, **kwargs):
+            # Accept timeout= (and any other constructor kwargs) — the provider
+            # now passes DDGS(timeout=10).
+            pass
         def __enter__(self):
             return self
         def __exit__(self, *_a):
             return False
         def text(self, query, max_results=5):
+            if text_sleep is not None:
+                _time.sleep(text_sleep)
             if text_raises is not None:
                 raise text_raises
             for hit in (text_results or []):
@@ -155,6 +165,55 @@ class TestDDGSProviderSearch:
         assert result["success"] is True
         assert result["data"]["web"] == []
 
+    def test_hung_search_times_out_and_returns_failure(self, monkeypatch):
+        """#36776: a ddgs call that never returns must be bounded by the
+        wall-clock timeout and surface a failure instead of hanging the
+        shared agent loop. We patch the blocking helper to wait on an Event
+        (released in finally so no worker thread leaks past the test) and
+        shrink the timeout; search() must return success=False promptly."""
+        import threading
+        import time
+
+        # ddgs must import-probe True for search() to proceed.
+        _install_fake_ddgs(monkeypatch)
+        monkeypatch.delitem(sys.modules, "plugins.web.ddgs.provider", raising=False)
+        import plugins.web.ddgs.provider as _prov
+
+        release = threading.Event()
+
+        def _blocking_search(query, safe_limit):
+            release.wait(timeout=10)  # bounded so the worker can never truly leak
+            return []
+
+        monkeypatch.setattr(_prov, "_run_ddgs_search", _blocking_search, raising=True)
+        monkeypatch.setattr(_prov, "_SEARCH_TIMEOUT_SECS", 0.3, raising=True)
+
+        try:
+            start = time.monotonic()
+            result = _prov.DDGSWebSearchProvider().search("hangs forever", limit=5)
+            elapsed = time.monotonic() - start
+
+            assert result["success"] is False
+            assert "timed out" in result["error"].lower()
+            # Returned well before the worker's 10s wait — proves the cap fired.
+            assert elapsed < 3.0, f"search did not return promptly ({elapsed:.1f}s)"
+        finally:
+            release.set()  # let the orphaned worker finish immediately
+
+    def test_fast_search_not_affected_by_timeout_wrapper(self, monkeypatch):
+        """Happy-path guard: the timeout wrapper must not break a normal,
+        fast search — results flow through unchanged."""
+        _install_fake_ddgs(
+            monkeypatch,
+            text_results=[{"title": "T", "href": "https://e.com", "body": "B"}],
+        )
+        from plugins.web.ddgs.provider import DDGSWebSearchProvider
+
+        result = DDGSWebSearchProvider().search("q", limit=5)
+        assert result["success"] is True
+        assert result["data"]["web"][0]["url"] == "https://e.com"
+        assert result["data"]["web"][0]["title"] == "T"
+
 
 # ---------------------------------------------------------------------------
 # Integration: _is_backend_available / _get_backend / check_web_api_key
@@ -190,11 +249,7 @@ class TestDDGSBackendWiring:
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
         assert web_tools._get_backend() == "exa"
 
-    def test_auto_detect_prefers_keyless_parallel_over_ddgs(self, monkeypatch):
-        # With no credentials, keyless Parallel is the auto-detect default even
-        # when the ddgs package is installed — ddgs is search-only (can't
-        # extract), so Parallel is preferred so both search and extract work.
-        # ddgs remains reachable via an explicit web.backend=ddgs.
+    def test_auto_detect_picks_ddgs_as_last_resort(self, monkeypatch):
         from tools import web_tools
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
         for key in ("FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY",
@@ -202,7 +257,7 @@ class TestDDGSBackendWiring:
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: True)
-        assert web_tools._get_backend() == "parallel"
+        assert web_tools._get_backend() == "ddgs"
 
     def test_check_web_api_key_true_when_ddgs_configured(self, monkeypatch):
         from tools import web_tools

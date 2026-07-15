@@ -201,4 +201,38 @@ describe('preprocessMarkdown', () => {
 
     expect(output).toContain('<https://example.com/a_b/c~d/page>')
   })
+
+  it('handles a fenced block larger than V8 spread-argument limit', () => {
+    // A single huge code block (e.g. a logged minified bundle) used to throw
+    // `RangeError: Maximum call stack size exceeded` via `out.push(...lines)`.
+    const body = Array.from({ length: 200_000 }, (_, i) => `line ${i}`).join('\n')
+    const input = `\`\`\`js\n${body}\n\`\`\``
+
+    expect(() => preprocessMarkdown(input)).not.toThrow()
+  })
+
+  it('keeps $$<digit>$$ display math intact instead of escaping it as currency', () => {
+    const output = preprocessMarkdown('$$5x = 10$$')
+
+    expect(output).toContain('$$5x = 10$$')
+    expect(output).not.toContain('\\$')
+  })
+
+  it('rewrites double-backslash bracket math to dollar delimiters', () => {
+    const output = preprocessMarkdown('\\\\(x^2\\\\)')
+
+    expect(output).toContain('$x^2$')
+  })
+
+  it('rewrites [/math] and [/inline] tag pairs to dollar delimiters', () => {
+    expect(preprocessMarkdown('[/math]a+b[/math]')).toContain('$$a+b$$')
+    expect(preprocessMarkdown('[/inline]x[/inline]')).toContain('$x$')
+  })
+
+  it('escapes currency dollars in prose so they are not parsed as math', () => {
+    const output = preprocessMarkdown('$5 and $10')
+
+    expect(output).toContain('\\$5')
+    expect(output).toContain('\\$10')
+  })
 })

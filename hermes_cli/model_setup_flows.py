@@ -2849,6 +2849,27 @@ _XIAOMI_TOKEN_PLAN_ANTHROPIC_ENDPOINTS = {
     "eu": "https://token-plan-ams.xiaomimimo.com/anthropic",
 }
 _XIAOMI_PAYG_URL = "https://api.xiaomimimo.com/v1"
+_XIAOMI_TOKEN_PLAN_ENDPOINT_TO_CLUSTER = {
+    url: cluster for cluster, url in _XIAOMI_TOKEN_PLAN_ENDPOINTS.items()
+}
+_XIAOMI_TOKEN_PLAN_ANTHROPIC_ENDPOINT_TO_CLUSTER = {
+    url: cluster for cluster, url in _XIAOMI_TOKEN_PLAN_ANTHROPIC_ENDPOINTS.items()
+}
+_XIAOMI_TOKEN_PLAN_CLUSTER_INPUT = {"cn": "1", "sgp": "2", "eu": "3"}
+_XIAOMI_TOKEN_PLAN_CLUSTER_LABELS = {"cn": "CN", "sgp": "SGP", "eu": "EU"}
+
+
+def _xiaomi_endpoint_cluster(base_url: str) -> str | None:
+    normalized = (base_url or "").strip().rstrip("/")
+    return (
+        _XIAOMI_TOKEN_PLAN_ENDPOINT_TO_CLUSTER.get(normalized)
+        or _XIAOMI_TOKEN_PLAN_ANTHROPIC_ENDPOINT_TO_CLUSTER.get(normalized)
+    )
+
+
+def _xiaomi_is_token_plan_base_url(base_url: str) -> bool:
+    normalized = (base_url or "").strip().lower()
+    return "token-plan-" in normalized and "xiaomimimo.com" in normalized
 
 
 def _model_flow_xiaomi(config, current_model=""):
@@ -2919,8 +2940,23 @@ def _model_flow_xiaomi(config, current_model=""):
         print("  ℹ  Detected Token Plan key (tp- prefix)")
         print()
 
-    # Determine default choice based on key prefix
-    default_choice = "2" if is_token_plan_key else "1"
+    current_cluster = _xiaomi_endpoint_cluster(current_base)
+    has_custom_token_plan_base = (
+        bool(current_base)
+        and current_base.rstrip("/") != _XIAOMI_PAYG_URL
+        and current_cluster is None
+        and (is_token_plan_key or _xiaomi_is_token_plan_base_url(current_base))
+    )
+
+    # Determine default choice from the configured endpoint first so rerunning
+    # ``hermes model`` preserves the user's existing plan. Fall back to key
+    # prefix only when no endpoint is configured yet.
+    if current_cluster or has_custom_token_plan_base:
+        default_choice = "2"
+    elif current_base.rstrip("/") == _XIAOMI_PAYG_URL:
+        default_choice = "1"
+    else:
+        default_choice = "2" if is_token_plan_key else "1"
 
     try:
         choice = input(f"Plan type [{default_choice}]: ").strip() or default_choice
@@ -2939,17 +2975,34 @@ def _model_flow_xiaomi(config, current_model=""):
         print("  [3] EU  — Amsterdam (token-plan-ams.xiaomimimo.com)")
         print()
 
+        if current_cluster:
+            default_cluster_input = _XIAOMI_TOKEN_PLAN_CLUSTER_INPUT[current_cluster]
+            default_cluster_label = _XIAOMI_TOKEN_PLAN_CLUSTER_LABELS[current_cluster]
+        elif has_custom_token_plan_base:
+            default_cluster_input = ""
+            default_cluster_label = "custom"
+            print(f"  Current custom endpoint: {current_base}")
+            print("  Press Enter to keep it, or choose a regional cluster to replace it.")
+            print()
+        else:
+            default_cluster_input = "2"
+            default_cluster_label = "SGP"
+
         try:
-            cluster_input = input("Cluster [2]: ").strip() or "2"
+            cluster_input = (
+                input(f"Cluster [{default_cluster_label}]: ").strip()
+                or default_cluster_input
+            )
         except (KeyboardInterrupt, EOFError):
             print()
-            cluster_input = "2"
+            cluster_input = default_cluster_input
 
         cluster_map = {"1": "cn", "2": "sgp", "3": "eu"}
-        cluster = cluster_map.get(cluster_input, "sgp")
+        cluster = cluster_map.get(cluster_input)
 
-        # Default to OpenAI-compatible endpoint
-        effective_base = _XIAOMI_TOKEN_PLAN_ENDPOINTS[cluster]
+        # Default to OpenAI-compatible endpoint. Preserve a custom Token Plan
+        # endpoint unless the user explicitly picks one of the regional options.
+        effective_base = _XIAOMI_TOKEN_PLAN_ENDPOINTS[cluster] if cluster else current_base
     else:
         # Pay As You Go
         effective_base = _XIAOMI_PAYG_URL
@@ -3048,6 +3101,7 @@ def _model_flow_xiaomi(config, current_model=""):
             cfg["model"] = model
         model["provider"] = "xiaomi"
         model["base_url"] = effective_base
+        clear_model_endpoint_credentials(model)
         save_config(cfg)
         deactivate_provider()
 

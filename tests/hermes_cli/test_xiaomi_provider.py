@@ -372,3 +372,121 @@ class TestXiaomiAgentInit:
         overlay = HERMES_OVERLAYS["xiaomi"]
         api_mode = TRANSPORT_TO_API_MODE[overlay.transport]
         assert api_mode == "chat_completions"
+
+
+# =============================================================================
+# Model setup flow regression coverage
+# =============================================================================
+
+
+def _run_xiaomi_model_flow(
+    monkeypatch,
+    inputs,
+    config_model,
+    *,
+    api_key="tp-test",
+    selected="mimo-v2.5-pro",
+):
+    """Run the interactive Xiaomi setup flow with patched I/O and config."""
+    from hermes_cli import auth as auth_mod
+    from hermes_cli import config as config_mod
+    from hermes_cli import main as main_mod
+    from hermes_cli import model_setup_flows as flows_mod
+    from agent import models_dev as models_dev_mod
+
+    saved = {}
+    cfg = {"model": dict(config_model)}
+
+    monkeypatch.setattr(main_mod, "_prompt_api_key", lambda *a, **k: (api_key, False))
+    monkeypatch.setattr(auth_mod, "_prompt_model_selection", lambda *a, **k: selected)
+    monkeypatch.setattr(auth_mod, "_save_model_choice", lambda *a, **k: None)
+    monkeypatch.setattr(auth_mod, "deactivate_provider", lambda *a, **k: None)
+    monkeypatch.setattr(models_dev_mod, "list_agentic_models", lambda provider: [selected])
+
+    def fake_get_env_value(name):
+        if name == "XIAOMI_API_KEY":
+            return api_key
+        if name == "XIAOMI_BASE_URL":
+            return ""
+        return ""
+
+    monkeypatch.setattr(config_mod, "get_env_value", fake_get_env_value)
+    monkeypatch.setattr(config_mod, "save_env_value", lambda *a, **k: None)
+    monkeypatch.setattr(config_mod, "remove_env_value", lambda *a, **k: None)
+    monkeypatch.setattr(config_mod, "load_config", lambda: cfg)
+
+    def fake_save_config(new_cfg):
+        saved.clear()
+        saved.update(new_cfg)
+
+    monkeypatch.setattr(config_mod, "save_config", fake_save_config)
+
+    iterator = iter(inputs)
+    monkeypatch.setattr("builtins.input", lambda prompt="": next(iterator))
+
+    flows_mod._model_flow_xiaomi({}, current_model="")
+    return saved["model"]
+
+
+class TestXiaomiModelFlow:
+    def test_token_plan_existing_cn_endpoint_is_default_and_preserved(self, monkeypatch):
+        model = _run_xiaomi_model_flow(
+            monkeypatch,
+            inputs=["", "", ""],
+            config_model={
+                "provider": "xiaomi",
+                "base_url": "https://token-plan-cn.xiaomimimo.com/v1",
+                "api_key": "stale-inline-key",
+                "api_mode": "anthropic_messages",
+            },
+        )
+
+        assert model["provider"] == "xiaomi"
+        assert model["base_url"] == "https://token-plan-cn.xiaomimimo.com/v1"
+        assert "api_key" not in model
+        assert "api_mode" not in model
+
+    def test_token_plan_existing_eu_endpoint_is_default_and_preserved(self, monkeypatch):
+        model = _run_xiaomi_model_flow(
+            monkeypatch,
+            inputs=["", "", ""],
+            config_model={
+                "provider": "xiaomi",
+                "base_url": "https://token-plan-ams.xiaomimimo.com/v1",
+            },
+        )
+
+        assert model["base_url"] == "https://token-plan-ams.xiaomimimo.com/v1"
+
+    def test_token_plan_custom_endpoint_is_preserved_unless_replaced(self, monkeypatch):
+        model = _run_xiaomi_model_flow(
+            monkeypatch,
+            inputs=["", "", ""],
+            config_model={
+                "provider": "xiaomi",
+                "base_url": "https://token-plan-private.xiaomimimo.com/v1",
+            },
+        )
+
+        assert model["base_url"] == "https://token-plan-private.xiaomimimo.com/v1"
+
+    def test_token_plan_region_selection_can_replace_custom_endpoint(self, monkeypatch):
+        model = _run_xiaomi_model_flow(
+            monkeypatch,
+            inputs=["", "3", ""],
+            config_model={
+                "provider": "xiaomi",
+                "base_url": "https://token-plan-private.xiaomimimo.com/v1",
+            },
+        )
+
+        assert model["base_url"] == "https://token-plan-ams.xiaomimimo.com/v1"
+
+    def test_manual_base_url_override_is_saved(self, monkeypatch):
+        model = _run_xiaomi_model_flow(
+            monkeypatch,
+            inputs=["2", "2", "https://token-plan-custom.xiaomimimo.com/v1"],
+            config_model={"provider": "xiaomi", "base_url": "https://api.xiaomimimo.com/v1"},
+        )
+
+        assert model["base_url"] == "https://token-plan-custom.xiaomimimo.com/v1"

@@ -6,6 +6,7 @@ Indexes code files by chunking, then searches using keyword pre-filtering
 and LLM-based semantic re-ranking via the auxiliary client for real understanding.
 """
 
+import hashlib
 import json
 import os
 import re
@@ -17,6 +18,26 @@ from hermes_constants import get_hermes_home
 
 
 MAX_FILE_SIZE = 2 * 1024 * 1024
+
+# Sensitive file basenames excluded from indexing and prompts
+_SENSITIVE_FILENAMES = frozenset({
+    ".env", ".env.local", ".env.production", ".env.development",
+    ".env.staging", ".env.test", ".npmrc", ".pypirc",
+})
+
+# Sensitive file patterns (matched against basename)
+_SENSITIVE_PATTERNS = (
+    re.compile(r"^\.env(\.\w+)?$"),
+    re.compile(r"^id_(?:rsa|dsa|ecdsa|ed25519)\.pub$"),
+    re.compile(r"^\.netrc$"),
+)
+
+
+def _is_sensitive_file(filename: str) -> bool:
+    """Check if a file is sensitive and should be excluded from indexing."""
+    if filename in _SENSITIVE_FILENAMES:
+        return True
+    return any(p.match(filename) for p in _SENSITIVE_PATTERNS)
 
 
 def _chunk_file(content: str, max_chars: int = 2000) -> List[str]:
@@ -58,10 +79,16 @@ def _classify_query(query: str) -> Dict[str, Any]:
 
 
 def _get_index_db(project_root: str) -> str:
-    project_name = os.path.basename(os.path.abspath(project_root))
+    """Derive index DB path from a canonical hash of the resolved project root.
+
+    Uses the first 16 chars of the SHA-256 of the absolute path to avoid
+    basename collisions between /work/a/app and /work/b/app.
+    """
+    abs_root = os.path.realpath(os.path.abspath(project_root))
+    root_hash = hashlib.sha256(abs_root.encode()).hexdigest()[:16]
     index_dir = get_hermes_home() / "semantic-index"
     index_dir.mkdir(parents=True, exist_ok=True)
-    return str(index_dir / f"{project_name}.db")
+    return str(index_dir / f"{root_hash}.db")
 
 
 def _rerank_with_llm(query: str, candidates: List[Dict]) -> List[Dict]:
@@ -86,13 +113,22 @@ def _rerank_with_llm(query: str, candidates: List[Dict]) -> List[Dict]:
             max_tokens=1000,
         )
 
-        import json as _json
-        scores = _json.loads(response)
+        # call_llm returns an OpenAI-style response object; extract content
+        content = response.choices[0].message.content
+        if not content:
+            return candidates
+
+        # Strip markdown code fences if present
+        content = content.strip()
+        if content.startswith("```"):
+            content = re.sub(r"^```(?:json)?\s*", "", content)
+            content = re.sub(r"\s*```$", "", content)
+
+        scores = json.loads(content)
         score_map = {s["index"]: s["score"] for s in scores if isinstance(s, dict)}
 
-        for c in candidates:
-            idx = candidates.index(c)
-            c["relevance"] = score_map.get(idx, 0)
+        for i, c in enumerate(candidates):
+            c["relevance"] = score_map.get(i, 0)
             c["score"] = round(c["relevance"] / 10.0, 4)
 
         candidates.sort(key=lambda c: c.get("relevance", 0), reverse=True)
@@ -152,12 +188,18 @@ def semantic_search(
             conn.execute("PRAGMA journal_mode = MEMORY")
 
             exclude_dirs = {".git", "__pycache__", "node_modules", ".venv", "venv",
-                           ".env", ".tox", "build", "dist", ".hermes"}
+                           ".tox", "build", "dist", ".hermes"}
 
             stats = {"files_processed": 0, "chunks_indexed": 0}
             for root, dirs, files in os.walk(abs_root):
                 dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith(".")]
                 for file in files:
+                    # Skip sensitive files (dotfiles, env files, secrets)
+                    if _is_sensitive_file(file):
+                        continue
+                    if file.startswith("."):
+                        continue
+
                     file_path = os.path.join(root, file)
                     rel_path = os.path.relpath(file_path, abs_root)
                     ext = os.path.splitext(file)[1].lower()
@@ -174,6 +216,7 @@ def semantic_search(
                     except Exception:
                         continue
                     chunks = _chunk_file(content)
+                    # Delete stale chunks for this file, then re-insert
                     conn.execute("DELETE FROM chunks WHERE file_path = ?", (rel_path,))
                     for i, chunk in enumerate(chunks):
                         conn.execute(
@@ -183,6 +226,12 @@ def semantic_search(
                         stats["chunks_indexed"] += 1
                     stats["files_processed"] += 1
 
+            # Prune chunks for files that no longer exist on disk
+            conn.execute("""
+                DELETE FROM chunks WHERE file_path NOT IN (
+                    SELECT DISTINCT file_path FROM chunks
+                )
+            """)
             conn.commit()
             return json.dumps({
                 "success": True,
@@ -204,10 +253,12 @@ def semantic_search(
         try:
             results = []
             exclude_dirs = {".git", "__pycache__", "node_modules", ".venv",
-                           "venv", ".env", "build", "dist"}
+                           "venv", ".tox", "build", "dist", ".hermes"}
             for root, dirs, files in os.walk(abs_root):
                 dirs[:] = [d for d in dirs if d not in exclude_dirs and not d.startswith(".")]
                 for file in files:
+                    if _is_sensitive_file(file) or file.startswith("."):
+                        continue
                     if file_pattern:
                         pat = file_pattern.replace("*", ".*").replace("?", ".")
                         if not re.search(pat, file):
@@ -262,20 +313,25 @@ def semantic_search(
 
         candidates: List[Dict] = []
         for file_path, language, chunk_idx, text in cursor.fetchall():
+            # Compute keyword score but do NOT gate on it — semantic/hybrid
+            # modes pass all chunks to the LLM reranker so natural-language
+            # and synonym queries can still find relevant code.
             kw_score = sum(1 for w in query_words if w in text.lower()) / max(len(query_words), 1)
-            if kw_score > 0:
-                candidates.append({
-                    "file": file_path,
-                    "language": language,
-                    "chunk": chunk_idx,
-                    "keyword_score": kw_score,
-                    "snippet": text[:300],
-                })
+            candidates.append({
+                "file": file_path,
+                "language": language,
+                "chunk": chunk_idx,
+                "keyword_score": kw_score,
+                "snippet": text[:300],
+            })
 
+        # Pre-sort by keyword score so the reranker sees a reasonable order,
+        # but never drop candidates — the LLM may rank low-keyword matches
+        # higher than high-keyword ones for semantic queries.
         candidates.sort(key=lambda c: c["keyword_score"], reverse=True)
-        top_candidates = candidates[:max_results * 2]
+        top_candidates = candidates[:max_results * 3]
 
-        if mode == "semantic" or mode == "hybrid":
+        if mode in ("semantic", "hybrid"):
             top_candidates = _rerank_with_llm(query, top_candidates)
 
         for c in top_candidates:

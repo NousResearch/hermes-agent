@@ -1,6 +1,6 @@
 ---
 name: study-research
-description: Guide source-grounded research learning, paper comprehension, replication, claim evaluation, and hypothesis transfer with StudyOS.
+description: Guide research and replication learning with StudyOS.
 ---
 
 # StudyOS Research Domain Pack

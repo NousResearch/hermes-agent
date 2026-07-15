@@ -16,6 +16,7 @@ from datetime import date, datetime
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+from plugins.study_os.domain_packs import domain_pack_for
 from plugins.study_os.schemas import (
     EVIDENCE_DIMENSIONS,
     INTERVENTION_POLICY_VERSION,
@@ -174,12 +175,7 @@ def _priority_band(score: int) -> str:
 
 
 def _duration_minutes(project: dict[str, Any]) -> int:
-    domain_pack = str(project.get("domain_pack") or "")
-    if domain_pack == "research.v1":
-        return 60
-    if domain_pack == "engineering.v1":
-        return 45
-    return 30
+    return domain_pack_for(project).intervention_duration
 
 
 def _assistance_for(kind: str) -> str:

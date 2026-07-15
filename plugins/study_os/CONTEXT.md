@@ -83,6 +83,13 @@ _Avoid_: Unqualified URL, free-form citation
 A domain-specific vocabulary, activity policy, and rubric that uses the shared StudyOS evidence and Session model.
 _Avoid_: Separate learning backend, prompt-only persona
 
+Each built-in Domain Pack is one discoverable module under `domain_packs/`
+exporting `PACK: DomainPack`. The Pack owns its Activity Adapter, optional
+prompt Skill, Intervention duration, project defaults, and Schedule template.
+`domain_pack` is authoritative; `domain` is used only when a manifest has no
+Pack id. A new domain therefore adds one module and its contract tests without
+editing the shared runtime or model-tool schemas.
+
 **Activity Adapter**:
 A Domain Pack implementation that proposes Activities and validates domain-specific Evidence Events at the StudyOS seam.
 _Avoid_: Tool wrapper, domain database

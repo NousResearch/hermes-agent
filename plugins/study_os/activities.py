@@ -223,12 +223,8 @@ def _grounding_issues(
 
 
 def activity_adapter_for(project: dict[str, Any]) -> ActivityAdapter:
-    """Select the narrowest domain adapter supported by a project manifest."""
+    """Return the adapter owned by the project's resolved Domain Pack."""
 
-    domain_pack = str(project.get("domain_pack") or "").casefold()
-    domain = str(project.get("domain") or "").casefold()
-    if domain_pack.startswith("engineering.") or domain == "engineering":
-        return EngineeringActivityAdapter()
-    if domain_pack.startswith("research.") or domain == "research":
-        return ResearchActivityAdapter()
-    return GeneralActivityAdapter()
+    from plugins.study_os.domain_packs import domain_pack_for
+
+    return domain_pack_for(project).activity_adapter

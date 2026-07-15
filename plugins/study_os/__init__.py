@@ -9,7 +9,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from agent.skill_utils import parse_frontmatter
 from plugins.study_os.context import active_learning_context
+from plugins.study_os.domain_packs import domain_pack_registry
 from plugins.study_os.learning import (
     STUDY_ACTIVITY_SCHEMA,
     STUDY_COACH_SCHEMA,
@@ -46,9 +48,20 @@ def register(ctx) -> None:
         ("study-teach", "Teach through StudyOS learning records."),
         ("study-lesson", "Create visual StudyOS lesson artifacts."),
         ("study-assessment", "Analyze StudyOS exams and mistakes."),
-        ("study-kaoyan", "Guide 考研 learning with StudyOS."),
-        ("study-engineering", "Guide engineering and skill learning with StudyOS."),
-        ("study-research", "Guide research and replication learning with StudyOS."),
         ("study-grill", "Bridge grilling sessions into StudyOS decisions."),
     ):
         ctx.register_skill(name, skills_root / name / "SKILL.md", description)
+
+    for pack in domain_pack_registry().values():
+        if pack.prompt_skill is None:
+            continue
+        skill_path = skills_root / pack.prompt_skill / "SKILL.md"
+        frontmatter, _body = parse_frontmatter(skill_path.read_text(encoding="utf-8"))
+        skill_name = str(frontmatter.get("name") or "").strip()
+        description = str(frontmatter.get("description") or "").strip()
+        if skill_name != pack.prompt_skill or not description:
+            raise ValueError(
+                f"DomainPack {pack.id} prompt skill metadata must declare "
+                f"name={pack.prompt_skill!r} and a description"
+            )
+        ctx.register_skill(skill_name, skill_path, description)

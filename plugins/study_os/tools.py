@@ -6,10 +6,12 @@ import json
 import os
 import re
 from collections import Counter
+from copy import deepcopy
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+from plugins.study_os.domain_packs import domain_pack_for
 from plugins.study_os.notes import (
     _append_text,
     _as_list,
@@ -1792,12 +1794,6 @@ STUDY_LIST_CURRICULA_SCHEMA = {
 # StudyOS projects, schedules, and prompt context
 # ---------------------------------------------------------------------------
 
-_PROJECT_DEFAULT_SUBJECTS = [
-    {"id": "math", "label": "数学", "target_score": 120},
-    {"id": "english", "label": "英语一", "target_score": 75},
-    {"id": "politics", "label": "政治", "target_score": 75},
-]
-
 _VALID_PROMPT_INTENTS = {
     "planning",
     "organizing",
@@ -1829,35 +1825,13 @@ def _default_project_manifest(args: dict[str, Any]) -> dict[str, Any]:
     requested_domain_pack = str(args.get("domain_pack") or "").strip()
     requested_domain = str(args.get("domain") or "").strip()
     requested_exam_type = str(args.get("exam_type") or "").strip()
-    is_kaoyan = (
-        requested_domain_pack == "kaoyan.v1"
-        or requested_domain == "kaoyan"
-        or requested_exam_type == "考研"
+    pack = domain_pack_for(
+        {
+            "domain_pack": requested_domain_pack,
+            "domain": requested_domain or ("kaoyan" if requested_exam_type == "考研" else ""),
+        }
     )
-    if is_kaoyan:
-        defaults = {
-            "project_id": "kaoyan-2027",
-            "title": "2027 考研学习计划",
-            "domain": "kaoyan",
-            "exam_type": "考研",
-            "exam_date": "2027-12-20",
-            "phase": "foundation",
-            "domain_pack": "kaoyan.v1",
-            "workspace_type": "exam-vault",
-            "subjects": list(_PROJECT_DEFAULT_SUBJECTS),
-        }
-    else:
-        defaults = {
-            "project_id": "general-learning",
-            "title": "General Learning Project",
-            "domain": "general",
-            "exam_type": "none",
-            "exam_date": "2099-12-31",
-            "phase": "discovery",
-            "domain_pack": requested_domain_pack or "general.v1",
-            "workspace_type": "skill-vault",
-            "subjects": [{"id": "learning", "label": "Learning"}],
-        }
+    defaults = deepcopy(dict(pack.project_defaults))
     common: dict[str, Any] = {
         "schema_version": requested_schema_version,
         "project_id": str(args.get("project_id") or defaults["project_id"]).strip(),
@@ -1865,9 +1839,9 @@ def _default_project_manifest(args: dict[str, Any]) -> dict[str, Any]:
         "domain": str(args.get("domain") or defaults["domain"]).strip(),
         "timezone": str(args.get("timezone") or "Asia/Shanghai").strip(),
         "phase": str(args.get("phase") or defaults["phase"]).strip(),
-        "domain_pack": str(args.get("domain_pack") or defaults["domain_pack"]).strip(),
+        "domain_pack": str(args.get("domain_pack") or pack.id).strip(),
         "workspace_type": str(args.get("workspace_type") or defaults["workspace_type"]).strip(),
-        "artifact_policy": str(args.get("artifact_policy") or "lightweight").strip(),
+        "artifact_policy": str(args.get("artifact_policy") or defaults["artifact_policy"]).strip(),
         "prompt_policy": dict(DEFAULT_PROMPT_POLICY),
         "created_at": now,
         "updated_at": now,
@@ -1881,7 +1855,11 @@ def _default_project_manifest(args: dict[str, Any]) -> dict[str, Any]:
         return common
     common["exam_type"] = str(args.get("exam_type") or defaults["exam_type"]).strip()
     common["exam_date"] = str(args.get("exam_date") or defaults["exam_date"]).strip()
-    common["subjects"] = args.get("subjects") if isinstance(args.get("subjects"), list) else defaults["subjects"]
+    common["subjects"] = (
+        args.get("subjects")
+        if isinstance(args.get("subjects"), list)
+        else defaults["subjects"]
+    )
     return common
 
 
@@ -1954,57 +1932,7 @@ def handle_study_project(args: dict[str, Any], **_kwargs) -> str:
 
 
 def _schedule_template(project: dict[str, Any]) -> dict[str, Any]:
-    project_id = project["project_id"]
-    if project.get("domain_pack") == "kaoyan.v1":
-        phase_title = "基础阶段"
-        phase_goal = "完成核心考点覆盖"
-        event = {
-            "id": "evt-20260701-math-derivative",
-            "title": "数学：导数定义整理",
-            "subject_id": "math",
-            "type": "learning",
-            "start": "2026-07-01T19:00:00+08:00",
-            "end": "2026-07-01T21:00:00+08:00",
-            "duration_minutes": 120,
-            "goals": ["整理导数定义例题"],
-            "source_curriculum": "一元函数微分学",
-            "status": "planned",
-        }
-    else:
-        groups = project.get("tracks") if project.get("schema_version") == PROJECT_SCHEMA_VERSION else project.get("subjects")
-        subject_id = (groups or [{}])[0].get("id", "learning")
-        phase_title = "Discovery"
-        phase_goal = "Map one concrete learning objective to lightweight notes and source anchors"
-        event = {
-            "id": "evt-20260701-learning-scout",
-            "title": "Scout one concept and source anchor",
-            "subject_id": subject_id,
-            "type": "learning",
-            "start": "2026-07-01T19:00:00+08:00",
-            "end": "2026-07-01T20:00:00+08:00",
-            "duration_minutes": 60,
-            "goals": ["Create or update one lightweight concept note only if it will be reused"],
-            "source_curriculum": "project-roadmap",
-            "status": "planned",
-        }
-    return {
-        "schema_version": "study_schedule.v1",
-        "schedule_id": f"{project_id}-master-plan",
-        "project_id": project_id,
-        "title": f"{project.get('title', project_id)} 学习计划",
-        "timezone": project.get("timezone", "Asia/Shanghai"),
-        "range": {"start": "2026-07-01", "end": "2026-07-31"},
-        "phases": [
-            {
-                "id": project.get("phase", "foundation"),
-                "title": phase_title,
-                "start": "2026-07-01",
-                "end": "2026-09-30",
-                "goal": phase_goal,
-            }
-        ],
-        "events": [event],
-    }
+    return domain_pack_for(project).schedule_template(project)
 
 
 def handle_study_schedule(args: dict[str, Any], **_kwargs) -> str:
@@ -2128,11 +2056,7 @@ def handle_study_prompt_context(args: dict[str, Any], **_kwargs) -> str:
                 return _err("PROMPT_CONTEXT_TOO_LARGE" if "exceeds" in warning else "PROMPT_CONTEXT_SOURCE_MISSING", warning)
             if fragment:
                 fragments.append(fragment)
-        domain_skill = {
-            "kaoyan.v1": "study-kaoyan",
-            "engineering.v1": "study-engineering",
-            "research.v1": "study-research",
-        }.get(domain_pack)
+        domain_skill = domain_pack_for(domain_pack).prompt_skill
         if domain_skill:
             fragment, warning = _read_prompt_fragment("domain", _skill_path(domain_skill), int(policy["domain_max_chars"]))
             if warning:

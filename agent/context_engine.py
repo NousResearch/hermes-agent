@@ -213,12 +213,21 @@ class ContextEngine(ABC):
     ) -> None:
         """Observe a finished user turn (post-turn ingestion / observation).
 
-        Called once after the assistant/tool loop completes for a turn, with
-        the finalized in-memory transcript snapshot. This is the complement to
-        ``select_context()``: selection happens *before* the request, while
-        observation happens *after* the turn. It lets an engine ingest, index,
-        summarize, or update routing / topic / session state from what actually
-        happened — so the next ``select_context()`` can act on it.
+        Called from the standard turn-finalization path once the assistant/tool
+        loop completes, with the finalized in-memory transcript snapshot. This
+        is the complement to ``select_context()``: selection happens *before*
+        the request, while observation happens *after* the turn. It lets an
+        engine ingest, index, summarize, or update routing / topic / session
+        state from what actually happened — so the next ``select_context()``
+        can act on it.
+
+        Coverage: this fires from the normal finalization seam. Some abnormal
+        early-return paths in the loop (e.g. a content-policy block or a
+        provider terminal failure) persist and return without routing through
+        finalization, and therefore do not currently emit this hook. Treat it
+        as a best-effort post-turn observation for completed turns, not a
+        guaranteed callback for every possible early exit; unifying all
+        terminal paths behind one finalization seam is a separate follow-up.
 
         Together the two hooks remove the need to abuse ``should_compress()`` /
         ``compress()`` as a generic per-turn callback just to observe history,
@@ -237,8 +246,8 @@ class ContextEngine(ABC):
         ``input_tokens`` / ``output_tokens`` / ``cache_read_tokens`` /
         ``cache_write_tokens`` / ``reasoning_tokens`` buckets) so an engine can
         weigh how large/expensive the selected context actually was when
-        deciding the next ``select_context()``. It is ``None`` on turns that
-        never reached a provider response (early failure / interrupt); engines
+        deciding the next ``select_context()``. It is ``None`` on finalized
+        turns that never reached a provider response (e.g. interrupt); engines
         must treat it as optional.
 
         Default is a no-op.

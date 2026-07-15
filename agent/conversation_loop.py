@@ -609,11 +609,21 @@ def _apply_context_engine_selection(
         return api_messages
 
     session_label = getattr(agent, "session_id", None) or "-"
+    # Pass shallow copies of the reference-only inputs so an engine that
+    # mutates them in place cannot alter persisted transcript state. Only
+    # ``request_messages`` (the per-call request list) is meant to be acted on,
+    # and it may be replaced wholesale via the return value — never mutated in
+    # place either. ``conversation_messages`` / ``incoming_message`` are
+    # read-only context; copying enforces the request-only contract rather than
+    # merely documenting it.
+    _conv_copy = [dict(m) if isinstance(m, dict) else m for m in conversation_messages] \
+        if conversation_messages is not None else None
+    _incoming_copy = dict(incoming_message) if isinstance(incoming_message, dict) else incoming_message
     try:
         selected = engine.select_context(
             api_messages,
-            conversation_messages=conversation_messages,
-            incoming_message=incoming_message,
+            conversation_messages=_conv_copy,
+            incoming_message=_incoming_copy,
             budget_tokens=getattr(engine, "context_length", 0) or 0,
         )
     except Exception:

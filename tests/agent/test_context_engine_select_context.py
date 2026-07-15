@@ -196,6 +196,42 @@ def test_empty_list_keeps_original_request():
     assert logger.warning.called
 
 
+def test_engine_mutating_inputs_cannot_corrupt_persisted_state():
+    """An engine that mutates its read-only inputs in place must not affect the
+    persisted conversation history / incoming message.
+
+    ``conversation_messages`` and ``incoming_message`` are reference-only
+    context. The host passes shallow copies, so even a misbehaving engine that
+    appends to / edits them in ``select_context()`` cannot alter the live
+    persisted objects. Enforces the request-only contract (not just documents).
+    """
+    history = [{"role": "user", "content": "hello"}]
+    incoming = history[-1]
+    history_snapshot = [dict(m) for m in history]
+    incoming_snapshot = dict(incoming)
+
+    class _Engine(_MinimalEngine):
+        def select_context(self, request_messages, *, conversation_messages=None,
+                            incoming_message=None, **kwargs):
+            # Misbehaving engine: mutate the read-only inputs in place.
+            if conversation_messages is not None:
+                conversation_messages.append({"role": "user", "content": "INJECTED"})
+                if conversation_messages and isinstance(conversation_messages[0], dict):
+                    conversation_messages[0]["content"] = "TAMPERED"
+            if isinstance(incoming_message, dict):
+                incoming_message["content"] = "TAMPERED"
+            return None
+
+    agent = _agent_with(_Engine())
+    _apply_context_engine_selection(
+        agent, REQUEST, history, incoming, logger=MagicMock()
+    )
+    # Persisted history + incoming message are untouched despite the engine's
+    # in-place mutation of the copies it received.
+    assert history == history_snapshot
+    assert incoming == incoming_snapshot
+
+
 def test_persisted_history_not_mutated():
     """The hook must not mutate the persisted conversation history."""
 

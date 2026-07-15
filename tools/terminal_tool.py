@@ -2081,6 +2081,29 @@ def terminal_tool(
                 "status": "error",
             }, ensure_ascii=False)
 
+        # Only a live gateway agent tool call of this exact canonical command
+        # reaches the supervised recovery handoff. It is deliberately before
+        # command approval and environment creation: recovery is not authorized
+        # by prompt text or a user approval for a raw service-manager command.
+        if os.environ.get("_HERMES_GATEWAY") == "1":
+            from gateway.restart import (
+                is_gateway_restart_command,
+                request_gateway_recovery_restart,
+            )
+
+            if is_gateway_restart_command(command):
+                accepted, message = request_gateway_recovery_restart(
+                    session_id=session_id,
+                    task_id=task_id,
+                )
+                return json.dumps({
+                    "output": message,
+                    "exit_code": 0 if accepted else 1,
+                    "error": "" if accepted else message,
+                    "status": "completed" if accepted else "error",
+                    "restart_scheduled": accepted,
+                }, ensure_ascii=False)
+
         # Get configuration
         config = _get_env_config()
         env_type = config["env_type"]
@@ -2318,34 +2341,17 @@ def terminal_tool(
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
 
-        # Lifecycle commands cannot run as child processes: service-manager
-        # termination kills the child before it can report completion. A fresh
-        # owner approval can request a supervised POSIX gateway restart by
-        # signalling the existing in-process graceful-restart handler instead.
+        # Gateway lifecycle commands cannot run as child processes: service-
+        # manager termination kills the child before it can report completion.
+        # The only recovery exception was handled above for the canonical
+        # Hermes command; raw service-manager and kill commands stay blocked.
         if os.environ.get("_HERMES_GATEWAY") == "1":
             from hermes_cli.cron import _contains_gateway_lifecycle_command
             if _contains_gateway_lifecycle_command(command):
-                from gateway.restart import (
-                    is_gateway_restart_command,
-                    request_approved_gateway_restart_handoff,
-                )
-
-                if _user_approved_run and is_gateway_restart_command(command):
-                    accepted, message = request_approved_gateway_restart_handoff()
-                    return json.dumps({
-                        "output": message,
-                        "exit_code": 0 if accepted else 1,
-                        "error": "" if accepted else message,
-                        "status": "completed" if accepted else "error",
-                        "restart_scheduled": accepted,
-                    }, ensure_ascii=False)
                 return json.dumps({
                     "output": "",
                     "exit_code": 1,
-                    "error": (
-                        "Blocked: gateway lifecycle commands require a fresh owner "
-                        "approval and a supported supervisor handoff."
-                    ),
+                    "error": "Blocked: gateway lifecycle commands cannot run inside the gateway.",
                     "status": "error",
                 }, ensure_ascii=False)
 

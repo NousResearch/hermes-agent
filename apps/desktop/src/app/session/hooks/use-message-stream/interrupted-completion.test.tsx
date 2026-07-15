@@ -29,7 +29,15 @@ vi.mock('@/store/pet', () => ({
 }))
 
 const SID = 'session-1'
-const SENTINEL = 'Operation interrupted: waiting for model response (0.3s elapsed).'
+const LEGACY_INTERRUPT_SENTINELS = [
+  'Operation interrupted.',
+  'Operation interrupted: waiting for model response (0.3s elapsed).',
+  'Operation interrupted during retry (upstream gateway timeout (504, 42s), attempt 1/3).',
+  'Operation interrupted: handling API error (RateLimitError: Too many requests).',
+  'Operation interrupted: retrying API call after error (retry 2/3).'
+] as const
+const PREFIX_COLLIDING_PARTIAL =
+  'Operation interrupted: waiting for model response (this phrase describes the log; the real answer continues here.'
 
 let currentState: ClientSessionState
 let handleEvent: ((event: RpcEvent) => void) | null = null
@@ -84,47 +92,47 @@ describe('useMessageStream interrupted completion', () => {
     vi.restoreAllMocks()
   })
 
-  it.each([
-    SENTINEL,
-    'Operation interrupted during retry (empty response, attempt 1/3).'
-  ])('settles backend interruption without prose or completion cues, then accepts the queued turn start: %s', async interruptText => {
+  it.each(LEGACY_INTERRUPT_SENTINELS)(
+    'settles backend interruption without prose or completion cues, then accepts the queued turn start: %s',
+    async interruptText => {
+      await mountStream()
+
+      act(() =>
+        handleEvent!({
+          payload: { status: 'interrupted', text: interruptText },
+          session_id: SID,
+          type: 'message.complete'
+        })
+      )
+
+      expect(currentState.interrupted).toBe(false)
+      expect(currentState.busy).toBe(false)
+      expect(currentState.awaitingResponse).toBe(false)
+      expect(currentState.messages.map(chatMessageText)).not.toContain(interruptText)
+      expect(cues.playCompletionSound).not.toHaveBeenCalled()
+      expect(cues.flashPetActivity).not.toHaveBeenCalled()
+      expect(cues.dispatchNativeNotification).not.toHaveBeenCalled()
+
+      act(() => handleEvent!({ payload: {}, session_id: SID, type: 'message.start' }))
+
+      expect(currentState.busy).toBe(true)
+      expect(currentState.awaitingResponse).toBe(true)
+      expect(currentState.interrupted).toBe(false)
+    }
+  )
+
+  it('keeps real partial assistant text that begins with a legacy prefix', async () => {
     await mountStream()
 
     act(() =>
       handleEvent!({
-        payload: { status: 'interrupted', text: interruptText },
+        payload: { status: 'interrupted', text: PREFIX_COLLIDING_PARTIAL },
         session_id: SID,
         type: 'message.complete'
       })
     )
 
-    expect(currentState.interrupted).toBe(false)
-    expect(currentState.busy).toBe(false)
-    expect(currentState.awaitingResponse).toBe(false)
-    expect(currentState.messages.map(chatMessageText)).not.toContain(interruptText)
-    expect(cues.playCompletionSound).not.toHaveBeenCalled()
-    expect(cues.flashPetActivity).not.toHaveBeenCalled()
-    expect(cues.dispatchNativeNotification).not.toHaveBeenCalled()
-
-    act(() => handleEvent!({ payload: {}, session_id: SID, type: 'message.start' }))
-
-    expect(currentState.busy).toBe(true)
-    expect(currentState.awaitingResponse).toBe(true)
-    expect(currentState.interrupted).toBe(false)
-  })
-
-  it('keeps real partial assistant text without completion cues', async () => {
-    await mountStream()
-
-    act(() =>
-      handleEvent!({
-        payload: { status: 'interrupted', text: 'Partial answer so far' },
-        session_id: SID,
-        type: 'message.complete'
-      })
-    )
-
-    expect(currentState.messages.map(chatMessageText)).toContain('Partial answer so far')
+    expect(currentState.messages.map(chatMessageText)).toContain(PREFIX_COLLIDING_PARTIAL)
     expect(cues.playCompletionSound).not.toHaveBeenCalled()
     expect(cues.flashPetActivity).not.toHaveBeenCalled()
     expect(cues.dispatchNativeNotification).not.toHaveBeenCalled()

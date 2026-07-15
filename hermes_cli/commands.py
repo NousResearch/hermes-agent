@@ -239,6 +239,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                cli_only=True, aliases=("gateway",)),
     CommandDef("platform", "Pause, resume, or list a failing gateway platform", "Info",
                gateway_only=True, args_hint="<pause|resume|list> [name]"),
+    CommandDef("mobile", "Open the Telegram mobile computer-control panel", "Info",
+               gateway_only=True, aliases=("mac", "panel")),
     CommandDef("copy", "Copy the last assistant response to clipboard", "Info",
                cli_only=True, args_hint="[number]"),
     CommandDef("paste", "Attach clipboard image from your clipboard", "Info",
@@ -510,6 +512,76 @@ def _iter_plugin_command_entries() -> list[tuple[str, str, str]]:
     return entries
 
 
+# Telegram menu descriptions in Simplified Chinese.
+# These override the English description for the Telegram `/` command menu.
+_TG_CMD_DESCRIPTIONS_CN: dict[str, str] = {
+    # Session
+    "start":    "忽略平台启动信号（不回复）",
+    "new":      "开始新会话（清空上下文）",
+    "topic":    "管理 Telegram 主题会话",
+    "retry":    "重试最后一条消息",
+    "undo":     "撤销 N 轮对话（默认1轮）",
+    "title":    "给当前会话取个标题",
+    "branch":   "分支当前会话（探索不同方向）",
+    "compress": "压缩对话上下文",
+    "rollback": "列出或恢复系统检查点",
+    "stop":     "停止所有后台任务",
+    "approve":  "批准待处理的危险操作",
+    "deny":     "拒绝待处理的危险操作",
+    "background": "后台运行提示词",
+    "agents":   "查看活跃 Agent 和任务",
+    "queue":    "将提示词排队（不中断当前任务）",
+    "steer":    "在下次工具调用后注入消息（不中断）",
+    "goal":     "设定 Agent 持续完成的目标",
+    "moa":      "用多 Agent 模式运行一次提示词",
+    "subgoal":  "管理当前目标的附加条件",
+    "status":   "查看会话、模型、Token 状态",
+    "whoami":   "查看你的命令权限（管理员/普通用户）",
+    "profile":  "查看当前配置profile名称和目录",
+    "sethome":  "将本聊天设为主频道",
+    "resume":   "恢复之前的会话",
+    "sessions": "浏览并恢复历史会话",
+    # Configuration
+    "model":         "切换模型（默认永久生效）",
+    "codex_runtime": "切换 Codex 运行时模式",
+    "personality":   "设置预定义人设",
+    "verbose":       "切换工具进度显示：关→新→全部→详细",
+    "footer":        "切换消息尾部运行时信息",
+    "yolo":          "切换 YOLO 模式（跳过危险操作确认）",
+    "reasoning":     "管理推理强度和显示",
+    "fast":          "切换快速模式（优先处理/正常处理）",
+    "voice":         "切换语音模式",
+    # Tools & Skills
+    "memory":       "查看待写入记忆 / 切换审批开关",
+    "bundles":      "查看技能包列表（多技能别名）",
+    "learn":        "从任意内容学习可复用技能",
+    "suggestions":  "查看建议自动化（接受/忽略）",
+    "blueprint":    "从模板设置自动化任务",
+    "curator":      "技能后台维护（状态/运行/置顶/归档）",
+    "kanban":       "多profile协作看板（任务/链接/评论）",
+    "reload_mcp":   "重载 MCP 服务器配置",
+    "reload_skills":"重新扫描技能目录",
+    # Info
+    "commands": "浏览所有命令和技能（分页）",
+    "help":     "查看可用命令",
+    "restart":  "重启网关（排空当前任务后）",
+    "usage":    "查看会话 Token 用量和限流",
+    "credits":  "查看 Nous 积分余额和充值",
+    "insights": "查看使用分析和洞察",
+    "platform": "暂停/恢复/列出网关平台",
+    "mobile":   "打开 Telegram 远程控制面板",
+    "update":   "更新 Hermes 到最新版本",
+    "version":  "查看 Hermes 版本号",
+    "debug":    "上传调试报告并获取分享链接",
+}
+"""Telegram menu descriptions in Simplified Chinese.
+
+These override the English description for the Telegram ``/`` command menu.
+Command names are stored in lowercase (already sanitized by
+``_sanitize_telegram_name``).
+"""
+
+
 def telegram_bot_commands() -> list[tuple[str, str]]:
     """Return (command_name, description) pairs for Telegram setMyCommands.
 
@@ -534,7 +606,8 @@ def telegram_bot_commands() -> list[tuple[str, str]]:
         # the menu hurts discoverability (issue #24312).
         tg_name = _sanitize_telegram_name(cmd.name)
         if tg_name:
-            result.append((tg_name, cmd.description))
+            desc = _TG_CMD_DESCRIPTIONS_CN.get(tg_name, cmd.description)
+            result.append((tg_name, desc))
     for name, description, args_hint in _iter_plugin_command_entries():
         if _requires_argument(args_hint):
             continue
@@ -554,6 +627,7 @@ _TELEGRAM_PRIORITY_MODES = {"prepend", "append", "replace"}
 
 _TELEGRAM_MENU_PRIORITY = (
     # Most-typed everyday commands first.
+    "mobile",
     "help",
     "new",
     "stop",
@@ -1164,7 +1238,8 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - mobile: Telegram-specific button panel; not useful as a native Slack slash.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "mobile"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

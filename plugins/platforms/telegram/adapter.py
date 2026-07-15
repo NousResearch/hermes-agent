@@ -8,6 +8,7 @@ Uses python-telegram-bot library for:
 """
 
 import asyncio
+import contextlib
 import dataclasses
 import faulthandler
 import inspect
@@ -16,6 +17,7 @@ import logging
 import os
 import html as _html
 import re
+import subprocess
 import threading
 from contextvars import ContextVar
 from datetime import datetime, timezone
@@ -677,6 +679,39 @@ class TelegramAdapter(BasePlatformAdapter):
         self._forum_command_registered: set[int] = set()
         # Lock per la registrazione sicura dei comandi nei forum supergroup
         self._forum_lock = asyncio.Lock()
+        # Lightweight mobile-control panel for Telegram DM/mobile use. This is
+        # intentionally handled inside the adapter so button taps can execute
+        # safe status commands without spending an agent turn.
+        self._mobile_panel_commands: Dict[str, Dict[str, str]] = {
+            "active": {
+                "label": "👀 正在执行",
+                "command": "python3 - <<'PY2'\nimport subprocess\nfrom pathlib import Path\nprint('👀 Hermes 正在执行')\nprint('━━━━━━━━')\nstatus=Path.home()/'Downloads/Hermes输出/状态/Hermes任务状态.md'\nif status.exists():\n    lines=status.read_text(errors='replace').splitlines()[:60]\n    print('任务状态文件：')\n    print('\\n'.join(lines) or '（空）')\nelse:\n    print('任务状态文件：暂无')\nprint('\\nHermes 相关进程：')\ncmd=\"ps aux | grep -Ei 'hermes|run_agent|gateway' | grep -v grep | awk '{print $2, $3\"%\", $4\"%\", $11, $12, $13}' | head -12\"\nout=subprocess.run(cmd, shell=True, text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=8).stdout.strip()\nprint(out or '未发现活跃 Hermes 进程')\nPY2",
+            },
+            "sessions": {
+                "label": "💬 最近会话",
+                "command": "(hermes sessions list --source telegram --limit 8 2>/dev/null || hermes sessions list --limit 8 2>/dev/null || echo '无法读取会话列表') | sed -n '1,80p'",
+            },
+            "sys": {
+                "label": "🖥 Mac 状态",
+                "command": "python3 - <<'PY2'\nimport subprocess, re\nprint('🖥 Mac 状态')\nprint('━━━━━━━━')\ndef sh(cmd):\n    return subprocess.run(cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=8).stdout.strip()\ncpu=sh(\"top -l 1 -n 0 | grep 'CPU usage' | awk '{print $3}'\") or 'N/A'\nvm=sh('vm_stat')\nm=re.search(r'Pages free:\\s+(\\d+)', vm)\nmem=f'{int(m.group(1))*4096/1024/1024/1024:.1f} GB' if m else 'N/A'\ndisk=sh(\"df -h / | tail -1 | awk '{print $4}'\") or 'N/A'\nbatt=sh(\"pmset -g batt 2>/dev/null | grep -Eo '[0-9]+%' | head -1\") or 'N/A'\nip=sh('curl -s --max-time 5 ifconfig.me') or 'N/A'\nprocs=sh(\"ps aux | wc -l | tr -d ' '\") or 'N/A'\nprint(f'CPU: {cpu}')\nprint(f'内存空闲: {mem}')\nprint(f'磁盘剩余: {disk}')\nprint(f'电池: {batt}')\nprint(f'公网 IP: {ip}')\nprint(f'进程数: {procs}')\nPY2",
+            },
+            "tasks": {
+                "label": "⏳ 任务状态",
+                "command": "p=\"$HOME/Downloads/Hermes输出/状态/Hermes任务状态.md\"; if [ -f \"$p\" ]; then sed -n '1,80p' \"$p\"; else echo '暂无任务状态文件'; fi",
+            },
+            "downloads": {
+                "label": "📁 最近下载",
+                "command": "python3 - <<'PY2'\nfrom pathlib import Path\nfiles=sorted(Path.home().joinpath('Downloads').iterdir(), key=lambda p:p.stat().st_mtime if p.exists() else 0, reverse=True)[:10]\nprint('📁 最近下载\\n━━━━━━━━')\nfor p in files:\n    try:\n        size=p.stat().st_size\n        if size>1024**3: s=f'{size/1024**3:.1f}G'\n        elif size>1024**2: s=f'{size/1024**2:.1f}M'\n        elif size>1024: s=f'{size/1024:.1f}K'\n        else: s=f'{size}B'\n    except Exception: s='?'\n    print(f'- {p.name} ({s})')\nPY2",
+            },
+            "topproc": {
+                "label": "🔥 高占用进程",
+                "command": "ps aux -r | awk 'NR==1{print \"USER PID CPU MEM COMMAND\";next} NR<=8{print $1,$2,$3,$4,$11}'",
+            },
+            "health": {
+                "label": "⚕ Gateway 状态",
+                "command": "hermes gateway status",
+            },
+        }
         # Status indicator: when enabled, the bot's short description (the line
         # shown under its name in the profile) is set to "Online" on connect and
         # "Offline" on clean disconnect, so users can tell whether the gateway is
@@ -5634,6 +5669,11 @@ class TelegramAdapter(BasePlatformAdapter):
         query_thread_id = getattr(query_message, "message_thread_id", None)
         query_user_name = getattr(query.from_user, "first_name", None)
 
+        # --- Mobile control panel callbacks ---
+        if data.startswith("mpanel:"):
+            await self._handle_mobile_panel_callback(query, data)
+            return
+
         # --- Model picker callbacks ---
         if data.startswith(("mp:", "mpg:", "mpv:", "mm:", "mc:", "mb", "mx", "mg:")):
             chat_id = str(query.message.chat_id) if query.message else None
@@ -7833,11 +7873,217 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         await self._ensure_forum_commands(update.message)
 
+        handled_quick_button = await self._handle_mobile_quick_text(msg)
+        if handled_quick_button:
+            return
+
         event = self._build_message_event(msg, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
         await self._cache_replied_media(msg, event)
         event = self._apply_telegram_group_observe_attribution(event)
         self._enqueue_text_event(event)
+
+    async def _handle_mobile_quick_text(self, msg: Any) -> bool:
+        """Handle Chinese mobile quick-keyboard labels locally.
+
+        Some mobile Telegram clients show custom keyboard buttons as plain text
+        messages. Treat the known Chinese labels like commands so they do not
+        fall through to the LLM and produce mixed-language guidance.
+        """
+        text = (getattr(msg, "text", "") or "").strip()
+        normalized = re.sub(r"\s+", "", text)
+        if normalized in {"🕹掌上控制", "掌上控制", "手机控制", "控制面板"}:
+            await self._send_mobile_panel_for_message(msg)
+            return True
+        if normalized in {"◷定时", "⏰定时", "定时", "定时任务"}:
+            await self._send_mobile_schedule_help(msg)
+            return True
+        return False
+
+    async def _send_mobile_schedule_help(self, msg: Any) -> None:
+        if not self._bot:
+            return
+        thread_id = getattr(msg, "message_thread_id", None)
+        chat_id = str(getattr(getattr(msg, "chat", None), "id", getattr(msg, "chat_id", "")))
+        reply_to_id = getattr(msg, "message_id", None)
+        metadata = {"thread_id": str(thread_id)} if thread_id is not None else None
+        text = (
+            "◷ <b>定时任务</b>\n"
+            "━━━━━━━━\n"
+            "你可以直接用中文告诉我什么时候提醒或执行任务。\n\n"
+            "常用说法：\n"
+            "• <code>明天上午 9 点提醒我看周报</code>\n"
+            "• <code>每天下午 6 点汇总今天任务</code>\n"
+            "• <code>每周一早上检查 Hermes 状态</code>\n\n"
+            "查看/管理：\n"
+            "• <code>/cron list</code> 查看定时任务\n"
+            "• <code>/cron</code> 打开定时任务帮助\n"
+        )
+        kwargs: Dict[str, Any] = {
+            "chat_id": normalize_telegram_chat_id(chat_id),
+            "text": text,
+            "parse_mode": ParseMode.HTML,
+            "reply_markup": InlineKeyboardMarkup([[InlineKeyboardButton("◀ 返回控制面板", callback_data="mpanel:menu")]]),
+            "reply_to_message_id": reply_to_id,
+            **self._link_preview_kwargs(),
+        }
+        kwargs.update(
+            self._thread_kwargs_for_send(
+                chat_id,
+                str(thread_id) if thread_id is not None else None,
+                metadata,
+                reply_to_message_id=reply_to_id,
+                reply_to_mode=self._reply_to_mode,
+            )
+        )
+        await self._send_message_with_thread_fallback(**kwargs)
+
+    def _mobile_panel_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup([
+            [
+                InlineKeyboardButton("👀 正在执行", callback_data="mpanel:active"),
+                InlineKeyboardButton("💬 最近会话", callback_data="mpanel:sessions"),
+            ],
+            [
+                InlineKeyboardButton("🖥 Mac 状态", callback_data="mpanel:sys"),
+                InlineKeyboardButton("⏳ 任务状态", callback_data="mpanel:tasks"),
+            ],
+            [
+                InlineKeyboardButton("📁 最近下载", callback_data="mpanel:downloads"),
+                InlineKeyboardButton("🔥 高占用进程", callback_data="mpanel:topproc"),
+            ],
+            [
+                InlineKeyboardButton("⚕ 网关状态", callback_data="mpanel:health"),
+                InlineKeyboardButton("📸 截图命令", callback_data="mpanel:hint:shot"),
+            ],
+            [InlineKeyboardButton("🔄 刷新菜单", callback_data="mpanel:menu")],
+        ])
+
+    def _mobile_panel_text(self) -> str:
+        return (
+            "📱 <b>Hermes 手机控制台</b>\n"
+            "━━━━━━━━\n"
+            "用手机查看 Hermes 当前在做什么、最近有哪些会话，"
+            "也可以快速检查这台 Mac 的状态。\n\n"
+            "推荐手机操作：\n"
+            "• 点 <b>正在执行</b>：看后台任务 / Agent / Gateway 进程\n"
+            "• 点 <b>最近会话</b>：找到 Telegram 历史会话，之后可用 <code>/resume</code> 继续\n"
+            "• 点 <b>任务状态</b>：查看长任务交付文件\n\n"
+            "常用命令：\n"
+            "• <code>/sessions</code> 浏览历史会话\n"
+            "• <code>/agents</code> 查看活跃 Agent 和任务\n"
+            "• <code>/status</code> 查看当前会话/模型/Token 状态\n"
+            "• <code>/shot</code> 截图回传\n"
+        )
+
+    async def _send_mobile_panel_for_message(self, msg: Message) -> None:
+        if not self._bot:
+            return
+        thread_id = getattr(msg, "message_thread_id", None)
+        chat_id = str(getattr(getattr(msg, "chat", None), "id", getattr(msg, "chat_id", "")))
+        reply_to_id = getattr(msg, "message_id", None)
+        metadata = {"thread_id": str(thread_id)} if thread_id is not None else None
+        kwargs: Dict[str, Any] = {
+            "chat_id": normalize_telegram_chat_id(chat_id),
+            "text": self._mobile_panel_text(),
+            "parse_mode": ParseMode.HTML,
+            "reply_markup": self._mobile_panel_keyboard(),
+            "reply_to_message_id": reply_to_id,
+            **self._link_preview_kwargs(),
+        }
+        kwargs.update(
+            self._thread_kwargs_for_send(
+                chat_id,
+                str(thread_id) if thread_id is not None else None,
+                metadata,
+                reply_to_message_id=reply_to_id,
+                reply_to_mode=self._reply_to_mode,
+            )
+        )
+        await self._send_message_with_thread_fallback(**kwargs)
+
+    async def _run_mobile_panel_command(self, action: str) -> str:
+        entry = self._mobile_panel_commands.get(action)
+        if not entry:
+            return "未知面板操作。"
+        try:
+            from tools.environments.local import _sanitize_subprocess_env
+            env = _sanitize_subprocess_env(os.environ.copy())
+        except Exception:
+            env = os.environ.copy()
+        proc = await asyncio.create_subprocess_shell(
+            entry["command"],
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=env,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        except asyncio.TimeoutError:
+            with contextlib.suppress(Exception):
+                proc.kill()
+            return "操作超时（30 秒）。"
+        output = (stdout or stderr or b"").decode(errors="replace").strip()
+        if not output:
+            output = "没有输出。"
+        try:
+            from agent.redact import redact_sensitive_text
+            output = redact_sensitive_text(output)
+        except Exception:
+            pass
+        return output[:3500]
+
+    async def _handle_mobile_panel_callback(self, query, data: str) -> None:
+        caller_id = str(getattr(query.from_user, "id", ""))
+        query_message = getattr(query, "message", None)
+        query_chat_id = getattr(query_message, "chat_id", None)
+        query_chat = getattr(query_message, "chat", None)
+        query_chat_type = getattr(query_chat, "type", None)
+        query_thread_id = getattr(query_message, "message_thread_id", None)
+        query_user_name = getattr(query.from_user, "first_name", None)
+        if not self._is_callback_user_authorized(
+            caller_id,
+            chat_id=query_chat_id,
+            chat_type=str(query_chat_type) if query_chat_type is not None else None,
+            thread_id=str(query_thread_id) if query_thread_id is not None else None,
+            user_name=query_user_name,
+        ):
+            await query.answer(text="⛔ 你没有权限使用这个面板。")
+            return
+
+        action = data.split(":", 1)[1] if ":" in data else "menu"
+        if action == "menu":
+            await query.edit_message_text(
+                text=self._mobile_panel_text(),
+                parse_mode=ParseMode.HTML,
+                reply_markup=self._mobile_panel_keyboard(),
+                **self._link_preview_kwargs(),
+            )
+            await query.answer(text="已刷新")
+            return
+        if action == "hint:shot":
+            await query.answer(text="请发送 /shot")
+            await query.edit_message_text(
+                text=(
+                    "📸 <b>截图回传</b>\n━━━━━━━━\n"
+                    "请直接发送 <code>/shot</code>。\n\n"
+                    "说明：截图会保存到 <code>Downloads/Hermes输出/图片</code>，并通过 Telegram 回传。"
+                ),
+                parse_mode=ParseMode.HTML,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀ 返回菜单", callback_data="mpanel:menu")]]),
+                **self._link_preview_kwargs(),
+            )
+            return
+
+        await query.answer(text="正在执行…")
+        output = await self._run_mobile_panel_command(action)
+        title = self._mobile_panel_commands.get(action, {}).get("label", action)
+        await query.edit_message_text(
+            text=f"{_html.escape(title)}\n━━━━━━━━\n<pre>{_html.escape(output)}</pre>",
+            parse_mode=ParseMode.HTML,
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀ 返回菜单", callback_data="mpanel:menu")]]),
+            **self._link_preview_kwargs(),
+        )
 
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         """Handle incoming command messages."""
@@ -7854,6 +8100,12 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return
         await self._ensure_forum_commands(msg)
+
+        raw_command = (msg.text or "").strip().split(maxsplit=1)[0]
+        command_name = raw_command.split("@", 1)[0].lower().lstrip("/")
+        if command_name in {"mobile", "mac", "panel"}:
+            await self._send_mobile_panel_for_message(msg)
+            return
 
         event = self._build_message_event(msg, MessageType.COMMAND, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)

@@ -452,10 +452,19 @@ def _is_accepted_host(host_header: str, bound_host: str) -> bool:
     if bound_host in {"0.0.0.0", "::"}:
         return True
 
-    # Loopback bind: accept the loopback names
+    # Loopback bind: accept loopback names and operator-allowlisted reverse
+    # proxy origins. The allowlist is opt-in; without it, preserve the strict
+    # DNS-rebinding defence above.
     bound_lc = bound_host.lower()
     if bound_lc in _LOOPBACK_HOST_VALUES:
-        return host_only in _LOOPBACK_HOST_VALUES
+        if host_only in _LOOPBACK_HOST_VALUES:
+            return True
+        allowed_hosts = {
+            entry.strip().lower().rstrip(".")
+            for entry in os.environ.get("HERMES_DASHBOARD_ALLOWED_HOSTS", "").split(",")
+            if entry.strip()
+        }
+        return host_only.rstrip(".") in allowed_hosts
 
     # Explicit non-loopback bind: require exact host match
     return host_only == bound_lc

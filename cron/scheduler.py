@@ -716,6 +716,35 @@ def _maybe_mirror_cron_delivery(
         )
 
 
+def _continuable_cron_thread_name(job: dict) -> str:
+    """Resolve the name for a newly-opened continuable cron thread.
+
+    Existing jobs keep the historical ``Hermes — <job name>`` default.  Jobs
+    may opt into a small, deterministic template with ``{date}``,
+    ``{job_name}``, and ``{job_id}``; ``{date}`` uses Hermes' configured
+    timezone rather than the host's implicit timezone.
+    """
+    task_name = str(job.get("name") or job.get("id", "cron")).strip()
+    default_name = f"Hermes — {task_name}"
+    template = job.get("thread_name_template")
+    if not isinstance(template, str) or not template.strip():
+        return default_name
+
+    try:
+        rendered = template.format(
+            date=_hermes_now().strftime("%Y-%m-%d"),
+            job_name=task_name,
+            job_id=str(job.get("id", "cron")),
+        ).strip()
+    except (KeyError, IndexError, ValueError) as exc:
+        logger.warning(
+            "Job '%s': invalid thread_name_template %r (%s); using default name",
+            job.get("id", "?"), template, exc,
+        )
+        return default_name
+    return rendered or default_name
+
+
 def _open_continuable_cron_thread(
     job: dict,
     adapter,
@@ -733,8 +762,7 @@ def _open_continuable_cron_thread(
     create_thread = getattr(adapter, "create_handoff_thread", None)
     if not callable(create_thread) or loop is None:
         return None
-    task_name = job.get("name") or job.get("id", "cron")
-    thread_name = f"Hermes — {task_name}"
+    thread_name = _continuable_cron_thread_name(job)
     try:
         from agent.async_utils import safe_schedule_threadsafe
 

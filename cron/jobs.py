@@ -1048,6 +1048,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    thread_name_template: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1092,6 +1093,10 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        attach_to_session: When True, make the delivery continuable on
+                thread-capable platforms; omitted preserves the global default.
+        thread_name_template: Optional template for continuable thread names.
+                Supported fields are ``{date}``, ``{job_name}``, and ``{job_id}``.
 
     Returns:
         The created job dict
@@ -1124,6 +1129,10 @@ def create_job(
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
+    normalized_thread_name_template = (
+        str(thread_name_template).strip() if isinstance(thread_name_template, str) else None
+    )
+    normalized_thread_name_template = normalized_thread_name_template or None
 
     # no_agent jobs are meaningless without a script — the script IS the job.
     # Surface this as a clear ValueError at create time so bad configs never
@@ -1219,6 +1228,8 @@ def create_job(
     # global cron.mirror_delivery config, default off).
     if normalized_attach is not None:
         job["attach_to_session"] = normalized_attach
+    if normalized_thread_name_template is not None:
+        job["thread_name_template"] = normalized_thread_name_template
 
     with _jobs_lock():
         jobs = load_jobs()

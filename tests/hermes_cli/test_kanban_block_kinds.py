@@ -138,7 +138,8 @@ def test_resolve_block_recurrence_limit_reads_config_and_guards_bad_values() -> 
     # missing / empty -> built-in default
     assert kb.resolve_block_recurrence_limit({}) == kb.BLOCK_RECURRENCE_LIMIT
     # non-int / non-positive must never disable the breaker -> default
-    for bad in ("abc", 0, -3, None):
+    # bool is rejected explicitly: YAML true would otherwise coerce to 1.
+    for bad in ("abc", 0, -3, None, True, False):
         assert (
             kb.resolve_block_recurrence_limit({"block_recurrence_limit": bad})
             == kb.BLOCK_RECURRENCE_LIMIT

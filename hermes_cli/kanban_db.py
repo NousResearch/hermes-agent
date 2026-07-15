@@ -7426,10 +7426,12 @@ def resolve_block_recurrence_limit(kanban_cfg: Optional[dict] = None) -> int:
             kanban_cfg = (load_config().get("kanban") or {})
         except Exception:
             kanban_cfg = {}
-    return _positive_int(
-        (kanban_cfg or {}).get("block_recurrence_limit"),
-        BLOCK_RECURRENCE_LIMIT,
-    )
+    raw = (kanban_cfg or {}).get("block_recurrence_limit")
+    # bool is a subclass of int, so int(True) == 1. Reject YAML true/false
+    # before coercion so a typo cannot silently become a limit of 1.
+    if isinstance(raw, bool):
+        return BLOCK_RECURRENCE_LIMIT
+    return _positive_int(raw, BLOCK_RECURRENCE_LIMIT)
 
 
 def worker_log_rotation_config(kanban_cfg: Optional[dict] = None) -> tuple[int, int]:

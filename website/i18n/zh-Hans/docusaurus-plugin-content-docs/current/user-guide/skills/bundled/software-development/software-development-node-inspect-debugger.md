@@ -201,7 +201,11 @@ TUI 基于 Ink + tsx 构建。两种常见场景：
 `ui-tui/package.json` 有 `npm run dev`（tsx --watch）。直接运行 tsx 并添加 `--inspect-brk`：
 
 ```bash
-cd "$(git rev-parse --show-toplevel)/ui-tui"
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  echo "错误：请从 Hermes Agent 检出目录中运行此命令。" >&2
+  exit 1
+}
+cd "$repo_root/ui-tui"
 npm run build    # produce dist/ once so transpile isn't needed on first load
 node --inspect-brk dist/entry.js
 # In another terminal:
@@ -245,7 +249,11 @@ node inspect ws://127.0.0.1:9229/<uuid>
 ## 在调试器下运行 Vitest 测试
 
 ```bash
-cd "$(git rev-parse --show-toplevel)/ui-tui"
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  echo "错误：请从 Hermes Agent 检出目录中运行此命令。" >&2
+  exit 1
+}
+cd "$repo_root/ui-tui"
 # Run a single test file paused on entry
 node --inspect-brk ./node_modules/vitest/vitest.mjs run --no-file-parallelism src/app/foo.test.tsx
 ```

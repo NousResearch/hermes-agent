@@ -151,7 +151,10 @@ For long-lived processes: Hermes gateway, tui_gateway, a daemon, a process that'
 ### Setup
 
 ```bash
-repo_root="$(git rev-parse --show-toplevel)"
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  echo "Error: run this command from inside the Hermes Agent checkout." >&2
+  exit 1
+}
 source "$repo_root/.venv/bin/activate"
 pip install debugpy
 ```

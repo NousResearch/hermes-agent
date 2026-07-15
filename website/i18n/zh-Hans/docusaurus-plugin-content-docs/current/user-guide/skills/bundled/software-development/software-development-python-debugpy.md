@@ -169,7 +169,10 @@ sys.excepthook = excepthook
 ### 安装
 
 ```bash
-repo_root="$(git rev-parse --show-toplevel)"
+repo_root="$(git rev-parse --show-toplevel 2>/dev/null)" || {
+  echo "错误：请从 Hermes Agent 检出目录中运行此命令。" >&2
+  exit 1
+}
 source "$repo_root/.venv/bin/activate"
 pip install debugpy
 ```

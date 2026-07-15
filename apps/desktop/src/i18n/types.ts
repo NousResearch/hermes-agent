@@ -1221,6 +1221,71 @@ export interface Translations {
     createAction: string
   }
 
+  kanban: {
+    title: string
+    close: string
+    loading: string
+    failedLoad: string
+    count: (count: number) => string
+    board: string
+    nudgeDispatcher: string
+    nudgeSent: (spawned: number, promoted: number) => string
+    nudgeFailed: string
+    newCard: string
+    noTasks: string
+    unassigned: string
+    priority: string
+    progressTitle: (done: number, total: number) => string
+    diagnostics: string
+    movedByRules: (column: string) => string
+    moveFailed: string
+    columnLabels: Record<string, string>
+    loadingDetail: string
+    status: string
+    assignee: string
+    description: string
+    noDescription: string
+    latestSummary: string
+    dependencies: string
+    parents: string
+    children: string
+    none: string
+    comments: string
+    noComments: string
+    commentPlaceholder: string
+    addComment: string
+    commentFailed: string
+    events: string
+    noEvents: string
+    runHistory: string
+    noRuns: string
+    runActive: string
+    workerLog: string
+    loadingLog: string
+    noWorkerLog: string
+    attachments: string
+    noAttachments: string
+    updateFailed: string
+    newCardTitle: string
+    newCardDesc: string
+    titleLabel: string
+    titlePlaceholder: string
+    assigneeLabel: string
+    assigneePlaceholder: string
+    bodyLabel: string
+    bodyPlaceholder: string
+    priorityLabel: string
+    parentLabel: string
+    parentNone: string
+    optional: string
+    createCard: string
+    creating: string
+    created: string
+    createFailed: string
+    titleRequired: string
+    assigneeRequired: string
+  }
+
   artifacts: {
     search: string
     refresh: string

@@ -25,6 +25,7 @@ import {
   Globe,
   type IconComponent,
   Info,
+  Kanban,
   KeyRound,
   Layers3,
   MessageCircle,
@@ -68,6 +69,7 @@ import {
   ARTIFACTS_ROUTE,
   COMMAND_CENTER_ROUTE,
   CRON_ROUTE,
+  KANBAN_ROUTE,
   MESSAGING_ROUTE,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
@@ -452,6 +454,14 @@ export function CommandPalette() {
             keywords: ['schedule', 'jobs'],
             label: t.shell.statusbar.cron,
             run: go(CRON_ROUTE)
+          },
+          {
+            action: 'nav.kanban',
+            icon: Kanban,
+            id: 'nav-kanban',
+            keywords: ['kanban', 'board', 'tasks', 'cards', 'dispatcher'],
+            label: t.kanban.title,
+            run: go(KANBAN_ROUTE)
           },
           { action: 'nav.profiles', icon: Users, id: 'nav-profiles', label: t.profiles.title, run: go(PROFILES_ROUTE) },
           { action: 'nav.agents', icon: Cpu, id: 'nav-agents', label: t.agents.title, run: go(AGENTS_ROUTE) },

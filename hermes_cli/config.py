@@ -4059,16 +4059,6 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
 
-    # ── Mem0 ──
-    "MEM0_API_KEY": {
-        "description": "Mem0 Platform API key for semantic persistent memory",
-        "prompt": "Mem0 API key",
-        "url": "https://app.mem0.ai",
-        "tools": ["mem0_search"],
-        "password": True,
-        "category": "tool",
-    },
-
     # ── RetainDB ──
     "RETAINDB_API_KEY": {
         "description": "RetainDB API key for persistent memory",

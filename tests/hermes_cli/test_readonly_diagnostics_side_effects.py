@@ -153,6 +153,7 @@ def test_readonly_cache_writers_are_noops(monkeypatch, tmp_path):
     import agent.model_metadata as model_metadata
     import agent.models_dev as models_dev
     import agent.prompt_builder as prompt_builder
+    import hermes_cli.gateway as gateway
     import hermes_cli.model_catalog as model_catalog
     import hermes_cli.models as models
     import hermes_cli.security_advisories as advisories
@@ -162,11 +163,16 @@ def test_readonly_cache_writers_are_noops(monkeypatch, tmp_path):
     models_dev._save_disk_cache({"example": {"models": {}}})
     prompt_builder._write_skills_snapshot(tmp_path / "skills", {}, [], {})
     skill_usage.bump_use("readonly-diagnostic-test")
+    launchd_plist = tmp_path / "installed-launchd.plist"
+    launchd_plist.write_text("<plist/>", encoding="utf-8")
+    monkeypatch.setattr(gateway, "get_launchd_plist_path", lambda: launchd_plist)
+    gateway.launchd_plist_is_current()
     model_catalog._write_disk_cache({"models": ["x"]})
     models._write_nous_recommended_disk("https://example.invalid", {"models": ["x"]})
     models._save_provider_models_cache({"provider": {"models": ["x"]}})
     advisories._write_banner_cache({"ADV-1": 1.0})
 
+    assert not (tmp_path / "logs").exists()
     assert not (tmp_path / ".skills_prompt_snapshot.json").exists()
     assert not (tmp_path / "skills/.usage.json").exists()
     assert not (tmp_path / "skills/.usage.json.lock").exists()

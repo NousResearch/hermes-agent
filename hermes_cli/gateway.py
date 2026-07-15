@@ -3884,7 +3884,10 @@ def generate_launchd_plist() -> str:
     hermes_home_path = get_hermes_home().resolve()
     hermes_home = str(hermes_home_path)
     log_dir = hermes_home_path / "logs"
-    log_dir.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import is_readonly_diagnostic
+
+    if not is_readonly_diagnostic():
+        log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
     profile_arg = _profile_arg(hermes_home)
     # Build a sane PATH for the launchd plist.  launchd provides only a

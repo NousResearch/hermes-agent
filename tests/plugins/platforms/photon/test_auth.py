@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import os
+import threading
+import time
 from base64 import b64encode
 from pathlib import Path
 from typing import Any, Dict
@@ -175,6 +177,110 @@ def test_load_project_credentials_env_override(
     sid, secret = photon_auth.load_project_credentials()
     assert sid == "from-env"
     assert secret == "secret-env"
+
+
+# ---------------------------------------------------------------------------
+# Cross-process auth.json lock (issue: photon wrote auth.json without the
+# cross-process lock hermes_cli/auth.py's ~15 other writers all use, so a
+# concurrent refresh from elsewhere could silently lose photon's update or
+# vice versa).
+
+def _hold_auth_lock_then_release(hold_event: threading.Event, release_event: threading.Event) -> None:
+    from hermes_cli.auth import _auth_store_lock
+
+    with _auth_store_lock():
+        hold_event.set()
+        release_event.wait(timeout=5)
+
+
+@pytest.mark.parametrize(
+    "call",
+    [
+        lambda: photon_auth.store_photon_token("blocked-token"),
+        lambda: photon_auth.store_user_numbers(phone_number="+15551234567"),
+    ],
+)
+def test_store_functions_block_on_auth_store_lock(
+    tmp_hermes_home: Path, call,
+) -> None:
+    """store_* writers must serialize against hermes_cli.auth's cross-process lock.
+
+    Before the fix, photon's store_* functions never acquired
+    ``_auth_store_lock`` at all, so a concurrent writer elsewhere in the
+    process (e.g. a Nous OAuth token refresh) could interleave with photon's
+    load-mutate-save cycle and silently drop one side's update. This test
+    proves the lock is actually taken (not just imported) by holding it on
+    a background thread and confirming the photon writer blocks until it is
+    released.
+    """
+    holding = threading.Event()
+    release = threading.Event()
+    holder = threading.Thread(
+        target=_hold_auth_lock_then_release, args=(holding, release), daemon=True,
+    )
+    holder.start()
+    try:
+        assert holding.wait(timeout=5), "background thread never acquired the auth lock"
+
+        finished = threading.Event()
+
+        def _run_call() -> None:
+            call()
+            finished.set()
+
+        caller = threading.Thread(target=_run_call, daemon=True)
+        caller.start()
+        try:
+            # The lock is held by the background thread — the store_* call
+            # must not complete while it waits for the lock.
+            assert not finished.wait(timeout=0.3), (
+                "store_* call completed while a concurrent writer held the "
+                "auth.json lock — it is not actually taking the lock"
+            )
+        finally:
+            release.set()
+            caller.join(timeout=5)
+        assert finished.is_set(), "store_* call never completed after the lock was released"
+    finally:
+        release.set()
+        holder.join(timeout=5)
+
+
+def test_store_project_credentials_blocks_on_auth_store_lock(
+    tmp_hermes_home: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(photon_auth, "_persist_runtime_env", lambda *a, **k: None)
+    holding = threading.Event()
+    release = threading.Event()
+    holder = threading.Thread(
+        target=_hold_auth_lock_then_release, args=(holding, release), daemon=True,
+    )
+    holder.start()
+    try:
+        assert holding.wait(timeout=5), "background thread never acquired the auth lock"
+
+        finished = threading.Event()
+
+        def _run_call() -> None:
+            photon_auth.store_project_credentials(
+                spectrum_project_id="sp-blocked", project_secret="secret-blocked",
+            )
+            finished.set()
+
+        caller = threading.Thread(target=_run_call, daemon=True)
+        caller.start()
+        try:
+            assert not finished.wait(timeout=0.3), (
+                "store_project_credentials completed while a concurrent writer "
+                "held the auth.json lock — it is not actually taking the lock"
+            )
+        finally:
+            release.set()
+            caller.join(timeout=5)
+        assert finished.is_set()
+    finally:
+        release.set()
+        holder.join(timeout=5)
 
 
 # ---------------------------------------------------------------------------

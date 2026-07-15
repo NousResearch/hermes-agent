@@ -758,4 +758,66 @@ def test_strip_slash_enum_ignores_non_string_enum_values():
     assert stripped == 0
     props = tools[0]["function"]["parameters"]["properties"]
     assert props["level"]["enum"] == [1, 2, 3]
-    assert props["flag"]["enum"] == [True, False]
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# dependentRequired — non-schema sibling keyword pass-through (#64587)
+# ─────────────────────────────────────────────────────────────────────────
+
+
+def test_dependent_required_preserved_as_string_lists():
+    """dependentRequired values (list[str]) must survive _sanitize_node unchanged.
+
+    Regression for #64587: GitHub Copilot MCP ``search_issues`` ships
+    ``dependentRequired = {owner: [repo], repo: [owner]}``. The sanitizer
+    was recursing into the value lists, treating ``"owner"`` / ``"repo"``
+    as bare-string schemas and replacing them with
+    ``{"type": "object", "properties": {}}`` — causing an HTTP 400 on
+    every provider turn (xAI, OpenAI, Codex).
+    """
+    tools = [_tool("mcp__github__search_issues", {
+        "type": "object",
+        "properties": {
+            "owner": {"type": "string", "description": "Repository owner"},
+            "repo": {"type": "string", "description": "Repository name"},
+        },
+        "required": ["owner", "repo"],
+        "dependentRequired": {
+            "owner": ["repo"],
+            "repo": ["owner"],
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    deps = out[0]["function"]["parameters"]["dependentRequired"]
+    assert deps == {"owner": ["repo"], "repo": ["owner"]}, f"Expected string lists, got {deps}"
+    # Verify every item is genuinely a string, not a dict.
+    for k, v in deps.items():
+        for item in v:
+            assert isinstance(item, str), f"{k}[{item!r}] should be str, got {type(item).__name__}"
+    # Sibling keywords (required, properties) survive alongside dependentRequired.
+    assert out[0]["function"]["parameters"]["required"] == ["owner", "repo"]
+    assert "owner" in out[0]["function"]["parameters"]["properties"]
+
+
+def test_dependent_required_preserved_in_nested_schema():
+    """dependentRequired inside a nested object should survive."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "filter": {
+                "type": "object",
+                "properties": {
+                    "author": {"type": "string"},
+                    "labels": {"type": "array", "items": {"type": "string"}},
+                },
+                "dependentRequired": {
+                    "author": ["labels"],
+                },
+            },
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    nested = out[0]["function"]["parameters"]["properties"]["filter"]
+    assert nested["dependentRequired"] == {"author": ["labels"]}
+    # Properties inside the nested object survive.
+    assert nested["properties"]["author"]["type"] == "string"

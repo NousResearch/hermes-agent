@@ -323,14 +323,15 @@ def _sanitize_node(node: Any, path: str) -> Any:
                 _sanitize_node(item, f"{path}.{key}[{i}]")
                 for i, item in enumerate(value)
             ]
-        elif key in {"required", "enum", "examples"}:
+        elif key in {"required", "enum", "examples", "dependentRequired"}:
             # Schema "sibling" keywords whose values are NOT schemas:
             #  - ``required``: list of property-name strings
             #  - ``enum``: list of literal values (any JSON type)
             #  - ``examples``: list of example values (any JSON type)
+            #  - ``dependentRequired``: dict of property-name -> list of property-name strings
             # Recursing into these with _sanitize_node() would mis-interpret
-            # literal strings like "path" as bare-string schemas and replace
-            # them with {"type": "object"} dicts. Pass through unchanged.
+            # literal strings like "path" or "owner" as bare-string schemas and
+            # replace them with {"type": "object"} dicts. Pass through unchanged.
             out[key] = copy.deepcopy(value) if isinstance(value, (list, dict)) else value
         else:
             out[key] = _sanitize_node(value, f"{path}.{key}") if isinstance(value, (dict, list)) else value

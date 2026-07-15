@@ -75,6 +75,7 @@ class AnthropicTransport(ProviderTransport):
             base_url=params.get("base_url"),
             fast_mode=params.get("fast_mode", False),
             drop_context_1m_beta=params.get("drop_context_1m_beta", False),
+            bedrock_guardrail_headers=params.get("bedrock_guardrail_headers"),
         )
 
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
@@ -216,7 +217,9 @@ class AnthropicTransport(ProviderTransport):
         if not isinstance(content_blocks, list):
             return False
         if not content_blocks:
-            return getattr(response, "stop_reason", None) in {"end_turn", "refusal"}
+            return getattr(response, "stop_reason", None) in {
+                "end_turn", "refusal", "guardrail_intervened",
+            }
         return True
 
     def extract_cache_stats(self, response: Any) -> Optional[Dict[str, int]]:
@@ -238,6 +241,8 @@ class AnthropicTransport(ProviderTransport):
         "stop_sequence": "stop",
         "refusal": "content_filter",
         "model_context_window_exceeded": "length",
+        # Bedrock guardrail blocked the request via InvokeModel headers
+        "guardrail_intervened": "content_filter",
     }
 
     def map_finish_reason(self, raw_reason: str) -> str:

@@ -273,6 +273,32 @@ def _merge_custom_provider_extra_body(agent, custom_providers: List[Dict[str, An
     agent.request_overrides = overrides
 
 
+def _bedrock_invokemodel_guardrail_headers(gr: Dict[str, Any]) -> Optional[Dict[str, str]]:
+    """Build the ``X-Amzn-Bedrock-Guardrail*`` InvokeModel headers from the
+    raw ``bedrock.guardrail`` config dict, or ``None`` if incomplete.
+
+    Extracted as a pure function so the trace-enum handling is unit
+    testable without spinning up a full ``init_agent`` (the Converse path
+    builds its ``guardrailConfig`` body param the same way, just without a
+    header — see the ``bedrock_converse`` branch below).
+    """
+    if not (gr.get("guardrail_identifier") and gr.get("guardrail_version")):
+        return None
+    headers = {
+        "X-Amzn-Bedrock-GuardrailIdentifier": gr["guardrail_identifier"],
+        "X-Amzn-Bedrock-GuardrailVersion": str(gr["guardrail_version"]),
+    }
+    trace = gr.get("trace")
+    if trace:
+        # Preserve the configured enum verbatim (uppercased to match the
+        # header's expected casing) — "disabled" and "enabled_full" are
+        # documented values too, not just "enabled"; collapsing all of them
+        # to "ENABLED" would unexpectedly turn tracing on for "disabled" and
+        # lose the "enabled_full" verbosity level.
+        headers["X-Amzn-Bedrock-Trace"] = str(trace).upper()
+    return headers
+
+
 def init_agent(
     agent,
     base_url: str = None,
@@ -787,8 +813,20 @@ def init_agent(
             agent.api_key = "aws-sdk"
             agent.client = None
             agent._client_kwargs = {}
+            # Guardrail config for Bedrock Claude via InvokeModel headers.
+            # The Converse API uses guardrailConfig body param; InvokeModel uses
+            # X-Amzn-Bedrock-Guardrail* HTTP headers — same enforcement, same
+            # guarantee, preserves prompt caching / thinking / 1M context.
+            agent._bedrock_guardrail_headers = None
+            try:
+                from hermes_cli.config import load_config as _load_gr_cfg
+                _gr = _load_gr_cfg().get("bedrock", {}).get("guardrail", {})
+                agent._bedrock_guardrail_headers = _bedrock_invokemodel_guardrail_headers(_gr)
+            except Exception:
+                pass
             if not agent.quiet_mode:
-                print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region})")
+                _gr_label = " + Guardrails" if agent._bedrock_guardrail_headers else ""
+                print(f"🤖 AI Agent initialized with model: {agent.model} (AWS Bedrock + AnthropicBedrock SDK, {_br_region}{_gr_label})")
         else:
             # Only fall back to ANTHROPIC_TOKEN when the provider is actually Anthropic.
             # Other anthropic_messages providers (MiniMax, Alibaba, etc.) must use their own API key.

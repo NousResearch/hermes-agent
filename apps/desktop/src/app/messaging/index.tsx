@@ -102,7 +102,8 @@ function fieldCopy(field: MessagingEnvVarInfo, m: Translations['messaging']) {
 export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, ...props }: MessagingViewProps) {
   const { t } = useI18n()
   const m = t.messaging
-  // Both save/toggle toasts offer the same one-click restart.
+  // Toggle toasts still offer one-click restart. Credential save auto-restarts
+  // via runGatewayRestart() so users don't hunt for a separate control.
   const restartGatewayAction = { label: t.commandCenter.restartGateway, onClick: () => void runGatewayRestart() }
   const [platforms, setPlatforms] = useState<MessagingPlatformInfo[] | null>(null)
   const [edits, setEdits] = useState<EditMap>({})
@@ -230,11 +231,14 @@ export function MessagingView({ setStatusbarItemGroup: _setStatusbarItemGroup, .
       await updateMessagingPlatform(platform.id, { env })
       setEdits(current => ({ ...current, [platform.id]: {} }))
       await refreshPlatforms()
+      // Save and restart are separate concerns: if restart fails we still keep
+      // saved credentials and surface restart status through the shared helper
+      // (statusbar in-flight + failure toast via runGatewayRestart).
+      void runGatewayRestart()
       notify({
         kind: 'success',
         title: m.setupSaved(platform.name),
-        message: m.restartToReconnect,
-        action: restartGatewayAction
+        message: m.restartToReconnect
       })
     } catch (err) {
       notifyError(err, m.failedSave(platform.name))

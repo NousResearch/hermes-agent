@@ -3668,7 +3668,7 @@ DELEGATE_TASK_SCHEMA = {
                     "Optional Hermes profile used for credential resolution. "
                     "When set, the subagent reads API keys and config from the "
                     "specified profile's .env and config.yaml. "
-                    "Examples: default, coder, dr-k."
+                    "Examples: default, coder, worker."
                 ),
             },
         },

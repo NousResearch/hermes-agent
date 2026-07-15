@@ -3256,7 +3256,14 @@ class SlackAdapter(BasePlatformAdapter):
 
         # 6) Escape Slack control characters in remaining plain text.
         # Unescape first so already-escaped input doesn't get double-escaped.
-        text = text.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+        # Single pass: sequential str.replace would re-scan its own output, so
+        # the & from "&amp;" could pair with a following "lt;" and decode twice
+        # ("&amp;lt;" → "&lt;" → "<"), destroying literal entity text.
+        text = re.sub(
+            r"&(amp|lt|gt);",
+            lambda m: {"amp": "&", "lt": "<", "gt": ">"}[m.group(1)],
+            text,
+        )
         text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
         # 7) Convert headers (## Title) → *Title* (bold)

@@ -4068,6 +4068,16 @@ class TestFormatMessage:
         """Already-escaped &gt; in plain text must not become &amp;gt;."""
         assert adapter.format_message("5 &gt; 3") == "5 &gt; 3"
 
+    def test_escaped_entity_text_not_double_decoded(self, adapter):
+        """&amp;lt; is the wire form of the literal text &lt; — it must survive.
+
+        The unescape pass must not re-scan its own output: decoding &amp; to &
+        first must not let the resulting & combine with a following lt; into a
+        second decode, or the literal text is silently destroyed.
+        """
+        assert adapter.format_message("&amp;lt;") == "&amp;lt;"
+        assert adapter.format_message("&amp;gt;") == "&amp;gt;"
+
     def test_mixed_raw_and_escaped_entities(self, adapter):
         """Raw & and pre-escaped &amp; coexist correctly."""
         result = adapter.format_message("AT&T and &amp; entity")

@@ -90,6 +90,32 @@ A specialisation of the profile lane: an orchestrator is a Hermes profile whose 
 
 ## Adding an external CLI worker lane
 
+External adapters should terminate a claim with the atomic handoff interface,
+not separate comment and complete/block calls:
+
+```bash
+hermes kanban handoff "$HERMES_KANBAN_TASK" \
+  --run-id "$HERMES_KANBAN_RUN_ID" \
+  --profile "$HERMES_PROFILE" \
+  --workspace "$HERMES_KANBAN_WORKSPACE" \
+  --claim-lock "$HERMES_KANBAN_CLAIM_LOCK" \
+  --idempotency-key "$ATTEMPT_ID" \
+  --transition complete \
+  --comment 'Structured implementation handoff' \
+  --summary 'Implementation and verification complete' \
+  --metadata '{"changed_files":["src/example.py"],"tests_run":12}'
+```
+
+Use `--transition block --reason 'review-required: ...'` for the blocking
+terminal path. The equivalent agent/MCP operation is `kanban_handoff` with the
+same fields. The kernel validates task id, active run id, assignee/profile,
+canonical workspace, claim lock, and unexpired task/run claims inside one
+SQLite write transaction. That transaction also appends the comment, closes
+the run, writes the terminal event/result, and records the idempotency result.
+A retry with the same key and identical payload returns the original response
+with `replayed: true`; key reuse with a changed payload is rejected. Any stale,
+reclaimed, superseded, or mismatched claim is rejected without partial writes.
+
 Wiring a non-Hermes CLI tool (Codex CLI, Claude Code CLI, OpenCode CLI, a local coding-model runner, etc.) as a kanban worker lane is *not yet a paved path*. The dispatcher's spawn function is pluggable (`spawn_fn` is a parameter on `dispatch_once`), and a plugin could register its own `spawn_fn` for a non-Hermes assignee, but the surrounding integration work — wrapping the CLI's exit code into `kanban_complete` / `kanban_block` calls, mapping the CLI's workspace/sandbox conventions onto the dispatcher's `HERMES_KANBAN_WORKSPACE` env, handling auth and per-CLI policy — is still per-integration design work.
 
 If you're considering adding a CLI lane, open an issue describing the specific CLI and the workflow you're trying to enable. The contract above is the constraints any such lane must satisfy; the implementation shape (one plugin per CLI vs a generic CLI-runner plugin parameterised by config) is open.

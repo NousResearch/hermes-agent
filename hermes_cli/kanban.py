@@ -522,6 +522,26 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_comment.add_argument("--max-len", type=int, default=None,
                            help="Trim the stored comment body to this many characters")
 
+    p_handoff = sub.add_parser(
+        "handoff", help="Atomically record a claim-guarded terminal worker handoff",
+    )
+    p_handoff.add_argument("task_id")
+    p_handoff.add_argument("--run-id", type=int, required=True)
+    p_handoff.add_argument("--profile", required=True)
+    p_handoff.add_argument("--workspace", required=True)
+    p_handoff.add_argument("--claim-lock", required=True)
+    p_handoff.add_argument("--idempotency-key", required=True)
+    p_handoff.add_argument("--transition", choices=("complete", "block"), required=True)
+    p_handoff.add_argument("--comment", required=True)
+    p_handoff.add_argument("--summary")
+    p_handoff.add_argument("--metadata", help="Structured handoff metadata as a JSON object")
+    p_handoff.add_argument("--result")
+    p_handoff.add_argument("--reason")
+    p_handoff.add_argument(
+        "--kind", choices=sorted(kb.VALID_BLOCK_KINDS),
+        help="Typed block reason; preserves dependency routing and loop escalation",
+    )
+
     p_complete = sub.add_parser("complete", help="Mark one or more tasks done")
     p_complete.add_argument("task_ids", nargs="+",
                             help="One or more task ids (only --result applies to all of them)")
@@ -951,6 +971,7 @@ def kanban_command(args: argparse.Namespace) -> int:
             "unlink":   _cmd_unlink,
             "claim":    _cmd_claim,
             "comment":  _cmd_comment,
+            "handoff":  _cmd_handoff,
             "complete": _cmd_complete,
             "edit":     _cmd_edit,
             "block":    _cmd_block,
@@ -1861,6 +1882,32 @@ def _worker_run_id_for(task_id: str) -> Optional[int]:
         return int(raw)
     except ValueError:
         return None
+
+
+def _cmd_handoff(args: argparse.Namespace) -> int:
+    metadata = None
+    if args.metadata:
+        try:
+            metadata = json.loads(args.metadata)
+            if not isinstance(metadata, dict):
+                raise ValueError("must be a JSON object")
+        except (ValueError, json.JSONDecodeError) as exc:
+            print(f"kanban: --metadata: {exc}", file=sys.stderr)
+            return 2
+    try:
+        with kb.connect_closing() as conn:
+            response = kb.terminal_handoff(
+                conn, args.task_id, run_id=args.run_id, profile=args.profile,
+                workspace=args.workspace, claim_lock=args.claim_lock,
+                idempotency_key=args.idempotency_key, transition=args.transition,
+                comment=args.comment, summary=args.summary, metadata=metadata,
+                result=args.result, reason=args.reason, kind=args.kind,
+            )
+    except kb.TerminalHandoffError as exc:
+        print(f"kanban: handoff rejected: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps(response, sort_keys=True))
+    return 0
 
 
 def _cmd_complete(args: argparse.Namespace) -> int:

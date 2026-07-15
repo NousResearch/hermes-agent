@@ -207,6 +207,7 @@ class CodexAppServerSession:
         permission_profile: Optional[str] = None,
         approval_callback: Optional[Callable[..., str]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
+        on_turn_started: Optional[Callable[[str, str], None]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
     ) -> None:
@@ -221,6 +222,7 @@ class CodexAppServerSession:
         )
         self._approval_callback = approval_callback
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
+        self._on_turn_started = on_turn_started
         self._routing = request_routing or _ServerRequestRouting()
         self._client_factory = client_factory or CodexAppServerClient
 
@@ -541,6 +543,15 @@ class CodexAppServerSession:
                     self._on_event(note)
                 except Exception:  # pragma: no cover - display callback
                     logger.debug("on_event callback raised", exc_info=True)
+            if (
+                method == "turn/started"
+                and self._on_turn_started is not None
+                and self._thread_id is not None
+            ):
+                turn_obj = (note.get("params") or {}).get("turn") or {}
+                turn_id = turn_obj.get("id")
+                if isinstance(turn_id, str) and turn_id:
+                    self._on_turn_started(self._thread_id, turn_id)
 
             _apply_token_usage_notification(result, note)
             _apply_compaction_notification(result, note)
@@ -728,6 +739,15 @@ class CodexAppServerSession:
                     self._on_event(note)
                 except Exception:  # pragma: no cover - display callback
                     logger.debug("on_event callback raised", exc_info=True)
+            if (
+                method == "turn/started"
+                and self._on_turn_started is not None
+                and self._thread_id is not None
+            ):
+                turn_obj = (note.get("params") or {}).get("turn") or {}
+                turn_id = turn_obj.get("id")
+                if isinstance(turn_id, str) and turn_id:
+                    self._on_turn_started(self._thread_id, turn_id)
 
             _apply_token_usage_notification(result, note)
             _apply_compaction_notification(result, note)

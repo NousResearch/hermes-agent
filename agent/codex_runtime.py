@@ -16,13 +16,47 @@ compatibility.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
 from types import SimpleNamespace
 from typing import Any, Dict, List
+from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
+
+
+def _codex_turn_started_callback_from_environment():
+    """Build the trusted control-plane callback configured for worker turns.
+
+    The URL stays in Hermes' parent environment; the Codex subprocess receives
+    Hermes' filtered environment and therefore cannot impersonate this
+    lifecycle signal. A configured callback is fail-closed so the worker never
+    runs with an uncorrelated turn.
+    """
+
+    url = os.environ.get("HERMES_CODEX_TURN_STARTED_URL", "").strip()
+    if not url:
+        return None
+
+    def notify(thread_id: str, turn_id: str) -> None:
+        request = Request(
+            url,
+            data=json.dumps(
+                {"codex_thread_id": thread_id, "codex_turn_id": turn_id},
+                separators=(",", ":"),
+            ).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urlopen(request, timeout=5) as response:
+            if response.status < 200 or response.status >= 300:
+                raise RuntimeError(
+                    f"Codex turn-start callback failed with HTTP {response.status}"
+                )
+
+    return notify
 
 
 def _codex_note_to_tool_progress(note: dict) -> tuple[str, str, dict] | None:
@@ -404,6 +438,7 @@ def run_codex_app_server_turn(
                 auto_approve_apply_patch=auto_approve_requests,
             ),
             on_event=_on_codex_event,
+            on_turn_started=_codex_turn_started_callback_from_environment(),
         )
 
     # NOTE: the user message is ALREADY appended to messages by the

@@ -173,6 +173,28 @@ class TestLifecycle:
 # ---- turn loop ----
 
 class TestRunTurn:
+    def test_turn_started_callback_receives_real_thread_and_turn_ids(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "turn-live-002"},
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={"id": "turn-live-002", "status": "completed", "error": None},
+        )
+        started = []
+        s = make_session(
+            client,
+            on_turn_started=lambda thread, turn: started.append((thread, turn)),
+        )
+
+        s.run_turn("hi", turn_timeout=2.0)
+
+        assert started == [("thread-fake-001", "turn-live-002")]
+
     def test_simple_text_turn_returns_final_message(self):
         client = FakeClient()
         client.queue_notification("turn/started", threadId="t", turn={"id": "tu1"})

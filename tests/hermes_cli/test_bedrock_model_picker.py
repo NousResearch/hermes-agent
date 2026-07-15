@@ -20,6 +20,11 @@ from contextlib import contextmanager
 from types import ModuleType
 from unittest.mock import MagicMock, patch
 
+from agent.bedrock_adapter import BEDROCK_OPENAI_RESPONSES_MODEL_IDS
+
+_MANTLE_MODELS = list(BEDROCK_OPENAI_RESPONSES_MODEL_IDS)
+_MANTLE_SET = {m.lower() for m in _MANTLE_MODELS}
+
 
 # ---------------------------------------------------------------------------
 # Shared helpers / fixtures
@@ -73,8 +78,9 @@ class TestProviderModelIdsBedrock:
 
         assert "eu.anthropic.claude-sonnet-4-6-20250514-v1:0" in result
         assert "eu.anthropic.claude-haiku-4-5-20251015-v1:0" in result
-        assert "openai.gpt-5.5" in result
-        assert len(result) == len(_EU_MODELS) + 1
+        for _m in _MANTLE_MODELS:
+            assert _m in result
+        assert len(result) == len(_EU_MODELS) + len(_MANTLE_MODELS)
 
     def test_region_determines_model_ids(self, monkeypatch):
         """Different regions produce different model ID prefixes (eu.* vs us.*)."""
@@ -86,14 +92,42 @@ class TestProviderModelIdsBedrock:
             with patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1"):
                 us_result = provider_model_ids("bedrock")
 
-        assert all(m.startswith("eu.") or m == "openai.gpt-5.5" for m in eu_result)
-        assert all(m.startswith("us.") or m == "openai.gpt-5.5" for m in us_result)
-        assert "openai.gpt-5.5" in eu_result
-        assert "openai.gpt-5.5" in us_result
+        assert all(m.startswith("eu.") or m.lower() in _MANTLE_SET for m in eu_result)
+        assert all(m.startswith("us.") or m.lower() in _MANTLE_SET for m in us_result)
+        for _m in _MANTLE_MODELS:
+            assert _m in eu_result
+            assert _m in us_result
         assert eu_result != us_result
 
 
 
+        # Should fall back to static table (may be empty or populated depending on
+        # the current static list, but must not crash and must be a list).
+        assert isinstance(result, list)
+
+    def test_falls_back_to_static_list_on_exception(self, monkeypatch):
+        """When discover_bedrock_models() raises, fall back gracefully."""
+        from hermes_cli.models import provider_model_ids
+
+        with patch("agent.bedrock_adapter.discover_bedrock_models",
+                   side_effect=Exception("boto3 not installed")), \
+             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
+            result = provider_model_ids("bedrock")
+
+        assert isinstance(result, list)  # no crash
+
+    def test_accepts_bedrock_aliases(self, monkeypatch):
+        """Provider aliases (aws, aws-bedrock, amazon) should also trigger live discovery."""
+        from hermes_cli.models import provider_model_ids
+
+        _expected_ids = [m["id"] for m in _US_MODELS]
+
+        with patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover), \
+             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="us-east-1"):
+            for alias in ("aws", "aws-bedrock", "amazon-bedrock"):
+                result = provider_model_ids(alias)
+                assert result == _expected_ids + _MANTLE_MODELS, \
+                    f"alias {alias!r} should return live-discovered US model IDs, got {result!r}"
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +140,59 @@ class TestListAuthenticatedProvidersBedrock:
 
 
 
+        bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
+        assert bedrock is not None, "bedrock should appear when AWS credentials are present"
+
+    def test_bedrock_uses_live_discovery_not_static_list(self, monkeypatch):
+        """Model IDs come from discover_bedrock_models(), not the static _PROVIDER_MODELS table."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        monkeypatch.setenv("AWS_PROFILE", "my-sso-profile")
+
+        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
+             patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover), \
+             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
+            providers = list_authenticated_providers(current_provider="bedrock")
+
+        bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
+        assert bedrock is not None
+
+        # All returned model IDs should have eu.* prefix — live discovery result
+        for _m in _MANTLE_MODELS:
+            assert _m in bedrock["models"]
+        for model_id in bedrock["models"]:
+            assert model_id.startswith("eu.") or model_id.lower() in _MANTLE_SET, \
+                f"Expected eu.* or Bedrock OpenAI model ID from live discovery, got {model_id!r}"
+
+    def test_bedrock_total_models_matches_discovery(self, monkeypatch):
+        """total_models reflects the actual discovered count."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        monkeypatch.setenv("AWS_PROFILE", "my-sso-profile")
+
+        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
+             patch("agent.bedrock_adapter.discover_bedrock_models", return_value=_EU_MODELS), \
+             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
+            providers = list_authenticated_providers(current_provider="openai")
+
+        bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
+        assert bedrock is not None
+        assert bedrock["total_models"] == len(_EU_MODELS) + len(_MANTLE_MODELS)
+
+    def test_bedrock_is_current_when_selected(self, monkeypatch):
+        """is_current=True when current_provider matches bedrock."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        monkeypatch.setenv("AWS_PROFILE", "my-sso-profile")
+
+        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
+             patch("agent.bedrock_adapter.discover_bedrock_models", return_value=_EU_MODELS), \
+             patch("agent.bedrock_adapter.resolve_bedrock_region", return_value="eu-central-1"):
+            providers = list_authenticated_providers(current_provider="bedrock")
+
+        bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
+        assert bedrock is not None
+        assert bedrock["is_current"] is True
 
     def test_bedrock_not_shown_without_credentials(self, monkeypatch):
         """Bedrock must not appear when no AWS credentials are present."""
@@ -171,11 +258,29 @@ class TestBedrockRegionRouting:
 
         bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
         assert bedrock is not None
-        assert "openai.gpt-5.5" in bedrock["models"]
+        for _m in _MANTLE_MODELS:
+            assert _m in bedrock["models"]
         for model_id in bedrock["models"]:
-            assert model_id.startswith("eu.") or model_id == "openai.gpt-5.5", \
+            assert model_id.startswith("eu.") or model_id.lower() in _MANTLE_SET, \
                 f"Expected eu.* or Bedrock OpenAI model ID from eu-central-1 profile, got {model_id!r}"
 
+    def test_us_region_from_env_var_yields_us_models(self, monkeypatch):
+        """Explicit AWS_REGION=us-east-1 returns us.* model IDs."""
+        from hermes_cli.model_switch import list_authenticated_providers
+
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        with patch("agent.bedrock_adapter.has_aws_credentials", return_value=True), \
+             patch("agent.bedrock_adapter.discover_bedrock_models", side_effect=_mock_discover):
+            providers = list_authenticated_providers(current_provider="bedrock")
+
+        bedrock = next((p for p in providers if p["slug"] == "bedrock"), None)
+        assert bedrock is not None
+        for _m in _MANTLE_MODELS:
+            assert _m in bedrock["models"]
+        for model_id in bedrock["models"]:
+            assert model_id.startswith("us.") or model_id.lower() in _MANTLE_SET, \
+                f"Expected us.* or Bedrock OpenAI model ID from us-east-1, got {model_id!r}"
 
     def test_env_var_takes_priority_over_botocore_profile(self, monkeypatch):
         """AWS_REGION env var wins over botocore profile region."""

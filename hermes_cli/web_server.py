@@ -6762,7 +6762,16 @@ async def update_config(body: ConfigUpdate, profile: Optional[str] = None):
             # frontend can only overwrite what it explicitly sends.
             existing = read_raw_config()
             incoming = _denormalize_config_from_web(body.config)
-            save_config(_deep_merge(existing, incoming))
+            merged = _deep_merge(existing, incoming)
+            # _denormalize_config_from_web reconstructs the FULL ``model``
+            # section from the on-disk config (every subkey recovered) and
+            # intentionally pops keys the user just cleared (context_length
+            # back to auto, allowlist emptied). Deep-merging that dict over
+            # the raw disk section would resurrect exactly those popped keys,
+            # so replace the section wholesale instead.
+            if isinstance(incoming.get("model"), dict):
+                merged["model"] = incoming["model"]
+            save_config(merged)
         return {"ok": True}
     except HTTPException:
         raise

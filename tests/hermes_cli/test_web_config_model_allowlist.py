@@ -153,3 +153,72 @@ def test_normalize_denormalize_roundtrip_is_stable(monkeypatch):
     assert out["model"]["allowlist"] == ["x/y"]
     assert out["model"]["default"] == "a/b"
     assert out["model"]["provider"] == "openrouter"
+
+
+# ---------------------------------------------------------------------------
+# Endpoint-level round-trip (PUT /api/config)
+# ---------------------------------------------------------------------------
+
+
+class TestAllowlistEndpointRoundTrip:
+    """Set AND clear must survive the real endpoint, not just the pure
+    denormalize function. update_config deep-merges the denormalized payload
+    over the raw disk config — which would silently resurrect a popped
+    ``allowlist`` key — so the ``model`` section is replaced wholesale there;
+    these tests pin that behavior end-to-end."""
+
+    @pytest.fixture(autouse=True)
+    def _setup(self):
+        try:
+            from starlette.testclient import TestClient
+        except ImportError:
+            pytest.skip("fastapi/starlette not installed")
+        from hermes_cli.web_server import app, _SESSION_HEADER_NAME, _SESSION_TOKEN
+
+        self.client = TestClient(app)
+        self.client.headers[_SESSION_HEADER_NAME] = _SESSION_TOKEN
+
+    def _seed(self, allowlist=None):
+        from hermes_cli.config import save_config
+
+        model = {"default": "a/b", "provider": "openrouter"}
+        if allowlist:
+            model["allowlist"] = allowlist
+        save_config({"model": model})
+
+    def test_put_sets_allowlist_on_disk(self):
+        from hermes_cli.config import load_config
+
+        self._seed()
+        web_config = self.client.get("/api/config").json()
+        assert web_config["model_allowlist"] == []
+
+        web_config["model_allowlist"] = ["x/y", "z/w"]
+        resp = self.client.put("/api/config", json={"config": web_config})
+        assert resp.status_code == 200
+
+        after = load_config()
+        assert after["model"]["allowlist"] == ["x/y", "z/w"]
+        # sibling subkeys survive the write
+        assert after["model"]["provider"] == "openrouter"
+        assert after["model"]["default"] == "a/b"
+
+    def test_put_clear_removes_allowlist_from_disk(self):
+        from hermes_cli.config import load_config
+
+        self._seed(allowlist=["x/y"])
+        web_config = self.client.get("/api/config").json()
+        assert web_config["model_allowlist"] == ["x/y"]
+
+        web_config["model_allowlist"] = []
+        resp = self.client.put("/api/config", json={"config": web_config})
+        assert resp.status_code == 200
+
+        after = load_config()
+        assert "allowlist" not in (after.get("model") or {}), (
+            "clearing the dashboard field must clear the restriction on disk "
+            "— the endpoint's deep-merge must not resurrect the popped key"
+        )
+        # ...without collateral damage to the rest of the model section
+        assert after["model"]["default"] == "a/b"
+        assert after["model"]["provider"] == "openrouter"

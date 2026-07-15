@@ -31,6 +31,7 @@ support.
 
 import json
 import logging
+import time
 from typing import Any, Dict, List, Optional, Union
 
 # Sources that are excluded from session browsing/searching by default.
@@ -505,11 +506,17 @@ def _discover(
     current_session_id: str = None,
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
+    _t0 = time.perf_counter()
     role_list = role_filter if role_filter else ["user", "assistant"]
+    _resolve_t0 = time.perf_counter()
     current_lineage_root = _resolve_to_parent(db, current_session_id) if current_session_id else None
+    _resolve_ms = (time.perf_counter() - _resolve_t0) * 1000
+    _title_t0 = time.perf_counter()
     title_result = _title_match_result(db, query, current_lineage_root)
+    _title_ms = (time.perf_counter() - _title_t0) * 1000
 
     try:
+        _search_t0 = time.perf_counter()
         raw_results = db.search_messages(
             query=query,
             role_filter=role_list,
@@ -520,7 +527,11 @@ def _discover(
             offset=0,
             sort=sort,
         )
+        _search_ms = (time.perf_counter() - _search_t0) * 1000
     except Exception as e:
+        _elapsed = (time.perf_counter() - _t0) * 1000
+        logging.error("DISCOVER_FAIL total_ms=%d resolve_ms=%d title_ms=%d error=%s",
+                       int(_elapsed), int(_resolve_ms), int(_title_ms), e)
         logging.error("FTS5 search failed: %s", e, exc_info=True)
         return tool_error(f"Search failed: {e}", success=False)
 
@@ -528,9 +539,16 @@ def _discover(
     # high-volume cron corpus can't starve the user's own sessions out of the
     # top `limit` results (#19434). Stable — preserves BM25/recency order
     # within each class.
+    _order_t0 = time.perf_counter()
     raw_results = _order_for_recall(raw_results)
+    _order_ms = (time.perf_counter() - _order_t0) * 1000
 
     if not raw_results and not title_result:
+        _elapsed = (time.perf_counter() - _t0) * 1000
+        logging.info(
+            "DISCOVER_DONE total_ms=%d resolve_ms=%d title_ms=%d search_ms=%d order_ms=%d results=0",
+            int(_elapsed), int(_resolve_ms), int(_title_ms), int(_search_ms), int(_order_ms),
+        )
         return json.dumps({
             "success": True,
             "mode": "discover",
@@ -543,6 +561,7 @@ def _discover(
     # Dedupe by lineage. Keep the raw owning session_id on the surviving
     # row — only that pairs validly with the FTS5 match id for the anchored
     # window. parent_session_id is exposed separately when different.
+    _dedup_t0 = time.perf_counter()
     seen_sessions = {}
     results = []
 
@@ -606,7 +625,9 @@ def _discover(
             entry["parent_session_id"] = lineage_root
         results.append(entry)
 
-    return json.dumps({
+    _view_ms = (time.perf_counter() - _dedup_t0) * 1000
+    _json_t0 = time.perf_counter()
+    _json = json.dumps({
         "success": True,
         "mode": "discover",
         "query": query,
@@ -614,6 +635,15 @@ def _discover(
         "count": len(results),
         "sessions_searched": len(seen_sessions),
     }, ensure_ascii=False)
+    _json_ms = (time.perf_counter() - _json_t0) * 1000
+    _elapsed = (time.perf_counter() - _t0) * 1000
+    logging.info(
+        "DISCOVER_DONE total_ms=%d resolve_ms=%d title_ms=%d search_ms=%d "
+        "order_ms=%d view_ms=%d json_ms=%d results=%d",
+        int(_elapsed), int(_resolve_ms), int(_title_ms), int(_search_ms),
+        int(_order_ms), int(_view_ms), int(_json_ms), len(results),
+    )
+    return _json
 
 
 def session_search(

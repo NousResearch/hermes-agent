@@ -4241,24 +4241,32 @@ class SessionDB:
         where_sql = " AND ".join(where_clauses)
         params.extend([limit, offset])
 
+        # 子查詢隔離：包一層 SELECT * FROM (... LIMIT ?) 阻止 planner
+        # flattening，讓 ORDER BY rank + LIMIT 在子查詢內完成（~292x）。
+        # 原始 SQL 中 FTS5 ORDER BY rank 阻止 LIMIT pushdown 因為 planner
+        # 不信任 FTS5 黑盒子的排序。把整個查詢包進子查詢後，外部 SELECT *
+        # 無法被 flatten（子查詢有 LIMIT），planner 必須在子查詢內先
+        # ORDER BY rank LIMIT 再吐出結果，實現等效的 LIMIT pushdown。
         sql = f"""
-            SELECT
-                m.id,
-                m.session_id,
-                m.role,
-                snippet(messages_fts, 0, '>>>', '<<<', '...', 40) AS snippet,
-                m.content,
-                m.timestamp,
-                m.tool_name,
-                s.source,
-                s.model,
-                s.started_at AS session_started
-            FROM messages_fts
-            JOIN messages m ON m.id = messages_fts.rowid
-            JOIN sessions s ON s.id = m.session_id
-            WHERE {where_sql}
-            {order_by_sql}
-            LIMIT ? OFFSET ?
+            SELECT * FROM (
+                SELECT
+                    m.id,
+                    m.session_id,
+                    m.role,
+                    snippet(messages_fts, 0, '>>>', '<<<', '...', 40) AS snippet,
+                    m.content,
+                    m.timestamp,
+                    m.tool_name,
+                    s.source,
+                    s.model,
+                    s.started_at AS session_started
+                FROM messages_fts
+                JOIN messages m ON m.id = messages_fts.rowid
+                JOIN sessions s ON s.id = m.session_id
+                WHERE {where_sql}
+                {order_by_sql}
+                LIMIT ? OFFSET ?
+            )
         """
 
         # CJK queries bypass the unicode61 FTS5 table.  The default tokenizer
@@ -4314,23 +4322,25 @@ class SessionDB:
                     tri_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     tri_params.extend(role_filter)
                 tri_sql = f"""
-                    SELECT
-                        m.id,
-                        m.session_id,
-                        m.role,
-                        snippet(messages_fts_trigram, 0, '>>>', '<<<', '...', 40) AS snippet,
-                        m.content,
-                        m.timestamp,
-                        m.tool_name,
-                        s.source,
-                        s.model,
-                        s.started_at AS session_started
-                    FROM messages_fts_trigram
-                    JOIN messages m ON m.id = messages_fts_trigram.rowid
-                    JOIN sessions s ON s.id = m.session_id
-                    WHERE {' AND '.join(tri_where)}
-                    {order_by_sql}
-                    LIMIT ? OFFSET ?
+                    SELECT * FROM (
+                        SELECT
+                            m.id,
+                            m.session_id,
+                            m.role,
+                            snippet(messages_fts_trigram, 0, '>>>', '<<<', '...', 40) AS snippet,
+                            m.content,
+                            m.timestamp,
+                            m.tool_name,
+                            s.source,
+                            s.model,
+                            s.started_at AS session_started
+                        FROM messages_fts_trigram
+                        JOIN messages m ON m.id = messages_fts_trigram.rowid
+                        JOIN sessions s ON s.id = m.session_id
+                        WHERE {' AND '.join(tri_where)}
+                        {order_by_sql}
+                        LIMIT ? OFFSET ?
+                    )
                 """
                 tri_params.extend([limit, offset])
                 with self._lock:
@@ -4399,67 +4409,75 @@ class SessionDB:
                 else:
                     matches = [dict(row) for row in cursor.fetchall()]
 
-        # Add surrounding context (1 message before + after each match).
-        # Done outside the lock so we don't hold it across N sequential queries.
-        for match in matches:
+        # Batch context: chunked session_id batches inside one lock.
+        # Each chunk loads all messages from ≤20 sessions — bounded memory,
+        # fast SQL (~76ms for 153 sessions via 8 queries), and the lock is
+        # released after all chunks so gateway writer stays responsive.
+        if matches:
             try:
+                ctx_session_ids = list({m["session_id"] for m in matches})
+                _ctx_session_msgs: dict = {}
+                _BATCH_SIZE = 20
+
                 with self._lock:
-                    ctx_cursor = self._conn.execute(
-                        """WITH target AS (
-                               SELECT session_id, timestamp, id
-                               FROM messages
-                               WHERE id = ?
-                           )
-                           SELECT role, content
-                           FROM (
-                               SELECT m.id, m.timestamp, m.role, m.content
-                               FROM messages m
-                               JOIN target t ON t.session_id = m.session_id
-                               WHERE (m.timestamp < t.timestamp)
-                                  OR (m.timestamp = t.timestamp AND m.id < t.id)
-                               ORDER BY m.timestamp DESC, m.id DESC
-                               LIMIT 1
-                           )
-                           UNION ALL
-                           SELECT role, content
-                           FROM messages
-                           WHERE id = ?
-                           UNION ALL
-                           SELECT role, content
-                           FROM (
-                               SELECT m.id, m.timestamp, m.role, m.content
-                               FROM messages m
-                               JOIN target t ON t.session_id = m.session_id
-                               WHERE (m.timestamp > t.timestamp)
-                                  OR (m.timestamp = t.timestamp AND m.id > t.id)
-                               ORDER BY m.timestamp ASC, m.id ASC
-                               LIMIT 1
-                           )""",
-                        (match["id"], match["id"]),
-                    )
+                    for chunk_start in range(0, len(ctx_session_ids), _BATCH_SIZE):
+                        chunk = ctx_session_ids[chunk_start:chunk_start + _BATCH_SIZE]
+                        placeholders = ",".join("?" for _ in chunk)
+                        chunk_rows = self._conn.execute(
+                            f"SELECT id, session_id, role, content "
+                            f"FROM messages WHERE session_id IN ({placeholders}) "
+                            f"ORDER BY session_id, timestamp, id",
+                            chunk,
+                        ).fetchall()
+                        for row in chunk_rows:
+                            sid = row["session_id"]
+                            if sid not in _ctx_session_msgs:
+                                _ctx_session_msgs[sid] = []
+                            _ctx_session_msgs[sid].append({
+                                "id": row["id"],
+                                "role": row["role"],
+                                "content": row["content"],
+                            })
+
+                # Build position index outside lock
+                _ctx_positions: dict = {}
+                for sid, msgs in _ctx_session_msgs.items():
+                    _ctx_positions[sid] = {m["id"]: i for i, m in enumerate(msgs)}
+
+                for match in matches:
+                    mid = match["id"]
+                    sid = match["session_id"]
+                    pos = _ctx_positions.get(sid, {}).get(mid)
+                    if pos is None:
+                        match["context"] = []
+                        continue
+
+                    msgs = _ctx_session_msgs[sid]
                     context_msgs = []
-                    for r in ctx_cursor.fetchall():
-                        raw = r["content"]
-                        decoded = self._decode_content(raw)
-                        # Multimodal context: render a compact text-only
-                        # summary for search previews.
-                        if isinstance(decoded, list):
-                            text_parts = [
-                                p.get("text", "") for p in decoded
-                                if isinstance(p, dict) and p.get("type") == "text"
-                            ]
-                            text = " ".join(t for t in text_parts if t).strip()
-                            preview = text or "[multimodal content]"
-                        elif isinstance(decoded, str):
-                            preview = decoded
-                        else:
-                            preview = ""
-                        context_msgs.append(
-                            {"role": r["role"], "content": preview[:200]}
-                        )
-                match["context"] = context_msgs
+                    for offset in (-1, 0, 1):
+                        idx = pos + offset
+                        if 0 <= idx < len(msgs):
+                            raw = msgs[idx]["content"]
+                            decoded = self._decode_content(raw)
+                            if isinstance(decoded, list):
+                                text_parts = [
+                                    p.get("text", "") for p in decoded
+                                    if isinstance(p, dict) and p.get("type") == "text"
+                                ]
+                                text = " ".join(t for t in text_parts if t).strip()
+                                preview = text or "[multimodal content]"
+                            elif isinstance(decoded, str):
+                                preview = decoded
+                            else:
+                                preview = ""
+                            context_msgs.append({
+                                "role": msgs[idx]["role"],
+                                "content": preview[:200],
+                            })
+                    match["context"] = context_msgs
             except Exception:
-                match["context"] = []
+                for match in matches:
+                    match["context"] = []
 
         # Remove full content from result (snippet is enough, saves tokens)
         for match in matches:

@@ -305,14 +305,18 @@ class TestContextNotHalvedOnOutputCapError:
     def test_output_cap_error_sets_ephemeral_not_context_length(self):
         """On 'max_tokens too large' error, _ephemeral_max_output_tokens is set
         and compressor.context_length is left unchanged."""
-        from agent.model_metadata import parse_available_output_tokens_from_error
+        from agent.model_metadata import (
+            OUTPUT_CAP_RETRY_SAFETY_MARGIN,
+            parse_available_output_tokens_from_error,
+        )
 
         error_msg = (
             "max_tokens: 128000 > context_window: 200000 "
             "- input_tokens: 180000 = available_tokens: 20000"
         )
 
-        # Simulate the handler logic from run_agent.py
+        # Simulate the handler logic from conversation_loop.py, using the
+        # production margin constant so this model cannot drift from the code.
         agent = self._make_agent_with_compressor(context_length=200_000)
         old_ctx = agent.context_compressor.context_length
 
@@ -320,11 +324,13 @@ class TestContextNotHalvedOnOutputCapError:
         assert available_out == 20_000, "parser must detect the error"
 
         # The fix: set ephemeral, skip context_length modification
-        agent._ephemeral_max_output_tokens = max(1, available_out - 64)
+        agent._ephemeral_max_output_tokens = max(
+            1, available_out - OUTPUT_CAP_RETRY_SAFETY_MARGIN
+        )
 
         # context_length must be untouched
         assert agent.context_compressor.context_length == old_ctx
-        assert agent._ephemeral_max_output_tokens == 19_936
+        assert agent._ephemeral_max_output_tokens == 20_000 - OUTPUT_CAP_RETRY_SAFETY_MARGIN
 
     def test_prompt_too_long_with_explicit_limit_uses_provider_limit(self):
         """Prompt-too-long errors only change context_length when they report a concrete limit."""
@@ -338,25 +344,39 @@ class TestContextNotHalvedOnOutputCapError:
         assert get_context_length_from_provider_error(error_msg, 1_000_000) == 200_000
 
     def test_output_cap_error_safety_margin(self):
-        """The ephemeral value includes a 64-token safety margin below available_out."""
-        from agent.model_metadata import parse_available_output_tokens_from_error
+        """The ephemeral value sits a safety margin below available_out.
+
+        The margin is the shared production constant (512 since the strict-
+        endpoint fix — a 64-token margin was regularly eaten by input-estimate
+        drift between retries); import it so this test validates the real
+        value instead of independently modeling a stale one.
+        """
+        from agent.model_metadata import (
+            OUTPUT_CAP_RETRY_SAFETY_MARGIN,
+            parse_available_output_tokens_from_error,
+        )
+
+        assert OUTPUT_CAP_RETRY_SAFETY_MARGIN == 512
 
         error_msg = (
             "max_tokens: 32768 > context_window: 200000 "
             "- input_tokens: 190000 = available_tokens: 10000"
         )
         available_out = parse_available_output_tokens_from_error(error_msg)
-        safe_out = max(1, available_out - 64)
-        assert safe_out == 9_936
+        safe_out = max(1, available_out - OUTPUT_CAP_RETRY_SAFETY_MARGIN)
+        assert safe_out == 10_000 - OUTPUT_CAP_RETRY_SAFETY_MARGIN
 
     def test_safety_margin_never_goes_below_one(self):
         """When available_out is very small, safe_out must be at least 1."""
-        from agent.model_metadata import parse_available_output_tokens_from_error
+        from agent.model_metadata import (
+            OUTPUT_CAP_RETRY_SAFETY_MARGIN,
+            parse_available_output_tokens_from_error,
+        )
 
         error_msg = (
             "max_tokens: 10 > context_window: 200000 "
             "- input_tokens: 199990 = available_tokens: 1"
         )
         available_out = parse_available_output_tokens_from_error(error_msg)
-        safe_out = max(1, available_out - 64)
+        safe_out = max(1, available_out - OUTPUT_CAP_RETRY_SAFETY_MARGIN)
         assert safe_out == 1

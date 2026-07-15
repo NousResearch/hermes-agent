@@ -1248,6 +1248,15 @@ def get_context_length_from_provider_error(
     return None
 
 
+# Safety margin subtracted from a provider-reported available output budget
+# when retrying after an output-cap 400 (see the overflow handler in
+# agent/conversation_loop.py).  512, not the old 64: strict endpoints (vLLM)
+# count the fully-rendered prompt (chat template, special tokens, tool
+# scaffolding), so the input estimate can drift upward between retries; a
+# 64-token margin was regularly eaten by that drift and the retry 400'd again.
+OUTPUT_CAP_RETRY_SAFETY_MARGIN = 512
+
+
 def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     """Detect an "output cap too large" error and return how many output tokens are available.
 

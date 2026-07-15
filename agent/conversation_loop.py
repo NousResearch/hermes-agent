@@ -49,6 +49,7 @@ from agent.message_sanitization import (
 )
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
+    OUTPUT_CAP_RETRY_SAFETY_MARGIN,
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
     get_context_length_from_provider_error,
@@ -626,7 +627,12 @@ def run_conversation(
     truncated_tool_call_retries = 0
     truncated_response_parts: List[str] = []
     compression_attempts = 0
-    output_cap_reductions = 0  # consecutive parseable output-cap 400s this turn (overflow-spiral guard)
+    # Consecutive parseable output-cap 400s in the CURRENT failing retry burst
+    # (overflow-spiral guard).  Burst-scoped, not turn-scoped: any successfully
+    # accepted response resets it (see the reset after the retry loop), so two
+    # unrelated output-cap errors many tool iterations apart are NOT mistaken
+    # for a non-converging burst that would force input compression.
+    output_cap_reductions = 0
     _turn_exit_reason = "unknown"  # Diagnostic: why the loop ended
     # Last composed answer intentionally held back by a verification gate. If
     # that continuation consumes the remaining budget, this is the best
@@ -3553,13 +3559,13 @@ def run_conversation(
                         )
                         local_available_out = old_ctx - request_input_estimate
                         if local_available_out > 0:
-                            safe_out = max(1, min(available_out, local_available_out) - 512)
+                            safe_out = max(1, min(available_out, local_available_out) - OUTPUT_CAP_RETRY_SAFETY_MARGIN)
                         else:
                             # The rough local estimate can overshoot the real
                             # request size.  Fall back to the provider-reported
                             # budget, which is authoritative for the failed
                             # request.
-                            safe_out = max(1, available_out - 512)
+                            safe_out = max(1, available_out - OUTPUT_CAP_RETRY_SAFETY_MARGIN)
                         agent._ephemeral_max_output_tokens = safe_out
                         agent._buffer_vprint(
                             f"⚠️  Output cap too large for current prompt — "
@@ -4312,6 +4318,20 @@ def run_conversation(
             agent.iteration_budget.refund()
             _retry.restart_with_rebuilt_messages = False
             continue
+
+        # A server-accepted response ends any output-cap 400 burst.  The
+        # overflow-spiral guard counts CONSECUTIVE parseable output-cap
+        # rejections of the request currently being retried; the failure
+        # restarts above `continue` before this line, so the count carries
+        # across their outer-loop round-trips.  Reaching here with a response
+        # means the provider accepted the request (including the
+        # length-continuation restart below, which follows a received
+        # response), so the next output-cap error — possibly many tool
+        # iterations later — starts a fresh burst and gets the cheap
+        # single-cap-reduction retry instead of being misclassified as a
+        # non-converging spiral that forces input compression.
+        if response is not None:
+            output_cap_reductions = 0
 
         if _retry.restart_with_length_continuation:
             # Progressively boost the output token budget on each retry.

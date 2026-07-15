@@ -534,6 +534,57 @@ export interface RollbackRestoreResponse {
   success?: boolean
 }
 
+// ── Kanban activity ──────────────────────────────────────────────────
+
+export type KanbanTaskStatus =
+  | 'archived'
+  | 'blocked'
+  | 'done'
+  | 'ready'
+  | 'review'
+  | 'running'
+  | 'scheduled'
+  | 'todo'
+  | 'triage'
+export type KanbanRunOutcome = string
+
+export interface KanbanActivityRun {
+  ended_at: null | number
+  last_heartbeat_at: null | number
+  max_runtime_seconds: null | number
+  outcome: KanbanRunOutcome | null
+  profile: null | string
+  run_id: number
+  started_at: null | number
+}
+
+export interface KanbanActivityTask {
+  assignee: null | string
+  block_reason: null | string
+  children: KanbanActivityTask[]
+  parents: string[]
+  run: KanbanActivityRun | null
+  status: KanbanTaskStatus
+  task_id: string
+  title: string
+}
+
+export interface KanbanActivityBoard {
+  board: string
+  checked_at: number
+  error?: string
+  roots: KanbanActivityTask[]
+  truncated?: boolean
+}
+
+export interface KanbanActivityResponse {
+  active_count: number
+  attention_count: number
+  boards: KanbanActivityBoard[]
+  checked_at: number
+  diagnostics?: string[]
+}
+
 // ── Subagent events ──────────────────────────────────────────────────
 
 export interface SubagentEventPayload {
@@ -692,7 +743,13 @@ export type GatewayEvent =
       type: 'clarify.request'
     }
   | {
-      payload: { allow_permanent?: boolean; choices?: string[]; command: string; description: string; smart_denied?: boolean }
+      payload: {
+        allow_permanent?: boolean
+        choices?: string[]
+        command: string
+        description: string
+        smart_denied?: boolean
+      }
       session_id?: string
       type: 'approval.request'
     }

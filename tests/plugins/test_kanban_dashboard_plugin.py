@@ -2484,3 +2484,33 @@ def test_dashboard_parent_notice_and_child_results_use_detail_links():
     assert "t.link_counts" not in detail
     assert "Child Results" in detail
     assert "props.data.child_results" in detail
+
+
+def test_active_workers_endpoint_uses_shared_database_projection(client, monkeypatch):
+    expected = {
+        "run_id": 7,
+        "task_id": "task-shared",
+        "task_title": "Shared read helper",
+        "task_status": "running",
+        "task_assignee": "worker",
+        "profile": "worker",
+        "worker_pid": 4242,
+        "started_at": 100,
+        "claim_lock": "claim",
+        "claim_expires": 200,
+        "last_heartbeat_at": 150,
+        "max_runtime_seconds": 3600,
+    }
+    calls = []
+
+    def shared_rows(conn):
+        calls.append(conn)
+        return [expected]
+
+    monkeypatch.setattr(kb, "list_active_worker_rows", shared_rows)
+    response = client.get("/api/plugins/kanban/workers/active")
+
+    assert response.status_code == 200
+    assert response.json()["workers"] == [expected]
+    assert response.json()["count"] == 1
+    assert len(calls) == 1

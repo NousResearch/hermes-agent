@@ -1697,6 +1697,10 @@ class ContextCompressor(ContextEngine):
 
         def _compact_fallback_turn(value: Any) -> str:
             text = redact_sensitive_text(_content_text_for_contains(value))
+            # Strip MEDIA delivery directives so a leaked MEDIA:<path> cannot
+            # re-trigger media reinjection from the persisted fallback summary
+            # (mirrors _serialize_for_summary; see #44708 / issue #14665).
+            text = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", text)
             text = re.sub(r"\bgh[pousr]_[A-Za-z0-9_]{8,}\b", "[REDACTED]", text)
             text = re.sub(r"\s+", " ", text).strip()
             if len(text) > _FALLBACK_TURN_MAX_CHARS:
@@ -1862,7 +1866,10 @@ Continue from the most recent unfulfilled user ask and protected tail messages. 
 
 ## Critical Context
 Summary generation was unavailable, so this is a best-effort deterministic fallback for {len(turns_to_summarize)} compacted message(s).{reason_text}"""
-        summary = self._with_summary_prefix(redact_sensitive_text(body.strip()))
+        # Final guard: also strip MEDIA directives that can reach the body via
+        # tool-call args (_summarize_tool_result), which bypass the per-turn path.
+        clean_body = _MEDIA_DIRECTIVE_RE.sub("[media attachment]", redact_sensitive_text(body.strip()))
+        summary = self._with_summary_prefix(clean_body)
         if len(summary) > _FALLBACK_SUMMARY_MAX_CHARS:
             summary = summary[: _FALLBACK_SUMMARY_MAX_CHARS - 42].rstrip() + "\n...[fallback summary truncated]"
         return summary

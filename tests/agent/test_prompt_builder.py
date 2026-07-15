@@ -1296,6 +1296,91 @@ class TestEnvironmentHints:
         assert "Linux 6.8.0" in line
         assert "root" in line
 
+    def test_probe_remote_backend_ssh_forwards_keepalive_config(self, monkeypatch):
+        """The SSH backend probe in ``_probe_remote_backend`` must forward
+        ``server_alive_interval`` / ``server_alive_count_max`` from
+        ``_get_env_config`` into the ``ssh_config`` dict passed to
+        ``_create_environment``.  Without this, a probe-created ControlMaster
+        socket uses the default keepalives even when the user configured custom
+        values or disabled keepalives (interval=0), so the startup probe socket
+        and the real tool sockets diverge in behavior.
+
+        Regression for teknium1's review feedback on PR #62800.
+        """
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        monkeypatch.setenv("TERMINAL_SSH_HOST", "probe-test-host")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "probe-test-user")
+        monkeypatch.setenv("TERMINAL_SSH_SERVER_ALIVE_INTERVAL", "42")
+        monkeypatch.setenv("TERMINAL_SSH_SERVER_ALIVE_COUNT_MAX", "9")
+        _pb._clear_backend_probe_cache()
+
+        class _FakeEnv:
+            def execute(self, cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": (
+                        "os=Linux\nkernel=6.8.0\nhome=/home/probe-test-user\n"
+                        "cwd=/home/probe-test-user\nuser=probe-test-user\n"
+                    ),
+                }
+
+        captured_ssh_config = {}
+
+        def _fake_create_environment(*, env_type, ssh_config=None, **kwargs):
+            captured_ssh_config.update(ssh_config or {})
+            return _FakeEnv()
+
+        import tools.terminal_tool as _tt
+        monkeypatch.setattr(_tt, "_create_environment", _fake_create_environment)
+
+        _pb._probe_remote_backend("ssh")
+
+        assert captured_ssh_config.get("server_alive_interval") == 42, (
+            "The probe must forward the configured keepalive interval to the "
+            "SSHEnvironment, not silently fall back to the default."
+        )
+        assert captured_ssh_config.get("server_alive_count_max") == 9, (
+            "The probe must forward the configured keepalive count to the "
+            "SSHEnvironment, not silently fall back to the default."
+        )
+
+    def test_probe_remote_backend_ssh_keepalive_defaults(self, monkeypatch):
+        """When no keepalive env vars are set, the probe's ssh_config should
+        still include the 60/3 defaults (matching ``_get_env_config`` and the
+        other call sites), not omit the keys entirely.
+        """
+        import agent.prompt_builder as _pb
+
+        monkeypatch.setenv("TERMINAL_ENV", "ssh")
+        monkeypatch.setenv("TERMINAL_SSH_HOST", "probe-test-host")
+        monkeypatch.setenv("TERMINAL_SSH_USER", "probe-test-user")
+        monkeypatch.delenv("TERMINAL_SSH_SERVER_ALIVE_INTERVAL", raising=False)
+        monkeypatch.delenv("TERMINAL_SSH_SERVER_ALIVE_COUNT_MAX", raising=False)
+        _pb._clear_backend_probe_cache()
+
+        class _FakeEnv:
+            def execute(self, cmd, timeout=None):
+                return {
+                    "returncode": 0,
+                    "output": "os=Linux\nkernel=6.8.0\nhome=/h\ncwd=/h\nuser=u\n",
+                }
+
+        captured_ssh_config = {}
+
+        def _fake_create_environment(*, env_type, ssh_config=None, **kwargs):
+            captured_ssh_config.update(ssh_config or {})
+            return _FakeEnv()
+
+        import tools.terminal_tool as _tt
+        monkeypatch.setattr(_tt, "_create_environment", _fake_create_environment)
+
+        _pb._probe_remote_backend("ssh")
+
+        assert captured_ssh_config.get("server_alive_interval") == 60
+        assert captured_ssh_config.get("server_alive_count_max") == 3
+
     def test_remote_backend_list_covers_known_sandboxes(self):
         """Regression guard: if someone adds a remote backend, they must list it here."""
         import agent.prompt_builder as _pb

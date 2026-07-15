@@ -1495,6 +1495,8 @@ if _config_path.exists():
                 "ssh_user": "TERMINAL_SSH_USER",
                 "ssh_port": "TERMINAL_SSH_PORT",
                 "ssh_key": "TERMINAL_SSH_KEY",
+                "ssh_server_alive_interval": "TERMINAL_SSH_SERVER_ALIVE_INTERVAL",
+                "ssh_server_alive_count_max": "TERMINAL_SSH_SERVER_ALIVE_COUNT_MAX",
                 "container_cpu": "TERMINAL_CONTAINER_CPU",
                 "container_memory": "TERMINAL_CONTAINER_MEMORY",
                 "container_disk": "TERMINAL_CONTAINER_DISK",

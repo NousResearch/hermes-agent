@@ -622,6 +622,8 @@ def load_cli_config() -> Dict[str, Any]:
         "ssh_user": "TERMINAL_SSH_USER",
         "ssh_port": "TERMINAL_SSH_PORT",
         "ssh_key": "TERMINAL_SSH_KEY",
+        "ssh_server_alive_interval": "TERMINAL_SSH_SERVER_ALIVE_INTERVAL",
+        "ssh_server_alive_count_max": "TERMINAL_SSH_SERVER_ALIVE_COUNT_MAX",
         # Container resource config (docker, singularity, modal, daytona -- ignored for local/ssh)
         "container_cpu": "TERMINAL_CONTAINER_CPU",
         "container_memory": "TERMINAL_CONTAINER_MEMORY",

@@ -183,6 +183,31 @@ class TestTerminalToolConfig:
         from tools.terminal_tool import _get_env_config
         assert _get_env_config()["ssh_persistent"] is False
 
+    def test_ssh_keepalive_config_defaults(self, monkeypatch):
+        """_get_env_config returns 60/3 keepalive defaults when env vars unset."""
+        monkeypatch.delenv("TERMINAL_SSH_SERVER_ALIVE_INTERVAL", raising=False)
+        monkeypatch.delenv("TERMINAL_SSH_SERVER_ALIVE_COUNT_MAX", raising=False)
+        from tools.terminal_tool import _get_env_config
+        cfg = _get_env_config()
+        assert cfg["ssh_server_alive_interval"] == 60
+        assert cfg["ssh_server_alive_count_max"] == 3
+
+    def test_ssh_keepalive_config_custom_values(self, monkeypatch):
+        """_get_env_config picks up custom keepalive values from env vars."""
+        monkeypatch.setenv("TERMINAL_SSH_SERVER_ALIVE_INTERVAL", "42")
+        monkeypatch.setenv("TERMINAL_SSH_SERVER_ALIVE_COUNT_MAX", "9")
+        from tools.terminal_tool import _get_env_config
+        cfg = _get_env_config()
+        assert cfg["ssh_server_alive_interval"] == 42
+        assert cfg["ssh_server_alive_count_max"] == 9
+
+    def test_ssh_keepalive_config_disabled(self, monkeypatch):
+        """interval=0 disable path flows through _get_env_config."""
+        monkeypatch.setenv("TERMINAL_SSH_SERVER_ALIVE_INTERVAL", "0")
+        from tools.terminal_tool import _get_env_config
+        cfg = _get_env_config()
+        assert cfg["ssh_server_alive_interval"] == 0
+
 
 class TestSSHPreflight:
     def test_ensure_ssh_available_raises_clear_error_when_missing(self, monkeypatch):

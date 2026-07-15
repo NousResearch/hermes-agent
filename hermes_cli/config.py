@@ -289,6 +289,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "IRC_SERVER", "IRC_PORT", "IRC_NICKNAME", "IRC_CHANNEL",
     "IRC_USE_TLS", "IRC_SERVER_PASSWORD", "IRC_NICKSERV_PASSWORD",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
+    "TERMINAL_SSH_SERVER_ALIVE_INTERVAL", "TERMINAL_SSH_SERVER_ALIVE_COUNT_MAX",
     # Deprecated tool-progress env vars — replaced by display.tool_progress in
     # config.yaml. Kept known here so .env sanitization/reload still handle
     # them for existing users (gateway reads them as a back-compat fallback),
@@ -1255,6 +1256,16 @@ DEFAULT_CONFIG = {
         # Enabled by default for non-local backends (SSH); local is always opt-in
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
+        # SSH keepalives prevent idle ControlMaster sockets from being silently
+        # killed by NAT/firewall idle timeouts (commonly 5-10 min on cloud and
+        # corporate networks).  Defaults: interval=60s (keepalive every 60s,
+        # well under typical NAT idle timeouts), count_max=3 (drop a dead
+        # master in ~180s instead of hanging for terminal.timeout).  Set
+        # interval=0 to disable keepalives entirely (matches ssh's
+        # ServerAliveInterval=0).  Bridged to TERMINAL_SSH_SERVER_ALIVE_*
+        # env vars for the terminal tool.
+        "ssh_server_alive_interval": 60,
+        "ssh_server_alive_count_max": 3,
     },
 
     "web": {
@@ -6826,6 +6837,8 @@ TERMINAL_CONFIG_ENV_MAP = {
     "ssh_user": "TERMINAL_SSH_USER",
     "ssh_port": "TERMINAL_SSH_PORT",
     "ssh_key": "TERMINAL_SSH_KEY",
+    "ssh_server_alive_interval": "TERMINAL_SSH_SERVER_ALIVE_INTERVAL",
+    "ssh_server_alive_count_max": "TERMINAL_SSH_SERVER_ALIVE_COUNT_MAX",
     "container_cpu": "TERMINAL_CONTAINER_CPU",
     "container_memory": "TERMINAL_CONTAINER_MEMORY",
     "container_disk": "TERMINAL_CONTAINER_DISK",

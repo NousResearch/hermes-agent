@@ -840,12 +840,34 @@ def classify_api_error(
             )
         return _result(FailoverReason.timeout, retryable=True)
 
-    # ── 7. Transport / timeout heuristics ───────────────────────────
+    # ── 7b. Stale-call circuit breaker → failover immediately ──────
+    # _check_stale_giveup() in agent/chat_completion_helpers.py raises a
+    # RuntimeError when the provider has been unresponsive for N
+    # consecutive stale attempts (default 5).  The error is NOT a transport
+    # timeout — the circuit breaker fires *before* any network call to avoid
+    # an indefinite stall.  Without this classification the RuntimeError
+    # falls through to FailoverReason.unknown (retryable=True), which burns
+    # all max_retries against the same dead provider (each retry hitting the
+    # circuit breaker instantly with zero network overhead) before fallback
+    # is attempted.  Classify as non-retryable + should_fallback so the
+    # retry loop activates the next fallback provider on the first hit.
+    if (
+        error_type == "RuntimeError"
+        and "consecutive stale attempts" in error_msg
+        and "aborting this call" in error_msg
+    ):
+        return _result(
+            FailoverReason.timeout,
+            retryable=False,
+            should_fallback=True,
+        )
+
+    # ── 8. Transport / timeout heuristics ───────────────────────────
 
     if error_type in _TRANSPORT_ERROR_TYPES or isinstance(error, (TimeoutError, ConnectionError, OSError)):
         return _result(FailoverReason.timeout, retryable=True)
 
-    # ── 8. Fallback: unknown ────────────────────────────────────────
+    # ── 9. Fallback: unknown ────────────────────────────────────────
 
     return _result(FailoverReason.unknown, retryable=True)
 
@@ -1043,6 +1065,17 @@ def _classify_by_status(
             )
         return result_fn(FailoverReason.overloaded, retryable=True)
 
+    # 408 Request Timeout — a transient timing failure the server itself flags
+    # as safe to retry (RFC 9110 §15.5.9), not a malformed request. Commonly
+    # emitted by reverse proxies sitting in front of self-hosted backends
+    # (llama.cpp / Ollama / vLLM) when a long generation outruns the proxy's
+    # request-read window. Route to the dedicated ``timeout`` reason (rebuild
+    # client + retry) instead of falling through to the generic 4xx bucket
+    # below, which would abort the turn on a retry-safe error the same way it
+    # aborts a 400 Bad Request.
+    if status_code == 408:
+        return result_fn(FailoverReason.timeout, retryable=True)
+
     # Other 4xx — non-retryable
     if 400 <= status_code < 500:
         return result_fn(
@@ -1136,6 +1169,7 @@ def _classify_400(
             "encrypted content for item" in error_msg
             and "could not be verified" in error_msg
         )
+        or "could not decrypt the provided encrypted_content" in error_msg
     ):
         return result_fn(
             FailoverReason.invalid_encrypted_content,

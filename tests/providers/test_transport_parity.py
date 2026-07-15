@@ -208,6 +208,21 @@ class TestNousParity:
         )
         assert kw["extra_body"]["tags"] == nous_portal_tags()
 
+    def test_provider_preferences(self, transport):
+        preferences = {
+            "only": ["deepseek"],
+            "ignore": ["deepinfra"],
+            "sort": "throughput",
+        }
+        kw = transport.build_kwargs(
+            model="deepseek/deepseek-v4-flash",
+            messages=_simple_messages(),
+            tools=None,
+            provider_profile=get_provider_profile("nous"),
+            provider_preferences=preferences,
+        )
+        assert kw["extra_body"]["provider"] == preferences
+
     def test_reasoning_omitted_when_disabled(self, transport):
         """Nous special case: reasoning omitted entirely when disabled."""
         kw = transport.build_kwargs(

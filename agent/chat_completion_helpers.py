@@ -1740,9 +1740,13 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
     print(f"⚠️  Reached maximum iterations ({agent.max_iterations}). Requesting summary...")
 
     summary_request = (
-        "You've reached the maximum number of tool-calling iterations allowed. "
-        "Please provide a final response summarizing what you've found and accomplished so far, "
-        "without calling any more tools."
+        "The iteration budget is exhausted, so this is a pause caused by the "
+        "system limit, not task completion. Provide a concise status update that "
+        "clearly separates work completed (with evidence) from work still unfinished. "
+        "Do not claim the task is complete while anything remains unfinished. "
+        "Unfinished work remains your responsibility; do not ask the user to perform "
+        "it. Ask the user only to reply 'continue' so you can resume. Do not call any "
+        "more tools."
     )
     messages.append({"role": "user", "content": summary_request})
 

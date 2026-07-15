@@ -221,6 +221,130 @@ class TestPatchStaleness(unittest.TestCase):
             pass
 
     @patch("tools.file_tools._get_file_ops")
+    def test_replace_rejects_existing_file_never_read_by_task(self, mock_ops):
+        fake_ops = MagicMock()
+        fake_ops.patch_replace.return_value = _FakePatchResult()
+        mock_ops.return_value = fake_ops
+
+        result = json.loads(patch_tool(
+            mode="replace", path=self._tmpfile,
+            old_string="original", new_string="patched",
+            task_id="unread-task",
+        ))
+
+        self.assertIn("error", result)
+        self.assertIn("read_file", result["error"])
+        fake_ops.patch_replace.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_replace_allows_file_read_by_same_task(self, mock_ops):
+        fake_ops = MagicMock()
+        fake_ops.read_file.side_effect = lambda path, offset=1, limit=500: _FakeReadResult(
+            content="original line\n", total_lines=1, file_size=14,
+        )
+        fake_ops.patch_replace.return_value = _FakePatchResult()
+        mock_ops.return_value = fake_ops
+
+        read_file_tool(self._tmpfile, task_id="reader-task")
+        result = json.loads(patch_tool(
+            mode="replace", path=self._tmpfile,
+            old_string="original", new_string="patched",
+            task_id="reader-task",
+        ))
+
+        self.assertNotIn("error", result)
+        fake_ops.patch_replace.assert_called_once()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_replace_allows_new_file_written_by_same_task(self, mock_ops):
+        fake_ops = MagicMock()
+
+        def create_file(path, content):
+            with open(path, "w") as handle:
+                handle.write(content)
+            return _FakeWriteResult()
+
+        fake_ops.write_file.side_effect = create_file
+        fake_ops.patch_replace.return_value = _FakePatchResult()
+        mock_ops.return_value = fake_ops
+        new_path = os.path.join(self._tmpdir, "new_then_patch.txt")
+
+        try:
+            write_result = json.loads(write_file_tool(
+                new_path, "first version\n", task_id="creator-task",
+            ))
+            patch_result = json.loads(patch_tool(
+                mode="replace", path=new_path,
+                old_string="first", new_string="second",
+                task_id="creator-task",
+            ))
+        finally:
+            if os.path.exists(new_path):
+                os.unlink(new_path)
+
+        self.assertNotIn("error", write_result)
+        self.assertNotIn("error", patch_result)
+        fake_ops.patch_replace.assert_called_once()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_failed_write_does_not_authorize_replace(self, mock_ops):
+        fake_ops = MagicMock()
+        failed_write = MagicMock()
+        failed_write.to_dict.return_value = {"error": "simulated write failure"}
+        fake_ops.write_file.return_value = failed_write
+        fake_ops.patch_replace.return_value = _FakePatchResult()
+        mock_ops.return_value = fake_ops
+
+        write_result = json.loads(write_file_tool(
+            self._tmpfile, "failed replacement\n", task_id="failed-writer",
+        ))
+        patch_result = json.loads(patch_tool(
+            mode="replace", path=self._tmpfile,
+            old_string="original", new_string="patched",
+            task_id="failed-writer",
+        ))
+
+        self.assertIn("error", write_result)
+        self.assertIn("read_file", patch_result["error"])
+        fake_ops.patch_replace.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_replace_read_permission_is_isolated_by_task(self, mock_ops):
+        fake_ops = MagicMock()
+        fake_ops.read_file.side_effect = lambda path, offset=1, limit=500: _FakeReadResult(
+            content="original line\n", total_lines=1, file_size=14,
+        )
+        fake_ops.patch_replace.return_value = _FakePatchResult()
+        mock_ops.return_value = fake_ops
+
+        read_file_tool(self._tmpfile, task_id="task-a")
+        result = json.loads(patch_tool(
+            mode="replace", path=self._tmpfile,
+            old_string="original", new_string="patched",
+            task_id="task-b",
+        ))
+
+        self.assertIn("error", result)
+        self.assertIn("read_file", result["error"])
+        fake_ops.patch_replace.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_replace_read_gate_can_be_disabled(self, mock_ops):
+        fake_ops = MagicMock()
+        fake_ops.patch_replace.return_value = _FakePatchResult()
+        mock_ops.return_value = fake_ops
+
+        with patch.dict(os.environ, {"HERMES_PATCH_REQUIRE_READ": "0"}, clear=False):
+            result = json.loads(patch_tool(
+                mode="replace", path=self._tmpfile,
+                old_string="original", new_string="patched",
+                task_id="unread-but-disabled",
+            ))
+
+        self.assertNotIn("error", result)
+        fake_ops.patch_replace.assert_called_once()
+
+    @patch("tools.file_tools._get_file_ops")
     def test_patch_warns_on_stale_file(self, mock_ops):
         """Patch should warn if the target file changed since last read."""
         mock_ops.return_value = _make_fake_ops("original line\n", 15)

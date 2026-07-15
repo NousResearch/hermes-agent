@@ -368,6 +368,8 @@ def test_patch_reports_resolved_absolute_path(_isolated_cwd, monkeypatch):
     monkeypatch.setattr(ft, "_get_live_tracking_cwd", lambda task_id="default": str(workspace))
 
     import json
+    read_result = json.loads(ft.read_file_tool("target.py", task_id="t1"))
+    assert not read_result.get("error"), read_result
     out = json.loads(ft.patch_tool(
         mode="replace", path="target.py",
         old_string="WORKSPACE_ORIGINAL", new_string="WORKSPACE_PATCHED",

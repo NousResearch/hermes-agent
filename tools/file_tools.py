@@ -1593,10 +1593,30 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
     except (OSError, ValueError):
         return
     with _read_tracker_lock:
+        task_data = _read_tracker.setdefault(task_id, {
+            "last_key": None, "consecutive": 0,
+            "read_history": set(), "dedup": {},
+            "dedup_hits": {}, "read_timestamps": {},
+        })
+        task_data.setdefault("read_timestamps", {})[resolved] = current_mtime
+        _cap_read_tracker_data(task_data)
+
+
+def _task_never_read_file(filepath: str, task_id: str) -> bool:
+    """Return True when replace would edit an existing unread file."""
+    if os.getenv("HERMES_PATCH_REQUIRE_READ", "1").strip() == "0":
+        return False
+    try:
+        resolved = str(_resolve_path_for_task(filepath, task_id))
+    except (OSError, ValueError):
+        return False
+    if not os.path.exists(resolved):
+        return False
+    with _read_tracker_lock:
         task_data = _read_tracker.get(task_id)
-        if task_data is not None:
-            task_data.setdefault("read_timestamps", {})[resolved] = current_mtime
-            _cap_read_tracker_data(task_data)
+        if not task_data:
+            return True
+        return resolved not in task_data.get("read_timestamps", {})
 
 
 def _check_file_staleness(filepath: str, task_id: str) -> str | None:
@@ -1706,7 +1726,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 result_dict["_warning"] = stale_warning
             if not result_dict.get("error"):
                 _mark_verification_stale(task_id, [path], session_id=session_id)
-            _update_read_timestamp(path, task_id)
+                _update_read_timestamp(path, task_id)
             return json.dumps(result_dict, ensure_ascii=False)
 
         # Serialize the read→modify→write region per-path so concurrent
@@ -1733,10 +1753,9 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             if not result_dict.get("error"):
                 result_dict["files_modified"] = [_resolved]
                 _mark_verification_stale(task_id, [_resolved], session_id=session_id)
-            # Refresh stamps after the successful write so consecutive
-            # writes by this task don't trigger false staleness warnings.
-            _update_read_timestamp(path, task_id)
-            if not result_dict.get("error"):
+                # Refresh stamps after the successful write so consecutive
+                # writes by this task don't trigger false staleness warnings.
+                _update_read_timestamp(path, task_id)
                 file_state.note_write(task_id, _resolved)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
@@ -1860,6 +1879,12 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                     return tool_error("path required")
                 if old_string is None or new_string is None:
                     return tool_error("old_string and new_string required")
+                if _task_never_read_file(path, task_id):
+                    return tool_error(
+                        f"Refusing to patch existing file '{path}' before this task "
+                        "has read it. Use read_file on the current file, then retry "
+                        "the patch. Set HERMES_PATCH_REQUIRE_READ=0 to disable this gate."
+                    )
                 # Pass the resolved ABSOLUTE path to the shell layer so it
                 # operates on the exact file the tool layer resolved — the
                 # shell's own cwd may differ (worktree-cwd bug), and a relative

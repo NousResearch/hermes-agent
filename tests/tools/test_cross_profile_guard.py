@@ -125,14 +125,18 @@ class TestPatchCrossProfileGuard:
         assert target.read_text() == original
 
     def test_cross_profile_patch_bypass(self, fake_hermes):
-        from tools.file_tools import patch_tool
+        from tools.file_tools import patch_tool, read_file_tool
         target = fake_hermes["root"] / "skills" / "shared-skill" / "SKILL.md"
+        task_id = "cross-profile-patch"
+        read_result = json.loads(read_file_tool(str(target), task_id=task_id))
+        assert not read_result.get("error"), read_result
         result_json = patch_tool(
             mode="replace",
             path=str(target),
             old_string="default copy.",
             new_string="user-directed update.",
             cross_profile=True,
+            task_id=task_id,
         )
         result = json.loads(result_json)
         assert not result.get("error"), f"cross_profile=True bypass: {result}"

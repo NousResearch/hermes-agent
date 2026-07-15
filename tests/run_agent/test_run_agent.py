@@ -3811,6 +3811,28 @@ class TestMcpParallelToolBatch:
 
 
 class TestHandleMaxIterations:
+    def test_summary_request_discloses_budget_pause_and_unfinished_work(self, agent):
+        """The limit summary must report a pause, not counterfeit completion."""
+        agent.client.chat.completions.create.return_value = _mock_response(content="Status")
+        agent._cached_system_prompt = "You are helpful."
+
+        result = agent._handle_max_iterations(
+            [{"role": "user", "content": "finish the migration"}],
+            60,
+        )
+
+        assert result == "Status"
+        sent_messages = agent.client.chat.completions.create.call_args.kwargs["messages"]
+        summary_request = sent_messages[-1]["content"].lower()
+        assert "iteration budget" in summary_request
+        assert "exhausted" in summary_request
+        assert "completed" in summary_request
+        assert "unfinished" in summary_request
+        assert "remains your responsibility" in summary_request
+        assert "do not claim" in summary_request
+        assert "reply 'continue'" in summary_request
+        assert "do not ask the user to perform" in summary_request
+
     def test_returns_summary(self, agent):
         resp = _mock_response(content="Here is a summary of what I did.")
         agent.client.chat.completions.create.return_value = resp

@@ -92,7 +92,8 @@ import {
   resolveReadableFileForIpc,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
-  TEXT_PREVIEW_SOURCE_MAX_BYTES
+  TEXT_PREVIEW_SOURCE_MAX_BYTES,
+  validateHermesMemoryFileWrite
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
@@ -8428,6 +8429,8 @@ ipcMain.handle('hermes:fs:writeText', async (_event, filePath, content) => {
   if (!directoryExists(path.dirname(resolved))) {
     throw new Error('Parent directory does not exist')
   }
+
+  validateHermesMemoryFileWrite(resolved, text, { hermesHome: HERMES_HOME })
 
   await fs.promises.writeFile(resolved, text, 'utf8')
 

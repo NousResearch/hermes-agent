@@ -1408,6 +1408,10 @@ _FS_TEXT_PREVIEW_MAX_BYTES = 512 * 1024
 # non-truncated text (<= the preview cap), so this is a safety ceiling against
 # a pasted-in megablob, not the expected payload size.
 _FS_TEXT_WRITE_MAX_BYTES = 8 * 1024 * 1024
+_MEMORY_FILE_LIMITS = {
+    "MEMORY.md": ("memory_char_limit", "memory.memory_char_limit", 2200),
+    "USER.md": ("user_char_limit", "memory.user_char_limit", 1375),
+}
 _FS_PREVIEW_LANGUAGE_BY_EXT = {
     ".c": "c",
     ".conf": "ini",
@@ -1482,6 +1486,67 @@ def _fs_path(raw_path: str) -> Path:
         return candidate.resolve(strict=False)
     except (OSError, RuntimeError, ValueError):
         raise HTTPException(status_code=400, detail="Invalid path")
+
+
+def _configured_memory_file_limit(
+    profile_home: Path,
+    limit_key: str,
+    default: int,
+) -> int:
+    try:
+        raw = yaml.safe_load((profile_home / "config.yaml").read_text(encoding="utf-8")) or {}
+        mem_cfg = raw.get("memory") if isinstance(raw, dict) else {}
+        if not isinstance(mem_cfg, dict):
+            return default
+        return int(mem_cfg.get(limit_key, default))
+    except Exception:
+        return default
+
+
+def _memory_file_target(path: Path) -> tuple[str, str, int] | None:
+    try:
+        target = path.resolve(strict=False)
+        root = get_hermes_home().resolve(strict=False)
+        relative = target.relative_to(root)
+    except (OSError, ValueError):
+        return None
+
+    parts = relative.parts
+    profile_home: Path | None = None
+    file_name: str | None = None
+    if len(parts) == 2 and parts[0] == "memories":
+        profile_home = root
+        file_name = parts[1]
+    elif len(parts) == 4 and parts[0] == "profiles" and parts[2] == "memories":
+        profile_home = root / "profiles" / parts[1]
+        file_name = parts[3]
+
+    if profile_home is None or file_name not in _MEMORY_FILE_LIMITS:
+        return None
+
+    limit_key, config_key, default_limit = _MEMORY_FILE_LIMITS[file_name]
+    limit = _configured_memory_file_limit(profile_home, limit_key, default_limit)
+    return file_name, config_key, limit
+
+
+def _validate_memory_file_write(path: Path, text: str) -> None:
+    target = _memory_file_target(path)
+    if target is None:
+        return
+
+    file_name, config_key, limit = target
+    current = len(text)
+    if current <= limit:
+        return
+
+    over_by = current - limit
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            f"{file_name} is {current}/{limit} chars, exceeding {config_key}. "
+            f"Reduce by {over_by} chars or raise {config_key} in config.yaml before saving."
+        ),
+    )
 
 
 def _fs_mime_type(path: Path) -> str:
@@ -2242,6 +2307,8 @@ async def fs_write_text(payload: FsWriteText):
         raise HTTPException(status_code=400, detail="Only regular files can be written")
     if not target.parent.is_dir():
         raise HTTPException(status_code=400, detail="Parent directory does not exist")
+
+    _validate_memory_file_write(target, text)
 
     tmp = target.with_name(f".{target.name}.hermes-tmp-{os.getpid()}")
     try:

@@ -491,6 +491,41 @@ def test_stranded_in_ready_fires_when_age_exceeds_threshold():
     assert stranded[0].data["assignee"] == "demo"
 
 
+def test_stranded_in_ready_includes_current_respawn_guard_reason():
+    now = 100_000
+    ready_since = now - 45 * 60
+    task = _task(status="ready", assignee="demo", claim_lock=None)
+    events = [
+        _event("created", ts=ready_since),
+        _event("respawn_guarded", ts=now - 60, reason="active_pr"),
+    ]
+
+    stranded = [
+        d for d in kd.compute_task_diagnostics(task, events, [], now=now)
+        if d.kind == "stranded_in_ready"
+    ][0]
+
+    assert stranded.data["respawn_guard_reason"] == "active_pr"
+    assert "respawn guard: active_pr" in stranded.detail
+
+
+def test_stranded_in_ready_ignores_guard_from_previous_ready_cycle():
+    now = 100_000
+    task = _task(status="ready", assignee="demo", claim_lock=None)
+    events = [
+        _event("respawn_guarded", ts=now - 7200, reason="active_pr"),
+        _event("reclaimed", ts=now - 45 * 60),
+    ]
+
+    stranded = [
+        d for d in kd.compute_task_diagnostics(task, events, [], now=now)
+        if d.kind == "stranded_in_ready"
+    ][0]
+
+    assert "respawn_guard_reason" not in stranded.data
+    assert "respawn guard:" not in stranded.detail
+
+
 def test_stranded_in_ready_silent_below_threshold():
     """A ready task only 10 min old should NOT fire."""
     now = 100_000

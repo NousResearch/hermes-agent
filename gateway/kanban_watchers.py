@@ -135,6 +135,21 @@ _FAULT_FIELDS = (
 )
 
 
+def _format_respawn_guarded_summary(guarded) -> str:
+    """Format guarded task ids by reason for the per-tick gateway log."""
+    entries = list(guarded or [])
+    if not entries:
+        return "respawn_guarded=0"
+    grouped: dict[str, list[str]] = {}
+    for task_id, reason in entries:
+        grouped.setdefault(str(reason), []).append(str(task_id))
+    details = "; ".join(
+        f"{reason}: {', '.join(task_ids)}"
+        for reason, task_ids in grouped.items()
+    )
+    return f"respawn_guarded={len(entries)} ({details})"
+
+
 def _stall_streak_is_bad(ready_pending, any_spawned, results) -> bool:
     """Decide whether a dispatcher tick counts toward the "stuck" streak.
 
@@ -1291,20 +1306,24 @@ class GatewayKanbanWatchersMixin:
                 results = await asyncio.to_thread(_tick_once)
                 any_spawned = False
                 for slug, res in (results or []):
-                    if res is not None and getattr(res, "spawned", None):
+                    spawned = getattr(res, "spawned", None) if res is not None else None
+                    guarded = getattr(res, "respawn_guarded", None) if res is not None else None
+                    if spawned:
                         any_spawned = True
-                        # Quiet by default — only log when something actually
-                        # happened, so an idle gateway stays silent.
+                    if res is not None and (spawned or guarded):
+                        # Quiet by default — log only actionable tick activity,
+                        # including guarded tasks that would otherwise be silent.
                         logger.info(
                             "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
-                            "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
+                            "crashed=%d timed_out=%d promoted=%d auto_blocked=%d %s",
                             slug,
-                            len(res.spawned),
+                            len(spawned or []),
                             res.reclaimed,
                             len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
                             len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
                             res.promoted,
                             len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                            _format_respawn_guarded_summary(guarded),
                         )
                 # Health telemetry (aggregate across boards).
                 #

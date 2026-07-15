@@ -5802,12 +5802,80 @@ DEFAULT_RATE_LIMIT_COOLDOWN_SECONDS = 300  # 5 minutes
 
 # Within this window a GitHub PR URL in a comment blocks re-spawn.
 _RESPAWN_GUARD_PR_WINDOW = 86400  # 24 hours
+_RESPAWN_GUARD_PR_QUERY_LIMIT = 5
+_RESPAWN_GUARD_PR_QUERY_TIMEOUT_SECONDS = 5
 
-# Pattern matching a GitHub PR URL in task comments.
+# Match PR-shaped GitHub URLs broadly enough that a malformed pull number is
+# still fail-safe guarded rather than silently ignored.
 _RESPAWN_GUARD_PR_URL_RE = re.compile(
-    r"https?://github\.com/[^/\s]+/[^/\s]+/pull/\d+",
+    r"https?://github\.com/[^/\s]+/[^/\s]+/pull/[^\s]+",
     re.IGNORECASE,
 )
+_RESPAWN_GUARD_PR_PARSE_RE = re.compile(
+    r"^https?://github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)(?:[/?#][^\s]*)?$",
+    re.IGNORECASE,
+)
+
+
+def _parse_github_pr_url(url: str) -> Optional[tuple[str, int]]:
+    """Return ``(owner/repo, number)`` for a canonical GitHub PR URL."""
+    if not isinstance(url, str):
+        return None
+    cleaned = url.rstrip(".,;:!?)]}>")
+    match = _RESPAWN_GUARD_PR_PARSE_RE.fullmatch(cleaned)
+    if match is None:
+        return None
+    return (f"{match.group(1)}/{match.group(2)}", int(match.group(3)))
+
+
+def _query_github_pr_state(repo: str, number: int) -> Optional[str]:
+    """Resolve a PR state via ``gh``; return None on any query failure."""
+    try:
+        proc = subprocess.run(
+            [
+                "gh", "pr", "view", str(number), "-R", repo,
+                "--json", "state,mergedAt",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True,
+            timeout=_RESPAWN_GUARD_PR_QUERY_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError, TimeoutError):
+        return None
+    if proc.returncode != 0:
+        return None
+    try:
+        payload = json.loads(proc.stdout or "{}")
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("mergedAt"):
+        return "MERGED"
+    state = str(payload.get("state") or "").upper()
+    return state if state in {"OPEN", "CLOSED", "MERGED"} else None
+
+
+@dataclass
+class _PrStateResolver:
+    """Per-dispatch-tick PR-state memo with a hard query budget."""
+
+    max_queries: int = _RESPAWN_GUARD_PR_QUERY_LIMIT
+    cache: dict[tuple[str, int], Optional[str]] = field(default_factory=dict)
+    query_count: int = 0
+
+    def resolve(self, repo: str, number: int) -> Optional[str]:
+        key = (repo.lower(), int(number))
+        if key in self.cache:
+            return self.cache[key]
+        if self.query_count >= self.max_queries:
+            return None
+        self.query_count += 1
+        state = _query_github_pr_state(repo, number)
+        self.cache[key] = state
+        return state
 
 
 @dataclass
@@ -6889,7 +6957,12 @@ def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
 _clear_spawn_failures = _clear_failure_counter
 
 
-def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+def check_respawn_guard(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    pr_state_resolver: Optional[_PrStateResolver] = None,
+) -> Optional[str]:
     """Return a guard reason if ``task_id`` should NOT be re-spawned, else None.
 
     Called per ready task in ``dispatch_once`` before any claim attempt.
@@ -7012,14 +7085,26 @@ def check_respawn_guard(conn: sqlite3.Connection, task_id: str) -> Optional[str]
         if not requeued_after:
             return "recent_success"
 
-    # 4. GitHub PR URL in a recent comment — prior worker already opened a PR.
+    # 4. Recent GitHub PR comments. Guard while ANY referenced PR is open,
+    #    unparseable, unqueryable, or beyond this tick's query budget. The
+    #    duplicate-PR risk is gone only when ALL referenced PRs are closed.
     pr_cutoff = now - _RESPAWN_GUARD_PR_WINDOW
+    pr_urls: list[str] = []
     for c in conn.execute(
         "SELECT body FROM task_comments WHERE task_id = ? AND created_at >= ?",
         (task_id, pr_cutoff),
     ).fetchall():
-        if c["body"] and _RESPAWN_GUARD_PR_URL_RE.search(c["body"]):
-            return "active_pr"
+        body = c["body"] or ""
+        pr_urls.extend(match.group(0) for match in _RESPAWN_GUARD_PR_URL_RE.finditer(body))
+    if pr_urls:
+        resolver = pr_state_resolver or _PrStateResolver()
+        for url in dict.fromkeys(pr_urls):
+            parsed = _parse_github_pr_url(url)
+            if parsed is None:
+                return "active_pr"
+            repo, number = parsed
+            if resolver.resolve(repo, number) not in {"MERGED", "CLOSED"}:
+                return "active_pr"
 
     return None
 
@@ -7194,6 +7279,7 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
+    pr_state_resolver = _PrStateResolver()
     result.reclaimed = release_stale_claims(conn)
     result.stale = detect_stale_running(
         conn, stale_timeout_seconds=stale_timeout_seconds,
@@ -7380,7 +7466,9 @@ def _dispatch_once_locked(
         # still trips the auto-block circuit breaker after failure_limit
         # consecutive failures, so a persistent auth error eventually
         # blocks via the normal path rather than on first occurrence.
-        guard_reason = check_respawn_guard(conn, row["id"])
+        guard_reason = check_respawn_guard(
+            conn, row["id"], pr_state_resolver=pr_state_resolver,
+        )
         if guard_reason is not None:
             result.respawn_guarded.append((row["id"], guard_reason))
             # Emit an event so operators can see why the task was

@@ -976,13 +976,34 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
         ),
     ]
 
+    guard_reason = None
+    for ev in events:
+        if _event_kind(ev) != "respawn_guarded":
+            continue
+        if _event_ts(ev) < last_ready_ts:
+            continue
+        reason = _parse_payload(ev).get("reason")
+        if reason:
+            guard_reason = str(reason)
+
+    guard_detail = ""
+    data = {
+        "ready_since": last_ready_ts,
+        "age_seconds": int(age_seconds),
+        "assignee": assignee,
+        "threshold_seconds": int(threshold_seconds),
+    }
+    if guard_reason:
+        guard_detail = f" Current respawn guard: {guard_reason}."
+        data["respawn_guard_reason"] = guard_reason
+
     return [Diagnostic(
         kind="stranded_in_ready",
         severity=severity,
         title=f"Ready for {age_str} with no worker",
         detail=(
             f"This task has been ready for {age_str} but nothing has "
-            f"claimed it. Common causes: assignee {assignee!r} is "
+            f"claimed it.{guard_detail} Common causes: assignee {assignee!r} is "
             f"misspelled, the profile was deleted, or the external "
             f"worker pool for this lane is down. Confirm the assignee "
             f"is correct and that a worker is actually polling for it."
@@ -991,12 +1012,7 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
         first_seen_at=last_ready_ts,
         last_seen_at=last_ready_ts,
         count=1,
-        data={
-            "ready_since": last_ready_ts,
-            "age_seconds": int(age_seconds),
-            "assignee": assignee,
-            "threshold_seconds": int(threshold_seconds),
-        },
+        data=data,
     )]
 
 

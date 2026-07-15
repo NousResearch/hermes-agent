@@ -8,6 +8,7 @@ operator footgun that only manifests in long-running setups.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -114,6 +115,27 @@ def test_cli_invalid_max_in_progress_silently_disables(isolated_kanban_home, mon
             f"invalid max_in_progress={bad_val!r} should fall through to None, "
             f"got {captured.get('max_in_progress')!r}"
         )
+
+
+def test_cli_dispatch_json_surfaces_respawn_guarded(
+    isolated_kanban_home, monkeypatch, capsys
+):
+    from hermes_cli import kanban as kb_cli
+    from hermes_cli import kanban_db
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"kanban": {}})
+    result = kanban_db.DispatchResult(
+        respawn_guarded=[("t_open", "active_pr")],
+    )
+    monkeypatch.setattr(kanban_db, "dispatch_once", lambda conn, **kwargs: result)
+
+    args = argparse.Namespace(dry_run=True, max=None, failure_limit=2, json=True)
+    assert kb_cli._cmd_dispatch(args) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["respawn_guarded"] == [
+        {"task_id": "t_open", "reason": "active_pr"},
+    ]
 
 
 def test_kanban_swarm_uses_existing_humanizer_skill():

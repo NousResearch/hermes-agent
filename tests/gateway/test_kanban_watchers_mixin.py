@@ -81,7 +81,10 @@ def test_singleton_dispatcher_lock_is_exclusive(tmp_path):
 
 from dataclasses import dataclass, field  # noqa: E402
 
-from gateway.kanban_watchers import _stall_streak_is_bad  # noqa: E402
+from gateway.kanban_watchers import (  # noqa: E402
+    _format_respawn_guarded_summary,
+    _stall_streak_is_bad,
+)
 
 
 @dataclass
@@ -124,6 +127,18 @@ def test_stall_lock_held_is_benign_not_bad():
     # Another dispatcher process holds the board lock this tick → healthy.
     res = _FakeResult(skipped_locked=True)
     assert _stall_streak_is_bad(True, False, [("b", res)]) is False
+
+
+def test_gateway_respawn_guard_summary_groups_reasons():
+    summary = _format_respawn_guarded_summary([
+        ("t_open1", "active_pr"),
+        ("t_recent", "recent_success"),
+        ("t_open2", "active_pr"),
+    ])
+    assert summary == (
+        "respawn_guarded=3 (active_pr: t_open1, t_open2; "
+        "recent_success: t_recent)"
+    )
 
 
 def test_stall_respawn_guard_is_benign_not_bad():

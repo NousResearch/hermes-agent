@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import json
 import os
 import sqlite3
 import subprocess
@@ -1955,8 +1956,9 @@ def test_respawn_guard_stale_success_not_guarded(kanban_home):
     assert reason is None
 
 
-def test_respawn_guard_active_pr_in_comment(kanban_home):
-    """A GitHub PR URL in a recent comment triggers active_pr."""
+def test_respawn_guard_active_pr_in_comment(kanban_home, monkeypatch):
+    """A recent comment referencing an open PR triggers active_pr."""
+    monkeypatch.setattr(kb, "_query_github_pr_state", lambda repo, number: "OPEN")
     with kb.connect() as conn:
         t = kb.create_task(conn, title="has-pr", assignee="alice")
         kb.add_comment(
@@ -2054,10 +2056,13 @@ def test_dispatch_respawn_guard_skips_recent_success(
 
 
 def test_dispatch_respawn_guard_skips_active_pr(
-    kanban_home, all_assignees_spawnable
+    kanban_home, all_assignees_spawnable, monkeypatch
 ):
     """dispatch_once skips (but does not block) a task with an active PR comment."""
     spawned_ids = []
+    monkeypatch.setattr(
+        kb, "_query_github_pr_state", lambda repo, number: "OPEN", raising=False,
+    )
 
     def fake_spawn(task, workspace):
         spawned_ids.append(task.id)
@@ -2075,6 +2080,194 @@ def test_dispatch_respawn_guard_skips_active_pr(
     assert t not in res.auto_blocked
     with kb.connect() as conn:
         assert kb.get_task(conn, t).status == "ready"
+
+
+def test_dispatch_respawn_guard_allows_merged_pr(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    """A merged PR removes duplicate-PR risk, so the ready task must spawn."""
+    monkeypatch.setattr(
+        kb, "_query_github_pr_state", lambda repo, number: "MERGED", raising=False,
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="post-merge work", assignee="alice")
+        kb.add_comment(
+            conn, task_id, "worker",
+            "PR https://github.com/Kyzcreig/hermes-agent/pull/321 merged; continue",
+        )
+        result = kb.dispatch_once(conn, dry_run=True)
+
+    assert [item[0] for item in result.spawned] == [task_id]
+    assert result.respawn_guarded == []
+
+
+def test_parse_github_pr_url_accepts_canonical_and_rejects_non_github():
+    assert kb._parse_github_pr_url(
+        "https://github.com/Kyzcreig/hermes-agent/pull/321),"
+    ) == ("Kyzcreig/hermes-agent", 321)
+    assert kb._parse_github_pr_url(
+        "https://gitlab.com/Kyzcreig/hermes-agent/pull/321"
+    ) is None
+    assert kb._parse_github_pr_url(
+        "https://github.com/Kyzcreig/hermes-agent/pull/not-a-number"
+    ) is None
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected"),
+    [
+        ({"state": "OPEN", "mergedAt": None}, "OPEN"),
+        ({"state": "CLOSED", "mergedAt": None}, "CLOSED"),
+        ({"state": "CLOSED", "mergedAt": "2026-07-14T12:00:00Z"}, "MERGED"),
+        ({"state": "UNKNOWN", "mergedAt": None}, None),
+    ],
+)
+def test_query_github_pr_state_normalizes_gh_payload(monkeypatch, payload, expected):
+    monkeypatch.setattr(
+        kb.subprocess,
+        "run",
+        lambda *args, **kwargs: types.SimpleNamespace(
+            returncode=0, stdout=json.dumps(payload),
+        ),
+    )
+    assert kb._query_github_pr_state("Kyzcreig/hermes-agent", 321) == expected
+
+
+def test_query_github_pr_state_rejects_non_object_json(monkeypatch):
+    monkeypatch.setattr(
+        kb.subprocess,
+        "run",
+        lambda *args, **kwargs: types.SimpleNamespace(returncode=0, stdout="[]"),
+    )
+    assert kb._query_github_pr_state("Kyzcreig/hermes-agent", 321) is None
+
+
+def test_pr_state_resolver_caches_and_caps_queries(monkeypatch):
+    calls = []
+
+    def fake_query(repo, number):
+        calls.append((repo, number))
+        return "CLOSED"
+
+    monkeypatch.setattr(kb, "_query_github_pr_state", fake_query)
+    resolver = kb._PrStateResolver(max_queries=2)
+
+    assert resolver.resolve("Owner/Repo", 1) == "CLOSED"
+    assert resolver.resolve("owner/repo", 1) == "CLOSED"
+    assert resolver.resolve("Owner/Repo", 2) == "CLOSED"
+    assert resolver.resolve("Owner/Repo", 3) is None
+    assert calls == [("Owner/Repo", 1), ("Owner/Repo", 2)]
+
+
+@pytest.mark.parametrize("failed_state", ["OPEN", None])
+def test_respawn_guard_requires_all_recent_prs_closed(
+    kanban_home, monkeypatch, failed_state
+):
+    states = {1: "MERGED", 2: failed_state}
+    monkeypatch.setattr(
+        kb, "_query_github_pr_state", lambda repo, number: states[number],
+    )
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="two PRs", assignee="alice")
+        kb.add_comment(
+            conn,
+            task_id,
+            "worker",
+            "PRs https://github.com/o/r/pull/1 and https://github.com/o/r/pull/2",
+        )
+        assert kb.check_respawn_guard(conn, task_id) == "active_pr"
+
+
+def test_respawn_guard_clears_when_all_recent_prs_closed(kanban_home, monkeypatch):
+    monkeypatch.setattr(
+        kb,
+        "_query_github_pr_state",
+        lambda repo, number: "MERGED" if number == 1 else "CLOSED",
+    )
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="two done PRs", assignee="alice")
+        kb.add_comment(
+            conn,
+            task_id,
+            "worker",
+            "PRs https://github.com/o/r/pull/1 and https://github.com/o/r/pull/2",
+        )
+        assert kb.check_respawn_guard(conn, task_id) is None
+
+
+def test_respawn_guard_deduplicates_repeated_pr_urls(kanban_home, monkeypatch):
+    calls = []
+    resolver = kb._PrStateResolver()
+    monkeypatch.setattr(
+        resolver,
+        "resolve",
+        lambda repo, number: calls.append((repo, number)) or "CLOSED",
+    )
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="quoted merged PR", assignee="alice")
+        for author in ("worker", "orchestrator"):
+            kb.add_comment(
+                conn,
+                task_id,
+                author,
+                "Continue after https://github.com/o/r/pull/1",
+            )
+        assert kb.check_respawn_guard(
+            conn,
+            task_id,
+            pr_state_resolver=resolver,
+        ) is None
+
+    assert calls == [("o/r", 1)]
+
+
+def test_dispatch_pr_query_budget_is_shared_across_tick(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    calls = []
+
+    def closed(repo, number):
+        calls.append((repo, number))
+        return "CLOSED"
+
+    monkeypatch.setattr(kb, "_query_github_pr_state", closed)
+    with kb.connect() as conn:
+        task_ids = []
+        for number in range(1, 7):
+            task_id = kb.create_task(conn, title=f"task {number}", assignee="alice")
+            kb.add_comment(
+                conn, task_id, "worker", f"https://github.com/o/r/pull/{number}",
+            )
+            task_ids.append(task_id)
+        result = kb.dispatch_once(conn, dry_run=True)
+
+    assert len(calls) == kb._RESPAWN_GUARD_PR_QUERY_LIMIT
+    assert [item[0] for item in result.spawned] == task_ids[:5]
+    assert result.respawn_guarded == [(task_ids[5], "active_pr")]
+
+
+def test_dispatch_pr_query_cache_is_shared_across_tasks(
+    kanban_home, all_assignees_spawnable, monkeypatch
+):
+    calls = []
+
+    def closed(repo, number):
+        calls.append((repo, number))
+        return "CLOSED"
+
+    monkeypatch.setattr(kb, "_query_github_pr_state", closed)
+    with kb.connect() as conn:
+        for title in ("first", "second"):
+            task_id = kb.create_task(conn, title=title, assignee="alice")
+            kb.add_comment(
+                conn, task_id, "worker", "https://github.com/o/r/pull/1",
+            )
+        result = kb.dispatch_once(conn, dry_run=True)
+
+    assert calls == [("o/r", 1)]
+    assert len(result.spawned) == 2
 
 
 def test_dispatch_respawn_guard_dry_run_no_auto_block(

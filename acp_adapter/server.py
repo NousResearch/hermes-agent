@@ -77,6 +77,7 @@ from acp_adapter.tools import build_tool_complete, build_tool_start
 from tools.approval import (
     reset_hermes_interactive_context,
     set_hermes_interactive_context,
+    _YOLO_MODE_FROZEN,
 )
 
 logger = logging.getLogger(__name__)
@@ -567,6 +568,10 @@ class HermesACPAgent(acp.Agent):
     def _edit_approval_policy_for_state(self, state: SessionState) -> tuple[str, str | None]:
         mode = str(getattr(state, "mode", "") or self._MODE_DEFAULT)
         policy = self._MODE_TO_EDIT_APPROVAL_POLICY.get(mode, self._EDIT_APPROVAL_POLICY_DEFAULT)
+        # --yolo / HERMES_YOLO_MODE promotes the default "ask" policy to "session"
+        # so the agent can write files without blocking on approval prompts.
+        if _YOLO_MODE_FROZEN and policy == "ask":
+            policy = "session"
         return policy, state.cwd
 
     @staticmethod

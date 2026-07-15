@@ -436,6 +436,21 @@ hermes config set skills.config.myplugin.path ~/myplugin-data
 
 有关在您自己的技能中声明配置设置的详细信息，请参阅[创建技能 — 配置设置](/developer-guide/creating-skills#config-settings-configyaml)。
 
+### 外部 skills 只读保护
+
+默认情况下，`skill_manage` 可以修改外部 skill 目录。如果这些目录包含由其他 agents 共享的规范 skills，可以启用可选的所有权边界：
+
+```yaml
+skills:
+  external_dirs:
+    - ~/.agents/skills
+  external_read_only: true   # 默认：false
+```
+
+启用后，外部 skills 仍可用于系统提示词索引、`skills_list`、`skill_view` 和斜杠命令。当 skill 由外部目录拥有，或解析后的修改目标位于 `<active HERMES_HOME>/skills` 之外时，Hermes 会拒绝所有 `skill_manage` 修改。通过本地符号链接写入会被拒绝；`remove_file` 仍可仅删除最后一级符号链接本身，而不会修改其目标。默认 profile 使用 `~/.hermes/skills`；命名 profile 使用 `~/.hermes/profiles/<name>/skills`。新 skills 仍写入当前 profile 的本地 skills 目录。
+
+此设置不限制普通文件工具或终端工具。它是 Hermes 管理程序性记忆时使用的安全边界，不是文件系统沙箱。Curator 已经排除配置的外部 skill 目录，不会对其执行自动维护。
+
 ### Agent 创建技能写入的守卫
 
 当 agent 使用 `skill_manage` 创建、编辑、修补或删除技能时，Hermes 可以选择扫描新/更新的内容以查找危险关键字模式（凭据收集、明显的 prompt 注入、数据外泄指令）。扫描器**默认关闭** —— 合法触及 `~/.ssh/` 或提及 `$OPENAI_API_KEY` 的真实 agent 工作流触发启发式规则过于频繁。如果您希望扫描器在 agent 的技能写入落地前提示您，请重新开启：

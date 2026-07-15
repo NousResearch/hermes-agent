@@ -675,13 +675,22 @@ skills:
   creation_nudge_interval: 15
 
   # External skill directories — share skills across tools/agents without
-  # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
-  # and resolved to an absolute path.  External dirs are read-only: skill
-  # creation always writes to ~/.hermes/skills/.  Local skills take precedence
-  # when names collide.
+  # copying them into the active profile's HERMES_HOME/skills/. Each path is
+  # expanded (~ and ${VAR}) and resolved to an absolute path. Skill creation
+  # always writes to
+  # HERMES_HOME/skills/. Existing external skills are mutable by skill_manage by
+  # default, and local skills take precedence when names collide.
   # external_dirs:
   #   - ~/.agents/skills
   #   - /home/shared/team-skills
+
+  # Optional skill_manage ownership boundary. When true, external skills stay
+  # discoverable/readable but skill_manage mutations are limited to skills and
+  # resolved targets under this profile's HERMES_HOME/skills/. This also blocks
+  # writes through local symlinks to external files. remove_file may still
+  # unlink the final symlink entry itself. Ordinary file/terminal tools are
+  # unaffected. Default: false (preserves external skill updates).
+  external_read_only: false
 
 # =============================================================================
 # Agent Behavior

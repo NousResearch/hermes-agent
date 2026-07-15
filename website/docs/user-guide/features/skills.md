@@ -324,14 +324,17 @@ skills:
     - ~/.agents/skills
     - /home/shared/team-skills
     - ${SKILLS_REPO}/skills
+  external_read_only: false  # default: skill_manage may update external skills
 ```
 
 Paths support `~` expansion and `${VAR}` environment variable substitution.
 
 ### How it works
 
-- **Create locally, update in place**: New agent-created skills are written to `~/.hermes/skills/`. Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch`, `edit`, `write_file`, `remove_file`, or `delete`.
-- **External dirs are not a write-protection boundary**: If an external skill directory is writable by the Hermes process, agent-managed skill updates can change files in that directory. Use filesystem permissions or a separate profile/toolset setup if shared external skills must stay read-only.
+- **Create locally, update in place by default**: New agent-created skills are written to `<active HERMES_HOME>/skills`. Existing skills are modified where they are found, including skills under `external_dirs`, when the agent uses `skill_manage` actions such as `patch`, `edit`, `write_file`, `remove_file`, or `delete`.
+- **Optional read-only boundary**: Set `skills.external_read_only: true` to keep external skills discoverable and readable while refusing every `skill_manage` mutation when the skill is externally owned or its resolved target is outside `<active HERMES_HOME>/skills`. Writes through a local symlink are refused. `remove_file` may still unlink a final symlink entry without modifying its target. The default profile uses `~/.hermes/skills`; named profiles use `~/.hermes/profiles/<name>/skills`.
+- **Curator and symlinks**: Curator already excludes configured external skill directories. It may still archive a normal local skill package that contains symlinks; moving the package moves the links, not their external targets. A skill directory that is itself a symlink remains protected by the existing recursive-delete guard.
+- **Not a filesystem sandbox**: `external_read_only` applies only to `skill_manage`. Ordinary file and terminal tools keep their existing access, so users can still edit canonical external skills directly when they intend to.
 - **Local precedence**: If the same skill name exists in both the local dir and an external dir, the local version wins.
 - **Full integration**: External skills appear in the system prompt index, `skills_list`, `skill_view`, and as `/skill-name` slash commands — no different from local skills.
 - **Non-existent paths are silently skipped**: If a configured directory doesn't exist, Hermes ignores it without errors. Useful for optional shared directories that may not be present on every machine.
@@ -345,7 +348,7 @@ Paths support `~` expansion and `${VAR}` environment variable substitution.
 └── mlops/axolotl/
     └── SKILL.md
 
-~/.agents/skills/               # External (shared, mutable if writable)
+~/.agents/skills/               # External (mutable unless external_read_only=true)
 ├── my-custom-workflow/
 │   └── SKILL.md
 └── team-conventions/

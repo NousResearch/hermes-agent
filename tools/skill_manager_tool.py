@@ -3,9 +3,10 @@
 Skill Manager Tool -- Agent-Managed Skill Creation & Editing
 
 Allows the agent to create, update, and delete skills, turning successful
-approaches into reusable procedural knowledge. New skills are created in
-~/.hermes/skills/. Existing skills (bundled, hub-installed, or user-created)
-can be modified or deleted wherever they live.
+approaches into reusable procedural knowledge. New skills are created in the
+active HERMES_HOME/skills/. Existing skills (bundled, hub-installed, or
+user-created) can be modified or deleted wherever they live unless the optional
+external read-only boundary is enabled.
 
 Skills are the agent's procedural memory: they capture *how to do a specific
 type of task* based on proven experience. General memory (MEMORY.md, USER.md) is
@@ -112,6 +113,20 @@ def _guard_agent_created_enabled() -> bool:
         cfg = load_config()
         return is_truthy_value(
             cfg_get(cfg, "skills", "guard_agent_created"),
+            default=False,
+        )
+    except Exception:
+        return False
+
+
+def _external_read_only_enabled() -> bool:
+    """Read skills.external_read_only from config (default False)."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        return is_truthy_value(
+            cfg_get(cfg, "skills", "external_read_only"),
             default=False,
         )
     except Exception:
@@ -575,7 +590,7 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
     return None
 
 
-def _resolve_skill_dir(name: str, category: str = None) -> Path:
+def _resolve_skill_dir(name: str, category: Optional[str] = None) -> Path:
     """Build the directory path for a new skill, optionally under a category."""
     if category:
         return _skills_dir() / category / name
@@ -743,15 +758,126 @@ def _validate_file_path(file_path: str) -> Optional[str]:
     return None
 
 
-def _resolve_skill_target(skill_dir: Path, file_path: str) -> Tuple[Optional[Path], Optional[str]]:
-    """Resolve a supporting-file path and ensure it stays within the skill directory."""
+def _resolve_skill_target(
+    skill_dir: Path,
+    file_path: str,
+    *,
+    allow_final_symlink: bool = False,
+) -> Tuple[Optional[Path], Optional[str]]:
+    """Resolve a supporting-file path and ensure it stays within the skill.
+
+    ``remove_file`` may unlink a final symlink entry without touching its target,
+    but a symlink in any parent component is still an escape. Other operations
+    follow the final component so writes through links remain blocked.
+    """
     from tools.path_security import validate_within_dir
 
     target = skill_dir / file_path
-    error = validate_within_dir(target, skill_dir)
+    validation_target = (
+        target.parent if allow_final_symlink and target.is_symlink() else target
+    )
+    error = validate_within_dir(validation_target, skill_dir)
     if error:
         return None, error
     return target, None
+
+
+_SKILL_MUTATION_ACTIONS = {
+    "create", "edit", "patch", "delete", "write_file", "remove_file",
+}
+
+
+def _external_read_only_preflight(
+    action: str,
+    name: str,
+    *,
+    category: Optional[str] = None,
+    file_path: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
+    """Block skill_manage mutations outside the active local skills tree.
+
+    Both the discovered skill directory and the resolved mutation target must
+    stay local. Read-only external skills remain discoverable and loadable. This
+    guard is deliberately scoped to ``skill_manage``; ordinary file and terminal
+    tools keep their existing behavior.
+    """
+    if action not in _SKILL_MUTATION_ACTIONS or not _external_read_only_enabled():
+        return None
+
+    if action == "create":
+        # Let the action handler return the established validation error for
+        # malformed names/categories rather than replacing it with a path error.
+        if _validate_name(name) or _validate_category(category):
+            return None
+        skill_dir = _resolve_skill_dir(name, category)
+        target = skill_dir
+    else:
+        existing = _find_skill(name)
+        if not existing:
+            return None
+        skill_dir = existing["path"]
+        if action == "delete":
+            target = skill_dir
+        elif action == "edit" or (action == "patch" and not file_path):
+            target = skill_dir / "SKILL.md"
+        else:
+            if not file_path or _validate_file_path(file_path):
+                return None
+            # Resolve against the local ownership boundary here, before the
+            # approval gate. The action handler still applies its narrower
+            # within-skill supporting-file guard when the write proceeds.
+            target = skill_dir / file_path
+
+    from agent.skill_utils import is_external_skill_path
+
+    if is_external_skill_path(skill_dir):
+        return {
+            "success": False,
+            "error": (
+                f"Refusing skill_manage {action} for skill '{name}': its skill "
+                "directory is under a configured external skills root, and "
+                "skills.external_read_only is enabled. External skills remain "
+                "readable."
+            ),
+        }
+
+    try:
+        local_root = _skills_dir().resolve()
+        resolved_skill_dir = skill_dir.resolve()
+        resolved_target = (
+            target.parent.resolve() / target.name
+            if action == "remove_file" and target.is_symlink()
+            else target.resolve()
+        )
+    except (OSError, RuntimeError) as exc:
+        return {
+            "success": False,
+            "error": (
+                f"Refusing skill_manage {action} for skill '{name}' while "
+                "skills.external_read_only is enabled: could not safely resolve "
+                f"the skill directory or mutation target ({exc})."
+            ),
+        }
+
+    resolved_paths = [("skill directory", resolved_skill_dir)]
+    if resolved_target != resolved_skill_dir:
+        resolved_paths.append(("mutation target", resolved_target))
+
+    for path_kind, resolved_path in resolved_paths:
+        try:
+            resolved_path.relative_to(local_root)
+        except ValueError:
+            return {
+                "success": False,
+                "error": (
+                    f"Refusing skill_manage {action} for skill '{name}': the resolved "
+                    f"{path_kind} '{resolved_path}' is outside the active Hermes "
+                    f"skills directory '{local_root}', and skills.external_read_only "
+                    "is enabled. External skills remain readable."
+                ),
+            }
+
+    return None
 
 
 def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -> None:
@@ -1206,11 +1332,15 @@ def _remove_file(name: str, file_path: str) -> Dict[str, Any]:
     if guard:
         return guard
 
-    target, err = _resolve_skill_target(skill_dir, file_path)
+    target, err = _resolve_skill_target(
+        skill_dir,
+        file_path,
+        allow_final_symlink=_external_read_only_enabled(),
+    )
     if err:
         return {"success": False, "error": err}
     assert target is not None
-    if not target.exists():
+    if not target.exists() and not target.is_symlink():
         # List what's actually there for the model to see
         available = []
         for subdir in ALLOWED_SUBDIRS:
@@ -1338,6 +1468,15 @@ def skill_manage(
     if preflight is not None:
         return json.dumps(preflight, ensure_ascii=False)
 
+    external_preflight = _external_read_only_preflight(
+        action,
+        name,
+        category=category,
+        file_path=file_path,
+    )
+    if external_preflight is not None:
+        return json.dumps(external_preflight, ensure_ascii=False)
+
     # Approval gate: when on, stages the write for review (skills are too large
     # to review inline, so they always stage regardless of origin); when off
     # (default) passes straight through. The gate is bypassed when this call is
@@ -1427,7 +1566,8 @@ SKILL_MANAGE_SCHEMA = {
     "description": (
         "Manage skills (create, update, delete). Skills are your procedural "
         "memory — reusable approaches for recurring task types. "
-        f"New skills go to {display_hermes_home()}/skills/; existing skills can be modified wherever they live.\n\n"
+        f"New skills go to {display_hermes_home()}/skills/; existing skills can "
+        "be modified wherever they live unless skills.external_read_only is enabled.\n\n"
         "Actions: create (full SKILL.md + optional category), "
         "patch (old_string/new_string — preferred for fixes), "
         "edit (full SKILL.md rewrite — major overhauls only), "

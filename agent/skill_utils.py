@@ -580,10 +580,11 @@ def is_external_skill_path(path) -> bool:
     """Return True when ``path`` lives under a configured external skills dir.
 
     ``skills.external_dirs`` are externally owned: Hermes can discover and view
-    their skills, and foreground user-directed tool calls may still edit them,
-    but autonomous lifecycle maintenance must treat them as read-only. This
-    helper centralizes the ownership boundary so curator/reporting/tool paths do
-    not each need to re-interpret the config.
+    their skills. Foreground ``skill_manage`` calls may edit them unless
+    ``skills.external_read_only`` is enabled, while autonomous lifecycle
+    maintenance always treats them as read-only. This helper centralizes the
+    ownership boundary so curator/reporting/tool paths do not each need to
+    re-interpret the config.
     """
     candidate = _resolve_for_skill_ownership(path)
     for root in get_external_skills_dirs():

@@ -2361,10 +2361,15 @@ DEFAULT_CONFIG = {
     },
 
     # Skills — external skill directories for sharing skills across tools/agents.
-    # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
-    # always goes to ~/.hermes/skills/.
+    # Each path is expanded (~, ${VAR}) and resolved. Skill creation always goes
+    # to HERMES_HOME/skills/; existing external skills are mutable unless the
+    # opt-in read-only boundary below is enabled.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # Restrict skill_manage mutations to resolved targets under the active
+        # profile's HERMES_HOME/skills/. Discovery and skill_view stay available;
+        # ordinary file/terminal tools are intentionally unaffected.
+        "external_read_only": False,
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled

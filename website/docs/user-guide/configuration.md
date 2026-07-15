@@ -581,6 +581,21 @@ hermes config set skills.config.myplugin.path ~/myplugin-data
 
 For details on declaring config settings in your own skills, see [Creating Skills — Config Settings](/developer-guide/creating-skills#config-settings-configyaml).
 
+### Read-only external skills
+
+External skill directories are writable through `skill_manage` by default. If those directories contain canonical skills shared with other agents, enable the optional ownership boundary:
+
+```yaml
+skills:
+  external_dirs:
+    - ~/.agents/skills
+  external_read_only: true   # default: false
+```
+
+When enabled, external skills remain available to the system prompt index, `skills_list`, `skill_view`, and slash commands. Every `skill_manage` mutation is refused when the skill is externally owned or its resolved target is outside `<active HERMES_HOME>/skills`. Writes through a local symlink are refused; `remove_file` may still unlink a final symlink entry without modifying its target. For the default profile this is `~/.hermes/skills`; named profiles use `~/.hermes/profiles/<name>/skills`. New skills still go to the active profile's local skills directory.
+
+This setting does not restrict ordinary file or terminal tools. It is a safety boundary for Hermes-managed procedural memory, not a filesystem sandbox. Curator already excludes configured external skill directories from autonomous maintenance.
+
 ### Guard on agent-created skill writes
 
 When the agent uses `skill_manage` to create, edit, patch, or delete a skill, Hermes can optionally scan the new/updated content for dangerous keyword patterns (credential harvesting, obvious prompt injection, exfil instructions). The scanner is **off by default** — real agent workflows that legitimately touch `~/.ssh/` or mention `$OPENAI_API_KEY` were tripping the heuristic too often. Turn it back on if you want the scanner to prompt you before the agent's skill writes land:

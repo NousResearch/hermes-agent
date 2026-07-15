@@ -517,6 +517,25 @@ class TestRemoveFile:
         assert "escapes" in result["error"].lower()
         assert outside_file.exists()
 
+    def test_remove_final_symlink_stays_blocked_by_default(self, tmp_path):
+        outside_file = tmp_path / "outside.md"
+        outside_file.write_text("keep", encoding="utf-8")
+
+        with _skill_dir(tmp_path):
+            _create_skill("my-skill", VALID_SKILL_CONTENT)
+            link = tmp_path / "my-skill" / "references" / "outside.md"
+            link.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                link.symlink_to(outside_file)
+            except OSError:
+                pytest.skip("Symlinks not supported")
+
+            result = _remove_file("my-skill", "references/outside.md")
+
+        assert result["success"] is False
+        assert link.is_symlink()
+        assert outside_file.read_text(encoding="utf-8") == "keep"
+
 
 # ---------------------------------------------------------------------------
 # skill_manage dispatcher
@@ -757,15 +776,379 @@ def _write_external_skill(external_dir: Path, name: str = "ext-skill") -> Path:
     return skill_dir
 
 
+def _configure_external_profile(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    read_only: bool,
+    write_approval: bool = False,
+    external_under_local: bool = False,
+):
+    """Create a real profile config with local and external skill roots."""
+    hermes_home = tmp_path / ".hermes"
+    local = hermes_home / "skills"
+    local.mkdir(parents=True)
+    external = (
+        local / "canonical-skills"
+        if external_under_local
+        else tmp_path / "canonical-skills"
+    )
+    external.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "skills:\n"
+        f"  external_dirs:\n    - {external}\n"
+        f"  external_read_only: {'true' if read_only else 'false'}\n"
+        f"  write_approval: {'true' if write_approval else 'false'}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from agent.skill_utils import _external_dirs_cache_clear
+
+    _external_dirs_cache_clear()
+    return local, external
+
+
 class TestExternalSkillMutations:
-    """Verify skill_manage can patch/edit/write/remove/delete skills that live
-    under skills.external_dirs — in place, without duplicating to local.
+    """Verify default external updates and the opt-in ownership boundary.
 
     Regression for issues #4759 and #4381: the read-only gate used to refuse
     with 'Skill X is in an external directory and cannot be modified', which
     caused agents to create duplicate copies in ~/.hermes/skills/ as a
     workaround.
     """
+
+    def test_external_read_only_refuses_configured_root_under_local(
+        self, tmp_path, monkeypatch
+    ):
+        _, external = _configure_external_profile(
+            tmp_path,
+            monkeypatch,
+            read_only=True,
+            external_under_local=True,
+        )
+        skill_dir = _write_external_skill(external)
+
+        result = json.loads(
+            skill_manage(
+                action="patch",
+                name="ext-skill",
+                old_string="OLD_MARKER",
+                new_string="NEW_MARKER",
+            )
+        )
+
+        assert result["success"] is False
+        assert "external_read_only" in result["error"]
+        assert "OLD_MARKER" in (skill_dir / "SKILL.md").read_text()
+
+    def test_external_read_only_false_preserves_in_place_patch(
+        self, tmp_path, monkeypatch
+    ):
+        local, external = _configure_external_profile(
+            tmp_path, monkeypatch, read_only=False
+        )
+        skill_dir = _write_external_skill(external)
+
+        result = json.loads(
+            skill_manage(
+                action="patch",
+                name="ext-skill",
+                old_string="OLD_MARKER",
+                new_string="NEW_MARKER",
+            )
+        )
+
+        assert result["success"] is True, result
+        assert "NEW_MARKER" in (skill_dir / "SKILL.md").read_text()
+        assert not (local / "ext-skill").exists()
+
+    def test_external_read_only_keeps_external_skill_readable(
+        self, tmp_path, monkeypatch
+    ):
+        _, external = _configure_external_profile(
+            tmp_path, monkeypatch, read_only=True
+        )
+        _write_external_skill(external)
+
+        from tools.skills_tool import skill_view
+
+        result = json.loads(skill_view("ext-skill"))
+
+        assert result["success"] is True
+        assert "OLD_MARKER" in result["content"]
+
+    @pytest.mark.parametrize(
+        ("action", "kwargs"),
+        [
+            ("patch", {
+                "old_string": "OLD_MARKER", "new_string": "NEW_MARKER"
+            }),
+            ("edit", {"content": VALID_SKILL_CONTENT_2.replace(
+                "name: test-skill", "name: ext-skill"
+            )}),
+            ("delete", {"absorbed_into": ""}),
+            ("write_file", {
+                "file_path": "references/new.md", "file_content": "new"
+            }),
+            ("remove_file", {"file_path": "references/existing.md"}),
+        ],
+    )
+    def test_external_read_only_refuses_every_existing_skill_mutation(
+        self, tmp_path, monkeypatch, action, kwargs
+    ):
+        _, external = _configure_external_profile(
+            tmp_path, monkeypatch, read_only=True
+        )
+        skill_dir = _write_external_skill(external)
+        existing_file = skill_dir / "references" / "existing.md"
+        existing_file.parent.mkdir()
+        existing_file.write_text("keep", encoding="utf-8")
+
+        result = json.loads(skill_manage(action=action, name="ext-skill", **kwargs))
+
+        assert result["success"] is False
+        assert "external_read_only" in result["error"]
+        assert skill_dir.exists()
+        assert "OLD_MARKER" in (skill_dir / "SKILL.md").read_text()
+        assert existing_file.read_text(encoding="utf-8") == "keep"
+        assert not (skill_dir / "references" / "new.md").exists()
+
+    def test_external_read_only_keeps_local_skills_mutable(
+        self, tmp_path, monkeypatch
+    ):
+        local, _ = _configure_external_profile(
+            tmp_path, monkeypatch, read_only=True
+        )
+        skill_dir = local / "local-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            VALID_SKILL_CONTENT.replace("name: test-skill", "name: local-skill"),
+            encoding="utf-8",
+        )
+
+        result = json.loads(
+            skill_manage(
+                action="patch",
+                name="local-skill",
+                old_string="Do the thing.",
+                new_string="Do the local thing.",
+            )
+        )
+
+        assert result["success"] is True, result
+        assert "Do the local thing." in (skill_dir / "SKILL.md").read_text()
+
+    def test_external_read_only_allows_local_delete_without_following_nested_symlink(
+        self, tmp_path, monkeypatch
+    ):
+        local, external = _configure_external_profile(
+            tmp_path, monkeypatch, read_only=True
+        )
+        skill_dir = local / "local-skill"
+        skill_dir.mkdir()
+        (skill_dir / "SKILL.md").write_text(
+            VALID_SKILL_CONTENT.replace("name: test-skill", "name: local-skill"),
+            encoding="utf-8",
+        )
+        canonical = external / "canonical.md"
+        canonical.write_text("keep\n", encoding="utf-8")
+        try:
+            (skill_dir / "canonical.md").symlink_to(canonical)
+        except OSError:
+            pytest.skip("Symlinks not supported")
+
+        result = json.loads(
+            skill_manage(action="delete", name="local-skill", absorbed_into="")
+        )
+
+        assert result["success"] is True, result
+        assert not skill_dir.exists()
+        assert canonical.read_text(encoding="utf-8") == "keep\n"
+
+    def test_external_read_only_blocks_symlinked_skill_md_but_not_read(
+        self, tmp_path, monkeypatch
+    ):
+        local, external = _configure_external_profile(
+            tmp_path, monkeypatch, read_only=True
+        )
+        canonical = _write_external_skill(external, "linked-skill") / "SKILL.md"
+        linked_dir = local / "linked-skill"
+        linked_dir.mkdir()
+        try:
+            (linked_dir / "SKILL.md").symlink_to(canonical)
+        except OSError:
+            pytest.skip("Symlinks not supported")
+
+        from tools.skills_tool import skill_view
+
+        view_result = json.loads(skill_view("linked-skill"))
+        patch_result = json.loads(
+            skill_manage(
+                action="patch",
+                name="linked-skill",
+                old_string="OLD_MARKER",
+                new_string="NEW_MARKER",
+            )
+        )
+
+        assert view_result["success"] is True
+        assert "OLD_MARKER" in view_result["content"]
+        assert patch_result["success"] is False
+        assert "external_read_only" in patch_result["error"]
+        assert "OLD_MARKER" in canonical.read_text(encoding="utf-8")
+
+    def test_external_read_only_blocks_symlinked_skill_directory_but_not_read(
+        self, tmp_path, monkeypatch
+    ):
+        local, external = _configure_external_profile(
+            tmp_path, monkeypatch, read_only=True
+        )
+        canonical_skill = _write_external_skill(external, "linked-directory")
+        try:
+            (local / "linked-directory").symlink_to(
+                canonical_skill, target_is_directory=True
+            )
+        except OSError:
+            pytest.skip("Symlinks not supported")
+
+        from tools.skills_tool import skill_view
+
+        view_result = json.loads(skill_view("linked-directory"))
+        patch_result = json.loads(
+            skill_manage(
+                action="patch",
+                name="linked-directory",
+                old_string="OLD_MARKER",
+                new_string="NEW_MARKER",
+            )
+        )
+
+        assert view_result["success"] is True
+        assert "OLD_MARKER" in view_result["content"]
+        assert patch_result["success"] is False
+        assert "external_read_only" in patch_result["error"]
+        assert "OLD_MARKER" in (canonical_skill / "SKILL.md").read_text()
+
+    def test_external_read_only_can_unlink_local_symlink_without_touching_target(
+        self, tmp_path, monkeypatch
+    ):
+        local, external = _configure_external_profile(
+            tmp_path, monkeypatch, read_only=True
+        )
+        skill_dir = local / "local-links"
+        references = skill_dir / "references"
+        references.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            VALID_SKILL_CONTENT.replace("name: test-skill", "name: local-links"),
+            encoding="utf-8",
+        )
+        canonical = external / "canonical.md"
+        canonical.write_text("keep me", encoding="utf-8")
+        link = references / "canonical.md"
+        try:
+            link.symlink_to(canonical)
+        except OSError:
+            pytest.skip("Symlinks not supported")
+
+        result = json.loads(
+            skill_manage(
+                action="remove_file",
+                name="local-links",
+                file_path="references/canonical.md",
+            )
+        )
+
+        assert result["success"] is True, result
+        assert not link.exists()
+        assert not link.is_symlink()
+        assert canonical.read_text(encoding="utf-8") == "keep me"
+
+    def test_external_read_only_blocks_write_through_local_symlink(
+        self, tmp_path, monkeypatch
+    ):
+        local, external = _configure_external_profile(
+            tmp_path, monkeypatch, read_only=True
+        )
+        skill_dir = local / "local-links"
+        references = skill_dir / "references"
+        references.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(
+            VALID_SKILL_CONTENT.replace("name: test-skill", "name: local-links"),
+            encoding="utf-8",
+        )
+        canonical = external / "canonical.md"
+        canonical.write_text("keep me", encoding="utf-8")
+        link = references / "canonical.md"
+        try:
+            link.symlink_to(canonical)
+        except OSError:
+            pytest.skip("Symlinks not supported")
+
+        result = json.loads(
+            skill_manage(
+                action="write_file",
+                name="local-links",
+                file_path="references/canonical.md",
+                file_content="replace me",
+            )
+        )
+
+        assert result["success"] is False
+        assert "external_read_only" in result["error"]
+        assert link.is_symlink()
+        assert canonical.read_text(encoding="utf-8") == "keep me"
+
+    def test_external_read_only_blocks_create_through_symlinked_category(
+        self, tmp_path, monkeypatch
+    ):
+        local, external = _configure_external_profile(
+            tmp_path, monkeypatch, read_only=True
+        )
+        try:
+            (local / "shared").symlink_to(external, target_is_directory=True)
+        except OSError:
+            pytest.skip("Symlinks not supported")
+
+        result = json.loads(
+            skill_manage(
+                action="create",
+                name="escaped-skill",
+                category="shared",
+                content=VALID_SKILL_CONTENT.replace(
+                    "name: test-skill", "name: escaped-skill"
+                ),
+            )
+        )
+
+        assert result["success"] is False
+        assert "external_read_only" in result["error"]
+        assert not (external / "escaped-skill").exists()
+
+    def test_external_read_only_refuses_before_write_approval_staging(
+        self, tmp_path, monkeypatch
+    ):
+        _, external = _configure_external_profile(
+            tmp_path,
+            monkeypatch,
+            read_only=True,
+            write_approval=True,
+        )
+        skill_dir = _write_external_skill(external)
+
+        result = json.loads(
+            skill_manage(
+                action="patch",
+                name="ext-skill",
+                old_string="OLD_MARKER",
+                new_string="NEW_MARKER",
+            )
+        )
+
+        assert result["success"] is False
+        assert result.get("staged") is not True
+        assert "external_read_only" in result["error"]
+        assert "OLD_MARKER" in (skill_dir / "SKILL.md").read_text()
 
     def test_patch_external_skill_writes_in_place(self, tmp_path):
         local = tmp_path / "local"

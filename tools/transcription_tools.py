@@ -558,7 +558,7 @@ def _transcribe_groq(file_path: str, model_name: str) -> Dict[str, Any]:
         logger.info("Model %s not available on Groq, using %s", model_name, DEFAULT_GROQ_STT_MODEL)
         model_name = DEFAULT_GROQ_STT_MODEL
 
-    groq_cfg = _load_stt_config().get("groq", {})
+    groq_cfg = _load_stt_config().get("groq") or {}
     language = str(
         groq_cfg.get("language") or os.getenv(LOCAL_STT_LANGUAGE_ENV) or ""
     ).strip() or None

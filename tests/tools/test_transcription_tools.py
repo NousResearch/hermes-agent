@@ -384,6 +384,27 @@ class TestTranscribeGroq:
         kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
         assert "language" not in kwargs
 
+    def test_null_groq_subsection_is_safe(self, monkeypatch, sample_wav):
+        """`stt.groq: null` in YAML yields None; must not raise, auto-detect stays intact."""
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hi"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client), \
+             patch(
+                 "tools.transcription_tools._load_stt_config",
+                 return_value={"groq": None},
+             ):
+            from tools.transcription_tools import _transcribe_groq
+            result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
+
+        assert result["success"] is True
+        kwargs = mock_client.audio.transcriptions.create.call_args.kwargs
+        assert "language" not in kwargs
+
 
 # ============================================================================
 # _transcribe_openai — additional tests

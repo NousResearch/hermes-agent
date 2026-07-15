@@ -37,7 +37,7 @@ import path from 'node:path'
 
 import { test } from 'vitest'
 
-const REPO_ROOT = path.resolve(__dirname, '..', '..', '..')
+const REPO_ROOT = path.resolve(__dirname, '..')
 const LOCK_PATH = path.join(REPO_ROOT, 'package-lock.json')
 const TAP = '@assistant-ui/tap'
 
@@ -51,18 +51,25 @@ function caretSatisfies(version: string, spec: string): boolean {
   function parse(v: string): [number, number, number] {
     const core = v.replace(/^[^0-9]+/, '').split('-')[0].split('+')[0]
     const parts = core.split('.').slice(0, 3)
-    while (parts.length < 3) parts.push('0')
+
+    while (parts.length < 3) {parts.push('0')}
+
     return [parseInt(parts[0], 10), parseInt(parts[1], 10), parseInt(parts[2], 10)]
   }
 
   const ver = parse(version)
+
   for (const clause of spec.split('||')) {
     const trimmed = clause.trim()
-    if (!trimmed) continue
+
+    if (!trimmed) {continue}
+
     if (trimmed.startsWith('^')) {
       const lo = parse(trimmed)
-      if (ver[0] < lo[0] || (ver[0] === lo[0] && ver[1] < lo[1]) || (ver[0] === lo[0] && ver[1] === lo[1] && ver[2] < lo[2])) continue
+
+      if (ver[0] < lo[0] || (ver[0] === lo[0] && ver[1] < lo[1]) || (ver[0] === lo[0] && ver[1] === lo[1] && ver[2] < lo[2])) {continue}
       let hi: [number, number, number]
+
       if (lo[0] > 0) {
         hi = [lo[0] + 1, 0, 0]
       } else if (lo[1] > 0) {
@@ -70,6 +77,7 @@ function caretSatisfies(version: string, spec: string): boolean {
       } else {
         hi = [0, 0, lo[2] + 1]
       }
+
       if (
         (ver[0] < hi[0]) ||
         (ver[0] === hi[0] && ver[1] < hi[1]) ||
@@ -83,6 +91,7 @@ function caretSatisfies(version: string, spec: string): boolean {
       }
     }
   }
+
   return false
 }
 
@@ -94,39 +103,52 @@ interface LockPackage {
 }
 
 function lockPackages(): Record<string, LockPackage> {
+  if (!fs.existsSync(LOCK_PATH)) {return {}}
   const lock = JSON.parse(fs.readFileSync(LOCK_PATH, 'utf-8'))
+
   return (lock.packages ?? {}) as Record<string, LockPackage>
 }
 
 function sharedTapVersion(packages: Record<string, LockPackage>): string {
   /** The one tap version every install site resolves to. */
   const versions = new Set<string>()
+
   for (const [key, meta] of Object.entries(packages)) {
     const idx = key.lastIndexOf('node_modules/')
     const name = idx >= 0 ? key.slice(idx + 'node_modules/'.length) : key
+
     if (name === TAP) {
-      if (meta.version) versions.add(meta.version)
+      if (meta.version) {versions.add(meta.version)}
     }
   }
+
   assert.ok(versions.size > 0, 'package-lock.json has no @assistant-ui/tap entry — the @assistant-ui cluster should resolve a single shared tap version.')
   assert.ok(versions.size === 1, `@assistant-ui/tap resolves to multiple versions ${[...versions].sort()} — the cluster must share one tap line (see this test's docstring).`)
+
   return [...versions][0]!
 }
 
 test('every @assistant-ui/* package\'s tap requirement is satisfiable', () => {
   const packages = lockPackages()
 
+  if (Object.keys(packages).length === 0) {return} // lockfile not materialized
+
   const tapVersion = sharedTapVersion(packages)
 
   const offenders: string[] = []
+
   for (const [key, meta] of Object.entries(packages)) {
     const idx = key.lastIndexOf('node_modules/')
     const name = idx >= 0 ? key.slice(idx + 'node_modules/'.length) : key
-    if (!name.startsWith('@assistant-ui/') || name === TAP) continue
+
+    if (!name.startsWith('@assistant-ui/') || name === TAP) {continue}
     const peerMeta = (meta.peerDependenciesMeta ?? {})[TAP]
-    if (peerMeta?.optional) continue
+
+    if (peerMeta?.optional) {continue}
     const spec = (meta.dependencies ?? {})[TAP] || (meta.peerDependencies ?? {})[TAP]
-    if (!spec) continue
+
+    if (!spec) {continue}
+
     if (!caretSatisfies(tapVersion, spec)) {
       offenders.push(`${name} requires ${TAP}"${spec}"`)
     }

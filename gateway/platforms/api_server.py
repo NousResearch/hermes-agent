@@ -4434,6 +4434,13 @@ class APIServerAdapter(BasePlatformAdapter):
             "updated_at": now,
         })
         current.setdefault("created_at", fields.pop("created_at", now))
+        latest_status = " ".join(str(fields.get("latest_status") or "").split())[:180]
+        if latest_status:
+            history = current.get("status_history")
+            history = list(history) if isinstance(history, list) else []
+            if not history or history[-1] != latest_status:
+                history = (history + [latest_status])[-12:]
+            fields["status_history"] = history
         current.update(fields)
         self._run_statuses[run_id] = current
         return current
@@ -4524,6 +4531,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 or run_status.get("latest_status")
                 or ""
             )
+            raw_history = metadata.get("status_history") or run_status.get("status_history") or []
+            status_history = [
+                " ".join(str(item).split())[:180]
+                for item in raw_history
+                if isinstance(item, str) and item.strip()
+            ][-12:]
             if (
                 state in {"active", "queued", "running", "working"}
                 and updated_at is not None
@@ -4539,6 +4552,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "state": state,
                 "run_id": run_id,
                 "latest_status": latest_status,
+                "status_history": status_history,
                 "started_at": entry.get("started_at"),
                 "updated_at": updated_at,
             })

@@ -456,7 +456,7 @@ def _touch_active_session_slot(
     session: dict | None,
     *,
     state: str,
-    latest_status: str,
+    latest_status: str | None = None,
 ) -> bool:
     if not session:
         return False
@@ -464,7 +464,22 @@ def _touch_active_session_slot(
     if lease is None:
         return False
     try:
-        return bool(lease.touch({"state": state, "latest_status": latest_status}))
+        if latest_status is not None:
+            clean_status = " ".join(str(latest_status or "").split())[:180]
+            session["_active_latest_status"] = clean_status
+            history = session.get("_active_status_history")
+            history = list(history) if isinstance(history, list) else []
+            if not clean_status:
+                history = []
+            elif not history or history[-1] != clean_status:
+                history = (history + [clean_status])[-12:]
+            session["_active_status_history"] = history
+        metadata = {
+            "state": state,
+            "latest_status": str(session.get("_active_latest_status") or ""),
+            "status_history": list(session.get("_active_status_history") or [])[-12:],
+        }
+        return bool(lease.touch(metadata))
     except Exception:
         logger.debug("Failed to heartbeat active session slot", exc_info=True)
         return False
@@ -486,7 +501,6 @@ def _start_active_session_heartbeat(session: dict) -> None:
                 _touch_active_session_slot(
                     session,
                     state="running",
-                    latest_status="Hermes is working…",
                 )
                 time.sleep(30)
         finally:
@@ -3668,9 +3682,20 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
     return f"{text}{suffix}" if text else None
 
 
+def _active_tool_label(name: str | None) -> str:
+    normalized = str(name or "tool").replace("_", " ").replace("-", " ")
+    safe = "".join(char for char in normalized if char.isalnum() or char.isspace())
+    return " ".join(safe.split())[:60] or "tool"
+
+
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
     session = _sessions.get(sid)
     if session is not None:
+        _touch_active_session_slot(
+            session,
+            state="running",
+            latest_status=f"Using {_active_tool_label(name)}…",
+        )
         try:
             from agent.display import capture_local_edit_snapshot
 
@@ -3701,6 +3726,11 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     snapshot = None
     started_at = None
     if session is not None:
+        _touch_active_session_slot(
+            session,
+            state="running",
+            latest_status=f"{_active_tool_label(name).capitalize()} finished",
+        )
         snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None)
         started_at = session.setdefault("tool_started_at", {}).pop(tool_call_id, None)
     duration_s = time.time() - started_at if started_at else None
@@ -3771,6 +3801,13 @@ def _on_tool_progress(
         _emit("tool.output_risk", sid, payload)
         return
     if event_type == "reasoning.available" and preview:
+        session = _sessions.get(sid)
+        if session is not None:
+            _touch_active_session_slot(
+                session,
+                state="running",
+                latest_status=str(preview),
+            )
         payload: dict[str, object] = {"text": str(preview)}
         if _session_verbose(sid):
             payload["verbose"] = True
@@ -9014,7 +9051,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
     _touch_active_session_slot(
         session,
         state="running",
-        latest_status="Hermes is working…",
+        latest_status="Reviewing the request…",
     )
     _start_active_session_heartbeat(session)
     with session["history_lock"]:

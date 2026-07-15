@@ -7,7 +7,7 @@ import time
 import types
 from datetime import datetime
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -422,6 +422,42 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     assert events[1][0] == "tool.complete"
     assert "args_text" not in events[0][2]
     assert "result_text" not in events[1][2]
+
+
+def test_tui_tool_lifecycle_updates_cross_surface_status_history(monkeypatch):
+    lease = MagicMock()
+    lease.touch.return_value = True
+    monkeypatch.setitem(
+        server._sessions,
+        "mobile-progress-test",
+        {
+            "active_session_lease": lease,
+            "tool_progress_mode": "all",
+            "tool_started_at": {},
+        },
+    )
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+
+    server._on_tool_start(
+        "mobile-progress-test",
+        "tool-1",
+        "terminal",
+        {"command": "secret command is not copied into status"},
+    )
+    server._on_tool_complete(
+        "mobile-progress-test",
+        "tool-1",
+        "terminal",
+        {},
+        "secret result is not copied into status",
+    )
+
+    assert lease.touch.call_args_list[0].args[0]["latest_status"] == "Using terminal…"
+    assert lease.touch.call_args_list[-1].args[0]["status_history"] == [
+        "Using terminal…",
+        "Terminal finished",
+    ]
+    assert "secret" not in str(lease.touch.call_args_list)
 
 
 def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypatch):

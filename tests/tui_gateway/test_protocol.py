@@ -1032,8 +1032,16 @@ def test_touch_active_session_slot_reports_running_and_idle(server):
     ) is True
 
     assert lease.touch.call_args_list == [
-        (({"state": "running", "latest_status": "Starting the task…"},), {}),
-        (({"state": "idle", "latest_status": ""},), {}),
+        (({
+            "state": "running",
+            "latest_status": "Starting the task…",
+            "status_history": ["Starting the task…"],
+        },), {}),
+        (({
+            "state": "idle",
+            "latest_status": "",
+            "status_history": [],
+        },), {}),
     ]
 
 

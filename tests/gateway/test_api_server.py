@@ -1070,6 +1070,7 @@ class TestMobileControlPlane:
             "run_id": "run-1",
             "status": "running",
             "latest_status": "Using terminal…",
+            "status_history": ["Reviewing the request…", "Using terminal…"],
             "updated_at": 3,
         }
         app = _create_app(adapter)
@@ -1091,6 +1092,10 @@ class TestMobileControlPlane:
                 assert data["active_count"] == 1
                 assert data["data"][0]["title"] == "Release work"
                 assert data["data"][0]["latest_status"] == "Using terminal…"
+                assert data["data"][0]["status_history"] == [
+                    "Reviewing the request…",
+                    "Using terminal…",
+                ]
                 assert data["data"][0]["updated_at"] == 3
                 assert data["data"][0]["state"] == "unresponsive"
                 assert "messages" not in data["data"][0]

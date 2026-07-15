@@ -6362,8 +6362,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
             # into the input area and requires Enter to send.
             task = target_buffer.open_in_editor(validate_and_handle=False)
             editor_auto_submit = (
-                (self.config or {}).get("display", {}).get("editor_auto_submit", True)
-            )
+                getattr(self, "config", None) or {}
+            ).get("display", {}).get("editor_auto_submit", True)
             if editor_auto_submit and task is not None and hasattr(task, "add_done_callback"):
                 task.add_done_callback(
                     lambda _t, b=target_buffer: self._submit_editor_buffer(b)
@@ -9557,7 +9557,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                         result = resolve_plugin_command_result(
                             plugin_handler(user_args)
                         )
-                        if result:
+                        if isinstance(result, dict) and result.get("action") == "inject":
+                            msg = result.get("content", "")
+                            if msg:
+                                if hasattr(self, "_pending_input"):
+                                    self._pending_input.put(msg)
+                                else:
+                                    _cprint(msg)
+                        elif result:
                             _cprint(str(result))
                     except Exception as e:
                         _cprint(f"\033[1;31mPlugin command error: {e}{_RST}")

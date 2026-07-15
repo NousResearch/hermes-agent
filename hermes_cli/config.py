@@ -1902,6 +1902,10 @@ DEFAULT_CONFIG = {
         #   "verbose" — include a compact content preview of what changed
         # Per-platform overrides via display.platforms.<platform>.memory_notifications.
         "memory_notifications": "on",
+        # When True (default), Ctrl+G (open in $EDITOR) auto-submits the
+        # saved draft on clean exit.  Set false to load the text back into
+        # the input area for further editing before sending.
+        "editor_auto_submit": True,
         "streaming": False,
         "timestamps": False,      # Show timestamp on user and assistant labels
         "timestamp_format": "%H:%M",  # strftime format for timestamps (e.g. "%b-%d %H:%M")

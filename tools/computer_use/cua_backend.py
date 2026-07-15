@@ -579,6 +579,9 @@ class _CuaDriverSession:
         self._shutdown_event: Optional[asyncio.Event] = None  # created on bridge loop
         self._lifecycle_future = None  # concurrent.futures.Future
         self._setup_error: Optional[BaseException] = None
+        # Track the backend's session id so _restart_session_locked
+        # can re-declare it after transport reconnect (#63428).
+        self._session_id: Optional[str] = None
 
     def _require_started(self) -> None:
         if not self._started:
@@ -878,6 +881,14 @@ class _CuaDriverSession:
         self._capability_version = ""
         self._start_lifecycle_locked()
         self._started = True
+        # Re-declare the session identity after transport reconnect.
+        # cua-driver expects start_session once per transport lifetime;
+        # skipping it leaves subsequent calls tombstoned (#63428).
+        if self._session_id:
+            try:
+                self.call_tool("start_session", {"session": self._session_id})
+            except Exception as e:
+                logger.debug("cua-driver start_session after reconnect failed (continuing anonymous): %s", e)
 
     def _call_tool_via_cli(self, name: str, args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
         """Fallback transport: invoke ``cua-driver call <tool> <json>`` as a
@@ -1133,8 +1144,17 @@ def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             pid_int, window_id_int = int(pid), int(window_id)
         except (TypeError, ValueError):
             continue
+        # Try exact key names first (app, app_name, name), then fall
+        # back to keys whose name contains "app" or "name" (case-insensitive)
+        # via regex — cua-driver 0.7.1 may use alternative naming.
+        app_name = w.get("app") or w.get("app_name") or w.get("name") or ""
+        if not app_name:
+            for k, v in w.items():
+                if isinstance(v, str) and re.search(r"(app|name)", k, re.IGNORECASE):
+                    app_name = v
+                    break
         windows.append({
-            "app_name": w.get("app_name", ""),
+            "app_name": app_name,
             "pid": pid_int,
             "window_id": window_id_int,
             "off_screen": not w.get("is_on_screen", True),
@@ -1213,6 +1233,7 @@ class CuaDriverBackend(ComputerUseBackend):
         # to start the session is non-fatal — cua-driver's tools
         # accept anonymous calls (the cursor just won't render),
         # so we degrade rather than abort.
+        self._session._session_id = self._session_id
         try:
             self._session.call_tool("start_session", {"session": self._session_id})
         except Exception as e:
@@ -1291,8 +1312,11 @@ class CuaDriverBackend(ComputerUseBackend):
                 logger.error("cua-driver CLI re-fetch for list_windows failed: %s", cli_exc)
 
         if not windows:
-            return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
-                                 elements=[], app="", window_title="", png_bytes_len=0)
+            raise RuntimeError(
+                "cua-driver returned an empty window inventory — "
+                "the session may be dead or the daemon needs restart. "
+                "Run `hermes computer-use doctor` to diagnose."
+            )
 
         # Filter by app name (case-insensitive substring) if requested.
         # When the filter matches nothing, surface that explicitly instead of
@@ -1731,7 +1755,8 @@ class CuaDriverBackend(ComputerUseBackend):
             for line in data.splitlines():
                 m = re.search(r'(.+?)\s+\(pid\s+(\d+)\)', line)
                 if m:
-                    apps.append({"name": m.group(1).strip(), "pid": int(m.group(2))})
+                    name = m.group(1).strip().lstrip("- ").strip()
+                    apps.append({"name": name, "pid": int(m.group(2))})
             return apps
         return []
 

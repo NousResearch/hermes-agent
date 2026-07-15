@@ -455,20 +455,17 @@ def _isolate_hermes_home(_hermetic_environment):
 _TUI_SERVER_MODULE = "tui_gateway.server"
 
 
-def _release_tui_server_leases(sessions: dict) -> None:
-    """Release active-session leases held by leftover server sessions.
+def _teardown_tui_server_sessions(mod) -> None:
+    """Close leftover sessions through the production teardown boundary.
 
-    Clearing ``_sessions`` without releasing leaks the lease's registry
-    entry; with the test process alive it is never pruned, so later tests
-    hit a phantom 'active session limit' against stale entries.
+    Besides returning active-session leases, this finalizes the session,
+    unregisters notification state, and closes its agent and slash worker.
     """
-    for session in list(sessions.values()):
-        lease = session.get("active_session_lease") if isinstance(session, dict) else None
-        if lease is not None:
-            try:
-                lease.release()
-            except Exception:
-                pass
+    sessions = getattr(mod, "_sessions", None)
+    if not isinstance(sessions, dict):
+        return
+    for sid in list(sessions):
+        mod._close_session_by_id(sid, end_reason="test_cleanup")
 
 
 @pytest.fixture(autouse=True)
@@ -494,8 +491,7 @@ def _reset_tui_gateway_server_state():
     # (monkeypatch restores the real, pre-test object afterwards anyway).
     sessions = mod._sessions
     if isinstance(sessions, dict):
-        _release_tui_server_leases(sessions)
-        sessions.clear()
+        _teardown_tui_server_sessions(mod)
     for name in (
         "_pending",
         "_pending_prompt_payloads",

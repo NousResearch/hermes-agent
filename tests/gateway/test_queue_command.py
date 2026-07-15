@@ -16,7 +16,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.base import MessageContextRef, MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -173,6 +173,45 @@ async def test_queue_preserves_reply_context():
     assert queued.reply_to_text == "the original message"
     assert queued.reply_to_author_id == "a1"
     assert queued.reply_to_author_name == "alice"
+
+
+@pytest.mark.asyncio
+async def test_queue_preserves_forwarded_context_refs():
+    """A forwarded /queue must keep its provenance annotations.
+
+    ``context_refs`` carries forwarded-message origin metadata that the
+    runner renders into a provenance block before the body. The handler
+    rebuilt the event without it, so forwarding a message via /queue
+    silently dropped the "[Forwarded message]" origin when the turn ran.
+    """
+    runner, adapter = _make_runner(_session_entry())
+    sk = _running(runner)
+
+    origin = MessageContextRef(
+        kind="forward",
+        platform="telegram",
+        origin_type="user",
+        origin_name="Alice Example",
+        origin_id="42",
+        origin_username="alice",
+    )
+    event = MessageEvent(
+        text="/queue check this out",
+        source=_make_source(),
+        message_id="q-fwd",
+        context_refs=[origin],
+    )
+    result = await runner._handle_message(event)
+
+    assert result is not None and "queued" in result.lower()
+    queued = adapter._pending_messages[sk]
+    assert queued.text == "check this out"
+    assert len(queued.context_refs) == 1
+    assert queued.context_refs[0] is origin
+    assert queued.context_refs[0].origin_name == "Alice Example"
+    # Copy semantics: mutating the queued list must not touch the source
+    # event's list (and vice versa).
+    assert queued.context_refs is not event.context_refs
 
 
 @pytest.mark.asyncio

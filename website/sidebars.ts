@@ -669,6 +669,7 @@ const sidebars: SidebarsConfig = {
         'integrations/index',
         'integrations/nous-portal',
         'integrations/providers',
+        'integrations/openai-compatible-audit-gateways',
         'user-guide/features/mcp',
         'user-guide/features/acp',
         'user-guide/features/provider-routing',

@@ -1937,6 +1937,26 @@ def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
     return result
 
 
+def _resolve_codex_oauth_live_context_length(
+    model: str, access_token: str = ""
+) -> Optional[int]:
+    """Return the live Codex context window, or ``None`` if unavailable."""
+    model_bare = _strip_provider_prefix(model).strip()
+    if not model_bare or not access_token:
+        return None
+
+    live = _fetch_codex_oauth_context_lengths(access_token)
+    if model_bare in live:
+        return live[model_bare]
+
+    # Case-insensitive match in case casing drifts.
+    model_lower = model_bare.lower()
+    for slug, ctx in live.items():
+        if slug.lower() == model_lower:
+            return ctx
+    return None
+
+
 def _resolve_codex_oauth_context_length(
     model: str, access_token: str = ""
 ) -> Optional[int]:
@@ -1949,15 +1969,9 @@ def _resolve_codex_oauth_context_length(
     if not model_bare:
         return None
 
-    if access_token:
-        live = _fetch_codex_oauth_context_lengths(access_token)
-        if model_bare in live:
-            return live[model_bare]
-        # Case-insensitive match in case casing drifts
-        model_lower = model_bare.lower()
-        for slug, ctx in live.items():
-            if slug.lower() == model_lower:
-                return ctx
+    live_ctx = _resolve_codex_oauth_live_context_length(model_bare, access_token)
+    if live_ctx:
+        return live_ctx
 
     # Fallback: longest-key-first substring match over hardcoded defaults.
     model_lower = model_bare.lower()
@@ -2139,10 +2153,8 @@ def get_model_context_length(
         if cached is not None:
             # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
             # resolved gpt-5.x to the direct-API value (e.g. 1.05M) via
-            # models.dev and persisted it. Codex OAuth caps at 272K for every
-            # slug, so any cached Codex entry at or above 400K is a leftover
-            # from the old resolution path. Drop it and fall through to the
-            # live /models probe in step 5 below.
+            # models.dev and persisted it. Values at or above 400K are known
+            # to come from that old path, so drop them before probing Codex.
             if provider == "openai-codex" and cached >= 400_000:
                 logger.info(
                     "Dropping stale Codex cache entry %s@%s -> %s (pre-fix value); "
@@ -2150,6 +2162,26 @@ def get_model_context_length(
                     model, base_url, f"{cached:,}",
                 )
                 _invalidate_cached_context_length(model, base_url)
+            # Codex's enforced context window can change in either direction
+            # while remaining below 400K (for example gpt-5.6-sol moved from
+            # 372K to 272K). When OAuth is available, refresh from the live,
+            # authoritative catalog instead of letting the persistent cache
+            # mask provider-side changes forever. The in-process live catalog
+            # has a one-hour TTL, so repeated resolutions do not add requests.
+            # If the probe is unavailable, retain the last known cached value.
+            elif provider == "openai-codex" and api_key:
+                live_codex_ctx = _resolve_codex_oauth_live_context_length(
+                    model, access_token=api_key
+                )
+                if live_codex_ctx:
+                    if live_codex_ctx != cached:
+                        logger.info(
+                            "Refreshing Codex context cache %s@%s: %s -> %s",
+                            model, base_url, f"{cached:,}", f"{live_codex_ctx:,}",
+                        )
+                        save_context_length(model, base_url, live_codex_ctx)
+                    return live_codex_ctx
+                return cached
             # Invalidate stale 32k cache entries for Kimi-family models.
             elif cached <= 32768 and _model_name_suggests_kimi(model):
                 logger.info(

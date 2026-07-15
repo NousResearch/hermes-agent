@@ -9037,6 +9037,100 @@ def _format_venv_python_holders_message(matches: list[tuple[int, str, str]]) -> 
     return "\n".join(lines)
 
 
+def _gateway_run_argv_minimal(argv: list[str]) -> bool:
+    """Recognize ``hermes ... gateway run`` without gateway/config imports."""
+    tokens = [str(value).strip("\"'").replace("\\", "/").lower() for value in argv]
+    joined = " ".join(tokens)
+    if not (
+        "hermes_cli.main" in joined
+        or "hermes_cli/main.py" in joined
+        or any(token.rsplit("/", 1)[-1] in {"hermes", "hermes.exe"} for token in tokens)
+    ):
+        return False
+
+    filtered: list[str] = []
+    skip_next = False
+    for token in tokens:
+        if skip_next:
+            skip_next = False
+            continue
+        if token in {"-p", "--profile"}:
+            skip_next = True
+            continue
+        if token.startswith("-p=") or token.startswith("--profile="):
+            continue
+        filtered.append(token)
+    for index, token in enumerate(filtered):
+        if token == "gateway":
+            return index + 1 == len(filtered) or filtered[index + 1] == "run"
+    return False
+
+
+def _pause_windows_gateways_for_update_minimal() -> dict | None:
+    """Stop active gateways without importing PyYAML/config-dependent code."""
+    try:
+        import psutil
+    except Exception:
+        return None
+
+    gateways: list[dict] = []
+    for pid, _name, _command in _detect_venv_python_processes():
+        try:
+            process = psutil.Process(int(pid))
+            argv = list(process.cmdline() or [])
+        except Exception:
+            continue
+        if not _gateway_run_argv_minimal(argv):
+            continue
+        try:
+            parent_pid = int(process.ppid())
+        except Exception:
+            parent_pid = 0
+        gateways.append(
+            {"pid": int(pid), "ppid": parent_pid, "argv": argv, "process": process}
+        )
+
+    # A Windows venv may expose both its launcher stub and child interpreter.
+    # Keep the child so one gateway is stopped and later restarted only once.
+    parents = {entry["ppid"] for entry in gateways}
+    gateways = [entry for entry in gateways if entry["pid"] not in parents]
+    if not gateways:
+        return None
+
+    print("→ Stopping Windows gateway process(es) before updating Hermes...")
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
+    stopped = []
+    for entry in gateways:
+        try:
+            result = subprocess.run(
+                ["taskkill", "/PID", str(entry["pid"]), "/T", "/F"],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                creationflags=windows_hide_flags(),
+            )
+            if result.returncode == 0:
+                stopped.append(entry)
+        except (FileNotFoundError, OSError, subprocess.TimeoutExpired):
+            try:
+                entry["process"].kill()
+                stopped.append(entry)
+            except Exception:
+                pass
+
+    if stopped:
+        print(f"  → Paused {len(stopped)} Windows gateway process(es)")
+    return {
+        "resume_needed": True,
+        "profiles": {},
+        "unmapped_pids": [entry["pid"] for entry in stopped],
+        "unmapped": [
+            {"pid": entry["pid"], "argv": entry["argv"]} for entry in stopped
+        ],
+    } if stopped else None
+
+
 def _pause_windows_gateways_for_update() -> dict | None:
     """Stop running Windows gateways before mutating the checkout or venv.
 
@@ -9047,6 +9141,8 @@ def _pause_windows_gateways_for_update() -> dict | None:
     """
     if not _is_windows():
         return None
+    if _windows_update_import_minimal():
+        return _pause_windows_gateways_for_update_minimal()
 
     try:
         from gateway.status import terminate_pid
@@ -9491,9 +9587,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
     # always roll back to the exact state they had before this update.
     _run_pre_update_backup(args)
 
-    _windows_gateway_resume = (
-        None if _windows_update_import_minimal() else _pause_windows_gateways_for_update()
-    )
+    _windows_gateway_resume = _pause_windows_gateways_for_update()
     if _windows_gateway_resume:
         import atexit as _atexit
 

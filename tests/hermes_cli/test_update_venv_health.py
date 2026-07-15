@@ -369,3 +369,62 @@ def _run_update_until_guard(args):
 def test_venv_holder_guard_force_semantics(force, force_venv, expected, capsys):
     result = _run_update_until_guard(_update_args(force=force, force_venv=force_venv))
     assert result == expected, capsys.readouterr().out
+
+
+def test_minimal_windows_update_pauses_gateway_before_holder_guard():
+    """An active gateway must be gone before the venv-holder guard runs."""
+    gateway_running = True
+    events = []
+    token = {
+        "resume_needed": True,
+        "profiles": {},
+        "unmapped_pids": [101],
+        "unmapped": [],
+    }
+
+    class _PastGuard(Exception):
+        pass
+
+    class _RootSentinel:
+        def __truediv__(self, _other):
+            raise _PastGuard
+
+    def pause():
+        nonlocal gateway_running
+        events.append("pause")
+        gateway_running = False
+        return token
+
+    def holders():
+        events.append("holders")
+        if gateway_running:
+            return [
+                (
+                    101,
+                    "pythonw.exe",
+                    "pythonw.exe -m hermes_cli.main gateway run",
+                )
+            ]
+        return []
+
+    with patch.object(cli_main, "_is_windows", return_value=True), patch.object(
+        cli_main, "_windows_update_import_minimal", return_value=True
+    ), patch.object(
+        cli_main, "_venv_scripts_dir", return_value=None
+    ), patch.object(
+        cli_main, "_run_pre_update_backup"
+    ), patch.object(
+        cli_main, "_pause_windows_gateways_for_update", side_effect=pause
+    ), patch.object(
+        cli_main, "_detect_venv_python_processes", side_effect=holders
+    ), patch.object(
+        cli_main, "_resume_windows_gateways_after_update"
+    ), patch.object(
+        cli_main, "PROJECT_ROOT", _RootSentinel()
+    ), patch(
+        "atexit.register"
+    ):
+        with pytest.raises(_PastGuard):
+            cli_main._cmd_update_impl(_update_args(), gateway_mode=False)
+
+    assert events == ["pause", "holders"]

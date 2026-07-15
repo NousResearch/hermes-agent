@@ -9234,8 +9234,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         _raw_clarify_reply = "\n".join(_clean_transcripts)
                         if _clean_transcripts:
                             _echo_adapter = self.adapters.get(source.platform)
-                            _echo_meta = {"thread_id": source.thread_id} if source.thread_id else None
-                            if _echo_adapter:
+                            _echo_meta = self._thread_metadata_for_source(
+                                source, self._reply_anchor_for_event(event),
+                            )
+                            if _echo_adapter and self._should_echo_stt_transcripts():
                                 for _tx in _clean_transcripts:
                                     try:
                                         await _echo_adapter.send(

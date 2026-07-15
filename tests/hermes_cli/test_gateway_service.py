@@ -845,9 +845,15 @@ class TestLaunchdServiceRecovery:
     ):
         calls = []
         terminated = []
+        self_restart_requests = []
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
 
-        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda pid: self_restart_requests.append(pid) or True,
+        )
         monkeypatch.setattr(
             gateway_cli,
             "_wait_for_gateway_replacement",
@@ -874,6 +880,7 @@ class TestLaunchdServiceRecovery:
 
         assert calls == [["launchctl", "kickstart", "-k", target]]
         assert terminated == []
+        assert self_restart_requests == []
         assert "handing replacement to launchd" in capsys.readouterr().out
 
     def test_wait_for_gateway_replacement_requires_new_start_id_and_pid(
@@ -922,6 +929,7 @@ class TestLaunchdServiceRecovery:
             "_request_gateway_self_restart",
             lambda pid: calls.append(("self", pid)) or True,
         )
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: {321})
         monkeypatch.setattr(
             gateway_cli,
             "_wait_for_gateway_replacement",
@@ -951,6 +959,7 @@ class TestLaunchdServiceRecovery:
             lambda: {"gateway_start_id": "gw-old", "gateway_state": "running"},
         )
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: True)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: {321})
         monkeypatch.setattr(
             gateway_cli,
             "_wait_for_gateway_replacement",
@@ -1213,6 +1222,7 @@ class TestLaunchdServiceRecovery:
         target = f"{domain}/{label}"
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
+        monkeypatch.setattr(gateway_cli, "_get_service_pids", lambda: set())
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
         monkeypatch.setattr(
             gateway_cli,

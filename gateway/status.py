@@ -20,6 +20,7 @@ import subprocess
 import sys
 import threading
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home, _get_platform_default_hermes_home
@@ -45,6 +46,7 @@ _WINDOWS_LOCK_OFFSET = 1024 * 1024
 _GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS = 1.0
 _gateway_running_pid_cache_lock = threading.Lock()
 _gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple[Any, ...], Optional[int]]] = {}
+_gateway_start_identity: tuple[int, str] | None = None
 
 
 def _get_process_hermes_home() -> Path:
@@ -93,6 +95,16 @@ def _get_lock_dir() -> Path:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _get_gateway_start_id() -> str:
+    """Return a stable identity for this gateway process lifetime."""
+    global _gateway_start_identity
+
+    pid = os.getpid()
+    if _gateway_start_identity is None or _gateway_start_identity[0] != pid:
+        _gateway_start_identity = (pid, f"gw_{uuid.uuid4().hex[:20]}")
+    return _gateway_start_identity[1]
 
 
 def terminate_pid(pid: int, *, force: bool = False) -> None:
@@ -426,6 +438,7 @@ def _build_pid_record() -> dict:
 def _build_runtime_status_record() -> dict[str, Any]:
     payload = _build_pid_record()
     payload.update({
+        "gateway_start_id": _get_gateway_start_id(),
         "gateway_state": "starting",
         "exit_reason": None,
         "restart_requested": False,
@@ -815,6 +828,7 @@ def write_runtime_status(
     payload["pid"] = current_record["pid"]
     payload["argv"] = current_record["argv"]
     payload["start_time"] = current_record["start_time"]
+    payload["gateway_start_id"] = _get_gateway_start_id()
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not _UNSET:

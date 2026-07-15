@@ -2,6 +2,7 @@
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -435,6 +436,54 @@ class TestGatewayRuntimeStatus:
         payload = status.read_runtime_status()
         assert payload["pid"] == os.getpid(), "PID should be overwritten, not preserved via setdefault"
         assert payload["start_time"] != 1000.0, "start_time should be overwritten on restart"
+
+    def test_write_runtime_status_emits_stable_process_start_id(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        state_path = tmp_path / "gateway_state.json"
+        state_path.write_text(
+            json.dumps(
+                {
+                    "pid": 99999,
+                    "gateway_start_id": "gw-previous",
+                    "gateway_state": "running",
+                    "platforms": {},
+                }
+            )
+        )
+
+        status.write_runtime_status(gateway_state="starting")
+        first = status.read_runtime_status()
+        status.write_runtime_status(gateway_state="running")
+        second = status.read_runtime_status()
+
+        assert first is not None
+        assert second is not None
+        assert first["gateway_start_id"].startswith("gw_")
+        assert first["gateway_start_id"] != "gw-previous"
+        assert second["gateway_start_id"] == first["gateway_start_id"]
+
+    def test_runtime_status_start_id_changes_across_gateway_processes(self, tmp_path):
+        env = os.environ.copy()
+        env["HERMES_HOME"] = str(tmp_path)
+        command = [
+            sys.executable,
+            "-c",
+            (
+                "from gateway.status import write_runtime_status; "
+                "write_runtime_status(gateway_state='running')"
+            ),
+        ]
+
+        subprocess.run(command, check=True, env=env)
+        first = json.loads((tmp_path / "gateway_state.json").read_text())
+        subprocess.run(command, check=True, env=env)
+        second = json.loads((tmp_path / "gateway_state.json").read_text())
+
+        assert first["gateway_start_id"].startswith("gw_")
+        assert second["gateway_start_id"].startswith("gw_")
+        assert second["gateway_start_id"] != first["gateway_start_id"]
 
     def test_write_runtime_status_overwrites_stale_argv_on_restart(self, tmp_path, monkeypatch):
         """Regression: gateway_state.json must not keep the previous launch argv."""

@@ -4365,7 +4365,12 @@ def launchd_restart():
 
     try:
         pid = get_running_pid()
-        if pid is not None and _request_gateway_self_restart(pid):
+        launchd_pids = _get_service_pids() if pid is not None else set()
+        if (
+            pid is not None
+            and pid in launchd_pids
+            and _request_gateway_self_restart(pid)
+        ):
             print("→ Service restart requested; waiting for replacement readiness...")
             if not _wait_for_gateway_replacement(pid, previous_start_id, 90.0):
                 raise RuntimeError(

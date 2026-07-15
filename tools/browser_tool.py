@@ -776,9 +776,11 @@ _BROWSERBASE_FEATURE_KEYS = frozenset({
 })
 
 
-def _has_browserbase_feature_advice(features: Dict[str, object]) -> bool:
-    return bool(_BROWSERBASE_FEATURE_KEYS.intersection(features)) and not (
-        features.get("local") or features.get("cdp_override")
+def _has_browserbase_feature_advice(session_info: Dict[str, object],
+                                    features: Dict[str, object]) -> bool:
+    return (
+        session_info.get("backend") == "browserbase"
+        and bool(_BROWSERBASE_FEATURE_KEYS.intersection(features))
     )
 
 
@@ -1898,6 +1900,7 @@ def _create_local_session(task_id: str) -> Dict[str, str]:
         "session_name": session_name,
         "bb_session_id": None,
         "cdp_url": None,
+        "backend": "local",
         "features": {"local": True},
     }
 
@@ -1912,6 +1915,7 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
         "session_name": session_name,
         "bb_session_id": None,
         "cdp_url": cdp_url,
+        "backend": "cdp",
         "features": {"cdp_override": True},
     }
 
@@ -1970,10 +1974,11 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
                 # Validate cloud provider returned a usable session
                 if not session_info or not isinstance(session_info, dict):
                     raise ValueError(f"Cloud provider returned invalid session: {session_info!r}")
+                session_info = dict(session_info)
+                session_info.setdefault("backend", provider.name)
                 if session_info.get("cdp_url"):
                     # Some cloud providers (including Browser-Use v3) return an HTTP
                     # CDP discovery URL instead of a raw websocket endpoint.
-                    session_info = dict(session_info)
                     session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
             except Exception as e:
                 provider_name = type(provider).__name__
@@ -2748,7 +2753,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         features = session_info.get("features", {})
         if not isinstance(features, dict):
             features = {}
-        show_browserbase_advice = _has_browserbase_feature_advice(features)
+        show_browserbase_advice = _has_browserbase_feature_advice(session_info, features)
 
         # Detect common "blocked" page patterns from title/url
         blocked_patterns = [

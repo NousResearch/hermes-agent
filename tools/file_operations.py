@@ -28,6 +28,7 @@ Usage:
 import os
 import re
 import difflib
+import json
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Optional, List, Dict, Any, ClassVar
@@ -2113,7 +2114,7 @@ class ShellFileOperations(FileOperations):
     def _search_dirs_find(self, pattern: str, path: str, limit: int) -> tuple[List[str], Optional[str]]:
         """Supplement rg file results with matching directory paths."""
         if not self._has_command('find'):
-            return [], None
+            return self._search_dirs_python(pattern, path, limit)
 
         search_root = Path(path)
         has_hidden_path_ancestor = any(
@@ -2165,6 +2166,124 @@ class ShellFileOperations(FileOperations):
 
         return dirs, limit_reason
 
+    def _search_python_command(self) -> Optional[str]:
+        if self._has_command("python3"):
+            return "python3"
+        if self._has_command("python"):
+            return "python"
+        return None
+
+    def _search_dirs_python(self, pattern: str, path: str, limit: int) -> tuple[List[str], Optional[str]]:
+        """Enumerate matching directories in the terminal environment without find."""
+        python_cmd = self._search_python_command()
+        if python_cmd is None:
+            return [], None
+
+        search_root = Path(path)
+        include_hidden = any(
+            part not in {".", ".."} and part.startswith(".")
+            for part in search_root.parts
+        )
+        payload = json.dumps({
+            "root": path,
+            "pattern": pattern,
+            "include_hidden": include_hidden,
+            "limit": limit,
+        })
+        script = r"""
+import fnmatch
+import json
+import os
+import sys
+
+payload = json.load(sys.stdin)
+root = payload["root"]
+pattern = payload["pattern"]
+include_hidden = bool(payload["include_hidden"])
+limit = int(payload["limit"])
+
+matches = []
+for current, dirnames, _filenames in os.walk(root):
+    if not include_hidden:
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+    for dirname in dirnames:
+        full_path = os.path.join(current, dirname)
+        if fnmatch.fnmatch(dirname, pattern):
+            try:
+                mtime = os.path.getmtime(full_path)
+            except OSError:
+                mtime = 0.0
+            matches.append((mtime, full_path))
+
+matches.sort(key=lambda item: (-item[0], item[1]))
+json.dump({
+    "paths": [path for _mtime, path in matches[:limit]],
+    "truncated": len(matches) > limit,
+}, sys.stdout)
+"""
+        result = self._exec(
+            f"{python_cmd} -c {self._escape_shell_arg(script)}",
+            timeout=60,
+            stdin_data=payload,
+        )
+        if result.exit_code != 0 or not result.stdout.strip():
+            return [], None
+        try:
+            parsed = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return [], None
+        dirs = [path for path in parsed.get("paths", []) if isinstance(path, str)]
+        limit_reason = "directory_search_limit" if parsed.get("truncated") else None
+        return dirs, limit_reason
+
+    def _sort_search_candidates(self, paths: List[str]) -> List[str]:
+        seen = set()
+        unique_paths = []
+        for path in paths:
+            if path and path not in seen:
+                seen.add(path)
+                unique_paths.append(path)
+
+        if len(unique_paths) < 2:
+            return unique_paths
+
+        python_cmd = self._search_python_command()
+        if python_cmd is None:
+            return unique_paths
+
+        script = r"""
+import json
+import os
+import sys
+
+paths = json.load(sys.stdin)
+
+def sort_key(item):
+    index, path = item
+    try:
+        mtime = os.path.getmtime(path)
+    except OSError:
+        mtime = 0.0
+    return (-mtime, index, path)
+
+ordered = [path for _index, path in sorted(enumerate(paths), key=sort_key)]
+json.dump(ordered, sys.stdout)
+"""
+        result = self._exec(
+            f"{python_cmd} -c {self._escape_shell_arg(script)}",
+            timeout=60,
+            stdin_data=json.dumps(unique_paths),
+        )
+        if result.exit_code != 0 or not result.stdout.strip():
+            return unique_paths
+        try:
+            ordered = json.loads(result.stdout)
+        except json.JSONDecodeError:
+            return unique_paths
+        if not isinstance(ordered, list) or not all(isinstance(path, str) for path in ordered):
+            return unique_paths
+        return ordered
+
     def _search_files_rg(self, pattern: str, path: str, limit: int, offset: int) -> SearchResult:
         """Search for files by name using ripgrep's --files mode.
 
@@ -2203,12 +2322,7 @@ class ShellFileOperations(FileOperations):
             all_files = [f for f in stdout.strip().split('\n') if f]
 
         dirs, dir_limit_reason = self._search_dirs_find(glob_pattern, path, fetch_limit)
-        if dirs:
-            seen = set()
-            all_files = [
-                item for item in [*all_files, *dirs]
-                if not (item in seen or seen.add(item))
-            ]
+        all_files = self._sort_search_candidates([*all_files, *dirs])
         limit_reason = limit_reason or dir_limit_reason
 
         page = all_files[offset:offset + limit]

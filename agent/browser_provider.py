@@ -26,6 +26,7 @@ Session metadata contract (preserved from the legacy ``CloudBrowserProvider``)::
         "session_name": str,        # unique name for agent-browser --session
         "bb_session_id": str,       # provider session ID (for close/cleanup)
         "cdp_url": str,             # CDP websocket URL
+        "backend": str,             # stable provider/backend identifier
         "features": dict,           # feature flags that were enabled
         "external_call_id": str,    # optional, managed-gateway billing key
     }
@@ -96,12 +97,16 @@ class BrowserProvider(abc.ABC):
                 "session_name": str,    # unique name for agent-browser --session
                 "bb_session_id": str,   # provider session ID (for close/cleanup)
                 "cdp_url": str,         # CDP websocket URL
+                "backend": str,         # stable provider/backend identifier
                 "features": dict,       # feature flags that were enabled
             }
 
         ``bb_session_id`` is a legacy key name kept for backward compat with
         the rest of :mod:`tools.browser_tool` — it holds the provider's
         session ID regardless of which provider is in use.
+
+        Providers may omit ``backend``; :mod:`tools.browser_tool` backfills it
+        from :attr:`name` for compatibility with older provider plugins.
 
         May raise ``ValueError`` (missing credentials) or ``RuntimeError``
         (network / API failure); the dispatcher surfaces these to the user.

@@ -114,7 +114,7 @@ class TestBrowserNavigateOpenTimeout:
 
 
 class TestBrowserNavigateWarnings:
-    def _patch_successful_navigation(self, monkeypatch, *, features, title="OK"):
+    def _patch_successful_navigation(self, monkeypatch, *, features, backend=None, title="OK"):
         def fake_run(task_id, command, args, timeout=None):
             if command == "open":
                 return {"success": True, "data": {"title": title, "url": args[0]}}
@@ -124,16 +124,23 @@ class TestBrowserNavigateWarnings:
 
         monkeypatch.setattr(bt, "_get_open_command_timeout", lambda first_open=False: 60)
         monkeypatch.setattr(bt, "_run_browser_command", fake_run)
-        monkeypatch.setattr(bt, "_get_session_info", lambda key: {"_first_nav": True, "features": features})
+        session_info = {"_first_nav": True, "features": features}
+        if backend is not None:
+            session_info["backend"] = backend
+        monkeypatch.setattr(bt, "_get_session_info", lambda key: dict(session_info))
         monkeypatch.setattr(bt, "_is_camofox_mode", lambda: False)
-        monkeypatch.setattr(bt, "_is_local_backend", lambda: bool(features.get("local")))
+        monkeypatch.setattr(
+            bt,
+            "_is_local_backend",
+            lambda: backend in {"local", "cdp"} or bool(features.get("local")),
+        )
         monkeypatch.setattr(bt, "_is_local_sidecar_key", lambda key: False)
         monkeypatch.setattr(bt, "_navigation_session_key", lambda task_id, url: task_id)
         monkeypatch.setattr(bt, "_maybe_start_recording", lambda *a, **kw: None)
         monkeypatch.setattr(bt, "check_website_access", lambda url: None)
 
     def test_local_session_omits_browserbase_stealth_warning(self, monkeypatch):
-        self._patch_successful_navigation(monkeypatch, features={"local": True})
+        self._patch_successful_navigation(monkeypatch, features={"local": True}, backend="local")
 
         result = json.loads(bt.browser_navigate("https://example.com", task_id="task-1"))
 
@@ -141,10 +148,46 @@ class TestBrowserNavigateWarnings:
         assert result["stealth_features"] == ["local"]
         assert "stealth_warning" not in result
 
+    def test_cdp_session_omits_browserbase_stealth_warning(self, monkeypatch):
+        self._patch_successful_navigation(
+            monkeypatch,
+            features={"cdp_override": True, "basic_stealth": True},
+            backend="cdp",
+        )
+
+        result = json.loads(bt.browser_navigate("https://example.com", task_id="task-1"))
+
+        assert result["success"] is True
+        assert "stealth_warning" not in result
+
+    def test_other_cloud_provider_omits_browserbase_stealth_warning(self, monkeypatch):
+        self._patch_successful_navigation(
+            monkeypatch,
+            features={"basic_stealth": True, "proxies": False},
+            backend="browser-use",
+        )
+
+        result = json.loads(bt.browser_navigate("https://example.com", task_id="task-1"))
+
+        assert result["success"] is True
+        assert "stealth_warning" not in result
+
+    def test_legacy_session_without_backend_omits_browserbase_stealth_warning(self, monkeypatch):
+        self._patch_successful_navigation(
+            monkeypatch,
+            features={"basic_stealth": True, "proxies": False},
+        )
+
+        result = json.loads(bt.browser_navigate("https://example.com", task_id="task-1"))
+
+        assert result["success"] is True
+        assert "stealth_warning" not in result
+
     def test_local_bot_detection_warning_omits_browserbase_advice(self, monkeypatch):
         self._patch_successful_navigation(
             monkeypatch,
             features={"local": True},
+            backend="local",
             title="Access Denied",
         )
 
@@ -157,9 +200,23 @@ class TestBrowserNavigateWarnings:
         self._patch_successful_navigation(
             monkeypatch,
             features={"basic_stealth": True, "proxies": False},
+            backend="browserbase",
         )
 
         result = json.loads(bt.browser_navigate("https://example.com", task_id="task-1"))
 
         assert result["success"] is True
         assert "Browserbase plan" in result["stealth_warning"]
+
+    def test_browserbase_bot_detection_warning_keeps_browserbase_advice(self, monkeypatch):
+        self._patch_successful_navigation(
+            monkeypatch,
+            features={"basic_stealth": True, "proxies": False},
+            backend="browserbase",
+            title="Access Denied",
+        )
+
+        result = json.loads(bt.browser_navigate("https://example.com", task_id="task-1"))
+
+        assert "bot_detection_warning" in result
+        assert "BROWSERBASE_ADVANCED_STEALTH" in result["bot_detection_warning"]

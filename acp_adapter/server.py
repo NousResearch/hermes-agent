@@ -1337,6 +1337,43 @@ class HermesACPAgent(acp.Agent):
 
     # ---- Prompt (core) ------------------------------------------------------
 
+    @staticmethod
+    def _final_user_history_index(
+        messages: Any, user_content: Any, agent_idx: Any
+    ) -> int | None:
+        """Absolute index of this turn's user message in the FINALIZED history.
+
+        ``agent_idx`` (the agent's ``_persist_user_message_idx``) is captured
+        when the turn machinery appends the user message — BEFORE preflight or
+        mid-turn context compression, which can replace the message list and
+        shift (or summarize away) that message. Trusting it blindly would let
+        the returned ``userHistoryIndex`` disagree with the ``historyIndex``
+        replay stamps and the prefix ``keepHistory`` slices. So it is used only
+        as proof the turn actually appended a user message; the coordinate
+        itself comes from rescanning the finalized list from the end — the
+        latest content match is the current turn (it was appended last;
+        synthetic user messages appended later in the turn, like
+        empty-response nudges and length continuations, carry fixed system
+        text that cannot equal the submitted content). Returns ``None`` when
+        the message cannot be located (e.g. compression merged it into a
+        summary), in which case the meta stamp is omitted and the client
+        falls back to a full-history fork.
+        """
+        if isinstance(agent_idx, bool) or not isinstance(agent_idx, int) or agent_idx < 0:
+            return None
+        if not isinstance(messages, list):
+            return None
+
+        for idx in range(len(messages) - 1, -1, -1):
+            msg = messages[idx]
+            if (
+                isinstance(msg, dict)
+                and msg.get("role") == "user"
+                and msg.get("content") == user_content
+            ):
+                return idx
+        return None
+
     async def prompt(
         self,
         prompt: list[
@@ -1615,12 +1652,18 @@ class HermesACPAgent(acp.Agent):
         # in the same coordinate space ``fork_session`` slices and history
         # replay stamps as ``_meta.hermes.historyIndex``. Returned to the client
         # so a "fork from this message" affordance can pass it back verbatim as
-        # ``_meta.hermes.keepHistory`` without re-deriving it from replay. Read
+        # ``_meta.hermes.keepHistory`` without re-deriving it from replay.
+        # Recomputed from the FINALIZED ``result["messages"]`` — the agent's
+        # ``_persist_user_message_idx`` is stamped before preflight compression,
+        # which can replace the message list mid-turn and leave that early index
+        # pointing at the wrong entry (or past a summarized-away message). Read
         # before draining queued prompts, since each drained follow-up rewrites
         # ``_persist_user_message_idx`` for its own turn.
-        user_history_index = getattr(state.agent, "_persist_user_message_idx", None)
-        if not isinstance(user_history_index, int) or user_history_index < 0:
-            user_history_index = None
+        user_history_index = self._final_user_history_index(
+            result.get("messages"),
+            user_content,
+            getattr(state.agent, "_persist_user_message_idx", None),
+        )
 
         if result.get("messages"):
             state.history = result["messages"]

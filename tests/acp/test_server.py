@@ -1243,6 +1243,94 @@ class TestPrompt:
         assert resp.field_meta is None
 
     @pytest.mark.asyncio
+    async def test_prompt_user_history_index_recomputed_after_compression(self, agent):
+        """Mid-turn compression rewrites the message list AFTER the agent stamps
+        ``_persist_user_message_idx`` (agent/turn_context.py sets it pre-preflight).
+        The coordinate must come from the finalized result history — and the
+        prompt metadata, replay metadata, and fork prefix must all agree."""
+        new_resp = await agent.new_session(cwd="/tmp")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        # Finalized post-compression history: a 41-entry pre-turn transcript
+        # collapsed to a summary, with the current user turn surviving at
+        # absolute index 1 — while the agent's early stamp still says 40.
+        compressed_history = [
+            {"role": "user", "content": "[Context summary]\nPrevious conversation"},
+            {"role": "user", "content": "now"},
+            {"role": "assistant", "content": "done"},
+        ]
+
+        def _run(*_args, **_kwargs):
+            state.agent._persist_user_message_idx = 40  # stale pre-compression index
+            return {"final_response": "done", "messages": list(compressed_history)}
+
+        state.agent.run_conversation = MagicMock(side_effect=_run)
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="now")],
+            session_id=new_resp.session_id,
+        )
+
+        # 1. Prompt metadata reflects the finalized coordinate, not the stale stamp.
+        assert resp.field_meta == {"hermes": {"userHistoryIndex": 1}}
+
+        # 2. Replay metadata agrees: session/load stamps the same index on the
+        #    replayed chunk for this user turn.
+        mock_conn.session_update.reset_mock()
+        await agent.load_session(cwd="/tmp", session_id=new_resp.session_id)
+        user_calls = [
+            call for call in mock_conn.session_update.await_args_list
+            if getattr(call.kwargs.get("update"), "session_update", None) == "user_message_chunk"
+        ]
+        stamped = {
+            call.kwargs["update"].content.text: call.kwargs["hermes"]["historyIndex"]
+            for call in user_calls
+        }
+        assert stamped["now"] == 1
+
+        # 3. Fork prefix agrees: keepHistory=<returned index> rewinds to just
+        #    before this turn's user message.
+        fork_resp = await agent.fork_session(
+            cwd="/forked",
+            session_id=new_resp.session_id,
+            hermes={"keepHistory": 1},
+        )
+        forked = agent.session_manager.get_session(fork_resp.session_id)
+        assert forked.history == compressed_history[:1]
+
+    @pytest.mark.asyncio
+    async def test_prompt_omits_user_history_index_when_message_summarized_away(self, agent):
+        """If compression removed the current user message entirely, no index
+        can be honestly returned — omit the stamp (client falls back to a
+        full-history fork) rather than pointing at the wrong entry."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def _run(*_args, **_kwargs):
+            state.agent._persist_user_message_idx = 40
+            return {
+                "final_response": "done",
+                "messages": [
+                    {"role": "user", "content": "[Context summary]\nEverything incl. the last user turn"},
+                    {"role": "assistant", "content": "done"},
+                ],
+            }
+
+        state.agent.run_conversation = MagicMock(side_effect=_run)
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        resp = await agent.prompt(
+            prompt=[TextContentBlock(type="text", text="now")],
+            session_id=new_resp.session_id,
+        )
+        assert resp.field_meta is None
+
+    @pytest.mark.asyncio
     async def test_prompt_sends_final_message_update(self, agent):
         """The final response should be sent as an AgentMessageChunk."""
         new_resp = await agent.new_session(cwd=".")

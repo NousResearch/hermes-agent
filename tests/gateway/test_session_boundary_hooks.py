@@ -415,3 +415,77 @@ async def test_idle_expiry_writes_ended_at_to_db(mock_invoke_hook):
     # The watcher must have ended the expired session in SQLite with reason
     # "idle" so that ended_at is persisted and the session stops looking live.
     mock_db.end_session.assert_called_once_with("sess-stale", "idle")
+
+
+def test_idle_expiry_persists_ended_at_and_preserves_reset_contract(tmp_path):
+    """End-to-end regression test for #28746 against a real SQLite SessionDB.
+
+    Two contracts, in sequence:
+
+    1. Watcher finalization (``set_expiry_finalized``) must persist
+       ``ended_at`` / ``end_reason='idle'`` on the actual sessions row, so
+       ``GET /api/sessions`` stops returning the session as live.
+    2. The next inbound ``get_or_create_session()`` must still honour the
+       idle auto-reset contract: a fresh session_id carrying
+       ``was_auto_reset`` / ``auto_reset_reason`` / ``reset_had_activity``
+       (the inactivity context note and reset notification depend on these),
+       even though the ended row now routes through the #54878 stale-routing
+       heal instead of the plain reset path.
+    """
+    from datetime import datetime, timedelta
+
+    from gateway.config import SessionResetPolicy
+    from gateway.session import SessionSource, SessionStore
+    from hermes_state import SessionDB
+
+    config = GatewayConfig(
+        default_reset_policy=SessionResetPolicy(mode="idle", idle_minutes=30)
+    )
+    db = SessionDB(db_path=tmp_path / "state.db")
+    try:
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path, config=config)
+        store._db = db
+        store._loaded = True
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="8494508720",
+            chat_type="dm",
+            user_id="8494508720",
+        )
+        entry = store.get_or_create_session(source)
+        old_id = entry.session_id
+        row = db.get_session(old_id)
+        assert row is not None and row.get("ended_at") is None
+
+        # Age the session past the idle window with real activity, then run
+        # the watcher's finalization write-path.
+        entry.updated_at = datetime.now() - timedelta(hours=2)
+        entry.last_prompt_tokens = 42
+        store.set_expiry_finalized(entry)
+
+        row = db.get_session(old_id)
+        assert row["ended_at"] is not None, (
+            "watcher finalization did not persist ended_at (regression of #28746)"
+        )
+        assert row["end_reason"] == "idle"
+        assert row["expiry_finalized"] == 1
+
+        # Next inbound message: fresh session, auto-reset metadata intact.
+        new_entry = store.get_or_create_session(source)
+        assert new_entry.session_id != old_id
+        assert new_entry.was_auto_reset is True, (
+            "idle auto-reset contract lost: the inactivity context note and "
+            "reset notification would be skipped"
+        )
+        assert new_entry.auto_reset_reason == "idle"
+        assert new_entry.reset_had_activity is True
+
+        # Old row keeps its first end_reason (first-reason-wins); the new
+        # session is live.
+        assert db.get_session(old_id)["end_reason"] == "idle"
+        new_row = db.get_session(new_entry.session_id)
+        assert new_row is not None and new_row.get("ended_at") is None
+    finally:
+        db.close()

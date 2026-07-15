@@ -1923,13 +1923,35 @@ class SessionStore:
                     # ``ws_orphan_reap`` rows (preserving the transcript) but
                     # returns None for other end_reasons (e.g. /new), starting
                     # a fresh session.
-                    logger.warning(
-                        "gateway.session: routing key %r -> %s is ended in "
-                        "state.db but still live in sessions.json; dropping "
-                        "stale entry and recovering/recreating the session "
-                        "(#54878)",
-                        session_key, entry.session_id,
-                    )
+                    if entry.expiry_finalized:
+                        # Watcher-finalized session: the expiry watcher ended
+                        # its row with end_reason='idle' at finalization
+                        # (#28746), so an ended row here is the EXPECTED
+                        # durable state, not a stale-routing anomaly. Still
+                        # drop + recreate through the heal (the closed row
+                        # must not be reused), but carry the auto-reset
+                        # metadata onto the replacement entry so the
+                        # inactivity context note and configured reset
+                        # notification are not skipped — the contract the
+                        # normal idle-reset path provided before the row was
+                        # ended eagerly.
+                        was_auto_reset = True
+                        auto_reset_reason = _reset_reason or "idle"
+                        reset_had_activity = entry.last_prompt_tokens > 0
+                        logger.debug(
+                            "gateway.session: routing key %r -> %s was "
+                            "watcher-finalized; recreating with auto-reset "
+                            "metadata (#28746)",
+                            session_key, entry.session_id,
+                        )
+                    else:
+                        logger.warning(
+                            "gateway.session: routing key %r -> %s is ended in "
+                            "state.db but still live in sessions.json; dropping "
+                            "stale entry and recovering/recreating the session "
+                            "(#54878)",
+                            session_key, entry.session_id,
+                        )
                     self._entries.pop(session_key, None)
                     entry = None
                     _needs_recover = True

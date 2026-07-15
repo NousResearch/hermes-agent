@@ -21,6 +21,7 @@ from gateway.session import SessionSource, build_session_key
 class _MediaRoutingAdapter(BasePlatformAdapter):
     def __init__(self):
         super().__init__(PlatformConfig(enabled=True, token="test"), Platform.TELEGRAM)
+        self.sent_texts = []
 
     async def connect(self, *, is_reconnect: bool = False):
         return True
@@ -29,6 +30,7 @@ class _MediaRoutingAdapter(BasePlatformAdapter):
         pass
 
     async def send(self, chat_id, content=None, **kwargs):
+        self.sent_texts.append(content)
         return SendResult(success=True, message_id="text")
 
     async def get_chat_info(self, chat_id):
@@ -119,6 +121,63 @@ async def test_base_adapter_routes_voice_tagged_telegram_ogg_media_tag_to_voice_
         metadata={"notify": True},
     )
     adapter.send_document.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_base_adapter_announces_large_media_upload_before_send(tmp_path, monkeypatch):
+    adapter = _MediaRoutingAdapter()
+    event = _event()
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "report.pdf")
+    media_file.write_bytes(b"x" * (1024 * 1024 + 1))
+    adapter._message_handler = AsyncMock(return_value=f"MEDIA:{media_file}")
+    adapter.send_document = AsyncMock(return_value=SendResult(success=True, message_id="doc"))
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert any(
+        text and text.startswith("Uploading attachment: report.pdf")
+        for text in adapter.sent_texts
+    )
+    adapter.send_document.assert_awaited_once_with(
+        chat_id="chat-1",
+        file_path=str(media_file),
+        metadata={"notify": True},
+    )
+
+
+@pytest.mark.asyncio
+async def test_base_adapter_surfaces_media_upload_failure_to_chat(tmp_path, monkeypatch):
+    adapter = _MediaRoutingAdapter()
+    event = _event()
+    media_file = _allowed_media_path(tmp_path, monkeypatch, "report.pdf")
+    adapter._message_handler = AsyncMock(return_value=f"MEDIA:{media_file}")
+    adapter.send_document = AsyncMock(
+        return_value=SendResult(success=False, error="Feishu file upload failed: file too large")
+    )
+
+    await adapter._process_message_background(event, build_session_key(event.source))
+
+    assert any(
+        text == "Attachment upload failed: report.pdf: Feishu file upload failed: file too large"
+        for text in adapter.sent_texts
+    )
+
+
+@pytest.mark.asyncio
+async def test_base_adapter_surfaces_returned_image_failure_to_chat(tmp_path):
+    adapter = _MediaRoutingAdapter()
+    image_file = tmp_path / "failed.png"
+    image_file.write_bytes(b"image")
+    adapter.send_image_file = AsyncMock(
+        return_value=SendResult(success=False, error="image upload rejected")
+    )
+
+    await adapter.send_multiple_images(
+        chat_id="chat-1",
+        images=[(image_file.as_uri(), "")],
+    )
+
+    assert "Attachment upload failed: failed.png: image upload rejected" in adapter.sent_texts
 
 
 def _fake_runner(thread_meta):

@@ -117,6 +117,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="<prompt>"),
     CommandDef("subgoal", "Add or manage extra criteria on the active goal", "Session",
                args_hint="[text | remove N | clear]"),
+    CommandDef("loop", "Create and manage a persistent scheduled agent loop", "Session",
+               args_hint="[<interval> <prompt> | status | pause <id> | resume <id> | stop <id>]"),
     CommandDef("status", "Show session, model, token, and context info", "Session"),
     CommandDef("whoami", "Show your slash command access (admin / user)", "Info"),
     CommandDef("profile", "Show active profile name and home directory", "Info"),
@@ -373,6 +375,7 @@ ACTIVE_SESSION_BYPASS_COMMANDS: frozenset[str] = frozenset(
         "commands",
         "deny",
         "help",
+        "loop",
         "new",
         "profile",
         "queue",
@@ -1164,7 +1167,8 @@ _SLACK_PRIORITY_ALIASES = ("btw", "bg")
 #   - moa: high-cost slash mode, available through /hermes moa to avoid
 #     displacing existing native Slack slash commands at the 50-command cap.
 #   - debug: the log/report upload surface; reached via /hermes debug on Slack.
-_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug"})
+#   - loop: persistent automation management; reached via /hermes loop on Slack.
+_SLACK_VIA_HERMES_ONLY = frozenset({"credits", "billing", "moa", "debug", "loop"})
 
 
 def _sanitize_slack_name(raw: str) -> str:

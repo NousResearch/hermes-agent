@@ -274,3 +274,156 @@ def test_run_one_job_tears_down_deferred_agent_when_save_raises(monkeypatch):
     assert ok is False
     assert "deliver" not in order
     assert order == ["save-raise", "agent.close", "cleanup_stale"], order
+
+
+def _patch_loop_pipeline(monkeypatch, job, final_response, deliver):
+    """Install a stateful pipeline around the real loop evaluator."""
+    monkeypatch.setattr(
+        s,
+        "run_job",
+        lambda _job, *, defer_agent_teardown=None: (
+            True,
+            final_response,
+            final_response,
+            None,
+        ),
+    )
+    monkeypatch.setattr(s, "save_job_output", lambda *_args: "/tmp/loop.txt")
+    monkeypatch.setattr(s, "_deliver_result", deliver)
+    monkeypatch.setattr(
+        s,
+        "_resolve_delivery_targets",
+        lambda _job: [{"platform": "test", "chat_id": "1"}],
+    )
+    monkeypatch.setattr(s, "mark_job_run", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(s, "_run_loop_verify", lambda _job: None)
+    monkeypatch.setattr(s, "_notify_provider_jobs_changed", lambda: None)
+
+    import cron.jobs as jobs
+    import hermes_cli.goals as goals
+
+    def update_job(_job_id, updates):
+        job.update(updates)
+        return job
+
+    monkeypatch.setattr(jobs, "update_job", update_job)
+    monkeypatch.setattr(jobs, "pause_job", lambda *_args, **_kwargs: job)
+    monkeypatch.setattr(
+        goals,
+        "judge_goal",
+        lambda *_args, **_kwargs: ("continue", "still running", False, None),
+    )
+
+
+def test_loop_acknowledges_only_after_successful_delivery(monkeypatch):
+    job = {
+        "id": "loop-delivery",
+        "name": "loop",
+        "prompt": "check status",
+        "loop": True,
+        "loop_no_progress_threshold": 10,
+        "loop_no_progress_count": 0,
+    }
+    delivery_results = iter(["send failed", None])
+    deliveries = []
+
+    def deliver(_job, content, adapters=None, loop=None):
+        deliveries.append(content)
+        return next(delivery_results)
+
+    _patch_loop_pipeline(monkeypatch, job, "same result", deliver)
+
+    assert s.run_one_job(job) is True
+    assert job.get("loop_last_delivered_hash") is None
+
+    assert s.run_one_job(job) is True
+    assert deliveries == ["same result", "same result"]
+    assert job["loop_last_delivered_hash"] == s._loop_response_hash("same result")
+
+
+def test_loop_silent_response_is_never_acknowledged(monkeypatch):
+    job = {
+        "id": "loop-silent",
+        "name": "loop",
+        "prompt": "check quietly",
+        "loop": True,
+        "loop_no_progress_threshold": 10,
+        "loop_no_progress_count": 0,
+    }
+
+    def unexpected_delivery(*_args, **_kwargs):
+        raise AssertionError("[SILENT] loop responses must not be delivered")
+
+    _patch_loop_pipeline(monkeypatch, job, "[SILENT]", unexpected_delivery)
+
+    assert s.run_one_job(job) is True
+    assert job.get("loop_last_delivered_hash") is None
+
+
+def test_loop_skips_output_only_after_prior_successful_delivery(monkeypatch):
+    response = "unchanged result"
+    job = {
+        "id": "loop-duplicate",
+        "name": "loop",
+        "prompt": "check status",
+        "loop": True,
+        "loop_no_progress_threshold": 10,
+        "loop_no_progress_count": 0,
+        "loop_last_output_hash": s._loop_response_hash(response),
+        "loop_last_delivered_hash": s._loop_response_hash(response),
+    }
+    deliveries = []
+
+    def deliver(_job, content, adapters=None, loop=None):
+        deliveries.append(content)
+        return None
+
+    _patch_loop_pipeline(monkeypatch, job, response, deliver)
+
+    assert s.run_one_job(job) is True
+    assert deliveries == []
+
+
+def test_loop_without_delivery_target_is_not_acknowledged(monkeypatch):
+    job = {
+        "id": "loop-local",
+        "name": "loop",
+        "prompt": "check locally",
+        "loop": True,
+        "loop_no_progress_threshold": 10,
+        "loop_no_progress_count": 0,
+        "deliver": "local",
+    }
+
+    _patch_loop_pipeline(monkeypatch, job, "local result", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(s, "_resolve_delivery_targets", lambda _job: [])
+
+    assert s.run_one_job(job) is True
+    assert job.get("loop_last_delivered_hash") is None
+
+
+def test_loop_pause_alert_is_delivered(monkeypatch):
+    response = "unchanged result"
+    job = {
+        "id": "loop-alert",
+        "name": "deploy-watch",
+        "prompt": "check deploy status",
+        "loop": True,
+        "loop_no_progress_threshold": 1,
+        "loop_no_progress_count": 0,
+        "loop_last_output_hash": s._loop_response_hash(response),
+        "repeat": {"completed": 2},
+    }
+    deliveries = []
+
+    def deliver(_job, content, adapters=None, loop=None):
+        deliveries.append(content)
+        return None
+
+    _patch_loop_pipeline(monkeypatch, job, response, deliver)
+
+    assert s.run_one_job(job) is True
+    assert len(deliveries) == 1
+    assert "auto-paused" in deliveries[0]
+    assert "Runs completed: 3" in deliveries[0]
+    assert "/loop resume loop-alert" in deliveries[0]

@@ -36,17 +36,17 @@ class TestDetectVideoMimeType:
     def test_mov(self, tmp_path):
         p = tmp_path / "clip.mov"
         p.write_bytes(b"\x00" * 10)
-        assert _detect_video_mime_type(p) == "video/mov"
+        assert _detect_video_mime_type(p) == "video/quicktime"
 
-    def test_avi_fallback_mp4(self, tmp_path):
+    def test_avi(self, tmp_path):
         p = tmp_path / "clip.avi"
         p.write_bytes(b"\x00" * 10)
-        assert _detect_video_mime_type(p) == "video/mp4"
+        assert _detect_video_mime_type(p) == "video/avi"
 
-    def test_mkv_fallback_mp4(self, tmp_path):
+    def test_mkv_is_unsupported(self, tmp_path):
         p = tmp_path / "clip.mkv"
         p.write_bytes(b"\x00" * 10)
-        assert _detect_video_mime_type(p) == "video/mp4"
+        assert _detect_video_mime_type(p) is None
 
     def test_mpeg(self, tmp_path):
         p = tmp_path / "clip.mpeg"

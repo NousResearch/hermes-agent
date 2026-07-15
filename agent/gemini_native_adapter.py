@@ -219,15 +219,28 @@ def _extract_multimodal_parts(content: Any) -> List[Dict[str, Any]]:
             text = item.get("text")
             if isinstance(text, str) and text:
                 parts.append({"text": text})
-        elif ptype == "image_url":
-            url = ((item.get("image_url") or {}).get("url") or "")
+        elif ptype in {"image_url", "video_url"}:
+            field = "video_url" if ptype == "video_url" else "image_url"
+            ref = item.get(field) or {}
+            url = ref.get("url", "") if isinstance(ref, dict) else ref
             if not isinstance(url, str) or not url.startswith("data:"):
                 continue
             try:
                 header, encoded = url.split(",", 1)
-                mime = header.split(":", 1)[1].split(";", 1)[0]
-                raw = base64.b64decode(encoded)
-            except Exception:
+                media_spec = header.split(":", 1)[1]
+                mime, *params = media_spec.split(";")
+                if "base64" not in {param.strip().lower() for param in params}:
+                    continue
+                if ptype == "video_url" and mime not in {
+                    "video/mp4",
+                    "video/mpeg",
+                    "video/webm",
+                    "video/quicktime",
+                    "video/avi",
+                }:
+                    continue
+                raw = base64.b64decode(encoded, validate=True)
+            except (ValueError, TypeError, base64.binascii.Error):
                 continue
             parts.append(
                 {

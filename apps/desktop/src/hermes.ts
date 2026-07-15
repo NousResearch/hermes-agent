@@ -61,7 +61,7 @@ import type {
 // model info/options, cron) the moment the backend passes readiness. On a
 // profile-heavy or remote install these can each take tens of seconds — e.g.
 // /api/profiles runs list_profiles(), which does a recursive skill-tree walk
-// per profile — so the 15s default (DEFAULT_FETCH_TIMEOUT_MS in hardening.cjs)
+// per profile — so the 15s default (DEFAULT_FETCH_TIMEOUT_MS in hardening.ts)
 // times out a backend that is alive-but-busy, surfacing as a spurious
 // "Timed out connecting to Hermes backend" that hangs the UI (#48504).
 //
@@ -413,15 +413,16 @@ export function saveHermesConfig(config: HermesConfigRecord): Promise<{ ok: bool
   })
 }
 
+// surface=declared serves the curated desktop schema; the dashboard consumes the raw plugin schema.
 export function getMemoryProviderConfig(provider: string): Promise<MemoryProviderConfig> {
   return window.hermesDesktop.api<MemoryProviderConfig>({
-    path: `/api/memory/providers/${encodeURIComponent(provider)}/config`
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`
   })
 }
 
 export function saveMemoryProviderConfig(provider: string, values: Record<string, string>): Promise<{ ok: boolean }> {
   return window.hermesDesktop.api<{ ok: boolean }>({
-    path: `/api/memory/providers/${encodeURIComponent(provider)}/config`,
+    path: `/api/memory/providers/${encodeURIComponent(provider)}/config?surface=declared`,
     method: 'PUT',
     body: { values }
   })
@@ -869,10 +870,28 @@ export function getUsageAnalytics(days = 30): Promise<AnalyticsResponse> {
   })
 }
 
-export function getGlobalModelOptions(opts?: { refresh?: boolean }): Promise<ModelOptionsResponse> {
+export function getGlobalModelOptions(opts?: {
+  refresh?: boolean
+  includeUnconfigured?: boolean
+  explicitOnly?: boolean
+}): Promise<ModelOptionsResponse> {
+  const params = new URLSearchParams()
+
+  if (opts?.refresh) {
+    params.set('refresh', '1')
+  }
+
+  if (opts?.includeUnconfigured) {
+    params.set('include_unconfigured', '1')
+  }
+
+  if (opts?.explicitOnly !== false) {
+    params.set('explicit_only', '1')
+  }
+
   return window.hermesDesktop.api<ModelOptionsResponse>({
     ...profileScoped(),
-    path: opts?.refresh ? '/api/model/options?refresh=1' : '/api/model/options',
+    path: params.size > 0 ? `/api/model/options?${params.toString()}` : '/api/model/options',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }

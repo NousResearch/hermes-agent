@@ -27,6 +27,59 @@ import subprocess
 from hermes_cli.config import clear_model_endpoint_credentials
 
 
+def _prune_replaced_custom_model_config_credentials(
+    base_url: str,
+    *,
+    provider_name: str = "",
+) -> None:
+    """Drop stale ``model_config`` credentials from inactive custom pools.
+
+    ``model_config`` means "the credential currently stored under
+    ``model.api_key``". After an explicit custom-endpoint switch, any old
+    custom pool still carrying that source points at the previous endpoint and
+    can be selected before the freshly saved config is tried.
+    """
+    try:
+        from agent.credential_pool import (
+            CUSTOM_POOL_PREFIX,
+            get_custom_provider_pool_key,
+        )
+        from hermes_cli.auth import read_credential_pool, write_credential_pool
+
+        active_pool_key = get_custom_provider_pool_key(
+            base_url,
+            provider_name=provider_name or None,
+        )
+        if not active_pool_key:
+            return
+        pools = read_credential_pool(None)
+        if not isinstance(pools, dict):
+            return
+        for pool_key, entries in pools.items():
+            if (
+                not isinstance(pool_key, str)
+                or not pool_key.startswith(CUSTOM_POOL_PREFIX)
+                or pool_key == active_pool_key
+                or not isinstance(entries, list)
+            ):
+                continue
+            retained = []
+            removed_ids = []
+            changed = False
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get("source") == "model_config":
+                    changed = True
+                    entry_id = entry.get("id")
+                    if entry_id:
+                        removed_ids.append(str(entry_id))
+                    continue
+                retained.append(entry)
+            if changed:
+                write_credential_pool(pool_key, retained, removed_ids=removed_ids)
+    except Exception:
+        return
+
+
 def _prompt_auth_credentials_choice(title: str) -> str:
     """Prompt for reuse / reauthenticate / cancel with the standard radio UI.
 
@@ -778,8 +831,8 @@ def _model_flow_custom(config):
     )
     if _looks_local and not _url_lower.endswith("/v1"):
         print()
-        print(f"  Hint: Did you mean to add /v1 at the end?")
-        print(f"  Most local model servers (Ollama, vLLM, llama.cpp) require it.")
+        print("  Hint: Did you mean to add /v1 at the end?")
+        print("  Most local model servers (Ollama, vLLM, llama.cpp) require it.")
         print(f"  e.g. {effective_url.rstrip('/')}/v1")
         try:
             _add_v1 = input("  Add /v1? [Y/n]: ").strip().lower()
@@ -942,6 +995,11 @@ def _model_flow_custom(config):
         name=display_name,
         api_mode=api_mode,
     )
+    _prune_replaced_custom_model_config_credentials(
+        effective_url,
+        provider_name=display_name,
+    )
+
 
 def _model_flow_azure_foundry(config, current_model=""):
     """Azure Foundry provider: configure endpoint, auth mode, API mode, and model.
@@ -1021,7 +1079,7 @@ def _model_flow_azure_foundry(config, current_model=""):
         )
         print(f"  Current API mode:  {_lbl}")
     if current_auth_mode == "entra_id":
-        print(f"  Current auth mode: Microsoft Entra ID (keyless)")
+        print("  Current auth mode: Microsoft Entra ID (keyless)")
     elif current_api_key:
         print(f"  Current auth mode: API key ({current_api_key[:8]}...)")
     print()

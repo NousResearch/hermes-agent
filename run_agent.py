@@ -198,7 +198,7 @@ from agent.trajectory import (
     save_trajectory as _save_trajectory_to_file,
 )
 from agent.tool_dispatch_helpers import (
-    _should_parallelize_tool_batch,
+    _should_parallelize_tool_batch,  # noqa: F401  # re-exported for tests that `from run_agent import _should_parallelize_tool_batch`
     _is_destructive_command,  # noqa: F401  # re-exported for tests that access `run_agent._is_destructive_command`
     _extract_parallel_scope_path,  # noqa: F401  # re-exported for tests that `from run_agent import _extract_parallel_scope_path`
     _paths_overlap,  # noqa: F401  # re-exported for tests that `from run_agent import _paths_overlap`
@@ -232,6 +232,8 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     # transcript and breaks prompt-prefix cache reuse on later turns. (#55733)
     "_verification_stop_synthetic",
     "_pre_verify_synthetic",
+    # kanban worker stop-guard: narrated exit without kanban_complete/block
+    "_kanban_stop_synthetic",
 )
 
 
@@ -288,26 +290,20 @@ def _routermint_headers() -> dict:
     }
 
 
-def _pool_may_recover_from_rate_limit(
-    pool, *, provider: str | None = None, base_url: str | None = None
-) -> bool:
+def _pool_may_recover_from_rate_limit(pool) -> bool:
     """Decide whether to wait for credential-pool rotation instead of falling back.
 
     The existing pool-rotation path requires the pool to (1) exist and (2) have
     at least one entry not currently in exhaustion cooldown.  But rotation is
     only meaningful when the pool has more than one entry.
 
-    With a single-credential pool (common for Gemini OAuth, Vertex service
-    accounts, and any "one personal key" configuration), the primary entry
-    just 429'd and there is nothing to rotate to.  Waiting for the pool
-    cooldown to expire means retrying against the same exhausted quota — the
-    daily-quota 429 will recur immediately, and the retry budget is burned.
+    With a single-credential pool (common for Vertex service accounts and any
+    "one personal key" configuration), the primary entry just 429'd and there
+    is nothing to rotate to.  Waiting for the pool cooldown to expire means
+    retrying against the same exhausted quota — the daily-quota 429 will recur
+    immediately, and the retry budget is burned.
 
-    Additionally, Google CloudCode / Gemini CLI rate limits are ACCOUNT-level
-    throttles — even a multi-entry pool shares the same quota window, so
-    rotation won't recover.  Skip straight to the fallback for those (#13636).
-
-    In those cases we must fall back to the configured ``fallback_model``
+    In that case we must fall back to the configured ``fallback_model``
     instead.  Returns True only when rotation has somewhere to go.
 
     See issues #11314 and #13636.
@@ -315,10 +311,6 @@ def _pool_may_recover_from_rate_limit(
     if pool is None:
         return False
     if not pool.has_available():
-        return False
-    # CloudCode / Gemini CLI quotas are account-wide — all pool entries share
-    # the same throttle window, so rotation can't recover.  Prefer fallback.
-    if str(base_url or "").startswith("cloudcode-pa://"):
         return False
     return len(pool.entries()) > 1
 
@@ -468,6 +460,7 @@ class AIAgent:
         notice_callback: callable = None,
         notice_clear_callback: callable = None,
         event_callback: Optional[Callable[[str, dict], None]] = None,
+        reaction_callback: Optional[Callable[[str], None]] = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
@@ -543,6 +536,7 @@ class AIAgent:
             notice_callback=notice_callback,
             notice_clear_callback=notice_clear_callback,
             event_callback=event_callback,
+            reaction_callback=reaction_callback,
             max_tokens=max_tokens,
             reasoning_config=reasoning_config,
             service_tier=service_tier,
@@ -734,6 +728,10 @@ class AIAgent:
         
         # Turn counter (added after reset_session_state was first written — #2635)
         self._user_turn_count = 0
+
+        # Copilot x-initiator: True for the first API call of a user turn,
+        # False for tool-loop follow-ups (#3040).
+        self._is_user_initiated_turn = False
 
         # Context engine reset/transition (works for built-in compressor and plugins)
         self._transition_context_engine_session(
@@ -987,6 +985,29 @@ class AIAgent:
         except Exception:
             pass
 
+    def _emit_pending_fallback_notice(self) -> None:
+        """Surface the one-shot fallback-switch notice on successful recovery.
+
+        A provider/model switch is a durable state change operators must see,
+        unlike transient retry chatter that ``_clear_status_buffer`` drops.
+        ``try_activate_fallback`` records the switch in
+        ``self._pending_fallback_notice``; this emits it exactly once via
+        ``_emit_status`` and then clears it, so a successful fallback still
+        produces one visible notice.  On terminal failure the buffered switch
+        line is flushed instead (and this notice discarded) — see
+        ``_flush_status_buffer`` — so the user always sees the switch once.
+        """
+        try:
+            notice = getattr(self, "_pending_fallback_notice", None)
+            if notice:
+                # Clear before emitting so a (swallowed) callback error can't
+                # leave the notice set for a stale re-emit on a later turn.
+                self._pending_fallback_notice = None
+                self._emit_status(notice)
+        except Exception:
+            # Never break the conversation loop on a notice hiccup.
+            pass
+
     def _flush_status_buffer(self) -> None:
         """Emit buffered retry messages — call on terminal failure.
 
@@ -994,6 +1015,10 @@ class AIAgent:
         was tried before the turn gave up.
         """
         try:
+            # The buffered trace already carries the fallback switch line, so
+            # drop any one-shot fallback notice to avoid a stale duplicate
+            # leaking into a later successful turn.
+            self._pending_fallback_notice = None
             buf = getattr(self, "_retry_status_buffer", None)
             if not buf:
                 return
@@ -1327,6 +1352,13 @@ class AIAgent:
         """Return True when the base URL targets OpenRouter."""
         return base_url_host_matches(self._base_url_lower, "openrouter.ai")
 
+    def _is_copilot_url(self) -> bool:
+        """Return True when the base URL targets GitHub Copilot or GitHub Models."""
+        return (
+            "api.githubcopilot.com" in self._base_url_lower
+            or "models.github.ai" in self._base_url_lower
+        )
+
     def _anthropic_prompt_cache_policy(
         self,
         *,
@@ -1633,14 +1665,14 @@ class AIAgent:
             msg = messages[idx]
             if isinstance(msg, dict) and msg.get("role") == "user":
                 # Text-only call paths may pass a synthetic API-facing prompt
-                # and a cleaner transcript string separately. Multimodal
-                # turns, however, keep image/audio blocks in the live
-                # messages list that is still used for the API request after
-                # early crash-resilience persistence. Do not replace those
-                # blocks with the text-only persistence override before the
-                # model call is built. The paired timestamp override still
-                # applies — it is metadata, not content.
-                if override is not None and not isinstance(msg.get("content"), list):
+                # and a cleaner transcript string separately. Before the API
+                # call, a plain-text override must not replace native image/audio
+                # blocks. A list override, however, is the original clean
+                # multimodal payload (for example before a queued /model note)
+                # and must replace the API-local list once the turn is final.
+                if override is not None and (
+                    not isinstance(msg.get("content"), list) or isinstance(override, list)
+                ):
                     msg["content"] = override
                 if timestamp is not None:
                     msg["timestamp"] = timestamp
@@ -1659,10 +1691,22 @@ class AIAgent:
         """
         # Scaffolding removal mutates the live list (desired — ephemeral
         # retry/failure sentinels must not survive into the real transcript).
-        self._drop_trailing_empty_response_scaffolding(messages)
-        self._session_messages = messages
-        self._save_session_log(messages)
-        self._flush_messages_to_session_db(messages, conversation_history)
+        # Close and turn-start persistence can run on separate CLI threads; the
+        # marker test-and-append below must be one critical section or both can
+        # observe the same unmarked dict and write duplicate durable rows.
+        persist_lock = getattr(self, "_session_persist_lock", None)
+        if persist_lock is None:
+            self._drop_trailing_empty_response_scaffolding(messages)
+            self._session_messages = messages
+            self._save_session_log(messages)
+            self._flush_messages_to_session_db(messages, conversation_history)
+            return
+
+        with persist_lock:
+            self._drop_trailing_empty_response_scaffolding(messages)
+            self._session_messages = messages
+            self._save_session_log(messages)
+            self._flush_messages_to_session_db(messages, conversation_history)
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
@@ -1722,7 +1766,23 @@ class AIAgent:
         from agent.agent_runtime_helpers import repair_message_sequence
         return repair_message_sequence(self, messages)
 
-    def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
+    def _flush_messages_to_session_db(
+        self,
+        messages: List[Dict],
+        conversation_history: Optional[List[Dict]] = None,
+    ):
+        """Serialize direct and turn-boundary session flushes per agent."""
+        persist_lock = getattr(self, "_session_persist_lock", None)
+        if persist_lock is None:
+            return self._flush_messages_to_session_db_unlocked(messages, conversation_history)
+        with persist_lock:
+            return self._flush_messages_to_session_db_unlocked(messages, conversation_history)
+
+    def _flush_messages_to_session_db_unlocked(
+        self,
+        messages: List[Dict],
+        conversation_history: Optional[List[Dict]] = None,
+    ):
         """Persist any un-flushed messages to the SQLite session store.
 
         Deduplicates via an intrinsic ``_DB_PERSISTED_MARKER`` stamped on each
@@ -1829,11 +1889,22 @@ class AIAgent:
                 content = msg.get("content")
                 _row_timestamp = msg.get("timestamp")
                 # Apply the persist override to THIS row's written values only
-                # (never to the live dict). Match the original guard: text-only
-                # content is replaced; multimodal (list) content is left intact
-                # so image/audio blocks aren't clobbered by the text override.
-                if _ov_idx == _msg_idx and msg.get("role") == "user":
-                    if _ov_content is not None and not isinstance(content, list):
+                # (never to the live dict). A multimodal override is a complete
+                # clean replacement for an API-local noted payload. Preserve the
+                # historical text-only guard for a list payload, though: a plain
+                # text override must not erase its image/audio transcript summary.
+                # The close safety-net may flush a shortened snapshot while
+                # turn setup still owns its staged CLI dict. In that shape the
+                # normal turn index refers to the full history, not this list;
+                # preserve the API-local override by recognizing the same dict.
+                pending_cli_message = getattr(self, "_pending_cli_user_message", None)
+                is_current_turn_user = (
+                    _ov_idx == _msg_idx or msg is pending_cli_message
+                )
+                if is_current_turn_user and msg.get("role") == "user":
+                    if _ov_content is not None and (
+                        not isinstance(content, list) or isinstance(_ov_content, list)
+                    ):
                         content = _ov_content
                     if _ov_timestamp is not None:
                         _row_timestamp = _ov_timestamp
@@ -2142,7 +2213,10 @@ class AIAgent:
         # widens exposure vs the old empty-body "HTTP 400" string).
         response = getattr(error, "response", None)
         if response is not None:
-            snippet = (getattr(response, "text", None) or "").strip()
+            try:
+                snippet = (getattr(response, "text", None) or "").strip()
+            except Exception:
+                snippet = ""
             if snippet:
                 status_code = getattr(error, "status_code", None)
                 prefix = f"HTTP {status_code}: " if status_code else ""
@@ -2641,6 +2715,16 @@ class AIAgent:
         """
         self._interrupt_requested = True
         self._interrupt_message = message
+        # A cron turn performs its API request on the conversation thread to
+        # avoid the nested interrupt-worker deadlock.  Unlike the normal worker
+        # path, its client is registered here so this cross-thread interrupt can
+        # still shut down the active sockets promptly.
+        _abort_active_request = getattr(self, "_active_request_abort", None)
+        if callable(_abort_active_request):
+            try:
+                _abort_active_request("interrupt_abort")
+            except Exception:
+                logger.debug("Failed to abort active inline request", exc_info=True)
         # Signal all tools to abort any in-flight operations immediately.
         # Scope the interrupt to this agent's execution thread so other
         # agents running in the same process (gateway) are not affected.
@@ -3885,30 +3969,70 @@ class AIAgent:
 
     @staticmethod
     def _build_keepalive_http_client(base_url: str = "", *, verify: Any = True) -> Any:
+        """Build an httpx.Client with proactive idle-connection reaping.
+
+        Previously this method injected a custom ``httpx.HTTPTransport``
+        with ``socket_options`` (``SO_KEEPALIVE``, ``TCP_KEEPIDLE``, …) to
+        prevent CLOSE-WAIT accumulation on long-lived connections (#10324).
+
+        That approach broke streaming for providers behind reverse proxies
+        (OpenResty, Cloudflare, etc.) because the custom socket options
+        conflict with the proxy's chunked-transfer handling (#54049,
+        #12952).  It also stripped ``TCP_NODELAY``, stalling TLS handshakes
+        and SSE encoding.
+
+        The fix moves connection lifecycle management from the socket layer
+        to the HTTP pool layer: ``keepalive_expiry=20.0`` tells httpx to
+        close idle pooled connections *before* a reverse proxy's typical
+        30–60 s timeout drops them, preventing CLOSE-WAIT accumulation
+        without modifying socket options.  The default httpx transport
+        preserves OS TCP defaults (including ``TCP_NODELAY``).
+
+        ``verify`` carries per-provider ``ssl_ca_cert`` / ``ssl_verify`` and
+        ``HERMES_CA_BUNDLE`` settings.  It is passed on the client AND on
+        the plain no-proxy mounts (a mounted transport owns the SSL context
+        for its scheme).
+        """
         try:
             import httpx as _httpx
-            import socket as _socket
 
-            if "api.githubcopilot.com" in str(base_url or "").lower():
-                return _httpx.Client(verify=verify)
-
-            _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
-            if hasattr(_socket, "TCP_KEEPIDLE"):
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPIDLE, 30))
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPINTVL, 10))
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPCNT, 3))
-            elif hasattr(_socket, "TCP_KEEPALIVE"):
-                _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
-            # When a custom transport is provided, httpx won't auto-read proxy
-            # from env vars (allow_env_proxies = trust_env and transport is None).
-            # Explicitly read proxy settings while still honoring NO_PROXY for
-            # loopback / local endpoints such as a locally hosted sub2api.
+            # Explicitly read proxy settings so requests route through
+            # HTTP_PROXY / HTTPS_PROXY / NO_PROXY correctly.
             _proxy = _get_proxy_for_base_url(base_url)
-            # verify lives on the transport: httpx ignores the client-level
-            # ``verify`` when a custom ``transport=`` is supplied.
+
+            # Proactive pool reaping: close idle connections at 20 s,
+            # before reverse proxies (30–60 s typical) send FIN and
+            # cause CLOSE-WAIT accumulation.
+            _limits = _httpx.Limits(
+                max_keepalive_connections=20,
+                max_connections=100,
+                keepalive_expiry=20.0,
+            )
+
+            # Timeouts: generous read=None for SSE streaming endpoints.
+            _timeout = _httpx.Timeout(
+                connect=15.0,
+                read=None,
+                write=15.0,
+                pool=10.0,
+            )
+
+            # When _proxy is None (NO_PROXY bypass or no proxy configured),
+            # mount plain transports to prevent httpx from reading env proxy
+            # vars and creating an HTTPProxy mount that would bypass our
+            # NO_PROXY resolution.
+            _mounts = {}
+            if _proxy is None:
+                _mounts = {
+                    "http://": _httpx.HTTPTransport(verify=verify),
+                    "https://": _httpx.HTTPTransport(verify=verify),
+                }
             return _httpx.Client(
-                transport=_httpx.HTTPTransport(socket_options=_sock_opts, verify=verify),
+                limits=_limits,
+                timeout=_timeout,
                 proxy=_proxy,
+                mounts=_mounts or None,
+                verify=verify,
             )
         except Exception:
             return None
@@ -4476,13 +4600,6 @@ class AIAgent:
         """Whether a rate-limit retry should wait for same-provider credentials."""
         pool = self._credential_pool
         if pool is None:
-            return False
-        if (
-            str(getattr(self, "base_url", "")).startswith("cloudcode-pa://")
-        ):
-            # CloudCode/Gemini quota windows are usually account-level throttles.
-            # Prefer the configured fallback immediately instead of waiting out
-            # Retry-After while a pooled OAuth credential may still appear usable.
             return False
         return pool.has_available()
 
@@ -5303,7 +5420,7 @@ class AIAgent:
             "google/gemini-2",
             "google/gemma-4",
             "qwen/qwen3",
-            "tencent/hy3-preview",
+            "tencent/hy3",
             "xiaomi/",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
@@ -5597,22 +5714,41 @@ class AIAgent:
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls from the assistant message and append results to messages.
 
-        Dispatches to concurrent execution only for batches that look
-        independent: read-only tools may always share the parallel path, while
-        file reads/writes may do so only when their target paths do not overlap.
+        The segment planner splits the batch into maximal contiguous runs of
+        parallel-safe calls (read-only tools, non-overlapping file targets,
+        opted-in MCP tools) separated by sequential barriers (interactive,
+        unsafe, or unrecognized tools). Homogeneous batches keep their
+        original single-path dispatch; mixed batches execute segment by
+        segment in emission order so safe subsets still run concurrently
+        while side-effect ordering is preserved.
         """
         tool_calls = assistant_message.tool_calls
 
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
         try:
-            if not _should_parallelize_tool_batch(tool_calls):
+            if len(tool_calls) <= 1:
                 return self._execute_tool_calls_sequential(
                     assistant_message, messages, effective_task_id, api_call_count
                 )
 
-            return self._execute_tool_calls_concurrent(
-                assistant_message, messages, effective_task_id, api_call_count
+            from agent.tool_dispatch_helpers import _plan_tool_batch_segments
+            segments = _plan_tool_batch_segments(tool_calls)
+
+            if len(segments) == 1:
+                kind = segments[0][0]
+                if kind == "parallel":
+                    return self._execute_tool_calls_concurrent(
+                        assistant_message, messages, effective_task_id, api_call_count
+                    )
+                return self._execute_tool_calls_sequential(
+                    assistant_message, messages, effective_task_id, api_call_count
+                )
+
+            from agent.tool_executor import execute_tool_calls_segmented
+            return execute_tool_calls_segmented(
+                self, assistant_message, messages, effective_task_id, api_call_count,
+                segments=segments,
             )
         finally:
             self._executing_tools = False
@@ -5710,12 +5846,12 @@ class AIAgent:
 
     def run_conversation(
         self,
-        user_message: str,
+        user_message: Any,
         system_message: str = None,
         conversation_history: List[Dict[str, Any]] = None,
         task_id: str = None,
         stream_callback: Optional[callable] = None,
-        persist_user_message: Optional[str] = None,
+        persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         moa_config: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:

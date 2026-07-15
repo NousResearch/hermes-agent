@@ -12,10 +12,12 @@ import { Check, Download, Loader2, Palette, Trash2 } from '@/lib/icons'
 import { selectableCardClass } from '@/lib/selectable-card'
 import { normalize } from '@/lib/text'
 import { cn } from '@/lib/utils'
+import { $backdrop, setBackdrop } from '@/store/backdrop'
 import { $embedAllowed, $embedMode, clearEmbedAllowed, type EmbedMode, setEmbedMode } from '@/store/embed-consent'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $toolViewMode, setToolViewMode } from '@/store/tool-view'
 import { $translucency, setTranslucency } from '@/store/translucency'
+import { $zoomPercent, setZoomPercent } from '@/store/zoom'
 import { getBaseColors, useTheme } from '@/themes/context'
 import { installVscodeThemeFromMarketplace } from '@/themes/install'
 import type { DesktopTheme } from '@/themes/types'
@@ -60,6 +62,18 @@ function ThemePreview({ name, mode }: { name: string; mode: 'light' | 'dark' }) 
       </div>
     </div>
   )
+}
+
+// UI scale presets, as zoom percentages. 100 is the browser-default size;
+// the ids double as the percent values sent to the main process. A Cmd/Ctrl
+// +/- step landing between presets highlights nothing, and the row
+// description keeps showing the exact current percent.
+const UI_SCALE_PRESETS = ['90', '100', '110', '125', '150', '175'] as const
+
+type UiScalePreset = (typeof UI_SCALE_PRESETS)[number]
+
+function matchUiScalePreset(percent: number): UiScalePreset | null {
+  return UI_SCALE_PRESETS.find(preset => Number(preset) === percent) ?? null
 }
 
 function useDebounced<T>(value: T, delayMs: number): T {
@@ -231,9 +245,11 @@ export function AppearanceSettings() {
   const { t, isSavingLocale } = useI18n()
   const { themeName, mode, resolvedMode, availableThemes, setTheme, setMode } = useTheme()
   const toolViewMode = useStore($toolViewMode)
+  const zoomPercent = useStore($zoomPercent)
   const embedMode = useStore($embedMode)
   const embedAllowed = useStore($embedAllowed)
   const translucency = useStore($translucency)
+  const backdrop = useStore($backdrop)
   const installs = useStore($marketplaceInstalls)
   const profiles = useStore($profiles)
   const activeProfileKey = normalizeProfileKey(useStore($activeGatewayProfile))
@@ -276,6 +292,10 @@ export function AppearanceSettings() {
     { id: 'always', label: a.embedsAlways },
     { id: 'off', label: a.embedsOff }
   ] as const satisfies readonly { id: EmbedMode; label: string }[]
+
+  const uiScaleOptions = UI_SCALE_PRESETS.map(preset => ({ id: preset, label: `${preset}%` }))
+
+  const matchedScalePreset = matchUiScalePreset(zoomPercent)
 
   return (
     <SettingsContent>
@@ -394,6 +414,21 @@ export function AppearanceSettings() {
 
           <ListRow
             action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setZoomPercent(Number(id))
+                }}
+                options={uiScaleOptions}
+                value={matchedScalePreset ?? ('' as UiScalePreset)}
+              />
+            }
+            description={a.uiScaleDesc(zoomPercent)}
+            title={a.uiScaleTitle}
+          />
+
+          <ListRow
+            action={
               <div className="flex items-center gap-3">
                 <input
                   aria-label={a.translucencyTitle}
@@ -416,6 +451,24 @@ export function AppearanceSettings() {
             }
             description={a.translucencyDesc}
             title={a.translucencyTitle}
+          />
+
+          <ListRow
+            action={
+              <SegmentedControl
+                onChange={id => {
+                  triggerHaptic('selection')
+                  setBackdrop(id === 'on')
+                }}
+                options={[
+                  { id: 'off', label: t.common.off },
+                  { id: 'on', label: t.common.on }
+                ]}
+                value={backdrop ? 'on' : 'off'}
+              />
+            }
+            description={a.backdropDesc}
+            title={a.backdropTitle}
           />
 
           <ListRow

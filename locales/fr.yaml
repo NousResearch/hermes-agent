@@ -7,6 +7,10 @@ approval:
   choose_short:    "      [o]ne fois  |  [s]ession  |  [r]efuser"
   prompt_long:     "      Choix [o/s/t/R] : "
   prompt_short:    "      Choix [o/s/R] : "
+  choose_smart_deny: "      [o]ne fois  |  [r]efuser"
+  prompt_smart_deny: "      Choix [o/R] : "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "r,refuser"
   timeout:         "      ⏱ Délai dépassé — commande refusée"
   allowed_once:    "      ✓ Autorisé une fois"
   allowed_session: "      ✓ Autorisé pour cette session"
@@ -107,6 +111,8 @@ gateway:
     no_pending:            "Aucune commande en attente de refus."
     denied_singular:       "❌ Commande refusée."
     denied_plural:         "❌ Commandes refusées ({count} commandes)."
+    denied_reason_singular: "❌ Commande refusée. Raison transmise à l'agent: \"{reason}\""
+    denied_reason_plural:  "❌ Commandes refusées ({count} commandes). Raison transmise à l'agent: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast n'est disponible que pour les modèles OpenAI qui prennent en charge Priority Processing."
@@ -358,6 +364,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_estimated_context:  "Contexte estimé : ~{count} jetons"
     detailed_after_first:     "_(Utilisation détaillée disponible après la première réponse de l'agent)_"
     no_data:                  "Aucune donnée d'utilisation disponible pour cette session."
+    unknown_subcommand:       "Sous-commande /usage inconnue : `{args}`. Essayez `/usage` ou `/usage reset [--force]`."
+    reset_wrong_provider:     "Les réinitialisations de limite en réserve ne sont disponibles qu'avec le fournisseur openai-codex. Changez d'abord avec `/model`."
 
   credits:
     not_logged_in:            "Non connecté à Nous Portal. Connecte-toi pour voir ton solde de crédits et recharger."

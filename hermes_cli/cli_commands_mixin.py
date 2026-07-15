@@ -571,7 +571,7 @@ class CLICommandsMixin:
         home = gw_config.get_home_channel(platform)
         if not home or not home.chat_id:
             _cprint(f"  No home channel configured for {platform_name}.")
-            _cprint(f"  Set one with /sethome on the destination chat first.")
+            _cprint("  Set one with /sethome on the destination chat first.")
             return True
 
         # Refuse mid-turn: an in-flight agent run would race with the
@@ -626,7 +626,7 @@ class CLICommandsMixin:
             return True
 
         _cprint(f"  Queued handoff of '{session_title}' → {platform_name} (home: {home.name}).")
-        _cprint(f"  Waiting for the gateway to pick it up...")
+        _cprint("  Waiting for the gateway to pick it up...")
 
         # Poll-block on terminal state. Tick every 0.5s; bail at ~60s.
         import time as _time
@@ -1872,7 +1872,7 @@ class CLICommandsMixin:
                     sys_name = _plat.system()
                     chrome_cmd = manual_chrome_debug_command(_port, sys_name)
                     if chrome_cmd:
-                        print(f"     Launch a Chromium-family browser manually:")
+                        print("     Launch a Chromium-family browser manually:")
                         print(f"     {chrome_cmd}")
                     else:
                         print("     No supported Chromium-family browser executable found in this environment")
@@ -2471,7 +2471,7 @@ class CLICommandsMixin:
 
         Usage:
             /reasoning              Show current effort level and display state
-            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh)
+            /reasoning <level>      Set effort (none, minimal, low, medium, high, xhigh, max, ultra)
             /reasoning show|on      Show model thinking/reasoning in output
             /reasoning hide|off     Hide model thinking/reasoning from output
             /reasoning full         Show complete thinking (no 10-line clamp)
@@ -2493,7 +2493,7 @@ class CLICommandsMixin:
             full_state = "full" if getattr(self, "reasoning_full", False) else "clamped to 10 lines"
             _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
             _cprint(f"  {_ACCENT}Reasoning display: {display_state} ({full_state}){_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide|full|clamp>{_RST}")
+            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|max|ultra|show|hide|full|clamp>{_RST}")
             return
 
         arg = parts[1].strip().lower()
@@ -2534,7 +2534,7 @@ class CLICommandsMixin:
         parsed = _parse_reasoning_config(arg)
         if parsed is None:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Valid levels: none, minimal, low, medium, high, xhigh{_RST}")
+            _cprint(f"  {_DIM}Valid levels: none, minimal, low, medium, high, xhigh, max, ultra{_RST}")
             _cprint(f"  {_DIM}Display:      show, hide{_RST}")
             return
 

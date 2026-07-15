@@ -94,6 +94,13 @@ class TestListAvailableProviders:
         all_unavailable.setattr(tts_tool, "_has_openai_audio_backend", MagicMock(return_value=True))
         assert "openai" in list_available_tts_providers({})
 
+    def test_deepinfra_requires_client_and_key(self, all_unavailable):
+        # Enumeration must agree with check_tts_requirements on deepinfra.
+        all_unavailable.setattr(tts_tool, "_import_openai_client", MagicMock(return_value=MagicMock()))
+        assert "deepinfra" not in list_available_tts_providers({})
+        all_unavailable.setenv("DEEPINFRA_API_KEY", "k")
+        assert "deepinfra" in list_available_tts_providers({})
+
     def test_includes_command_providers(self, all_unavailable):
         config = {
             "providers": {
@@ -130,8 +137,10 @@ class TestPluginProviderEnumeration:
             "agent.tts_registry.list_providers",
             MagicMock(return_value=[self._fake_provider("myplugin")]),
         )
+        # Enumeration surfaces the plugin so /v1/models advertises it and the
+        # audio endpoint doesn't reject it before dispatch. (check_tts_requirements
+        # is configured-provider-scoped and covered separately.)
         assert list_available_tts_providers({}) == ["myplugin"]
-        assert check_tts_requirements() is True
 
     def test_plugin_listed_alongside_builtin(self, all_unavailable):
         all_unavailable.setattr(tts_tool, "_import_edge_tts", MagicMock(return_value=MagicMock()))

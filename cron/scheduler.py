@@ -20,6 +20,7 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 try:
@@ -237,7 +238,7 @@ _LEGACY_HOME_TARGET_ENV_VARS = {
     "QQBOT_HOME_CHANNEL": "QQ_HOME_CHANNEL",
 }
 
-from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch
+from cron.jobs import get_due_jobs, mark_job_run, save_job_output, advance_next_run, claim_dispatch, heartbeat_run_claim
 
 # Sentinel: when a cron agent has nothing new to report, it can start its
 # response with this marker to suppress delivery.  Output is still saved
@@ -297,6 +298,102 @@ _parallel_pool: Optional[concurrent.futures.ThreadPoolExecutor] = None
 _parallel_pool_max_workers: Optional[int] = None
 _running_job_ids: set = set()
 _running_lock = threading.Lock()
+
+# Job IDs the gateway shutdown path force-killed the tool subprocess of
+# while still in ``_running_job_ids`` (see ``mark_running_jobs_interrupted``
+# below). ``run_one_job``'s own completion path checks this set before
+# writing its own ``last_status`` so a cron agent thread that keeps running
+# in-process after its tool was killed out from under it — and produces a
+# plausible-looking final response from truncated output — can never
+# overwrite the interrupted status with a false "ok" (#60432).
+_interrupted_job_ids: set = set()
+
+
+def get_running_job_ids() -> "frozenset[str]":
+    """Thread-safe snapshot of cron job IDs currently executing.
+
+    A job ID is a member from the moment ``_submit_with_guard`` dispatches
+    it onto the parallel/sequential pool until ``_process_job`` returns —
+    i.e. for the job's *entire* run, tool calls included, not just the
+    ticker's dispatch instant.
+
+    The gateway shutdown path (``gateway/run.py::GatewayRunner.
+    _drain_active_agents``) reads this to treat in-flight cron work as
+    active the same way it already treats in-flight chat sessions via
+    ``_running_agents`` — cron jobs run through their own thread pool here,
+    entirely outside that dict, so without this the drain is structurally
+    blind to them (#60432).
+    """
+    with _running_lock:
+        return frozenset(_running_job_ids)
+
+
+def mark_running_jobs_interrupted(reason: str) -> list:
+    """Best-effort: mark every currently in-flight cron job interrupted.
+
+    Called by the gateway shutdown path immediately after it force-kills
+    tool subprocesses (``process_registry.kill_all()``). A job whose tool
+    subprocess was just killed out from under it must never be allowed to
+    report success — even though its agent thread is still alive in this
+    same process and may go on to produce a plausible-looking final
+    response from the now-truncated tool output.
+
+    Records the job IDs in ``_interrupted_job_ids`` BEFORE writing
+    ``last_status`` so ``run_one_job``'s own eventual completion for the
+    same job (racing in its own thread) sees the flag and skips its normal
+    write instead of clobbering this one — see the check near the end of
+    ``run_one_job``. This does not attempt to correlate the killed
+    subprocess PID to a specific job ID (the process registry tracks PIDs,
+    not cron job IDs); any job still dispatched at the moment of a forced
+    kill is treated as interrupted, matching the coarser precedent already
+    set by ``GatewayRunner._interrupt_running_agents``, which interrupts
+    every entry in ``_running_agents`` on a drain timeout without
+    per-agent correlation either.
+
+    Returns the list of job IDs marked, for the caller to log.
+    """
+    with _running_lock:
+        job_ids = list(_running_job_ids)
+        _interrupted_job_ids.update(job_ids)
+    marked = []
+    for job_id in job_ids:
+        try:
+            mark_job_run(job_id, False, reason)
+            marked.append(job_id)
+        except Exception as e:
+            logger.warning("Failed to mark job %s interrupted: %s", job_id, e)
+    return marked
+
+
+def _is_interrupted(job_id: str) -> bool:
+    """Non-destructive peek at whether the shutdown path has marked
+    ``job_id`` interrupted (see ``mark_running_jobs_interrupted``).
+
+    Called by ``run_one_job`` BEFORE it decides what to deliver — a job
+    whose tool subprocess was killed mid-flight may still produce a
+    plausible-looking ``final_response`` from the truncated output, and
+    that must not go out to the user as if it were a normal result.
+    Unlike ``_consume_interrupted_flag`` below, this does not clear the
+    flag: the later, authoritative check (right before ``last_status`` is
+    written) still needs to see it."""
+    with _running_lock:
+        return job_id in _interrupted_job_ids
+
+
+def _consume_interrupted_flag(job_id: str) -> bool:
+    """Return True and clear the flag if the shutdown path already marked
+    ``job_id`` interrupted (see ``mark_running_jobs_interrupted``).
+
+    Called by ``run_one_job`` right before it would otherwise write its own
+    ``last_status``. Consuming (discarding) rather than just checking keeps
+    the flag from leaking across a later, unrelated run of the same job ID
+    (recurring jobs reuse their ID every fire)."""
+    with _running_lock:
+        if job_id in _interrupted_job_ids:
+            _interrupted_job_ids.discard(job_id)
+            return True
+        return False
+
 
 # Sequential (env-mutating) cron jobs — workdir jobs that touch
 # process-global runtime state — must run one at a time, but must NOT block the
@@ -405,6 +502,38 @@ def _shutdown_parallel_pool() -> None:
 
 
 atexit.register(_shutdown_parallel_pool)
+
+
+def _interpreter_shutting_down(exc: Optional[BaseException] = None) -> bool:
+    """True when the Python interpreter is finalizing.
+
+    A cron tick can fire while the gateway is tearing down — SIGTERM from
+    ``hermes update`` / ``hermes gateway stop`` / systemd restart, or an
+    OOM-kill. Once finalization starts, ``concurrent.futures`` refuses new
+    work with ``RuntimeError: cannot schedule new futures after interpreter
+    shutdown`` and asyncio's default executor is gone, so *any* attempt to
+    schedule delivery (live-adapter, ``asyncio.run``, or a fresh pool) is
+    doomed and only pollutes ``errors.log`` with a traceback. Callers use
+    this to skip gracefully with a warning instead of crashing (#58720,
+    #55924).
+
+    ``exc`` lets a caller also treat an already-raised scheduling error as a
+    shutdown signal: the ``concurrent.futures`` module-global flag can be set
+    a hair before ``sys.is_finalizing()`` flips, so matching the error text is
+    a safe fallback for that race.
+    """
+    if sys.is_finalizing():
+        return True
+    if exc is not None:
+        # Match the SHORT prefix deliberately: CPython emits two shutdown
+        # variants — "cannot schedule new futures after interpreter shutdown"
+        # (asyncio.run_coroutine_threadsafe / a torn-down default executor) and
+        # "cannot schedule new futures after shutdown" (a plain
+        # ThreadPoolExecutor). Both are documented in #58720. The common prefix
+        # catches both; the sibling agent/tool_executor._is_interpreter_shutdown_submit_error
+        # matches only the fuller "...after interpreter shutdown" form.
+        return "cannot schedule new futures" in str(exc).lower()
+    return False
 
 
 # Backward-compatible module override used by tests and emergency monkeypatches.
@@ -1758,16 +1887,37 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 )
 
         if not delivered:
+            # If the interpreter is finalizing (gateway SIGTERM / restart /
+            # OOM), scheduling any new delivery is futile — asyncio.run and a
+            # fresh ThreadPoolExecutor both raise "cannot schedule new futures
+            # after interpreter shutdown". Skip gracefully with a warning
+            # rather than emitting an ERROR traceback on every restart-race
+            # (#58720, #55924).
+            if _interpreter_shutting_down():
+                msg = f"delivery to {platform_name}:{chat_id} skipped — interpreter is shutting down"
+                logger.warning("Job '%s': %s", job["id"], msg)
+                target_errors.append(msg)
+                delivery_errors.extend(target_errors)
+                continue
             # Standalone path: run the async send in a fresh event loop (safe from any thread)
             coro = _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files)
             try:
                 result = asyncio.run(coro)
-            except RuntimeError:
+            except RuntimeError as run_err:
                 # asyncio.run() checks for a running loop before awaiting the coroutine;
                 # when it raises, the original coro was never started — close it to
                 # prevent "coroutine was never awaited" RuntimeWarning, then retry in a
                 # fresh thread that has no running loop.
                 coro.close()
+                # If the RuntimeError is the interpreter-finalization signal,
+                # the fresh-thread fallback would fail identically — skip
+                # gracefully instead of logging a shutdown-race traceback.
+                if _interpreter_shutting_down(run_err):
+                    msg = f"delivery to {platform_name}:{chat_id} skipped — interpreter is shutting down"
+                    logger.warning("Job '%s': %s", job["id"], msg)
+                    target_errors.append(msg)
+                    delivery_errors.extend(target_errors)
+                    continue
                 # The thread-pool fallback can itself raise (SMTP ConnectionError,
                 # future.result timeout, etc.). An exception raised inside this
                 # `except RuntimeError` block is NOT caught by the sibling
@@ -1784,6 +1934,14 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     finally:
                         pool.shutdown(wait=False)
                 except Exception as e:
+                    # A shutdown-race here is expected during teardown; downgrade
+                    # to a warning so it doesn't read as a genuine failure.
+                    if _interpreter_shutting_down(e):
+                        msg = f"delivery to {platform_name}:{chat_id} skipped — interpreter is shutting down"
+                        logger.warning("Job '%s': %s", job["id"], msg)
+                        target_errors.append(msg)
+                        delivery_errors.extend(target_errors)
+                        continue
                     msg = f"delivery to {platform_name}:{chat_id} failed: {e}"
                     logger.error("Job '%s': %s", job["id"], msg, exc_info=True)
                     target_errors.extend([msg])
@@ -1818,6 +1976,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 _DEFAULT_SCRIPT_TIMEOUT = 3600  # seconds (1 hour)
 # Backward-compatible module override used by tests and emergency monkeypatches.
 _SCRIPT_TIMEOUT = _DEFAULT_SCRIPT_TIMEOUT
+_RUN_CLAIM_HEARTBEAT_SECONDS = 60.0
 
 
 def _get_script_timeout() -> int:
@@ -1977,6 +2136,71 @@ def _run_job_script(script_path: str) -> tuple[bool, str]:
         return False, f"Script execution failed: {exc}"
 
 
+def _run_job_script_with_claim_heartbeat(
+    job: dict, script_path: str
+) -> tuple[bool, str]:
+    """Run a cron script while keeping its owned one-shot claim fresh.
+
+    Script execution is synchronous and may legitimately outlive the stale
+    claim TTL.  Without a concurrent heartbeat, another scheduler process can
+    mistake the live run for a dead owner and dispatch the same one-shot again.
+    Recurring jobs and unclaimed/manual runs have no durable one-shot claim and
+    therefore use the ordinary script path without starting a thread.
+
+    The claim owner is captured from the dispatched job and never re-read from
+    storage.  ``heartbeat_run_claim`` compares that stable owner before every
+    refresh, so a stale runner cannot extend a replacement owner's claim.
+    """
+    schedule = job.get("schedule")
+    claim = job.get("run_claim")
+    owner = str(claim.get("by") or "") if isinstance(claim, dict) else ""
+    if not (
+        isinstance(schedule, dict)
+        and schedule.get("kind") == "once"
+        and owner
+    ):
+        return _run_job_script(script_path)
+
+    job_id = str(job.get("id") or "")
+    stop = threading.Event()
+    heartbeat_context = contextvars.copy_context()
+
+    def _heartbeat_loop() -> None:
+        while not stop.wait(_RUN_CLAIM_HEARTBEAT_SECONDS):
+            try:
+                heartbeat_run_claim(job_id, expected_owner=owner)
+            except Exception:
+                logger.debug(
+                    "Job '%s': script run_claim heartbeat failed",
+                    job_id,
+                    exc_info=True,
+                )
+
+    heartbeat_thread = threading.Thread(
+        target=heartbeat_context.run,
+        args=(_heartbeat_loop,),
+        name="cron-script-claim-heartbeat",
+        daemon=True,
+    )
+    try:
+        heartbeat_thread.start()
+    except Exception:
+        logger.debug(
+            "Job '%s': could not start script run_claim heartbeat",
+            job_id,
+            exc_info=True,
+        )
+        return _run_job_script(script_path)
+
+    try:
+        return _run_job_script(script_path)
+    finally:
+        stop.set()
+        # Event.wait() wakes immediately.  Keep completion bounded if the
+        # heartbeat is already waiting on another process's jobs-file lock.
+        heartbeat_thread.join(timeout=1.0)
+
+
 def _parse_wake_gate(script_output: str) -> bool:
     """Parse the last non-empty stdout line of a cron job's pre-check script
     as a wake gate.
@@ -2056,7 +2280,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     # Inject output from referenced cron jobs as context.
     context_from = job.get("context_from")
     if context_from:
-        from cron.jobs import OUTPUT_DIR
+        from cron.jobs import get_cron_output_dir
+        output_dir = get_cron_output_dir()
         if isinstance(context_from, str):
             context_from = [context_from]
         for source_job_id in context_from:
@@ -2071,7 +2296,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                 )
                 continue
             try:
-                job_output_dir = OUTPUT_DIR / source_job_id
+                job_output_dir = output_dir / source_job_id
                 if not job_output_dir.exists():
                     continue  # silent skip — no output yet
                 output_files = sorted(
@@ -2134,6 +2359,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     from tools.skills_tool import skill_view
     from tools.skill_usage import bump_use
     from agent.skill_bundles import build_bundle_invocation_message, resolve_bundle_command_key
+    from agent.skill_utils import normalize_skill_lookup_name
 
     parts = []
     skipped: list[str] = []
@@ -2164,7 +2390,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             continue
 
         try:
-            loaded = json.loads(skill_view(skill_name))
+            loaded = json.loads(skill_view(normalize_skill_lookup_name(skill_name)))
         except (json.JSONDecodeError, TypeError):
             logger.warning("Cron job '%s': skill '%s' returned invalid JSON, skipping", job.get("name", job.get("id")), skill_name)
             skipped.append(skill_name)
@@ -2322,10 +2548,22 @@ def _guard_job_credential_exfil(job: dict) -> None:
         raise RuntimeError(f"Cron job '{job_id}' blocked for safety: {err}")
 
 
-def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
+def run_job(
+    job: dict, *, defer_agent_teardown: Optional[list] = None
+) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
-    
+
+    ``defer_agent_teardown``: when a caller passes a list, ``run_job`` skips
+    the agent's async-resource teardown (``agent.close()`` +
+    ``cleanup_stale_async_clients()``) in its ``finally`` block and instead
+    appends the live agent to that list. The caller is then responsible for
+    calling ``_teardown_cron_agent(agent)`` AFTER it has delivered the result.
+    This closes the ordering window in #58720 where delivery ran against a
+    torn-down async client (defense-in-depth alongside the interpreter-shutdown
+    guard). When ``None`` (the default) teardown happens inline as before, so
+    every existing caller is unchanged.
+
     Returns:
         Tuple of (success, full_output_doc, final_response, error_message)
     """
@@ -2370,7 +2608,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _prior_cwd = None
 
         try:
-            ok, output = _run_job_script(script_path)
+            ok, output = _run_job_script_with_claim_heartbeat(job, script_path)
         finally:
             if _prior_cwd is not None:
                 try:
@@ -2445,10 +2683,68 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
     # Initialize SQLite session store so cron job messages are persisted
     # and discoverable via session_search (same pattern as gateway/run.py).
+    #
+    # Bounded with its own timeout (separate from HERMES_CRON_TIMEOUT, which
+    # only watches the agent's run_conversation below): SessionDB.__init__
+    # opens/migrates state.db synchronously and has no timeout of its own
+    # against a wedged sqlite3.connect (e.g. a stale flock left by a crashed
+    # sibling process). An unbounded hang here is invisible to every other
+    # cron safeguard, because it happens BEFORE _submit_with_guard's future
+    # exists — the finally block that releases the job from
+    # _running_job_ids never runs, so the job stays wedged "running" until
+    # the whole gateway process is restarted, silently skipping every
+    # scheduled fire in between with "already running — skipping".
     _session_db = None
     try:
         from hermes_state import SessionDB
-        _session_db = SessionDB()
+
+        # Resolve timeout: env override → config.yaml → default 10s.
+        # Mirrors the script_timeout_seconds resolution pattern.
+        _session_db_timeout: float | None = None
+        _raw_env_timeout = os.getenv("HERMES_CRON_SESSION_DB_TIMEOUT", "").strip()
+        if _raw_env_timeout:
+            try:
+                _session_db_timeout = float(_raw_env_timeout)
+            except (ValueError, TypeError):
+                logger.warning(
+                    "Invalid HERMES_CRON_SESSION_DB_TIMEOUT=%r; using config/default",
+                    _raw_env_timeout,
+                )
+        if _session_db_timeout is None:
+            try:
+                from hermes_cli.config import load_config
+                _cfg = load_config() or {}
+                _cron_cfg = _cfg.get("cron", {}) if isinstance(_cfg, dict) else {}
+                _configured = _cron_cfg.get("session_db_timeout_seconds")
+                if _configured is not None:
+                    _session_db_timeout = float(_configured)
+            except Exception as exc:
+                logger.debug(
+                    "Failed to load cron.session_db_timeout_seconds from config: %s",
+                    exc,
+                )
+        if _session_db_timeout is None:
+            _session_db_timeout = 10.0
+
+        if _session_db_timeout > 0:
+            _session_db_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+            try:
+                _session_db = _session_db_pool.submit(SessionDB).result(timeout=_session_db_timeout)
+            finally:
+                # Don't wait for a wedged connect() to unwind — abandon the
+                # worker thread (same pattern as the agent inactivity timeout
+                # further down) rather than blocking shutdown on it too.
+                _session_db_pool.shutdown(wait=False)
+        else:
+            # 0 = unlimited (legacy behavior, opt-in for debugging)
+            _session_db = SessionDB()
+    except concurrent.futures.TimeoutError:
+        logger.error(
+            "Job '%s': SessionDB init did not return within %.0fs — proceeding "
+            "without a session store for this run instead of blocking it "
+            "forever",
+            job.get("id", "?"), _session_db_timeout,
+        )
     except Exception as e:
         logger.debug("Job '%s': SQLite session store not available: %s", job.get("id", "?"), e)
 
@@ -2459,7 +2755,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     prerun_script = None
     script_path = job.get("script")
     if script_path:
-        prerun_script = _run_job_script(script_path)
+        prerun_script = _run_job_script_with_claim_heartbeat(job, script_path)
         _ran_ok, _script_output = prerun_script
         if _ran_ok and not _parse_wake_gate(_script_output):
             logger.info(
@@ -2692,11 +2988,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         except Exception:
             pass
 
-        # Reasoning config from config.yaml (raw value — a YAML boolean False
-        # means thinking disabled, see parse_reasoning_effort)
-        from hermes_constants import parse_reasoning_effort
-        reasoning_config = parse_reasoning_effort(
-            _cfg.get("agent", {}).get("reasoning_effort", "")
+        # Reasoning config from config.yaml (per-model override > global) —
+        # resolved through the shared chokepoint against the job's effective
+        # model (per-job override > HERMES_MODEL env > config.yaml default).
+        from hermes_constants import resolve_reasoning_config
+        reasoning_config = resolve_reasoning_config(
+            _cfg if isinstance(_cfg, dict) else {}, str(model)
         )
 
         # Prefill messages from env or config.yaml. The top-level
@@ -2926,6 +3223,38 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             _cron_timeout = 600.0
         _cron_inactivity_limit = _cron_timeout if _cron_timeout > 0 else None
         _POLL_INTERVAL = 5.0
+        # Keep the one-shot run_claim fresh while the run is alive (#62002):
+        # the claim TTL is a dead-owner detector, but without a heartbeat a
+        # run that legitimately outlives it (stream stall, laptop asleep
+        # mid-run) is indistinguishable from a dead tick — another process
+        # re-dispatches it and get_due_jobs stale-removes the job record out
+        # from under the live run. Refreshing the claim from this monitor
+        # keeps "expired claim" meaning "owner died".
+        _job_schedule = job.get("schedule")
+        _is_oneshot = (
+            isinstance(_job_schedule, dict) and _job_schedule.get("kind") == "once"
+        )
+        _run_claim = job.get("run_claim")
+        _run_claim_owner = (
+            str(_run_claim.get("by") or "") if isinstance(_run_claim, dict) else ""
+        )
+        _last_claim_heartbeat = time.monotonic()
+
+        def _heartbeat_run_claim_if_due():
+            nonlocal _last_claim_heartbeat
+            if not _is_oneshot or not _run_claim_owner:
+                return
+            _mono = time.monotonic()
+            if _mono - _last_claim_heartbeat < _RUN_CLAIM_HEARTBEAT_SECONDS:
+                return
+            _last_claim_heartbeat = _mono
+            try:
+                heartbeat_run_claim(job_id, expected_owner=_run_claim_owner)
+            except Exception:
+                logger.debug(
+                    "Job '%s': run_claim heartbeat failed", job_name, exc_info=True
+                )
+
         _cron_pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         # Preserve scheduler-scoped ContextVar state (for example skill-declared
         # env passthrough registrations) when the cron run hops into the worker
@@ -2935,8 +3264,20 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         _inactivity_timeout = False
         try:
             if _cron_inactivity_limit is None:
-                # Unlimited — just wait for the result.
-                result = _cron_future.result()
+                # Unlimited — no inactivity watchdog, but a one-shot still
+                # needs its run_claim heartbeat, so poll instead of blocking.
+                if _is_oneshot:
+                    result = None
+                    while True:
+                        done, _ = concurrent.futures.wait(
+                            {_cron_future}, timeout=_POLL_INTERVAL,
+                        )
+                        if done:
+                            result = _cron_future.result()
+                            break
+                        _heartbeat_run_claim_if_due()
+                else:
+                    result = _cron_future.result()
             else:
                 result = None
                 while True:
@@ -2946,6 +3287,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                     if done:
                         result = _cron_future.result()
                         break
+                    _heartbeat_run_claim_if_due()
                     # Agent still running — check inactivity.
                     _idle_secs = 0.0
                     if hasattr(agent, "get_activity_summary"):
@@ -3140,20 +3482,40 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # main OpenAI/httpx client held by this ephemeral cron agent. Without
         # this, a gateway that ticks cron every N minutes leaks fds per job
         # until it hits EMFILE (#10200 / "too many open files").
-        try:
+        #
+        # When the caller opted to defer teardown (passed a list), hand the live
+        # agent back instead of closing it here — delivery must run against a
+        # live async client, and the caller tears down afterwards (#58720).
+        if defer_agent_teardown is not None:
             if agent is not None:
-                agent.close()
-        except (Exception, KeyboardInterrupt) as e:
-            logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
-        # Each cron run spins up a short-lived worker thread whose event loop
-        # dies as soon as the ``ThreadPoolExecutor`` shuts down. Any async
-        # httpx clients cached under that loop are now unusable — reap them
-        # so their transports don't accumulate in the process-global cache.
-        try:
-            from agent.auxiliary_client import cleanup_stale_async_clients
-            cleanup_stale_async_clients()
-        except Exception as e:
-            logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
+                defer_agent_teardown.append(agent)
+        else:
+            _teardown_cron_agent(agent, job_id)
+
+
+def _teardown_cron_agent(agent, job_id: str) -> None:
+    """Release an ephemeral cron agent's async resources.
+
+    Split out of ``run_job``'s ``finally`` so a caller that defers teardown
+    (to deliver first — #58720) can invoke the identical cleanup AFTER delivery.
+    Closes the agent (subprocesses, sandboxes, browser daemons, OpenAI/httpx
+    client) and reaps stale async clients whose loop has since closed. Idempotent
+    and independently guarded, matching the original inline behavior.
+    """
+    try:
+        if agent is not None:
+            agent.close()
+    except (Exception, KeyboardInterrupt) as e:
+        logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
+    # Each cron run spins up a short-lived worker thread whose event loop
+    # dies as soon as the ``ThreadPoolExecutor`` shuts down. Any async
+    # httpx clients cached under that loop are now unusable — reap them
+    # so their transports don't accumulate in the process-global cache.
+    try:
+        from agent.auxiliary_client import cleanup_stale_async_clients
+        cleanup_stale_async_clients()
+    except Exception as e:
+        logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
 def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -> bool:
@@ -3202,40 +3564,86 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         _scope_token = set_secret_scope(
             build_profile_secret_scope(_get_hermes_home())
         )
+        # Defer the cron agent's async-resource teardown until AFTER delivery.
+        # run_job normally closes the agent (and reaps stale async clients) in
+        # its finally block; doing that before _deliver_result runs means the
+        # live send races a torn-down async client (#58720). Passing a holder
+        # list makes run_job hand the agent back instead, and we tear it down
+        # below once delivery is done. Defense-in-depth alongside the
+        # interpreter-shutdown guard in _deliver_result.
+        _deferred_agents: list = []
         try:
-            success, output, final_response, error = run_job(job)
+            success, output, final_response, error = run_job(
+                job, defer_agent_teardown=_deferred_agents
+            )
+        except BaseException:
+            # run_job's finally still hands back the agent when it raises; tear
+            # it down here so a failed run never leaks its async resources
+            # (#10200), then re-raise into the outer handler. BaseException
+            # (not just Exception) so a KeyboardInterrupt/SystemExit mid-run
+            # still triggers teardown before propagating.
+            for _deferred_agent in _deferred_agents:
+                _teardown_cron_agent(_deferred_agent, job["id"])
+            raise
         finally:
             reset_secret_scope(_scope_token)
 
-        output_file = save_job_output(job["id"], output)
-        if verbose:
-            logger.info("Output saved to: %s", output_file)
-
-        # Deliver the final response to the origin/target chat.
-        # If the agent responded with [SILENT], skip delivery (but
-        # output is already saved above).  Failed jobs always deliver.
-        deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
-        # Treat whitespace-only final responses the same as empty
-        # responses: do not deliver a blank message, and let the
-        # empty-response guard below mark the run as a soft failure.
-        should_deliver = bool(deliver_content.strip())
-        # Cron silence suppression — see _is_cron_silence_response.  Replaces the
-        # old `SILENT_MARKER in ...upper()` substring check, which both leaked
-        # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
-        # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
-        # #46917).  Keeps the intentional bracketed-prefix / trailing-line
-        # tolerance the cron contract relies on.
-        if should_deliver and success and _is_cron_silence_response(deliver_content):
-            logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
-            should_deliver = False
-
+        # Everything from here through delivery runs with the agent still live
+        # (deferred teardown). Wrap it ALL in a try/finally so that if any step
+        # between run_job returning and delivery — save_job_output, the [SILENT]
+        # / empty-response computation, or _deliver_result itself — raises, the
+        # deferred agent is still torn down. Otherwise the outer `except` would
+        # swallow the error and leak the agent's subprocesses/clients (#10200).
         delivery_error = None
-        if should_deliver:
-            try:
-                delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
-            except Exception as de:
-                delivery_error = str(de)
-                logger.error("Delivery failed for job %s: %s", job["id"], de)
+        try:
+            output_file = save_job_output(job["id"], output)
+            if verbose:
+                logger.info("Output saved to: %s", output_file)
+
+            # If the gateway shutdown killed this job's tool subprocess
+            # mid-flight (#60432), the agent may still have produced a
+            # plausible-looking final_response from the truncated output --
+            # force the failure path so the delivered message is an honest
+            # "this run was interrupted" summary instead of that response.
+            # Peek-only: the flag stays set for the authoritative check
+            # right before mark_job_run below.
+            if success and _is_interrupted(job["id"]):
+                success = False
+                error = (
+                    "Interrupted by gateway shutdown before the run finished "
+                    "(tool subprocess was killed mid-flight)."
+                )
+
+            # Deliver the final response to the origin/target chat.
+            # If the agent responded with [SILENT], skip delivery (but
+            # output is already saved above).  Failed jobs always deliver.
+            deliver_content = final_response if success else _summarize_cron_failure_for_delivery(job, error)
+            # Treat whitespace-only final responses the same as empty
+            # responses: do not deliver a blank message, and let the
+            # empty-response guard below mark the run as a soft failure.
+            should_deliver = bool(deliver_content.strip())
+            # Cron silence suppression — see _is_cron_silence_response.  Replaces the
+            # old `SILENT_MARKER in ...upper()` substring check, which both leaked
+            # bracketless near-markers ("SILENT" / "NO_REPLY") and wrongly swallowed
+            # a real report that merely quoted "[SILENT]" mid-sentence (#51438,
+            # #46917).  Keeps the intentional bracketed-prefix / trailing-line
+            # tolerance the cron contract relies on.
+            if should_deliver and success and _is_cron_silence_response(deliver_content):
+                logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
+                should_deliver = False
+
+            if should_deliver:
+                try:
+                    delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
+                except Exception as de:
+                    delivery_error = str(de)
+                    logger.error("Delivery failed for job %s: %s", job["id"], de)
+        finally:
+            # Tear down the deferred agent(s) now that save + delivery have run
+            # (or raised). Must happen on every path so cron agents never leak
+            # their subprocesses/clients (#10200).
+            for _deferred_agent in _deferred_agents:
+                _teardown_cron_agent(_deferred_agent, job["id"])
 
         # Treat empty final_response as a soft failure so last_status
         # is not "ok" — the agent ran but produced nothing useful.
@@ -3244,12 +3652,14 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             success = False
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
-        mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+        if not _consume_interrupted_flag(job["id"]):
+            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
         return True
 
     except Exception as e:
         logger.error("Error processing job %s: %s", job['id'], e)
-        mark_job_run(job["id"], False, str(e))
+        if not _consume_interrupted_flag(job["id"]):
+            mark_job_run(job["id"], False, str(e))
         return False
 
 
@@ -3271,7 +3681,14 @@ def _notify_provider_jobs_changed() -> None:
         logger.debug("on_jobs_changed notify failed: %s", e)
 
 
-def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> int:
+def tick(
+    verbose: bool = True,
+    adapters=None,
+    loop=None,
+    sync: bool = True,
+    *,
+    can_dispatch=None,
+):
     """
     Check and run all due jobs.
     
@@ -3282,7 +3699,9 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         verbose: Whether to print status messages
         adapters: Optional dict mapping Platform → live adapter (from gateway)
         loop: Optional asyncio event loop (from gateway) for live adapter sends
-    
+        can_dispatch: Optional synchronous gate; false leaves due jobs untouched
+            for the next allowed tick
+
     Returns:
         Number of jobs executed (0 if another tick is already running)
     """
@@ -3304,6 +3723,10 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
         return 0
 
     try:
+        if can_dispatch is not None and not can_dispatch():
+            logger.debug("Cron dispatch paused while gateway drains existing work")
+            return 0
+
         due_jobs = get_due_jobs()
 
         if verbose and not due_jobs:
@@ -3375,6 +3798,17 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
             membership is released in the worker's finally block.
             """
             job_id = job["id"]
+            # A tick can race gateway teardown: once the interpreter is
+            # finalizing, ``pool.submit`` raises "cannot schedule new futures
+            # after interpreter shutdown" and crashes the tick. Skip cleanly —
+            # the job stays due and will fire on the next healthy tick
+            # (#58720, #55924).
+            if _interpreter_shutting_down():
+                logger.warning(
+                    "Job '%s' not dispatched — interpreter is shutting down",
+                    job.get("name", job_id),
+                )
+                return None
             with _running_lock:
                 if job_id in _running_job_ids:
                     logger.info("Job '%s' already running — skipping", job.get("name", job_id))
@@ -3389,7 +3823,20 @@ def tick(verbose: bool = True, adapters=None, loop=None, sync: bool = True) -> i
                     with _running_lock:
                         _running_job_ids.discard(j["id"])
 
-            return pool.submit(_run_and_release)
+            try:
+                return pool.submit(_run_and_release)
+            except RuntimeError as submit_err:
+                # Interpreter began finalizing between the guard above and the
+                # submit — release the in-flight claim we just took and skip.
+                if _interpreter_shutting_down(submit_err):
+                    with _running_lock:
+                        _running_job_ids.discard(job_id)
+                    logger.warning(
+                        "Job '%s' not dispatched — interpreter is shutting down",
+                        job.get("name", job_id),
+                    )
+                    return None
+                raise
 
         # Sequential pass for env-mutating (workdir) jobs.
         # Queued to a persistent single-thread pool so they run one at a time

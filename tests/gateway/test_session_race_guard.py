@@ -180,17 +180,20 @@ async def test_second_message_during_sentinel_queued_not_duplicate():
 
         # Verify sentinel is set
         assert runner._running_agents.get(session_key) is _AGENT_PENDING_SENTINEL
+        adapter = runner.adapters[Platform.TELEGRAM]
+        adapter._active_sessions[session_key] = asyncio.Event()
 
         # Second message should see "already running" and be queued
         result2 = await runner._handle_message(event2)
         assert result2 is None, "Second message should return None (queued)"
 
         # The second message should have been queued in adapter pending
-        adapter = runner.adapters[Platform.TELEGRAM]
         assert session_key in adapter._pending_messages, (
             "Second message should be queued as pending"
         )
         assert adapter._pending_messages[session_key] is event2
+        assert runner._session_run_generation[session_key] == 2
+        assert adapter._active_sessions[session_key].is_set()
 
         # Let first message complete
         barrier.set()

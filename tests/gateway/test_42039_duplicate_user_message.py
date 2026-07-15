@@ -12,6 +12,7 @@ This test covers the two fallback paths that previously lacked
 1. ``agent_failed_early`` path — transient 429/timeout failures
 2. ``not new_messages`` path — edge case where ``history_offset`` exceeds
    the actual message count
+3. Superseded setup generations never enter the provider API
 """
 
 import sys
@@ -242,3 +243,17 @@ async def test_normal_path_skip_db_when_agent_has_session_db(
     _assert_user_call_has_skip_db(
         runner.session_store.append_to_transcript.call_args_list, True
     )
+
+
+@pytest.mark.asyncio
+async def test_superseded_setup_generation_skips_agent_start(monkeypatch, tmp_path):
+    runner = _bootstrap(monkeypatch, tmp_path)
+    runner._is_session_run_current = lambda _key, _generation: False
+    runner._run_agent = AsyncMock()
+
+    result = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert result is None
+    runner._run_agent.assert_not_awaited()

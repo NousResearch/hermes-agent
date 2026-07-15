@@ -14,6 +14,7 @@ Covers four fix paths:
 
 import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -375,6 +376,20 @@ class TestQueuedMessageAlreadyStreamed:
         )
 
         assert _already_streamed is False
+
+
+class TestInterruptedStreamRetraction:
+    @pytest.mark.asyncio
+    async def test_cancels_stream_before_retracting_stale_preview(self):
+        from gateway.run import _retract_interrupted_stream_preview
+
+        consumer = SimpleNamespace(discard_interrupted_preview=AsyncMock())
+        stream_task = asyncio.create_task(asyncio.sleep(60))
+
+        await _retract_interrupted_stream_preview(consumer, stream_task)
+
+        assert stream_task.cancelled()
+        consumer.discard_interrupted_preview.assert_awaited_once_with()
 
 
 # ===================================================================

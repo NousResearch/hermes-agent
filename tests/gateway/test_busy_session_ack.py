@@ -3,6 +3,7 @@
 Verifies that users get an immediate status response instead of total silence
 when the agent is working on a task. See PR fix for the @Lonely__MH report.
 """
+import asyncio
 import time
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -61,6 +62,7 @@ def _make_runner():
     runner = object.__new__(GatewayRunner)
     runner._running_agents = {}
     runner._running_agents_ts = {}
+    runner._session_run_generation = {}
     runner._pending_messages = {}
     runner._busy_ack_ts = {}
     runner._draining = False
@@ -82,6 +84,7 @@ def _make_adapter(platform_val="telegram"):
     """Build a minimal adapter mock."""
     adapter = MagicMock()
     adapter._pending_messages = {}
+    adapter._active_sessions = {}
     adapter._send_with_retry = AsyncMock()
     adapter.config = MagicMock()
     adapter.config.extra = {}
@@ -193,6 +196,7 @@ class TestBusySessionAck:
         }
         runner._running_agents[sk] = agent
         runner._running_agents_ts[sk] = time.time() - 600  # 10 min ago
+        adapter._active_sessions[sk] = asyncio.Event()
         runner.adapters[event.source.platform] = adapter
 
         result = await runner._handle_active_session_busy_message(event, sk)
@@ -210,6 +214,7 @@ class TestBusySessionAck:
 
         # Verify agent interrupt was called
         agent.interrupt.assert_called_once_with("Are you working?")
+        assert adapter._active_sessions[sk].is_set()
 
     @pytest.mark.asyncio
     async def test_queue_mode_suppresses_interrupt_and_updates_ack(self):
@@ -661,8 +666,8 @@ class TestBusySessionAck:
         assert "restarting" in content
 
     @pytest.mark.asyncio
-    async def test_pending_sentinel_no_interrupt(self):
-        """When agent is PENDING_SENTINEL, don't call interrupt (it has no method)."""
+    async def test_pending_sentinel_supersedes_start_without_agent_interrupt(self):
+        """Interrupt during setup invalidates the obsolete turn before its API call."""
         runner, sentinel = _make_runner()
         runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
@@ -672,11 +677,15 @@ class TestBusySessionAck:
 
         runner._running_agents[sk] = sentinel
         runner._running_agents_ts[sk] = time.time()
+        runner._session_run_generation[sk] = 1
+        adapter._active_sessions[sk] = asyncio.Event()
         runner.adapters[event.source.platform] = adapter
 
         result = await runner._handle_active_session_busy_message(event, sk)
         assert result is True
-        # Should still send ack
+        assert adapter._pending_messages[sk] is event
+        assert runner._session_run_generation[sk] == 2
+        assert adapter._active_sessions[sk].is_set()
         adapter._send_with_retry.assert_called_once()
 
     @pytest.mark.asyncio

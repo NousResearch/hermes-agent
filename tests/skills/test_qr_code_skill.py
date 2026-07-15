@@ -206,11 +206,34 @@ class TestPayloadBuilders:
         monkeypatch.setattr(qr_code, "encode", fake_encode)
         rc = _run(["vcard", "--name", "Ada", "--phone", "+1", "--email", "a@b.c"])
         assert rc == 0
-        assert "BEGIN:VCARD" in captured["payload"]
-        assert "FN:Ada" in captured["payload"]
-        assert "TEL;CELL:+1" in captured["payload"]
-        assert "EMAIL:a@b.c" in captured["payload"]
-        assert captured["payload"].endswith("END:VCARD")
+        payload = captured["payload"]
+        assert "BEGIN:VCARD" in payload
+        assert "VERSION:2.1" in payload
+        assert "N:Ada;;;;" in payload
+        assert "FN:Ada" in payload
+        assert "TEL;CELL:+1" in payload
+        assert "EMAIL:a@b.c" in payload
+        # RFC 2426: CRLF-delimited records with a trailing CRLF
+        assert "\r\n" in payload
+        assert payload.endswith("END:VCARD\r\n")
+
+    def test_vcard_escapes_special_characters(self, monkeypatch):
+        captured = {}
+
+        def fake_encode(payload, out, terminal, ec):
+            captured["payload"] = payload
+            return 0
+
+        monkeypatch.setattr(qr_code, "encode", fake_encode)
+        rc = _run(["vcard", "--name", "Doe, John; Jr."])
+        assert rc == 0
+        payload = captured["payload"]
+        # Commas and semicolons in the name are escaped per RFC 2426
+        assert r"N:Doe\, John\; Jr.;;;;" in payload
+        assert r"FN:Doe\, John\; Jr." in payload
+        # No raw, unescaped special characters leaked into N/FN
+        assert "N:Doe, " not in payload
+        assert payload.endswith("END:VCARD\r\n")
 
     def test_vcard_requires_name(self, monkeypatch, capsys):
         rc = _run(["vcard", "--name", ""])

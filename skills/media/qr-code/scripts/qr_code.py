@@ -158,18 +158,37 @@ def wifi_encode(ssid: str, password: str, security: str, hidden: bool,
     return encode(payload, out, terminal, ec)
 
 
+def _vcard_escape(value: str) -> str:
+    """Escape a vCard property value per RFC 2426 (backslash, comma, semicolon, newline)."""
+    return (
+        value.replace("\\", "\\\\")
+        .replace(",", r"\,")
+        .replace(";", r"\;")
+        .replace("\n", r"\n")
+    )
+
+
 def vcard_encode(name: str, phone: str, email: str,
                  out: Optional[Path], terminal: bool, ec: str) -> int:
     if not name:
         sys.stderr.write("vcard: --name is required\n")
         return 1
-    lines = ["BEGIN:VCARD", "VERSION:2.1", f"FN:{name}"]
+    escaped = _vcard_escape(name)
+    # RFC 2426: VERSION, FN, and N are required; records are CRLF-delimited
+    # with a trailing CRLF. N is "Family;Given;Additional;Prefix;Suffix".
+    lines = [
+        "BEGIN:VCARD",
+        "VERSION:2.1",
+        f"N:{escaped};;;;",
+        f"FN:{escaped}",
+    ]
     if phone:
         lines.append(f"TEL;CELL:{phone}")
     if email:
         lines.append(f"EMAIL:{email}")
     lines.append("END:VCARD")
-    return encode("\n".join(lines), out, terminal, ec)
+    payload = "\r\n".join(lines) + "\r\n"
+    return encode(payload, out, terminal, ec)
 
 
 def batch_encode(infile: Path, outdir: Path, ec: str) -> int:

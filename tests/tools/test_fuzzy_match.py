@@ -774,3 +774,28 @@ class TestIdempotencyGuard:
         # Should be a plain no-match, not the "already applied" message.
         assert "already" not in err.lower()
 
+
+
+class TestIdempotencyGuardScoping:
+    """Sweeper feedback: guard must be scoped to the candidate position,
+    not whole-file new_string presence. Unrelated occurrences must not block."""
+
+    def test_unrelated_new_string_occurrence_does_not_block(self):
+        """If new_string appears ELSEWHERE in the file but old_string's
+        context doesn't overlap with that occurrence, fuzzy match should proceed."""
+        content = (
+            "import os\n"
+            "def foo():\n"
+            "    x = 1\n"
+            "    return x\n"
+            "def bar():\n"
+            "    return 'new_value'\n"
+        )
+        old = "    x = 1\n    return x"
+        new = "    x = 2\n    return 'new_value'"
+        # new_string's "return 'new_value'" appears in bar() but that's
+        # an unrelated occurrence. The patch should still apply to foo().
+        result, count, strat, err = fuzzy_find_and_replace(content, old, new)
+        assert err is None, f"unrelated occurrence should not block: {err}"
+        assert count == 1
+        assert "x = 2" in result

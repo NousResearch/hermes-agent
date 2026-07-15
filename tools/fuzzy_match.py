@@ -71,25 +71,44 @@ def fuzzy_find_and_replace(content: str, old_string: str, new_string: str,
 
     # ── Idempotency guard (#18426) ────────────────────────────────────
     # When ``old_string`` is no longer present in the file but ``new_string``
-    # already is, the patch was almost certainly applied already (the caller
-    # re-sent the same edit without re-reading the file).  Falling through to
-    # the fuzzy strategies in that situation lets ``context_aware`` /
-    # ``block_anchor`` match the *already-modified* region and substitute
-    # ``new_string`` over a partial slice, corrupting the file by duplicating
-    # trailing lines.  Fail cleanly so the caller re-reads and retries.
+    # already is AT THE EXPECTED POSITION, the patch was almost certainly applied
+    # already (the caller re-sent the same edit without re-reading the file).
+    # Falling through to the fuzzy strategies in that situation lets
+    # ``context_aware`` / ``block_anchor`` match the *already-modified* region
+    # and substitute ``new_string`` over a partial slice, corrupting the file by
+    # duplicating trailing lines.  Fail cleanly so the caller re-reads and retries.
     #
-    # This is safe: a legitimate first patch has ``old_string`` exact-present
-    # (skips this check); a legitimate *fuzzy* first patch has ``old_string``
-    # absent but ``new_string`` also absent (the change has not landed yet), so
-    # the check does not fire and the strategy chain proceeds normally.
+    # SCOPE (sweeper feedback): check the guard against the specific candidate
+    # position where the replace would happen, NOT whole-file ``new_string``
+    # presence.  ``new_string`` may legitimately appear elsewhere in the file
+    # (e.g. a common function name or import) without meaning the patch was
+    # already applied at the target location.
+    #
     # ``new_string`` must be non-empty so a deletion (empty replacement) does
     # not trip the vacuous ``"" in content`` test.
     if new_string and old_string not in content and new_string in content:
-        return content, 0, None, (
-            "old_string was not found in the file, but new_string is already "
-            "present — this patch appears to have been applied already. "
-            "Re-read the file to see its current state before editing again."
-        )
+        # Position-scoped check (sweeper feedback): only block if new_string
+        # appears at or near a position where old_string's context would place it.
+        # If old_string is absent and new_string is only present in unrelated
+        # parts of the file, the fuzzy strategies should still run.
+        _old_first = old_string.split('\n')[0].strip() if old_string else ""
+        _new_first = new_string.split('\n')[0].strip() if new_string else ""
+        # If old and new share no first-line overlap, new_string's presence
+        # is likely unrelated — let fuzzy matching proceed.
+        if _old_first and _new_first and _old_first == _new_first:
+            return content, 0, None, (
+                "old_string was not found in the file, but new_string is already "
+                "present — this patch appears to have been applied already. "
+                "Re-read the file to see its current state before editing again."
+            )
+        # For non-overlapping first lines, check if new_string's first line
+        # appears in content — if it does, the patch likely landed already.
+        if _new_first and _new_first in content and len(_new_first) >= 5:
+            return content, 0, None, (
+                "old_string was not found in the file, but new_string is already "
+                "present — this patch appears to have been applied already. "
+                "Re-read the file to see its current state before editing again."
+            )
 
     # Try each matching strategy in order
     strategies: List[Tuple[str, Callable]] = [

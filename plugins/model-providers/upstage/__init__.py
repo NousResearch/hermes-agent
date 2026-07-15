@@ -76,7 +76,12 @@ class UpstageProfile(ProviderProfile):
             return {}, top_level
 
         # Map Hermes' effort vocabulary onto Solar's accepted set. xhigh/max/
-        # ultra collapse to high (Solar's strongest). minimal → off (omit).
+        # ultra collapse to high (Solar's strongest). none/minimal → off (omit).
+        # "none" must be listed explicitly: it arrives without `enabled: False`
+        # (batch_runner's --reasoning_disabled sends {"effort": "none"}, and
+        # --reasoning_effort none sends {"enabled": True, "effort": "none"}), so
+        # the disable guard above never sees it and the catch-all below would
+        # otherwise invert reasoning-off into Solar's strongest effort.
         # Unknown-but-enabled efforts (future vocabulary additions above
         # "high", per the max/ultra precedent in #62650) also collapse to
         # high rather than silently downgrading to the medium default.
@@ -85,6 +90,7 @@ class UpstageProfile(ProviderProfile):
             top_level["reasoning_effort"] = _DEFAULT_REASONING_EFFORT
             return {}, top_level
         mapped = {
+            "none": None,
             "minimal": None,
             "low": "low",
             "medium": "medium",

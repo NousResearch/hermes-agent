@@ -111,6 +111,24 @@ class TestUpstageReasoning:
         )
         assert top_level == {}
 
+    def test_effort_none_omits_field(self, upstage_profile):
+        # "none" is documented-valid Hermes effort vocabulary, and neither shape
+        # it arrives in carries `enabled: False`, so the disable guard above
+        # can't catch either: batch_runner's --reasoning_disabled builds
+        # {"effort": "none"}, and --reasoning_effort none builds
+        # {"enabled": True, "effort": "none"}. A request to turn reasoning OFF
+        # must never reach the unknown-effort catch-all and become Solar's
+        # strongest effort.
+        _, top_level = upstage_profile.build_api_kwargs_extras(
+            reasoning_config={"effort": "none"}, model="solar-pro3"
+        )
+        assert top_level == {}
+
+        _, top_level = upstage_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": "none"}, model="solar-pro3"
+        )
+        assert top_level == {}
+
     def test_disabled_omits_field(self, upstage_profile):
         # `/reasoning none` → enabled False → explicitly off.
         _, top_level = upstage_profile.build_api_kwargs_extras(

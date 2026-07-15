@@ -994,6 +994,7 @@ def test_create_happy_path(worker_env):
     assert d["ok"] is True
     assert d["task_id"]
     assert d["status"] == "todo"  # parent isn't done yet
+    assert d["preflight"]["level"] == "low"
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
@@ -1002,6 +1003,26 @@ def test_create_happy_path(worker_env):
         assert child.assignee == "peer"
     finally:
         conn.close()
+
+
+def test_create_high_risk_preflight_is_advisory(worker_env):
+    from tools import kanban_tools as kt
+
+    out = kt._handle_create({
+        "title": "broad live repair",
+        "assignee": "peer",
+        "body": (
+            "Investigate and design the repair, then implement API, database, CLI, "
+            "and dashboard changes. Back up and migrate live data with credentials."
+        ),
+    })
+    data = json.loads(out)
+
+    assert data["ok"] is True
+    assert data["status"] == "ready"
+    assert data["preflight"]["level"] == "high"
+    assert data["preflight"]["recommendation"] == "decompose_before_dispatch"
+    assert "non-blocking" in data["advice"].lower()
 
 
 def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):
@@ -1455,6 +1476,13 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     assert "kanban_complete" in prompt
     assert "kanban_block" in prompt
     assert "kanban_create" in prompt
+    assert "Checkpoint — done:" in prompt
+    assert "after discovery/design" in prompt
+    assert "after implementation" in prompt
+    assert "after local verification" in prompt
+    assert "before an external wait" in prompt
+    assert "heartbeat is not a phase checkpoint" in prompt
+    assert "approximately 20 tool/API iterations" in prompt
     # Anti-shell guidance
     assert "Do not shell out" in prompt or "tools — they work" in prompt
 

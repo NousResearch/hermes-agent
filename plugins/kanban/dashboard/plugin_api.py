@@ -612,6 +612,8 @@ class CreateTaskBody(BaseModel):
 
 @router.post("/tasks")
 def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
+    from hermes_cli.kanban_task_risk import assess_task_risk
+
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
@@ -634,7 +636,19 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             goal_max_turns=payload.goal_max_turns,
         )
         task = kanban_db.get_task(conn, task_id)
-        body: dict[str, Any] = {"task": _task_dict(task) if task else None}
+        preflight = assess_task_risk(
+            title=payload.title,
+            body=payload.body,
+            goal_mode=payload.goal_mode,
+            max_runtime_seconds=payload.max_runtime_seconds,
+        )
+        body: dict[str, Any] = {
+            "task": _task_dict(task) if task else None,
+            "preflight": preflight.as_dict(),
+        }
+        warnings: list[str] = []
+        if preflight.level in {"medium", "high"}:
+            warnings.append(preflight.message())
         # Surface a dispatcher-presence warning so the UI can show a
         # banner when a `ready` task would otherwise sit idle because no
         # gateway is running (or dispatch_in_gateway=false). Only emit
@@ -645,10 +659,12 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
                 from hermes_cli.kanban import _check_dispatcher_presence
                 running, message = _check_dispatcher_presence()
                 if not running and message:
-                    body["warning"] = message
+                    warnings.append(message)
             except Exception:
                 # Probe failure must never block the create itself.
                 pass
+        if warnings:
+            body["warning"] = " ".join(warnings)
         return body
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -2574,6 +2574,15 @@ def create_task(
         if board_default:
             workspace_path = str(board_default)
 
+    from hermes_cli.kanban_task_risk import assess_task_risk
+
+    preflight = assess_task_risk(
+        title=title,
+        body=body,
+        goal_mode=goal_mode,
+        max_runtime_seconds=max_runtime_seconds,
+    )
+
     # Retry once on the extremely unlikely id collision.
     for attempt in range(2):
         task_id = _new_task_id()
@@ -2681,6 +2690,13 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+                if preflight.level in {"medium", "high"}:
+                    _append_event(
+                        conn,
+                        task_id,
+                        "task_preflight",
+                        preflight.event_payload(),
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

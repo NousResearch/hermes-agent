@@ -96,7 +96,9 @@ def test_create_task_appears_on_board(client):
         },
     )
     assert r.status_code == 200, r.text
-    task = r.json()["task"]
+    response = r.json()
+    task = response["task"]
+    assert response["preflight"]["level"] == "low"
     assert task["title"] == "Research LLM caching"
     assert task["assignee"] == "researcher"
     assert task["status"] == "ready"  # no parents -> immediately ready
@@ -1524,6 +1526,31 @@ def test_create_task_includes_warning_when_no_dispatcher(client, monkeypatch):
     assert r.status_code == 200
     data = r.json()
     assert data.get("warning")
+    assert "gateway" in data["warning"].lower()
+
+
+def test_create_task_combines_high_risk_and_dispatcher_warnings(client, monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.kanban._check_dispatcher_presence",
+        lambda: (False, "No gateway is running."),
+    )
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "broad live repair",
+            "assignee": "worker",
+            "body": (
+                "Investigate and design the repair, then implement API, database, CLI, "
+                "and dashboard changes. Back up and migrate live data with credentials."
+            ),
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["task"]["status"] == "ready"
+    assert data["preflight"]["level"] == "high"
+    assert "non-blocking" in data["warning"].lower()
     assert "gateway" in data["warning"].lower()
 
 

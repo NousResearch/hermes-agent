@@ -1303,6 +1303,8 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 
 
 def _cmd_create(args: argparse.Namespace) -> int:
+    from hermes_cli.kanban_task_risk import assess_task_risk
+
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
@@ -1349,10 +1351,22 @@ def _cmd_create(args: argparse.Namespace) -> int:
             initial_status=getattr(args, "initial_status", "running"),
         )
         task = kb.get_task(conn, task_id)
+    preflight = assess_task_risk(
+        title=args.title,
+        body=args.body,
+        goal_mode=bool(getattr(args, "goal_mode", False)),
+        max_runtime_seconds=max_runtime,
+    )
     if getattr(args, "json", False):
-        print(json.dumps(_task_to_dict(task), indent=2, ensure_ascii=False))
+        payload = _task_to_dict(task)
+        payload["preflight"] = preflight.as_dict()
+        print(json.dumps(payload, indent=2, ensure_ascii=False))
     else:
         print(f"Created {task_id}  ({task.status}, assignee={task.assignee or '-'})")
+
+        warnings: list[str] = []
+        if preflight.level in {"medium", "high"}:
+            warnings.append(preflight.message())
 
         # Warn when the task would sit in `ready` because no dispatcher is
         # present. Only warn on ready+assigned tasks — triage/todo are
@@ -1364,7 +1378,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
         if task.status == "ready" and task.assignee:
             running, message = _check_dispatcher_presence()
             if not running and message:
-                print(f"\n⚠  {message}", file=sys.stderr)
+                warnings.append(message)
+        if warnings:
+            print("\n⚠  " + "\n⚠  ".join(warnings), file=sys.stderr)
     return 0
 
 

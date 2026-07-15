@@ -844,6 +844,8 @@ def _handle_create(args: dict, **kw) -> str:
     ``parents`` can be a list of task ids; dependency-gated promotion
     works as usual.
     """
+    from hermes_cli.kanban_task_risk import assess_task_risk
+
     title = args.get("title")
     if not title or not str(title).strip():
         return tool_error("title is required")
@@ -943,11 +945,24 @@ def _handle_create(args: dict, **kw) -> str:
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)
-            return _ok(
-                task_id=new_tid,
-                status=new_task.status if new_task else None,
-                subscribed=subscribed,
+            preflight = assess_task_risk(
+                title=str(title).strip(),
+                body=body,
+                goal_mode=goal_mode,
+                max_runtime_seconds=(
+                    int(max_runtime_seconds)
+                    if max_runtime_seconds is not None else None
+                ),
             )
+            response = {
+                "task_id": new_tid,
+                "status": new_task.status if new_task else None,
+                "subscribed": subscribed,
+                "preflight": preflight.as_dict(),
+            }
+            if preflight.level in {"medium", "high"}:
+                response["advice"] = preflight.message()
+            return _ok(**response)
         finally:
             conn.close()
     except ValueError as e:

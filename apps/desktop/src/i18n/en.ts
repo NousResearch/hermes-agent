@@ -842,7 +842,6 @@ export const en: Translations = {
       modelInactiveHint: 'Select this backend first to change its model.',
       modelSelectedTitle: 'Model selected',
       modelSelectedMessage: model => `${model} applies to new sessions.`,
-
       failedSelectModel: model => `Failed to select ${model}`,
       terminalBackend: {
         sectionTitle: 'Execution backend',
@@ -857,9 +856,8 @@ export const en: Translations = {
         failedSelect: backend => `Failed to select ${backend}`,
         needsSetupHint: 'You can select this backend now — commands will fail until setup is complete.'
       }
+    }
 
-      failedSelectModel: model => `Failed to select ${model}`
-    },
     uninstall: {
       heading: 'Danger zone',
       title: 'Uninstall Hermes',
@@ -894,8 +892,6 @@ export const en: Translations = {
             'EVERYTHING — the Chat GUI, the Hermes agent, and all of your config, chats, secrets, and logs'
         }
       }
-    }
-
     }
   },
 

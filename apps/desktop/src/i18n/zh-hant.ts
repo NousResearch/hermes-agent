@@ -844,7 +844,6 @@ export const zhHant = defineLocale({
       postSetupCompleteMessage: step => `已安裝 ${step}。`,
       postSetupErrorTitle: '設定完成但有錯誤',
       postSetupErrorMessage: step => `請檢查 ${step} 日誌。`,
-
       postSetupFailed: step => `執行 ${step} 設定失敗`,
       terminalBackend: {
         sectionTitle: '執行後端',
@@ -858,9 +857,9 @@ export const zhHant = defineLocale({
         selectedMessage: backend => `終端命令現在透過 ${backend} 執行。將套用於新工作階段。`,
         failedSelect: backend => `選擇 ${backend} 失敗`,
         needsSetupHint: '現在即可選擇此後端——但在完成設定前命令將會失敗。'
+      }
+    }
 
-      postSetupFailed: step => `執行 ${step} 設定失敗`
-    },
     uninstall: {
       heading: '危險區域',
       title: '解除安裝 Hermes',
@@ -889,7 +888,6 @@ export const zhHant = defineLocale({
           description: '移除應用程式、代理和所有使用者資料——設定、對話、排程工作、金鑰、紀錄。',
           consequence: '所有內容——聊天介面、Hermes 代理、所有設定、對話、金鑰和紀錄'
         }
-
       }
     }
   },

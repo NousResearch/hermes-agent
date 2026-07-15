@@ -872,7 +872,6 @@ export const ja = defineLocale({
       postSetupCompleteMessage: step => `${step} をインストールしました。`,
       postSetupErrorTitle: 'セットアップはエラーで終了しました',
       postSetupErrorMessage: step => `${step} のログを確認してください。`,
-
       postSetupFailed: step => `${step} のセットアップの実行に失敗しました`,
       terminalBackend: {
         sectionTitle: '実行バックエンド',
@@ -886,9 +885,9 @@ export const ja = defineLocale({
         selectedMessage: backend => `ターミナルコマンドは ${backend} で実行されます。新しいセッションに適用されます。`,
         failedSelect: backend => `${backend} の選択に失敗しました`,
         needsSetupHint: 'このバックエンドは今すぐ選択できますが、セットアップが完了するまでコマンドは失敗します。'
+      }
+    }
 
-      postSetupFailed: step => `${step} のセットアップの実行に失敗しました`
-    },
     uninstall: {
       heading: '危険区域',
       title: 'Hermes をアンインストール',
@@ -922,7 +921,6 @@ export const ja = defineLocale({
           consequence:
             'すべて——チャット GUI、Hermes エージェント、およびすべての設定、チャット、シークレット、ログ'
         }
-
       }
     }
   },

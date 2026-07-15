@@ -322,3 +322,21 @@ def test_docker_forward_env_is_bridged_everywhere():
     assert "docker_forward_env" in _gateway_env_map_keys()
     assert "docker_forward_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
+
+
+def test_local_memory_guard_is_bridged_everywhere():
+    """Regression pin for the local backend cgroup memory guard.
+
+    ``terminal.local_memory_max_mb`` and ``terminal.local_memory_swap_max_mb``
+    are consumed by terminal_tool / local backend via TERMINAL_LOCAL_MEMORY_* env
+    vars.  Guard the same four-site bridge invariant as Docker resource keys so
+    the setting works in CLI, gateway, and ``hermes config set`` paths.
+    """
+    for key, env_var in (
+        ("local_memory_max_mb", "TERMINAL_LOCAL_MEMORY_MAX_MB"),
+        ("local_memory_swap_max_mb", "TERMINAL_LOCAL_MEMORY_SWAP_MAX_MB"),
+    ):
+        assert key in _cli_env_map_keys()
+        assert key in _gateway_env_map_keys()
+        assert key in _save_config_env_sync_keys()
+        assert env_var in _terminal_tool_env_var_names()

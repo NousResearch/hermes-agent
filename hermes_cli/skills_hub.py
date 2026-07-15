@@ -648,6 +648,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             or getattr(meta, "identifier", "")
             or identifier
         )
+<<<<<<< Updated upstream
     from tools.skills_hub import HUB_DIR, source_url_for_bundle
     result, scan_provenance = scan_skill_cached(
         q_path,
@@ -666,6 +667,10 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         f"[dim]Source: {scan_provenance['source_url']}; scanned "
         f"{scan_provenance['scanned_at']}; rules: {rules}[/]"
     )
+=======
+    result = scan_skill(q_path, source=scan_source)
+    c.print(format_scan_report(result), markup=False)
+>>>>>>> Stashed changes
 
     # Check install policy
     allowed, reason = should_allow_install(result, force=force)
@@ -1101,7 +1106,7 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
             continue
 
         result = scan_skill(skill_path, source=entry.get("identifier", entry["source"]))
-        c.print(format_scan_report(result))
+        c.print(format_scan_report(result), markup=False)
 
         if deep:
             c.print(format_ast_report(ast_scan_path(skill_path), skill_name=entry["name"]))
@@ -1480,7 +1485,7 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
     # Self-scan before publishing
     c.print(f"[bold]Scanning '{name}' before publish...[/]")
     result = scan_skill(path, source="self")
-    c.print(format_scan_report(result))
+    c.print(format_scan_report(result), markup=False)
     if result.verdict == "dangerous":
         c.print("[bold red]Cannot publish a skill with DANGEROUS verdict.[/]\n")
         return

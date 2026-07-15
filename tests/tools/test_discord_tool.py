@@ -569,6 +569,20 @@ class TestCreateThread:
         assert "type" not in body                       # not a text thread
 
     @patch("tools.discord_tool._discord_request")
+    def test_create_media_post_uses_message_body(self, mock_req, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        mock_req.side_effect = [
+            {"id": "56", "type": 16},
+            {"id": "911", "name": "Media post"},
+        ]
+
+        discord_core(action="create_thread", channel_id="56", name="Media post")
+
+        body = mock_req.call_args_list[1].kwargs["body"]
+        assert body["message"] == {"content": "Media post"}
+        assert "type" not in body
+
+    @patch("tools.discord_tool._discord_request")
     def test_create_forum_post_defaults_content_to_name(self, mock_req, monkeypatch):
         """Forum post with tags but no content → content falls back to name."""
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")

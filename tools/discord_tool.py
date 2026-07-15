@@ -599,8 +599,8 @@ def _create_thread(
     - ``message_id`` given → thread anchored to an existing message
       (text/announcement channel). No message body, no type field, and no
       channel pre-fetch (the anchor endpoint is unambiguous).
-    - target is a GUILD_FORUM channel (``type == 15``) → a FORUM post. Forum
-      (and media) channels REQUIRE the message-object endpoint
+    - target is a GUILD_FORUM or GUILD_MEDIA channel (``type`` 15 or 16) → a
+      post. Forum and media channels REQUIRE the message-object endpoint
       (``POST /channels/{forum_id}/threads`` with a ``message`` object) and
       REJECT the text-style "Start Thread" call — so we must detect the forum
       by channel type, NOT by whether tags were supplied. ``applied_tags`` is
@@ -627,13 +627,12 @@ def _create_thread(
             "name": thread.get("name"),
         })
 
-    # Discriminate forum vs text on the actual channel type (type 15 ==
-    # GUILD_FORUM). Tag presence is NOT a reliable signal — tagless forum
-    # posts are normal and still require the message-object endpoint.
+    # Tag presence is not a reliable discriminator: tagless forum/media posts
+    # still require the message-object endpoint.
     channel = _discord_request("GET", f"/channels/{channel_id}", token)
     path = f"/channels/{channel_id}/threads"
-    if channel.get("type") == 15:
-        # Forum post: required message object; tags optional.
+    if channel.get("type") in (15, 16):
+        # Forum/media post: required message object; tags optional.
         body = {
             "name": name,
             "auto_archive_duration": auto_archive_duration,

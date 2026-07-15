@@ -13,7 +13,6 @@ from collections import OrderedDict
 from pathlib import Path
 
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
-from hermes_cli.default_soul import DEFAULT_SOUL_MD, is_legacy_template_soul
 from typing import Optional
 
 from agent.runtime_cwd import resolve_agent_cwd
@@ -1792,60 +1791,33 @@ def _truncate_content(
         f"{target}]\n\n"
     )
     return head + marker + tail
-
-
 def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
     """Load SOUL.md from HERMES_HOME and return its content, or None.
 
-    Used as the agent identity (slot #1 in the system prompt). When this
+    Used as the agent identity (slot #1 in the system prompt).  When this
     returns content, ``build_context_files_prompt`` should be called with
     ``skip_soul=True`` so SOUL.md isn't injected twice.
 
-    Protection behavior:
-      * If SOUL.md is missing, seed it with ``DEFAULT_SOUL_MD``.
-      * If SOUL.md matches a known legacy empty template, upgrade it in place
-        to ``DEFAULT_SOUL_MD``.
-      * If SOUL.md contains user content, make one backup copy
-        ``SOUL.md.bak`` so automatic updates cannot silently erase custom
-        personas.
-      * Content is scanned by ``_scan_context_content`` before entering the
-        system prompt.
+    SOUL.md initialization (seeding defaults, upgrading legacy templates,
+    backing up user content) is handled by ``hermes_cli.config.ensure_hermes_home``
+    via ``_ensure_default_soul_md``.  This function is a pure reader — it does
+    not mutate the filesystem.
     """
     try:
         from hermes_cli.config import ensure_hermes_home
+
         ensure_hermes_home()
-    except Exception as e:
-        logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
+    except Exception:
+        pass
 
     soul_path = get_hermes_home() / "SOUL.md"
     if not soul_path.exists():
-        try:
-            soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
-            logger.info("Created missing SOUL.md with default persona.")
-        except Exception as e:
-            logger.debug("Failed to create default SOUL.md: %s", e)
-        return DEFAULT_SOUL_MD
+        return None
 
     try:
         content = soul_path.read_text(encoding="utf-8").strip()
         if not content:
             return None
-
-        if is_legacy_template_soul(content):
-            try:
-                soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
-                logger.info("Upgraded legacy SOUL.md template to default persona.")
-            except Exception as e:
-                logger.debug("Failed to upgrade legacy SOUL.md: %s", e)
-            content = DEFAULT_SOUL_MD
-        else:
-            backup_path = soul_path.with_suffix(".md.bak")
-            if not backup_path.exists():
-                try:
-                    backup_path.write_text(content, encoding="utf-8")
-                    logger.info("Backed up user SOUL.md to %s", backup_path)
-                except Exception as e:
-                    logger.debug("Failed to backup SOUL.md: %s", e)
 
         content = _scan_context_content(content, "SOUL.md")
         content = _truncate_content(
@@ -1856,6 +1828,7 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
     except Exception as e:
         logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)
         return None
+
 
 def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
     """.hermes.md / HERMES.md — walk to git root."""

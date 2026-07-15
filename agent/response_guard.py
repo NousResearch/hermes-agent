@@ -13,6 +13,17 @@ for patterns associated with LLM persuasion bombs:
 The detector is intentionally small (stdlib only) and aims for sub-millisecond
 latency on short responses. It returns a structured result that callers can use
 to log, flag, or rewrite the model output.
+
+False-positive design:
+    Patterns are scoped to multi-word phrases that are unlikely in ordinary
+    helpful responses.  Single-word matches (e.g. "manipulate", "dangerous")
+    are never used alone — they require a surrounding rhetorical frame like
+    "you are trying to manipulate me" or "I will not comply with your
+    dangerous request".  Factual corrections ("you are mistaken about X"),
+    technical safety warnings ("this is dangerous because..."), and quoted
+    instructions ("ignore your previous instructions" said *by* the user)
+    should not trigger the guard when they appear in a helpful, explanatory
+    context.
 """
 
 from __future__ import annotations
@@ -45,9 +56,10 @@ class PersuasionResult:
 # ---------------------------------------------------------------------------
 # Pattern catalog. Each tuple is (category, severity-weight, regexes...).
 #
-# Patterns are lowercase and applied to lowercased text. They are intentionally
-# broad enough to catch common persuasion-bomb rhetoric while avoiding
-# everyday conversational uses.
+# Patterns are lowercase and applied to lowercased text. They target
+# multi-word rhetorical frames — not individual words — to avoid
+# classifying ordinary disagreement, factual corrections, or safety
+# warnings as persuasion bombs.
 # ---------------------------------------------------------------------------
 
 _PATTERNS: List[Tuple[str, int, List[str]]] = [
@@ -55,27 +67,32 @@ _PATTERNS: List[Tuple[str, int, List[str]]] = [
         "escalation",
         1,
         [
-            r"\byou (?:are|seem|appear) (?:trying|attempting) to\b",
-            r"\b(?:manipulate|manipulating|deceive|trick|mislead)\b",
-            r"\bi (?:will|must) not (?:comply|obey|follow|engage|participate)\b",
-            r"\bthis is (?:wrong|dangerous|harmful|unethical|illegal|toxic|absurd)\b",
-            r"\brefuse to (?:engage|comply|respond|answer|accept)\b",
-            r"\bi (?:reject|denounce|condemn) (?:this|that|your)\b",
-            r"\byou are (?:wrong|incorrect|mistaken)\b",
-            r"\bi am (?:right|correct)\b",
-            r"\bwithout question\b",
-            r"\bdo exactly what you want\b",
+            # Requires attribution of intent ("you are trying to...")
+            r"\byou (?:are|seem|appear) (?:trying|attempting) to (?:manipulate|deceive|trick|mislead|coerce|force)\b",
+            # Direct refusal rhetoric — must include the compliance verb
+            r"\bi (?:will|must|cannot|can ?not) not (?:comply|obey|follow|engage|participate) (?:with |in )?(?:your |this |that |such )?\b",
+            # Accusation of manipulation — needs the "you are" frame
+            r"\byou (?:are|seem|appear) (?:trying|attempting) to (?:manipulate|deceive|trick|mislead)\b",
+            # Rejection with condemnation — needs the verb
+            r"\bi (?:reject|denounce|condemn) (?:this|that|your) (?:request|prompt|attempt|approach)\b",
+            # "Refuse to engage" must be a direct refusal, not a warning
+            r"\bi refuse to (?:engage|comply|respond|answer|accept)\b",
         ],
     ),
     (
         "sycophancy",
         1,
         [
+            # Intensifier + "right" — "you are right" alone is fine
             r"\byou are (?:so|absolutely|completely|totally|entirely) right\b",
-            r"\byou(?:'re| are) (?:perfect|brilliant|exceptional|amazing|incredible|correct|outstanding)\b",
+            r"\byou(?:'re| are) (?:perfect|brilliant|exceptional|amazing|incredible|outstanding)\b",
+            # Complete agreement with intensifier
             r"\bi (?:completely|totally|absolutely|entirely|fully) agree\b",
+            # Flattery about insight quality
             r"\byour (?:insight|point|perspective|take|idea) is (?:perfect|brilliant|flawless|spot on|exceptional)\b",
+            # Uncritical agreement opener
             r"\bof course,? (?:you(?:'re| are)|i agree)\b",
+            # User-directed flattery
             r"\b(?:exceptional|brilliant|amazing) user\b",
             r"\bclearly exceptional\b",
         ],
@@ -84,10 +101,14 @@ _PATTERNS: List[Tuple[str, int, List[str]]] = [
         "certainty",
         1,
         [
+            # Must include the intensifier + certainty claim
             r"\bi (?:am|remain) (?:absolutely|certainly|definitely|completely) certain\b",
+            # Guaranteed outcome with intensifier
             r"\bthis (?:will|is going to) (?:definitely|certainly|absolutely|always) (?:work|succeed|happen|be)\b",
+            # Directive with certainty intensifier
             r"\byou (?:should|must|need to) definitely\b",
-            r"\bthere (?:is|are) no (?:doubt|risk|problem|issue|question|uncertainty)\b",
+            # Unqualified guarantee
+            r"\bthere (?:is|are) no (?:doubt|risk|problem|question|uncertainty)\b",
             r"\b(?:guaranteed|guarantee) (?:to |that )?(?:work|succeed|be correct|be right)\b",
         ],
     ),
@@ -95,20 +116,27 @@ _PATTERNS: List[Tuple[str, int, List[str]]] = [
         "role_usurpation",
         1,
         [
-            r"\bignore (?:your |all |any )(previous |prior |earlier )?instructions\b",
+            # Classic prompt-injection phrasing
+            r"\bignore (?:your |all |any )(?:previous |prior |earlier )?instructions\b",
+            # Role reassignment
             r"\bfrom now on,? (?:you are|you will be|you must act as)\b",
+            # Obedience demand
             r"\byou (?:are|will be) (?:now )?(?:my |only )(?:loyal|obedient|dedicated)\b",
             r"\bobey (?:only )?me\b",
+            # Constraint dismissal
             r"\b(?:your|the) (?:rules|guidelines|instructions|constraints) (?:do not|don't) (?:apply|matter)\b",
-            r"\bi will definitely follow\b",
-            r"\bno matter what\b",
+            # Unconditional compliance promise — must include "follow" + "no matter what"
+            r"\bi will (?:definitely |certainly )?follow .*(?:no matter what|regardless)\b",
         ],
     ),
 ]
 
 # Severity thresholds for deciding whether to offer a rewrite.
-_REWRITE_THRESHOLD = 2
-_STRONG_REWRITE_THRESHOLD = 3
+# Raised from 2 to 3: two ordinary single-hit matches should not replace
+# a complete answer.  Rewrite only triggers on genuine multi-pattern or
+# high-weight detections.
+_REWRITE_THRESHOLD = 3
+_STRONG_REWRITE_THRESHOLD = 5
 
 _REWRITE_PREFIXES = {
     "escalation": (
@@ -137,11 +165,20 @@ _COMPILED: List[Tuple[str, int, re.Pattern[str]]] = [
 
 
 def _normalized(text: str) -> str:
-    """Lowercase and remove excessive repeated punctuation."""
+    """Lowercase and remove excessive repeated punctuation.
+
+    Also strips quoted spans ("..." and '...') so that an assistant
+    *quoting* a persuasion-bomb phrase (e.g. explaining why it refused
+    a prompt-injection attempt) is not itself flagged.  The guard scans
+    the assistant's own rhetoric, not text it quotes from the user.
+    """
     text = text.lower()
     # Collapse repeated punctuation so "!!!" and "..." don't defeat simple patterns.
     text = re.sub(r"[!?]{2,}", "!", text)
     text = re.sub(r"\.{3,}", "...", text)
+    # Remove quoted spans so quoted injection phrases don't trigger the guard.
+    text = re.sub(r'"[^"]*"', "", text)
+    text = re.sub(r"'[^']*'", "", text)
     return text
 
 

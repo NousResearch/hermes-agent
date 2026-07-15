@@ -60,7 +60,7 @@ If you already have Git installed, the installer detects it and uses that instea
 
 ### Response guard
 
-Hermes includes a lightweight, built-in **response guard** that detects persuasion-bomb and sycophancy patterns in model output — for example, unqualified certainty, aggressive refusal rhetoric, excessive flattery, or attempts to override system instructions. When the guard triggers, it logs at verbose level and, for moderate-to-severe cases, rewrites the response to a safe fallback before it reaches the user. The guard runs on every assistant response and is designed to add well under a millisecond of overhead for typical message sizes.
+Hermes includes a lightweight, built-in **response guard** that detects persuasion-bomb and sycophancy patterns in model output — for example, unqualified certainty, aggressive refusal rhetoric, excessive flattery, or attempts to override system instructions. When the guard triggers at moderate-to-severe levels, it rewrites the response to a safe fallback before it reaches the user (non-streaming path only; when streaming is active, it logs the detection but does not rewrite, since the user already saw the original text). The guard runs on every assistant response, is designed to add well under a millisecond of overhead, and targets multi-word rhetorical frames to avoid false positives on ordinary disagreement, factual corrections, and safety warnings.
 
 The detector lives in `agent/response_guard.py` and is wired into the conversation loop in `agent/conversation_loop.py`. See the module docstring and `tests/agent/test_response_guard.py` for the pattern catalog and behavior.
 

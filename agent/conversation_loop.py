@@ -4299,6 +4299,13 @@ def run_conversation(
             # in the model's own output. Runs after content normalization but
             # before the response is displayed or acted on. Lightweight enough
             # for the per-API-call path (std-lib regex, single pass).
+            #
+            # Streaming boundary: when stream consumers are registered, text
+            # deltas were already delivered to the user via _fire_stream_delta
+            # during generation.  Rewriting assistant_message.content here
+            # would only change the persisted/final copy, creating a mismatch
+            # between what the user saw and what's in history.  In that case
+            # we log the detection but do NOT rewrite.
             try:
                 from agent.response_guard import check_persuasion_bomb
                 _guard_result = check_persuasion_bomb(assistant_message.content or "")
@@ -4308,12 +4315,21 @@ def run_conversation(
                             f"{agent.log_prefix}🛡️ Persuasion-bomb guard triggered: "
                             f"severity={_guard_result.severity}, reasons={_guard_result.reasons}"
                         )
-                    # For moderate+ hits, rewrite the visible content to a safe fallback.
-                    if _guard_result.rewrite:
+                    # Only rewrite visible content when the user has NOT
+                    # already seen the original via streaming.  When stream
+                    # consumers are active, log only — rewriting would
+                    # diverge from what was already displayed.
+                    if _guard_result.rewrite and not agent._has_stream_consumers():
                         assistant_message.content = _guard_result.rewrite
                         agent._buffer_vprint(
                             f"🛡️ Response guard intervened ({_guard_result.severity}): "
                             "model output showed persuasion-bomb / sycophancy patterns."
+                        )
+                    elif _guard_result.rewrite and agent._has_stream_consumers():
+                        agent._buffer_vprint(
+                            f"🛡️ Response guard detected persuasion-bomb patterns "
+                            f"(severity={_guard_result.severity}) — content was already "
+                            "streamed, logging only."
                         )
             except Exception:
                 # Guard failure must never break the conversation loop.

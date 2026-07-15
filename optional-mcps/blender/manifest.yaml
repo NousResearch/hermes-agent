@@ -20,8 +20,13 @@ source: https://github.com/ahujasid/blender-mcp
 transport:
   type: stdio
   command: "uvx"
+  # Pinned per catalog dependency policy: exact version, and the release must
+  # be at least 2 weeks old at pin time (supply-chain cooldown — same rule as
+  # pyproject.toml dependencies). 1.6.4 released 2026-06-11. The catalog never
+  # auto-updates; bumping the pin is a PR to this manifest.
   args:
-    - "blender-mcp"
+    - "blender-mcp==1.6.4"
+  version: "1.6.4"
   env:
     # Upstream ships anonymous telemetry, on by default. Hermes policy is
     # no outbound telemetry without explicit opt-in, so the catalog entry

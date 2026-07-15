@@ -1305,3 +1305,104 @@ class TestMinimaxOAuthProvider:
             "doesn't fire the 'No auxiliary LLM provider configured' warning "
             "for every minimax-oauth session."
         )
+
+
+# =============================================================================
+# Regression tests for #55539 — config.yaml model.api_key fallback
+# =============================================================================
+
+
+class TestConfigApiKeyFallback:
+    """Verify that config.yaml model.api_key is used as a last-resort
+    fallback when env vars and credential pool are empty, but ONLY when
+    model.provider matches the requested provider (credential-isolation).
+    """
+
+    def test_config_api_key_used_when_provider_matches(self, monkeypatch):
+        """model.api_key from config.yaml must be picked up when
+        model.provider matches the requested provider — this is the
+        profile-scoped Kanban-worker scenario (#55539)."""
+        # Clear env vars so the fallback path is hit
+        for ev in ("MINIMAX_CN_API_KEY", "MINIMAX_API_KEY"):
+            monkeypatch.delenv(ev, raising=False)
+        # Mock credential pool to return empty
+        monkeypatch.setattr(
+            "agent.credential_pool.load_pool", lambda _pid: None,
+        )
+        # Mock load_config to return a minimax-cn profile config
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {
+                    "provider": "minimax-cn",
+                    "api_key": "cfg-minimax-cn-key",
+                },
+            },
+        )
+        creds = resolve_api_key_provider_credentials("minimax-cn")
+        assert creds["api_key"] == "cfg-minimax-cn-key"
+        assert creds["source"] == "config:model.api_key"
+
+    def test_config_api_key_ignored_when_provider_mismatch(self, monkeypatch):
+        """model.api_key from config.yaml must NOT leak when model.provider
+        differs from the requested provider — cross-provider credential
+        isolation contract.  If config has provider: openrouter but we're
+        resolving minimax-cn, the openrouter key must not be used."""
+        # Clear env vars
+        for ev in ("MINIMAX_CN_API_KEY", "MINIMAX_API_KEY"):
+            monkeypatch.delenv(ev, raising=False)
+        # Mock credential pool to return empty
+        monkeypatch.setattr(
+            "agent.credential_pool.load_pool", lambda _pid: None,
+        )
+        # Mock load_config: provider is openrouter, but we're resolving minimax-cn
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {
+                    "provider": "openrouter",
+                    "api_key": "openrouter-secret-key",
+                },
+            },
+        )
+        creds = resolve_api_key_provider_credentials("minimax-cn")
+        assert creds["api_key"] == "", (
+            "model.api_key from a different provider must not leak through"
+        )
+        assert creds["source"] == "default"
+
+    def test_config_api_key_env_var_takes_precedence(self, monkeypatch):
+        """Env var must still take precedence over config.yaml fallback."""
+        monkeypatch.setenv("MINIMAX_CN_API_KEY", "env-minimax-cn-key")
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {
+                    "provider": "minimax-cn",
+                    "api_key": "cfg-minimax-cn-key",
+                },
+            },
+        )
+        creds = resolve_api_key_provider_credentials("minimax-cn")
+        assert creds["api_key"] == "env-minimax-cn-key"
+
+    def test_config_api_key_alias_field(self, monkeypatch):
+        """model.api (alias for model.api_key) must also be picked up
+        when provider matches."""
+        for ev in ("DEEPSEEK_API_KEY",):
+            monkeypatch.delenv(ev, raising=False)
+        monkeypatch.setattr(
+            "agent.credential_pool.load_pool", lambda _pid: None,
+        )
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "model": {
+                    "provider": "deepseek",
+                    "api": "cfg-deepseek-key-via-alias",
+                },
+            },
+        )
+        creds = resolve_api_key_provider_credentials("deepseek")
+        assert creds["api_key"] == "cfg-deepseek-key-via-alias"
+        assert creds["source"] == "config:model.api_key"

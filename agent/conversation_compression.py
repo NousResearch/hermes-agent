@@ -843,7 +843,30 @@ def compress_context(
                     # for search/recovery (Teknium review — keep one durable id
                     # WITHOUT destroying history, unlike a hard replace_messages).
                     # See #38763.
-                    agent._session_db.archive_and_compact(agent.session_id, compressed)
+                    durable_compressed = agent._messages_for_session_persistence(
+                        compressed
+                    )
+                    agent._session_db.archive_and_compact(
+                        agent.session_id, durable_compressed
+                    )
+                    # ``durable_compressed`` is a persistence-clean copy, so
+                    # stamp the corresponding live rows explicitly. The shared
+                    # post-write cursor reset below intentionally forces an
+                    # identity rebase; without these markers, the same-turn
+                    # final flush would append the compacted prefix again and
+                    # could skip the assistant that follows a suppressed row.
+                    suppressed_idx = None
+                    if getattr(
+                        agent,
+                        "_suppress_current_user_message_persistence",
+                        False,
+                    ):
+                        suppressed_idx = agent._current_turn_user_message_index(
+                            compressed
+                        )
+                    for idx, msg in enumerate(compressed):
+                        if isinstance(msg, dict) and idx != suppressed_idx:
+                            msg["_db_persisted"] = True
                     # Reset the flush identity set so the next turn's appends are
                     # diffed against the COMPACTED transcript: the compacted dicts
                     # are passed as conversation_history next turn and skipped by

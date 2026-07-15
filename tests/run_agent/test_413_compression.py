@@ -135,7 +135,13 @@ def test_current_user_turn_is_persisted_before_provider_call(agent):
     assert observed[0][0] == "persist"
     assert observed[1][0] == "provider"
     persisted_messages = observed[0][1]
-    assert persisted_messages[-1] == {
+    last = persisted_messages[-1]
+    assert last["role"] == "user"
+    assert last["content"] == "new message that must survive a crash"
+    # In-memory identity metadata is expected; durable sinks strip it.
+    assert last.get("_hermes_current_turn_user_id")
+    durable = agent._messages_for_session_persistence([last])[0]
+    assert durable == {
         "role": "user",
         "content": "new message that must survive a crash",
     }

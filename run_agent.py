@@ -260,6 +260,7 @@ _MAX_TOOL_WORKERS = 8
 # every top-level ``_``-prefixed key before the request leaves the process, so
 # this never reaches a strict OpenAI-compatible gateway.
 _DB_PERSISTED_MARKER = "_db_persisted"
+_CURRENT_TURN_USER_MARKER = "_hermes_current_turn_user_id"
 
 
 # Guard so the OpenRouter metadata pre-warm thread is only spawned once per
@@ -1678,6 +1679,46 @@ class AIAgent:
             tool_call_id=tool_call_id,
         )
 
+    def _current_turn_user_message_index(
+        self, messages: List[Dict]
+    ) -> Optional[int]:
+        """Locate the current turn by stable metadata, surviving compaction copies."""
+        token = getattr(self, "_persist_user_message_token", None)
+        if token:
+            for idx, msg in enumerate(messages):
+                if (
+                    isinstance(msg, dict)
+                    and msg.get("role") == "user"
+                    and msg.get(_CURRENT_TURN_USER_MARKER) == token
+                ):
+                    return idx
+            # Fail closed: once a stable token exists, a stale numeric index may
+            # point at a summary or a genuine historical user after compaction.
+            return None
+        legacy_idx = getattr(self, "_persist_user_message_idx", None)
+        if isinstance(legacy_idx, int) and 0 <= legacy_idx < len(messages):
+            msg = messages[legacy_idx]
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                return legacy_idx
+        return None
+
+    def _messages_for_session_persistence(
+        self, messages: List[Dict]
+    ) -> List[Dict]:
+        """Return durable-safe copies without private turn metadata/synthetic user."""
+        suppress_idx = None
+        if getattr(self, "_suppress_current_user_message_persistence", False):
+            suppress_idx = self._current_turn_user_message_index(messages)
+        durable: List[Dict] = []
+        for idx, msg in enumerate(messages):
+            if idx == suppress_idx:
+                continue
+            if isinstance(msg, dict) and _CURRENT_TURN_USER_MARKER in msg:
+                msg = msg.copy()
+                msg.pop(_CURRENT_TURN_USER_MARKER, None)
+            durable.append(msg)
+        return durable
+
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
         """Rewrite the current-turn user message before persistence/return.
 
@@ -1688,34 +1729,34 @@ class AIAgent:
         history stay clean.  A paired timestamp override preserves the platform
         event time as message metadata, rather than embedding it in content.
         """
-        idx = getattr(self, "_persist_user_message_idx", None)
+        idx = self._current_turn_user_message_index(messages)
         suppress = getattr(self, "_suppress_current_user_message_persistence", False)
         override = getattr(self, "_persist_user_message_override", None)
         timestamp = getattr(self, "_persist_user_message_timestamp", None)
         if idx is None:
             return
-        if suppress and 0 <= idx < len(messages):
-            msg = messages[idx]
-            if isinstance(msg, dict) and msg.get("role") == "user":
-                messages.pop(idx)
+        if suppress:
+            messages.pop(idx)
             return
+        msg = messages[idx]
         if override is None and timestamp is None:
+            if isinstance(msg, dict):
+                msg.pop(_CURRENT_TURN_USER_MARKER, None)
             return
-        if 0 <= idx < len(messages):
-            msg = messages[idx]
-            if isinstance(msg, dict) and msg.get("role") == "user":
-                # Text-only call paths may pass a synthetic API-facing prompt
-                # and a cleaner transcript string separately. Before the API
-                # call, a plain-text override must not replace native image/audio
-                # blocks. A list override, however, is the original clean
-                # multimodal payload (for example before a queued /model note)
-                # and must replace the API-local list once the turn is final.
-                if override is not None and (
-                    not isinstance(msg.get("content"), list) or isinstance(override, list)
-                ):
-                    msg["content"] = override
-                if timestamp is not None:
-                    msg["timestamp"] = timestamp
+        if isinstance(msg, dict) and msg.get("role") == "user":
+            # Text-only call paths may pass a synthetic API-facing prompt
+            # and a cleaner transcript string separately. Before the API
+            # call, a plain-text override must not replace native image/audio
+            # blocks. A list override, however, is the original clean
+            # multimodal payload (for example before a queued /model note)
+            # and must replace the API-local list once the turn is final.
+            if override is not None and (
+                not isinstance(msg.get("content"), list) or isinstance(override, list)
+            ):
+                msg["content"] = override
+            if timestamp is not None:
+                msg["timestamp"] = timestamp
+            msg.pop(_CURRENT_TURN_USER_MARKER, None)
 
     def _persist_session(self, messages: List[Dict], conversation_history: List[Dict] = None):
         """Save session state to both JSON log and SQLite on any exit path.
@@ -1736,18 +1777,7 @@ class AIAgent:
         # observe the same unmarked dict and write duplicate durable rows.
         def _persist_locked() -> None:
             self._drop_trailing_empty_response_scaffolding(messages)
-            persisted_messages = messages
-            suppress_idx = getattr(self, "_persist_user_message_idx", None)
-            if (
-                getattr(self, "_suppress_current_user_message_persistence", False)
-                and isinstance(suppress_idx, int)
-                and 0 <= suppress_idx < len(messages)
-                and isinstance(messages[suppress_idx], dict)
-                and messages[suppress_idx].get("role") == "user"
-            ):
-                persisted_messages = (
-                    messages[:suppress_idx] + messages[suppress_idx + 1 :]
-                )
+            persisted_messages = self._messages_for_session_persistence(messages)
             self._session_messages = persisted_messages
             self._save_session_log(persisted_messages)
             self._flush_messages_to_session_db(messages, conversation_history)
@@ -1871,7 +1901,7 @@ class AIAgent:
         # live dict is never mutated, so every caller (early persist, mid-loop
         # flush, /resume, /branch) is protected uniformly. Timestamp override is
         # metadata and is likewise applied only to the written row.
-        _ov_idx = getattr(self, "_persist_user_message_idx", None)
+        _ov_idx = self._current_turn_user_message_index(messages)
         _ov_content = getattr(self, "_persist_user_message_override", None)
         _ov_timestamp = getattr(self, "_persist_user_message_timestamp", None)
         _suppress_user_row = getattr(

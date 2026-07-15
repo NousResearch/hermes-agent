@@ -734,6 +734,10 @@ class SessionEntry:
     # Used by provider rate-limit recovery so the promise survives a gateway
     # restart without replaying before the provider's reset window.
     resume_not_before: Optional[float] = None
+    # Adapter transport required to deliver a deferred continuation. This is
+    # deliberately separate from SessionSource's wire-invisible relay trust
+    # marker: it is local routing state, not an inbound authorization claim.
+    resume_transport: Optional[str] = None
 
     # Session-scoped /model override (model/provider/base_url ONLY — never
     # credentials).  ``_session_model_overrides`` in the gateway runner is
@@ -771,6 +775,7 @@ class SessionEntry:
                 else None
             ),
             "resume_not_before": self.resume_not_before,
+            "resume_transport": self.resume_transport,
             "is_fresh_reset": self.is_fresh_reset,
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
@@ -796,6 +801,15 @@ class SessionEntry:
                 platform = Platform(data["platform"])
             except ValueError as e:
                 logger.debug("Unknown platform value %r: %s", data["platform"], e)
+
+        resume_transport = None
+        if data.get("resume_transport"):
+            try:
+                resume_transport = Platform(data["resume_transport"]).value
+            except (TypeError, ValueError) as e:
+                logger.debug(
+                    "Unknown resume transport %r: %s", data["resume_transport"], e
+                )
 
         last_resume_marked_at = None
         _lrma = data.get("last_resume_marked_at")
@@ -847,6 +861,7 @@ class SessionEntry:
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
             resume_not_before=data.get("resume_not_before"),
+            resume_transport=resume_transport,
             is_fresh_reset=data.get("is_fresh_reset", False),
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
@@ -2131,6 +2146,7 @@ class SessionStore:
         session_key: str,
         reason: str = "restart_timeout",
         not_before: Optional[float] = None,
+        resume_transport: Optional[str] = None,
     ) -> bool:
         """Mark a session as resumable after an interruption or deferred wait.
 
@@ -2141,6 +2157,12 @@ class SessionStore:
 
         Returns True if the session existed and was marked.
         """
+        normalized_transport = None
+        if resume_transport:
+            try:
+                normalized_transport = Platform(resume_transport).value
+            except (TypeError, ValueError):
+                return False
         with self._lock:
             self._ensure_loaded_locked()
             if session_key in self._entries:
@@ -2149,10 +2171,22 @@ class SessionStore:
                 # forced-wipe signal (from /stop or stuck-loop escalation).
                 if entry.suspended:
                     return False
+                # A provider reset deadline is the stronger continuation
+                # promise: stop/restart drain markers are transient ownership
+                # bookkeeping and must not replace it.  This check is inside
+                # the store lock so mark(B) -> mark(A) -> clear(A) cannot erase
+                # a durable provider continuation.
+                if (
+                    entry.resume_pending
+                    and entry.resume_reason == "provider_rate_limit"
+                    and reason != "provider_rate_limit"
+                ):
+                    return False
                 entry.resume_pending = True
                 entry.resume_reason = reason
                 entry.last_resume_marked_at = _now()
                 entry.resume_not_before = not_before
+                entry.resume_transport = normalized_transport
                 self._save()
                 return True
         return False
@@ -2194,6 +2228,7 @@ class SessionStore:
             entry.resume_reason = None
             entry.last_resume_marked_at = None
             entry.resume_not_before = None
+            entry.resume_transport = None
             self._save()
             return True
 

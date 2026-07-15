@@ -85,6 +85,17 @@ class TestEstimateMessagesTokensRough:
         expected = (n + 3) // 4
         assert result == expected
 
+    def test_internal_metadata_does_not_change_wire_estimate(self):
+        plain = {"role": "user", "content": "hello"}
+        marked = {
+            **plain,
+            "_hermes_current_turn_user_id": "opaque-turn-id",
+            "_db_persisted": True,
+        }
+        assert estimate_messages_tokens_rough([marked]) == (
+            estimate_messages_tokens_rough([plain])
+        )
+
     def test_tool_call_message(self):
         """Tool call messages with no 'content' key still contribute tokens."""
         msg = {"role": "assistant", "content": None,

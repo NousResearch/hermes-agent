@@ -6870,6 +6870,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     run_generation=getattr(
                         self, "_session_run_generation", {}
                     ).get(entry.session_key, 0),
+                    resume_transport=getattr(entry, "resume_transport", None),
                 ):
                     scheduled += 1
                 continue
@@ -6970,11 +6971,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         if reset_epoch is None or not session_key or source is None:
             return False
+        resume_transport = (
+            Platform.RELAY.value
+            if (
+                getattr(source, "delivered_via_upstream_relay", False) is True
+                or getattr(source, "platform", None) == Platform.RELAY
+            )
+            else None
+        )
         try:
             marked = await self.async_session_store.mark_resume_pending(
                 session_key,
                 reason="provider_rate_limit",
                 not_before=reset_epoch,
+                resume_transport=resume_transport,
             )
         except Exception as exc:
             logger.warning(
@@ -6990,6 +7000,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             source=source,
             reset_at=reset_epoch,
             run_generation=run_generation,
+            resume_transport=resume_transport,
         )
 
     async def _supersede_provider_rate_limit_resume_for_user_turn(
@@ -7037,6 +7048,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         source: SessionSource,
         reset_at: float,
         run_generation: int,
+        resume_transport: Optional[str] = None,
     ) -> bool:
         """Install an in-memory task for an already-persisted provider deadline."""
         # ``reset_at`` may already be in the past when restored after a gateway
@@ -7048,6 +7060,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         )
         if reset_epoch is None or not session_key or source is None:
             return False
+        normalized_transport = None
+        if resume_transport:
+            try:
+                normalized_transport = Platform(resume_transport).value
+            except (TypeError, ValueError):
+                return False
 
         tasks = getattr(self, "_provider_rate_limit_resume_tasks", None)
         if tasks is None:
@@ -7060,7 +7078,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 "_hermes_provider_resume_identity",
                 None,
             )
-            if existing_identity == (run_generation, reset_epoch):
+            if existing_identity == (
+                run_generation,
+                reset_epoch,
+                normalized_transport,
+            ):
                 return True
             if not getattr(existing, "_hermes_provider_resume_dispatched", False):
                 existing.cancel()
@@ -7075,13 +7097,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 source=source,
                 reset_at=reset_epoch,
                 run_generation=run_generation,
+                resume_transport=normalized_transport,
             )
         )
         setattr(task, "_hermes_provider_resume_dispatched", False)
         setattr(
             task,
             "_hermes_provider_resume_identity",
-            (run_generation, reset_epoch),
+            (run_generation, reset_epoch, normalized_transport),
         )
         tasks[session_key] = task
         self._background_tasks.add(task)
@@ -7100,6 +7123,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         source: SessionSource,
         reset_at: float,
         run_generation: int,
+        resume_transport: Optional[str] = None,
     ) -> None:
         """Wake after provider reset and route a synthetic continuation turn."""
         try:
@@ -7160,22 +7184,50 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     return
                 if not still_pending:
                     return
-            try:
-                if not self._is_user_authorized(source):
+            resume_source = source
+            adapter = None
+            if resume_transport == Platform.RELAY.value:
+                adapter = self._authorization_adapter(
+                    Platform.RELAY,
+                    getattr(source, "profile", None),
+                )
+                # A restored relay continuation has no fresh connector event to
+                # authenticate. Trust only the local durable marker plus a live
+                # adapter that explicitly delegates authorization upstream.
+                if not (
+                    adapter is not None
+                    and getattr(adapter, "authorization_is_upstream", False) is True
+                ):
                     logger.warning(
-                        "Skipping provider rate-limit continuation for %s: session owner is no longer authorized",
+                        "Skipping provider rate-limit continuation for %s: "
+                        "authenticated relay adapter is unavailable",
                         session_key,
                     )
                     return
-            except Exception as exc:
-                logger.warning(
-                    "Skipping provider rate-limit continuation for %s: authorization check failed: %s",
-                    session_key,
-                    exc,
+                resume_source = dataclasses.replace(
+                    source,
+                    message_id=None,
+                    delivered_via_upstream_relay=True,
                 )
-                return
+            else:
+                try:
+                    if not self._is_user_authorized(source):
+                        logger.warning(
+                            "Skipping provider rate-limit continuation for %s: "
+                            "session owner is no longer authorized",
+                            session_key,
+                        )
+                        return
+                except Exception as exc:
+                    logger.warning(
+                        "Skipping provider rate-limit continuation for %s: "
+                        "authorization check failed: %s",
+                        session_key,
+                        exc,
+                    )
+                    return
+                adapter = self._adapter_for_source(source)
 
-            adapter = self._adapter_for_source(source)
             if adapter is None:
                 logger.info(
                     "Skipping provider rate-limit continuation for %s: adapter not ready for %s",
@@ -7209,7 +7261,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # without persisting a synthetic user row.
                 text="",
                 message_type=MessageType.TEXT,
-                source=source,
+                source=resume_source,
                 internal=True,
                 metadata={
                     "_hermes_provider_rate_limit_resume": (
@@ -7219,6 +7271,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     "reset_at": reset_at,
                 },
             )
+            if resume_transport == Platform.RELAY.value:
+                capture_scope = getattr(adapter, "_capture_scope", None)
+                if callable(capture_scope):
+                    capture_scope(event)
             await self._run_startup_resume_event(adapter, event, session_key)
         except asyncio.CancelledError:
             raise
@@ -8693,11 +8749,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 if _agent is _AGENT_PENDING_SENTINEL:
                     continue
                 try:
-                    await self.async_session_store.mark_resume_pending(
+                    _marked = await self.async_session_store.mark_resume_pending(
                         _sk,
                         _pre_drain_reason,
                     )
-                    _pre_drain_reasons[_sk] = _pre_drain_reason
+                    if _marked:
+                        _pre_drain_reasons[_sk] = _pre_drain_reason
                 except Exception as _e:
                     logger.debug("pre-drain mark_resume_pending failed for %s: %s", _sk, _e)
 
@@ -10867,7 +10924,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
         self._running_agents_ts[_quick_key] = time.time()
         self._persist_active_agents()
-        _run_generation = self._begin_session_run_generation(_quick_key)
+        _event_metadata = getattr(event, "metadata", None) or {}
+        _is_provider_resume_candidate = (
+            is_internal
+            and _event_metadata.get("_hermes_provider_rate_limit_resume")
+            is _PROVIDER_RATE_LIMIT_RESUME_EVENT_TOKEN
+        )
+        if is_internal and not _is_provider_resume_candidate:
+            # Background/delegation completions share the session lane but do
+            # not supersede a pending provider continuation. Advancing here
+            # would make that timer stale even though its durable marker still
+            # promises an automatic resume.
+            _run_generation = getattr(
+                self, "_session_run_generation", {}
+            ).get(_quick_key, 0)
+        else:
+            _run_generation = self._begin_session_run_generation(_quick_key)
 
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)
@@ -12746,7 +12818,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 new_messages = agent_messages[history_len:] if len(agent_messages) > history_len else []
                 if _is_provider_resume_event:
                     for _idx, _msg in enumerate(new_messages):
-                        if isinstance(_msg, dict) and _msg.get("role") == "user":
+                        if (
+                            isinstance(_msg, dict)
+                            and _msg.get("role") == "user"
+                            and _msg.get("_hermes_current_turn_user_id")
+                        ):
                             new_messages = new_messages[:_idx] + new_messages[_idx + 1 :]
                             break
 
@@ -19757,8 +19833,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # through blank" noise.  Treat the marker as fresh when
             # EITHER signal is fresh so the two freshness checks agree.
             _resume_mark_is_fresh = False
+            _resume_reason = None
             if _resume_entry is not None and getattr(_resume_entry, "resume_pending", False):
-                if getattr(_resume_entry, "resume_reason", None) == "provider_rate_limit":
+                _resume_reason = getattr(_resume_entry, "resume_reason", None)
+                if _resume_reason == "provider_rate_limit":
                     # Provider deadlines may be hours or days away. Only the
                     # private, due continuation event may consume this marker;
                     # unrelated internal events must not inherit its guidance.
@@ -19768,11 +19846,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         getattr(_resume_entry, "last_resume_marked_at", None),
                         window_secs=_freshness_window,
                     )
-            _is_resume_pending = bool(
-                _resume_entry is not None
-                and getattr(_resume_entry, "resume_pending", False)
-                and (_interruption_is_fresh or _resume_mark_is_fresh)
-            )
+            if _resume_reason == "provider_rate_limit":
+                # Exclusive verified-resume gate: never OR with transcript
+                # freshness, or process/delegation completions steal the note.
+                _is_resume_pending = bool(
+                    _resume_entry is not None
+                    and getattr(_resume_entry, "resume_pending", False)
+                    and _resume_mark_is_fresh
+                )
+            else:
+                _is_resume_pending = bool(
+                    _resume_entry is not None
+                    and getattr(_resume_entry, "resume_pending", False)
+                    and (_interruption_is_fresh or _resume_mark_is_fresh)
+                )
             _has_fresh_tool_tail = bool(
                 agent_history
                 and agent_history[-1].get("role") == "tool"

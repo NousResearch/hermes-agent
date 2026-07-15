@@ -174,7 +174,9 @@ def test_returns_turn_context_with_user_message_appended():
     assert isinstance(ctx, TurnContext)
     assert ctx.user_message == "hello"
     # The user turn was appended and indexed.
-    assert ctx.messages[-1] == {"role": "user", "content": "hello"}
+    assert ctx.messages[-1]["role"] == "user"
+    assert ctx.messages[-1]["content"] == "hello"
+    assert ctx.messages[-1]["_hermes_current_turn_user_id"]
     assert ctx.current_turn_user_idx == len(ctx.messages) - 1
     assert ctx.active_system_prompt == "SYSTEM"
 
@@ -366,6 +368,77 @@ def test_between_turns_refresh_no_churn_when_unchanged():
         _build(agent)
 
     assert agent.tools is same  # not replaced → no churn
+
+
+def test_preflight_rebases_current_user_index_by_stable_identity(tmp_path):
+    agent = _make_agent_with_cooldown(tmp_path / "state.db", "sess-1")
+
+    def _compact(messages, *_args, **_kwargs):
+        current = messages[-1].copy()
+        return (
+            [
+                {"role": "user", "content": "compacted context"},
+                {"role": "assistant", "content": "prior answer"},
+                current,
+            ],
+            "SYSTEM",
+        )
+
+    agent._compress_context = MagicMock(side_effect=_compact)
+    history = [
+        {"role": "user", "content": "old question"},
+        {"role": "assistant", "content": "old answer"},
+        {"role": "user", "content": "older question"},
+        {"role": "assistant", "content": "older answer"},
+    ]
+    with patch("agent.turn_context._should_run_preflight_estimate", return_value=True), \
+         patch("agent.turn_context.estimate_request_tokens_rough", side_effect=[999_999, 10]):
+        ctx = _build(agent, conversation_history=history)
+
+    assert ctx.current_turn_user_idx == 2
+    assert ctx.messages[2]["content"] == "hello"
+    assert ctx.messages[2]["_hermes_current_turn_user_id"] == agent._persist_user_message_token
+    assert agent._persist_user_message_idx == 2
+
+
+def test_preflight_reappended_user_can_be_flushed_again(tmp_path):
+    """If compression drops the live turn, reappend must clear early-persist marks."""
+    agent = _make_agent_with_cooldown(tmp_path / "state.db", "sess-1")
+
+    def _early_persist(messages, *_a, **_k):
+        agent._persist_calls += 1
+        for msg in messages:
+            if isinstance(msg, dict) and msg.get("role") == "user":
+                msg["_db_persisted"] = True
+
+    agent._persist_session = _early_persist
+
+    def _compact(messages, *_args, **_kwargs):
+        # Drop the live turn entirely so the recovery path re-appends it.
+        return (
+            [
+                {"role": "user", "content": "compacted context"},
+                {"role": "assistant", "content": "prior answer"},
+            ],
+            "SYSTEM",
+        )
+
+    agent._compress_context = MagicMock(side_effect=_compact)
+    history = [
+        {"role": "user", "content": "old question"},
+        {"role": "assistant", "content": "old answer"},
+    ]
+    with patch("agent.turn_context._should_run_preflight_estimate", return_value=True), \
+         patch("agent.turn_context.estimate_request_tokens_rough", side_effect=[999_999, 10]):
+        ctx = _build(agent, conversation_history=history)
+
+    recovered = ctx.messages[ctx.current_turn_user_idx]
+    assert recovered["content"] == "hello"
+    assert recovered["_hermes_current_turn_user_id"] == agent._persist_user_message_token
+    # Early-persist marks must not survive recovery reappend, or the active
+    # transcript flush will skip writing the real user row after recovery.
+    assert recovered.get("_db_persisted") is not True
+    assert agent._persist_user_message_idx == ctx.current_turn_user_idx
 
 
 def test_preflight_skips_when_persisted_cooldown_survives_restart(tmp_path):

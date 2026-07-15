@@ -62,10 +62,16 @@ class GatewayAuthorizationMixin:
         """Resolve the live adapter for an inbound ``SessionSource``."""
         if source is None:
             return None
+        # Relay-delivered messages keep the underlying platform for session
+        # identity, but all egress still travels over the authenticated relay
+        # socket. The marker is process-local and never accepted from wire data.
+        platform = getattr(source, "platform", None)
+        if getattr(source, "delivered_via_upstream_relay", False) is True:
+            platform = Platform.RELAY
         # ``getattr`` guards test fixtures that build a bare source via
         # SimpleNamespace and omit ``profile`` (see AGENTS.md pitfall #17).
         return self._authorization_adapter(
-            getattr(source, "platform", None),
+            platform,
             getattr(source, "profile", None),
         )
 

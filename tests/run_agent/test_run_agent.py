@@ -258,6 +258,38 @@ def test_suppress_current_user_message_omits_synthetic_db_row(agent):
     assert persisted_roles == ["assistant"]
 
 
+def test_suppress_current_user_message_uses_stable_identity_after_compaction(agent):
+    token = "turn-token"
+    synthetic = {
+        "role": "user",
+        "content": "[System note: synthetic continuation]",
+        "_hermes_current_turn_user_id": token,
+    }
+    messages = [
+        {"role": "user", "content": "real compacted context"},
+        {"role": "assistant", "content": "prior answer"},
+        synthetic,
+        {"role": "assistant", "content": "continued"},
+    ]
+    agent._persist_user_message_idx = 99
+    agent._persist_user_message_token = token
+    agent._suppress_current_user_message_persistence = True
+
+    durable = agent._messages_for_session_persistence(messages)
+    assert [msg["content"] for msg in durable] == [
+        "real compacted context",
+        "prior answer",
+        "continued",
+    ]
+
+    agent._apply_persist_user_message_override(messages)
+    assert [msg["content"] for msg in messages] == [
+        "real compacted context",
+        "prior answer",
+        "continued",
+    ]
+
+
 def test_suppress_current_user_message_filters_json_session_log(agent):
     agent._suppress_current_user_message_persistence = True
     agent._persist_user_message_idx = 0

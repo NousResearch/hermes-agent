@@ -124,6 +124,55 @@ class TestInPlaceCompaction:
             # Live transcript actually shrank.
             assert len(compressed) == 2
 
+    def test_in_place_excludes_suppressed_current_user_from_durable_rewrite(self):
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            sid = "ip_synthetic"
+            _seed(db, sid, "synthetic")
+            agent = _make_agent(db, sid, in_place=True)
+            token = "turn-token"
+            agent._persist_user_message_idx = 99
+            agent._persist_user_message_token = token
+            agent._suppress_current_user_message_persistence = True
+            synthetic = {
+                "role": "user",
+                "content": "[synthetic provider continuation]",
+                "_hermes_current_turn_user_id": token,
+            }
+            agent.context_compressor.compress = lambda *_a, **_k: [
+                {"role": "user", "content": "real compacted context"},
+                {"role": "assistant", "content": "prior answer"},
+                synthetic.copy(),
+            ]
+
+            compressed, _ = compress_context(
+                agent,
+                [{"role": "user", "content": "real prior user"}, synthetic],
+                approx_tokens=100_000,
+                system_message="sys",
+            )
+
+            assert any(m.get("content") == synthetic["content"] for m in compressed)
+            durable = db.get_messages_as_conversation(sid)
+            assert [m.get("content") for m in durable] == [
+                "real compacted context",
+                "prior answer",
+            ]
+
+            # The in-place cursor must count durable rows, not the synthetic
+            # row kept only for the provider call. Otherwise finalization pops
+            # that row and the new assistant lands immediately before the stale
+            # cursor, so the next flush silently skips it.
+            compressed.append({"role": "assistant", "content": "fresh answer"})
+            agent._apply_persist_user_message_override(compressed)
+            agent._flush_messages_to_session_db(compressed)
+            assert [
+                m.get("content") for m in db.get_messages_as_conversation(sid)
+            ] == ["real compacted context", "prior answer", "fresh answer"]
+
     def test_in_place_alternation_preserved(self):
         """The compacted list must not introduce consecutive same-role messages."""
         from hermes_state import SessionDB
@@ -185,6 +234,52 @@ class TestInPlaceCompaction:
 
 
 class TestRotationFallbackWhenFlagOff:
+    def test_rotation_excludes_suppressed_current_user_from_parent_and_child(self):
+        from hermes_state import SessionDB
+        from agent.conversation_compression import compress_context
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db = SessionDB(db_path=Path(tmp) / "t.db")
+            parent_sid = "rot_synthetic"
+            _seed(db, parent_sid, "synthetic")
+            agent = _make_agent(db, parent_sid, in_place=False)
+            token = "turn-token"
+            agent._persist_user_message_idx = 99
+            agent._persist_user_message_token = token
+            agent._suppress_current_user_message_persistence = True
+            synthetic = {
+                "role": "user",
+                "content": "[synthetic provider continuation]",
+                "_hermes_current_turn_user_id": token,
+            }
+            agent.context_compressor.compress = lambda *_a, **_k: [
+                {"role": "user", "content": "real compacted context"},
+                {"role": "assistant", "content": "continued"},
+                synthetic.copy(),
+            ]
+
+            compressed, _ = compress_context(
+                agent,
+                [{"role": "user", "content": "real prior user"}, synthetic],
+                approx_tokens=100_000,
+                system_message="sys",
+            )
+            child_sid = agent.session_id
+            assert child_sid != parent_sid
+
+            agent._apply_persist_user_message_override(compressed)
+            agent._persist_session(compressed, [])
+
+            parent_contents = [
+                row.get("content")
+                for row in db.get_messages(parent_sid, include_inactive=True)
+            ]
+            child_contents = [
+                row.get("content") for row in db.get_messages_as_conversation(child_sid)
+            ]
+            assert synthetic["content"] not in parent_contents
+            assert child_contents == ["real compacted context", "continued"]
+
     def test_rotation_when_flag_off(self):
         """Rotation is now the OPT-OUT fallback (default flipped to in-place in
         #38763). With in_place=False explicitly set, legacy rotation is

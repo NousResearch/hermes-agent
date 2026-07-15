@@ -2548,7 +2548,10 @@ def _estimate_message_chars(msg: Dict[str, Any]) -> int:
         return len(str(msg))
     shadow: Dict[str, Any] = {}
     for k, v in msg.items():
-        if k == "_anthropic_content_blocks":
+        # Match the chat-completions wire sanitizer: every top-level private
+        # metadata key is removed before dispatch, so persistence/turn identity
+        # markers must not reduce the calculated output budget.
+        if isinstance(k, str) and k.startswith("_"):
             continue
         if k == "content":
             if isinstance(v, list):

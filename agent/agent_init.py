@@ -748,6 +748,7 @@ def init_agent(
     # user message intentionally differs from the persisted transcript
     # (e.g. CLI voice mode adds a temporary prefix for the live call only).
     agent._persist_user_message_idx = None
+    agent._persist_user_message_token = None
     agent._persist_user_message_override = None
     agent._persist_user_message_timestamp = None
     agent._suppress_current_user_message_persistence = False

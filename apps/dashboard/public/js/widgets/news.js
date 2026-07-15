@@ -1,6 +1,7 @@
 import { h, clear, timeAgo, hostOf } from "../utils.js";
 import { viewerLink } from "../viewer.js";
 import { summarizeButton } from "../summarize.js";
+import { saveForLater, markRead, isRead, isSaved } from "../reading.js";
 
 const LABELS = {
   top: "Top", world: "World", tech: "Tech", business: "Business",
@@ -40,7 +41,9 @@ export default {
         ),
       );
 
-      const list = h("div.news-list", {}, h("div.widget-loading", {}, "Fetching headlines…"));
+      const list = h("div.news-list", {
+        onscroll: () => { lastScroll = list.scrollTop; },
+      }, h("div.widget-loading", {}, "Fetching headlines…"));
       clear(body).append(tabs, list);
 
       let data;
@@ -61,6 +64,7 @@ export default {
       for (const item of data.items) {
         const anchor = h("a.news-item", {
             href: item.url, target: "_blank", rel: "noopener noreferrer",
+            class: isRead(item.url) ? "news-item news-read" : "news-item",
           },
             h("div.news-title", {}, item.title),
             item.summary ? h("div.news-summary", {}, item.summary) : null,
@@ -68,6 +72,20 @@ export default {
               h("span.news-source", {}, item.source),
               item.published ? h("span", {}, " · ", timeAgo(item.published)) : null,
               data.source === "live" ? h("span.muted", {}, " · ", hostOf(item.url)) : null,
+              h("button.icon-btn.sum-inline.bookmark-btn", {
+                type: "button",
+                title: "Save to reading list",
+                "aria-label": `Save “${item.title}” to reading list`,
+                class: isSaved(item.url)
+                  ? "icon-btn sum-inline bookmark-btn bookmark-saved"
+                  : "icon-btn sum-inline bookmark-btn",
+                onclick: (ev) => {
+                  ev.preventDefault();
+                  ev.stopPropagation();
+                  saveForLater(item);
+                  ev.currentTarget.classList.add("bookmark-saved");
+                },
+              }, "🔖"),
               summarizeButton(() => ({
                 kind: "news story",
                 title: item.title,
@@ -75,6 +93,10 @@ export default {
               }), { cls: "icon-btn sum-btn sum-inline", tip: "Summarize this story" }),
             ),
           );
+        anchor.addEventListener("click", () => {
+          markRead(item.url);
+          anchor.classList.add("news-read");
+        });
         list.append(viewerLink(anchor, {
           url: item.url,
           title: item.title,
@@ -83,9 +105,11 @@ export default {
           mode: "reader",
         }));
       }
+      list.scrollTop = lastScroll; // keep the reading position across redraws
     };
 
     let lastItems = [];
+    let lastScroll = 0;
     ctx.onSummarize(() => ({
       kind: "set of news headlines",
       title: `${store.state.news.topic} news`,
@@ -105,7 +129,11 @@ export default {
       } catch { /* keep last known tabs */ }
     };
 
-    ctx.onStore((topic) => { if (topic === "news-external") draw(); });
+    ctx.onStore((topic) => {
+      if (topic === "news-external") draw();
+      // read/saved state changed elsewhere (reading widget, another device)
+      if (topic === "reading" || topic === "replace") draw();
+    });
     window.addEventListener("hub:feeds-changed", loadTopics);
     ctx.onRefresh(draw);
     loadTopics();

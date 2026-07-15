@@ -78,7 +78,8 @@ dashboard's own feeds). It also has **long-term memory**: say
 agent's context automatically).
 
 Every widget (and every news story, and the article viewer) has a **∑**
-button that summarizes that piece of data with the active engine.
+button that summarizes that piece of data with the active engine. In
+Claude mode, replies stream in live (SSE) and type out as they arrive.
 
 ### Automations — set-and-forget Jarvis
 
@@ -117,6 +118,9 @@ Rules live in `data/automations.json`; triggers are `daily`, `market` and
   sparkline (CoinGecko, no key needed). The watchlist syncs across devices.
 - **Voice** — 🎙 push-to-talk on the agent (browsers with SpeechRecognition,
   e.g. Chrome) and a 🔊 toggle to have replies read aloud.
+- **Reading list** — tap 🔖 on any story to save it; opened stories are
+  tracked and dimmed everywhere, with one-tap "clear read". Synced across
+  devices like everything else.
 - **Lists, Notes, Calendar** — multiple task lists with progress, autosaving
   notes, month calendar with events. All stored in `localStorage`.
 - **Universal search** — engine picker + bang prefixes (`g` `ddg` `yt` `w`
@@ -136,9 +140,9 @@ public/            zero-build frontend (ES modules, design-system CSS)
   js/viewer.js     in-app reader/embed overlay
   js/actions.js    executes agent tool calls against local state
 tests/
-  test_server.py   73 unit tests (feeds+sources, worldstate, reader, assistant,
-                   sync, auth, automations, memory, watchlist, HTTP)
-  e2e.mjs          74-check Playwright suite (needs playwright-core + Chromium)
+  test_server.py   75 unit tests (feeds+sources, worldstate, reader, assistant,
+                   sync, auth, automations, memory, watchlist, SSE, HTTP)
+  e2e.mjs          80-check Playwright suite (needs playwright-core + Chromium)
                    — also runs in CI (.github/workflows/dashboard.yml)
 ```
 

@@ -110,9 +110,31 @@ export default {
       const texts = [];
       const actions = [];
       let mode = "local";
+
+      // Live bubble: streamed text types out here, then is replaced by the
+      // durable history entry when the turn completes.
+      const livePara = h("p.agent-line");
+      const live = h("div.agent-msg.agent-assistant.agent-live", {}, livePara);
+      let liveText = "";
+      const onDelta = (text) => {
+        if (!live.isConnected) {
+          log.append(live);
+        }
+        liveText += text;
+        livePara.textContent = liveText;
+        log.scrollTop = log.scrollHeight;
+      };
+
       try {
         for (let hop = 0; hop < MAX_LOOPS; hop++) {
-          const res = await api.chat(apiMessages, hop === 0 ? context : {});
+          if (hop > 0 && liveText) onDelta("\n\n");
+          let res;
+          try {
+            res = await api.chatStream(apiMessages, hop === 0 ? context : {}, onDelta);
+          } catch (err) {
+            if (liveText) throw err; // stream died mid-answer: surface it
+            res = await api.chat(apiMessages, hop === 0 ? context : {});
+          }
           mode = res.mode;
           apiMessages.push({ role: "assistant", content: res.content });
           const toolResults = [];
@@ -133,9 +155,11 @@ export default {
           apiMessages.push({ role: "user", content: toolResults });
         }
         const replyText = texts.join("\n\n") || "Done.";
+        live.remove();
         pushEntry({ role: "assistant", text: replyText, actions, mode });
         speak(replyText);
       } catch (err) {
+        live.remove();
         pushEntry({ role: "assistant", text: `Something went wrong: ${err.message}`, actions });
       } finally {
         setBusy(false);

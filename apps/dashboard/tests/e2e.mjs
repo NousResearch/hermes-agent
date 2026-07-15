@@ -42,7 +42,15 @@ const browser = await chromium.launch({ executablePath: EXECUTABLE });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
 const errors = [];
 page.on("pageerror", (err) => errors.push(String(err)));
-page.on("console", (msg) => { if (msg.type() === "error") errors.push(msg.text()); });
+page.on("console", (msg) => {
+  // server-error responses are captured (with URLs) by the response listener
+  if (msg.type() === "error" && !msg.text().includes("Failed to load resource")) {
+    errors.push(msg.text());
+  }
+});
+page.on("response", (r) => {
+  if (r.status() >= 500) errors.push(`${r.status()} ${r.request().method()} ${r.url()}`);
+});
 if (process.env.E2E_TRACE_SYNC) {
   page.on("response", (r) => {
     if (r.url().includes("/api/state")) {
@@ -94,7 +102,7 @@ check("topbar brand", await page.locator(".brand-name").innerText() === "HERMES/
 check("dark theme default", await page.evaluate(() => document.documentElement.dataset.theme) === "dark");
 
 // ---- widgets render --------------------------------------------------------
-for (const type of ["clock", "worldstate", "agent", "weather", "launcher", "news", "tasks", "markets", "calendar", "notes"]) {
+for (const type of ["clock", "worldstate", "agent", "weather", "launcher", "news", "reading", "tasks", "markets", "calendar", "notes"]) {
   await page.waitForSelector(`.widget-${type}`, { timeout: 10000 });
   check(`widget ${type} present`, true);
 }
@@ -250,9 +258,44 @@ await page.waitForFunction(() =>
   null, { timeout: 10000 });
 check("agent answers weather from live data", true);
 
+// ---- streaming chat endpoint (the agent turns above already used it) ----------
+const streamShape = await page.evaluate(async () => {
+  const res = await fetch("/api/assistant/chat-stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messages: [{ role: "user", content: "what's the weather?" }], context: {} }),
+  });
+  const text = await res.text();
+  return {
+    contentType: res.headers.get("Content-Type"),
+    hasDelta: text.includes("event: delta"),
+    hasDone: text.includes("event: done"),
+  };
+});
+check("chat-stream serves SSE with delta+done",
+  streamShape.contentType.includes("text/event-stream") && streamShape.hasDelta && streamShape.hasDone);
+
+// ---- reading list ---------------------------------------------------------------
+await page.locator(".news-item .bookmark-btn").first().click();
+await page.waitForSelector(".reading-row", { timeout: 10000 });
+check("bookmark saves story to reading list", true);
+const savedTitle = await page.locator(".reading-row .news-title").first().innerText();
+await page.locator(".reading-row .news-item").first().click();
+await page.waitForSelector(".viewer", { timeout: 10000 });
+await page.keyboard.press("Escape");
+await page.waitForSelector(".viewer", { state: "detached" });
+await page.waitForSelector(".reading-read-chip", { timeout: 10000 });
+check("opened story is marked read", true);
+check("read story dimmed in news widget", (await page.locator(".widget-news .news-read").count()) >= 1);
+await page.locator(".widget-reading .link-btn", { hasText: "Clear read" }).click();
+await page.waitForFunction((t) =>
+  ![...document.querySelectorAll(".reading-row .news-title")].some((el) => el.textContent === t),
+  savedTitle, { timeout: 10000 });
+check("clear read empties the list", true);
+
 // ---- summarize buttons -------------------------------------------------------
 check("widget summarize buttons present", (await page.locator(".widget-controls .sum-btn").count()) >= 6);
-await page.locator(".news-item .sum-inline").first().click();
+await page.locator(".news-item .sum-btn.sum-inline").first().click();
 await page.waitForSelector(".sum-pop", { timeout: 10000 });
 await page.waitForFunction(() => document.querySelector(".sum-body p"));
 check("news item summary shows text", (await page.locator(".sum-body").innerText()).length > 20);

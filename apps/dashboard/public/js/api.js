@@ -48,6 +48,57 @@ async function postJSON(path, body) {
   return handle(res, path);
 }
 
+/**
+ * POST to an SSE endpoint and read it incrementally. `onDelta(text)` fires
+ * for each text chunk; resolves with the final "done" payload (same shape
+ * as the non-streaming endpoint).
+ */
+async function streamJSON(path, body, onDelta) {
+  const res = await fetch(path, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", ...authHeaders() },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401) {
+    window.dispatchEvent(new CustomEvent("hub:auth-required"));
+    throw new Error("access code required");
+  }
+  if (!res.ok || !res.body) {
+    let detail = res.statusText;
+    try {
+      detail = (await res.json()).error || detail;
+    } catch { /* non-JSON error body */ }
+    throw new Error(detail);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let result = null;
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    let split;
+    while ((split = buffer.indexOf("\n\n")) >= 0) {
+      const frame = buffer.slice(0, split);
+      buffer = buffer.slice(split + 2);
+      let event = "message";
+      let data = "";
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("event: ")) event = line.slice(7).trim();
+        else if (line.startsWith("data: ")) data += line.slice(6);
+      }
+      if (!data) continue;
+      const payload = JSON.parse(data);
+      if (event === "delta") onDelta?.(payload.text);
+      else if (event === "done") result = payload;
+      else if (event === "error") throw new Error(payload.error);
+    }
+  }
+  if (!result) throw new Error("stream ended without a result");
+  return result;
+}
+
 export const api = {
   news: (topic, limit = 30) => getJSON("/api/news", { topic, limit }),
   weather: (lat, lon, name) =>
@@ -64,6 +115,8 @@ export const api = {
   statePut: (state, baseRev) => postJSON("/api/state", { state, baseRev }),
   assistantStatus: () => getJSON("/api/assistant/status"),
   chat: (messages, context) => postJSON("/api/assistant/chat", { messages, context }),
+  chatStream: (messages, context, onDelta) =>
+    streamJSON("/api/assistant/chat-stream", { messages, context }, onDelta),
   runTool: (name, input) => postJSON("/api/assistant/tool", { name, input }),
   automations: () => getJSON("/api/automations"),
   automationsOp: (body) => postJSON("/api/automations", body),

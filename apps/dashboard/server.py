@@ -1087,6 +1087,42 @@ class Api:
             raise ApiError(400, "after must be an integer") from None
         return self.automations.notifications_after(after)
 
+    def assistant_chat_stream(self, body: dict, handler) -> None:
+        """SSE: delta events with live text, then one done event (chat shape)."""
+        generator = self.assistant.chat_stream(body)
+        try:  # pull the first event before committing to a 200 SSE response
+            first = next(generator)
+        except ValueError as exc:
+            raise ApiError(400, str(exc)) from None
+        except StopIteration:
+            raise ApiError(500, "empty stream") from None
+
+        handler.send_response(200)
+        handler.send_header("Content-Type", "text/event-stream")
+        handler.send_header("Cache-Control", "no-store")
+        # SSE has no Content-Length; close the socket after the final event so
+        # clients that wait for EOF (curl, urllib) terminate cleanly.
+        handler.send_header("Connection", "close")
+        handler.close_connection = True
+        handler.end_headers()
+
+        def emit(event: str, payload: dict) -> None:
+            frame = f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+            handler.wfile.write(frame.encode("utf-8"))
+            handler.wfile.flush()
+
+        try:
+            emit(*first)
+            for event, payload in generator:
+                emit(event, payload)
+        except (BrokenPipeError, ConnectionResetError):
+            pass  # client went away mid-stream
+        except Exception as exc:
+            try:
+                emit("error", {"error": str(exc)})
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
     # -- agent tool proxy (tools that read server data / server state) -------
     def assistant_tool(self, body: dict) -> dict:
         name = body.get("name", "")
@@ -1155,6 +1191,11 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/feeds": "feeds_op",
     }
 
+    # POST endpoints that write their own (streaming) response.
+    STREAM_ROUTES = {
+        "/api/assistant/chat-stream": "assistant_chat_stream",
+    }
+
     # /api/health stays open so the lock screen can probe reachability.
     OPEN_PATHS = {"/api/health"}
 
@@ -1181,7 +1222,7 @@ class HubHandler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         parsed = urllib.parse.urlparse(self.path)
-        if parsed.path not in self.POST_ROUTES:
+        if parsed.path not in self.POST_ROUTES and parsed.path not in self.STREAM_ROUTES:
             self._send_json(404, {"error": "unknown endpoint"})
             return
         try:
@@ -1204,6 +1245,12 @@ class HubHandler(BaseHTTPRequestHandler):
             and hmac.compare_digest(body_token, self.token)
         ):
             self._send_json(401, {"error": "access code required"})
+            return
+        if parsed.path in self.STREAM_ROUTES:
+            try:
+                getattr(self.api, self.STREAM_ROUTES[parsed.path])(body, self)
+            except ApiError as exc:
+                self._send_json(exc.status, {"error": exc.message})
             return
         self._handle_api(self.POST_ROUTES[parsed.path], body)
 

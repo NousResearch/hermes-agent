@@ -397,6 +397,22 @@ class Assistant:
         return self._chat_local(messages, context)
 
     def _chat_claude(self, messages: list, context: dict) -> dict:
+        system, request_messages = self._prepare_claude_request(messages, context)
+        response = self._get_client().messages.create(
+            model=self.model,
+            max_tokens=4096,
+            thinking={"type": "adaptive"},
+            system=system,
+            tools=DASHBOARD_TOOLS,
+            messages=request_messages,
+        )
+        return {
+            "mode": "claude",
+            "stop_reason": response.stop_reason,
+            "content": self._convert_content(response),
+        }
+
+    def _prepare_claude_request(self, messages: list, context: dict) -> tuple[list, list]:
         # Keep the system prompt frozen for caching; per-request dashboard
         # context travels as the final block of the first user turn instead.
         request_messages = list(messages)
@@ -422,14 +438,10 @@ class Assistant:
         if memory.strip():
             # after the cached block, so editing memory never invalidates it
             system.append({"type": "text", "text": "Long-term memory about the user:\n" + memory[-4000:]})
-        response = self._get_client().messages.create(
-            model=self.model,
-            max_tokens=4096,
-            thinking={"type": "adaptive"},
-            system=system,
-            tools=DASHBOARD_TOOLS,
-            messages=request_messages,
-        )
+        return system, request_messages
+
+    @staticmethod
+    def _convert_content(response) -> list:
         content = []
         for block in response.content:
             if block.type == "text":
@@ -439,7 +451,44 @@ class Assistant:
             elif block.type == "thinking":
                 # must be echoed back verbatim on the next loop iteration
                 content.append(json.loads(block.to_json()))
-        return {"mode": "claude", "stop_reason": response.stop_reason, "content": content}
+        return content
+
+    def chat_stream(self, payload: dict):
+        """Yields ("delta", {...}) events, then exactly one ("done", {...}).
+
+        The "done" payload matches chat()'s return shape, so the client tool
+        loop is transport-agnostic — it just also gets live text on the way.
+        """
+        messages = payload.get("messages")
+        if not isinstance(messages, list) or not messages:
+            raise ValueError("messages must be a non-empty list")
+        context = payload.get("context") or {}
+
+        if self.mode != "claude":
+            result = self._chat_local(messages, context)
+            for block in result["content"]:
+                if block["type"] == "text" and block["text"]:
+                    yield "delta", {"text": block["text"]}
+            yield "done", result
+            return
+
+        system, request_messages = self._prepare_claude_request(messages, context)
+        with self._get_client().messages.stream(
+            model=self.model,
+            max_tokens=4096,
+            thinking={"type": "adaptive"},
+            system=system,
+            tools=DASHBOARD_TOOLS,
+            messages=request_messages,
+        ) as stream:
+            for text in stream.text_stream:
+                yield "delta", {"text": text}
+            response = stream.get_final_message()
+        yield "done", {
+            "mode": "claude",
+            "stop_reason": response.stop_reason,
+            "content": self._convert_content(response),
+        }
 
     # Local command grammar: "add task X [to LIST]", "complete/finish X",
     # "add event on 2026-07-08: standup" / "add event tomorrow: standup",

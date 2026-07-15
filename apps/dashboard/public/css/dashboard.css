@@ -1138,6 +1138,35 @@ a { color: inherit; }
 .sources-newtopic { margin-top: 4px; }
 .sources-footer { display: flex; justify-content: space-between; align-items: center; gap: 12px; margin-top: 14px; }
 
+.agent-live .agent-line::after {
+  content: "▮";
+  color: var(--accent);
+  margin-left: 2px;
+  animation: blink 1s steps(2) infinite;
+}
+
+/* ---------- reading list & read tracking ---------- */
+
+.news-read .news-title { color: var(--muted); font-weight: 450; }
+.news-read .news-summary { opacity: 0.55; }
+.bookmark-btn { filter: grayscale(1); }
+.bookmark-btn:hover, .bookmark-saved { filter: none; }
+.reading-row { display: flex; align-items: flex-start; gap: 4px; }
+.reading-row .news-item { flex: 1; border-bottom: 1px solid var(--hairline); }
+.reading-row:last-child .news-item { border-bottom: none; }
+.reading-row .icon-btn { margin-top: 10px; opacity: 0; }
+.reading-row:hover .icon-btn { opacity: 1; }
+.reading-empty { padding: 10px 4px; }
+.reading-read-chip {
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  color: var(--delta-up);
+}
+@media (max-width: 760px) {
+  .reading-row .icon-btn { opacity: 1; }
+}
+
 .agent-mic { padding: 6px 10px; }
 .agent-mic-live {
   color: var(--status-critical);

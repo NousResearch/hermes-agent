@@ -16,6 +16,7 @@ function defaultState() {
       { id: uid(), type: "weather", size: "m" },
       { id: uid(), type: "launcher", size: "m" },
       { id: uid(), type: "news", size: "l" },
+      { id: uid(), type: "reading", size: "m" },
       { id: uid(), type: "tasks", size: "m" },
       { id: uid(), type: "markets", size: "m" },
       { id: uid(), type: "calendar", size: "m" },
@@ -66,6 +67,8 @@ function defaultState() {
     agent: { history: [] },
     weather: { location: null }, // null → server default until the user picks a city
     news: { topic: "top" },
+    reading: { items: [] },
+    newsRead: {}, // url → timestamp of first open (bounded in markRead)
     markets: { ids: ["bitcoin", "ethereum", "solana", "dogecoin"] },
     search: { engine: "google" },
   };

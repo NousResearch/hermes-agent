@@ -604,6 +604,38 @@ class HttpTests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(data["summary"])
 
+    def test_assistant_chat_stream_sse(self):
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/api/assistant/chat-stream",
+            data=json.dumps({
+                "messages": [{"role": "user", "content": "add task stream test"}],
+                "context": {},
+            }).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(req) as resp:
+            self.assertIn("text/event-stream", resp.headers["Content-Type"])
+            raw = resp.read().decode()
+        events = {}
+        for frame in raw.strip().split("\n\n"):
+            lines = frame.split("\n")
+            name = next(l[7:] for l in lines if l.startswith("event: "))
+            data = next(l[6:] for l in lines if l.startswith("data: "))
+            events[name] = json.loads(data)
+        self.assertIn("delta", events)
+        self.assertIn("done", events)
+        # the done payload matches the non-streaming chat shape
+        done = events["done"]
+        self.assertIn(done["stop_reason"], ("end_turn", "tool_use"))
+        tools = [b for b in done["content"] if b["type"] == "tool_use"]
+        self.assertEqual(tools[0]["name"], "add_task")
+
+    def test_assistant_chat_stream_rejects_bad_body(self):
+        status, data = self.post("/api/assistant/chat-stream", {"messages": []})
+        self.assertEqual(status, 400)
+        self.assertIn("error", data)
+
     def test_assistant_briefing_endpoint(self):
         status, data = self.post("/api/assistant/briefing", {"context": {
             "tasks": [{"name": "Today", "items": [{"text": "renew passport", "done": False}]}],

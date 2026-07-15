@@ -18,9 +18,10 @@ import notes from "./widgets/notes.js";
 import calendar from "./widgets/calendar.js";
 import markets from "./widgets/markets.js";
 import worldstate from "./widgets/worldstate.js";
+import reading from "./widgets/reading.js";
 
 const WIDGETS = Object.fromEntries(
-  [clock, worldstate, agent, weather, launcher, news, tasks, notes, calendar, markets]
+  [clock, worldstate, agent, weather, launcher, news, reading, tasks, notes, calendar, markets]
     .map((w) => [w.type, w]),
 );
 

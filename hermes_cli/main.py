@@ -319,6 +319,7 @@ from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
 from hermes_cli.subcommands.claw import build_claw_parser
+from hermes_cli.update_engine import NativeUpdateEngine, UpdateRequest, UpdateResult
 
 
 def _require_tty(command_name: str) -> None:
@@ -9655,6 +9656,12 @@ def _discard_lockfile_churn(git_cmd, repo_root):
         pass
 
 
+def _run_legacy_native_update(request: UpdateRequest) -> UpdateResult:
+    """Legacy implementation behind the native update seam."""
+    _cmd_update_impl(request.args, gateway_mode=request.gateway_mode)
+    return UpdateResult(exit_code=0, message="legacy update completed")
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -9711,7 +9718,8 @@ def cmd_update(args):
     # _install_hangup_protection for rationale.
     _update_io_state = _install_hangup_protection(gateway_mode=gateway_mode)
     try:
-        _cmd_update_impl(args, gateway_mode=gateway_mode)
+        request = UpdateRequest(args=args, gateway_mode=gateway_mode)
+        NativeUpdateEngine(legacy_runner=_run_legacy_native_update).run(request)
     finally:
         _finalize_update_output(_update_io_state)
 

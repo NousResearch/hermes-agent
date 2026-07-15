@@ -1082,7 +1082,7 @@ _task_env_overrides: Dict[str, Dict[str, Any]] = {}
 # live cwd (post-command tracking, cwd-override registration) also records it
 # here. Readers still use the legacy env.cwd ladder. Later steps flip
 # file_tools and _resolve_command_cwd to read this store, then delete the
-# env-side tracking + ownership guards. See .hermes/plans/cwd-rearch-audit.md.
+# env-side tracking + ownership guards.
 _session_cwd: Dict[str, str] = {}
 _session_cwd_lock = threading.Lock()
 

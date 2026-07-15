@@ -156,7 +156,7 @@ _MARKDOWN_HINT_RE = re.compile(
     re.MULTILINE,
 )
 # Detect markdown tables: a line starting with | followed by a separator line.
-# Feishu post-type 'md' elements do not render tables, so we force text mode.
+# Used by the legacy post/text routing path when interactive cards are disabled.
 _MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
@@ -164,6 +164,14 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+_MAX_CARD_JSON_BYTES = 30 * 1024
+
+
+def _utf8_len(content: str) -> int:
+    """Measure Feishu outbound content in UTF-8 bytes."""
+    return len(content.encode("utf-8"))
+
+
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -409,6 +417,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    interactive_cards: bool = True
 
 
 @dataclass
@@ -569,6 +578,17 @@ def _build_markdown_post_payload(content: str) -> str:
             "zh_cn": {
                 "content": rows,
             }
+        },
+        ensure_ascii=False,
+    )
+
+
+def _build_markdown_card_payload(content: str) -> str:
+    """Build a Card 2.0 payload containing one full Markdown element."""
+    return json.dumps(
+        {
+            "schema": "2.0",
+            "body": {"elements": [{"tag": "markdown", "content": content}]},
         },
         ensure_ascii=False,
     )
@@ -1426,6 +1446,8 @@ class FeishuAdapter(BasePlatformAdapter):
     supports_code_blocks = True  # Feishu renders fenced code blocks
     splits_long_messages = True  # send() chunks via truncate_message(MAX_MESSAGE_LENGTH)
 
+    # Measured with message_len_fn (UTF-8 bytes). Keeping the existing 8K
+    # budget leaves ample room below Feishu's 30KB Card 2.0 JSON limit.
     MAX_MESSAGE_LENGTH = 8000
     # Max distinct chat IDs retained in _chat_locks before LRU eviction kicks in.
     CHAT_LOCK_MAX_SIZE: int = 1000
@@ -1499,6 +1521,11 @@ class FeishuAdapter(BasePlatformAdapter):
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
         self._load_seen_message_ids()
+
+    @property
+    def message_len_fn(self):
+        """Feishu card limits are byte-based, not Python code-point based."""
+        return _utf8_len
 
     @staticmethod
     def _load_settings(extra: Dict[str, Any]) -> FeishuAdapterSettings:
@@ -1600,6 +1627,7 @@ class FeishuAdapter(BasePlatformAdapter):
             require_mention=_to_boolean(
                 extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
             ),
+            interactive_cards=_to_boolean(extra.get("interactive_cards", True)),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -1632,6 +1660,7 @@ class FeishuAdapter(BasePlatformAdapter):
         self._ws_ping_timeout = settings.ws_ping_timeout
         self._allow_bots = settings.allow_bots
         self._require_mention = settings.require_mention
+        self._use_interactive_cards = settings.interactive_cards
 
     def _build_event_handler(self) -> Any:
         if EventDispatcherHandler is None:
@@ -1896,7 +1925,11 @@ class FeishuAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="Not connected")
 
         formatted = self.format_message(content)
-        chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
+        chunks = self.truncate_message(
+            formatted,
+            self.MAX_MESSAGE_LENGTH,
+            len_fn=self.message_len_fn,
+        )
         last_response = None
 
         try:
@@ -1911,17 +1944,41 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type == "interactive":
+                        fallback_text = chunk
+                        logger.warning(
+                            "[Feishu] Interactive card send failed; falling back to plain text: %s",
+                            exc,
+                        )
+                    elif msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
+                        fallback_text = _strip_markdown_to_plain_text(chunk)
+                        logger.warning(
+                            "[Feishu] Invalid post payload rejected by API; falling back to plain text"
+                        )
+                    else:
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
+                        payload=json.dumps({"text": fallback_text}, ensure_ascii=False),
                         reply_to=reply_to,
                         metadata=metadata,
                     )
                 if (
+                    msg_type == "interactive"
+                    and not self._response_succeeded(response)
+                ):
+                    logger.warning(
+                        "[Feishu] Interactive card rejected by API response; falling back to plain text"
+                    )
+                    response = await self._feishu_send_with_retry(
+                        chat_id=chat_id,
+                        msg_type="text",
+                        payload=json.dumps({"text": chunk}, ensure_ascii=False),
+                        reply_to=reply_to,
+                        metadata=metadata,
+                    )
+                elif (
                     msg_type == "post"
                     and not self._response_succeeded(response)
                     and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
@@ -1960,7 +2017,24 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await self._run_blocking(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
+            if not result.success and msg_type == "interactive":
+                logger.warning(
+                    "[Feishu] Interactive card update rejected; retrying as a plain interactive card"
+                )
+                fallback_body = self._build_update_message_body(
+                    msg_type="interactive",
+                    content=_build_markdown_card_payload(_strip_markdown_to_plain_text(content)),
+                )
+                fallback_request = self._build_update_message_request(
+                    message_id=message_id,
+                    request_body=fallback_body,
+                )
+                fallback_response = await self._run_blocking(
+                    self._client.im.v1.message.update,
+                    fallback_request,
+                )
+                result = self._finalize_send_result(fallback_response, "update failed")
+            elif not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
                 logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
                 fallback_body = self._build_update_message_body(
                     msg_type="text",
@@ -4526,6 +4600,9 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        if self._use_interactive_cards:
+            return "interactive", _build_markdown_card_payload(content)
+
         # Feishu post-type 'md' elements do not render markdown tables; sending
         # table content as post causes the message to appear blank on the client.
         # Force plain text for anything that looks like a markdown table.

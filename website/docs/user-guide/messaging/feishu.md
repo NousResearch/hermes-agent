@@ -398,7 +398,7 @@ For small text-based documents (.txt, .md), the file content is automatically in
 
 | Method | What it sends |
 |--------|--------------|
-| `send` | Text or rich post messages (auto-detected based on markdown content) |
+| `send` | Card 2.0 Markdown messages by default; legacy text/post routing is configurable |
 | `send_image` / `send_image_file` | Uploads image to Feishu, then sends as native image bubble (with optional caption) |
 | `send_document` | Uploads file to Feishu API, then sends as file attachment |
 | `send_voice` | Uploads audio file as a Feishu file attachment |
@@ -412,13 +412,20 @@ File upload routing is automatic based on extension:
 - `.pdf`, `.doc(x)`, `.xls(x)`, `.ppt(x)` → uploaded with their document type
 - Everything else → uploaded as a generic stream file
 
-## Markdown Rendering and Post Fallback
+## Markdown Rendering and Card Fallback
 
-When outbound text contains markdown formatting (headings, bold, lists, code blocks, links, etc.), the adapter automatically sends it as a Feishu **post** message with an embedded `md` tag rather than as plain text. This enables rich rendering in the Feishu client.
+By default, all outbound text is sent as a Feishu **Interactive Card 2.0** containing a `markdown` element. This renderer supports headings, lists, fenced code blocks, links, and GFM tables more consistently than the legacy post-message `md` element. Plain text also uses the same card type so streaming previews and final edits never need to switch message types.
 
-If the Feishu API rejects the post payload (e.g., due to unsupported markdown constructs), the adapter automatically falls back to sending as plain text with markdown stripped. This two-stage fallback ensures messages are always delivered.
+Long replies use Hermes's normal message splitter. Feishu measures these chunks in UTF-8 bytes, and fenced code blocks are closed and reopened at chunk boundaries so each card remains valid. If a new card cannot be sent, Hermes retries that chunk as plain text. If an in-place card update is rejected, Hermes retries with a simplified plain-text card while keeping the `interactive` message type.
 
-Plain text messages (no markdown detected) are sent as the simple `text` message type.
+To restore the legacy routing behavior (plain text → `text`, Markdown → `post`, tables → `text`), disable interactive cards in `config.yaml`:
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      interactive_cards: false
+```
 
 ## Processing Status Reactions
 
@@ -563,7 +570,7 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `HERMES_FEISHU_TEXT_BATCH_MAX_CHARS` | — | `4000` | Max characters merged per text batch |
 | `HERMES_FEISHU_MEDIA_BATCH_DELAY_SECONDS` | — | `0.8` | Media burst debounce quiet period |
 
-WebSocket and per-group ACL settings are configured via `config.yaml` under `platforms.feishu.extra` (see [WebSocket Tuning](#websocket-tuning) and [Per-Group Access Control](#per-group-access-control) above).
+Interactive-card rendering, WebSocket tuning, and per-group ACL settings are configured via `config.yaml` under `platforms.feishu.extra` (see [Markdown Rendering and Card Fallback](#markdown-rendering-and-card-fallback), [WebSocket Tuning](#websocket-tuning), and [Per-Group Access Control](#per-group-access-control) above).
 
 ## Troubleshooting
 
@@ -577,7 +584,7 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 | Bot doesn't respond in groups | Ensure the bot is @mentioned, check `FEISHU_GROUP_POLICY`, and verify the sender is in `FEISHU_ALLOWED_USERS` if policy is `allowlist` |
 | `Webhook rejected: invalid verification token` | Ensure `FEISHU_VERIFICATION_TOKEN` matches the token in your Feishu app's Event Subscriptions config |
 | `Webhook rejected: invalid signature` | Ensure `FEISHU_ENCRYPT_KEY` matches the encrypt key in your Feishu app config |
-| Post messages show as plain text | The Feishu API rejected the post payload; this is normal fallback behavior. Check logs for details. |
+| Card messages fall back to plain text | The Feishu API rejected an interactive card payload; Hermes preserves delivery by retrying the chunk as text. Check logs for details. |
 | Images/files not received by bot | Grant `im:message` and `im:resource` permission scopes to your Feishu app |
 | Bot identity not auto-detected | Usually a transient network issue reaching Feishu's bot info endpoint. Set `FEISHU_BOT_OPEN_ID` and `FEISHU_BOT_NAME` manually as a workaround. |
 | Peer bot messages still ignored after enabling `FEISHU_ALLOW_BOTS` | Hermes can't identify itself yet — set `FEISHU_BOT_OPEN_ID` (and `FEISHU_BOT_USER_ID` if your app uses `sender_id_type=user_id`). |

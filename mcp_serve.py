@@ -37,6 +37,7 @@ import sys
 import threading
 import time
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -79,17 +80,113 @@ def _get_session_db():
 
 
 def _load_sessions_index() -> dict:
-    """Load the gateway sessions.json index directly.
+    """Load the gateway session routing index.
 
     Returns a dict of session_key -> entry_dict with platform routing info.
-    This avoids importing the full SessionStore which needs GatewayConfig.
+
+    state.db is the primary source (#9006): gateway sessions persist their
+    routing metadata (session_key, chat/thread ids, display_name, origin) on
+    the durable session row, so a single database read replaces the old
+    dual-file sessions.json dependency.  Falls back to sessions.json for
+    pre-migration databases where no gateway rows carry a session_key yet.
+    """
+    entries = _load_sessions_index_from_db()
+    if entries:
+        return entries
+    return _load_sessions_index_from_json()
+
+
+def _row_to_index_entry(row: dict) -> dict:
+    """Convert a state.db gateway session row to the sessions.json entry shape."""
+    origin = {}
+    origin_json = row.get("origin_json")
+    if origin_json:
+        try:
+            parsed = json.loads(origin_json)
+            if isinstance(parsed, dict):
+                origin = parsed
+        except (TypeError, ValueError):
+            pass
+    if not origin:
+        # Pre-origin_json rows: synthesize the minimal origin from columns.
+        origin = {
+            "platform": row.get("source", ""),
+            "chat_id": row.get("chat_id"),
+            "chat_type": row.get("chat_type"),
+            "thread_id": row.get("thread_id"),
+            "user_id": row.get("user_id"),
+        }
+
+    def _iso(ts) -> str:
+        try:
+            return datetime.fromtimestamp(float(ts)).isoformat() if ts else ""
+        except (TypeError, ValueError, OSError):
+            return ""
+
+    input_tokens = int(row.get("input_tokens") or 0)
+    output_tokens = int(row.get("output_tokens") or 0)
+    return {
+        "session_id": str(row.get("id", "")),
+        "session_key": row.get("session_key", ""),
+        "platform": row.get("source", ""),
+        "chat_type": row.get("chat_type") or origin.get("chat_type", ""),
+        "display_name": row.get("display_name") or origin.get("chat_name") or "",
+        "origin": origin,
+        "created_at": _iso(row.get("started_at")),
+        "updated_at": _iso(row.get("last_active") or row.get("started_at")),
+        "input_tokens": input_tokens,
+        "output_tokens": output_tokens,
+        "total_tokens": input_tokens + output_tokens,
+    }
+
+
+def _load_sessions_index_from_db() -> dict:
+    """Build the routing index from state.db gateway session rows."""
+    db = _get_session_db()
+    if db is None:
+        return {}
+    try:
+        lister = getattr(db, "list_gateway_sessions", None)
+        if not callable(lister):
+            return {}
+        rows = lister(active_only=True)
+        entries = {}
+        for row in rows:
+            key = row.get("session_key")
+            if not key:
+                continue
+            entries[key] = _row_to_index_entry(row)
+        return entries
+    except Exception as e:
+        logger.debug("Failed to load gateway sessions from state.db: %s", e)
+        return {}
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
+
+
+def _load_sessions_index_from_json() -> dict:
+    """Legacy fallback: load the gateway sessions.json index directly.
+
+    Used only for pre-migration databases whose gateway rows don't carry a
+    session_key yet.  This avoids importing the full SessionStore which
+    needs GatewayConfig.
     """
     sessions_file = _get_sessions_dir() / "sessions.json"
     if not sessions_file.exists():
         return {}
     try:
         with open(sessions_file, "r", encoding="utf-8") as f:
-            return json.load(f)
+            data = json.load(f)
+        # Drop documentation/metadata sentinels (keys starting with "_", e.g.
+        # the "_README" note the gateway writes into the index). They are not
+        # session entries and would break consumers that treat every value as
+        # an entry dict.
+        if isinstance(data, dict):
+            return {k: v for k, v in data.items() if not str(k).startswith("_")}
+        return {}
     except Exception as e:
         logger.debug("Failed to load sessions.json: %s", e)
         return {}
@@ -201,6 +298,21 @@ class QueueEvent:
     data: dict = field(default_factory=dict)
 
 
+def _ts_float(ts) -> float:
+    """Normalize a message timestamp (epoch int/float or ISO string) to float."""
+    if isinstance(ts, (int, float)):
+        return float(ts)
+    if isinstance(ts, str) and ts:
+        try:
+            return float(ts)
+        except ValueError:
+            try:
+                return datetime.fromisoformat(ts).timestamp()
+            except Exception:
+                return 0.0
+    return 0.0
+
+
 class EventBridge:
     """Background poller that watches SessionDB for new messages and
     maintains an in-memory event queue with waiter support.
@@ -217,12 +329,9 @@ class EventBridge:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._last_poll_timestamps: Dict[str, float] = {}  # session_key -> unix timestamp
-        self._bridge_started_at = time.time()
-        self._initial_scan_complete = False
         # In-memory approval tracking (populated from events)
         self._pending_approvals: Dict[str, dict] = {}
-        # mtime cache — skip expensive work when files haven't changed
-        self._sessions_json_mtime: float = 0.0
+        # mtime cache — skip expensive work when state.db hasn't changed
         self._state_db_mtime: float = 0.0
         self._cached_sessions_index: dict = {}
 
@@ -230,6 +339,13 @@ class EventBridge:
         """Start the background polling thread."""
         if self._running:
             return
+        # Snapshot existing history BEFORE the poll loop starts so pre-existing
+        # messages are not replayed as new events on startup (#13414). Sessions
+        # that first appear afterwards are absent from the baseline and default
+        # to last_seen=0.0 in _poll_once, so new-conversation delivery is
+        # preserved. Unit tests that drive _poll_once directly bypass start()
+        # and still observe first-poll delivery.
+        self._establish_baseline()
         self._running = True
         self._thread = threading.Thread(target=self._poll_loop, daemon=True)
         self._thread.start()
@@ -331,6 +447,46 @@ class EventBridge:
                 self._queue.pop(0)
         self._new_event.set()
 
+    def _establish_baseline(self) -> None:
+        """Record the latest per-session message timestamp and the current
+        state.db mtime WITHOUT emitting events, so startup does not replay
+        history (#13414).
+
+        Only sessions that already exist at startup are baselined; a session
+        that first appears afterwards is absent here and defaults to
+        last_seen=0.0 in _poll_once, so a brand-new conversation's first
+        message is still delivered on its state.db-change tick.
+        """
+        db = _get_session_db()
+        if not db:
+            return
+        try:
+            from hermes_constants import get_hermes_home
+            db_file = get_hermes_home() / "state.db"
+        except ImportError:
+            db_file = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes")) / "state.db"
+        try:
+            self._state_db_mtime = db_file.stat().st_mtime if db_file.exists() else 0.0
+        except OSError:
+            self._state_db_mtime = 0.0
+        try:
+            self._cached_sessions_index = _load_sessions_index()
+        except Exception:
+            self._cached_sessions_index = {}
+        for session_key, entry in self._cached_sessions_index.items():
+            session_id = entry.get("session_id", "")
+            if not session_id:
+                continue
+            try:
+                messages = db.get_messages(session_id)
+            except Exception:
+                continue
+            all_ts = [_ts_float(m.get("timestamp", 0)) for m in (messages or ())]
+            if all_ts:
+                latest = max(all_ts)
+                if latest > 0.0:
+                    self._last_poll_timestamps[session_key] = latest
+
     def _poll_loop(self):
         """Background loop: poll SessionDB for new messages."""
         db = _get_session_db()
@@ -348,22 +504,14 @@ class EventBridge:
     def _poll_once(self, db):
         """Check for new messages across all sessions.
 
-        Uses mtime checks on sessions.json and state.db to skip work
-        when nothing has changed — makes 200ms polling essentially free.
+        Uses a single mtime check on state.db to skip work when nothing
+        has changed — makes 200ms polling essentially free.  Since #9006
+        the routing index itself lives in state.db (session rows carry
+        session_key/origin metadata), so a new conversation and its first
+        message land in the SAME file and one mtime check covers both —
+        eliminating the old dual-file (sessions.json + state.db) race that
+        could drop brand-new conversations (#8925).
         """
-        # Check if sessions.json has changed (mtime check is ~1μs)
-        sessions_file = _get_sessions_dir() / "sessions.json"
-        try:
-            sj_mtime = sessions_file.stat().st_mtime if sessions_file.exists() else 0.0
-        except OSError:
-            sj_mtime = 0.0
-
-        sessions_changed = sj_mtime != self._sessions_json_mtime
-        if sessions_changed:
-            self._sessions_json_mtime = sj_mtime
-            self._cached_sessions_index = _load_sessions_index()
-
-        # Check if state.db has changed
         try:
             from hermes_constants import get_hermes_home
             db_file = get_hermes_home() / "state.db"
@@ -375,11 +523,14 @@ class EventBridge:
         except OSError:
             db_mtime = 0.0
 
-        db_changed = db_mtime != self._state_db_mtime
-        if not db_changed and not sessions_changed:
+        if db_mtime == self._state_db_mtime:
             return  # Nothing changed since last poll — skip entirely
 
         self._state_db_mtime = db_mtime
+        # Refresh the routing index from state.db on every change tick —
+        # it's a single indexed query and it can never lag the messages
+        # table (both live in the same database file).
+        self._cached_sessions_index = _load_sessions_index()
         entries = self._cached_sessions_index
 
         for session_key, entry in entries.items():
@@ -387,11 +538,7 @@ class EventBridge:
             if not session_id:
                 continue
 
-            has_seen_session = session_key in self._last_poll_timestamps
-            if has_seen_session:
-                last_seen = self._last_poll_timestamps[session_key]
-            else:
-                last_seen = 0.0 if not self._initial_scan_complete else self._bridge_started_at
+            last_seen = self._last_poll_timestamps.get(session_key, 0.0)
 
             try:
                 messages = db.get_messages(session_id)
@@ -399,36 +546,10 @@ class EventBridge:
                 continue
 
             if not messages:
-                self._last_poll_timestamps.setdefault(session_key, last_seen)
                 continue
 
-            # Normalize timestamps to float for comparison
-            def _ts_float(ts) -> float:
-                if isinstance(ts, (int, float)):
-                    return float(ts)
-                if isinstance(ts, str) and ts:
-                    try:
-                        return float(ts)
-                    except ValueError:
-                        # ISO string — parse to epoch
-                        try:
-                            from datetime import datetime
-                            return datetime.fromisoformat(ts).timestamp()
-                        except Exception:
-                            return 0.0
-                return 0.0
-
-            all_ts = [_ts_float(m.get("timestamp", 0)) for m in messages]
-            latest = max(all_ts) if all_ts else last_seen
-
-            # The first successful scan establishes a baseline. Without this,
-            # starting the MCP server replays every saved conversation message
-            # as a new live event.
-            if not has_seen_session and not self._initial_scan_complete:
-                self._last_poll_timestamps[session_key] = latest
-                continue
-
-            # Find messages newer than our last seen timestamp
+            # Find messages newer than our last seen timestamp (see the
+            # module-level _ts_float helper for timestamp normalization).
             new_messages = []
             for msg in messages:
                 ts = _ts_float(msg.get("timestamp", 0))
@@ -454,10 +575,12 @@ class EventBridge:
                     },
                 ))
 
-            # Update last seen to the most recent message timestamp.
-            self._last_poll_timestamps[session_key] = max(latest, last_seen)
-
-        self._initial_scan_complete = True
+            # Update last seen to the most recent message timestamp
+            all_ts = [_ts_float(m.get("timestamp", 0)) for m in messages]
+            if all_ts:
+                latest = max(all_ts)
+                if latest > last_seen:
+                    self._last_poll_timestamps[session_key] = latest
 
 
 # ---------------------------------------------------------------------------

@@ -373,7 +373,7 @@ export const zh: Translations = {
       title: '外观',
       intro: '这些是仅桌面端的显示偏好。模式控制明暗；主题控制强调色与对话界面样式。',
       colorMode: '颜色模式',
-      colorModeDesc: '选择指定模式，或让 Hermes 跟随系统设置。',
+      colorModeDesc: '选择固定模式，或让 Hermes 跟随系统设置。',
       toolViewTitle: '工具调用显示',
       toolViewDesc: '产品模式隐藏原始工具数据；技术模式显示完整输入/输出。',
       uiScaleTitle: '界面缩放',
@@ -489,7 +489,7 @@ export const zh: Translations = {
       },
       commandAllowlist: '命令白名单',
       security: {
-        redactSecrets: '隐藏密钥',
+        redactSecrets: '隐去密钥',
         allowPrivateUrls: '允许私有 URL'
       },
       browser: {
@@ -1132,7 +1132,7 @@ export const zh: Translations = {
   },
   agents: {
     close: '关闭智能体',
-    title: '任务队列',
+    title: '分支树',
     subtitle: '当前回合的子智能体实时活动。',
     emptyTitle: '暂无活跃子智能体',
     emptyDesc: '当某个回合派发任务时，子智能体会在此实时显示进度。',
@@ -1653,7 +1653,7 @@ export const zh: Translations = {
     promptPlaceholder: '总结我未读的 Slack 话题，并把前 5 条邮件发给我…',
     frequencyLabel: '频率',
     deliverLabel: '投递至',
-    customScheduleLabel: '自定义定时任务',
+    customScheduleLabel: '自定义调度规则',
     customPlaceholder: '0 9 * * * 或 weekdays at 9am',
     customHint: 'Cron 表达式，或类似"每小时""工作日上午 9 点"的短语。',
     optional: '可选',
@@ -2291,7 +2291,7 @@ export const zh: Translations = {
           memory: '记忆',
           rules: '规则',
           skills: '技能',
-          subagent_definitions: '子代理定义',
+          subagent_definitions: 'subagent 定义',
           system_prompt: '系统提示词',
           tool_definitions: '工具定义'
         },

@@ -1087,7 +1087,9 @@ class PhotonAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        return await self._sidecar_send(chat_id, self.format_message(content))
+        return await self._sidecar_send(
+            chat_id, self.format_message(content), reply_to=reply_to,
+        )
 
     # -- Outbound media (parity with the BlueBubbles iMessage channel) -----
     #
@@ -1468,7 +1470,9 @@ class PhotonAdapter(BasePlatformAdapter):
             logger.error("[photon] Plain-text retry also failed: %s", fallback_result.error)
         return fallback_result
 
-    async def _sidecar_send(self, space_id: str, text: str) -> SendResult:
+    async def _sidecar_send(
+        self, space_id: str, text: str, *, reply_to: Optional[str] = None,
+    ) -> SendResult:
         if len(text) > self.MAX_MESSAGE_LENGTH:
             logger.warning(
                 "[photon] truncating outbound from %d to %d chars",
@@ -1476,6 +1480,8 @@ class PhotonAdapter(BasePlatformAdapter):
             )
             text = text[: self.MAX_MESSAGE_LENGTH]
         body: Dict[str, Any] = {"spaceId": space_id, "text": text}
+        if reply_to:
+            body["replyTo"] = reply_to
         # Omit the key when disabled so an older sidecar (pre-`format`)
         # keeps accepting the body during a half-upgraded restart.
         if _markdown_enabled():

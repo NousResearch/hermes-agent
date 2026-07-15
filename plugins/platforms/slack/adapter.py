@@ -103,6 +103,10 @@ _SLACK_PERMALINK_RE = re.compile(
     re.IGNORECASE,
 )
 
+_SLACK_FILE_ID_RE = re.compile(
+    r"(?<![A-Z0-9])F[A-Z0-9]{8,}(?![A-Z0-9])"
+)
+
 
 def _parse_slack_permalinks(text: str, *, limit: int = 3) -> List[_SlackPermalinkTarget]:
     """Parse bounded Slack message permalinks from message text.
@@ -144,6 +148,35 @@ def _parse_slack_permalinks(text: str, *, limit: int = 3) -> List[_SlackPermalin
             break
 
     return targets
+
+
+def _parse_slack_file_ids(text: str, *, limit: int = 3) -> List[str]:
+    """Return bounded, unique Slack file IDs explicitly present in text."""
+    file_ids: List[str] = []
+    seen: set[str] = set()
+    hard_limit = min(max(int(limit), 0), 3)
+    for match in _SLACK_FILE_ID_RE.finditer(text or ""):
+        file_id = match.group(0)
+        if file_id in seen:
+            continue
+        seen.add(file_id)
+        file_ids.append(file_id)
+        if len(file_ids) >= hard_limit:
+            break
+    return file_ids
+
+
+def _slack_file_is_shared_in_message(
+    file_obj: Dict[str, Any], *, channel_id: str, message_ts: str
+) -> bool:
+    """Fail closed unless Slack ties the file to this exact channel message."""
+    for visibility in (file_obj.get("shares") or {}).values():
+        if not isinstance(visibility, dict):
+            continue
+        for share in visibility.get(channel_id) or []:
+            if str((share or {}).get("ts", "")) == message_ts:
+                return True
+    return False
 
 
 def _sanitize_permalink_context_text(value: Any) -> str:
@@ -1476,6 +1509,21 @@ class SlackAdapter(BasePlatformAdapter):
             return self._team_clients[team_id]
         return self._app.client  # fallback to primary
 
+    def _download_token_for_team(self, team_id: str) -> str:
+        """Return the exact event-workspace token, failing closed when explicit."""
+        if not team_id:
+            token = self.config.token
+            if not isinstance(token, str) or not token:
+                raise ValueError("Slack bot token is unavailable for file download")
+            return token
+        client = self._team_clients.get(team_id)
+        token = getattr(client, "token", None) if client is not None else None
+        if not isinstance(token, str) or not token:
+            raise ValueError(
+                "Slack workspace client is unavailable for file download"
+            )
+        return token
+
     async def send(
         self,
         chat_id: str,
@@ -2719,24 +2767,29 @@ class SlackAdapter(BasePlatformAdapter):
 
     @staticmethod
     def _event_team_id(event: dict, body: Optional[dict] = None) -> str:
-        """Resolve a workspace ID from an event plus Bolt's outer payload.
+        """Resolve the authoritative app-installation workspace for an event.
 
-        Bolt injects only the inner ``event`` into an event listener, while
-        Slack places ``team_id`` on the outer Events API payload. Reading both
-        keeps multi-workspace client routing correct after a process boundary.
+        Slack Connect inner events can name an origin team that differs from the
+        app installation which authenticated the outer Events API payload. Prefer
+        the outer body (including ``authorizations``) so an inner value cannot
+        select another workspace client or token.
         """
-        for payload in (event, body or {}):
-            if not isinstance(payload, dict):
-                continue
-            team = payload.get("team_id") or payload.get("team")
+        if isinstance(body, dict):
+            team = body.get("team_id") or body.get("team")
             if isinstance(team, str) and team:
                 return team
             if isinstance(team, dict) and team.get("id"):
                 return str(team["id"])
-        authorizations = (body or {}).get("authorizations") if isinstance(body, dict) else None
-        for authorization in authorizations or []:
-            if isinstance(authorization, dict) and authorization.get("team_id"):
-                return str(authorization["team_id"])
+            for authorization in body.get("authorizations") or []:
+                if isinstance(authorization, dict) and authorization.get("team_id"):
+                    return str(authorization["team_id"])
+
+        if isinstance(event, dict):
+            team = event.get("team_id") or event.get("team")
+            if isinstance(team, str) and team:
+                return team
+            if isinstance(team, dict) and team.get("id"):
+                return str(team["id"])
         return ""
 
     @staticmethod
@@ -3525,7 +3578,17 @@ class SlackAdapter(BasePlatformAdapter):
         media_urls = []
         media_types = []
         attachment_notices: List[str] = []
-        files = event.get("files", [])
+        files = list(event.get("files") or [])
+        if not files:
+            files, hydration_notices = await self._fetch_same_message_file_references(
+                original_text,
+                current_channel_id=channel_id,
+                current_ts=ts,
+                team_id=team_id,
+                requesting_user_id=user_id,
+                requesting_chat_type="dm" if is_one_to_one_dm else "group",
+            )
+            attachment_notices.extend(hydration_notices)
         for f in files:
             # Slack Connect channels return stub file objects with
             # file_access="check_file_info" and no URL fields. We must
@@ -4383,7 +4446,123 @@ class SlackAdapter(BasePlatformAdapter):
 
         # (approval already resolved above; state consumed by atomic pop)
 
-    # ----- Slack permalink context -----
+    # ----- Slack permalink and file-reference context -----
+
+    async def _fetch_same_message_file_references(
+        self,
+        source_text: str,
+        *,
+        current_channel_id: str,
+        current_ts: str,
+        team_id: str = "",
+        requesting_user_id: str = "",
+        requesting_chat_type: str = "group",
+    ) -> Tuple[List[Dict[str, Any]], List[str]]:
+        """Hydrate file IDs that Slack omitted from ``message.files``.
+
+        Some existing-file shares arrive with the file ID in message text while
+        the Socket Mode message event has an empty ``files`` list. Resolve only
+        when permalink resolution is enabled, the requester is authorized, and
+        ``files.info`` proves that the file is attached to this exact channel
+        and message timestamp. The final check prevents an arbitrary accessible
+        Slack file ID from becoming a cross-message or cross-channel read.
+        """
+        if not self._slack_resolve_permalinks():
+            return [], []
+        if not requesting_user_id or not current_channel_id or not current_ts:
+            return [], []
+        if self._is_sender_authorized(
+            requesting_user_id,
+            chat_type=requesting_chat_type,
+            chat_id=current_channel_id,
+        ) is not True:
+            return [], []
+
+        file_ids = _parse_slack_file_ids(source_text)
+        if not file_ids:
+            return [], []
+
+        if team_id:
+            client = self._team_clients.get(team_id)
+            if client is None:
+                logger.warning(
+                    "[Slack] Refusing same-message file resolution: "
+                    "workspace client is unavailable"
+                )
+                return [], [
+                    "Slack workspace client is unavailable; refusing to resolve "
+                    "file references outside the event workspace."
+                ]
+        else:
+            client = self._get_client(current_channel_id)
+        resolved: List[Dict[str, Any]] = []
+        notices: List[str] = []
+
+        for file_id in file_ids:
+            try:
+                result = await client.files_info(file=file_id)
+            except Exception as exc:
+                response = getattr(exc, "response", None)
+                detail = self._describe_slack_api_error(
+                    response, file_obj={"id": file_id}
+                )
+                logger.warning(
+                    "[Slack] Failed to resolve same-message file %s: %s",
+                    file_id,
+                    detail or type(exc).__name__,
+                )
+                notices.append(
+                    detail
+                    or f"Slack file {file_id} could not be resolved: "
+                    f"{type(exc).__name__}."
+                )
+                continue
+
+            if not result or not result.get("ok"):
+                detail = self._describe_slack_api_error(
+                    result, file_obj={"id": file_id}
+                )
+                error = str((result or {}).get("error", "unknown_error"))
+                logger.warning(
+                    "[Slack] files.info failed for same-message file %s: %s",
+                    file_id,
+                    detail or error,
+                )
+                notice = detail or f"Slack file {file_id} could not be resolved."
+                if error and error not in notice:
+                    notice = f"{notice} Slack error: {error}."
+                notices.append(notice)
+                continue
+
+            file_obj = result.get("file") or {}
+            if str(file_obj.get("id", "")) != file_id:
+                logger.warning(
+                    "[Slack] files.info returned a mismatched file for %s", file_id
+                )
+                notices.append(
+                    f"Slack returned mismatched metadata for file {file_id}; "
+                    "refusing to attach it."
+                )
+                continue
+            if not _slack_file_is_shared_in_message(
+                file_obj,
+                channel_id=current_channel_id,
+                message_ts=current_ts,
+            ):
+                logger.warning(
+                    "[Slack] Refusing file reference %s: not shared in %s at %s",
+                    file_id,
+                    current_channel_id,
+                    current_ts,
+                )
+                notices.append(
+                    f"Slack file {file_id} is not attached to this message; "
+                    "refusing to read it outside the current message scope."
+                )
+                continue
+            resolved.append(file_obj)
+
+        return resolved, notices
 
     async def _fetch_permalink_context(
         self,
@@ -4418,8 +4597,10 @@ class SlackAdapter(BasePlatformAdapter):
         if not targets:
             return ""
 
-        client = self._team_clients.get(team_id) if team_id else None
-        client = client or self._get_client(current_channel_id)
+        if team_id:
+            client = self._team_clients.get(team_id)
+        else:
+            client = self._get_client(current_channel_id)
         context_parts: List[str] = []
         allowed_channels = self._slack_allowed_channels()
 
@@ -4441,6 +4622,17 @@ class SlackAdapter(BasePlatformAdapter):
                     "[Unable to read linked Slack message "
                     f"{_permalink_target_label(target)}: "
                     "blocked by allowed_channels policy]"
+                )
+                continue
+            if client is None:
+                logger.warning(
+                    "[Slack] Refusing permalink resolution: "
+                    "workspace client is unavailable"
+                )
+                context_parts.append(
+                    "[Unable to read linked Slack message "
+                    f"{_permalink_target_label(target)}: "
+                    "workspace client is unavailable]"
                 )
                 continue
 
@@ -4944,11 +5136,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Download a Slack file using the bot token for auth, with retry."""
         import httpx
 
-        bot_token = (
-            self._team_clients[team_id].token
-            if team_id and team_id in self._team_clients
-            else self.config.token
-        )
+        bot_token = self._download_token_for_team(team_id)
 
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             for attempt in range(3):
@@ -5000,11 +5188,7 @@ class SlackAdapter(BasePlatformAdapter):
         """Download a Slack file and return raw bytes, with retry."""
         import httpx
 
-        bot_token = (
-            self._team_clients[team_id].token
-            if team_id and team_id in self._team_clients
-            else self.config.token
-        )
+        bot_token = self._download_token_for_team(team_id)
 
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             for attempt in range(3):

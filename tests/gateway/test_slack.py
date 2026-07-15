@@ -72,6 +72,7 @@ _slack_mod.SLACK_AVAILABLE = True
 
 from plugins.platforms.slack.adapter import (  # noqa: E402
     SlackAdapter,
+    _parse_slack_file_ids,
     _parse_slack_permalinks,
 )
 
@@ -399,6 +400,89 @@ class TestAppMentionHandler:
         assert result is True
         assert created_handlers
         assert created_handlers[0].app_token == "xapp-default"
+
+    def test_outer_team_id_is_forwarded_to_message_and_file_handlers(self):
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+        handlers = {}
+        mock_app = MagicMock()
+
+        def mock_event(event_type):
+            def decorator(fn):
+                handlers[event_type] = fn
+                return fn
+
+            return decorator
+
+        def noop_decorator(_key):
+            return lambda fn: fn
+
+        mock_app.event = mock_event
+        mock_app.command = noop_decorator
+        mock_app.action = noop_decorator
+        mock_app.client = AsyncMock()
+        mock_app.client.auth_test = AsyncMock(
+            return_value={"user_id": "U_BOT", "user": "testbot"}
+        )
+        mock_web_client = AsyncMock()
+        mock_web_client.auth_test = AsyncMock(
+            return_value={
+                "user_id": "U_BOT",
+                "user": "testbot",
+                "team_id": "T_OUTER",
+                "team": "OuterTeam",
+            }
+        )
+        socket_mode_handler = MagicMock()
+        socket_mode_handler.start_async = AsyncMock(return_value=None)
+
+        with (
+            patch.object(_slack_mod, "AsyncApp", return_value=mock_app),
+            patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client),
+            patch.object(
+                _slack_mod, "AsyncSocketModeHandler", return_value=socket_mode_handler
+            ),
+            patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}),
+            patch("gateway.status.acquire_scoped_lock", return_value=(True, None)),
+            patch("asyncio.create_task", side_effect=_fake_create_task),
+        ):
+            asyncio.run(adapter.connect())
+
+        adapter._handle_slack_message = AsyncMock()
+        adapter._handle_slack_file_shared = AsyncMock()
+        asyncio.run(
+            handlers["message"](
+                {
+                    "type": "message",
+                    "channel": "C123",
+                    "ts": "1.0",
+                    "team": "T_INNER_CONFLICT",
+                },
+                AsyncMock(),
+                body={"team_id": "T_OUTER"},
+            )
+        )
+        asyncio.run(
+            handlers["file_shared"](
+                {
+                    "type": "file_shared",
+                    "channel_id": "C123",
+                    "file_id": "F123",
+                    "team_id": "T_INNER_CONFLICT",
+                },
+                AsyncMock(),
+                body={"team_id": "T_OUTER"},
+            )
+        )
+
+        message_event, message_body = adapter._handle_slack_message.await_args.args
+        file_event, file_body = adapter._handle_slack_file_shared.await_args.args
+        assert message_event["team"] == "T_INNER_CONFLICT"
+        assert file_event["team_id"] == "T_INNER_CONFLICT"
+        assert message_body["team_id"] == "T_OUTER"
+        assert file_body["team_id"] == "T_OUTER"
+        assert adapter._event_team_id(message_event, message_body) == "T_OUTER"
+        assert adapter._event_team_id(file_event, file_body) == "T_OUTER"
 
 
 class TestSlackConnectCleanup:
@@ -1642,6 +1726,7 @@ class TestIncomingDocumentHandling:
     async def test_file_shared_video_fallback_fetches_file_info(self, adapter):
         """file_shared-only video events should still reach the agent."""
         video_bytes = b"\x00\x00\x00\x18ftypmp42fake-mp4"
+        adapter._resolve_user_name = AsyncMock(return_value="Uploader")
         adapter._app.client.files_info = AsyncMock(
             return_value={
                 "ok": True,
@@ -1686,6 +1771,292 @@ class TestIncomingDocumentHandling:
         assert len(msg_event.media_urls) == 1
         assert os.path.exists(msg_event.media_urls[0])
         assert msg_event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+    def test_bare_file_id_parser_deduplicates_and_hard_caps_at_three(self):
+        text = "F00000001 F00000002 F00000001 F00000003 F00000004"
+        assert _parse_slack_file_ids(text, limit=99) == [
+            "F00000001",
+            "F00000002",
+            "F00000003",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_bare_file_id_from_same_message_is_hydrated_as_document(self, adapter):
+        """Slack can omit ``message.files`` while leaving the shared file ID in
+        the message text.  The resolver must hydrate that exact same-message
+        file so the document reaches the agent on the first turn.
+        """
+        docx_bytes = b"PK\x03\x04fake-docx"
+        adapter.config.extra["resolve_permalinks"] = True
+        adapter.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: user_id == "U_USER"
+        )
+        adapter._resolve_user_name = AsyncMock(return_value="Requester")
+        adapter._app.client.files_info = AsyncMock(
+            return_value={
+                "ok": True,
+                "file": {
+                    "id": "F0BJC2W86G0",
+                    "mimetype": (
+                        "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml.document"
+                    ),
+                    "name": "comparison.docx",
+                    "url_private_download": "https://files.slack.com/comparison.docx",
+                    "size": len(docx_bytes),
+                    "user": "U_AUTHOR",
+                    "shares": {
+                        "private": {
+                            "D123": [{"ts": "1234567890.000001"}],
+                        }
+                    },
+                },
+            }
+        )
+
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
+            dl.return_value = docx_bytes
+            await adapter._handle_slack_message(
+                self._make_event(
+                    text="Please summarize F0BJC2W86G0",
+                    files=[],
+                )
+            )
+
+        adapter._app.client.files_info.assert_awaited_once_with(
+            file="F0BJC2W86G0"
+        )
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.DOCUMENT
+        assert len(msg_event.media_urls) == 1
+        assert os.path.exists(msg_event.media_urls[0])
+        assert msg_event.media_types == [
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ]
+
+    @pytest.mark.asyncio
+    async def test_bare_file_id_unauthorized_sender_does_not_call_files_info(
+        self, adapter
+    ):
+        adapter.config.extra["resolve_permalinks"] = True
+        adapter.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: False
+        )
+        adapter._resolve_user_name = AsyncMock(return_value="Denied")
+        adapter._app.client.files_info = AsyncMock()
+
+        await adapter._handle_slack_message(
+            self._make_event(
+                text="Please summarize F0BJC2W86G0",
+                files=[],
+            )
+        )
+
+        adapter._app.client.files_info.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_bare_file_id_uses_event_workspace_client(self, adapter):
+        docx_bytes = b"PK\x03\x04fake-docx"
+        adapter.config.extra["resolve_permalinks"] = True
+        adapter.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: user_id == "U_USER"
+        )
+        adapter._resolve_user_name = AsyncMock(return_value="Requester")
+        secondary_client = AsyncMock()
+        secondary_client.files_info = AsyncMock(
+            return_value={
+                "ok": True,
+                "file": {
+                    "id": "F0BJC2W86G0",
+                    "mimetype": (
+                        "application/vnd.openxmlformats-officedocument."
+                        "wordprocessingml.document"
+                    ),
+                    "name": "comparison.docx",
+                    "url_private_download": "https://files.slack.com/comparison.docx",
+                    "size": len(docx_bytes),
+                    "shares": {
+                        "private": {
+                            "D123": [{"ts": "1234567890.000001"}],
+                        }
+                    },
+                },
+            }
+        )
+        adapter._team_clients["T_SECONDARY"] = secondary_client
+        adapter._app.client.files_info = AsyncMock()
+        event = self._make_event(
+            text="Please summarize F0BJC2W86G0",
+            files=[],
+        )
+        event["team_id"] = "T_SECONDARY"
+
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
+            dl.return_value = docx_bytes
+            await adapter._handle_slack_message(event)
+
+        secondary_client.files_info.assert_awaited_once_with(file="F0BJC2W86G0")
+        adapter._app.client.files_info.assert_not_awaited()
+        dl.assert_awaited_once_with(
+            "https://files.slack.com/comparison.docx",
+            team_id="T_SECONDARY",
+        )
+
+    @pytest.mark.asyncio
+    async def test_bare_file_id_known_team_without_client_fails_closed(self, adapter):
+        docx_bytes = b"PK\x03\x04fake-docx"
+        adapter.config.extra["resolve_permalinks"] = True
+        adapter.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: user_id == "U_USER"
+        )
+        adapter._resolve_user_name = AsyncMock(return_value="Requester")
+        adapter._app.client.files_info = AsyncMock(
+            return_value={
+                "ok": True,
+                "file": {
+                    "id": "F0BJC2W86G0",
+                    "mimetype": "application/pdf",
+                    "name": "wrong-workspace.pdf",
+                    "url_private_download": "https://files.slack.com/wrong.pdf",
+                    "size": len(docx_bytes),
+                    "shares": {
+                        "private": {
+                            "D123": [{"ts": "1234567890.000001"}],
+                        }
+                    },
+                },
+            }
+        )
+        event = self._make_event(
+            text="Please summarize F0BJC2W86G0",
+            files=[],
+        )
+        event["team_id"] = "T_NOT_REGISTERED"
+
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
+            await adapter._handle_slack_message(event)
+
+        adapter._app.client.files_info.assert_not_awaited()
+        dl.assert_not_awaited()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.TEXT
+        assert "workspace client is unavailable" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_bare_file_id_from_other_message_is_refused_with_notice(self, adapter):
+        """An accessible file ID must not bridge Slack message/channel scope."""
+        adapter.config.extra["resolve_permalinks"] = True
+        adapter.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: user_id == "U_USER"
+        )
+        adapter._resolve_user_name = AsyncMock(return_value="Requester")
+        adapter._app.client.files_info = AsyncMock(
+            return_value={
+                "ok": True,
+                "file": {
+                    "id": "F0BJC2W86G0",
+                    "mimetype": "application/pdf",
+                    "name": "other-message.pdf",
+                    "url_private_download": "https://files.slack.com/other-message.pdf",
+                    "size": 1024,
+                    "shares": {
+                        "private": {
+                            "D123": [{"ts": "9999999999.999999"}],
+                        }
+                    },
+                },
+            }
+        )
+
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
+            await adapter._handle_slack_message(
+                self._make_event(
+                    text="Please summarize F0BJC2W86G0",
+                    files=[],
+                )
+            )
+
+        dl.assert_not_awaited()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.TEXT
+        assert "[Slack attachment notice]" in msg_event.text
+        assert "not attached to this message" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_bare_file_id_mismatched_info_is_refused_with_notice(self, adapter):
+        adapter.config.extra["resolve_permalinks"] = True
+        adapter.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: user_id == "U_USER"
+        )
+        adapter._resolve_user_name = AsyncMock(return_value="Requester")
+        adapter._app.client.files_info = AsyncMock(
+            return_value={
+                "ok": True,
+                "file": {
+                    "id": "FOTHER000",
+                    "mimetype": "application/pdf",
+                    "name": "mismatched.pdf",
+                    "url_private_download": "https://files.slack.com/mismatched.pdf",
+                    "shares": {
+                        "private": {
+                            "D123": [{"ts": "1234567890.000001"}],
+                        }
+                    },
+                },
+            }
+        )
+
+        with patch.object(
+            adapter, "_download_slack_file_bytes", new_callable=AsyncMock
+        ) as dl:
+            await adapter._handle_slack_message(
+                self._make_event(
+                    text="Please summarize F0BJC2W86G0",
+                    files=[],
+                )
+            )
+
+        dl.assert_not_awaited()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "[Slack attachment notice]" in msg_event.text
+        assert "mismatched metadata" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_bare_file_id_missing_scope_is_surfaced_in_notice(self, adapter):
+        adapter.config.extra["resolve_permalinks"] = True
+        adapter.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: user_id == "U_USER"
+        )
+        adapter._resolve_user_name = AsyncMock(return_value="Requester")
+        adapter._app.client.files_info = AsyncMock(
+            return_value={
+                "ok": False,
+                "error": "missing_scope",
+                "needed": "files:read",
+                "provided": "chat:write",
+            }
+        )
+
+        await adapter._handle_slack_message(
+            self._make_event(
+                text="Please summarize F0BJC2W86G0",
+                files=[],
+            )
+        )
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.TEXT
+        assert "[Slack attachment notice]" in msg_event.text
+        assert "missing_scope" in msg_event.text
+        assert "files:read" in msg_event.text
 
     @pytest.mark.asyncio
     async def test_download_failure_is_surfaced_in_message_text(self, adapter):
@@ -1870,10 +2241,15 @@ class TestIncomingDocumentHandling:
             return_value={
                 "messages": [
                     {
+                        "ts": "1783954235.806659",
+                        "user": "U_PARENT",
+                        "text": "thread parent, not the linked reply",
+                    },
+                    {
                         "ts": "1783954894.392819",
                         "user": "U_AUTHOR",
                         "text": "permalink resolver target body",
-                    }
+                    },
                 ]
             }
         )
@@ -1914,6 +2290,42 @@ class TestIncomingDocumentHandling:
         assert "permalink resolver target body" in msg_event.text
         assert "[Slack permalink context" in msg_event.text
         assert "Treat as quoted reference" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_permalink_known_team_without_client_fails_closed(self, adapter):
+        adapter.config.extra.update(
+            {
+                "resolve_permalinks": True,
+                "allowed_channels": ["C9999999999"],
+            }
+        )
+        adapter.set_authorization_check(
+            lambda user_id, chat_type=None, chat_id=None: user_id == "U_REQUESTER"
+        )
+        adapter._resolve_user_name = AsyncMock(return_value="Linked Author")
+        adapter._app.client.conversations_history = AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "ts": "1783954894.392819",
+                        "user": "U_AUTHOR",
+                        "text": "wrong workspace body",
+                    }
+                ]
+            }
+        )
+
+        context = await adapter._fetch_permalink_context(
+            "https://5minlab.slack.com/archives/C9999999999/p1783954894392819",
+            current_channel_id="C9999999999",
+            current_ts="1783957000.000001",
+            team_id="T_NOT_REGISTERED",
+            requesting_user_id="U_REQUESTER",
+        )
+
+        adapter._app.client.conversations_history.assert_not_awaited()
+        assert "workspace client is unavailable" in context
+        assert "wrong workspace body" not in context
 
     @pytest.mark.asyncio
     async def test_bot_permalink_is_unverified_and_cannot_close_context(self, adapter):

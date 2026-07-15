@@ -617,6 +617,21 @@ class TestSlackDownloadSlackFile:
         assert path.endswith(".jpg")
         mock_client.get.assert_called_once()
 
+    def test_explicit_unknown_team_is_rejected_before_http(self):
+        adapter = _make_slack_adapter()
+
+        async def run():
+            with patch("httpx.AsyncClient") as client_factory:
+                with pytest.raises(ValueError, match="workspace client is unavailable"):
+                    await adapter._download_slack_file(
+                        "https://files.slack.com/img.jpg",
+                        ext=".jpg",
+                        team_id="T_NOT_REGISTERED",
+                    )
+                client_factory.assert_not_called()
+
+        asyncio.run(run())
+
     def test_rejects_html_response(self, tmp_path, monkeypatch):
         """An HTML sign-in page from Slack is rejected, not cached as image."""
         monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
@@ -753,6 +768,20 @@ class TestSlackDownloadSlackFileBytes:
 
         result = asyncio.run(run())
         assert result == b"raw bytes here"
+
+    def test_explicit_unknown_team_is_rejected_before_http(self):
+        adapter = _make_slack_adapter()
+
+        async def run():
+            with patch("httpx.AsyncClient") as client_factory:
+                with pytest.raises(ValueError, match="workspace client is unavailable"):
+                    await adapter._download_slack_file_bytes(
+                        "https://files.slack.com/file.bin",
+                        team_id="T_NOT_REGISTERED",
+                    )
+                client_factory.assert_not_called()
+
+        asyncio.run(run())
 
     def test_rejects_html_response(self):
         """Slack HTML sign-in pages should not be accepted as file bytes."""

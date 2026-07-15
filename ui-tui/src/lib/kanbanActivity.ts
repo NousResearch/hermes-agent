@@ -9,7 +9,7 @@ import type {
   KanbanTaskStatus
 } from '../gatewayTypes.js'
 
-export type ActivityTone = 'accent' | 'error' | 'muted' | 'success' | 'warning'
+export type ActivityTone = 'accent' | 'error' | 'muted' | 'neutral' | 'success' | 'warning'
 export type HeartbeatFreshness = 'fresh' | 'missing' | 'not-applicable' | 'stale'
 
 export interface ActivityRun {
@@ -55,31 +55,43 @@ export interface ActivityCounts {
   total: number
 }
 
+// Truncation-aware label segments. `title` renders in the default foreground,
+// `owner` dim, and `state` in the row tone — the segments exist so the
+// component can paint each signal on its own channel.
+export interface ActivityLabelParts {
+  owner: null | string
+  state: null | string
+  title: string
+}
+
 export interface ActivityTaskRow {
   board: string
-  connector: '' | '├──' | '└──'
   depth: number
   glyph: '!' | '×' | '○' | '●' | '◉'
   kind: 'task'
   label: string
-  rail: '┃' | '│'
+  parts: ActivityLabelParts
+  prefix: string
   stateLabel: string
   task: ActivityTask
   tone: ActivityTone
 }
 
+// `label` is the width-budgeted board name (possibly empty at extreme widths)
+// and `suffix` the warn-toned error marker; together they always fit `width`.
 export interface ActivityBoardRow {
   board: string
+  error: boolean
   kind: 'board'
   label: string
+  suffix: null | string
 }
 
 export interface ActivitySummaryRow {
   board: string
-  connector: '├──' | '└──'
-  depth: number
   kind: 'summary'
   label: string
+  prefix: string
   tone: 'muted'
 }
 
@@ -275,60 +287,63 @@ function isFailed(task: ActivityTask): boolean {
   return Boolean(task.run?.outcome && FAILED_OUTCOMES.has(task.run.outcome))
 }
 
+// Lifecycle channel only: glyph + state word + tone. Topology (the rail) is
+// built separately and stays muted, and accent is reserved for live work —
+// queued states (ready/review) render neutral so triage reads at a glance.
 export function activityPresentation(
   task: ActivityTask,
   now: number,
   staleAfterSeconds = DEFAULT_STALE_SECONDS
-): Pick<ActivityTaskRow, 'glyph' | 'rail' | 'stateLabel' | 'tone'> {
+): Pick<ActivityTaskRow, 'glyph' | 'stateLabel' | 'tone'> {
   if (isFailed(task)) {
-    return { glyph: '×', rail: '┃', stateLabel: task.run!.outcome!, tone: 'error' }
+    return { glyph: '×', stateLabel: task.run!.outcome!, tone: 'error' }
   }
 
   if (task.status === 'blocked') {
     const reason = task.blockReason ? `blocked: ${task.blockReason}` : 'blocked'
 
-    return { glyph: '!', rail: '│', stateLabel: reason, tone: 'warning' }
+    return { glyph: '!', stateLabel: reason, tone: 'warning' }
   }
 
   if (task.status === 'triage') {
-    return { glyph: '○', rail: '│', stateLabel: 'triage', tone: 'muted' }
+    return { glyph: '○', stateLabel: 'triage', tone: 'muted' }
   }
 
   if (task.status === 'running') {
     const freshness = heartbeatFreshness(task, now, staleAfterSeconds)
 
     if (freshness === 'stale') {
-      return { glyph: '!', rail: '│', stateLabel: 'heartbeat stale', tone: 'warning' }
+      return { glyph: '!', stateLabel: 'heartbeat stale', tone: 'warning' }
     }
 
     if (freshness === 'missing') {
-      return { glyph: '!', rail: '│', stateLabel: 'heartbeat unavailable', tone: 'warning' }
+      return { glyph: '!', stateLabel: 'heartbeat unavailable', tone: 'warning' }
     }
 
-    return { glyph: '◉', rail: '│', stateLabel: 'running', tone: 'accent' }
+    return { glyph: '◉', stateLabel: 'running', tone: 'accent' }
   }
 
   if (task.status === 'review') {
-    return { glyph: '○', rail: '│', stateLabel: 'review queued', tone: 'accent' }
+    return { glyph: '○', stateLabel: 'review queued', tone: 'neutral' }
   }
 
   if (task.status === 'scheduled') {
-    return { glyph: '○', rail: '│', stateLabel: 'scheduled', tone: 'muted' }
+    return { glyph: '○', stateLabel: 'scheduled', tone: 'muted' }
   }
 
   if (task.status === 'ready') {
-    return { glyph: '○', rail: '│', stateLabel: 'ready', tone: 'accent' }
+    return { glyph: '○', stateLabel: 'ready', tone: 'neutral' }
   }
 
   if (task.status === 'done') {
-    return { glyph: '●', rail: '┃', stateLabel: 'completed', tone: 'success' }
+    return { glyph: '●', stateLabel: 'completed', tone: 'success' }
   }
 
   if (task.status === 'archived') {
-    return { glyph: '●', rail: '┃', stateLabel: 'archived', tone: 'muted' }
+    return { glyph: '●', stateLabel: 'archived', tone: 'muted' }
   }
 
-  return { glyph: '○', rail: '│', stateLabel: task.status, tone: 'muted' }
+  return { glyph: '○', stateLabel: task.status, tone: 'muted' }
 }
 
 function isRecentTerminal(task: ActivityTask, now: number, lingerSeconds: number): boolean {
@@ -423,28 +438,236 @@ export function truncateActivityLabel(value: string, width: number): string {
   return `${chars.join('')}…`
 }
 
+const MIN_TITLE_WIDTH = 8
+
+function shortActivityState(task: ActivityTask, now: number, staleAfterSeconds = DEFAULT_STALE_SECONDS): string {
+  return task.status === 'blocked' ? 'blocked' : activityPresentation(task, now, staleAfterSeconds).stateLabel
+}
+
+export function joinActivityLabelParts(parts: ActivityLabelParts): string {
+  const owner = parts.owner === null ? '' : ` — ${parts.owner}`
+  const state = parts.state === null ? '' : ` · ${parts.state}`
+
+  return `${parts.title}${owner}${state}`
+}
+
+// Truncation drops the least important signal first: blocked-reason detail,
+// then the owner, then title characters. The state word goes last — the glyph
+// and tone still encode it, but the word is the primary carrier.
+export function composeActivityLabel(
+  task: ActivityTask,
+  width: number,
+  now: number,
+  staleAfterSeconds = DEFAULT_STALE_SECONDS
+): ActivityLabelParts {
+  const { stateLabel } = activityPresentation(task, now, staleAfterSeconds)
+  const owner = task.assignee ?? task.run?.profile ?? null
+  const shortState = shortActivityState(task, now, staleAfterSeconds)
+
+  const candidates: ActivityLabelParts[] = [
+    { owner, state: stateLabel, title: task.title },
+    { owner, state: shortState, title: task.title },
+    { owner: null, state: shortState, title: task.title }
+  ]
+
+  for (const candidate of candidates) {
+    if (stringWidth(joinActivityLabelParts(candidate)) <= width) {
+      return candidate
+    }
+  }
+
+  const titleWidth = width - stringWidth(` · ${shortState}`)
+
+  if (titleWidth >= MIN_TITLE_WIDTH) {
+    return { owner: null, state: shortState, title: truncateActivityLabel(task.title, titleWidth) }
+  }
+
+  return { owner: null, state: null, title: truncateActivityLabel(task.title, width) }
+}
+
 export function focusedActivityLabel(
   task: ActivityTask,
   width: number,
   now: number,
   staleAfterSeconds = DEFAULT_STALE_SECONDS
 ): string {
-  const { stateLabel } = activityPresentation(task, now, staleAfterSeconds)
-  const owner = task.assignee ?? task.run?.profile ?? 'unassigned'
-
-  return truncateActivityLabel(`${task.title} — ${owner} · ${stateLabel}`, width)
+  return joinActivityLabelParts(composeActivityLabel(task, width, now, staleAfterSeconds))
 }
 
-export function collapsedActivityLabel(model: KanbanActivityModel, width: number, now = model.checkedAt): string {
+const MIN_HEADLINE_WIDTH = 12
+
+export interface ActivityDockSegment {
+  text: string
+  tone: ActivityTone
+}
+
+function segmentDockCounts(label: string, counts: ActivityCounts): ActivityDockSegment[] {
+  const markers: ActivityDockSegment[] = counts.attention
+    ? [
+        { text: String(counts.attention), tone: 'warning' },
+        { text: String(counts.active), tone: 'accent' }
+      ]
+    : counts.active
+      ? [{ text: String(counts.active), tone: 'accent' }]
+      : [{ text: String(counts.completed), tone: 'success' }]
+
+  const segments: ActivityDockSegment[] = []
+  let cursor = 0
+
+  const push = (text: string, tone: ActivityTone) => {
+    if (!text) {
+      return
+    }
+
+    const previous = segments.at(-1)
+
+    if (previous?.tone === tone) {
+      previous.text += text
+    } else {
+      segments.push({ text, tone })
+    }
+  }
+
+  for (const marker of markers) {
+    const index = label.indexOf(marker.text, cursor)
+
+    if (index < 0) {
+      continue
+    }
+
+    push(label.slice(cursor, index), 'neutral')
+    push(marker.text, marker.tone)
+    cursor = index + marker.text.length
+  }
+
+  push(label.slice(cursor), 'neutral')
+
+  return segments
+}
+
+// Narrow-dock shorthand never shows a zero-count badge: attention and active
+// appear only when present, and completed-only recent activity reports itself
+// as '●N' instead of a false '◉0'.
+function shorthandBadges(counts: ActivityCounts): ActivityDockSegment[] {
+  const badges: ActivityDockSegment[] = []
+
+  if (counts.attention) {
+    badges.push({ text: `!${counts.attention}`, tone: 'warning' })
+  }
+
+  if (counts.active) {
+    badges.push({ text: `◉${counts.active}`, tone: 'accent' })
+  }
+
+  if (!counts.attention && !counts.active && counts.completed) {
+    badges.push({ text: `●${counts.completed}`, tone: 'success' })
+  }
+
+  return badges
+}
+
+// Tone-tagged view of the collapsed dock so the component can paint 'K'
+// neutral, '!N' warning, and '◉N' accent as separate segments below the
+// medium breakpoint. Above it the single label renders in the default
+// foreground behind the dock's lamp glyph.
+export function collapsedActivitySegments(
+  model: KanbanActivityModel,
+  width: number,
+  now = model.checkedAt,
+  layoutWidth = width
+): ActivityDockSegment[] {
+  const counts = aggregateKanbanActivity(model, now)
+
+  if (!counts.total && !counts.attention) {
+    return [{ text: truncateActivityLabel('Kanban · idle', width), tone: 'muted' }]
+  }
+
+  if (layoutWidth >= 28) {
+    return segmentDockCounts(collapsedActivityLabel(model, width, now, layoutWidth), counts)
+  }
+
+  const badges = shorthandBadges(counts)
+
+  const segments: ActivityDockSegment[] =
+    width >= 14
+      ? [{ text: 'K', tone: 'neutral' }, ...badges.map(badge => ({ ...badge, text: ` ${badge.text}` }))]
+      : badges
+
+  const total = segments.reduce((sum, segment) => sum + stringWidth(segment.text), 0)
+
+  if (total > width) {
+    return [{ text: collapsedActivityLabel(model, width, now), tone: badges[0]?.tone ?? 'muted' }]
+  }
+
+  return segments
+}
+
+// The wide-dock headline is the single most attention-worthy task: a fresh
+// failure outranks a block, which outranks a degraded heartbeat, which
+// outranks ordinary running work.
+function headlineTask(tasks: readonly ActivityTask[], now: number): ActivityTask | null {
+  const ranks: ((task: ActivityTask) => boolean)[] = [
+    task => isFailed(task) && isRecentTerminal(task, now, DEFAULT_COMPLETION_LINGER_SECONDS),
+    task => task.status === 'blocked',
+    task => {
+      const freshness = heartbeatFreshness(task, now)
+
+      return freshness === 'missing' || freshness === 'stale'
+    },
+    task => task.status === 'running' && !isFailed(task),
+    task => isRecentTerminal(task, now, DEFAULT_COMPLETION_LINGER_SECONDS)
+  ]
+
+  for (const matches of ranks) {
+    const found = tasks.find(matches)
+
+    if (found) {
+      return found
+    }
+  }
+
+  return tasks[0] ?? null
+}
+
+export function collapsedActivityLabel(
+  model: KanbanActivityModel,
+  width: number,
+  now = model.checkedAt,
+  layoutWidth = width
+): string {
   const counts = aggregateKanbanActivity(model, now)
 
   if (!counts.total && !counts.attention) {
     return truncateActivityLabel('Kanban · idle', width)
   }
 
+  if (layoutWidth < 14) {
+    return truncateActivityLabel(
+      shorthandBadges(counts)
+        .map(badge => badge.text)
+        .join(''),
+      width
+    )
+  }
+
+  if (layoutWidth < 28) {
+    return truncateActivityLabel(
+      ['K', ...shorthandBadges(counts).map(badge => badge.text)].join(' '),
+      width
+    )
+  }
+
   const lead = counts.attention
-    ? `${counts.attention} needs attention · ${counts.active} active`
-    : `${counts.active} active`
+    ? `${counts.attention} need attention · ${counts.active} active`
+    : counts.active
+      ? `${counts.active} active`
+      : `${counts.completed} completed`
+
+  const medium = `Kanban · ${lead}`
+
+  if (layoutWidth < 48) {
+    return truncateActivityLabel(medium, width)
+  }
 
   const tasks: ActivityTask[] = []
 
@@ -457,25 +680,68 @@ export function collapsedActivityLabel(model: KanbanActivityModel, width: number
 
   model.boards.forEach(board => collect(board.roots))
 
-  const headline =
-    tasks.find(task => needsAttention(task, now, DEFAULT_STALE_SECONDS, DEFAULT_COMPLETION_LINGER_SECONDS)) ??
-    tasks.find(task => task.status === 'running') ??
-    tasks.find(task => isRecentTerminal(task, now, DEFAULT_COMPLETION_LINGER_SECONDS)) ??
-    tasks[0]
+  const headline = headlineTask(tasks, now)
 
-  const wide = headline ? `Kanban · ${lead} · ${headline.title}` : `Kanban · ${lead}`
-  const medium = `Kanban · ${lead}`
-  const narrow = counts.attention ? `K · !${counts.attention} · A${counts.active}` : `K · ${counts.active} active`
-  const tiny = counts.attention ? `K !${counts.attention} A${counts.active}` : `K ${counts.active}`
-  const source = width >= 48 ? wide : width >= 28 ? medium : width >= 14 ? narrow : tiny
+  if (!headline) {
+    return truncateActivityLabel(medium, width)
+  }
 
-  return truncateActivityLabel(source, width)
+  const headlineText = needsAttention(headline, now, DEFAULT_STALE_SECONDS, DEFAULT_COMPLETION_LINGER_SECONDS)
+    ? `${headline.title} ${shortActivityState(headline, now)}`
+    : headline.title
+
+  const wide = `${medium} · ${headlineText}`
+
+  if (stringWidth(wide) <= width) {
+    return wide
+  }
+
+  // A headline fragment under ~12 cells reads as noise — fall back to counts.
+  const headlineWidth = width - stringWidth(`${medium} · `)
+
+  if (headlineWidth >= MIN_HEADLINE_WIDTH) {
+    return `${medium} · ${truncateActivityLabel(headlineText, headlineWidth)}`
+  }
+
+  return truncateActivityLabel(medium, width)
 }
 
 export function branchChildren<T>(children: readonly T[], visibleLimit = 5): { omitted: number; visible: T[] } {
   const limit = Math.max(0, Math.floor(visibleLimit))
 
   return { omitted: Math.max(0, children.length - limit), visible: children.slice(0, limit) }
+}
+
+const RAIL_PREFIX = '│ '
+const BRANCH_CONNECTOR = '├── '
+const LAST_CONNECTOR = '└── '
+const CONTINUE_SEGMENT = '│   '
+const GAP_SEGMENT = '    '
+
+// One '│   '/'    ' segment per ancestor level below the root keeps branch
+// lines attached to their parent at depth 2+ ('│   ├── …'). The topology
+// prefix is a single light rail — lifecycle never changes its weight.
+function continuationPrefix(ancestors: readonly boolean[]): string {
+  return ancestors.map(hasMore => (hasMore ? CONTINUE_SEGMENT : GAP_SEGMENT)).join('')
+}
+
+const BOARD_ERROR_SUFFIX = ' · unavailable'
+const MIN_BOARD_NAME_WIDTH = 2
+
+// Name and error suffix share one width budget so the row can never wrap.
+// When the budget cannot hold both, the error signal outranks identity.
+function boardRowPresentation(name: string, error: boolean, width: number): Pick<ActivityBoardRow, 'label' | 'suffix'> {
+  if (!error) {
+    return { label: truncateActivityLabel(name, width), suffix: null }
+  }
+
+  const nameWidth = width - stringWidth(BOARD_ERROR_SUFFIX)
+
+  if (nameWidth >= MIN_BOARD_NAME_WIDTH) {
+    return { label: truncateActivityLabel(name, nameWidth), suffix: BOARD_ERROR_SUFFIX }
+  }
+
+  return { label: '', suffix: truncateActivityLabel('unavailable', width) }
 }
 
 export function buildKanbanActivityRows(
@@ -499,42 +765,56 @@ export function buildKanbanActivityRows(
 
   model.boards.forEach(board => indexTasks(board.roots))
 
-  const walk = (board: string, tasks: readonly ActivityTask[], depth: number, parentId: null | string = null) => {
+  const walk = (
+    board: string,
+    tasks: readonly ActivityTask[],
+    omittedAfter: number,
+    depth: number,
+    parentId: null | string,
+    ancestors: readonly boolean[]
+  ) => {
     tasks.forEach((task, index) => {
+      const moreAfter = index < tasks.length - 1 || omittedAfter > 0
       const presentation = activityPresentation(task, now, staleAfterSeconds)
-      const connector = depth === 0 ? '' : index === tasks.length - 1 ? '└──' : '├──'
-      const prefixWidth = 2 + (depth > 0 ? depth * 2 + 4 : 0)
+
+      const prefix =
+        depth === 0 ? RAIL_PREFIX : `${continuationPrefix(ancestors)}${moreAfter ? BRANCH_CONNECTOR : LAST_CONNECTOR}`
+
+      const labelWidth = Math.max(1, width - stringWidth(`${prefix}${presentation.glyph} `))
+      const parts = composeActivityLabel(task, labelWidth, now, staleAfterSeconds)
       rows.push({
         board,
-        connector,
         depth,
         ...presentation,
         kind: 'task',
-        label: focusedActivityLabel(task, Math.max(1, width - prefixWidth), now, staleAfterSeconds),
+        label: joinActivityLabelParts(parts),
+        parts,
+        prefix,
         task
       })
 
-      for (const linkedParent of task.parents.filter(id => id !== parentId)) {
+      const childAncestors = depth === 0 ? [] : [...ancestors, moreAfter]
+      const { omitted, visible } = branchChildren(task.children, maxChildren)
+      const linkedParents = task.parents.filter(id => id !== parentId)
+      linkedParents.forEach((linkedParent, linkedIndex) => {
+        const followed = linkedIndex < linkedParents.length - 1 || visible.length > 0 || omitted > 0
         rows.push({
           board,
-          connector: '├──',
-          depth: depth + 1,
           kind: 'summary',
           label: `↳ also linked from ${taskTitles.get(linkedParent) ?? linkedParent}`,
+          prefix: `${continuationPrefix(childAncestors)}${followed ? BRANCH_CONNECTOR : LAST_CONNECTOR}`,
           tone: 'muted'
         })
-      }
+      })
 
-      const { omitted, visible } = branchChildren(task.children, maxChildren)
-      walk(board, visible, depth + 1, task.id)
+      walk(board, visible, omitted, depth + 1, task.id, childAncestors)
 
       if (omitted) {
         rows.push({
           board,
-          connector: '└──',
-          depth: depth + 1,
           kind: 'summary',
           label: `+${omitted} more tasks`,
+          prefix: `${continuationPrefix(childAncestors)}${LAST_CONNECTOR}`,
           tone: 'muted'
         })
       }
@@ -543,18 +823,22 @@ export function buildKanbanActivityRows(
 
   for (const board of model.boards) {
     if (showBoards || board.error) {
-      rows.push({ board: board.name, kind: 'board', label: board.error ? `${board.name} · unavailable` : board.name })
+      rows.push({
+        board: board.name,
+        error: Boolean(board.error),
+        kind: 'board',
+        ...boardRowPresentation(board.name, Boolean(board.error), width)
+      })
     }
 
-    walk(board.name, board.roots, 0)
+    walk(board.name, board.roots, 0, 0, null, [])
 
     if (board.truncated) {
       rows.push({
         board: board.name,
-        connector: '└──',
-        depth: 0,
         kind: 'summary',
         label: '+ more activity not shown',
+        prefix: LAST_CONNECTOR,
         tone: 'muted'
       })
     }

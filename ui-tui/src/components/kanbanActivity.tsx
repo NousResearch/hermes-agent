@@ -2,38 +2,43 @@ import { Box, Text } from '@hermes/ink'
 import { memo } from 'react'
 
 import {
+  type ActivityTone,
   aggregateKanbanActivity,
   buildKanbanActivityRows,
-  collapsedActivityLabel,
+  collapsedActivitySegments,
   type KanbanActivityModel,
   type KanbanActivityRowModel
 } from '../lib/kanbanActivity.js'
 import type { Theme } from '../theme.js'
 
-function toneColor(t: Theme, row: KanbanActivityRowModel): string {
-  if (row.kind === 'board') {
-    return t.color.accent
-  }
-
-  if (row.tone === 'error') {
+// Lifecycle tones only. 'neutral' (queued work) renders in the terminal's
+// default foreground so accent stays reserved for live activity.
+function toneColor(t: Theme, tone: ActivityTone): string | undefined {
+  if (tone === 'error') {
     return t.color.error
   }
 
-  if (row.tone === 'warning') {
+  if (tone === 'warning') {
     return t.color.warn
   }
 
-  if (row.tone === 'success') {
+  if (tone === 'success') {
     return t.color.ok
   }
 
-  if (row.tone === 'accent') {
+  if (tone === 'accent') {
     return t.color.accent
   }
 
-  return t.color.muted
+  if (tone === 'muted') {
+    return t.color.muted
+  }
+
+  return undefined
 }
 
+// Each signal paints its own channel: topology prefix muted, glyph and state
+// word in the lifecycle tone, title in the default foreground, owner dim.
 export const KanbanActivityRow = memo(function KanbanActivityRow({
   row,
   t,
@@ -45,36 +50,44 @@ export const KanbanActivityRow = memo(function KanbanActivityRow({
 }) {
   if (row.kind === 'board') {
     return (
-      <Text bold color={toneColor(t, row)} wrap="truncate">
-        Kanban · {row.label}
-      </Text>
+      <Box width={Math.max(1, width)}>
+        {row.label ? (
+          <Text bold wrap="truncate">
+            {row.label}
+          </Text>
+        ) : null}
+        {row.suffix === null ? null : (
+          <Text color={t.color.warn} wrap="truncate">
+            {row.suffix}
+          </Text>
+        )}
+      </Box>
     )
   }
 
   if (row.kind === 'summary') {
-    const indent = '  '.repeat(Math.max(0, row.depth - 1))
-
     return (
-      <Text color={toneColor(t, row)} dim wrap="truncate">
-        {indent}
-        {row.connector} {row.label}
+      <Text color={t.color.muted} dim wrap="truncate">
+        {row.prefix}
+        {row.label}
       </Text>
     )
   }
 
-  const color = toneColor(t, row)
-
-  const prefix =
-    row.depth === 0
-      ? `${row.rail} ${row.glyph} `
-      : `${'  '.repeat(Math.max(0, row.depth - 1))}${row.connector} ${row.glyph} `
+  const tone = toneColor(t, row.tone)
 
   return (
     <Box width={Math.max(1, width)}>
-      <Text color={color} dim={row.tone === 'muted'} wrap="truncate">
-        {prefix}
-        {row.label}
-      </Text>
+      <Text color={t.color.muted}>{row.prefix}</Text>
+      <Text color={tone}>{`${row.glyph} `}</Text>
+      {/* Title identity never changes: no tone, no dim, on every row kind. */}
+      <Text wrap="truncate">{row.parts.title}</Text>
+      {row.parts.owner === null ? null : (
+        <Text color={t.color.muted} dim>{` — ${row.parts.owner}`}</Text>
+      )}
+      {row.parts.state === null ? null : (
+        <Text color={tone}>{` · ${row.parts.state}`}</Text>
+      )}
     </Box>
   )
 })
@@ -96,8 +109,25 @@ export const KanbanActivityDock = memo(function KanbanActivityDock({
     return null
   }
 
-  const label = collapsedActivityLabel(activity, Math.max(1, width - 2), now)
-  const prefix = counts.attention > 0 ? '! ' : counts.active > 0 ? '◉ ' : counts.completed > 0 ? '● ' : '○ '
+  // Below the medium breakpoint the shorthand badges are the lamp: each
+  // segment carries its own tone ('K' neutral, '!N' warn, '◉N'/'●N' toned),
+  // so no separate prefix glyph is rendered.
+  if (width < 28) {
+    const segments = collapsedActivitySegments(activity, Math.max(1, width), now)
+
+    return (
+      <Box height={1} width={Math.max(1, width)}>
+        {segments.map((segment, index) => (
+          <Text color={toneColor(t, segment.tone)} key={`${segment.text}:${index}`} wrap="truncate">
+            {segment.text}
+          </Text>
+        ))}
+      </Box>
+    )
+  }
+
+  const glyph = counts.attention > 0 ? '!' : counts.active > 0 ? '◉' : '●'
+  const segments = collapsedActivitySegments(activity, Math.max(1, width - 2), now, width)
 
   const color =
     counts.attention > 0
@@ -110,10 +140,12 @@ export const KanbanActivityDock = memo(function KanbanActivityDock({
 
   return (
     <Box height={1} width={Math.max(1, width)}>
-      <Text color={color} wrap="truncate">
-        {prefix}
-        {label}
-      </Text>
+      <Text color={color}>{`${glyph} `}</Text>
+      {segments.map((segment, index) => (
+        <Text color={toneColor(t, segment.tone)} key={`${segment.text}:${index}`} wrap="truncate">
+          {segment.text}
+        </Text>
+      ))}
     </Box>
   )
 })

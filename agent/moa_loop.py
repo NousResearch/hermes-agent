@@ -812,7 +812,7 @@ class MoAChatCompletions:
         # recent cache-MISS create() call, awaiting consumption by session
         # accounting. Set on every create() (zeroed on a cache HIT so per-turn
         # advisor spend is counted exactly once). Consumed via
-        # ``consume_reference_usage``.
+        # ``consume_reference_usage`` / ``consume_reference_details``.
         from agent.usage_pricing import CanonicalUsage
 
         self._pending_reference_usage: Any = CanonicalUsage()
@@ -836,16 +836,17 @@ class MoAChatCompletions:
         always a ``CanonicalUsage`` (zeroed if none); cost is a summed-dollars
         float or ``None`` when no advisor could be priced.
         """
-        from agent.usage_pricing import CanonicalUsage
-
-        usage = self._pending_reference_usage or CanonicalUsage()
-        cost = self._pending_reference_cost
-        self._pending_reference_usage = CanonicalUsage()
-        self._pending_reference_cost = None
+        usage, cost, _details = self._consume_reference_accounting()
         return usage, cost
 
     def consume_reference_details(self) -> tuple[Any, Any, list[dict]]:
+        """Pop usage, cost, and privacy-safe per-reference metadata rows."""
+        return self._consume_reference_accounting()
+
+    def _consume_reference_accounting(self) -> tuple[Any, Any, list[dict]]:
+        """Pop and clear all pending reference accounting representations."""
         from agent.usage_pricing import CanonicalUsage
+
         usage = self._pending_reference_usage or CanonicalUsage()
         cost = self._pending_reference_cost
         details = list(self._pending_reference_details)
@@ -1036,14 +1037,16 @@ class MoAChatCompletions:
                         _ref_usage = _ref_usage + _acct.usage
                     if _acct.cost_usd is not None:
                         _ref_cost = (_ref_cost or 0) + _acct.cost_usd
-                    _ref_details.append({
-                        "role": "reference",
-                        "slot_index": _idx,
-                        "provider": _acct.provider,
-                        "model": _acct.model,
-                        "usage": _acct.usage,
-                        "cost_usd": _acct.cost_usd
-                    })
+                    _ref_details.append(
+                        {
+                            "role": "reference",
+                            "slot_index": _idx,
+                            "provider": _acct.provider,
+                            "model": _acct.model,
+                            "usage": _acct.usage,
+                            "cost_usd": _acct.cost_usd,
+                        }
+                    )
             self._pending_reference_usage = _ref_usage
             self._pending_reference_cost = _ref_cost
             self._pending_reference_details = _ref_details
@@ -1165,9 +1168,12 @@ class MoAChatCompletions:
 
 class MoAClient:
     def __init__(self, preset_name: str, reference_callback: Any = None):
-        self.preset_name = preset_name
         self.chat = type("_MoAChat", (), {})()
-        self.chat.completions = MoAChatCompletions(preset_name, reference_callback=reference_callback)
+        self.chat.completions = MoAChatCompletions(
+            preset_name,
+            reference_callback=reference_callback,
+        )
+        self.preset_name = self.chat.completions.preset_name
 
     def consume_reference_usage(self) -> Any:
         """Pop the pending reference-fan-out usage from the completions facade.

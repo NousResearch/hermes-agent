@@ -843,7 +843,7 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
 
 CREATE TABLE IF NOT EXISTS session_moa_usage (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL REFERENCES sessions(id),
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
     preset TEXT,
     role TEXT NOT NULL,
     slot_index INTEGER,
@@ -2635,8 +2635,10 @@ class SessionDB:
         billing_mode: Optional[str] = None,
         api_call_count: int = 0,
         absolute: bool = False,
+        moa_breakdown: Optional[List[Dict[str, Any]]] = None,
+        moa_preset: str = "",
     ) -> None:
-        """Update token counters and backfill model if not already set.
+        """Update token counters and optional MoA detail rows atomically.
 
         When *absolute* is False (default), values are **incremented** — use
         this for per-API-call deltas (CLI path).
@@ -2644,6 +2646,10 @@ class SessionDB:
         When *absolute* is True, values are **set directly** — use this when
         the caller already holds cumulative totals (gateway path, where the
         cached agent accumulates across messages).
+
+        When *moa_breakdown* is provided, its per-slot rows are inserted in
+        the same transaction as the aggregate counter update. A failure in
+        either representation therefore rolls back both.
         """
         # Ensure the session row exists so the UPDATE doesn't silently affect
         # 0 rows.  Under concurrent load (cron + kanban + delegate_task) the
@@ -2783,6 +2789,13 @@ class SessionDB:
                     cost_source=cost_source,
                     api_call_count=api_call_count,
                 )
+            if moa_breakdown:
+                self._insert_session_moa_usage(
+                    conn,
+                    session_id,
+                    moa_breakdown,
+                    preset=moa_preset,
+                )
         self._execute_write(_do)
 
     def _record_model_usage(
@@ -2870,20 +2883,31 @@ class SessionDB:
             ),
         )
 
-    def add_session_moa_usage(self, session_id: str, moa_breakdown: List[Dict[str, Any]], preset: str = "") -> None:
-        """Add MoA reference and aggregator usage to the detailed breakdown table."""
-        if not moa_breakdown:
-            return
-
+    @staticmethod
+    def _insert_session_moa_usage(
+        conn: sqlite3.Connection,
+        session_id: str,
+        moa_breakdown: List[Dict[str, Any]],
+        *,
+        preset: str = "",
+    ) -> None:
+        """Insert detailed MoA rows using the caller's active transaction."""
         sql = """INSERT INTO session_moa_usage
                  (session_id, preset, role, slot_index, provider, model, input_tokens, output_tokens,
                   cache_read_tokens, cache_write_tokens, reasoning_tokens, cost_usd)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
+                  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"""
 
-        def _do(conn):
-            for entry in moa_breakdown:
-                usage = entry.get("usage")
-                conn.execute(sql, (
+        for entry in moa_breakdown:
+            usage = entry.get("usage")
+            cost_usd = entry.get("cost_usd")
+            if cost_usd is not None:
+                try:
+                    cost_usd = float(cost_usd)
+                except (TypeError, ValueError):
+                    cost_usd = None
+            conn.execute(
+                sql,
+                (
                     session_id,
                     preset,
                     entry.get("role", "reference"),
@@ -2895,8 +2919,33 @@ class SessionDB:
                     getattr(usage, "cache_read_tokens", 0) if usage else 0,
                     getattr(usage, "cache_write_tokens", 0) if usage else 0,
                     getattr(usage, "reasoning_tokens", 0) if usage else 0,
-                    entry.get("cost_usd")
-                ))
+                    cost_usd,
+                ),
+            )
+
+    def add_session_moa_usage(
+        self,
+        session_id: str,
+        moa_breakdown: List[Dict[str, Any]],
+        preset: str = "",
+    ) -> None:
+        """Add standalone MoA detail rows in one transaction.
+
+        Callers that also update aggregate counters should instead pass the
+        rows to :meth:`update_token_counts` so both representations commit or
+        roll back together.
+        """
+        if not moa_breakdown:
+            return
+
+        def _do(conn):
+            self._insert_session_moa_usage(
+                conn,
+                session_id,
+                moa_breakdown,
+                preset=preset,
+            )
+
         self._execute_write(_do)
 
     def ensure_session(

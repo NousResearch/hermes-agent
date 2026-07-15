@@ -2113,10 +2113,17 @@ def run_conversation(
                     _moa_ref_cost = None
                     _moa_client = getattr(agent, "client", None)
                     _ref_details = []
-                    if _moa_client is not None and hasattr(_moa_client, "consume_reference_usage"):
+                    _is_moa_call = _moa_client is not None and hasattr(
+                        _moa_client, "consume_reference_usage"
+                    )
+                    if _is_moa_call:
                         try:
                             if hasattr(_moa_client, "consume_reference_details"):
-                                _ref_usage, _moa_ref_cost, _ref_details = _moa_client.consume_reference_details()
+                                (
+                                    _ref_usage,
+                                    _moa_ref_cost,
+                                    _ref_details,
+                                ) = _moa_client.consume_reference_details()
                             else:
                                 _ref_usage, _moa_ref_cost = _moa_client.consume_reference_usage()
                             if _ref_usage is not None:
@@ -2269,6 +2276,30 @@ def run_conversation(
                                     _cost_delta = (_cost_delta or 0.0) + float(_moa_ref_cost)
                                 except (TypeError, ValueError):  # pragma: no cover
                                     pass
+
+                            _moa_breakdown = None
+                            _moa_preset = ""
+                            if _is_moa_call:
+                                _agg_cost_amount = None
+                                try:
+                                    if cost_result.amount_usd is not None:
+                                        _agg_cost_amount = float(cost_result.amount_usd)
+                                except (TypeError, ValueError):
+                                    pass
+
+                                _moa_breakdown = list(_ref_details)
+                                _moa_breakdown.append(
+                                    {
+                                        "role": "aggregator",
+                                        "slot_index": len(_ref_details),
+                                        "provider": _agg_cost_provider,
+                                        "model": _agg_cost_model,
+                                        "usage": aggregator_usage,
+                                        "cost_usd": _agg_cost_amount,
+                                    }
+                                )
+                                _moa_preset = getattr(_moa_client, "preset_name", "")
+
                             agent._session_db.update_token_counts(
                                 agent.session_id,
                                 input_tokens=canonical_usage.input_tokens,
@@ -2285,31 +2316,9 @@ def run_conversation(
                                 if cost_result.status == "included" else None,
                                 model=agent.model,
                                 api_call_count=1,
+                                moa_breakdown=_moa_breakdown,
+                                moa_preset=_moa_preset,
                             )
-                            if _moa_client is not None and hasattr(agent._session_db, "add_session_moa_usage"):
-                                # Add the aggregator and reference models to the MoA detailed tracking
-                                _agg_cost_amount = None
-                                try:
-                                    if cost_result.amount_usd is not None:
-                                        _agg_cost_amount = float(cost_result.amount_usd)
-                                except (TypeError, ValueError):
-                                    pass
-                                
-                                _moa_breakdown = list(_ref_details)
-                                _moa_breakdown.append({
-                                    "role": "aggregator",
-                                    "slot_index": len(_ref_details),
-                                    "provider": _agg_cost_provider,
-                                    "model": _agg_cost_model,
-                                    "usage": aggregator_usage,
-                                    "cost_usd": _agg_cost_amount
-                                })
-                                agent._session_db.add_session_moa_usage(
-                                    agent.session_id,
-                                    _moa_breakdown,
-                                    preset=getattr(_moa_client, "preset_name", "")
-                                )
-
                         except Exception as e:
                             # Log token persistence failures so they're
                             # visible in agent.log — silent loss here is

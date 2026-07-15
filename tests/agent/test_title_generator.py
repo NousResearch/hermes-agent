@@ -9,6 +9,7 @@ from agent.title_generator import (
     maybe_auto_title,
     _title_language,
 )
+from hermes_state import SessionDB
 
 
 class TestGenerateTitle:
@@ -240,17 +241,27 @@ class TestAutoTitleSession:
     def test_generates_and_sets_title(self):
         db = MagicMock()
         db.get_session_title.return_value = None
+        db.set_auto_title_if_empty.return_value = True
 
         with patch("agent.title_generator.generate_title", return_value="New Title"):
             auto_title_session(db, "sess-1", "hi", "hello")
-            db.set_session_title.assert_called_once_with("sess-1", "New Title")
+            db.set_auto_title_if_empty.assert_called_once_with("sess-1", "New Title")
 
-    def test_does_not_overwrite_title_set_while_generation_was_in_flight(self):
-        db = MagicMock()
-        db.get_session_title.side_effect = [None, "Manual Title"]
+    def test_does_not_overwrite_title_set_immediately_before_conditional_write(
+        self, tmp_path
+    ):
+        db = SessionDB(tmp_path / "state.db")
+        db.create_session(session_id="sess-1", source="cli")
         seen = []
 
-        with patch("agent.title_generator.generate_title", return_value="Auto Title"):
+        def generate_after_manual_title(*_args, **_kwargs):
+            db.set_session_title("sess-1", "Manual Title")
+            return "Auto Title"
+
+        with patch(
+            "agent.title_generator.generate_title",
+            side_effect=generate_after_manual_title,
+        ):
             auto_title_session(
                 db,
                 "sess-1",
@@ -259,12 +270,13 @@ class TestAutoTitleSession:
                 title_callback=seen.append,
             )
 
-        db.set_session_title.assert_not_called()
+        assert db.get_session_title("sess-1") == "Manual Title"
         assert seen == []
 
     def test_invokes_title_callback_after_setting_title(self):
         db = MagicMock()
         db.get_session_title.return_value = None
+        db.set_auto_title_if_empty.return_value = True
         seen = []
         with patch("agent.title_generator.generate_title", return_value="Readable Session"):
             auto_title_session(
@@ -274,7 +286,7 @@ class TestAutoTitleSession:
                 "hi there",
                 title_callback=seen.append,
             )
-        db.set_session_title.assert_called_once_with("sess-1", "Readable Session")
+        db.set_auto_title_if_empty.assert_called_once_with("sess-1", "Readable Session")
         assert seen == ["Readable Session"]
 
     def test_skips_if_generation_fails(self):
@@ -283,7 +295,7 @@ class TestAutoTitleSession:
 
         with patch("agent.title_generator.generate_title", return_value=None):
             auto_title_session(db, "sess-1", "hi", "hello")
-            db.set_session_title.assert_not_called()
+            db.set_auto_title_if_empty.assert_not_called()
 
     def test_never_raises_when_body_throws(self):
         """Daemon-thread target must swallow ALL exceptions (e.g. the

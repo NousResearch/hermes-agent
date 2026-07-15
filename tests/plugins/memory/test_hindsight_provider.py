@@ -653,6 +653,17 @@ class TestToolHandlers:
         assert "bank_id" not in item
         assert "retain_async" not in item
 
+    def test_retain_timeout_uses_retain_specific_operation_name(self, provider, monkeypatch):
+        def _timeout(coro, *, operation_name):
+            coro.close()
+            raise TimeoutError(f"{operation_name} timed out after 0.01s")
+
+        monkeypatch.setattr(provider, "_run_sync", _timeout)
+
+        result = provider.handle_tool_call("hindsight_retain", {"content": "remember this"})
+
+        assert "hindsight retain timed out after 0.01s" in result
+
     def test_retain_with_tags(self, provider_with_config):
         p = provider_with_config(retain_tags=["pref", "ui"])
         p.handle_tool_call("hindsight_retain", {"content": "likes dark mode"})

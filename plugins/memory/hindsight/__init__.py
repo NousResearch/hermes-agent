@@ -1153,11 +1153,11 @@ class HindsightMemoryProvider(MemoryProvider):
         except Exception as exc:
             logger.debug("Hindsight atexit shutdown failed: %s", exc)
 
-    def _run_hindsight_operation(self, operation):
+    def _run_hindsight_operation(self, operation, operation_name="hindsight client operation"):
         """Run an async Hindsight client operation, retrying once after idle shutdown."""
         client = self._get_client()
         try:
-            return self._run_sync(operation(client), operation_name="hindsight client operation")
+            return self._run_sync(operation(client), operation_name=operation_name)
         except Exception as exc:
             if not self._is_retriable_embedded_connection_error(exc):
                 raise
@@ -1168,7 +1168,7 @@ class HindsightMemoryProvider(MemoryProvider):
             self._client = None
             client = self._get_client()
             self._client = client
-            return self._run_sync(operation(client), operation_name="hindsight client operation retry")
+            return self._run_sync(operation(client), operation_name=f"{operation_name} retry")
 
     def _probe_url(self) -> str:
         """Return the URL to probe /version on.
@@ -1688,7 +1688,8 @@ class HindsightMemoryProvider(MemoryProvider):
                     items=[item],
                     document_id=document_id,
                     retain_async=retain_async_flag,
-                )
+                ),
+                operation_name="hindsight retain",
             )
             logger.debug("Hindsight retain succeeded")
 
@@ -1725,7 +1726,8 @@ class HindsightMemoryProvider(MemoryProvider):
                     self._bank_id, self._api_url, self._timeout, retain_async, len(content), context,
                 )
                 self._run_hindsight_operation(
-                    lambda client: client.aretain_batch(bank_id=self._bank_id, items=[item])
+                    lambda client: client.aretain_batch(bank_id=self._bank_id, items=[item]),
+                    operation_name="hindsight retain",
                 )
                 logger.debug("Tool hindsight_retain: success")
                 return json.dumps({"result": "Memory stored successfully."})
@@ -1872,7 +1874,8 @@ class HindsightMemoryProvider(MemoryProvider):
                             items=[item],
                             document_id=old_document_id,
                             retain_async=self._retain_async,
-                        )
+                        ),
+                        operation_name="hindsight retain",
                     )
                 except Exception as e:
                     logger.warning("Hindsight flush-on-switch failed: %s", e, exc_info=True)

@@ -7,6 +7,7 @@ and the assignee-fallback logic.
 
 from __future__ import annotations
 
+import argparse
 import json as jsonlib
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -15,6 +16,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_decompose as decomp
+from hermes_cli import kanban as kanban_cli
 
 
 @pytest.fixture
@@ -75,6 +77,14 @@ def _patch_list_profiles(names: list[str]):
     ]
 
 
+def _run_cli(*argv: str) -> int:
+    root = argparse.ArgumentParser()
+    subparsers = root.add_subparsers(dest="cmd")
+    kanban_cli.build_parser(subparsers)
+    args = root.parse_args(["kanban", *argv])
+    return kanban_cli.kanban_command(args)
+
+
 def test_decompose_with_fanout_creates_children(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="ship a feature", triage=True)
@@ -106,11 +116,55 @@ def test_decompose_with_fanout_creates_children(kanban_home):
         root = kb.get_task(conn, tid)
         c0 = kb.get_task(conn, outcome.child_ids[0])
         c1 = kb.get_task(conn, outcome.child_ids[1])
+    assert root is not None
+    assert c0 is not None
+    assert c1 is not None
     assert root.status == "todo"
+    assert root.assignee == "orchestrator"
     assert c0.status == "ready"
     assert c1.status == "todo"
     assert c0.assignee == "researcher"
     assert c1.assignee == "engineer"
+
+
+def test_cli_decompose_preserves_create_assignee(kanban_home, capsys):
+    assert _run_cli(
+        "create",
+        "ship an assigned feature",
+        "--assignee",
+        "owner",
+        "--triage",
+        "--json",
+    ) == 0
+    task_id = jsonlib.loads(capsys.readouterr().out)["id"]
+
+    llm_payload = jsonlib.dumps({
+        "fanout": True,
+        "rationale": "test split",
+        "tasks": [
+            {"title": "build", "body": "code it", "assignee": "engineer", "parents": []},
+        ],
+    })
+    patches = _patch_list_profiles(["configured-orchestrator", "owner", "engineer"])
+    for profile_patch in patches:
+        profile_patch.start()
+    try:
+        with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
+            "hermes_cli.kanban_decompose._load_config",
+            return_value={"kanban": {"orchestrator_profile": "configured-orchestrator"}},
+        ):
+            assert _run_cli("decompose", task_id, "--json") == 0
+    finally:
+        for profile_patch in patches:
+            profile_patch.stop()
+
+    outcome = jsonlib.loads(capsys.readouterr().out)
+    assert outcome["ok"] is True
+    assert outcome["fanout"] is True
+    with kb.connect() as conn:
+        root = kb.get_task(conn, task_id)
+    assert root is not None
+    assert root.assignee == "owner"
 
 
 def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):

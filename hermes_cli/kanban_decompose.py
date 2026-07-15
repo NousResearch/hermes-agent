@@ -291,7 +291,10 @@ def decompose_task(
         )
 
     cfg = _load_config()
-    orchestrator = _resolve_orchestrator_profile(cfg)
+    # An assignee chosen when the triage task was created is explicit routing
+    # intent. Only unassigned roots fall back to the configured/active
+    # orchestrator profile.
+    orchestrator = task.assignee or _resolve_orchestrator_profile(cfg)
     default_assignee = _resolve_default_assignee(cfg)
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
     auto_promote = bool(kanban_cfg.get("auto_promote_children", True))

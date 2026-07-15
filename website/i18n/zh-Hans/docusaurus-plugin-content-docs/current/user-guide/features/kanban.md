@@ -369,7 +369,7 @@ hermes dashboard        # 导航栏中出现 "Kanban" 标签页，位于 "Skills
 ### 插件提供的功能
 
 - 一个 **Kanban** 标签页，每个状态显示一列：`triage`、`todo`、`ready`、`running`、`blocked`、`done`（开启切换时还有 `archived`）。
-  - `triage` 是粗略想法的停车列。默认情况下（`kanban.auto_decompose: true`），调度器会自动对落在这里的任务运行**分解器** —— 编排器配置文件读取粗略想法，查看你的配置文件名册（含描述），并将任务扇出为路由到最合适专家的小型子任务图。原始任务作为每个子任务的父级保持存活，因此当所有子任务完成时，编排器会重新唤醒以判断完成情况，并在工作未完成时添加更多任务。点击页面顶部的 **Orchestration: Auto/Manual** 切换按钮（或设置 `kanban.auto_decompose: false`）切换到手动模式，在手动模式下分诊任务保持原位，直到你点击卡片上的 **⚗ Decompose** 或运行 `hermes kanban decompose <id>`。对于不需要扇出的任务（或没有编排器配置文件的设置），**✨ Specify** 按钮通过相同的 LLM 机制进行单任务规格重写（标题 + 正文，包含目标、方法、验收标准）。详见下方[自动与手动编排](#auto-vs-manual-orchestration)。
+  - `triage` 是粗略想法的停车列。默认情况下（`kanban.auto_decompose: true`），调度器会自动对落在这里的任务运行**分解器** —— 编排器配置文件读取粗略想法，查看你的配置文件名册（含描述），并将任务扇出为路由到最合适专家的小型子任务图。原始任务作为每个子任务的父级保持存活，因此当所有子任务完成时，其显式受让人会重新唤醒；如果任务未分配，则依次回退到 `kanban.orchestrator_profile` 和活动默认配置文件。点击页面顶部的 **Orchestration: Auto/Manual** 切换按钮（或设置 `kanban.auto_decompose: false`）切换到手动模式，在手动模式下分诊任务保持原位，直到你点击卡片上的 **⚗ Decompose** 或运行 `hermes kanban decompose <id>`。对于不需要扇出的任务（或没有编排器配置文件的设置），**✨ Specify** 按钮通过相同的 LLM 机制进行单任务规格重写（标题 + 正文，包含目标、方法、验收标准）。详见下方[自动与手动编排](#auto-vs-manual-orchestration)。
 - 卡片显示任务 id、标题、优先级徽章、租户标签、分配的配置文件、评论/链接计数、**进度标签**（任务有依赖项时显示 `N/M` 子任务已完成）以及"N 前创建"。每张卡片的复选框启用多选。
 - **Running 列内的按配置文件分组** —— 工具栏复选框切换 Running 列按受让人的子分组。
 - **通过 WebSocket 实时更新** —— 插件以短轮询间隔追踪仅追加的 `task_events` 表；任何配置文件（CLI、gateway 或另一个仪表盘标签页）操作后，看板立即反映变化。重新加载经过防抖处理，因此一批事件只触发一次重新获取。
@@ -391,7 +391,7 @@ hermes dashboard        # 导航栏中出现 "Kanban" 标签页，位于 "Skills
 
 看板有两种方式处理你放入 Triage 列的任务：
 
-**自动（默认）** —— `kanban.auto_decompose: true`。Gateway 内嵌调度器在每个 tick 运行**分解器**，受 `kanban.auto_decompose_per_tick`（默认每 tick 3 个任务）限制，以防批量加载分诊任务时突发消耗辅助 LLM。分解器读取粗略想法，查看你安装的配置文件及其描述，并要求 LLM 生成 JSON 任务图：要启动哪些任务、分配给谁，以及哪些依赖哪些。原始分诊任务成为图中每个叶节点的父级，因此它保持存活直到整个图完成 —— 然后推进回 `ready`，让其受让人（编排器配置文件）判断完成情况，并在工作未完成时添加更多任务。这是"丢一行描述，走开"的流程。
+**自动（默认）** —— `kanban.auto_decompose: true`。Gateway 内嵌调度器在每个 tick 运行**分解器**，受 `kanban.auto_decompose_per_tick`（默认每 tick 3 个任务）限制，以防批量加载分诊任务时突发消耗辅助 LLM。分解器读取粗略想法，查看你安装的配置文件及其描述，并要求 LLM 生成 JSON 任务图：要启动哪些任务、分配给谁，以及哪些依赖哪些。原始分诊任务成为图中每个叶节点的父级，因此它保持存活直到整个图完成 —— 然后推进回 `ready`，让其受让人判断完成情况，并在工作未完成时添加更多任务。显式受让人优先；未分配的任务依次回退到 `kanban.orchestrator_profile` 和活动默认配置文件。这是"丢一行描述，走开"的流程。
 
 **手动** —— `kanban.auto_decompose: false`。分诊任务保持在分诊中，直到你操作。点击卡片上的 **⚗ Decompose** 按钮，运行 `hermes kanban decompose <id>`（或 `--all`），或从聊天中使用 `/kanban decompose <id>`。这与看板的预分解器行为一致，适合需要完全控制运行时机的场景。
 
@@ -405,7 +405,7 @@ hermes dashboard        # 导航栏中出现 "Kanban" 标签页，位于 "Skills
 |---|---|---|
 | `auto_decompose` | `true` | 调度器每 tick 自动运行分解器。 |
 | `auto_decompose_per_tick` | `3` | 每个调度器 tick 的分解上限。超出部分推迟到下一个 tick。 |
-| `orchestrator_profile` | `""` | 拥有分解权的配置文件。空 = 回退到活动默认配置文件。 |
+| `orchestrator_profile` | `""` | 分解后用于未分配根任务的回退配置文件。空 = 回退到活动默认配置文件；显式受让人优先。 |
 | `default_assignee` | `""` | LLM 选择未知配置文件时子任务的落地位置。空 = 回退到活动默认配置文件。 |
 | `auto_subscribe_on_create` | `true` | 当 worker 在具有持久投递通道的会话（消息网关或 TUI）内调用 `kanban_create` 时，原始会话会自动订阅新任务的完成/阻塞事件。调度器仍负责驱动投递 —— 此设置只决定调用者的聊天/密钥是否出现在通知订阅表中。设为 `false` 则要求对每个任务显式调用 `kanban_notify-subscribe`。 |
 

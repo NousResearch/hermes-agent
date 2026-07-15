@@ -39,6 +39,7 @@ import mimetypes
 import os
 import time
 import uuid
+import collections
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
@@ -159,6 +160,8 @@ class QQAdapter(BasePlatformAdapter):
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
     _TYPING_INPUT_SECONDS = 60  # input_notify duration reported to QQ
     _TYPING_DEBOUNCE_SECONDS = 50  # refresh before it expires
+    # Maximum number of sent message IDs to retain for echo detection.
+    _SENT_MSG_IDS_MAX = 500
 
     @property
     def _log_tag(self) -> str:
@@ -231,6 +234,8 @@ class QQAdapter(BasePlatformAdapter):
         # Request/response correlation
         self._pending_responses: Dict[str, asyncio.Future] = {}
         self._seen_messages: Dict[str, float] = {}
+        # Track sent message IDs to detect platform echoes (QQ C2C echo fix).
+        self._sent_msg_ids: collections.OrderedDict = collections.OrderedDict()
 
         # Last inbound message ID per chat — used by send_typing
         self._last_msg_id: Dict[str, str] = {}
@@ -939,6 +944,15 @@ class QQAdapter(BasePlatformAdapter):
         if not msg_id or self._is_duplicate(msg_id):
             logger.debug(
                 "[%s] Duplicate or missing message id: %s", self._log_tag, msg_id
+            )
+            return
+        # Drop echo of our own sent messages (QQ C2C platform echo).
+        if msg_id in self._sent_msg_ids:
+            self._sent_msg_ids.pop(msg_id, None)
+            logger.debug(
+                "[%s] Dropping bot echo (sent-msg tracking): %s",
+                self._log_tag,
+                msg_id,
             )
             return
 
@@ -2518,6 +2532,15 @@ class QQAdapter(BasePlatformAdapter):
         )
         return SendResult(success=False, error=error_msg, retryable=retryable)
 
+    def _track_sent_msg(self, msg_id: str) -> None:
+        """Record a sent message ID for echo detection.
+
+        Evicts the oldest entry when at capacity.
+        """
+        self._sent_msg_ids[msg_id] = None
+        while len(self._sent_msg_ids) > self._SENT_MSG_IDS_MAX:
+            self._sent_msg_ids.popitem(last=False)
+
     async def _send_c2c_text(
             self,
             openid: str,
@@ -2538,6 +2561,7 @@ class QQAdapter(BasePlatformAdapter):
 
         data = await self._api_request("POST", f"/v2/users/{openid}/messages", body)
         msg_id = str(data.get("id", uuid.uuid4().hex[:12]))
+        self._track_sent_msg(msg_id)
         return SendResult(success=True, message_id=msg_id, raw_response=data)
 
     async def _send_group_text(
@@ -2562,6 +2586,7 @@ class QQAdapter(BasePlatformAdapter):
             "POST", f"/v2/groups/{group_openid}/messages", body
         )
         msg_id = str(data.get("id", uuid.uuid4().hex[:12]))
+        self._track_sent_msg(msg_id)
         return SendResult(success=True, message_id=msg_id, raw_response=data)
 
     async def _send_guild_text(
@@ -2574,6 +2599,7 @@ class QQAdapter(BasePlatformAdapter):
 
         data = await self._api_request("POST", f"/channels/{channel_id}/messages", body)
         msg_id = str(data.get("id", uuid.uuid4().hex[:12]))
+        self._track_sent_msg(msg_id)
         return SendResult(success=True, message_id=msg_id, raw_response=data)
 
     # ------------------------------------------------------------------
@@ -2942,9 +2968,11 @@ class QQAdapter(BasePlatformAdapter):
                 ),
                 body,
             )
+            _media_msg_id = str(send_data.get("id", uuid.uuid4().hex[:12]))
+            self._track_sent_msg(_media_msg_id)
             return SendResult(
                 success=True,
-                message_id=str(send_data.get("id", uuid.uuid4().hex[:12])),
+                message_id=_media_msg_id,
                 raw_response=send_data,
             )
         except UploadDailyLimitExceededError as exc:

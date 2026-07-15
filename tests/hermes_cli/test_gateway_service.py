@@ -840,13 +840,14 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
-    def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch, capsys):
+    def test_launchd_restart_uses_atomic_kickstart_without_preterminate(
+        self, monkeypatch, capsys
+    ):
         calls = []
+        terminated = []
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
 
-        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 12.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
-        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
         monkeypatch.setattr(
             gateway_cli,
             "_wait_for_gateway_replacement",
@@ -856,11 +857,12 @@ class TestLaunchdServiceRecovery:
             "gateway.status.read_runtime_status",
             lambda: {"gateway_start_id": "gw-old", "gateway_state": "running"},
         )
-        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: calls.append(("term", pid, force)))
         monkeypatch.setattr(
-            "gateway.status.get_running_pid",
-            lambda: 321,
+            gateway_cli,
+            "terminate_pid",
+            lambda pid, force=False: terminated.append((pid, force)),
         )
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
 
         def fake_run(cmd, check=False, **kwargs):
             calls.append(cmd)
@@ -870,16 +872,9 @@ class TestLaunchdServiceRecovery:
 
         gateway_cli.launchd_restart()
 
-        assert calls == [
-            ("term", 321, False),
-            ["launchctl", "kickstart", "-k", target],
-        ]
-        # The drain can silently hold for the full budget (180s default); the
-        # desktop updater streams this output as its only progress feedback,
-        # so the stop must be announced BEFORE the wait (#44515).
-        out = capsys.readouterr().out
-        assert "draining in-flight runs" in out
-        assert "up to 12s" in out
+        assert calls == [["launchctl", "kickstart", "-k", target]]
+        assert terminated == []
+        assert "handing replacement to launchd" in capsys.readouterr().out
 
     def test_wait_for_gateway_replacement_requires_new_start_id_and_pid(
         self, tmp_path, monkeypatch
@@ -1175,10 +1170,13 @@ class TestLaunchdServiceRecovery:
         monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
         target = f"gui/501/{gateway_cli.get_launchd_label()}"
 
-        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
-        monkeypatch.setattr(gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True)
-        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
+        terminated = []
+        monkeypatch.setattr(
+            gateway_cli,
+            "terminate_pid",
+            lambda pid, force=False: terminated.append((pid, force)),
+        )
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
         monkeypatch.setattr(
             "gateway.status.read_runtime_status",
@@ -1203,6 +1201,7 @@ class TestLaunchdServiceRecovery:
             gateway_cli.launchd_restart()
 
         assert spawned == []
+        assert terminated == []
 
     def test_launchd_restart_boots_out_stale_registration_before_bootstrap(
         self, tmp_path, monkeypatch
@@ -1214,11 +1213,7 @@ class TestLaunchdServiceRecovery:
         target = f"{domain}/{label}"
 
         monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
-        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
         monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
-        monkeypatch.setattr(
-            gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True
-        )
         monkeypatch.setattr(
             gateway_cli,
             "_wait_for_gateway_replacement",
@@ -1228,7 +1223,6 @@ class TestLaunchdServiceRecovery:
             "gateway.status.read_runtime_status",
             lambda: {"gateway_start_id": "gw-old", "gateway_state": "running"},
         )
-        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
         monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
 
         calls = []

@@ -4355,7 +4355,6 @@ def _wait_for_gateway_replacement(
 def launchd_restart():
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
-    drain_timeout = _get_restart_drain_timeout()
     from gateway.status import get_running_pid, read_runtime_status
 
     before = read_runtime_status()
@@ -4376,26 +4375,14 @@ def launchd_restart():
             _clear_launchd_unsupported_marker()
             return
         if pid is not None:
-            # Announce the drain BEFORE waiting on it. This wait can run for
-            # the full drain budget (180s by default) while the old gateway
-            # finishes in-flight agent runs, and it streams into surfaces with
-            # no other feedback — the desktop updater's live output most of
-            # all, where a silent stop here reads as "update stuck" (#44515).
-            # Mirrors the systemd branch's "draining (up to Ns)..." line.
+            # Do not terminate the current gateway before launchd has accepted
+            # responsibility for the replacement. ``kickstart -k`` performs
+            # the stop/start as one supervisor-owned operation; if launchd
+            # rejects the domain, the current gateway remains available.
             print(
-                f"→ Stopping gateway (PID {pid}) — draining in-flight runs "
-                f"(up to {drain_timeout:.0f}s)..."
+                f"→ Gateway PID {pid} did not accept a graceful restart request; "
+                "handing replacement to launchd..."
             )
-            try:
-                terminate_pid(pid, force=False)
-            except (ProcessLookupError, PermissionError, OSError):
-                pid = None
-            if pid is not None:
-                exited = _wait_for_gateway_exit(timeout=drain_timeout, force_after=None)
-                if not exited:
-                    print(
-                        f"⚠ Gateway drain timed out after {drain_timeout:.0f}s — forcing launchd restart"
-                    )
         subprocess.run(["launchctl", "kickstart", "-k", target], check=True, timeout=90)
         if not _wait_for_gateway_replacement(pid, previous_start_id, 90.0):
             raise RuntimeError("Gateway restart readiness was not confirmed within 90s")

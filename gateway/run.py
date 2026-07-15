@@ -634,6 +634,21 @@ async def _send_or_update_status_coro(adapter, chat_id, status_key, content, met
     return await adapter.send(chat_id, content, metadata=metadata)
 
 
+def _resolve_approval_session_is_guest(status_adapter: Any, status_chat_id: Any) -> bool:
+    """Return whether *status_chat_id* is currently a guest-mode (non-member)
+    chat, per *status_adapter*'s own ``_is_guest_chat`` predicate.
+
+    A no-op (always False) until an adapter defines ``_is_guest_chat`` --
+    today none does; the Telegram Bot API 10.0 guest-mode work (see
+    plugins/platforms/telegram/adapter.py's ``_pending_guest_queries`` /
+    ``_guest_only_chats``) supplies the real predicate. Extracted to its own
+    function so this wiring is testable against that concrete adapter
+    contract independent of driving a full gateway turn.
+    """
+    is_guest_chat_fn = getattr(status_adapter, "_is_guest_chat", None)
+    return bool(callable(is_guest_chat_fn) and is_guest_chat_fn(status_chat_id))
+
+
 def _resolve_progress_thread_id(
     platform: Any,
     source_thread_id: Any,
@@ -5042,9 +5057,8 @@ class TurnRunner:
         # _await_gateway_decision short-circuit) instead of blocking the
         # agent thread for the full gateway_timeout on an approval that
         # can structurally never arrive.
-        _is_guest_chat_fn = getattr(ctx._status_adapter, "_is_guest_chat", None)
-        _approval_session_is_guest = bool(
-            callable(_is_guest_chat_fn) and _is_guest_chat_fn(ctx._status_chat_id)
+        _approval_session_is_guest = _resolve_approval_session_is_guest(
+            ctx._status_adapter, ctx._status_chat_id
         )
         if _approval_session_is_guest:
             mark_session_guest(_approval_session_key)

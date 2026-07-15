@@ -776,6 +776,81 @@ async def _send_via_adapter(
     }
 
 
+async def _send_dingtalk_files_via_live_adapter(
+    chat_id,
+    message,
+    media_files,
+    *,
+    thread_id=None,
+    force_document=False,
+):
+    """Send text and local files through an active gateway adapter.
+
+    Session-webhook platforms cannot deliver files from a standalone process:
+    the webhook belongs to the live conversation. Requiring the active adapter
+    also makes a missing target-chat webhook an explicit failure instead of a
+    deferred success that can attach the file to the wrong conversation.
+    """
+    from gateway.config import Platform
+
+    runner = None
+    try:
+        from gateway.run import _gateway_runner_ref
+        runner = _gateway_runner_ref()
+    except Exception:
+        runner = None
+
+    try:
+        adapter = runner.adapters.get(Platform.DINGTALK) if runner is not None else None
+    except Exception:
+        adapter = None
+    if adapter is None:
+        return {
+            "error": (
+                "DingTalk file delivery requires a live gateway adapter "
+                "for the target chat."
+            )
+        }
+
+    metadata = {"thread_id": thread_id} if thread_id else None
+    last_result = None
+    try:
+        if message.strip():
+            last_result = await adapter.send(
+                chat_id=chat_id,
+                content=message,
+                metadata=metadata,
+            )
+            if not last_result.success:
+                return {"error": f"Adapter send failed: {last_result.error}"}
+
+        image_extensions = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
+        for media_path, _is_voice in media_files or []:
+            extension = os.path.splitext(media_path)[1].lower()
+            if extension in image_extensions and not force_document:
+                last_result = await adapter.send_image_file(
+                    chat_id=chat_id,
+                    image_path=media_path,
+                    metadata=metadata,
+                )
+            else:
+                last_result = await adapter.send_document(
+                    chat_id=chat_id,
+                    file_path=media_path,
+                    metadata=metadata,
+                )
+            if not last_result.success:
+                return {"error": f"Adapter media send failed: {last_result.error}"}
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        return {"error": f"Adapter media send failed: {exc}"}
+
+    if last_result is None:
+        return {"error": "No DingTalk text or file content to send"}
+    return {"success": True, "message_id": last_result.message_id}
+
+
 async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None, media_files=None, force_document=False):
     """Route a message to the appropriate platform sender.
 
@@ -1023,6 +1098,25 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
                 chat_id,
                 chunk,
                 media_files=media_files if is_last else None,
+                thread_id=thread_id,
+                force_document=force_document,
+            )
+            if isinstance(result, dict) and result.get("error"):
+                return result
+            last_result = result
+        return last_result
+
+    # DingTalk file messages require the per-conversation session webhook held
+    # by the running adapter. Sending through that adapter makes success mean
+    # the upload and target-chat webhook post both completed.
+    if platform == Platform.DINGTALK and media_files:
+        last_result = None
+        for index, chunk in enumerate(chunks):
+            is_last = index == len(chunks) - 1
+            result = await _send_dingtalk_files_via_live_adapter(
+                chat_id,
+                chunk,
+                media_files if is_last else [],
                 thread_id=thread_id,
                 force_document=force_document,
             )

@@ -907,6 +907,69 @@ class TestSendToPlatformChunking:
         assert bot.send_message.await_count >= 3
         bot.send_photo.assert_awaited_once()
 
+    def test_dingtalk_media_uses_live_adapter_for_current_chat(self, tmp_path):
+        from gateway.platforms.base import SendResult
+
+        file_path = tmp_path / "git_diff.txt"
+        file_path.write_text("diff", encoding="utf-8")
+        calls = []
+
+        class FakeAdapter:
+            async def send(self, chat_id, content, metadata=None):
+                calls.append(("send", chat_id, content))
+                return SendResult(success=True, message_id="text-1")
+
+            async def send_document(self, chat_id, file_path, metadata=None):
+                calls.append(("send_document", chat_id, file_path))
+                return SendResult(success=True, message_id="file-1")
+
+        runner = SimpleNamespace(adapters={Platform.DINGTALK: FakeAdapter()})
+        with patch("gateway.run._gateway_runner_ref", return_value=runner):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DINGTALK,
+                    SimpleNamespace(enabled=True, token=None, extra={}),
+                    "chat-current",
+                    "",
+                    media_files=[(str(file_path), False)],
+                )
+            )
+
+        assert result == {"success": True, "message_id": "file-1"}
+        assert calls == [("send_document", "chat-current", str(file_path))]
+        assert "media_deferred_to_gateway" not in result
+
+    def test_dingtalk_media_other_chat_propagates_missing_webhook(self, tmp_path):
+        from gateway.platforms.base import SendResult
+
+        file_path = tmp_path / "git_diff.txt"
+        file_path.write_text("diff", encoding="utf-8")
+
+        class FakeAdapter:
+            async def send(self, chat_id, content, metadata=None):
+                return SendResult(success=True, message_id="text-1")
+
+            async def send_document(self, chat_id, file_path, metadata=None):
+                return SendResult(
+                    success=False,
+                    error="No valid session_webhook available for target chat.",
+                )
+
+        runner = SimpleNamespace(adapters={Platform.DINGTALK: FakeAdapter()})
+        with patch("gateway.run._gateway_runner_ref", return_value=runner):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.DINGTALK,
+                    SimpleNamespace(enabled=True, token=None, extra={}),
+                    "chat-other",
+                    "",
+                    media_files=[(str(file_path), False)],
+                )
+            )
+
+        assert "session_webhook" in result["error"]
+        assert "media_deferred_to_gateway" not in result
+
     def test_matrix_media_uses_native_adapter_helper(self, tmp_path):
         doc_path = tmp_path / "test-send-message-matrix.pdf"
         doc_path.write_bytes(b"%PDF-1.4 test")

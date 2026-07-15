@@ -22,8 +22,10 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest.mock import patch
 
 from tools import file_state
+from tools.file_operations import ReadResult, WriteResult
 from tools.file_tools import (
     read_file_tool,
     write_file_tool,
@@ -367,6 +369,72 @@ class UnstatablePathUnitTests(unittest.TestCase):
         finally:
             os.unlink(p)
         self.assertIsNone(file_state.check_stale("A", p))
+
+
+class _RemoteFileOps:
+    """File ops whose bytes live inside the backend, not on the host FS.
+
+    Stands in for what ``_get_file_ops`` hands back on a remote terminal
+    env: reads and writes succeed against the sandbox while the resolved
+    path stays unstatable from the host.
+    """
+
+    def __init__(self, content: str = "seed\n") -> None:
+        self.content = content
+
+    def read_file(self, path: str, offset: int = 1, limit: int = 500) -> ReadResult:
+        return ReadResult(
+            content=self.content,
+            total_lines=len(self.content.splitlines()),
+            file_size=len(self.content),
+        )
+
+    def write_file(self, path: str, content: str) -> WriteResult:
+        self.content = content
+        return WriteResult(bytes_written=len(content))
+
+
+class UnstatablePathHandlerTests(unittest.TestCase):
+    """The remote-backend case through the real file-tool handlers.
+
+    ``UnstatablePathUnitTests`` pins the registry semantics directly, but
+    production reaches the registry through ``read_file_tool`` /
+    ``write_file_tool`` — so the sibling warning must survive that wiring
+    too when the host cannot stat the path.
+    """
+
+    def setUp(self) -> None:
+        file_state.get_registry().clear()
+        self._tmpdir = tempfile.mkdtemp(prefix="hermes_fs_remote_")
+        # Backend-side path: never created on the host, so every getmtime()
+        # the handlers attempt raises OSError — as it does for a file that
+        # only exists inside the sandbox.
+        self._remote = os.path.join(self._tmpdir, "workspace", "app.py")
+
+    def tearDown(self) -> None:
+        import shutil
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+        file_state.get_registry().clear()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_sibling_write_surfaces_warning_through_handler(self, mock_get):
+        mock_get.return_value = _RemoteFileOps()
+
+        r = json.loads(read_file_tool(path=self._remote, task_id="agentA"))
+        self.assertNotIn("error", r)
+
+        w_b = json.loads(
+            write_file_tool(path=self._remote, content="B wrote\n", task_id="agentB")
+        )
+        self.assertNotIn("error", w_b)
+
+        w_a = json.loads(
+            write_file_tool(path=self._remote, content="A stale\n", task_id="agentA")
+        )
+        warn = w_a.get("_warning", "")
+        self.assertTrue(warn, f"expected warning, got: {w_a}")
+        self.assertIn("agentB", warn)
+        self.assertIn("sibling", warn.lower())
 
 
 if __name__ == "__main__":

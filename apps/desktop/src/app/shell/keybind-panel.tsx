@@ -6,15 +6,17 @@ import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { Kbd, KbdCombo } from '@/components/ui/kbd'
+import { useContributions } from '@/contrib/react/use-contributions'
 import { useI18n } from '@/i18n'
 import {
+  allKeybindActions,
   composerReadonlyKeybinds,
-  KEYBIND_ACTIONS,
   KEYBIND_CATEGORIES,
   KEYBIND_PANEL_ACTION,
   KEYBIND_READONLY,
   type KeybindActionMeta,
-  type KeybindReadonly
+  type KeybindReadonly,
+  KEYBINDS_AREA
 } from '@/lib/keybinds/actions'
 import { formatCombo } from '@/lib/keybinds/combo'
 import { arraysEqual } from '@/lib/storage'
@@ -24,6 +26,7 @@ import {
   $capture,
   $keybindPanelOpen,
   beginCapture,
+  bindingsFor,
   closeKeybindPanel,
   conflictsFor,
   endCapture,
@@ -39,6 +42,9 @@ export function KeybindPanel() {
   const enterSends = useStore($composerEnterSends)
   const k = t.keybinds
   const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set())
+  // Subscribe so contributed actions appear/disappear live in the map.
+  useContributions(KEYBINDS_AREA)
+  const actionList = allKeybindActions()
 
   const openCombo = bindings[KEYBIND_PANEL_ACTION]?.[0]
 
@@ -77,7 +83,7 @@ export function KeybindPanel() {
           {/* Body */}
           <div className="min-h-0 flex-1 overflow-y-auto px-2 py-1.5">
             {KEYBIND_CATEGORIES.map(category => {
-              const actions = KEYBIND_ACTIONS.filter(
+              const actions = actionList.filter(
                 action => action.category === category && action.id !== KEYBIND_PANEL_ACTION
               )
 
@@ -143,9 +149,12 @@ function KeybindRow({ action }: { action: KeybindActionMeta }) {
   const bindings = useStore($bindings)
   const capture = useStore($capture)
 
-  const combos = bindings[action.id] ?? []
+  // bindingsFor resolves stored overrides for late-registered (contributed)
+  // actions too — $bindings only carries built-ins, so a raw lookup would show
+  // the default instead of the user's rebinding for a plugin/contrib action.
+  const combos = bindingsFor(action.id, bindings)
   const capturing = capture === action.id
-  const label = k.actions[action.id] ?? action.id
+  const label = k.actions[action.id] ?? action.label ?? action.id
   const isDefault = arraysEqual(combos, [...action.defaults])
 
   const conflict = combos

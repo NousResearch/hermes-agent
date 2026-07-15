@@ -4308,13 +4308,23 @@ def _resolve_auto(
 # below — never look up auth env vars ad-hoc.
 
 
-def _to_async_client(sync_client, model: str, is_vision: bool = False):
+def _to_async_client(
+    sync_client, model: str, is_vision: bool = False,
+    custom_entry: dict | None = None,
+):
     """Convert a sync client to its async counterpart, preserving Codex routing.
 
     When ``is_vision=True`` and the underlying base URL is Copilot, the
     resulting async client carries the ``Copilot-Vision-Request: true``
     header so the request is routed to Copilot's vision-capable
     infrastructure (otherwise vision payloads silently time out).
+
+    ``custom_entry`` is the resolved named ``custom_providers``/``providers``
+    entry, when the sync client was built from one. The async rebuild
+    reconstructs ``default_headers`` from scratch (it does not copy the sync
+    client's), so the entry's own ``extra_headers`` must be re-applied here —
+    last, mirroring the sync path's precedence — or per-provider gateway-auth
+    headers would silently drop from every async auxiliary call.
     """
     from openai import AsyncOpenAI
 
@@ -4370,6 +4380,27 @@ def _to_async_client(sync_client, model: str, is_vision: bool = False):
         except Exception:
             pass
     _merged_async = _apply_user_default_headers(async_kwargs.get("default_headers"))
+    if custom_entry is not None:
+        _merged_async = _apply_custom_provider_own_extra_headers(
+            _merged_async, custom_entry
+        )
+    else:
+        # No explicit entry (fallback_chain / vision auto-detect exits):
+        # self-look-up the matching custom_providers entry by the sync
+        # client's base_url, mirroring the main client's
+        # apply_custom_provider_extra_headers_to_client_kwargs matching.
+        # The named-provider branch keeps passing custom_entry explicitly
+        # because its anthropic-fallback URL is rewritten (/anthropic → /v1)
+        # and would miss here.
+        try:
+            from hermes_cli.config import get_custom_provider_extra_headers
+            _entry_headers = get_custom_provider_extra_headers(sync_base_url)
+            if _entry_headers:
+                _merged_async = _apply_custom_provider_own_extra_headers(
+                    _merged_async, {"extra_headers": _entry_headers}
+                )
+        except Exception:
+            pass
     if _merged_async:
         async_kwargs["default_headers"] = _merged_async
     async_kwargs = {
@@ -4801,7 +4832,8 @@ def resolve_provider_client(
                         if _fb_headers:
                             _fb_extra["default_headers"] = _fb_headers
                         client = _create_openai_client(api_key=custom_key, base_url=_fb_clean, **_fb_extra)
-                        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                        return (_to_async_client(client, final_model, is_vision=is_vision,
+                                                 custom_entry=custom_entry) if async_mode
                                 else (client, final_model))
                     sync_anthropic = AnthropicAuxiliaryClient(
                         real_client, final_model, custom_key, custom_base, is_oauth=False,
@@ -4820,7 +4852,8 @@ def resolve_provider_client(
                     client = CodexAuxiliaryClient(client, final_model)
                 else:
                     client = _wrap_if_needed(client, final_model, raw_base_for_wrap, custom_key)
-                return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                return (_to_async_client(client, final_model, is_vision=is_vision,
+                                         custom_entry=custom_entry) if async_mode
                         else (client, final_model))
             logger.warning(
                 "resolve_provider_client: named custom provider %r has no base_url",

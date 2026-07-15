@@ -165,6 +165,133 @@ class TestAuxClientHonorsPerProviderExtraHeaders:
         headers = mock_openai.call_args.kwargs.get("default_headers", {}) or {}
         assert headers.get("x-gateway-auth") == "token"
 
+    def test_entry_extra_headers_applied_on_async_path(self, tmp_path):
+        """async_mode=True rebuilds an AsyncOpenAI via _to_async_client, which
+        reconstructs default_headers from scratch (URL rules -> profile ->
+        model.default_headers) — it must also apply the entry's extra_headers.
+        """
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "custom_providers": [
+                {
+                    "name": "my-gw",
+                    "base_url": "http://my-gw.local/v1",
+                    "api_key": "k",
+                    "extra_headers": {"x-gateway-auth": "token"},
+                },
+            ],
+        })
+        sync_mock = MagicMock()
+        # _to_async_client reads these off the sync client to rebuild kwargs.
+        sync_mock.api_key = "k"
+        sync_mock.base_url = "http://my-gw.local/v1"
+        # _to_async_client does a local `from openai import AsyncOpenAI`,
+        # so the patch target is the openai module, not auxiliary_client.
+        with patch("agent.auxiliary_client.OpenAI", return_value=sync_mock), \
+             patch("openai.AsyncOpenAI") as mock_async_openai:
+            mock_async_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+            client, model = resolve_provider_client(
+                "my-gw", "test-model", async_mode=True
+            )
+
+        assert client is not None
+        assert mock_async_openai.called
+        headers = mock_async_openai.call_args.kwargs.get("default_headers", {}) or {}
+        assert headers.get("x-gateway-auth") == "token"
+
+    def test_entry_extra_headers_win_over_top_level_on_async_path(self, tmp_path):
+        """Async path precedence must match the sync path and the main client:
+        per-provider extra_headers applied last, over model.default_headers.
+        """
+        _write_config(tmp_path, {
+            "model": {
+                "default": "test-model",
+                "default_headers": {"User-Agent": "curl/8.7.1", "x-gateway-auth": "should-lose"},
+            },
+            "custom_providers": [
+                {
+                    "name": "my-gw",
+                    "base_url": "http://my-gw.local/v1",
+                    "api_key": "k",
+                    "extra_headers": {"x-gateway-auth": "token"},
+                },
+            ],
+        })
+        sync_mock = MagicMock()
+        sync_mock.api_key = "k"
+        sync_mock.base_url = "http://my-gw.local/v1"
+        with patch("agent.auxiliary_client.OpenAI", return_value=sync_mock), \
+             patch("openai.AsyncOpenAI") as mock_async_openai:
+            mock_async_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+            client, model = resolve_provider_client(
+                "my-gw", "test-model", async_mode=True
+            )
+
+        assert client is not None
+        headers = mock_async_openai.call_args.kwargs.get("default_headers", {}) or {}
+        # Non-conflicting top-level header still present...
+        assert headers.get("User-Agent") == "curl/8.7.1"
+        # ...but the per-provider entry wins on the overlapping key.
+        assert headers.get("x-gateway-auth") == "token"
+
+    def test_to_async_client_self_lookup_applies_entry_headers(self, tmp_path):
+        """`_to_async_client` without an explicit ``custom_entry`` (the
+        fallback_chain and vision auto-detect exits) must self-look-up the
+        matching ``custom_providers`` entry by the sync client's base_url and
+        apply its extra_headers — otherwise those async exits drop them.
+        """
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "custom_providers": [
+                {
+                    "name": "my-gw",
+                    "base_url": "http://my-gw.local/v1",
+                    "api_key": "k",
+                    "extra_headers": {"x-gateway-auth": "token"},
+                },
+            ],
+        })
+        sync_mock = MagicMock()
+        sync_mock.api_key = "k"
+        sync_mock.base_url = "http://my-gw.local/v1"
+        with patch("openai.AsyncOpenAI") as mock_async_openai:
+            mock_async_openai.return_value = MagicMock()
+            from agent.auxiliary_client import _to_async_client
+            client, model = _to_async_client(sync_mock, "test-model")
+
+        assert client is not None
+        headers = mock_async_openai.call_args.kwargs.get("default_headers", {}) or {}
+        assert headers.get("x-gateway-auth") == "token"
+
+    def test_to_async_client_self_lookup_skips_non_matching_base_url(self, tmp_path):
+        """Negative: a sync client whose base_url matches no entry must not
+        pick up another entry's extra_headers.
+        """
+        _write_config(tmp_path, {
+            "model": {"default": "test-model"},
+            "custom_providers": [
+                {
+                    "name": "my-gw",
+                    "base_url": "http://my-gw.local/v1",
+                    "api_key": "k",
+                    "extra_headers": {"x-gateway-auth": "token"},
+                },
+            ],
+        })
+        sync_mock = MagicMock()
+        sync_mock.api_key = "k"
+        sync_mock.base_url = "http://other-endpoint.local/v1"
+        with patch("openai.AsyncOpenAI") as mock_async_openai:
+            mock_async_openai.return_value = MagicMock()
+            from agent.auxiliary_client import _to_async_client
+            client, model = _to_async_client(sync_mock, "test-model")
+
+        assert client is not None
+        headers = mock_async_openai.call_args.kwargs.get("default_headers", {}) or {}
+        assert "x-gateway-auth" not in headers
+
     def test_entry_extra_headers_win_over_top_level_default_headers(self, tmp_path):
         """Precedence must match the main client: per-provider extra_headers
         (applied last by ``apply_custom_provider_extra_headers_to_client_kwargs``

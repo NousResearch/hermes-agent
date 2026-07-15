@@ -1,6 +1,8 @@
 from types import SimpleNamespace
 from typing import Any
 
+import pytest
+
 from agent.turn_finalizer import finalize_turn
 
 
@@ -252,6 +254,203 @@ def test_empty_success_persists_adoption_and_acks_without_retry_or_replay(
     assert restarted["deferred_notification_texts"] == []
     assert restarted["deferred_notification_event_ids"] == set()
     assert restarted["defer_notifications_until_user"] is False
+
+
+def _persist_messages_to_session_db(db, session_id, messages):
+    for message in messages:
+        db.append_message(
+            session_id,
+            message.get("role", "unknown"),
+            message.get("content"),
+            deferred_notification_ids=message.get("_deferred_notification_ids"),
+        )
+
+
+def _adopted_closing_message(db, event_id):
+    row = db._conn.execute(
+        """SELECT messages.role, messages.content
+             FROM deferred_notification_adoptions AS adoption
+             JOIN messages ON messages.id = adoption.message_id
+            WHERE adoption.event_id=?""",
+        (event_id,),
+    ).fetchone()
+    return tuple(row) if row is not None else None
+
+
+def _run_iteration_limit_with_durable_notification(
+    tmp_path,
+    monkeypatch,
+    *,
+    delegation_id,
+    summarize,
+):
+    from hermes_state import SessionDB
+    from tools import async_delegation
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db_path = tmp_path / "state.db"
+    event_id = f"async_delegation:{delegation_id}"
+    db = SessionDB(db_path)
+    db.create_session("sess-test", source="tui")
+    assert async_delegation.persist_deferred_notification(
+        "sess-test",
+        event_id,
+        "durable iteration-limit result",
+        {
+            "type": "async_delegation",
+            "delegation_id": delegation_id,
+            "session_key": "sess-test",
+        },
+        db_path=db_path,
+    )
+
+    agent = FakeAgent()
+    agent.max_iterations = 1
+    agent.iteration_budget = SimpleNamespace(remaining=0, used=1, max_total=1)
+    agent._deferred_notification_ids = (event_id,)
+    agent._handle_max_iterations = summarize
+    agent._persist_session = lambda messages, _history: _persist_messages_to_session_db(
+        db, "sess-test", messages
+    )
+
+    result = finalize_turn(
+        agent,
+        final_response=None,
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[{"role": "user", "content": "Next request"}],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="Next request",
+        original_user_message="Next request",
+        _should_review_memory=False,
+        _turn_exit_reason="unknown",
+    )
+    return db, event_id, result
+
+
+def test_iteration_limit_summary_persists_durable_closing_adoption(
+    tmp_path, monkeypatch
+):
+    """A summary is accepted and adopted even though completed stays false."""
+
+    def summarize(messages, _api_call_count):
+        report = "Summary of completed work."
+        messages.append({"role": "assistant", "content": report})
+        return report
+
+    db, event_id, result = _run_iteration_limit_with_durable_notification(
+        tmp_path,
+        monkeypatch,
+        delegation_id="deleg-summary-success",
+        summarize=summarize,
+    )
+    try:
+        assert result["completed"] is False
+        assert result["final_response"] == "Summary of completed work."
+        assert result["messages"][-1] == {
+            "role": "assistant",
+            "content": "Summary of completed work.",
+        }
+        assert _adopted_closing_message(db, event_id) == (
+            "assistant",
+            "Summary of completed work.",
+        )
+    finally:
+        db.close()
+
+
+def test_iteration_limit_summary_exception_fallback_closes_and_adopts(
+    tmp_path, monkeypatch
+):
+    """The handler's visible exception fallback is durable without a helper row."""
+    fallback = "I reached the maximum iterations (1) but couldn't summarize. Error: API down"
+
+    def summarize(messages, _api_call_count):
+        messages.append({"role": "user", "content": "Summarize without tools."})
+        return fallback
+
+    db, event_id, result = _run_iteration_limit_with_durable_notification(
+        tmp_path,
+        monkeypatch,
+        delegation_id="deleg-summary-fallback",
+        summarize=summarize,
+    )
+    try:
+        assert result["completed"] is False
+        assert result["final_response"] == fallback
+        assert result["messages"][-1] == {"role": "assistant", "content": fallback}
+        assert _adopted_closing_message(db, event_id) == ("assistant", fallback)
+    finally:
+        db.close()
+
+
+@pytest.mark.parametrize(
+    ("interrupted", "failed", "exit_reason"),
+    [
+        (True, False, "interrupted_by_user"),
+        (False, True, "provider_failure"),
+    ],
+)
+def test_failed_or_interrupted_response_never_adopts_deferred_notifications(
+    tmp_path, monkeypatch, interrupted, failed, exit_reason
+):
+    """Visible partial/error text is not proof that deferred work was accepted."""
+    from hermes_state import SessionDB
+    from tools import async_delegation
+
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db_path = tmp_path / "state.db"
+    event_id = f"async_delegation:deleg-{exit_reason}"
+    db = SessionDB(db_path)
+    db.create_session("sess-test", source="tui")
+    assert async_delegation.persist_deferred_notification(
+        "sess-test",
+        event_id,
+        "must remain pending",
+        {
+            "type": "async_delegation",
+            "delegation_id": f"deleg-{exit_reason}",
+            "session_key": "sess-test",
+        },
+        db_path=db_path,
+    )
+    agent = FakeAgent()
+    agent._deferred_notification_ids = (event_id,)
+    agent._persist_session = lambda messages, _history: _persist_messages_to_session_db(
+        db, "sess-test", messages
+    )
+
+    try:
+        finalize_turn(
+            agent,
+            final_response="Visible partial or error report.",
+            api_call_count=1,
+            interrupted=interrupted,
+            failed=failed,
+            messages=[
+                {"role": "user", "content": "Next request"},
+                {"role": "assistant", "content": "Visible partial or error report."},
+            ],
+            conversation_history=[],
+            effective_task_id="task",
+            turn_id="turn",
+            user_message="Next request",
+            original_user_message="Next request",
+            _should_review_memory=False,
+            _turn_exit_reason=exit_reason,
+        )
+
+        assert _adopted_closing_message(db, event_id) is None
+        assert async_delegation.load_deferred_notifications(
+            "sess-test", db_path=db_path
+        )
+    finally:
+        db.close()
 
 
 def test_finalizer_restores_clean_api_local_multimodal_before_return(monkeypatch):

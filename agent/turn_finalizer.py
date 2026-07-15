@@ -231,6 +231,17 @@ def finalize_turn(
         if callable(_rollback_fn):
             _rollback_fn(_preflight_snapshot)
 
+    # ``completed`` is a strict success metric, not a persistence contract.
+    # Iteration-limit summaries and their visible exception fallbacks are
+    # accepted user-facing responses even though they intentionally report
+    # ``completed=False``. Any accepted response must durably close the turn so
+    # restart cannot replay its user input or deferred background context.
+    accepted_closing_response = (
+        final_response is not None
+        and not interrupted
+        and not failed
+    )
+
     # Post-loop cleanup must never lose the response.  Trajectory save,
     # resource teardown, and session persistence all touch fallible
     # surfaces — file I/O / JSON serialization (_save_trajectory), remote
@@ -305,7 +316,7 @@ def finalize_turn(
         # Compare content (not just role) so a verification candidate that
         # matches the final response is not duplicated at budget
         # exhaustion. (#65919 §7)
-        if completed and final_response and not interrupted:
+        if accepted_closing_response:
             try:
                 _tail = messages[-1] if messages else None
             except Exception:
@@ -350,7 +361,7 @@ def finalize_turn(
         _adopted_ids = tuple(
             getattr(agent, "_deferred_notification_ids", ()) or ()
         )
-        if completed and not interrupted and _adopted_ids:
+        if accepted_closing_response and _adopted_ids:
             if messages and messages[-1].get("role") == "assistant":
                 messages[-1]["_deferred_notification_ids"] = list(_adopted_ids)
                 _adoption_message = messages[-1]

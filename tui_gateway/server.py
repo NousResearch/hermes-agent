@@ -11476,16 +11476,22 @@ def _run_prompt_submit(
                 raw = str(result)
                 status = "complete"
 
-            claimed_notifications_consumed = status == "complete" and history_adopted
-            if (
-                status == "complete"
-                and not claimed_notifications_consumed
-                and _deferred_notifications_have_durable_adoption(
-                    session, claimed_notification_ids
-                )
-            ):
-                claimed_notifications_consumed = True
-            if claimed_notifications_consumed:
+            # Durable deferred notifications are consumed only after the exact
+            # owned event IDs have adoption/delivery proof in SessionDB. Live
+            # history adoption alone is not crash-safe: the returned transcript
+            # can look complete while the final assistant/proof transaction was
+            # never committed. Legacy in-memory notifications have no durable
+            # IDs or ack path, so they retain their history-fence behavior.
+            if status == "complete":
+                if claimed_notification_ids:
+                    claimed_notifications_consumed = (
+                        _deferred_notifications_have_durable_adoption(
+                            session, claimed_notification_ids
+                        )
+                    )
+                else:
+                    claimed_notifications_consumed = history_adopted
+            if claimed_notifications_consumed and claimed_notification_ids:
                 _ack_consumed_deferred_notifications(
                     session, claimed_notification_ids
                 )

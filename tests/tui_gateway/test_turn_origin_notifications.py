@@ -469,6 +469,108 @@ def test_history_version_mismatch_restores_claimed_notifications(monkeypatch):
     assert session["defer_notifications_until_user"] is False
 
 
+def test_complete_history_adoption_without_durable_proof_restores_batch(
+    tmp_path, monkeypatch
+):
+    """Live history cannot consume an owned durable batch without DB proof."""
+    async_delegation, event = _durable_completion(
+        tmp_path, monkeypatch, "deleg-history-only"
+    )
+    from hermes_state import SessionDB
+
+    db_path = tmp_path / "state.db"
+    event_id = "async_delegation:deleg-history-only"
+    db = SessionDB(db_path)
+    db.create_session("session-key", source="tui")
+    assert async_delegation.persist_deferred_notification(
+        "session-key",
+        event_id,
+        "claimed without proof",
+        event,
+        db_path=db_path,
+    )
+
+    class _Agent:
+        model = "test-model"
+        provider = "test-provider"
+        base_url = ""
+        api_key = ""
+        service_tier = ""
+        session_id = "session-key"
+
+        def clear_interrupt(self):
+            return None
+
+        def run_conversation(
+            self,
+            prompt,
+            conversation_history=None,
+            stream_callback=None,
+            task_id=None,
+            persist_user_message=None,
+            deferred_notification_ids=None,
+        ):
+            assert deferred_notification_ids == [event_id]
+            return _successful_turn(prompt, conversation_history)
+
+    session = _session(
+        agent=_Agent(),
+        profile_home=str(tmp_path),
+        deferred_notification_texts=["claimed without proof"],
+        deferred_notification_event_ids={event_id},
+        defer_notifications_until_user=True,
+    )
+    emitted = []
+    ack_threads = []
+
+    class _PromptOnlyThread:
+        def __init__(
+            self,
+            target=None,
+            args=(),
+            kwargs=None,
+            daemon=None,
+            name=None,
+            **_kwargs,
+        ):
+            self._target = target
+            self._args = args
+            self._kwargs = kwargs or {}
+            self._name = name
+
+        def start(self):
+            if self._name:
+                ack_threads.append(self._name)
+                return
+            self._target(*self._args, **self._kwargs)
+
+        def is_alive(self):
+            return False
+
+    monkeypatch.setattr(server.threading, "Thread", _PromptOnlyThread)
+    _patch_prompt_turn_runtime(monkeypatch, emitted, immediate_thread=False)
+
+    try:
+        server._run_prompt_submit(
+            "rid-history-only", "sid", session, "Next request", origin="user"
+        )
+
+        assert session["history"][-1] == {"role": "assistant", "content": "answer"}
+        assert session["deferred_notification_texts"] == ["claimed without proof"]
+        assert session["deferred_notification_event_ids"] == {event_id}
+        assert session["defer_notifications_until_user"] is True
+        assert ack_threads == []
+        assert _adoption_event_ids(db_path) == []
+        assert [
+            row["event_id"]
+            for row in async_delegation.load_deferred_notifications(
+                "session-key", db_path=db_path
+            )
+        ] == [event_id]
+    finally:
+        db.close()
+
+
 def test_history_version_mismatch_keeps_live_history_when_db_adoption_won(
     tmp_path, monkeypatch
 ):

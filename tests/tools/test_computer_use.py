@@ -6,7 +6,7 @@ import base64
 import json
 import os
 import sys
-from typing import Any, Dict, List
+from typing import Any, Dict, List, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -69,8 +69,16 @@ class TestSchema:
         actions = set(COMPUTER_USE_SCHEMA["parameters"]["properties"]["action"]["enum"])
         assert actions >= {
             "capture", "click", "double_click", "right_click", "middle_click",
-            "drag", "scroll", "type", "key", "wait", "list_apps", "focus_app",
+            "drag", "scroll", "type", "key", "wait", "list_apps", "list_windows",
+            "focus_app",
         }
+
+    def test_schema_exposes_exact_capture_targeting(self):
+        from tools.computer_use.schema import COMPUTER_USE_SCHEMA
+
+        props = COMPUTER_USE_SCHEMA["parameters"]["properties"]
+        assert props["pid"]["type"] == "integer"
+        assert props["window_id"]["type"] == "integer"
 
     def test_capture_mode_enum_has_som_vision_ax(self):
         from tools.computer_use.schema import COMPUTER_USE_SCHEMA
@@ -164,6 +172,12 @@ class TestDispatch:
         parsed = json.loads(out)
         assert "apps" in parsed
         assert parsed["count"] == 0
+
+    def test_list_windows_returns_json(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+        out = handle_computer_use({"action": "list_windows"})
+        parsed = json.loads(out)
+        assert parsed == {"windows": [], "count": 0}
 
     def test_wait_clamps_long_waits(self, noop_backend):
         from tools.computer_use.tool import handle_computer_use
@@ -265,6 +279,19 @@ class TestDispatch:
         out = handle_computer_use({"action": "set_value"})
         parsed = json.loads(out)
         assert "error" in parsed
+
+    def test_capture_forwards_exact_pid_window_target(self, noop_backend):
+        from tools.computer_use.tool import handle_computer_use
+
+        handle_computer_use({
+            "action": "capture", "mode": "ax", "pid": 23502, "window_id": 58720504,
+        })
+
+        capture_kw = next(c[1] for c in noop_backend.calls if c[0] == "capture")
+        assert capture_kw == {
+            "mode": "ax", "app": None, "pid": 23502, "window_id": 58720504,
+        }
+
     def test_capture_after_skipped_when_action_failed(self, noop_backend):
         """capture_after must not fire when res.ok=False (regression guard).
 
@@ -1421,6 +1448,45 @@ def _make_cua_backend_with_windows(windows: List[Dict[str, Any]]):
     return backend
 
 
+def _make_cua_backend_with_windows_and_apps(
+    windows: List[Dict[str, Any]], apps: List[Dict[str, Any]]
+):
+    """Construct a backend whose mocked session serves list_windows/list_apps."""
+    from tools.computer_use.cua_backend import CuaDriverBackend
+
+    backend = CuaDriverBackend()
+    backend._session = MagicMock()
+
+    def _call_tool(name, args):
+        if name == "list_windows":
+            return {
+                "data": "",
+                "images": [],
+                "structuredContent": {"windows": windows},
+                "isError": False,
+            }
+        if name == "list_apps":
+            # cua-driver MCP puts the canonical app objects in
+            # structuredContent; `data` is only a human-readable summary.
+            return {
+                "data": f"✅ Found {len(apps)} app(s)",
+                "images": [],
+                "structuredContent": {"apps": apps},
+                "isError": False,
+            }
+        if name == "get_window_state":
+            return {
+                "data": '✅ FreeCAD — 0 elements\n',
+                "images": [],
+                "structuredContent": None,
+                "isError": False,
+            }
+        raise AssertionError(f"unexpected tool call: {name}")
+
+    backend._session.call_tool.side_effect = _call_tool
+    return backend
+
+
 class TestCuaDriverSessionReconnect:
     """Verify reconnect-once on a closed-resource error. After the
     lifecycle-owner refactor (Sun Jun 21 2026) the session no longer goes
@@ -1595,6 +1661,32 @@ class TestCuaDriverSessionReconnect:
         assert "AXButton" in out["data"]
         assert "7 elements" in out["data"]
 
+    def test_cli_fallback_preserves_logical_error(self, monkeypatch):
+        from typing import Any, cast
+        from tools.computer_use.cua_backend import _CuaDriverSession
+
+        session = cast(Any, _CuaDriverSession.__new__(_CuaDriverSession))
+
+        class FakeProc:
+            stdout = '{"isError": true, "message": "bad target"}'
+            stderr = ""
+            returncode = 0
+
+        monkeypatch.setattr("subprocess.run", lambda *a, **kw: FakeProc())
+
+        out = session._call_tool_via_cli("list_windows", {}, 30.0)
+
+        assert out["isError"] is True
+
+    def test_extract_tool_result_missing_mock_error_flag_is_not_error(self):
+        from tools.computer_use.cua_backend import _extract_tool_result
+
+        result = MagicMock()
+        result.content = []
+        result.structuredContent = None
+
+        assert _extract_tool_result(result)["isError"] is False
+
 
 class TestCaptureEmptyResultClipFallback:
     """When the MCP bridge returns a degenerate/empty get_window_state result
@@ -1740,6 +1832,231 @@ class TestCaptureAppFilterNoMatch:
         assert backend._active_pid == 200
         assert backend._active_window_id == 2
 
+    def test_app_filter_falls_back_to_list_apps_metadata(self):
+        windows = [
+            {"app_name": "Qt6Application", "pid": 7675, "window_id": 42,
+             "is_on_screen": True, "title": "FreeCAD 1.1.1", "z_index": 0},
+        ]
+        apps = [
+            {"name": "FreeCAD", "bundle_id": "org.freecad.FreeCAD", "pid": 7675},
+        ]
+        backend = _make_cua_backend_with_windows_and_apps(windows, apps)
+
+        cap = backend.capture(mode="ax", app="org.freecad.FreeCAD")
+
+        assert cap.app == "Qt6Application"
+        assert backend._active_pid == 7675
+        assert backend._active_window_id == 42
+
+    def test_exact_metadata_alias_beats_broader_direct_window_name(self):
+        windows = [
+            {"app_name": "Visual Studio Code", "pid": 100, "window_id": 1,
+             "is_on_screen": True, "title": "Visual Studio Code", "z_index": 0},
+            {"app_name": "Qt6Application", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "Code", "z_index": 1},
+        ]
+        apps = [{"name": "Code", "bundle_id": "org.example.Code", "pid": 200}]
+        backend = _make_cua_backend_with_windows_and_apps(windows, apps)
+
+        cap = backend.capture(mode="ax", app="Code")
+
+        assert cap.app == "Qt6Application"
+        assert backend._active_pid == 200
+        assert backend._active_window_id == 2
+
+    def test_exact_pid_window_capture_bypasses_window_discovery(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        session = MagicMock()
+
+        def _call_tool(name, args):
+            assert name != "list_windows", "exact target must bypass discovery"
+            assert name == "get_window_state"
+            assert args["pid"] == 7675
+            assert args["window_id"] == 42
+            return {
+                "data": "✅ FreeCAD — 0 elements", "images": [],
+                "structuredContent": None, "isError": False,
+            }
+
+        session.call_tool.side_effect = _call_tool
+        backend._session = session
+
+        cap = backend.capture(mode="ax", pid=7675, window_id=42)
+
+        assert cap.app == ""
+        assert backend._active_pid == 7675
+        assert backend._active_window_id == 42
+
+    @pytest.mark.parametrize(
+        ("pid", "window_id", "diagnostic"),
+        [
+            (None, 2, "both"),
+            ("bad", 2, "positive integer"),
+            (True, 2, "positive integer"),
+            (1, False, "positive integer"),
+            (-1, 2, "positive integer"),
+            (1, 0, "positive integer"),
+        ],
+    )
+    def test_failed_exact_capture_clears_prior_target_and_tokens(
+        self, pid, window_id, diagnostic,
+    ):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        session = MagicMock()
+        session.call_tool.return_value = {
+            "data": "ok", "images": [], "structuredContent": None, "isError": False,
+        }
+        backend._session = session
+        backend._active_pid = 111
+        backend._active_window_id = 222
+        backend._last_app = "Previous"
+        backend._last_target = {"pid": 111, "window_id": 222}
+        backend._snapshot_tokens = {1: "stale-token"}
+
+        cap = backend.capture(mode="ax", pid=pid, window_id=window_id)
+
+        assert cap.width == 0 and cap.height == 0
+        assert diagnostic in cap.window_title
+        assert backend._active_pid is None
+        assert backend._active_window_id is None
+        assert backend._last_target is None
+        assert backend._snapshot_tokens == {}
+        assert backend.click(x=1, y=2).ok is False
+        session.call_tool.assert_not_called()
+
+    def test_list_windows_drops_nonpositive_and_boolean_identifiers(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        session = MagicMock()
+        session.call_tool.return_value = {
+            "data": "", "images": [], "isError": False,
+            "structuredContent": {"windows": [
+                {"app_name": "Good", "pid": 12, "window_id": 34,
+                 "is_on_screen": True, "z_index": 0},
+                {"app_name": "Bool", "pid": True, "window_id": 2,
+                 "is_on_screen": True, "z_index": 1},
+                {"app_name": "Zero", "pid": 0, "window_id": 3,
+                 "is_on_screen": True, "z_index": 2},
+                {"app_name": "Negative", "pid": 4, "window_id": -1,
+                 "is_on_screen": True, "z_index": 3},
+            ]},
+        }
+        backend._session = session
+
+        assert backend.list_windows() == [{
+            "app_name": "Good", "pid": 12, "window_id": 34,
+            "off_screen": False, "title": "", "z_index": 0,
+        }]
+
+    def test_capture_transport_exception_disarms_prior_target(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        session = MagicMock()
+        session.call_tool.side_effect = RuntimeError("list_windows failed")
+        backend._session = session
+        backend._active_pid = 111
+        backend._active_window_id = 222
+        backend._last_target = {"pid": 111, "window_id": 222}
+        backend._snapshot_tokens = {1: "stale-token"}
+
+        with pytest.raises(RuntimeError, match="list_windows failed"):
+            backend.capture(mode="ax")
+
+        assert backend._active_pid is None
+        assert backend._active_window_id is None
+        assert backend._last_target is None
+        assert backend._snapshot_tokens == {}
+
+    def test_focus_changes_target_and_clears_snapshot_tokens(self):
+        windows = [
+            {"app_name": "New", "pid": 333, "window_id": 444,
+             "is_on_screen": True, "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        backend._active_pid = 111
+        backend._active_window_id = 222
+        backend._snapshot_tokens = {1: "stale-token"}
+
+        res = backend.focus_app("New")
+
+        assert res.ok is True
+        assert backend._active_pid == 333
+        assert backend._active_window_id == 444
+        assert backend._snapshot_tokens == {}
+
+    def test_get_window_state_exception_disarms_selected_target_and_tokens(self):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        session = MagicMock()
+        session.call_tool.side_effect = [
+            {"data": "", "images": [], "isError": False,
+             "structuredContent": {"windows": [{
+                 "app_name": "New", "pid": 333, "window_id": 444,
+                 "is_on_screen": True, "z_index": 0,
+             }]}},
+            RuntimeError("get_window_state failed"),
+        ]
+        backend._session = session
+        backend._active_pid = 111
+        backend._active_window_id = 222
+        backend._snapshot_tokens = {1: "stale-token"}
+
+        with pytest.raises(RuntimeError, match="get_window_state failed"):
+            backend.capture(mode="ax", app="New")
+
+        assert backend._active_pid is None
+        assert backend._active_window_id is None
+        assert backend._last_target is None
+        assert backend._snapshot_tokens == {}
+
+    @pytest.mark.parametrize("tool_name", ["list_windows", "get_window_state"])
+    def test_capture_logical_driver_error_disarms_target_and_tokens(self, tool_name):
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        session = MagicMock()
+        window_result = {
+            "data": "", "images": [], "isError": False,
+            "structuredContent": {"windows": [{
+                "app_name": "New", "pid": 333, "window_id": 444,
+                "is_on_screen": True, "z_index": 0,
+            }]},
+        }
+        logical_error = {
+            "data": f"{tool_name} rejected target", "images": [],
+            "structuredContent": None, "isError": True,
+        }
+        session.call_tool.side_effect = (
+            [logical_error]
+            if tool_name == "list_windows"
+            else [window_result, logical_error]
+        )
+        backend._session = session
+        backend._active_pid = 111
+        backend._active_window_id = 222
+        backend._last_app = "Previous"
+        backend._last_target = {"pid": 111, "window_id": 222}
+        backend._snapshot_tokens = {1: "stale-token"}
+
+        with pytest.raises(RuntimeError, match=f"cua-driver {tool_name} failed"):
+            backend.capture(mode="ax", app="New")
+
+        assert backend._active_pid is None
+        assert backend._active_window_id is None
+        assert backend._last_app is None
+        assert backend._last_target is None
+        assert backend._snapshot_tokens == {}
+        calls_before = session.call_tool.call_count
+        assert backend.click(x=1, y=2).ok is False
+        assert session.call_tool.call_count == calls_before
+
     def test_no_app_filter_still_picks_frontmost(self):
         """When no app= is given, capture continues to pick the frontmost
         window — the no-match early-return must not fire on the empty case."""
@@ -1797,6 +2114,181 @@ class TestFocusAppFilterNoMatch:
         assert res.ok is True
         assert backend._active_pid == 200
         assert backend._active_window_id == 2
+
+    def test_focus_app_falls_back_to_list_apps_metadata(self):
+        windows = [
+            {"app_name": "Qt6Application", "pid": 7675, "window_id": 42,
+             "is_on_screen": True, "title": "FreeCAD 1.1.1", "z_index": 0},
+        ]
+        apps = [
+            {"name": "FreeCAD", "bundle_id": "org.freecad.FreeCAD", "pid": 7675},
+        ]
+        backend = _make_cua_backend_with_windows_and_apps(windows, apps)
+
+        res = backend.focus_app("FreeCAD")
+
+        assert res.ok is True
+        assert backend._active_pid == 7675
+        assert backend._active_window_id == 42
+
+    def test_focus_exact_metadata_alias_beats_broader_direct_window_name(self):
+        windows = [
+            {"app_name": "Visual Studio Code", "pid": 100, "window_id": 1,
+             "is_on_screen": True, "title": "Visual Studio Code", "z_index": 0},
+            {"app_name": "Qt6Application", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "Code", "z_index": 1},
+        ]
+        apps = [{"name": "Code", "bundle_id": "org.example.Code", "pid": 200}]
+        backend = _make_cua_backend_with_windows_and_apps(windows, apps)
+
+        res = backend.focus_app("Code")
+
+        assert res.ok is True
+        assert backend._active_pid == 200
+        assert backend._active_window_id == 2
+
+    def test_title_fallback_only_targets_nameless_windows(self):
+        windows = [
+            {"app_name": "計算機", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "Calculator", "z_index": 0},
+            {"app_name": "", "pid": 300, "window_id": 3,
+             "is_on_screen": True, "title": "Calculator", "z_index": 1},
+        ]
+        backend = _make_cua_backend_with_windows_and_apps(windows, [])
+
+        cap = backend.capture(mode="ax", app="Calculator")
+
+        assert backend._active_pid == 300
+        assert backend._active_window_id == 3
+        assert cap.app == ""
+
+    def test_title_fallback_survives_list_apps_failure(self):
+        windows = [
+            {"app_name": "", "pid": 300, "window_id": 3,
+             "is_on_screen": True, "title": "Mousepad", "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        session = cast(Any, backend._session)
+        session.call_tool.side_effect = [
+            {
+                "data": "", "images": [], "isError": False,
+                "structuredContent": {"windows": windows},
+            },
+            RuntimeError("list_apps unavailable"),
+            {
+                "data": "✅ Mousepad — 0 elements", "images": [], "isError": False,
+                "structuredContent": None,
+            },
+        ]
+
+        cap = backend.capture(mode="ax", app="Mousepad")
+
+        assert cap.app == ""
+        assert backend._active_pid == 300
+        assert backend._active_window_id == 3
+
+    def test_focus_app_title_fallback_targets_a_nameless_window(self):
+        windows = [
+            {"app_name": "", "pid": 300, "window_id": 3,
+             "is_on_screen": True, "title": "Mousepad", "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_windows_and_apps(windows, [])
+
+        res = backend.focus_app("Mousepad")
+
+        assert res.ok is True
+        assert backend._active_pid == 300
+        assert backend._active_window_id == 3
+
+    def test_installed_only_metadata_cannot_target_a_pid_zero_window(self):
+        windows = [
+            {"app_name": "", "pid": 0, "window_id": 7,
+             "is_on_screen": True, "title": "Desktop", "z_index": 0},
+        ]
+        apps = [
+            {"name": "FreeCAD", "bundle_id": "org.freecad.FreeCAD",
+             "pid": 0, "running": False},
+        ]
+        backend = _make_cua_backend_with_windows_and_apps(windows, apps)
+
+        cap = backend.capture(mode="ax", app="org.freecad.FreeCAD")
+
+        assert cap.app == ""
+        assert backend._active_pid is None
+        assert backend._active_window_id is None
+
+
+class TestCaptureAfterExactTarget:
+    def test_followup_capture_reuses_exact_window_identity(self):
+        from tools.computer_use.backend import ActionResult, CaptureResult
+        from tools.computer_use.tool import _maybe_follow_capture
+
+        class GenericWindowBackend:
+            _last_app = "Qt6Application"
+            _last_target = {"pid": 7675, "window_id": 42}
+
+            def __init__(self):
+                self.capture_calls = []
+
+            def capture(self, mode="som", app=None, pid=None, window_id=None):
+                self.capture_calls.append({
+                    "mode": mode, "app": app, "pid": pid, "window_id": window_id,
+                })
+                return CaptureResult(
+                    mode=mode, width=0, height=0, png_b64=None,
+                    elements=[], app="Qt6Application", window_title="FreeCAD",
+                )
+
+        backend = GenericWindowBackend()
+        _maybe_follow_capture(cast(Any, backend), ActionResult(ok=True, action="click"), True)
+
+        assert backend.capture_calls == [{
+            "mode": "som", "app": None, "pid": 7675, "window_id": 42,
+        }]
+
+    def test_dispatch_capture_after_reuses_metadata_resolved_identity(self, monkeypatch):
+        from tools.computer_use import tool as computer_use_tool
+
+        windows = [
+            {"app_name": "Qt6Application", "pid": 100, "window_id": 1,
+             "is_on_screen": True, "title": "Other Qt App", "z_index": 0},
+            {"app_name": "Qt6Application", "pid": 7675, "window_id": 42,
+             "is_on_screen": True, "title": "FreeCAD", "z_index": 1},
+        ]
+        apps = [
+            {"name": "FreeCAD", "bundle_id": "org.freecad.FreeCAD", "pid": 7675},
+        ]
+        backend = _make_cua_backend_with_windows_and_apps(windows, apps)
+        session = cast(Any, backend._session)
+        original_call_tool = session.call_tool.side_effect
+
+        def _call_tool(name, args):
+            if name == "click":
+                return {
+                    "data": "clicked", "images": [],
+                    "structuredContent": None, "isError": False,
+                }
+            return original_call_tool(name, args)
+
+        session.call_tool.side_effect = _call_tool
+        monkeypatch.setattr(computer_use_tool, "_backend", backend)
+
+        capture_out = computer_use_tool.handle_computer_use({
+            "action": "capture", "mode": "ax", "app": "org.freecad.FreeCAD",
+        })
+        assert "error" not in json.loads(capture_out)
+        click_out = computer_use_tool.handle_computer_use({
+            "action": "click", "coordinate": [10, 20], "capture_after": True,
+        })
+        assert "error" not in json.loads(click_out)
+
+        tool_calls = [call.args for call in session.call_tool.call_args_list]
+        gws_calls = [args for name, args in tool_calls if name == "get_window_state"]
+        assert len(gws_calls) == 2
+        assert all(call["pid"] == 7675 and call["window_id"] == 42 for call in gws_calls)
+        action_calls = [args for name, args in tool_calls if name == "click"]
+        assert len(action_calls) == 1
+        assert action_calls[0]["window_id"] == 42
 
 
 class TestCuaEnvironmentScrubbing:
@@ -1985,6 +2477,206 @@ class TestClickButtonPassthrough:
         assert name == "click"
         assert args["button"] == "right"
         assert args["x"] == 10 and args["y"] == 20
+        assert args["window_id"] == 222
+
+    def test_coordinate_drag_and_scroll_keep_the_captured_window(self):
+        backend = self._backend_with_active_target()
+        # Mock the capability check so x/y are included (they're gated
+        # behind the input.scroll.coordinates capability).
+        backend._session.supports_capability.return_value = True
+
+        backend.drag(from_xy=(10, 20), to_xy=(30, 40))
+        drag_name, drag_args = backend._session.call_tool.call_args.args
+        assert drag_name == "drag"
+        assert drag_args == {
+            "pid": 111,
+            "from_x": 10,
+            "from_y": 20,
+            "to_x": 30,
+            "to_y": 40,
+            "window_id": 222,
+            "session": backend._session_id,
+        }
+
+        backend.scroll(direction="down", x=50, y=60)
+        scroll_name, scroll_args = backend._session.call_tool.call_args.args
+        assert scroll_name == "scroll"
+        assert scroll_args["window_id"] == 222
+        assert scroll_args["x"] == 50 and scroll_args["y"] == 60
+
+    def test_scroll_xy_omitted_without_coordinate_capability(self):
+        """CUA Driver 0.7.1 Linux schema rejects x/y on scroll. When the
+        driver does not advertise input.scroll.coordinates, x/y must be
+        omitted so the call is not rejected."""
+        backend = self._backend_with_active_target()
+        backend._session.supports_capability.return_value = False
+
+        backend.scroll(direction="down", x=50, y=60)
+        _, scroll_args = backend._session.call_tool.call_args.args
+        assert "x" not in scroll_args
+        assert "y" not in scroll_args
+        assert scroll_args["window_id"] == 222
+
+    def test_scroll_xy_present_with_coordinate_capability(self):
+        """When the driver advertises input.scroll.coordinates, x/y are
+        included in the scroll call."""
+        backend = self._backend_with_active_target()
+        backend._session.supports_capability.return_value = True
+
+        backend.scroll(direction="up", x=10, y=20)
+        _, scroll_args = backend._session.call_tool.call_args.args
+        assert scroll_args["x"] == 10
+        assert scroll_args["y"] == 20
+        assert scroll_args["window_id"] == 222
+
+    def test_coordinate_actions_without_window_id_fail_closed(self):
+        backend = self._backend_with_active_target()
+        backend._active_window_id = None
+
+        assert backend.click(x=10, y=20).ok is False
+        assert backend.drag(from_xy=(10, 20), to_xy=(30, 40)).ok is False
+        assert backend.scroll(direction="down", x=10, y=20).ok is False
+        backend._session.call_tool.assert_not_called()
+
+
+class TestKeyboardWindowIdRouting:
+    """Review comment #1 on PR #63725: type_text, press_key, and hotkey
+    must carry window_id so CUA Driver routes input to the correct window
+    in multi-window apps. Without window_id the driver falls back to the
+    first window for that PID, which can be the wrong one.
+
+    These tests also verify fail-closed: when _active_window_id is None,
+    keyboard actions return an error rather than sending PID-only input.
+    """
+
+    def _backend_with_active_target(self):
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.call_tool.return_value = {
+            "data": "ok",
+            "images": [],
+            "structuredContent": None,
+            "isError": False,
+        }
+        backend._active_pid = 111
+        backend._active_window_id = 222
+        return backend
+
+    def test_type_text_carries_window_id(self):
+        backend = self._backend_with_active_target()
+        backend.type_text("hello world")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "type_text"
+        assert args["pid"] == 111
+        assert args["window_id"] == 222
+        assert args["text"] == "hello world"
+
+    def test_press_key_carries_window_id(self):
+        backend = self._backend_with_active_target()
+        backend.key("a")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "press_key"
+        assert args["pid"] == 111
+        assert args["window_id"] == 222
+        assert args["key"] == "a"
+
+    def test_hotkey_carries_window_id(self):
+        backend = self._backend_with_active_target()
+        backend.key("cmd+s")
+        name, args = backend._session.call_tool.call_args.args
+        assert name == "hotkey"
+        assert args["pid"] == 111
+        assert args["window_id"] == 222
+        assert "cmd" in args["keys"]
+        assert "s" in args["keys"]
+
+    def test_type_text_fails_closed_without_window_id(self):
+        backend = self._backend_with_active_target()
+        backend._active_window_id = None
+        res = backend.type_text("hello")
+        assert res.ok is False
+        backend._session.call_tool.assert_not_called()
+
+    def test_press_key_fails_closed_without_window_id(self):
+        backend = self._backend_with_active_target()
+        backend._active_window_id = None
+        res = backend.key("a")
+        assert res.ok is False
+        backend._session.call_tool.assert_not_called()
+
+    def test_hotkey_fails_closed_without_window_id(self):
+        backend = self._backend_with_active_target()
+        backend._active_window_id = None
+        res = backend.key("cmd+s")
+        assert res.ok is False
+        backend._session.call_tool.assert_not_called()
+
+
+class TestZIndexSorting:
+    """Review comment #3 on PR #63725: CUA Driver defines higher z_index
+    values as closer to the front (top of the stack). The wrapper must sort
+    descending so the frontmost window is selected. Wayland may return
+    z_index: null, which must be handled without crashing.
+    """
+
+    def test_frontmost_window_selected_by_higher_z_index(self):
+        """The frontmost window (highest z_index) should be the one
+        capture() selects as its target."""
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        windows = [
+            {"app_name": "Terminal", "pid": 100, "window_id": 1,
+             "is_on_screen": True, "title": "term", "z_index": 5},
+            {"app_name": "Firefox", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "browser", "z_index": 10},
+            {"app_name": "Desktop", "pid": 300, "window_id": 3,
+             "is_on_screen": True, "title": "desktop", "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+
+        cap = backend.capture(mode="ax")
+
+        # Firefox has z_index=10 (frontmost) — must be selected.
+        assert backend._active_pid == 200
+        assert backend._active_window_id == 2
+
+    def test_null_z_index_treated_as_lowest(self):
+        """Wayland may return z_index: null. _ingest_windows must coerce
+        it to 0 (backmost) so it doesn't crash the sort or get selected
+        over real foreground windows."""
+        from tools.computer_use.cua_backend import _ingest_windows
+
+        raw = [
+            {"app_name": "Desktop", "pid": 300, "window_id": 3,
+             "is_on_screen": True, "title": "desktop", "z_index": None},
+            {"app_name": "Firefox", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "browser", "z_index": 5},
+        ]
+        out = _ingest_windows(raw)
+        # Both windows survive (null z_index doesn't drop the window).
+        assert len(out) == 2
+        # Null z_index was normalised to 0.
+        desktop = next(w for w in out if w["app_name"] == "Desktop")
+        assert desktop["z_index"] == 0
+
+    def test_null_z_index_does_not_crash_capture(self):
+        """End-to-end: a null z_index window in the list must not crash
+        capture(), and a real window (with z_index) must be selected over
+        the null-z_index desktop."""
+        windows = [
+            {"app_name": "Desktop", "pid": 300, "window_id": 3,
+             "is_on_screen": True, "title": "desktop", "z_index": None},
+            {"app_name": "Firefox", "pid": 200, "window_id": 2,
+             "is_on_screen": True, "title": "browser", "z_index": 5},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+
+        cap = backend.capture(mode="ax")
+
+        assert backend._active_pid == 200
+        assert backend._active_window_id == 2
 
 
 class TestImageMimeTypePropagation:

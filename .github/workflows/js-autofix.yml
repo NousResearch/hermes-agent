@@ -207,12 +207,17 @@ jobs:
               exit 0
             fi
 
-            # If main moved, close the PR — the next workflow run re-applies
-            # on the current state.
+            # If main moved, the PR may have already merged (which moves
+            # main) or another commit landed. Re-check state first.
             CURRENT_SHA=$(gh api "repos/${{ github.repository }}/branches/main" --jq '.commit.sha')
             if [ "$CURRENT_SHA" != "$START_SHA" ]; then
+              STATE=$(gh pr view "$PR_NUM" --json state --jq '.state')
+              if [ "$STATE" = "MERGED" ]; then
+                echo "PR #$PR_NUM merged (main moved to $CURRENT_SHA)."
+                exit 0
+              fi
               echo "Main moved ($START_SHA → $CURRENT_SHA). Closing stale PR."
-              gh pr close "$PR_NUM" --delete-branch
+              gh pr close "$PR_NUM" --delete-branch || true
               exit 0
             fi
 

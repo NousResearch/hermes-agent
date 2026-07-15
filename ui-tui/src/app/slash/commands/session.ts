@@ -121,14 +121,30 @@ export const sessionCommands: SlashCommand[] = [
     aliases: ['switch', 'session', 'resume'],
     help: 'browse, switch, or resume sessions',
     name: 'sessions',
-    run: (arg, ctx) => {
+    run: (arg, ctx, cmd) => {
       const trimmed = arg.trim()
+      const subcommand = trimmed.split(/\s+/, 1)[0]?.toLowerCase()
 
       // A new *live* session keeps the current one running in the background
       // (it doesn't close it), so fanning out while busy is allowed — that's
       // the whole point of multiple live sessions.
       if (trimmed.toLowerCase() === 'new') {
         return ctx.session.newLiveSession()
+      }
+
+      // The classic CLI owns the session-manager grammar and destructive
+      // confirmation flow. Do not treat these as resume targets merely
+      // because the TUI has an interactive picker for bare `/sessions`.
+      if (['list', 'ls', 'browse', 'delete', 'rename', 'prune'].includes(subcommand ?? '')) {
+        return ctx.gateway.gw
+          .request<SlashExecResponse>('slash.exec', { command: cmd.slice(1), session_id: ctx.sid })
+          .then(
+            ctx.guarded<SlashExecResponse>(r => {
+              const body = r.output || '/sessions: no output'
+              ctx.transcript.sys(r.warning ? `warning: ${r.warning}\n${body}` : body)
+            })
+          )
+          .catch(ctx.guardedErr)
       }
 
       // `/resume <id|title>` (and `/sessions <id>`) load a cold session and

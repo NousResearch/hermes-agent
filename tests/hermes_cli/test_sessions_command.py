@@ -204,6 +204,28 @@ class TestHandleSessionsCommandPrune:
         call_kwargs = obj._session_db.prune_sessions.call_args[1]
         assert call_kwargs.get("older_than_days") == 30
 
+    def test_prune_days_with_case_insensitive_yes_parses_days_before_confirmation(self):
+        obj = _make_mixin()
+        obj._confirm_destructive_slash = MagicMock(return_value=True)
+
+        with patch("cli._cprint", create=True), patch("cli._DIM", "", create=True), patch("cli._RST", "", create=True), \
+             patch("hermes_constants.get_hermes_home", return_value=MagicMock(__truediv__=lambda s, x: MagicMock()), create=True):
+            obj._handle_sessions_command("/sessions prune --days 30 --YES")
+
+        assert obj._session_db.prune_sessions.call_args[1]["older_than_days"] == 30
+        assert obj._confirm_destructive_slash.call_args.kwargs["cmd_original"].endswith("--YES")
+
+    def test_prune_rejects_negative_days(self):
+        obj = _make_mixin()
+        lines = []
+
+        with patch("cli._cprint", side_effect=lambda m="": lines.append(m), create=True), \
+             patch("cli._DIM", "", create=True), patch("cli._RST", "", create=True):
+            obj._handle_sessions_command("/sessions prune --days -1")
+
+        assert any("non-negative" in line for line in lines)
+        obj._session_db.prune_sessions.assert_not_called()
+
 
 class TestResolveSessionsTarget:
     def test_resolve_by_number(self):

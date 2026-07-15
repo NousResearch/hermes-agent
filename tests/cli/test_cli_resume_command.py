@@ -213,6 +213,18 @@ class TestPendingResumeNumberedSelection:
         # One-shot: prompt is disarmed after consuming.
         assert cli_obj._pending_resume_sessions is None
 
+    def test_pending_selection_uses_displayed_id_not_a_refreshed_index(self):
+        cli_obj = _make_cli()
+        cli_obj._pending_resume_sessions = [
+            {"id": "row-one"},
+            {"id": "row-eleven"},
+        ]
+        cli_obj._handle_resume_command = MagicMock()
+
+        assert cli_obj._consume_pending_resume_selection("2") is True
+
+        cli_obj._handle_resume_command.assert_called_once_with("/resume row-eleven")
+
     def test_pending_out_of_range_consumed_with_message(self):
         cli_obj = _make_cli()
         cli_obj._pending_resume_sessions = [{"id": "sess_002", "title": "Coding"}]

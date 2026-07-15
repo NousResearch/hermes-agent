@@ -7221,7 +7221,11 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             _cprint("  Use /resume with no arguments to see available sessions.")
             return True
 
-        self._handle_resume_command(f"/resume {index}")
+        # Resume the exact row that was displayed rather than resolving the
+        # number against a newly fetched (and historically shorter) list.
+        # The ordering can change between display and selection, and
+        # /sessions deliberately shows more rows than bare /resume.
+        self._handle_resume_command(f"/resume {pending[index - 1]['id']}")
         return True
 
 

@@ -925,12 +925,22 @@ class CLICommandsMixin:
         if subcommand == "prune":
             days = 90
             rest_parts = (parts[2].strip().split() if len(parts) > 2 else [])
+            # The confirmation helper recognizes --yes/-y in cmd_original;
+            # remove those control tokens before parsing this command's own
+            # grammar so `/sessions prune --days 30 --yes` works.
+            rest_parts = [part for part in rest_parts if part.lower() not in {"--yes", "-y"}]
             if rest_parts:
-                try:
-                    days = int(rest_parts[-1])
-                except ValueError:
-                    _cprint(f"  ✗ Invalid number of days: {rest_parts[-1]!r}")
+                if len(rest_parts) != 2 or rest_parts[0] != "--days":
                     _cprint("  Usage: /sessions prune [--days N]  (default: 90)")
+                    return
+                try:
+                    days = int(rest_parts[1])
+                except ValueError:
+                    _cprint(f"  ✗ Invalid number of days: {rest_parts[1]!r}")
+                    _cprint("  Usage: /sessions prune [--days N]  (default: 90)")
+                    return
+                if days < 0:
+                    _cprint("  ✗ Number of days must be non-negative.")
                     return
 
             confirm = self._confirm_destructive_slash(

@@ -36,6 +36,27 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().sessions).toBe(true)
   })
 
+  it.each([
+    'list',
+    'delete archived-session --yes',
+    'rename archived-session New title',
+    'prune --days 30 --yes'
+  ])('routes /sessions %s through the slash worker', async arg => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+    ctx.gateway.gw.request.mockResolvedValue({ output: 'session command complete' })
+
+    expect(createSlashHandler(ctx)(`/sessions ${arg}`)).toBe(true)
+
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
+      command: `sessions ${arg}`,
+      session_id: 'sid-abc'
+    })
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('session command complete')
+    })
+  })
+
   it('resumes a prior session by id when /resume has an argument', () => {
     const ctx = buildCtx()
 

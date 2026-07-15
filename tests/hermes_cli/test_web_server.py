@@ -1593,6 +1593,145 @@ class TestWebServerEndpoints:
         row = next(s for s in rows if s["id"] == "session-no-cwd")
         assert row["cwd"] is None
 
+    def test_get_sessions_projects_gateway_origin_from_state_db_only(self):
+        """Historical origins stay complete without exposing routing identity."""
+        from hermes_constants import get_hermes_home
+        from hermes_state import SessionDB
+        from hermes_cli.web_server import get_sessions
+
+        db = SessionDB()
+        try:
+            phone = "+15551234567"
+            for session_id in ("gateway-origin-old", "gateway-origin"):
+                db.create_session(session_id=session_id, source="telegram")
+                db.record_gateway_session_peer(
+                    session_id,
+                    source="telegram",
+                    user_id=phone,
+                    session_key=f"agent:main:telegram:dm:{phone}",
+                    chat_id=phone,
+                    chat_type="dm",
+                    display_name=phone,
+                    origin_json=json.dumps(
+                        {
+                            "platform": "telegram",
+                            "chat_id": phone,
+                            "chat_name": phone,
+                            "chat_type": "dm",
+                            "thread_id": "private-thread-id",
+                            "user_id": phone,
+                            "user_name": phone,
+                            "session_key": f"agent:main:telegram:dm:{phone}",
+                            "token": "must-not-leak",
+                        }
+                    ),
+                )
+        finally:
+            db.close()
+
+        assert not (get_hermes_home() / "sessions" / "sessions.json").exists()
+        payload = get_sessions(limit=20, min_messages=0)
+        rows = {s["id"]: s for s in payload["sessions"]}
+        assert rows["gateway-origin"]["origin"] == {
+            "platform": "telegram",
+            "chat_type": "dm",
+            "display_label": "Telegram DM",
+        }
+        assert rows["gateway-origin-old"]["origin"]["display_label"] == "Telegram DM"
+        serialized_origins = json.dumps(
+            [rows["gateway-origin"]["origin"], rows["gateway-origin-old"]["origin"]]
+        )
+        for private_value in (
+            phone,
+            "private-thread-id",
+            f"agent:main:telegram:dm:{phone}",
+            "must-not-leak",
+        ):
+            assert private_value not in serialized_origins
+
+    def test_profiles_sessions_projects_gateway_origin_from_each_profile_db(self):
+        from hermes_state import SessionDB
+        from hermes_cli import profiles as profiles_mod
+        from hermes_cli.web_server import get_profiles_sessions
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True)
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            worker_db.create_session(session_id="worker-gateway-origin", source="slack")
+            worker_db.record_gateway_session_peer(
+                "worker-gateway-origin",
+                source="slack",
+                session_key="agent:worker:slack:channel:c9:t2",
+                chat_id="c9",
+                chat_type="channel",
+                thread_id="t2",
+                display_name="Engineering",
+                origin_json=json.dumps(
+                    {
+                        "platform": "slack",
+                        "chat_id": "c9",
+                        "chat_name": "Engineering",
+                        "chat_type": "channel",
+                        "thread_id": "t2",
+                        "chat_topic": "Release train",
+                    }
+                ),
+            )
+        finally:
+            worker_db.close()
+
+        payload = get_profiles_sessions(limit=20, min_messages=0)
+        row = next(s for s in payload["sessions"] if s["id"] == "worker-gateway-origin")
+        assert row["profile"] == "worker"
+        assert row["origin"] == {
+            "platform": "slack",
+            "chat_type": "channel",
+            "display_label": "Engineering",
+        }
+
+    def test_profiles_sessions_gateway_origin_rejects_identifier_as_room_label(self):
+        from hermes_state import SessionDB
+        from hermes_cli import profiles as profiles_mod
+        from hermes_cli.web_server import get_profiles_sessions
+
+        worker_home = profiles_mod.get_profile_dir("worker")
+        worker_home.mkdir(parents=True, exist_ok=True)
+        worker_db = SessionDB(db_path=worker_home / "state.db")
+        try:
+            routing_id = "+15557654321"
+            worker_db.create_session(session_id="worker-gateway-origin-private", source="slack")
+            worker_db.record_gateway_session_peer(
+                "worker-gateway-origin-private",
+                source="slack",
+                user_id=routing_id,
+                session_key=f"agent:worker:slack:channel:{routing_id}",
+                chat_id=routing_id,
+                chat_type="channel",
+                display_name=routing_id,
+                origin_json=json.dumps(
+                    {
+                        "platform": "slack",
+                        "chat_id": routing_id,
+                        "chat_name": routing_id,
+                        "chat_type": "channel",
+                        "user_id": routing_id,
+                        "user_name": routing_id,
+                    }
+                ),
+            )
+        finally:
+            worker_db.close()
+
+        payload = get_profiles_sessions(limit=20, min_messages=0)
+        row = next(s for s in payload["sessions"] if s["id"] == "worker-gateway-origin-private")
+        assert row["origin"] == {
+            "platform": "slack",
+            "chat_type": "channel",
+            "display_label": "Slack channel",
+        }
+        assert routing_id not in json.dumps(row["origin"])
+
     def test_get_sessions_forwards_min_messages(self, monkeypatch):
         """The ?min_messages= filter must reach SessionDB.
 

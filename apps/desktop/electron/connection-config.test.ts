@@ -23,8 +23,10 @@ import {
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  createAppliedConnectionConfig,
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
+  inheritProfileConnectionConfig,
   isGatewayAuthRejection,
   localProfileEntry,
   modeIsRemoteLike,
@@ -32,14 +34,18 @@ import {
   normalizeSshConfig,
   normAuthMode,
   pathWithGlobalRemoteProfile,
+  profileConnectionEntry,
+  profileConnectionState,
   profileHasRemoteConnection,
+  profileLocalOverride,
   profileRemoteOverride,
   profileSshOverride,
   resolveAuthMode,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   savedProfileSsh,
-  tokenPreview
+  tokenPreview,
+  updateProfileConnectionEntries
 } from './connection-config'
 
 // --- connectionScopeKey / normAuthMode ---
@@ -187,6 +193,81 @@ test('saved SSH drafts are inactive and explicit overrides take precedence', () 
   assert.equal(profileHasRemoteConnection(config, 'coder'), true)
 })
 
+test('profileLocalOverride distinguishes an explicit local marker from inherit', () => {
+  assert.equal(profileLocalOverride({ profiles: { coder: { mode: 'local' } } }, 'coder'), true)
+  assert.equal(profileLocalOverride({ profiles: {} }, 'coder'), false)
+  assert.equal(profileLocalOverride({ profiles: { coder: { mode: 'remote' } } }, 'coder'), false)
+})
+
+test('profileConnectionEntry persists local instead of deleting the profile scope', () => {
+  assert.deepEqual(profileConnectionEntry('local'), { mode: 'local' })
+  assert.deepEqual(profileConnectionEntry('remote', { url: 'https://writer.example' }), {
+    mode: 'remote',
+    url: 'https://writer.example'
+  })
+})
+
+test('profileConnectionState distinguishes inherit from explicit local', () => {
+  assert.deepEqual(profileConnectionState({ mode: 'remote', profiles: {} }, 'writer'), {
+    inherited: true,
+    profileOverride: false
+  })
+  assert.deepEqual(profileConnectionState({ mode: 'remote', profiles: { writer: { mode: 'local' } } }, 'writer'), {
+    inherited: false,
+    profileOverride: true
+  })
+})
+
+test('updateProfileConnectionEntries deletes only the scoped entry for inherit', () => {
+  const existing = { writer: { mode: 'local' }, reviewer: { mode: 'remote' } }
+
+  assert.deepEqual(updateProfileConnectionEntries(existing, 'writer', 'local', undefined, true), {
+    reviewer: { mode: 'remote' }
+  })
+  assert.deepEqual(updateProfileConnectionEntries(existing, 'writer', 'local'), {
+    writer: { mode: 'local' },
+    reviewer: { mode: 'remote' }
+  })
+})
+
+test.each([
+  [
+    'token',
+    { mode: 'remote', remote: { authMode: 'token', token: { value: 'global-token' }, url: 'https://token.example' } }
+  ],
+  ['oauth', { mode: 'remote', remote: { authMode: 'oauth', url: 'https://oauth.example' } }],
+  ['cloud', { mode: 'cloud', remote: { authMode: 'oauth', org: 'nous', url: 'https://cloud.example' } }]
+])('profile inherit preserves the global %s connection without rebuilding profile credentials', (_kind, global) => {
+  const existing = {
+    ...global,
+    profiles: {
+      reviewer: { mode: 'local' },
+      writer: { authMode: 'token', mode: 'remote', token: undefined, url: '' }
+    }
+  }
+
+  assert.deepEqual(inheritProfileConnectionConfig(existing, 'writer'), {
+    ...global,
+    profiles: { reviewer: { mode: 'local' } }
+  })
+})
+
+test('applied connection config ignores save-only staging until promote', () => {
+  const initial = { mode: 'local', profiles: {} }
+  const staged = { mode: 'remote', profiles: { writer: { mode: 'local' } } }
+  const live = createAppliedConnectionConfig(initial)
+  let persisted = initial
+
+  persisted = staged
+  assert.equal(persisted.mode, 'remote')
+  assert.equal(live.current().mode, 'local')
+  assert.equal(profileLocalOverride(live.current(), 'writer'), false)
+
+  live.promote(persisted)
+  assert.equal(live.current().mode, 'remote')
+  assert.equal(profileLocalOverride(live.current(), 'writer'), true)
+})
+
 // --- pathWithGlobalRemoteProfile ---
 
 test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => {
@@ -231,6 +312,14 @@ test('pathWithGlobalRemoteProfile skips local and per-profile remote override pa
     pathWithGlobalRemoteProfile('/api/model/info', 'iris', {
       globalRemote: true,
       profileRemoteOverride: true
+    }),
+    '/api/model/info'
+  )
+  assert.equal(
+    pathWithGlobalRemoteProfile('/api/model/info', 'iris', {
+      globalRemote: true,
+      profileLocalOverride: true,
+      profileRemoteOverride: false
     }),
     '/api/model/info'
   )

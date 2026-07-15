@@ -10,6 +10,7 @@ import {
   Archive,
   BarChart3,
   Bell,
+  Clipboard,
   Download,
   Globe,
   Info,
@@ -36,6 +37,7 @@ import { BillingSettings } from './billing'
 import { ConfigSettings } from './config-settings'
 import { SECTIONS } from './constants'
 import { GatewaySettings } from './gateway-settings'
+import { KanbanSettings } from './kanban-settings'
 import { KeybindSettings } from './keybind-settings'
 import { KEYS_VIEWS, KeysSettings, type KeysView } from './keys-settings'
 import { NotificationsSettings } from './notifications-settings'
@@ -49,6 +51,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'providers',
   'gateway',
   'keybinds',
+  'kanban',
   'keys',
   'notifications',
   'billing',
@@ -57,7 +60,7 @@ const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   'about'
 ]
 
-export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
+export function SettingsView({ gatewayId, onClose, onConfigSaved, onMainModelChanged }: SettingsPageProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
   const { hash, pathname, search } = useLocation()
@@ -206,6 +209,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
       onSelect: () => setActiveView('keybinds')
     },
     {
+      active: activeView === 'kanban',
+      icon: Clipboard,
+      id: 'kanban',
+      label: t.settings.nav.kanban,
+      onSelect: () => setActiveView('kanban')
+    },
+    {
       active: activeView === 'keys',
       children: [
         {
@@ -297,6 +307,8 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
             <GatewaySettings />
           ) : activeView === 'keybinds' ? (
             <KeybindSettings />
+          ) : activeView === 'kanban' ? (
+            <KanbanSettings gatewayId={gatewayId} />
           ) : activeView.startsWith('config:') ? (
             <ConfigSettings
               activeSectionId={activeView.slice('config:'.length)}

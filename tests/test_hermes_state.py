@@ -6947,6 +6947,45 @@ def test_list_gateway_sessions_filters_and_dedupes(db):
     assert "cli-session" not in {r["id"] for r in all_rows}
 
 
+def test_get_gateway_session_metadata_preserves_same_key_history(db):
+    shared_key = "agent:main:telegram:dm:c1"
+    for session_id, display_name in (("gw-history-old", "Earlier chat"), ("gw-history-new", "Latest chat")):
+        db.create_session(session_id, "telegram")
+        db.record_gateway_session_peer(
+            session_id,
+            source="telegram",
+            session_key=shared_key,
+            chat_id="private-chat-id",
+            chat_type="dm",
+            display_name=display_name,
+            origin_json=json.dumps({"platform": "telegram", "chat_type": "dm"}),
+        )
+    db.create_session("not-gateway", "cli")
+
+    rows = db.get_gateway_session_metadata(
+        ["gw-history-old", "missing", "gw-history-new", "gw-history-old", "not-gateway"]
+    )
+
+    assert set(rows) == {"gw-history-old", "gw-history-new"}
+    assert rows["gw-history-old"]["display_name"] == "Earlier chat"
+    assert rows["gw-history-new"]["display_name"] == "Latest chat"
+    assert set(rows["gw-history-old"]) == {
+        "id",
+        "source",
+        "chat_type",
+        "display_name",
+        "origin_json",
+        "session_key",
+        "chat_id",
+        "user_id",
+        "thread_id",
+    }
+
+
+def test_get_gateway_session_metadata_empty_request(db):
+    assert db.get_gateway_session_metadata([]) == {}
+
+
 def test_find_session_by_origin_matching_rules(db):
     db.create_session(
         "gw-o1", "telegram", user_id="u1",

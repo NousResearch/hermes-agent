@@ -19,6 +19,7 @@ import {
   ensureGatewayForProfile,
   pruneSecondaryGateways,
   reconnectSecondaryGateways,
+  rehomeSecondaryGateway,
   reportPrimaryGatewayState,
   setPrimaryGateway,
   touchSecondaryGateways
@@ -399,7 +400,25 @@ export function useGatewayBoot({
     // Wake signals: power resume (macOS/Windows), network coming back, and the
     // window regaining focus/visibility. Each nudges an immediate reconnect.
     const offPowerResume = desktop.onPowerResume?.(() => reconnectNow())
-    const offConnectionApplied = desktop.onConnectionApplied?.(() => void softSwitch())
+    const offConnectionApplied = desktop.onConnectionApplied?.(payload => {
+      const profile = payload?.profile ? normalizeProfileKey(payload.profile) : null
+
+      if (profile) {
+        // Named applies are scoped to one pooled renderer socket. In
+        // particular, an active secondary is soft-rehomed in place; the
+        // primary and unrelated profile sockets remain untouched.
+        void rehomeSecondaryGateway(profile).then(() => {
+          if (!cancelled && $activeGatewayProfile.get() === profile) {
+            void callbacksRef.current.refreshHermesConfig().catch(() => undefined)
+            void callbacksRef.current.refreshSessions().catch(() => undefined)
+          }
+        })
+
+        return
+      }
+
+      void softSwitch()
+    })
 
     const onOnline = () => reconnectNow()
 

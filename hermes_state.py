@@ -3687,6 +3687,37 @@ class SessionDB:
             rows = self._conn.execute(query, params).fetchall()
         return [dict(r) for r in rows]
 
+    def get_gateway_session_metadata(
+        self, session_ids: List[str]
+    ) -> Dict[str, Dict[str, Any]]:
+        """Return gateway presentation metadata keyed by requested session ID.
+
+        Unlike :meth:`list_gateway_sessions`, this preserves historical rows
+        that share a routing ``session_key``. Queries are bounded to the
+        requested primary keys and select only the columns presentation
+        consumers need.
+        """
+        ids = list(dict.fromkeys(str(value) for value in session_ids if value))
+        if not ids:
+            return {}
+
+        result: Dict[str, Dict[str, Any]] = {}
+        # Stay comfortably below SQLite's host-parameter limit on older builds.
+        for start in range(0, len(ids), 400):
+            batch = ids[start : start + 400]
+            placeholders = ",".join("?" for _ in batch)
+            query = f"""
+                SELECT id, source, chat_type, display_name, origin_json,
+                       session_key, chat_id, user_id, thread_id
+                FROM sessions
+                WHERE session_key IS NOT NULL
+                  AND id IN ({placeholders})
+            """
+            with self._lock:
+                rows = self._conn.execute(query, batch).fetchall()
+            result.update((row["id"], dict(row)) for row in rows)
+        return result
+
     def find_session_by_origin(
         self,
         *,

@@ -350,6 +350,84 @@ function profileRemoteOverride(config, profile) {
   return { url, authMode: normAuthMode(entry.authMode), token: entry.token }
 }
 
+/** True when a named profile is explicitly pinned to its local backend. */
+function profileLocalOverride(config, profile) {
+  const key = connectionScopeKey(profile)
+  const entry = key ? config?.profiles?.[key] : null
+
+  return Boolean(entry && typeof entry === 'object' && entry.mode === 'local')
+}
+
+/** Describe whether a named profile has its own saved connection entry. */
+function profileConnectionState(config, profile) {
+  const key = connectionScopeKey(profile)
+  const profiles = config?.profiles
+  const entry = key && profiles && typeof profiles === 'object' ? profiles[key] : null
+  const profileOverride = Boolean(entry && typeof entry === 'object')
+
+  return {
+    inherited: Boolean(key && !profileOverride),
+    profileOverride
+  }
+}
+
+/** Build the persisted entry for a named profile's selected connection mode. */
+function profileConnectionEntry(mode, remoteBlock: any = {}) {
+  return modeIsRemoteLike(mode) ? { mode, ...remoteBlock } : { mode: 'local' }
+}
+
+/** Update one profile entry, deleting it only for the explicit inherit choice. */
+function updateProfileConnectionEntries(
+  existingProfiles: any,
+  profile,
+  mode,
+  remoteBlock = undefined,
+  inherit = false
+) {
+  const profiles = { ...(existingProfiles || {}) }
+
+  if (inherit) {
+    delete profiles[profile]
+  } else {
+    profiles[profile] = profileConnectionEntry(mode, remoteBlock)
+  }
+
+  return profiles
+}
+
+/**
+ * Apply an explicit profile inherit before remote fields are validated. The
+ * inherited global connection may use token, OAuth, or cloud auth; none of its
+ * credentials need to be rebuilt in the now-deleted profile block.
+ */
+function inheritProfileConnectionConfig(existing: any, profile) {
+  return {
+    mode: modeIsRemoteLike(existing?.mode) ? existing.mode : 'local',
+    remote: existing?.remote || {},
+    profiles: updateProfileConnectionEntries(existing?.profiles, profile, 'local', undefined, true)
+  }
+}
+
+/**
+ * Hold the process-lifetime connection config used by live routing.
+ * Persisting a staged config does not touch this boundary; Apply explicitly
+ * promotes the just-written config before backend teardown begins.
+ */
+function createAppliedConnectionConfig<T>(initialConfig: T) {
+  let appliedConfig = initialConfig
+
+  return {
+    current(): T {
+      return appliedConfig
+    },
+    promote(config: T): T {
+      appliedConfig = config
+
+      return appliedConfig
+    }
+  }
+}
+
 /**
  * In global-remote mode one backend serves every Desktop profile, so REST calls
  * that are scoped by renderer-side `request.profile` must carry that scope as a
@@ -359,7 +437,7 @@ function profileRemoteOverride(config, profile) {
 function pathWithGlobalRemoteProfile(path, profile, opts: any = {}) {
   const scopedProfile = connectionScopeKey(profile)
 
-  if (!scopedProfile || !opts.globalRemote || opts.profileRemoteOverride) {
+  if (!scopedProfile || !opts.globalRemote || opts.profileRemoteOverride || opts.profileLocalOverride) {
     return path
   }
 
@@ -491,9 +569,11 @@ export {
   cookiesHaveLiveSession,
   cookiesHavePrivySession,
   cookiesHaveSession,
+  createAppliedConnectionConfig,
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
   hostLabelFromBaseUrl,
+  inheritProfileConnectionConfig,
   isGatewayAuthRejection,
   localProfileEntry,
   modeIsRemoteLike,
@@ -502,12 +582,16 @@ export {
   normAuthMode,
   pathWithGlobalRemoteProfile,
   PRIVY_SESSION_COOKIE_VARIANTS,
+  profileConnectionEntry,
+  profileConnectionState,
   profileHasRemoteConnection,
+  profileLocalOverride,
   profileRemoteOverride,
   profileSshOverride,
   resolveAuthMode,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
   savedProfileSsh,
-  tokenPreview
+  tokenPreview,
+  updateProfileConnectionEntries
 }

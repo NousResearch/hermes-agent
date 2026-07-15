@@ -291,6 +291,11 @@ class SessionManager:
         db = self._get_db()
         persisted_rows: dict[str, dict[str, Any]] = {}
 
+        def matches_archive_filter(is_archived: bool) -> bool:
+            if archived_only:
+                return is_archived
+            return include_archived or not is_archived
+
         if db is not None:
             try:
                 for row in db.list_sessions_rich(
@@ -303,44 +308,61 @@ class SessionManager:
             except Exception:
                 logger.debug("Failed to load ACP sessions from DB", exc_info=True)
 
-        # Collect in-memory sessions first.
+        # Snapshot in-memory sessions before consulting the DB for rows omitted by
+        # the requested filter or page limit.
         with self._lock:
-            seen_ids = set(self._sessions.keys())
-            results = []
-            for s in self._sessions.values():
-                history_len = len(s.history)
-                if history_len <= 0:
-                    continue
-                if archived_only:
-                    continue
-                if normalized_cwd and _normalize_cwd_for_compare(s.cwd) != normalized_cwd:
-                    continue
-                persisted = persisted_rows.get(s.session_id, {})
-                preview = next(
-                    (
-                        str(msg.get("content") or "").strip()
-                        for msg in s.history
-                        if msg.get("role") == "user" and str(msg.get("content") or "").strip()
+            live_sessions = list(self._sessions.values())
+        seen_ids = {s.session_id for s in live_sessions}
+        results = []
+        for s in live_sessions:
+            history_len = len(s.history)
+            if history_len <= 0:
+                continue
+            if normalized_cwd and _normalize_cwd_for_compare(s.cwd) != normalized_cwd:
+                continue
+            persisted = persisted_rows.get(s.session_id)
+            if persisted is None and db is not None:
+                try:
+                    raw_row = db.get_session(s.session_id)
+                    persisted = dict(raw_row) if raw_row is not None else {}
+                except Exception:
+                    logger.debug(
+                        "Failed to load ACP session %s archive state from DB",
+                        s.session_id,
+                        exc_info=True,
+                    )
+            persisted = persisted or {}
+            is_archived = bool(persisted.get("archived"))
+            if not matches_archive_filter(is_archived):
+                continue
+            preview = next(
+                (
+                    str(msg.get("content") or "").strip()
+                    for msg in s.history
+                    if msg.get("role") == "user" and str(msg.get("content") or "").strip()
+                ),
+                persisted.get("preview") or "",
+            )
+            results.append(
+                {
+                    "session_id": s.session_id,
+                    "cwd": s.cwd,
+                    "model": s.model,
+                    "history_len": history_len,
+                    "title": _build_session_title(persisted.get("title"), preview, s.cwd),
+                    "updated_at": _format_updated_at(
+                        persisted.get("last_active") or persisted.get("started_at") or time.time()
                     ),
-                    persisted.get("preview") or "",
-                )
-                results.append(
-                    {
-                        "session_id": s.session_id,
-                        "cwd": s.cwd,
-                        "model": s.model,
-                        "history_len": history_len,
-                        "title": _build_session_title(persisted.get("title"), preview, s.cwd),
-                        "updated_at": _format_updated_at(
-                            persisted.get("last_active") or persisted.get("started_at") or time.time()
-                        ),
-                        "archived": False,
-                    }
-                )
+                    "archived": is_archived,
+                }
+            )
 
         # Merge any persisted sessions not currently in memory.
         for sid, row in persisted_rows.items():
             if sid in seen_ids:
+                continue
+            is_archived = bool(row.get("archived"))
+            if not matches_archive_filter(is_archived):
                 continue
             message_count = int(row.get("message_count") or 0)
             if message_count <= 0:
@@ -362,7 +384,7 @@ class SessionManager:
                 "history_len": message_count,
                 "title": _build_session_title(row.get("title"), row.get("preview"), session_cwd),
                 "updated_at": _format_updated_at(row.get("last_active") or row.get("started_at")),
-                "archived": bool(row.get("archived")),
+                "archived": is_archived,
             })
 
         results.sort(key=lambda item: _updated_at_sort_key(item.get("updated_at")), reverse=True)

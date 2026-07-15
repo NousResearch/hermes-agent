@@ -4,18 +4,68 @@ Covers any endpoint registered as provider="custom", including local
 Ollama instances and OpenAI-compatible reasoning endpoints (GLM-5.2 on
 Volcengine ARK, vLLM, llama.cpp). Key quirks:
   - ollama_num_ctx → extra_body.options.num_ctx (local context window)
-  - reasoning_config disabled → top-level reasoning_effort="none"
+  - reasoning_config disabled + local endpoint → top-level reasoning_effort="none"
     (Ollama /v1/chat/completions ignores think=False — ollama#14820)
     + extra_body.think = False for /api/chat and proxies
+    Remote endpoints get neither (they reject "none" as invalid).
   - reasoning_config enabled + effort → top-level reasoning_effort
     (the native OpenAI-compatible format GLM/ARK expect; unset omits it
     so the endpoint's server default applies)
 """
 
+import ipaddress
 from typing import Any
+from urllib.parse import urlparse
 
 from providers import register_provider
 from providers.base import ProviderProfile
+
+
+def _is_local_endpoint(base_url: str) -> bool:
+    """Return True if base_url points to a local/private/LAN endpoint.
+
+    Checks for loopback (v4 + v6), private LAN ranges, and .local domains.
+    Avoids false positives from remote URLs that happen to contain substrings
+    like 'localhost' (e.g. https://localhost.example.com).
+    """
+    if not base_url:
+        return False
+    base_url = base_url.strip()
+    if not base_url:
+        return False
+
+    # Parse URL properly instead of substring matching
+    if not (base_url.startswith("http://") or base_url.startswith("https://")):
+        base_url = f"http://{base_url}"
+    try:
+        parsed = urlparse(base_url)
+        host = parsed.hostname or ""
+    except Exception:
+        return False
+
+    if not host:
+        return False
+
+    host_lower = host.lower()
+
+    # Exact hostname matches for loopback/loopback aliases
+    if host_lower in {"localhost", "ip6-localhost", "ip6-loopback", "0.0.0.0", "::", "::1"}:
+        return True
+
+    # .local mDNS domains (Bonjour/AVAHI — always local LAN)
+    if host_lower.endswith(".local") or host_lower.endswith(".localhost"):
+        return True
+
+    # IP address check: loopback or private/LAN range
+    try:
+        ip = ipaddress.ip_address(host)
+        if ip.is_loopback or ip.is_private or ip.is_link_local:
+            return True
+    except ValueError:
+        # Not an IP, hostname checked above
+        pass
+
+    return False
 
 
 class CustomProfile(ProviderProfile):
@@ -37,10 +87,25 @@ class CustomProfile(ProviderProfile):
             options["num_ctx"] = ollama_num_ctx
             extra_body["options"] = options
 
+        # Resolve base URL for local detection
+        _base_url = str(
+            ctx.get("base_url")
+            or getattr(self, "base_url", "")
+            or ""
+        ).strip()
+        # If no base_url is provided (only happens in legacy tests, never production),
+        # default to local behavior to preserve backward compatibility
+        _is_local = True if not _base_url else _is_local_endpoint(_base_url)
+
         # Reasoning / thinking control for custom OpenAI-compatible endpoints
         # (GLM-5.2 on Volcengine ARK, vLLM, Ollama, llama.cpp, …).
         #
-        #   - disabled  → extra_body.think = False (Ollama's thinking-off flag)
+        #   - disabled + LOCAL endpoint → extra_body.think = False + reasoning_effort="none"
+        #     (Ollama's thinking-off flag + top-level field that Ollama /v1/chat/completions
+        #     actually respects; ollama#14820, #25758)
+        #   - disabled + REMOTE endpoint → emit NEITHER. Remote OpenAI-compatible APIs
+        #     (ofox, Volcengine ARK, etc.) reject reasoning_effort="none" as invalid, so we
+        #     omit the field entirely and let the server default apply.
         #   - enabled + effort set → TOP-LEVEL reasoning_effort string, the
         #     format GLM-5.2/ARK and other OpenAI-compatible reasoning APIs
         #     expect (GLM documents "high" and "max"; "max" is its default).
@@ -55,14 +120,12 @@ class CustomProfile(ProviderProfile):
             _effort = (reasoning_config.get("effort") or "").strip().lower()
             _enabled = reasoning_config.get("enabled", True)
             if _effort == "none" or _enabled is False:
-                # Ollama's /v1/chat/completions silently ignores
-                # extra_body.think (only /api/chat honours it — ollama#14820)
-                # but respects the top-level reasoning_effort field, so both
-                # are needed to actually stop a thinking-capable model from
-                # reasoning (#25758). Endpoints that recognize neither simply
-                # ignore them.
-                top_level["reasoning_effort"] = "none"
-                extra_body["think"] = False
+                # Only send reasoning_effort="none" + think=False to LOCAL
+                # endpoints (Ollama, local vLLM/llama.cpp). Remote endpoints
+                # reject "none" as invalid — omit entirely so server default applies.
+                if _is_local:
+                    top_level["reasoning_effort"] = "none"
+                    extra_body["think"] = False
             elif _effort:
                 top_level["reasoning_effort"] = _effort
 

@@ -18824,6 +18824,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             agent.notice_clear_callback = None
             agent.event_callback = _event_callback_sync
             agent.reasoning_config = reasoning_config
+            # Adaptive intent is separate from the concrete reasoning_config
+            # that may already be a resolved effort mid-turn. Sync the flag
+            # whenever the gateway rebinds reasoning onto a live agent so
+            # fixed session overrides (and re-enabling adaptive) take effect
+            # without relying on agent rebuild alone. See #58305.
+            try:
+                from agent.adaptive_reasoning import apply_adaptive_reasoning_intent
+
+                apply_adaptive_reasoning_intent(agent, reasoning_config)
+            except Exception:
+                agent._adaptive_reasoning = bool(
+                    reasoning_config
+                    and isinstance(reasoning_config, dict)
+                    and reasoning_config.get("effort") == "adaptive"
+                )
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}
 

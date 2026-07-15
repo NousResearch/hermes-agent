@@ -5420,13 +5420,18 @@ class AIAgent:
     def _resolve_adaptive_reasoning(self, api_messages: list) -> None:
         """Classify this turn's message and set a concrete reasoning effort.
 
-        Only called when ``agent.reasoning_effort: adaptive`` is configured
-        (``self._adaptive_reasoning`` set once in agent_init.py). Overwrites
+        Only called when adaptive intent is live (``self._adaptive_reasoning``,
+        set in agent_init and kept in sync by ``apply_adaptive_reasoning_intent``
+        when TUI/gateway rewrite ``reasoning_config``). Overwrites
         ``self.reasoning_config`` with a concrete
         ``{"enabled": True, "effort": <minimal|low|medium|high|xhigh|max>}``
         for this API call only — every downstream provider-specific code
         path (OpenRouter, Kimi, LM Studio, GitHub Models, Anthropic, Codex)
         keeps working unmodified since it only ever sees a concrete level.
+
+        Classification is cached per user-message fingerprint so tool/retry
+        loops that re-enter ``_build_api_kwargs`` do not re-fire the
+        classifier mid-turn (review #58305).
         """
         last_user_message = ""
         for msg in reversed(api_messages or []):
@@ -5442,6 +5447,20 @@ class AIAgent:
                     )
                 break
 
+        cache = getattr(self, "_adaptive_reasoning_cache", None)
+        if (
+            isinstance(cache, dict)
+            and cache.get("message") == last_user_message
+            and cache.get("effort")
+        ):
+            effort = cache["effort"]
+            logger.debug(
+                "Adaptive reasoning: reusing cached effort %r for this user turn",
+                effort,
+            )
+            self.reasoning_config = {"enabled": True, "effort": effort}
+            return
+
         from agent.adaptive_reasoning import classify_reasoning_effort
         effort = classify_reasoning_effort(
             last_user_message,
@@ -5449,8 +5468,13 @@ class AIAgent:
             model=self.model,
             base_url=self.base_url,
             api_key=getattr(self, "api_key", None),
+            api_mode=getattr(self, "api_mode", None),
         )
         logger.info("Adaptive reasoning: classified this turn as %r", effort)
+        self._adaptive_reasoning_cache = {
+            "message": last_user_message,
+            "effort": effort,
+        }
         self.reasoning_config = {"enabled": True, "effort": effort}
 
     def _supports_reasoning_extra_body(self) -> bool:

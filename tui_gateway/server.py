@@ -10643,6 +10643,21 @@ def _(rid, params: dict) -> dict:
                 session["create_reasoning_override"] = parsed
                 if session.get("agent") is not None:
                     session["agent"].reasoning_config = parsed
+                    # Keep adaptive intent in sync with the live override so
+                    # /reasoning high actually stops classification and
+                    # /reasoning adaptive re-enables it without agent rebuild.
+                    try:
+                        from agent.adaptive_reasoning import (
+                            apply_adaptive_reasoning_intent,
+                        )
+
+                        apply_adaptive_reasoning_intent(session["agent"], parsed)
+                    except Exception:
+                        session["agent"]._adaptive_reasoning = bool(
+                            parsed
+                            and isinstance(parsed, dict)
+                            and parsed.get("effort") == "adaptive"
+                        )
                     _persist_live_session_runtime(session)
                     _emit(
                         "session.info",

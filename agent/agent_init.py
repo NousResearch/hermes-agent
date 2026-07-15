@@ -628,14 +628,18 @@ def init_agent(
     # Model response configuration
     agent.max_tokens = max_tokens  # None = use model default
     agent.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
-    # 'adaptive' is a meta-value: never sent to a provider directly. Flag it
-    # once here (immutable for the agent's lifetime) so _build_api_kwargs can
-    # re-classify per turn even after reasoning_config gets overwritten with
-    # a concrete resolved effort below.
+    # 'adaptive' is a meta-value: never sent to a provider directly. Track it
+    # as a separate intent flag so _build_api_kwargs can re-classify per turn
+    # even after reasoning_config gets overwritten with a concrete resolved
+    # effort below. The flag is mutable — TUI /reasoning, gateway overrides,
+    # and apply_adaptive_reasoning_intent() update it when the user switches
+    # off (or back onto) adaptive mid-session. Do not treat it as frozen at
+    # init. See #58305.
     agent._adaptive_reasoning = bool(
         reasoning_config and isinstance(reasoning_config, dict)
         and reasoning_config.get("effort") == "adaptive"
     )
+    agent._adaptive_reasoning_cache = None
     agent.service_tier = service_tier
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns

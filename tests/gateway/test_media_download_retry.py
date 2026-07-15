@@ -13,6 +13,7 @@ in this environment.
 
 import asyncio
 import sys
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -121,6 +122,35 @@ class TestCacheImageFromBytes:
         from gateway.platforms.base import cache_image_from_bytes
         with pytest.raises(ValueError, match="non-image data"):
             cache_image_from_bytes(b"just some text, not an image", ".jpg")
+
+    def test_caches_heic_ftyp_brand(self, tmp_path, monkeypatch):
+        """iPhone HEIC containers must pass the image sniffer and cache."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes, _looks_like_heic_heif
+
+        heic = (24).to_bytes(4, "big") + b"ftypheic" + b"\x00\x00\x00\x00" + b"mif1heic"
+        assert _looks_like_heic_heif(heic) is True
+        path = cache_image_from_bytes(heic, ".heic")
+        assert path.endswith(".heic")
+        assert Path(path).read_bytes() == heic
+
+    def test_caches_heif_via_compatible_brand(self, tmp_path, monkeypatch):
+        """mif1 major brand with heic compatible brand (common iOS still layout)."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+
+        # major brand mif1, compatible brand heic at offset 16
+        heif = (24).to_bytes(4, "big") + b"ftypmif1" + b"\x00\x00\x00\x00" + b"heic"
+        path = cache_image_from_bytes(heif + b"\x00" * 8, ".heif")
+        assert path.endswith(".heif")
+
+    def test_rejects_unrelated_ftyp(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+
+        mp4 = (24).to_bytes(4, "big") + b"ftypisom" + b"\x00\x00\x00\x00" + b"isom"
+        with pytest.raises(ValueError, match="non-image data"):
+            cache_image_from_bytes(mp4, ".heic")
 
 
 # ---------------------------------------------------------------------------

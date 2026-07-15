@@ -134,10 +134,28 @@ def cua_driver_child_env(base_env: Optional[Dict[str, str]] = None) -> Dict[str,
     When the user has opted in, the var is left untouched so cua-driver uses
     its own default. Used by every cua-driver spawn site (MCP backend, status,
     doctor, install) so the policy is applied consistently.
+
+    On Windows, an additional guard is applied: the process is given the
+    ``=::=::\\`` environment variable, which instructs the Windows Application
+    Compatibility (AppCompat / ``ahcache.sys``) layer to skip its per-process
+    shim cache lookup (the ``NtApphelpCacheControl`` call). cua-driver spawns
+    child GUI/console processes (notably PowerShell via its ``launch_app``
+    path); on some Windows builds a kernel pool-corruption bug in
+    ``ahcache!AhcpCacheBuildEnvironmentSafe`` can be hit during that lookup and
+    take the machine down with ``SYSTEM_SERVICE_EXCEPTION (0x3B)`` — see
+    NousResearch/hermes-agent#64917. The empty-named ``=::=::\\`` var disables
+    the AppCompat cache for the process tree without changing how cua-driver
+    itself runs, so it is a safe, targeted mitigation on the spawning side.
     """
     env = dict(base_env if base_env is not None else os.environ)
     if _cua_telemetry_disabled():
         env[_CUA_TELEMETRY_ENV_VAR] = "0"
+    if sys.platform == "win32":
+        # Disable AppCompat shim cache lookup for the cua-driver process tree.
+        # This prevents the NtApphelpCacheControl path (ahcache.sys) that the
+        # #64917 BSOD traced back to cua-driver.exe from firing on Windows
+        # builds affected by the kernel pool-corruption bug.
+        env.setdefault("=::=::\\", "")
     return env
 
 

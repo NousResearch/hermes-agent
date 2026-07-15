@@ -263,6 +263,9 @@ class GatewayTurnMixin:
                     # Adopt the provider's bundled model only when the override named none.
                     if ch_runtime_model and not ch.model:
                         model = ch_runtime_model
+                elif ch.model and runtime_kwargs.get("provider") == "copilot":
+                    # A model-only override must not inherit the default model's transport.
+                    runtime_kwargs = _resolve_runtime_agent_kwargs_for_provider("copilot", target_model=model)
 
         if override and skey:
             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)

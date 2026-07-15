@@ -56,7 +56,8 @@ model:
   # id that `/model` shows (not a short alias), matched case-insensitively; an
   # alias entry is still refused on typed input but won't surface in the picker.
   # This does NOT change `default` above, and it governs the in-session `/model`
-  # command (local operator surfaces are out of scope).
+  # command (local operator surfaces are out of scope). Also editable from the
+  # dashboard Config page ("Model Allowlist", next to the Model field).
   #
   # allowlist:
   #   - "anthropic/claude-opus-4.6"

@@ -410,10 +410,12 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   // Which key-form option to preselect when we flip to 'apikey' mode. The
   // OpenRouter row selects its key; the generic link lands on the first option.
   const [apiKeyInitialEnv, setApiKeyInitialEnv] = useState<string | undefined>(undefined)
+
   const openKeyForm = (envKey?: string) => {
     setApiKeyInitialEnv(envKey)
     setOnboardingMode('apikey')
   }
+
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
   const apiKeyOptions = useApiKeyCatalog()

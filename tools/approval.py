@@ -120,6 +120,53 @@ def _fire_approval_hook(hook_name: str, **kwargs) -> None:
         logger.debug("Approval hook %s dispatch failed: %s", hook_name, exc)
 
 
+def _prepare_smart_approval_observer(
+    *,
+    command: str,
+    description: str,
+    pattern_key: str,
+    pattern_keys: list[str],
+    session_key: str,
+) -> dict | None:
+    """Redact and emit the pre-decision smart approval observer hook.
+
+    Redaction is part of observer payload preparation, not approval policy. If
+    it fails, skip all observability rather than leaking raw data or preventing
+    the auxiliary LLM from making its decision.
+    """
+    try:
+        from agent.redact import redact_sensitive_text
+
+        hook_command = redact_sensitive_text(command, force=True)
+        hook_description = redact_sensitive_text(description, force=True)
+    except Exception as exc:
+        logger.debug("Smart approval hook redaction failed: %s", exc)
+        return
+
+    payload = {
+        "command": hook_command,
+        "description": hook_description,
+        "pattern_key": pattern_key,
+        "pattern_keys": list(pattern_keys),
+        "session_key": session_key,
+        "surface": "smart",
+    }
+    _fire_approval_hook("pre_approval_request", **payload)
+    return payload
+
+
+def _observe_smart_approval_verdict(payload: dict | None, verdict: str) -> None:
+    """Emit a smart verdict after the auxiliary LLM decision, if safe."""
+    if payload is None or verdict not in {"approve", "deny"}:
+        return
+    _fire_approval_hook(
+        "post_approval_response",
+        **payload,
+        choice=f"smart_{verdict}",
+        decided_by="aux_llm",
+    )
+
+
 
 def set_current_session_key(session_key: str) -> contextvars.Token[str]:
     """Bind the active approval session key to the current context."""
@@ -1688,16 +1735,21 @@ def save_permanent_allowlist(patterns: set):
 def prompt_dangerous_approval(command: str, description: str,
                               timeout_seconds: int | None = None,
                               allow_permanent: bool = True,
-                              approval_callback=None) -> str:
+                              approval_callback=None,
+                              *, smart_denied: bool = False) -> str:
     """Prompt the user to approve a dangerous command (CLI only).
 
     Args:
         allow_permanent: When False, hide the [a]lways option (used when
             tirith warnings are present, since broad permanent allowlisting
             is inappropriate for content-level security findings).
+        smart_denied: When True, this is an owner override of a Smart DENY.
+            Offer only one-operation approval or denial.
         approval_callback: Optional callback registered by the CLI for
             prompt_toolkit integration. Signature:
-            (command, description, *, allow_permanent=True) -> str.
+            (command, description, *, allow_permanent=True,
+            smart_denied=False) -> str. Legacy callback signatures remain
+            supported when ``smart_denied`` is false.
 
     Returns: 'once', 'session', 'always', or 'deny'
     """
@@ -1714,8 +1766,12 @@ def prompt_dangerous_approval(command: str, description: str,
 
     if approval_callback is not None:
         try:
-            return approval_callback(display_command, display_description,
-                                     allow_permanent=allow_permanent)
+            callback_kwargs = {"allow_permanent": allow_permanent}
+            if smart_denied:
+                callback_kwargs["smart_denied"] = True
+            return approval_callback(
+                display_command, display_description, **callback_kwargs
+            )
         except Exception as e:
             logger.error("Approval callback failed: %s", e, exc_info=True)
             return "deny"
@@ -1757,7 +1813,9 @@ def prompt_dangerous_approval(command: str, description: str,
             print(f"  {t('approval.dangerous_header', description=display_description)}")
             print(f"      {display_command}")
             print()
-            if allow_permanent:
+            if smart_denied:
+                print(t("approval.choose_smart_deny"))
+            elif allow_permanent:
                 print(t("approval.choose_long"))
             else:
                 print(t("approval.choose_short"))
@@ -1768,7 +1826,10 @@ def prompt_dangerous_approval(command: str, description: str,
 
             def get_input():
                 try:
-                    prompt = t("approval.prompt_long") if allow_permanent else t("approval.prompt_short")
+                    if smart_denied:
+                        prompt = t("approval.prompt_smart_deny")
+                    else:
+                        prompt = t("approval.prompt_long") if allow_permanent else t("approval.prompt_short")
                     result["choice"] = input(prompt).strip().lower()
                 except (EOFError, OSError):
                     result["choice"] = ""
@@ -1782,6 +1843,21 @@ def prompt_dangerous_approval(command: str, description: str,
                 return "deny"
 
             choice = result["choice"]
+            if smart_denied:
+                choice_map = {
+                    **{
+                        value: "once"
+                        for value in t("approval.smart_deny_once_inputs").split(",")
+                    },
+                    **{
+                        value: "deny"
+                        for value in t("approval.smart_deny_deny_inputs").split(",")
+                    },
+                }
+                decision = choice_map.get(choice, "deny")
+                print(t("approval.allowed_once" if decision == "once" else "approval.denied"))
+                return decision
+
             if choice in {'o', 'once'}:
                 print(t("approval.allowed_once"))
                 return "once"
@@ -2763,9 +2839,18 @@ def check_all_command_guards(command: str, env_type: str,
     # When approvals.mode=smart, ask the aux LLM before prompting the user.
     # Inspired by OpenAI Codex's Smart Approvals guardian subagent
     # (openai/codex#13860).
+    smart_denied_for_owner = False
     if approval_mode == "smart":
         combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
+        observer_payload = _prepare_smart_approval_observer(
+            command=command,
+            description=combined_desc_for_llm,
+            pattern_key=warnings[0][0],
+            pattern_keys=[key for key, _, _ in warnings],
+            session_key=session_key,
+        )
         verdict = _smart_approve(command, combined_desc_for_llm)
+        _observe_smart_approval_verdict(observer_payload, verdict)
         if verdict == "approve":
             # Approve this command only. Pattern-level persistence would let one
             # benign command suppress review of later commands that happen to
@@ -2775,15 +2860,17 @@ def check_all_command_guards(command: str, env_type: str,
             return {"approved": True, "message": None,
                     "smart_approved": True,
                     "description": combined_desc_for_llm}
-        elif verdict == "deny":
-            combined_desc_for_llm = "; ".join(desc for _, desc, _ in warnings)
+        elif verdict == "deny" and not (is_cli or is_gateway or is_ask):
             return {
                 "approved": False,
                 "message": f"BLOCKED by smart approval: {combined_desc_for_llm}. "
                            "The command was assessed as genuinely dangerous. Do NOT retry.",
                 "smart_denied": True,
             }
-        # verdict == "escalate" → fall through to manual prompt
+        elif verdict == "deny":
+            smart_denied_for_owner = True
+        # An interactive owner may override DENY for this operation only.
+        # ESCALATE follows the normal, potentially persistent manual behavior.
 
     # --- Phase 3: Approval ---
 
@@ -2820,10 +2907,12 @@ def check_all_command_guards(command: str, env_type: str,
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": redact_sensitive_text(combined_desc),
-                # Mirror the CLI's allow_permanent gate: a tirith warning downgrades
-                # "always" to session scope below, so the UI must not offer it.
-                "allow_permanent": not has_tirith,
+                # Smart DENY overrides are one-operation decisions, so the UI
+                # must not offer a permanent scope.
+                "allow_permanent": not has_tirith and not smart_denied_for_owner,
             }
+            if smart_denied_for_owner:
+                approval_data["smart_denied"] = True
             decision = _await_gateway_decision(
                 session_key, notify_cb, approval_data, surface="gateway"
             )
@@ -2876,16 +2965,17 @@ def check_all_command_guards(command: str, env_type: str,
                     "deny_reason": deny_reason,
                 }
 
-            # User approved — persist based on scope (same logic as CLI)
-            for key, _, is_tirith in warnings:
-                if choice == "session" or (choice == "always" and is_tirith):
-                    approve_session(session_key, key)
-                elif choice == "always":
-                    approve_session(session_key, key)
-                    approve_permanent(key)
-                    save_permanent_allowlist(_permanent_approved)
-                # choice == "once": no persistence — command allowed this
-                # single time only, matching the CLI's behavior.
+            # A smart-DENY owner override is always one operation, even if an
+            # older client returns "session" or "always". Manual and ESCALATE
+            # choices retain their existing persistence semantics.
+            if not smart_denied_for_owner:
+                for key, _, is_tirith in warnings:
+                    if choice == "session" or (choice == "always" and is_tirith):
+                        approve_session(session_key, key)
+                    elif choice == "always":
+                        approve_session(session_key, key)
+                        approve_permanent(key)
+                        save_permanent_allowlist(_permanent_approved)
 
             return {"approved": True, "message": None,
                     "user_approved": True, "description": combined_desc}
@@ -2897,13 +2987,16 @@ def check_all_command_guards(command: str, env_type: str,
         from agent.redact import redact_sensitive_text
         _disp_command = redact_sensitive_text(command)
         _disp_combined_desc = redact_sensitive_text(combined_desc)
-        submit_pending(session_key, {
+        pending_data = {
             "command": _disp_command,
             "pattern_key": primary_key,
             "pattern_keys": all_keys,
             "description": _disp_combined_desc,
-        })
-        return {
+        }
+        if smart_denied_for_owner:
+            pending_data.update(smart_denied=True, allow_permanent=False)
+        submit_pending(session_key, pending_data)
+        result = {
             "approved": False,
             "pattern_key": primary_key,
             "status": "pending_approval",
@@ -2914,6 +3007,9 @@ def check_all_command_guards(command: str, env_type: str,
                 f"⚠️ {_disp_combined_desc}. Asking the user for approval.\n\n**Command:**\n```\n{_disp_command}\n```"
             ),
         }
+        if smart_denied_for_owner:
+            result.update(smart_denied=True, allow_permanent=False)
+        return result
 
     # CLI interactive: single combined prompt
     # Hide [a]lways when any tirith warning is present
@@ -2926,9 +3022,13 @@ def check_all_command_guards(command: str, env_type: str,
         session_key=session_key,
         surface="cli",
     )
-    choice = prompt_dangerous_approval(command, combined_desc,
-                                       allow_permanent=not has_tirith,
-                                       approval_callback=approval_callback)
+    choice = prompt_dangerous_approval(
+        command,
+        combined_desc,
+        allow_permanent=not has_tirith and not smart_denied_for_owner,
+        smart_denied=smart_denied_for_owner,
+        approval_callback=approval_callback,
+    )
     _fire_approval_hook(
         "post_approval_response",
         command=command,
@@ -2957,16 +3057,18 @@ def check_all_command_guards(command: str, env_type: str,
             "user_consent": False,
         }
 
-    # Persist approval for each warning individually
-    for key, _, is_tirith in warnings:
-        if choice == "session" or (choice == "always" and is_tirith):
-            # tirith: session only (no permanent broad allowlisting)
-            approve_session(session_key, key)
-        elif choice == "always":
-            # dangerous patterns: permanent allowed
-            approve_session(session_key, key)
-            approve_permanent(key)
-            save_permanent_allowlist(_permanent_approved)
+    # Smart-DENY owner overrides are one-operation scoped. Preserve existing
+    # persistence for manual mode and smart ESCALATE.
+    if not smart_denied_for_owner:
+        for key, _, is_tirith in warnings:
+            if choice == "session" or (choice == "always" and is_tirith):
+                # tirith: session only (no permanent broad allowlisting)
+                approve_session(session_key, key)
+            elif choice == "always":
+                # dangerous patterns: permanent allowed
+                approve_session(session_key, key)
+                approve_permanent(key)
+                save_permanent_allowlist(_permanent_approved)
 
     return {"approved": True, "message": None,
             "user_approved": True, "description": combined_desc}
@@ -3048,17 +3150,6 @@ def check_execute_code_guard(code: str, env_type: str,
     # paths don't pay to copy a potentially-large script into this string.
     command = f"execute_code <<'PY'\n{code}\nPY"
 
-    # Redacted copies for user-visible rendering only. An execute_code script
-    # can embed credentials (e.g. api_key = "sk-..."), and the gateway renders
-    # this payload directly to Discord/Slack — those messages are
-    # screenshottable. The raw `command`/`code` are still what get assessed by
-    # smart approval and executed; redaction is display-only. Approval
-    # persistence keys off pattern_key, so the allowlist is unaffected.
-    from agent.redact import redact_sensitive_text
-    display_command = redact_sensitive_text(command)
-    display_code = redact_sensitive_text(code)
-    display_description = redact_sensitive_text(description)
-
     # Check session/permanent approval — same gate as check_all_command_guards.
     # Without this, "Approve session" / "Always" choices are stored but never
     # consulted, so every execute_code call re-prompts the user (#39275).
@@ -3068,14 +3159,23 @@ def check_execute_code_guard(code: str, env_type: str,
     # Smart mode: ask the aux LLM about the whole script. An APPROVE here only
     # suppresses the redundant whole-script prompt; the per-call terminal()
     # guards (restored by context propagation) still run independently.
+    smart_denied_for_owner = False
     if approval_mode == "smart":
+        observer_payload = _prepare_smart_approval_observer(
+            command=command,
+            description=description,
+            pattern_key=pattern_key,
+            pattern_keys=[pattern_key],
+            session_key=session_key,
+        )
         verdict = _smart_approve(command, description)
+        _observe_smart_approval_verdict(observer_payload, verdict)
         if verdict == "approve":
             logger.debug("Smart approval: auto-approved execute_code for session %s",
                          session_key)
             return {"approved": True, "message": None,
                     "smart_approved": True, "description": description}
-        if verdict == "deny":
+        if verdict == "deny" and not (is_gateway or is_ask):
             return {
                 "approved": False,
                 "message": ("BLOCKED by smart approval: execute_code script "
@@ -3087,7 +3187,21 @@ def check_execute_code_guard(code: str, env_type: str,
                 "outcome": "denied",
                 "user_consent": False,
             }
-        # verdict == "escalate" → fall through to manual approval
+        if verdict == "deny":
+            smart_denied_for_owner = True
+        # Interactive DENY falls through to one-operation human approval;
+        # ESCALATE retains the normal manual approval behavior.
+
+    # Redacted copies for user-visible rendering only. An execute_code script
+    # can embed credentials (e.g. api_key = "sk-..."), and the gateway renders
+    # this payload directly to Discord/Slack — those messages are
+    # screenshottable. The raw `command`/`code` are still what get assessed by
+    # smart approval and executed; redaction is display-only. Approval
+    # persistence keys off pattern_key, so the allowlist is unaffected.
+    from agent.redact import redact_sensitive_text
+    display_command = redact_sensitive_text(command)
+    display_code = redact_sensitive_text(code)
+    display_description = redact_sensitive_text(description)
 
     notify_cb = None
     with _lock:
@@ -3096,13 +3210,16 @@ def check_execute_code_guard(code: str, env_type: str,
     if notify_cb is None:
         # No gateway callback registered (e.g. ask-mode without a notifier):
         # surface a pending approval for backward compatibility.
-        submit_pending(session_key, {
+        pending_data = {
             "command": display_command,
             "pattern_key": pattern_key,
             "pattern_keys": [pattern_key],
             "description": display_description,
-        })
-        return {
+        }
+        if smart_denied_for_owner:
+            pending_data.update(smart_denied=True, allow_permanent=False)
+        submit_pending(session_key, pending_data)
+        result = {
             "approved": False,
             "pattern_key": pattern_key,
             "status": "pending_approval",
@@ -3114,13 +3231,19 @@ def check_execute_code_guard(code: str, env_type: str,
                 f"**Code:**\n```python\n{display_code}\n```"
             ),
         }
+        if smart_denied_for_owner:
+            result.update(smart_denied=True, allow_permanent=False)
+        return result
 
     approval_data = {
         "command": display_command,
         "pattern_key": pattern_key,
         "pattern_keys": [pattern_key],
         "description": display_description,
+        "allow_permanent": not smart_denied_for_owner,
     }
+    if smart_denied_for_owner:
+        approval_data["smart_denied"] = True
     decision = _await_gateway_decision(
         session_key, notify_cb, approval_data, surface="gateway"
     )
@@ -3160,13 +3283,16 @@ def check_execute_code_guard(code: str, env_type: str,
             "deny_reason": deny_reason,
         }
 
-    # Approved — persist based on scope (same logic as check_all_command_guards).
-    if choice == "session":
-        approve_session(session_key, pattern_key)
-    elif choice == "always":
-        approve_session(session_key, pattern_key)
-        approve_permanent(pattern_key)
-        save_permanent_allowlist(_permanent_approved)
+    # Never persist a smart-DENY override under the coarse execute_code key;
+    # doing so would approve unrelated future scripts. Manual and ESCALATE
+    # decisions preserve their existing session/permanent behavior.
+    if not smart_denied_for_owner:
+        if choice == "session":
+            approve_session(session_key, pattern_key)
+        elif choice == "always":
+            approve_session(session_key, pattern_key)
+            approve_permanent(pattern_key)
+            save_permanent_allowlist(_permanent_approved)
     # choice == "once": no persistence — approval lasts this single call only.
 
     return {"approved": True, "message": None,

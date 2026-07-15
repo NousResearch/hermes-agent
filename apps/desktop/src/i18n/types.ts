@@ -232,6 +232,8 @@ export interface Translations {
     openSettings: string
     openStarmap: string
     openKeybinds: string
+    layoutEditor: string
+    layoutEditorTitle: string
   }
 
   keybinds: {
@@ -277,6 +279,20 @@ export interface Translations {
       archivedChats: string
       about: string
       notifications: string
+      plugins: string
+    }
+    plugins: {
+      title: string
+      blurb: string
+      count: (n: number) => string
+      openFolder: string
+      rescan: string
+      reveal: string
+      enable: string
+      disable: string
+      failed: string
+      empty: string
+      kinds: { bundled: string; disk: string; runtime: string }
     }
     notifications: {
       title: string
@@ -311,6 +327,8 @@ export interface Translations {
       uiScaleDesc: (percent: number) => string
       translucencyTitle: string
       translucencyDesc: string
+      backdropTitle: string
+      backdropDesc: string
       embedsTitle: string
       embedsDesc: string
       embedsAsk: string
@@ -865,6 +883,7 @@ export interface Translations {
     goTo: string
     goToSession: string
     branches: string
+    commands: string
     startInBranch: (branch: string) => string
     commandCenter: string
     appearance: string
@@ -1312,6 +1331,9 @@ export interface Translations {
       newWorktreeTitle: string
       newWorktreeDesc: string
       branchPlaceholder: string
+      branchOff: () => { after: string; before: string }
+      baseBranchPlaceholder: string
+      baseBranchNone: string
       startWorkFailed: string
       convertBranch: string
       convertBranchTitle: string
@@ -1347,18 +1369,23 @@ export interface Translations {
       rename: string
       archive: string
       newWindow: string
+      hideTabBar: string
+      openInNewTab: string
+      openInSplit: string
       copyIdFailed: string
       actionsFor: (title: string) => string
       sessionActions: string
       sessionRunning: string
       needsInput: string
       waitingForAnswer: string
+      finishedUnread: string
       handoffOrigin: (platform: string) => string
       renamed: string
       renameFailed: string
       renameTitle: string
       renameDesc: string
       untitledPlaceholder: string
+      untitledChat: (id: string) => string
       ageNow: string
       ageDay: string
       ageHour: string
@@ -1699,6 +1726,16 @@ export interface Translations {
       viewAllLogs: string
       messagingPlatforms: string
     }
+    approvalMode: {
+      title: string
+      ariaLabel: (mode: string) => string
+      manual: string
+      manualDescription: string
+      smart: string
+      smartDescription: string
+      off: string
+      offDescription: string
+    }
     statusbar: {
       unknown: string
       restart: string
@@ -1893,6 +1930,51 @@ export interface Translations {
       openTarget: (url: string) => string
       fallbackTitle: string
     }
+  }
+
+  zones: {
+    showHeader: string
+    hideHeader: string
+    minimize: string
+    restore: string
+    closeRunningTitle: string
+    closeRunningBody: string
+    closeRunningConfirm: string
+    closeOthers: string
+    closeToRight: string
+    closeAll: string
+    split: (dir: string) => string
+    move: (dir: string) => string
+    dirUp: string
+    dirDown: string
+    dirLeft: string
+    dirRight: string
+    pluginDisabled: (pluginId: string) => string
+    pluginDisabledBody: string
+    missingPane: (paneId: string) => string
+    editTitle: string
+    editHint: string
+    reset: string
+    templates: string
+    custom: string
+    newGridLayout: string
+    saveCurrentAs: string
+    nameLayoutPlaceholder: string
+    deletePreset: (name: string) => string
+    zoneEditorTitle: string
+    editorHintPre: string
+    editorHintPost: string
+    templateColumns: string
+    templateRows: string
+    templateGrid: string
+    templatePriority: string
+    zoneTag: (index: number) => string
+    mergeZones: (count: number) => string
+    customZoneName: (count: number) => string
+    layoutNamePlaceholder: (fallback: string) => string
+    saveApply: string
+    notExpressible: string
+    zoneCount: (count: number) => string
   }
 
   assistant: {

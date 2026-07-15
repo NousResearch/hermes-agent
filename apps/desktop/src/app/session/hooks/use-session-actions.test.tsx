@@ -74,6 +74,7 @@ function Harness({
     getRouteToken: () => 'token',
     navigate: vi.fn() as never,
     requestGateway,
+    resetViewSync: vi.fn(),
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
     selectedStoredSessionId: null,
     selectedStoredSessionIdRef: ref<string | null>(null),
@@ -229,6 +230,7 @@ function ResumeHarness({
     getRouteToken: () => 'token',
     navigate: vi.fn() as never,
     requestGateway,
+    resetViewSync: vi.fn(),
     runtimeIdByStoredSessionIdRef: runtimeIdByStoredSessionIdRef ?? ref(new Map<string, string>()),
     selectedStoredSessionId: null,
     selectedStoredSessionIdRef: ref<string | null>(null),
@@ -424,6 +426,7 @@ describe('resumeSession failure recovery', () => {
             storedSessionId: 'stored-1',
             streamId: null,
             turnStartedAt: null,
+            usage: null,
             yolo: false
           }
         ]
@@ -476,6 +479,7 @@ function BranchHarness({
     getRouteToken: () => 'token',
     navigate: vi.fn() as never,
     requestGateway,
+    resetViewSync: vi.fn(),
     runtimeIdByStoredSessionIdRef: ref(new Map<string, string>()),
     selectedStoredSessionId: null,
     selectedStoredSessionIdRef: ref<string | null>(null),

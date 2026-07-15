@@ -546,6 +546,21 @@ def get_task(
         # a second round-trip. Cards on /board carry a 200-char preview.
         full_summary = kanban_db.latest_summary(conn, task_id)
         task_d = _task_dict(task, latest_summary=full_summary)
+        links = _links_for(conn, task_id)
+        child_ids = links["children"]
+        child_summaries = kanban_db.latest_summaries(conn, child_ids)
+        child_results = []
+        for child_id in child_ids:
+            child = kanban_db.get_task(conn, child_id)
+            if child is None:
+                continue
+            child_results.append({
+                "id": child.id,
+                "title": child.title,
+                "status": child.status,
+                "latest_summary": child_summaries.get(child.id),
+                "result": child.result,
+            })
         # Attach diagnostics so the drawer's Diagnostics section can
         # render recovery actions without a second round-trip.
         diags = _compute_task_diagnostics(conn, task_ids=[task_id])
@@ -558,7 +573,8 @@ def get_task(
             "comments": [_comment_dict(c) for c in kanban_db.list_comments(conn, task_id)],
             "events": [_event_dict(e) for e in kanban_db.list_events(conn, task_id)],
             "attachments": [_attachment_dict(a) for a in kanban_db.list_attachments(conn, task_id)],
-            "links": _links_for(conn, task_id),
+            "links": links,
+            "child_results": child_results,
             "runs": [
                 _run_dict(r)
                 for r in kanban_db.list_runs(
@@ -646,7 +662,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
 
 # Cap a single upload so a runaway request can't fill the disk. 25 MB
 # comfortably covers PDFs, images, and source docs — the kanban use case.
-_MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024
+_MAX_ATTACHMENT_BYTES = kanban_db.KANBAN_ATTACHMENT_MAX_BYTES
 
 
 def _safe_attachment_name(raw: str) -> str:

@@ -110,4 +110,19 @@ describe('FallbackModelsField', () => {
 
     await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
   })
+
+  it('keeps a draft row visible after autosave re-renders the same persisted chain', async () => {
+    const onChange = vi.fn()
+    const rerender = await renderFieldWithRerender([], onChange)
+
+    fireEvent.click(screen.getByText('Add fallback'))
+
+    expect(onChange.mock.calls.at(-1)?.[0]).toEqual([])
+    expect(screen.getAllByLabelText('Remove')).toHaveLength(1)
+
+    // Parent autosave echo — same complete chain, new array identity.
+    rerender([])
+
+    await waitFor(() => expect(screen.getAllByLabelText('Remove')).toHaveLength(1))
+  })
 })

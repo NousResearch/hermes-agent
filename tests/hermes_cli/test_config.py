@@ -19,6 +19,8 @@ from hermes_cli.config import (
     save_env_value,
     save_env_value_secure,
     sanitize_env_file,
+    _redact_yaml_secrets,
+    _restore_yaml_secrets,
     _sanitize_env_lines,
 )
 
@@ -182,6 +184,114 @@ class TestSaveConfigParseFailureGuard:
                 "set_config_value overwrote a non-empty config.yaml that "
                 "failed to parse — the wipe guard failed"
             )
+
+
+class TestReversibleSecretRedaction:
+    """Tests for _redact_yaml_secrets / _restore_yaml_secrets.
+
+    These power the credential-safe config-recovery flow: secrets in
+    broken config.yaml are replaced with __REDACTED_N__ placeholders
+    before the YAML is sent to an external LLM, then restored after the
+    repair comes back.
+    """
+
+    def test_redacts_named_secret_keys(self):
+        """Values under keys named api_key, token, password, etc. are replaced."""
+        yaml_text = (
+            "model:\n"
+            "  default: test-model\n"
+            "providers:\n"
+            "  openrouter:\n"
+            "    api_key: sk-or-abc123def456\n"
+            "    name: OpenRouter\n"
+            "mcp_servers:\n"
+            "  github:\n"
+            "    token: ghp_abc123def456ghi789\n"
+        )
+        redacted, mapping = _redact_yaml_secrets(yaml_text)
+        assert "sk-or-abc123def456" not in redacted
+        assert "ghp_abc123def456ghi789" not in redacted
+        assert "__REDACTED_1__" in redacted
+        assert "__REDACTED_2__" in redacted
+        assert len(mapping) == 2
+
+    def test_restore_roundtrip_recovers_original_secrets(self):
+        """After redact → restore, the YAML has real values back."""
+        yaml_text = (
+            "providers:\n"
+            "  openrouter:\n"
+            "    api_key: sk-or-abc123def456\n"
+            "    name: OpenRouter\n"
+        )
+        redacted, mapping = _redact_yaml_secrets(yaml_text)
+        # Simulate the LLM fixing YAML but keeping placeholders intact
+        restored = _restore_yaml_secrets(redacted, mapping)
+        assert "sk-or-abc123def456" in restored
+        assert "__REDACTED_" not in restored
+
+    def test_redacts_inline_token_patterns(self):
+        """Inline tokens in arbitrary values are caught by prefix patterns."""
+        yaml_text = (
+            "mcp_servers:\n"
+            "  custom:\n"
+            "    env:\n"
+            "      SOME_VAR: sk-abc123def456ghi789\n"
+        )
+        redacted, mapping = _redact_yaml_secrets(yaml_text)
+        assert "sk-abc123def456ghi789" not in redacted
+        assert len(mapping) >= 1
+
+    def test_does_not_redact_non_secret_values(self):
+        """Model names, URLs without credentials, and numbers are left alone."""
+        yaml_text = (
+            "model:\n"
+            "  default: anthropic/claude-sonnet-4\n"
+            "  provider: openrouter\n"
+            "terminal:\n"
+            "  timeout: 180\n"
+        )
+        redacted, mapping = _redact_yaml_secrets(yaml_text)
+        assert mapping == {}
+        assert "claude-sonnet-4" in redacted
+        assert "180" in redacted
+
+    def test_handles_unparseable_yaml_with_regex_fallback(self):
+        """Even if the YAML can't be parsed, known token patterns are redacted."""
+        broken_yaml = (
+            "model: [unclosed\n"
+            "  api_key: sk-or-abc123def456\n"
+        )
+        redacted, mapping = _redact_yaml_secrets(broken_yaml)
+        assert "sk-or-abc123def456" not in redacted
+        assert len(mapping) >= 1
+
+    def test_empty_secrets_not_redacted(self):
+        """Empty-string secret values are not replaced with placeholders."""
+        yaml_text = (
+            "providers:\n"
+            "  openrouter:\n"
+            "    api_key: ''\n"
+            "    name: OpenRouter\n"
+        )
+        redacted, mapping = _redact_yaml_secrets(yaml_text)
+        assert mapping == {}
+
+    def test_restore_handles_reformatted_yaml(self):
+        """Restore works even if the LLM reformatted the YAML structure."""
+        original_yaml = (
+            "providers:\n"
+            "  test:\n"
+            "    api_key: sk-test-abc123def456\n"
+        )
+        _, mapping = _redact_yaml_secrets(original_yaml)
+        # Simulate the LLM changing indentation but keeping placeholders
+        reformatted = (
+            "providers:\n"
+            "    test:\n"
+            "        api_key: __REDACTED_1__\n"
+        )
+        restored = _restore_yaml_secrets(reformatted, mapping)
+        assert "sk-test-abc123def456" in restored
 
 
 class TestSaveEnvValueSecure:

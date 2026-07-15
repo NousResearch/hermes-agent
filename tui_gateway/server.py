@@ -3795,8 +3795,9 @@ def _(rid, params: dict) -> dict:
     """Return recovery info if config.yaml has a parse error.
 
     The terminal TUI calls this after startup to check whether it should
-    offer a config-repair session.  Returns the broken YAML content and
-    the parse error message so the agent has full context.
+    offer a config-repair session.  Returns the broken YAML content (with
+    secrets redacted) and the parse error message so the agent has full
+    context for syntax repair without exposing credentials.
     """
     try:
         if not os.environ.get("HERMES_CONFIG_PARSE_FAILED"):
@@ -3810,6 +3811,11 @@ def _(rid, params: dict) -> dict:
             raw = broken_path.read_text(encoding="utf-8")
         if error_path.exists():
             error = error_path.read_text(encoding="utf-8")
+        # Redact secrets before returning to the TUI client, and stash
+        # the mapping so config.recover_write can restore them.
+        from hermes_cli.config import _redact_yaml_secrets
+        raw, secret_map = _redact_yaml_secrets(raw)
+        _recover_secret_map["mapping"] = secret_map
         return _ok(rid, {
             "needs_recovery": True,
             "raw_config": raw,
@@ -3819,19 +3825,28 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 5035, str(e))
 
 
+# Stashes the secret mapping between recover_status (redact) and
+# recover_write (restore).  Cleared after restore.
+_recover_secret_map: dict = {}
+
+
 @method("config.recover_write")
 def _(rid, params: dict) -> dict:
     """Write a repaired config.yaml directly, bypassing the parse-failure guard.
 
     Called by the terminal TUI after the agent produces a fixed config.
-    The guard stays active until the gateway restarts and confirms the
-    fix loads cleanly.
+    Redacted secret placeholders (__REDACTED_N__) are restored from the
+    mapping saved by config.recover_status before writing.
     """
     try:
         content = params.get("content", "")
         if not content or not isinstance(content, str):
             return _err(rid, 5036, "content must be a non-empty string")
-        from hermes_cli.config import write_raw_config
+        from hermes_cli.config import write_raw_config, _restore_yaml_secrets
+        # Restore redacted secrets before writing
+        mapping = _recover_secret_map.pop("mapping", {})
+        if mapping:
+            content = _restore_yaml_secrets(content, mapping)
         ok = write_raw_config(content)
         if ok:
             return _ok(rid, {"written": True})

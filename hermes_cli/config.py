@@ -3229,6 +3229,117 @@ def write_raw_config(content: str) -> bool:
         return False
 
 
+# ---------------------------------------------------------------------------
+# Reversible secret redaction for the LLM config-recovery flow.
+#
+# config.yaml can contain inline API keys (provider api_key fields, MCP
+# server env vars, database URLs with passwords).  Sending the raw broken
+# YAML to an external LLM for syntax repair would disclose those credentials.
+# These functions replace sensitive values with numbered placeholders before
+# the LLM sees them, then restore the originals after the repair comes back.
+# ---------------------------------------------------------------------------
+
+# YAML keys whose values are credentials.  Matched case-insensitively.
+_SECRET_KEY_NAMES = frozenset({
+    "api_key", "apikey", "key", "token", "secret", "password",
+    "client_secret", "private_key", "authorization", "access_token",
+    "refresh_token", "id_token",
+})
+
+
+def _redact_yaml_secrets(yaml_text: str) -> tuple[str, dict[str, str]]:
+    """Replace credential values in YAML text with numbered placeholders.
+
+    Returns (redacted_text, mapping) where mapping is ``{placeholder:
+    original_value}``.  Call :func:`_restore_yaml_secrets` with the LLM's
+    repaired output and the mapping to put real values back.
+
+    Uses the existing ``redact_sensitive_text`` prefix patterns (sk-, ghp_,
+    etc.) as a second net for secrets that live in values whose key names
+    don't match ``_SECRET_KEY_NAMES`` — e.g. inside MCP server ``env``
+    blocks or arbitrary string values that happen to contain inline tokens.
+    """
+    import yaml as _yaml
+
+    try:
+        data = _yaml.safe_load(yaml_text)
+    except Exception:
+        # Can't parse — the file is broken, that's why we're here.
+        # Fall back to regex-only redaction on the raw text so we still
+        # protect obvious token patterns before sending to the LLM.
+        from agent.redact import _PREFIX_RE, _mask_token
+        mapping: dict[str, str] = {}
+        counter = [0]
+
+        def _regex_repl(m):
+            counter[0] += 1
+            ph = f"__REDACTED_{counter[0]}__"
+            mapping[ph] = m.group(1)
+            return ph
+
+        redacted = _PREFIX_RE.sub(_regex_repl, yaml_text)
+        return redacted, mapping
+
+    if not isinstance(data, dict):
+        # Not a mapping — regex-only fallback.
+        from agent.redact import _PREFIX_RE
+        mapping = {}
+        counter = [0]
+
+        def _regex_repl(m):
+            counter[0] += 1
+            ph = f"__REDACTED_{counter[0]}__"
+            mapping[ph] = m.group(1)
+            return ph
+
+        redacted = _PREFIX_RE.sub(_regex_repl, yaml_text)
+        return redacted, mapping
+
+    mapping: dict[str, str] = {}
+
+    def _walk(obj):
+        """Recursively walk the parsed YAML, redacting sensitive values."""
+        if isinstance(obj, dict):
+            for key, value in list(obj.items()):
+                if isinstance(value, str) and key.lower() in _SECRET_KEY_NAMES:
+                    if value.strip():
+                        ph = f"__REDACTED_{len(mapping) + 1}__"
+                        mapping[ph] = value
+                        obj[key] = ph
+                elif isinstance(value, str):
+                    # Check for inline token patterns in arbitrary string
+                    # values (URLs with credentials, env blocks, etc.)
+                    from agent.redact import _PREFIX_RE
+                    def _inline_repl(m):
+                        ph = f"__REDACTED_{len(mapping) + 1}__"
+                        mapping[ph] = m.group(1)
+                        return ph
+                    new_val = _PREFIX_RE.sub(_inline_repl, value)
+                    if new_val != value:
+                        obj[key] = new_val
+                else:
+                    _walk(value)
+        elif isinstance(obj, list):
+            for i, item in enumerate(obj):
+                _walk(item)
+
+    _walk(data)
+    redacted_text = _yaml.dump(data, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    return redacted_text, mapping
+
+
+def _restore_yaml_secrets(yaml_text: str, mapping: dict[str, str]) -> str:
+    """Restore redacted placeholder values in repaired YAML.
+
+    Replaces each ``__REDACTED_N__`` placeholder with the original secret
+    value from ``mapping``.  Works on raw text so it handles YAML the LLM
+    may have reformatted.
+    """
+    for placeholder, original in mapping.items():
+        yaml_text = yaml_text.replace(placeholder, original)
+    return yaml_text
+
+
 def load_env() -> Dict[str, str]:
     """Load environment variables from ~/.hermes/.env.
 
@@ -3926,6 +4037,14 @@ def _config_recover(args):
     if error_path.exists():
         error_msg = error_path.read_text(encoding="utf-8")
 
+    # Redact secrets before sending to an external LLM.  config.yaml can
+    # contain inline api_key fields, MCP server tokens, database passwords,
+    # and other credentials.  The LLM only needs to fix YAML syntax — it
+    # does not need real secret values.
+    redacted_yaml, secret_mapping = _redact_yaml_secrets(raw_yaml)
+    if secret_mapping:
+        print(f"Redacted {len(secret_mapping)} secret(s) from the config before sending to the LLM.")
+
     print()
     print("config.yaml has a parse error:")
     print(f"  {error_msg}")
@@ -3962,15 +4081,23 @@ def _config_recover(args):
         print(f"No API key found for {provider_id}.  Set one first.")
         sys.exit(1)
 
-    # Build the repair prompt
+    # Build the repair prompt using redacted YAML
+    placeholder_note = ""
+    if secret_mapping:
+        placeholder_note = (
+            "\n\nNote: Secret values (API keys, tokens, passwords) have been\n"
+            "replaced with __REDACTED_N__ placeholders.  Preserve them\n"
+            "exactly as-is in your output.  Do NOT try to fill them in.\n"
+        )
     repair_prompt = (
         "The user's Hermes Agent config.yaml has a YAML parse error and "
         "cannot be loaded.  Here is the broken config:\n\n"
-        f"```yaml\n{raw_yaml}\n```\n\n"
-        f"Parse error: {error_msg}\n\n"
+        f"```yaml\n{redacted_yaml}\n```\n\n"
+        f"Parse error: {error_msg}{placeholder_note}\n\n"
         "Fix the YAML syntax error while preserving ALL existing settings, "
-        "comments, env-var templates (${VAR}), and structure.  Output ONLY "
-        "the corrected YAML — no explanation, no markdown fences, no extra text."
+        "comments, env-var templates (${VAR}), placeholders (__REDACTED_N__), "
+        "and structure.  Output ONLY the corrected YAML — no explanation, "
+        "no markdown fences, no extra text."
     )
 
     print(f"Calling {model_id}...")
@@ -4004,6 +4131,10 @@ def _config_recover(args):
     if not fixed_yaml.strip():
         print("LLM returned empty output.  Config not modified.")
         return
+
+    # Restore redacted secrets into the repaired YAML
+    if secret_mapping:
+        fixed_yaml = _restore_yaml_secrets(fixed_yaml, secret_mapping)
 
     # Validate the fix parses as YAML
     import yaml

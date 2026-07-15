@@ -17,6 +17,7 @@ Key design decisions:
 import asyncio
 import json
 import logging
+import os
 import random
 import re
 import sqlite3
@@ -30,6 +31,12 @@ from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
+
+# Keep the pristine constructor for the isolated in-memory DDL parser. Tests
+# and embedders may replace ``sqlite3.connect`` to simulate filesystem/runtime
+# capabilities; that must affect the live DB connection, not redirect the
+# parser's private ``:memory:`` database onto the live file.
+_SQLITE_CONNECT = sqlite3.connect
 
 
 def workspace_key(row: Dict[str, Any]) -> Optional[str]:
@@ -141,6 +148,16 @@ T = TypeVar("T")
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
 SCHEMA_VERSION = 21
+STATE_SCHEMA_READINESS_KEY = "canonical_schema_readiness_v1"
+
+# Canonical schema initialization is serialized by SQLite itself on the
+# database object. This deliberately avoids adjacent advisory lock files:
+# those are not portable to every NFS/SMB/FUSE path where SQLite's rollback
+# journal works, and pathname-derived locks do not unify hard-link aliases.
+_STATE_SCHEMA_TRANSACTION_TIMEOUT_S = 30.0
+_STATE_SCHEMA_TRANSACTION_POLL_MIN_S = 0.020
+_STATE_SCHEMA_TRANSACTION_POLL_MAX_S = 0.150
+_STATE_DB_PATH_RETRY_LIMIT = 8
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -168,6 +185,13 @@ _WAL_INCOMPAT_MARKERS = (
     "not authorized",         # Some FUSE mounts block WAL pragma outright
 )
 
+# ``PRAGMA journal_mode=WAL`` needs a write lock but does not reliably honour
+# the connection busy timeout while changing mode. Concurrent first opens
+# therefore retry here before the existing network-filesystem DELETE fallback.
+_WAL_SET_MAX_RETRIES = 15
+_WAL_SET_RETRY_MIN_S = 0.020
+_WAL_SET_RETRY_MAX_S = 0.150
+
 # Last SessionDB() init error, per-process.  Surfaced in /resume and
 # related slash-command error strings so users know WHY the DB is
 # unavailable instead of getting a bare "Session database not available."
@@ -184,14 +208,187 @@ _last_init_error_lock = threading.Lock()
 _wal_fallback_warned_paths: set[str] = set()
 _wal_fallback_warned_lock = threading.Lock()
 
-_FTS_TRIGGERS = (
+_BASE_FTS_TRIGGERS = (
     "messages_fts_insert",
     "messages_fts_delete",
     "messages_fts_update",
+)
+_TRIGRAM_FTS_TRIGGERS = (
     "messages_fts_trigram_insert",
     "messages_fts_trigram_delete",
     "messages_fts_trigram_update",
 )
+_FTS_TRIGGERS = _BASE_FTS_TRIGGERS + _TRIGRAM_FTS_TRIGGERS
+
+
+class StateDBAliasError(RuntimeError):
+    """Raised before schema mutation when state.db has an unsafe hard-link alias."""
+
+
+class StateDBSerializationUnavailableError(TimeoutError):
+    """SQLite could not provide the bounded database-object schema lease."""
+
+
+def canonical_schema_readiness_token(
+    schema_version: int,
+    schema_cookie: int,
+    fts_enabled: bool,
+    trigram_enabled: bool,
+) -> str:
+    """Bind canonical readiness to SQLite's transactional schema cookie."""
+    return ":".join(
+        (
+            str(schema_version),
+            str(schema_cookie),
+            "1" if fts_enabled else "0",
+            "1" if trigram_enabled else "0",
+        )
+    )
+
+
+def _canonical_state_db_path(db_path: Path) -> Path:
+    """Return one normalized path identity, resolving symlinks when possible."""
+    return Path(db_path).expanduser().resolve(strict=False)
+
+
+def _open_state_db_anchor(db_path: Path) -> tuple[int, os.stat_result]:
+    """Open a stable identity anchor and reject existing hard-link aliases.
+
+    The descriptor is not an advisory lock. It only lets callers prove that
+    the SQLite connection they opened still corresponds to the current
+    pathname after readiness/schema work. A missing file is created empty;
+    no SQLite header, schema, or row is written before alias validation.
+    """
+    fd = os.open(db_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        identity = os.fstat(fd)
+        if identity.st_nlink > 1:
+            raise StateDBAliasError(
+                f"state.db hard-link alias is unsupported: {db_path} "
+                f"has {identity.st_nlink} names"
+            )
+        return fd, identity
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def _state_db_anchor_matches_path(anchor_fd: int, db_path: Path) -> bool:
+    """True only while *db_path* still names the anchored database object."""
+    anchor = os.fstat(anchor_fd)
+    if anchor.st_nlink > 1:
+        raise StateDBAliasError(
+            f"state.db hard-link alias is unsupported: {db_path} "
+            f"has {anchor.st_nlink} names"
+        )
+    try:
+        current = os.stat(db_path)
+    except FileNotFoundError:
+        return False
+    if current.st_nlink > 1:
+        raise StateDBAliasError(
+            f"state.db hard-link alias is unsupported: {db_path} "
+            f"has {current.st_nlink} names"
+        )
+    return os.path.samestat(anchor, current)
+
+
+_STATE_SCHEMA_ACTIVE_CONNECTIONS: dict[int, sqlite3.Connection] = {}
+_STATE_SCHEMA_ACTIVE_CONNECTIONS_LOCK = threading.Lock()
+
+
+def _register_schema_connection(conn: sqlite3.Connection) -> None:
+    with _STATE_SCHEMA_ACTIVE_CONNECTIONS_LOCK:
+        _STATE_SCHEMA_ACTIVE_CONNECTIONS[id(conn)] = conn
+
+
+def _end_schema_transaction(conn: sqlite3.Connection) -> None:
+    with _STATE_SCHEMA_ACTIVE_CONNECTIONS_LOCK:
+        _STATE_SCHEMA_ACTIVE_CONNECTIONS.pop(id(conn), None)
+
+
+def _close_inherited_schema_connections() -> None:
+    """Drop parent schema descriptors in a POSIX fork child before user code."""
+    global _STATE_SCHEMA_ACTIVE_CONNECTIONS_LOCK
+    inherited = list(_STATE_SCHEMA_ACTIVE_CONNECTIONS.values())
+    _STATE_SCHEMA_ACTIVE_CONNECTIONS.clear()
+    _STATE_SCHEMA_ACTIVE_CONNECTIONS_LOCK = threading.Lock()
+    for conn in inherited:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+if hasattr(os, "register_at_fork"):
+    os.register_at_fork(after_in_child=_close_inherited_schema_connections)
+
+
+def _begin_schema_transaction(conn: sqlite3.Connection) -> None:
+    """Acquire SQLite's database-object write lease with a bounded wait."""
+    _register_schema_connection(conn)
+    deadline = time.monotonic() + _STATE_SCHEMA_TRANSACTION_TIMEOUT_S
+    try:
+        while True:
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                return
+            except sqlite3.OperationalError as exc:
+                message = str(exc).lower()
+                if "locked" not in message and "busy" not in message:
+                    raise
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise StateDBSerializationUnavailableError(
+                        "state schema transaction unavailable before timeout; "
+                        "the SQLite backend may not support database-object "
+                        "locking or another live holder did not release it"
+                    ) from exc
+                time.sleep(
+                    min(
+                        remaining,
+                        random.uniform(
+                            _STATE_SCHEMA_TRANSACTION_POLL_MIN_S,
+                            _STATE_SCHEMA_TRANSACTION_POLL_MAX_S,
+                        ),
+                    )
+                )
+    except BaseException:
+        _end_schema_transaction(conn)
+        raise
+
+
+def _execute_script_statements(cursor: sqlite3.Cursor, script: str) -> None:
+    """Execute a SQL script without sqlite3.executescript's implicit COMMIT."""
+    pending: list[str] = []
+    for line in script.splitlines(keepends=True):
+        pending.append(line)
+        statement = "".join(pending)
+        if sqlite3.complete_statement(statement):
+            if statement.strip():
+                cursor.execute(statement)
+            pending.clear()
+    remainder = "".join(pending)
+    if remainder.strip():
+        raise sqlite3.OperationalError("incomplete canonical schema statement")
+
+
+def _is_exact_duplicate_column_race(
+    cursor: sqlite3.Cursor,
+    table_name: str,
+    target_column: str,
+    exc: sqlite3.OperationalError,
+) -> bool:
+    """Accept only SQLite's exact duplicate error after a fresh target probe."""
+    if str(exc) != f"duplicate column name: {target_column}":
+        return False
+    safe_table = table_name.replace('"', '""')
+    rows = cursor.execute(f'PRAGMA table_info("{safe_table}")').fetchall()
+    return any(
+        (row[1] if isinstance(row, (tuple, list)) else row["name"])
+        == target_column
+        for row in rows
+    )
 
 
 def _set_last_init_error(msg: Optional[str]) -> None:
@@ -422,23 +619,37 @@ def apply_wal_with_fallback(
     except sqlite3.OperationalError:
         pass
 
-    try:
-        conn.execute("PRAGMA journal_mode=WAL")
-        _apply_macos_checkpoint_barrier(conn)
-        _enforce_macos_synchronous_full(conn)
-        return "wal"
-    except sqlite3.OperationalError as exc:
-        msg = str(exc).lower()
-        if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
-            # Unrelated OperationalError — don't silently swallow.
-            raise
-        # Don't downgrade if another process already set WAL on disk.
-        existing = _on_disk_journal_mode(conn)
-        if existing == "wal":
-            raise
-        _log_wal_fallback_once(db_label, exc)
-        conn.execute("PRAGMA journal_mode=DELETE")
-        return "delete"
+    last_lock_error: Optional[sqlite3.OperationalError] = None
+    for attempt in range(_WAL_SET_MAX_RETRIES):
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            _apply_macos_checkpoint_barrier(conn)
+            _enforce_macos_synchronous_full(conn)
+            return "wal"
+        except sqlite3.OperationalError as exc:
+            msg = str(exc).lower()
+            if "locked" in msg or "busy" in msg:
+                last_lock_error = exc
+                if attempt < _WAL_SET_MAX_RETRIES - 1:
+                    time.sleep(
+                        random.uniform(
+                            _WAL_SET_RETRY_MIN_S,
+                            _WAL_SET_RETRY_MAX_S,
+                        )
+                    )
+                    continue
+                raise
+            if not any(marker in msg for marker in _WAL_INCOMPAT_MARKERS):
+                # Unrelated OperationalError — don't silently swallow.
+                raise
+            # Don't downgrade if another process already set WAL on disk.
+            existing = _on_disk_journal_mode(conn)
+            if existing == "wal":
+                raise
+            _log_wal_fallback_once(db_label, exc)
+            conn.execute("PRAGMA journal_mode=DELETE")
+            return "delete"
+    raise last_lock_error or sqlite3.OperationalError("database is locked")
 
 
 def _log_wal_fallback_once(db_label: str, exc: Exception) -> None:
@@ -1009,7 +1220,7 @@ class SessionDB:
     _IMPORT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
-        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path = _canonical_state_db_path(db_path or DEFAULT_DB_PATH)
         self.read_only = read_only
 
         self._lock = threading.Lock()
@@ -1041,22 +1252,59 @@ class SessionDB:
             self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
             def _connect_and_init():
-                self._conn = sqlite3.connect(
-                    str(self.db_path),
-                    check_same_thread=False,
-                    # Short timeout — application-level retry with random
-                    # jitter handles contention instead of sitting in
-                    # SQLite's internal busy handler for up to 30s.
-                    timeout=1.0,
-                    # auto-starts transactions on DML, which conflicts with
-                    # our explicit BEGIN IMMEDIATE.  None = we manage
-                    # transactions ourselves.
-                    isolation_level=None,
+                for attempt in range(_STATE_DB_PATH_RETRY_LIMIT):
+                    anchor_fd, _ = _open_state_db_anchor(self.db_path)
+                    try:
+                        self._conn = sqlite3.connect(
+                            str(self.db_path),
+                            check_same_thread=False,
+                            # Keep each SQLite busy wait within the outer
+                            # schema-transaction deadline.
+                            timeout=max(
+                                0.01,
+                                min(30.0, _STATE_SCHEMA_TRANSACTION_TIMEOUT_S),
+                            ),
+                            # None = explicit transaction ownership below.
+                            isolation_level=None,
+                        )
+                        self._conn.row_factory = sqlite3.Row
+                        self._conn.execute("PRAGMA foreign_keys=ON")
+                        self._init_schema()
+                        apply_wal_with_fallback(self._conn, db_label="state.db")
+                        if _state_db_anchor_matches_path(anchor_fd, self.db_path):
+                            return
+                    except BaseException as exc:
+                        alias_error = None
+                        try:
+                            stale = not _state_db_anchor_matches_path(
+                                anchor_fd, self.db_path
+                            )
+                        except StateDBAliasError as alias_exc:
+                            stale = False
+                            alias_error = alias_exc
+                        if self._conn is not None:
+                            try:
+                                _end_schema_transaction(self._conn)
+                                self._conn.close()
+                            finally:
+                                self._conn = None
+                        if alias_error is not None:
+                            raise alias_error from exc
+                        if stale and attempt < _STATE_DB_PATH_RETRY_LIMIT - 1:
+                            continue
+                        raise
+                    else:
+                        # The pathname changed after this connection opened.
+                        # Close the stale inode before retrying the current path.
+                        if self._conn is not None:
+                            self._conn.close()
+                            self._conn = None
+                    finally:
+                        os.close(anchor_fd)
+                raise RuntimeError(
+                    f"state.db pathname kept changing during initialization: "
+                    f"{self.db_path}"
                 )
-                self._conn.row_factory = sqlite3.Row
-                apply_wal_with_fallback(self._conn, db_label="state.db")
-                self._conn.execute("PRAGMA foreign_keys=ON")
-                self._init_schema()
 
             try:
                 _connect_and_init()
@@ -1166,12 +1414,15 @@ class SessionDB:
                 pass
 
     @staticmethod
-    def _fts_trigger_count(cursor: sqlite3.Cursor) -> int:
-        placeholders = ",".join("?" for _ in _FTS_TRIGGERS)
+    def _fts_trigger_count(
+        cursor: sqlite3.Cursor,
+        trigger_names: tuple[str, ...] = _FTS_TRIGGERS,
+    ) -> int:
+        placeholders = ",".join("?" for _ in trigger_names)
         row = cursor.execute(
             f"SELECT COUNT(*) FROM sqlite_master "
             f"WHERE type = 'trigger' AND name IN ({placeholders})",
-            _FTS_TRIGGERS,
+            trigger_names,
         ).fetchone()
         return int(row[0] if not isinstance(row, sqlite3.Row) else row[0])
 
@@ -1203,6 +1454,19 @@ class SessionDB:
         )
 
     def _fts_table_probe(self, cursor: sqlite3.Cursor, table_name: str) -> Optional[bool]:
+        schema_row = cursor.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?",
+            (table_name,),
+        ).fetchone()
+        if schema_row is None:
+            return False
+        schema_sql = schema_row[0] if not isinstance(schema_row, sqlite3.Row) else schema_row[0]
+        normalized_schema = " ".join(str(schema_sql or "").lower().split())
+        if (
+            "create virtual table" not in normalized_schema
+            or "using fts5" not in normalized_schema
+        ):
+            return False
         try:
             cursor.execute(f"SELECT * FROM {table_name} LIMIT 0")
             return True
@@ -1229,10 +1493,14 @@ class SessionDB:
         if status is None:
             return False
         try:
+            if status is False:
+                # A normal table with a canonical FTS name is corruption of a
+                # derived object, not user data. Replace it transactionally.
+                cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
             # Run even when the virtual table exists so any dropped or missing
             # triggers are recreated after a previous no-FTS5 runtime disabled
             # them to keep message writes working.
-            cursor.executescript(ddl)
+            _execute_script_statements(cursor, ddl)
             return True
         except sqlite3.OperationalError as exc:
             if not self._is_fts5_unavailable_error(exc):
@@ -1355,11 +1623,22 @@ class SessionDB:
         with self._lock:
             if self._conn:
                 try:
-                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except Exception as exc:
-                    logger.debug("WAL checkpoint (TRUNCATE) at close failed: %s", exc)
-                self._conn.close()
-                self._conn = None
+                    # A checkpoint cannot run inside a transaction. Roll back
+                    # any abandoned caller/schema transaction before the
+                    # controlled close-time TRUNCATE.
+                    if self._conn.in_transaction is True:
+                        self._conn.rollback()
+                    _end_schema_transaction(self._conn)
+                    try:
+                        self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                    except Exception as exc:
+                        logger.debug(
+                            "WAL checkpoint (TRUNCATE) at close failed: %s", exc
+                        )
+                finally:
+                    _end_schema_transaction(self._conn)
+                    self._conn.close()
+                    self._conn = None
 
     @staticmethod
     def _parse_schema_columns(schema_sql: str) -> Dict[str, Dict[str, str]]:
@@ -1374,7 +1653,7 @@ class SessionDB:
         Adding a column to SCHEMA_SQL is all that's needed; the
         reconciliation loop picks it up automatically.
         """
-        ref = sqlite3.connect(":memory:")
+        ref = _SQLITE_CONNECT(":memory:")
         try:
             ref.executescript(schema_sql)
             table_columns: Dict[str, Dict[str, str]] = {}
@@ -1440,12 +1719,17 @@ class SessionDB:
                             f'ALTER TABLE "{table_name}" ADD COLUMN "{safe_name}" {col_type}'
                         )
                     except sqlite3.OperationalError as exc:
-                        # Expected: "duplicate column name" from a race or
-                        # re-run.  Unexpected: "Cannot add a NOT NULL column
-                        # with default value NULL" from a schema mistake.
-                        # Log at DEBUG so it's visible in agent.log.
+                        if not _is_exact_duplicate_column_race(
+                            cursor,
+                            table_name,
+                            col_name,
+                            exc,
+                        ):
+                            raise
                         logger.debug(
-                            "reconcile %s.%s: %s", table_name, col_name, exc,
+                            "reconcile %s.%s completed concurrently",
+                            table_name,
+                            col_name,
                         )
 
     def _init_schema(self):
@@ -1461,9 +1745,11 @@ class SessionDB:
         The schema_version table is retained for future data migrations
         (transforming existing rows) which cannot be handled declaratively.
         """
+        assert self._conn is not None
+        _begin_schema_transaction(self._conn)
         cursor = self._conn.cursor()
 
-        cursor.executescript(SCHEMA_SQL)
+        _execute_script_statements(cursor, SCHEMA_SQL)
 
         # ── Declarative column reconciliation ──────────────────────────
         # Diff live tables against SCHEMA_SQL and ADD any missing columns.
@@ -1487,7 +1773,7 @@ class SessionDB:
 
         # Deferred indexes that reference the reconciler-added ``active``
         # column (idx_messages_session_active) — same ordering constraint.
-        cursor.executescript(DEFERRED_INDEX_SQL)
+        _execute_script_statements(cursor, DEFERRED_INDEX_SQL)
 
         # Heal NULL ``active`` rows unconditionally on every startup.
         # On real-world DBs the reconciler-added ``active`` column can lack
@@ -1722,24 +2008,59 @@ class SessionDB:
             # FTS5 setup. Run the DDL even when the virtual table exists so
             # CREATE TRIGGER IF NOT EXISTS repairs trigger-only degradation from
             # an earlier no-FTS5 runtime.
-            triggers_need_repair = self._fts_trigger_count(cursor) < len(_FTS_TRIGGERS)
+            base_was_ready = self._fts_table_probe(cursor, "messages_fts") is True
+            base_triggers_need_repair = self._fts_trigger_count(
+                cursor, _BASE_FTS_TRIGGERS
+            ) < len(_BASE_FTS_TRIGGERS)
             self._fts_enabled = self._ensure_fts_schema(cursor, "messages_fts", FTS_SQL)
 
             # Trigram FTS5 for CJK/substring search. This is optional relative
             # to the main FTS table; if it cannot be created, CJK search falls
             # back to LIKE.
             if self._fts_enabled:
+                trigram_was_ready = (
+                    self._fts_table_probe(cursor, "messages_fts_trigram") is True
+                )
+                trigram_triggers_need_repair = self._fts_trigger_count(
+                    cursor, _TRIGRAM_FTS_TRIGGERS
+                ) < len(_TRIGRAM_FTS_TRIGGERS)
                 trigram_enabled = self._ensure_fts_schema(
                     cursor, "messages_fts_trigram", FTS_TRIGRAM_SQL
                 )
                 self._trigram_available = trigram_enabled
-                if triggers_need_repair:
+                if (
+                    not base_was_ready
+                    or base_triggers_need_repair
+                    or (
+                        trigram_enabled
+                        and (
+                            not trigram_was_ready
+                            or trigram_triggers_need_repair
+                        )
+                    )
+                ):
                     self._rebuild_fts_indexes(
                         cursor,
                         include_trigram=trigram_enabled,
                     )
 
-        self._conn.commit()
+        schema_cookie = int(cursor.execute("PRAGMA schema_version").fetchone()[0])
+        readiness_token = canonical_schema_readiness_token(
+            SCHEMA_VERSION,
+            schema_cookie,
+            self._fts_enabled,
+            self._trigram_available,
+        )
+        cursor.execute(
+            """INSERT INTO state_meta(key, value) VALUES (?, ?)
+               ON CONFLICT(key) DO UPDATE SET value = excluded.value""",
+            (STATE_SCHEMA_READINESS_KEY, readiness_token),
+        )
+
+        try:
+            self._conn.commit()
+        finally:
+            _end_schema_transaction(self._conn)
 
     # =========================================================================
     # Session lifecycle
@@ -7191,6 +7512,12 @@ class SessionDB:
                 (error[:500], session_id),
             )
         self._execute_write(_do)
+
+
+def initialize_state_db(db_path: Optional[Path] = None) -> None:
+    """Create or reconcile the one canonical state.db schema."""
+    db = SessionDB() if db_path is None else SessionDB(db_path=db_path)
+    db.close()
 
 
 class AsyncSessionDB:

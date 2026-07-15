@@ -271,6 +271,7 @@ def _schema_transaction_holder(db_path, ready_event, release_event, crash):
         if crash:
             os._exit(0)
         conn.rollback()
+        hermes_state._end_schema_transaction(conn)
     finally:
         conn.close()
 
@@ -487,6 +488,7 @@ def test_replacement_between_open_and_readiness_reopens_current_object(
     """A connection opened before atomic replacement must never be returned."""
     iterations = int(os.environ.get("HERMES_SCHEMA_REPLACEMENT_ITERATIONS", "1"))
     assert iterations > 0
+    production_open = ad._open_with_wal
 
     for attempt in range(iterations):
         home = tmp_path / f"attempt-{attempt}"
@@ -500,13 +502,12 @@ def test_replacement_between_open_and_readiness_reopens_current_object(
         _prepare_async_only_db(replacement)
         opened = threading.Event()
         resume = threading.Event()
-        real_open = ad._open_with_wal
         first_open = True
         outcome = {}
 
         def paused_open(path):
             nonlocal first_open
-            conn = real_open(path)
+            conn = production_open(path)
             if first_open:
                 first_open = False
                 opened.set()
@@ -595,24 +596,34 @@ def test_current_version_supported_fts_damage_is_repaired(
 
 
 def test_readiness_does_not_require_optional_trigram_when_tokenizer_is_missing(
-    tmp_path
+    tmp_path, monkeypatch
 ):
     db_path = tmp_path / "state.db"
-    db = SessionDB(db_path=db_path)
-    db.close()
-    with sqlite3.connect(db_path) as conn:
-        for trigger in _TRIGRAM_FTS_TRIGGERS:
-            conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
-        conn.execute("DROP TABLE IF EXISTS messages_fts_trigram")
-
     real_connect = sqlite3.connect
 
+    class _NoTrigramCursor(sqlite3.Cursor):
+        def execute(self, sql, parameters=()):  # type: ignore[override]
+            if "tokenize='trigram'" in sql:
+                raise sqlite3.OperationalError("no such tokenizer: trigram")
+            return super().execute(sql, parameters)
+
     class _NoTrigramConnection(sqlite3.Connection):
+        def cursor(self, factory=None):
+            return super().cursor(factory or _NoTrigramCursor)
+
         def execute(self, sql, *args, **kwargs):  # type: ignore[override]
             normalized = sql.lower().replace(" ", "")
             if "temp._hermes_fts_trigram_probeusingfts5" in normalized:
                 raise sqlite3.OperationalError("no such tokenizer: trigram")
             return super().execute(sql, *args, **kwargs)
+
+    def connect_without_trigram(*args, **kwargs):
+        kwargs["factory"] = _NoTrigramConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(hermes_state.sqlite3, "connect", connect_without_trigram)
+    db = SessionDB(db_path=db_path)
+    db.close()
 
     conn = real_connect(db_path, factory=_NoTrigramConnection)
     try:
@@ -797,41 +808,53 @@ def test_hardlink_alias_is_rejected_before_mutation(tmp_path):
 
 
 @pytest.mark.skipif(not hasattr(os, "fork"), reason="POSIX fork required")
-def test_posix_fork_child_waits_for_parent_schema_transaction(tmp_path):
-    db_path = tmp_path / "state.db"
-    initial = SessionDB(db_path=db_path)
-    initial.close()
-    holder = sqlite3.connect(db_path, timeout=0.1, isolation_level=None)
-    hermes_state._begin_schema_transaction(holder)
-
+@pytest.mark.parametrize("child_kind", ["session", "async"])
+def test_posix_fork_child_waits_for_parent_schema_transaction(
+    tmp_path, monkeypatch, child_kind
+):
+    iterations = int(os.environ.get("HERMES_SCHEMA_FORK_ITERATIONS", "1"))
+    assert iterations > 0
     ctx = multiprocessing.get_context("fork")
-    started = ctx.Event()
-    entered = ctx.Event()
+    for attempt in range(iterations):
+        home = tmp_path / child_kind / f"attempt-{attempt}"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        db_path = home / "state.db"
+        initial = SessionDB(db_path=db_path)
+        initial.close()
+        holder = sqlite3.connect(db_path, timeout=0.1, isolation_level=None)
+        hermes_state._begin_schema_transaction(holder)
+        started = ctx.Event()
+        entered = ctx.Event()
 
-    def fork_child():
-        started.set()
-        db = SessionDB(db_path=db_path)
-        db.close()
-        entered.set()
+        def fork_child():
+            started.set()
+            if child_kind == "session":
+                db = SessionDB(db_path=db_path)
+                db.close()
+            else:
+                ad.restore_undelivered_completions(queue.Queue())
+            entered.set()
 
-    child = ctx.Process(target=fork_child)
-    child.start()
-    try:
-        assert started.wait(timeout=10)
-        assert not entered.wait(timeout=0.3), (
-            "fork child entered schema initialization before parent release"
-        )
-        holder.rollback()
-        assert entered.wait(timeout=15)
-    finally:
-        if holder.in_transaction:
+        child = ctx.Process(target=fork_child)
+        child.start()
+        try:
+            assert started.wait(timeout=10)
+            assert not entered.wait(timeout=0.05), (
+                "fork child entered schema initialization before parent release"
+            )
             holder.rollback()
-        holder.close()
-        child.join(timeout=15)
-        if child.is_alive():
-            child.terminate()
-            child.join(timeout=5)
-    assert child.exitcode == 0
+            hermes_state._end_schema_transaction(holder)
+            assert entered.wait(timeout=15)
+        finally:
+            if holder.in_transaction:
+                holder.rollback()
+            hermes_state._end_schema_transaction(holder)
+            holder.close()
+            child.join(timeout=15)
+            if child.is_alive():
+                child.terminate()
+                child.join(timeout=5)
+        assert child.exitcode == 0
 
 
 def test_schema_transaction_wait_is_bounded(tmp_path, monkeypatch):
@@ -881,3 +904,129 @@ def test_schema_transaction_recovers_after_owner_process_exits(tmp_path):
     db.close()
     _assert_complete_schema(db_path)
     assert not db_path.with_name(f"{db_path.name}.schema.lock").exists()
+
+@pytest.mark.parametrize("bootstrap_kind", ["session", "async"])
+def test_bootstrap_keeps_periodic_checkpoint_passive(
+    tmp_path, monkeypatch, bootstrap_kind
+):
+    """Canonical and async-first bootstrap must retain periodic PASSIVE mode."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    db_path = tmp_path / "state.db"
+    real_connect = sqlite3.connect
+    checkpoint_calls = []
+
+    class _CheckpointTracingConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            normalized = sql.lower().replace(" ", "")
+            if "wal_checkpoint(" in normalized:
+                checkpoint_calls.append((normalized, self.in_transaction))
+            return super().execute(sql, *args, **kwargs)
+
+    def tracing_connect(*args, **kwargs):
+        kwargs["factory"] = _CheckpointTracingConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(hermes_state.sqlite3, "connect", tracing_connect)
+    if bootstrap_kind == "async":
+        conn = ad._connect()
+        conn.close()
+
+    db = SessionDB(db_path=db_path)
+    start = len(checkpoint_calls)
+    try:
+        for index in range(db._CHECKPOINT_EVERY_N_WRITES):
+            db._execute_write(
+                lambda conn, current=index: conn.execute(
+                    "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+                    (f"checkpoint-{current}", "test", float(current)),
+                )
+            )
+
+        periodic_calls = checkpoint_calls[start:]
+        assert periodic_calls == [("pragmawal_checkpoint(passive)", False)]
+    finally:
+        db.close()
+
+    assert checkpoint_calls[-1] == ("pragmawal_checkpoint(truncate)", False)
+    with real_connect(db_path) as check:
+        assert check.execute("PRAGMA quick_check").fetchone() == ("ok",)
+
+
+def test_failed_passive_checkpoint_preserves_schema_and_ownership(
+    tmp_path, monkeypatch, caplog
+):
+    """A periodic checkpoint failure cannot partially mutate canonical schema."""
+    db_path = tmp_path / "state.db"
+    real_connect = sqlite3.connect
+    inject_failure = False
+
+    class _CheckpointFailureConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            normalized = sql.lower().replace(" ", "")
+            if inject_failure and "wal_checkpoint(passive)" in normalized:
+                raise sqlite3.OperationalError("injected PASSIVE checkpoint failure")
+            return super().execute(sql, *args, **kwargs)
+
+    def failure_connect(*args, **kwargs):
+        kwargs["factory"] = _CheckpointFailureConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(hermes_state.sqlite3, "connect", failure_connect)
+    db = SessionDB(db_path=db_path)
+    db.create_session("checkpoint-owner", source="test")
+    inject_failure = True
+    try:
+        with caplog.at_level("WARNING"):
+            db._try_wal_checkpoint()
+        assert "injected PASSIVE checkpoint failure" in caplog.text
+        assert hermes_state._STATE_SCHEMA_ACTIVE_CONNECTIONS == {}
+    finally:
+        inject_failure = False
+        db.close()
+
+    _assert_complete_schema(db_path)
+    with real_connect(db_path) as check:
+        assert check.execute("PRAGMA quick_check").fetchone() == ("ok",)
+        assert check.execute(
+            "SELECT COUNT(*) FROM sessions WHERE id = 'checkpoint-owner'"
+        ).fetchone() == (1,)
+        assert ad._canonical_schema_ready(check, SCHEMA_VERSION)
+
+
+def test_close_rolls_back_schema_transaction_before_checkpoint(tmp_path, monkeypatch):
+    """Close-time TRUNCATE never runs inside an abandoned schema transaction."""
+    db_path = tmp_path / "state.db"
+    real_connect = sqlite3.connect
+    checkpoint_states = []
+
+    class _TransactionTracingConnection(sqlite3.Connection):
+        def execute(self, sql, *args, **kwargs):  # type: ignore[override]
+            normalized = sql.lower().replace(" ", "")
+            if "wal_checkpoint(" in normalized:
+                checkpoint_states.append((normalized, self.in_transaction))
+            return super().execute(sql, *args, **kwargs)
+
+    def tracing_connect(*args, **kwargs):
+        kwargs["factory"] = _TransactionTracingConnection
+        return real_connect(*args, **kwargs)
+
+    monkeypatch.setattr(hermes_state.sqlite3, "connect", tracing_connect)
+    db = SessionDB(db_path=db_path)
+    conn = db._conn
+    assert conn is not None
+    hermes_state._begin_schema_transaction(conn)
+    conn.execute("CREATE TABLE partial_schema_marker (id INTEGER)")
+    assert conn.in_transaction is True
+    assert id(conn) in hermes_state._STATE_SCHEMA_ACTIVE_CONNECTIONS
+
+    checkpoint_states.clear()
+    db.close()
+
+    assert checkpoint_states == [("pragmawal_checkpoint(truncate)", False)]
+    assert hermes_state._STATE_SCHEMA_ACTIVE_CONNECTIONS == {}
+    with real_connect(db_path) as check:
+        assert check.execute("PRAGMA quick_check").fetchone() == ("ok",)
+        assert check.execute(
+            "SELECT COUNT(*) FROM sqlite_master "
+            "WHERE type = 'table' AND name = 'partial_schema_marker'"
+        ).fetchone() == (0,)

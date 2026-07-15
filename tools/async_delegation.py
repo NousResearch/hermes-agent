@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import threading
 import time
@@ -78,50 +79,157 @@ _MAX_RETAINED_COMPLETED = 50
 _DURABLE_RETENTION_SECONDS = 7 * 24 * 60 * 60
 _MAX_DURABLE_PENDING = 1000
 _DB_LOCK = threading.Lock()
+_FTS_CAPABILITY_CACHE: dict[tuple[str, type], tuple[bool, bool]] = {}
 
 
 def _db_path():
     return get_hermes_home() / "state.db"
 
 
-def _connect() -> sqlite3.Connection:
-    path = _db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
+def _open_with_wal(path) -> sqlite3.Connection:
+    """Open *path* with the canonical state layer's journal semantics."""
     conn = sqlite3.connect(path, timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS async_delegations (
-            delegation_id TEXT PRIMARY KEY,
-            origin_session TEXT NOT NULL,
-            origin_ui_session_id TEXT NOT NULL DEFAULT '',
-            parent_session_id TEXT,
-            state TEXT NOT NULL,
-            dispatched_at REAL NOT NULL,
-            completed_at REAL,
-            updated_at REAL NOT NULL,
-            event_json TEXT,
-            result_json TEXT,
-            delivery_state TEXT NOT NULL DEFAULT 'pending',
-            delivery_attempts INTEGER NOT NULL DEFAULT 0,
-            delivered_at REAL,
-            owner_pid INTEGER,
-            owner_started_at INTEGER,
-            task_json TEXT,
-            delivery_claim TEXT,
-            delivery_claimed_at REAL
-        )"""
+    try:
+        from hermes_state import apply_wal_with_fallback
+
+        apply_wal_with_fallback(conn, db_label="state.db")
+        return conn
+    except BaseException:
+        conn.close()
+        raise
+
+
+def _fts_capabilities(conn: sqlite3.Connection) -> tuple[bool, bool]:
+    """Return (base FTS5, optional trigram tokenizer) for this runtime."""
+    cache_key = (sqlite3.sqlite_version, type(conn))
+    cached = _FTS_CAPABILITY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    try:
+        conn.execute("DROP TABLE IF EXISTS temp._hermes_fts5_probe")
+        conn.execute("CREATE VIRTUAL TABLE temp._hermes_fts5_probe USING fts5(x)")
+        conn.execute("DROP TABLE temp._hermes_fts5_probe")
+    except sqlite3.OperationalError as exc:
+        if "no such module" in str(exc).lower() and "fts5" in str(exc).lower():
+            result = (False, False)
+            _FTS_CAPABILITY_CACHE[cache_key] = result
+            return result
+        raise
+
+    try:
+        conn.execute("DROP TABLE IF EXISTS temp._hermes_fts_trigram_probe")
+        conn.execute(
+            "CREATE VIRTUAL TABLE temp._hermes_fts_trigram_probe "
+            "USING fts5(x, tokenize='trigram')"
+        )
+        conn.execute("DROP TABLE temp._hermes_fts_trigram_probe")
+        result = (True, True)
+        _FTS_CAPABILITY_CACHE[cache_key] = result
+        return result
+    except sqlite3.OperationalError as exc:
+        if "no such tokenizer: trigram" in str(exc).lower():
+            result = (True, False)
+            _FTS_CAPABILITY_CACHE[cache_key] = result
+            return result
+        raise
+
+
+def _canonical_schema_ready(
+    conn: sqlite3.Connection,
+    schema_version: int,
+) -> bool:
+    """Validate the transactional schema-cookie token for this capability set."""
+    from hermes_state import (
+        STATE_SCHEMA_READINESS_KEY,
+        canonical_schema_readiness_token,
     )
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")}
-    for name, sql_type in (
-        ("owner_pid", "INTEGER"),
-        ("owner_started_at", "INTEGER"),
-        ("task_json", "TEXT"),
-        ("delivery_claim", "TEXT"),
-        ("delivery_claimed_at", "REAL"),
-    ):
-        if name not in columns:
-            conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
-    return conn
+
+    try:
+        base_fts, trigram_fts = _fts_capabilities(conn)
+        row = conn.execute(
+            """SELECT
+                   (SELECT version FROM schema_version LIMIT 1),
+                   (SELECT value FROM state_meta WHERE key = ?)""",
+            (STATE_SCHEMA_READINESS_KEY,),
+        ).fetchone()
+        if row is None or row[0] is None or row[1] is None:
+            return False
+        schema_cookie = int(conn.execute("PRAGMA schema_version").fetchone()[0])
+        expected = canonical_schema_readiness_token(
+            schema_version,
+            schema_cookie,
+            base_fts,
+            trigram_fts,
+        )
+        return int(row[0]) == schema_version and str(row[1]) == expected
+    except (sqlite3.DatabaseError, TypeError, ValueError):
+        return False
+
+
+def _connect() -> sqlite3.Connection:
+    from hermes_state import (
+        SCHEMA_VERSION,
+        _STATE_DB_PATH_RETRY_LIMIT,
+        _begin_schema_transaction,
+        _canonical_state_db_path,
+        _end_schema_transaction,
+        _open_state_db_anchor,
+        _state_db_anchor_matches_path,
+        initialize_state_db,
+    )
+
+    path = _canonical_state_db_path(_db_path())
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for attempt in range(_STATE_DB_PATH_RETRY_LIMIT):
+        anchor_fd, _ = _open_state_db_anchor(path)
+        conn = None
+        stale = False
+        schema_transaction = False
+        try:
+            conn = _open_with_wal(path)
+            _begin_schema_transaction(conn)
+            schema_transaction = True
+            ready = _canonical_schema_ready(conn, SCHEMA_VERSION)
+            stale = not _state_db_anchor_matches_path(anchor_fd, path)
+            conn.commit()
+            _end_schema_transaction(conn)
+            schema_transaction = False
+            if ready and not stale:
+                return conn
+        except BaseException:
+            try:
+                stale = not _state_db_anchor_matches_path(anchor_fd, path)
+            except BaseException:
+                if conn is not None:
+                    if schema_transaction:
+                        try:
+                            conn.rollback()
+                        finally:
+                            _end_schema_transaction(conn)
+                    conn.close()
+                raise
+            if conn is not None:
+                if schema_transaction:
+                    try:
+                        conn.rollback()
+                    finally:
+                        _end_schema_transaction(conn)
+                conn.close()
+            if stale and attempt < _STATE_DB_PATH_RETRY_LIMIT - 1:
+                continue
+            raise
+        finally:
+            os.close(anchor_fd)
+
+        if conn is not None:
+            conn.close()
+        if stale:
+            continue
+        initialize_state_db(path)
+
+    raise RuntimeError(
+        f"state.db pathname kept changing during async bootstrap: {path}"
+    )
 
 
 def _persist_dispatch(record: Dict[str, Any]) -> None:

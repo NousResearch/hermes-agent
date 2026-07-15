@@ -9,6 +9,7 @@ are never written to the receipt.
 
 from __future__ import annotations
 
+import _imp
 import hashlib
 import importlib.util
 import json
@@ -95,7 +96,9 @@ def _pyc_is_safe_for_tracked_source(cache_path: Path, source_path: Path) -> bool
     PEP 552 metadata still determines whether ordinary import machinery can
     select the cache at all. A timestamp/size mismatch or a checked-hash
     mismatch makes the cache stale, so Python compiles the clean tracked source
-    instead. Unchecked-hash and metadata-current caches remain content-attested.
+    instead. Hash staleness also follows the interpreter's active
+    ``--check-hash-based-pycs`` policy; modes that skip validation remain
+    content-attested along with metadata-current caches.
     """
     optimization = 0
     match = re.search(r"\.opt-([0-9]+)\.pyc$", cache_path.name)
@@ -112,9 +115,12 @@ def _pyc_is_safe_for_tracked_source(cache_path: Path, source_path: Path) -> bool
         if flags & ~0b11:
             return False
         if flags & 0b1:
-            if (
-                flags & 0b10
-                and cached[8:16] != importlib.util.source_hash(source_bytes)
+            hash_policy = _imp.check_hash_based_pycs
+            runtime_checks_hash = hash_policy == "always" or (
+                hash_policy == "default" and bool(flags & 0b10)
+            )
+            if runtime_checks_hash and (
+                cached[8:16] != importlib.util.source_hash(source_bytes)
             ):
                 return True
         else:

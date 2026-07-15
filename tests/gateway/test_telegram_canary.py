@@ -287,6 +287,35 @@ def test_runtime_sha_verification_requires_exact_clean_checkout(tmp_path):
             text=True,
         )
         assert stale_import.stdout.strip() == "0 1"
+        if invalidation_mode is py_compile.PycInvalidationMode.CHECKED_HASH:
+            never_check_env = standard_import_env.copy()
+            repo_root = Path(__file__).resolve().parents[2]
+            never_check_env["PYTHONPATH"] = (
+                f"{tmp_path}{os.pathsep}{repo_root}"
+            )
+            never_check = subprocess.run(
+                [
+                    sys.executable,
+                    "--check-hash-based-pycs",
+                    "never",
+                    "-B",
+                    "-c",
+                    "from pathlib import Path; "
+                    "from hermes_cli.telegram_canary import "
+                    "verify_running_runtime_sha; "
+                    "import tracked_module; "
+                    "print(bool(getattr(tracked_module, 'PWNED', 0)), "
+                    "getattr(tracked_module, 'VALUE', 0), "
+                    "verify_running_runtime_sha("
+                    f"'{sha}', source_root=Path.cwd()))",
+                ],
+                cwd=tmp_path,
+                env=never_check_env,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            assert never_check.stdout.strip() == "True 0 False"
         stale_source.write_text(
             'PWNED = "stale ordinary cache payload must not execute"\n',
             encoding="utf-8",

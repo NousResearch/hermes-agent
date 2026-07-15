@@ -856,6 +856,33 @@ class GatewayKanbanWatchersMixin:
                 else:
                     logger.info(f"kanban dispatcher: max_in_progress={max_in_progress}")
 
+        # Aggregate cap across every active board. Unlike max_in_progress,
+        # this is enforced under a machine-global dispatch lock so two boards
+        # cannot consume the same remaining slot.
+        raw_global_max = kanban_cfg.get("global_max_in_progress", None)
+        global_max_in_progress = None
+        if raw_global_max is not None:
+            try:
+                global_max_in_progress = int(raw_global_max)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "kanban dispatcher: invalid kanban.global_max_in_progress=%r; ignoring",
+                    raw_global_max,
+                )
+                global_max_in_progress = None
+            else:
+                if global_max_in_progress < 1:
+                    logger.warning(
+                        "kanban dispatcher: kanban.global_max_in_progress=%r is below 1; ignoring",
+                        raw_global_max,
+                    )
+                    global_max_in_progress = None
+                else:
+                    logger.info(
+                        "kanban dispatcher: global_max_in_progress=%d",
+                        global_max_in_progress,
+                    )
+
         raw_failure_limit = kanban_cfg.get("failure_limit", _kb.DEFAULT_FAILURE_LIMIT)
         try:
             failure_limit = int(raw_failure_limit)
@@ -902,7 +929,7 @@ class GatewayKanbanWatchersMixin:
 
         # Read kanban.max_in_progress_per_profile — per-profile concurrency
         # cap (#21582). When set, no single profile gets more than N
-        # workers running at once, even if the global max_in_progress
+        # workers running at once, even if the board-local max_in_progress
         # would allow it. Prevents one profile's local model / API quota
         # / browser pool from being overwhelmed by a fan-out.
         raw_per_profile = kanban_cfg.get("max_in_progress_per_profile", None)
@@ -1018,6 +1045,7 @@ class GatewayKanbanWatchersMixin:
                     board=slug,
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
+                    global_max_in_progress=global_max_in_progress,
                     failure_limit=failure_limit,
                     stale_timeout_seconds=stale_timeout_seconds,
                     default_assignee=default_assignee,

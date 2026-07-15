@@ -1551,6 +1551,21 @@ def _maybe_checkpoint_wal(conn: sqlite3.Connection, db_path: Path) -> None:
         _log.debug("kanban WAL checkpoint on %s skipped: %s", key, exc)
 
 
+def _global_dispatch_tick_lock():
+    """Serialize capped dispatch decisions across every kanban board.
+
+    The per-board lock prevents duplicate writers to one database, but cannot
+    make an aggregate capacity check atomic across separate board databases.
+    Callers that enable ``global_max_in_progress`` take this machine-global
+    lock before counting running tasks and spawning. It is deliberately
+    non-blocking, matching :func:`_dispatch_tick_lock`: another dispatcher
+    holding the lock is already making progress, so the losing tick retries
+    at the next interval instead of stalling the gateway.
+    """
+    lock_anchor = kanban_home() / "kanban" / ".global"
+    return _dispatch_tick_lock(lock_anchor)
+
+
 def _looks_like_tls_record_at(data: bytes, offset: int) -> bool:
     """Return True for a TLS record header at ``data[offset:]``."""
     if len(data) < offset + 5:
@@ -7770,6 +7785,71 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     return False
 
 
+def _count_running_across_boards(
+    *,
+    current_conn: sqlite3.Connection,
+    current_board: Optional[str],
+) -> Optional[int]:
+    """Count running tasks across active boards, or fail closed with ``None``.
+
+    Missing databases count as empty. If an existing board database cannot be
+    read, the aggregate count is unknown and callers must not interpret that
+    as spare capacity.
+    """
+    current_slug = _normalize_board_slug(current_board) or get_current_board()
+    try:
+        current_path = kanban_db_path(board=current_slug).resolve()
+        boards = list_boards(include_archived=False)
+    except Exception:
+        _log.exception("kanban global cap: could not enumerate active boards")
+        return None
+
+    total = 0
+    seen_paths: set[Path] = set()
+    for metadata in boards:
+        slug = _normalize_board_slug(metadata.get("slug")) or DEFAULT_BOARD
+        path = kanban_db_path(board=slug).resolve()
+        if path in seen_paths:
+            continue
+        seen_paths.add(path)
+        if path == current_path:
+            try:
+                total += int(
+                    current_conn.execute(
+                        "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+                    ).fetchone()[0]
+                )
+            except sqlite3.DatabaseError:
+                _log.exception(
+                    "kanban global cap: could not count running tasks on board %s",
+                    slug,
+                )
+                return None
+            continue
+
+        if not path.exists():
+            continue
+        other_conn = None
+        try:
+            other_conn = connect(board=slug)
+            total += int(
+                other_conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+                ).fetchone()[0]
+            )
+        except (OSError, sqlite3.DatabaseError):
+            _log.exception(
+                "kanban global cap: could not count running tasks on board %s; "
+                "skipping all new spawns this tick",
+                slug,
+            )
+            return None
+        finally:
+            if other_conn is not None:
+                other_conn.close()
+    return total
+
+
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
@@ -7778,6 +7858,7 @@ def dispatch_once(
     dry_run: bool = False,
     max_spawn: Optional[int] = None,
     max_in_progress: Optional[int] = None,
+    global_max_in_progress: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
@@ -7799,45 +7880,54 @@ def dispatch_once(
     boards tick in parallel. See :func:`_dispatch_tick_lock` for the
     cross-process / cross-platform mechanics.
     """
-    try:
-        db_path = kanban_db_path(board=board)
-    except Exception:
-        # Path resolution should never fail, but if it somehow does we
-        # must not lose the tick — fall through to an unguarded dispatch
-        # rather than dropping work.
-        return _dispatch_once_locked(
-            conn,
-            spawn_fn=spawn_fn,
-            ttl_seconds=ttl_seconds,
-            dry_run=dry_run,
-            max_spawn=max_spawn,
-            max_in_progress=max_in_progress,
-            failure_limit=failure_limit,
-            stale_timeout_seconds=stale_timeout_seconds,
-            board=board,
-            default_assignee=default_assignee,
-            max_in_progress_per_profile=max_in_progress_per_profile,
-        )
-    with _dispatch_tick_lock(db_path) as held:
-        if not held:
-            return DispatchResult(skipped_locked=True)
-        result = _dispatch_once_locked(
-            conn,
-            spawn_fn=spawn_fn,
-            ttl_seconds=ttl_seconds,
-            dry_run=dry_run,
-            max_spawn=max_spawn,
-            max_in_progress=max_in_progress,
-            failure_limit=failure_limit,
-            stale_timeout_seconds=stale_timeout_seconds,
-            board=board,
-            default_assignee=default_assignee,
-            max_in_progress_per_profile=max_in_progress_per_profile,
-        )
-        # Still under the dispatch lock: opportunistically truncate the WAL
-        # at a coarse interval so it cannot grow unbounded between restarts.
-        _maybe_checkpoint_wal(conn, db_path)
-        return result
+    def _run_board_tick() -> DispatchResult:
+        try:
+            db_path = kanban_db_path(board=board)
+        except Exception:
+            # Path resolution should never fail, but if it somehow does we
+            # must not lose the tick — fall through to an unguarded dispatch.
+            return _dispatch_once_locked(
+                conn,
+                spawn_fn=spawn_fn,
+                ttl_seconds=ttl_seconds,
+                dry_run=dry_run,
+                max_spawn=max_spawn,
+                max_in_progress=max_in_progress,
+                global_max_in_progress=global_max_in_progress,
+                failure_limit=failure_limit,
+                stale_timeout_seconds=stale_timeout_seconds,
+                board=board,
+                default_assignee=default_assignee,
+                max_in_progress_per_profile=max_in_progress_per_profile,
+            )
+        with _dispatch_tick_lock(db_path) as held:
+            if not held:
+                return DispatchResult(skipped_locked=True)
+            result = _dispatch_once_locked(
+                conn,
+                spawn_fn=spawn_fn,
+                ttl_seconds=ttl_seconds,
+                dry_run=dry_run,
+                max_spawn=max_spawn,
+                max_in_progress=max_in_progress,
+                global_max_in_progress=global_max_in_progress,
+                failure_limit=failure_limit,
+                stale_timeout_seconds=stale_timeout_seconds,
+                board=board,
+                default_assignee=default_assignee,
+                max_in_progress_per_profile=max_in_progress_per_profile,
+            )
+            # Still under the dispatch lock: opportunistically truncate the WAL
+            # at a coarse interval so it cannot grow unbounded between restarts.
+            _maybe_checkpoint_wal(conn, db_path)
+            return result
+
+    if isinstance(global_max_in_progress, int) and global_max_in_progress > 0:
+        with _global_dispatch_tick_lock() as held:
+            if not held:
+                return DispatchResult(skipped_locked=True)
+            return _run_board_tick()
+    return _run_board_tick()
 
 
 def _dispatch_once_locked(
@@ -7848,6 +7938,7 @@ def _dispatch_once_locked(
     dry_run: bool = False,
     max_spawn: Optional[int] = None,
     max_in_progress: Optional[int] = None,
+    global_max_in_progress: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stale_timeout_seconds: int = 0,
     board: Optional[str] = None,
@@ -7911,13 +8002,46 @@ def _dispatch_once_locked(
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = recompute_ready(conn, failure_limit=failure_limit)
 
+    # Convert aggregate headroom into an effective board-local cap. The public
+    # wrapper holds the machine-global dispatch lock around this count and the
+    # subsequent spawn, so two boards cannot both consume the same slot.
+    if isinstance(global_max_in_progress, int) and global_max_in_progress > 0:
+        global_running = _count_running_across_boards(
+            current_conn=conn,
+            current_board=board,
+        )
+        if global_running is None or global_running >= global_max_in_progress:
+            return result
+        local_running = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+            ).fetchone()[0]
+        )
+        effective_local_cap = local_running + (
+            global_max_in_progress - global_running
+        )
+        if max_in_progress is None or max_in_progress > effective_local_cap:
+            max_in_progress = effective_local_cap
+
+    # Apply the board-local/global-derived cap to the shared ready + review
+    # dispatch budget before either queue is inspected. ``max_spawn`` is a
+    # concurrency ceiling in this function (existing running workers plus new
+    # spawns), not merely a per-tick count.
+    if max_in_progress is not None:
+        in_progress = int(
+            conn.execute(
+                "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
+            ).fetchone()[0]
+        )
+        if in_progress >= max_in_progress:
+            return result
+        if max_spawn is None or max_spawn > max_in_progress:
+            max_spawn = max_in_progress
+
     # Count tasks already running so max_spawn enforces concurrency rather
     # than a per-tick spawn budget. See the docstring above for the full
     # rationale; the short version is that a 60-second tick interval with a
-    # per-tick budget of N would grow concurrency by N every tick on a busy
-    # board, since "running" tasks aren't reclaimed by completion alone —
-    # they sit in status='running' until the worker calls
-    # kanban_complete/kanban_block (or the dispatcher TTL-reclaims them).
+    # slow backend must not add max_spawn new workers every minute.
     running_count = 0
     if max_spawn is not None:
         running_count = int(
@@ -7931,20 +8055,6 @@ def _dispatch_once_locked(
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
-    # Honour kanban.max_in_progress: if the board already has enough running
-    # tasks, skip spawning this tick so slow workers (local LLMs,
-    # resource-constrained hosts) can finish what they have before more tasks
-    # pile up and time out.
-    if max_in_progress is not None and ready_rows:
-        in_progress = conn.execute(
-            "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
-        ).fetchone()[0]
-        if in_progress >= max_in_progress:
-            return result
-        # Only spawn enough to reach the cap, respecting max_spawn too.
-        remaining = max_in_progress - in_progress
-        if max_spawn is None or max_spawn > remaining:
-            max_spawn = remaining
     spawned = 0
     # Per-profile concurrency cap (#21582): when set, track how many
     # workers each assignee already has in flight, and refuse to spawn
@@ -8088,6 +8198,7 @@ def _dispatch_once_locked(
             continue
         if dry_run:
             result.spawned.append((row["id"], row_assignee, ""))
+            spawned += 1
             # Increment per-profile counter even in dry_run so the cap
             # check sees the would-be spawn on subsequent iterations.
             # Without this, dry_run reports every task as spawnable and
@@ -8188,6 +8299,7 @@ def _dispatch_once_locked(
             continue
         if dry_run:
             result.spawned.append((row["id"], row["assignee"], ""))
+            spawned += 1
             continue
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
@@ -8701,6 +8813,7 @@ def run_daemon(
     *,
     interval: float = 60.0,
     max_spawn: Optional[int] = None,
+    global_max_in_progress: Optional[int] = None,
     failure_limit: int = DEFAULT_SPAWN_FAILURE_LIMIT,
     stop_event=None,
     on_tick=None,
@@ -8738,6 +8851,7 @@ def run_daemon(
                 res = dispatch_once(
                     conn,
                     max_spawn=max_spawn,
+                    global_max_in_progress=global_max_in_progress,
                     failure_limit=failure_limit,
                 )
             if on_tick is not None:

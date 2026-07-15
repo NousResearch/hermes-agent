@@ -3674,6 +3674,50 @@ def test_gateway_dispatcher_watcher_env_truthy_uses_config(monkeypatch):
     )
 
 
+def test_gateway_dispatcher_passes_global_cap(kanban_home, monkeypatch):
+    """The embedded gateway path must not bypass the cross-board cap."""
+    import asyncio
+    from gateway.run import GatewayRunner
+    import hermes_cli.config as _cfg_mod
+    import hermes_cli.kanban_db as _kb
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    monkeypatch.setattr(
+        _cfg_mod,
+        "load_config",
+        lambda: {
+            "kanban": {
+                "dispatch_in_gateway": True,
+                "dispatch_interval_seconds": 1,
+                "auto_decompose": False,
+                "global_max_in_progress": 2,
+            }
+        },
+    )
+    captured = {}
+
+    def fake_dispatch_once(_conn, **kwargs):
+        captured.update(kwargs)
+        runner._running = False
+        return _kb.DispatchResult()
+
+    async def immediate_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(_kb, "dispatch_once", fake_dispatch_once)
+    monkeypatch.setattr("gateway.kanban_watchers.asyncio.sleep", immediate_sleep)
+
+    asyncio.run(
+        asyncio.wait_for(
+            runner._kanban_dispatcher_watcher(),
+            timeout=3.0,
+        )
+    )
+
+    assert captured["global_max_in_progress"] == 2
+
+
 @pytest.mark.parametrize("corrupt_exc", ["sqlite", "guard"])
 def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     monkeypatch, tmp_path, caplog, corrupt_exc

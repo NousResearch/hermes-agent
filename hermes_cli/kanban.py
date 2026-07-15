@@ -2287,8 +2287,9 @@ def _cmd_tail(args: argparse.Namespace) -> int:
 
 def _cmd_dispatch(args: argparse.Namespace) -> int:
     # Honour kanban.default_assignee as the fallback for unassigned ready
-    # tasks (#27145), kanban.max_in_progress as the global concurrency cap
-    # (#33488), kanban.max_in_progress_per_profile as the per-profile
+    # tasks (#27145), kanban.max_in_progress as the board-local cap (#33488),
+    # kanban.global_max_in_progress as the aggregate cross-board cap,
+    # kanban.max_in_progress_per_profile as the per-profile
     # cap (#21582), and kanban.max_spawn as the per-tick spawn limit
     # (#28805). Same semantics as the gateway dispatch path so behavior
     # matches whether the user runs the CLI directly or relies on the
@@ -2312,6 +2313,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             _kanban_cfg.get("max_in_progress_per_profile")
         )
         max_in_progress = _coerce_positive_int(_kanban_cfg.get("max_in_progress"))
+        global_max_in_progress = _coerce_positive_int(
+            _kanban_cfg.get("global_max_in_progress")
+        )
         # CLI --max overrides config kanban.max_spawn when both are present;
         # CLI is the more explicit signal so it wins.
         cli_max = getattr(args, "max", None)
@@ -2322,6 +2326,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         default_assignee = None
         max_in_progress_per_profile = None
         max_in_progress = None
+        global_max_in_progress = None
         max_spawn = getattr(args, "max", None)
     with kb.connect_closing() as conn:
         res = kb.dispatch_once(
@@ -2329,6 +2334,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
             dry_run=args.dry_run,
             max_spawn=max_spawn,
             max_in_progress=max_in_progress,
+            global_max_in_progress=global_max_in_progress,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
@@ -2516,10 +2522,25 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         except Exception:
             return False
 
+    global_max_in_progress = None
+    try:
+        from hermes_cli.config import load_config
+
+        raw_global_max = (load_config().get("kanban") or {}).get(
+            "global_max_in_progress"
+        )
+        if raw_global_max is not None:
+            parsed_global_max = int(raw_global_max)
+            if parsed_global_max > 0:
+                global_max_in_progress = parsed_global_max
+    except Exception:
+        pass
+
     try:
         kb.run_daemon(
             interval=args.interval,
             max_spawn=args.max,
+            global_max_in_progress=global_max_in_progress,
             failure_limit=getattr(args, "failure_limit", kb.DEFAULT_SPAWN_FAILURE_LIMIT),
             on_tick=_on_tick,
         )

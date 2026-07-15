@@ -1957,10 +1957,27 @@ def dispatch(
     board: Optional[str] = Query(None),
 ):
     board = _resolve_board(board)
+    global_max_in_progress = None
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        kanban_config = config.get("kanban", {}) if isinstance(config, dict) else {}
+        raw_global_max = kanban_config.get("global_max_in_progress")
+        if raw_global_max is not None:
+            parsed_global_max = int(raw_global_max)
+            if parsed_global_max > 0:
+                global_max_in_progress = parsed_global_max
+    except Exception:
+        pass
     conn = _conn(board=board)
     try:
         result = kanban_db.dispatch_once(
-            conn, dry_run=dry_run, max_spawn=max_n, board=board,
+            conn,
+            dry_run=dry_run,
+            max_spawn=max_n,
+            global_max_in_progress=global_max_in_progress,
+            board=board,
         )
         # DispatchResult is a dataclass.
         try:

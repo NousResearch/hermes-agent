@@ -2551,6 +2551,8 @@ DEFAULT_CONFIG = {
             "limit": 100,                 # Global cap on messages scanned per reconnect
             "max_dispatches": 10,         # Cap on recovered messages dispatched per reconnect
         },
+        "startup_catchup": True,          # Replay unseen post-checkpoint triggers after a Discord gateway outage
+        "startup_catchup_limit": 50,      # Bounded recent-history scan per channel during startup catch-up
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         # Discord Gateway transport health. These settings inspect the active
         # WebSocket's ready/open/heartbeat state; they never use Discord REST as

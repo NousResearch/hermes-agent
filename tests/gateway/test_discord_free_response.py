@@ -1486,3 +1486,64 @@ async def test_discord_non_reply_free_channel_skips_backfill(adapter, monkeypatc
 
     adapter._fetch_channel_context.assert_not_awaited()
 
+
+
+@pytest.mark.asyncio
+async def test_discord_thread_context_includes_parent_starter_message(adapter, monkeypatch):
+    """A public thread mention can recover the parent request that started it."""
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+    author = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    parent = FakeTextChannel(channel_id=100, name="requests")
+    parent.fetch_message = AsyncMock(return_value=make_history_message(author=author, content="Please analyze the missed opportunity.", msg_id=200))
+    thread = FakeThread(channel_id=200, parent=parent)
+    thread.history = FakeHistoryChannel([], channel_id=200).history
+    trigger = make_message(channel=thread, content="<@999>", mentions=[adapter._client.user])
+    trigger.id = 201
+
+    result = await adapter._fetch_channel_context(thread, before=trigger)
+
+    assert "[Thread starter message]" in result
+    assert "Please analyze the missed opportunity." in result
+
+
+@pytest.mark.asyncio
+async def test_discord_bare_thread_mention_dispatches_when_parent_starter_is_context(adapter, monkeypatch):
+    """The empty-turn guard permits a bare mention only when starter context exists."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+    adapter.config.extra["history_backfill"] = True
+    adapter._fetch_channel_context = AsyncMock(
+        return_value="[Thread starter message]\n[Alice] Actual request"
+    )
+    thread = FakeThread(channel_id=200, parent=FakeTextChannel(channel_id=100, name="requests"))
+    message = make_message(channel=thread, content=f"<@{adapter._client.user.id}>", mentions=[adapter._client.user])
+
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+    event = adapter.handle_message.await_args.args[0]
+    assert event.text == ""
+    assert event.channel_context == "[Thread starter message]\n[Alice] Actual request"
+
+
+@pytest.mark.asyncio
+async def test_discord_startup_catchup_primes_then_dispatches_missed_mention_once(adapter, tmp_path, monkeypatch):
+    """A restart processes one unseen trigger but never replays it again."""
+    monkeypatch.setattr("hermes_constants.get_hermes_home", lambda: tmp_path)
+    adapter.config.extra["startup_catchup"] = True
+    adapter.config.extra["startup_catchup_limit"] = 10
+    bot_user = adapter._client.user
+    channel = FakeHistoryChannel([], channel_id=321)
+    adapter._client.guilds = [SimpleNamespace(text_channels=[channel], threads=[])]
+    adapter._dispatch_discord_message = AsyncMock()
+
+    await adapter._catch_up_missed_mentions()
+    missed = make_message(channel=channel, content=f"<@{bot_user.id}> offline request", mentions=[bot_user])
+    missed.id = 456
+    channel._history_messages.append(missed)
+
+    await adapter._catch_up_missed_mentions()
+    await adapter._catch_up_missed_mentions()
+
+    adapter._dispatch_discord_message.assert_awaited_once_with(missed)

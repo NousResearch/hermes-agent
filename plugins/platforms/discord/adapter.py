@@ -52,7 +52,7 @@ _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 _DISCORD_COMMAND_SYNC_STATE_SUBDIR = "gateway"
 _DISCORD_COMMAND_SYNC_STATE_FILENAME = "discord_command_sync_state.json"
 _DISCORD_NONCONVERSATIONAL_STATE_FILENAME = "discord_nonconversational_messages.json"
-
+_DISCORD_STARTUP_CATCHUP_STATE_FILENAME = "discord_startup_catchup_state.json"
 _DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS = 4.5
 _DISCORD_COMMAND_SYNC_MAX_RATE_LIMIT_SLEEP_SECONDS = 30.0
 # Discord enforces a hard cap of 100 global application (slash) commands per
@@ -308,6 +308,61 @@ class _DiscordNonConversationalMessageTracker:
 
     def __contains__(self, message_id: str) -> bool:
         return str(message_id or "") in self._ids
+
+
+class _DiscordStartupCatchupTracker:
+    """Persist bounded Discord startup catch-up progress across restarts."""
+
+    _MAX_TRACKED = 2000
+
+    def __init__(self, max_tracked: int = _MAX_TRACKED):
+        self._max_tracked = max_tracked
+        self._state = self._load()
+
+    def _state_path(self) -> _Path:
+        from hermes_constants import get_hermes_home
+
+        return get_hermes_home() / _DISCORD_COMMAND_SYNC_STATE_SUBDIR / _DISCORD_STARTUP_CATCHUP_STATE_FILENAME
+
+    def _load(self) -> dict:
+        try:
+            data = json.loads(self._state_path().read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {
+                    "initialized_channels": [str(item) for item in data.get("initialized_channels", [])],
+                    "processed_message_ids": [str(item) for item in data.get("processed_message_ids", [])],
+                }
+        except FileNotFoundError:
+            pass
+        except Exception:
+            logger.debug("[%s] Failed to load Discord startup catch-up state", "Discord")
+        return {"initialized_channels": [], "processed_message_ids": []}
+
+    def _save(self) -> None:
+        for key in ("initialized_channels", "processed_message_ids"):
+            self._state[key] = self._state[key][-self._max_tracked:]
+        try:
+            atomic_json_write(self._state_path(), self._state, indent=None)
+        except Exception:
+            logger.debug("[%s] Failed to save Discord startup catch-up state", "Discord", exc_info=True)
+
+    def initialized(self, channel_id: str) -> bool:
+        return str(channel_id) in self._state["initialized_channels"]
+
+    def mark_initialized(self, channel_id: str) -> None:
+        key = str(channel_id)
+        if key not in self._state["initialized_channels"]:
+            self._state["initialized_channels"].append(key)
+            self._save()
+
+    def processed(self, message_id: str) -> bool:
+        return str(message_id) in self._state["processed_message_ids"]
+
+    def mark_processed(self, message_id: str) -> None:
+        key = str(message_id)
+        if key not in self._state["processed_message_ids"]:
+            self._state["processed_message_ids"].append(key)
+            self._save()
 
 
 def _metadata_marks_nonconversational(metadata: Optional[Dict[str, Any]]) -> bool:
@@ -973,6 +1028,7 @@ class DiscordAdapter(BasePlatformAdapter):
         # Persistent set of bot-authored lifecycle/status message IDs that
         # should not act as conversational history boundaries after restart.
         self._nonconversational_messages = _DiscordNonConversationalMessageTracker()
+        self._startup_catchup = _DiscordStartupCatchupTracker()
         # Last truncated mid-stream preview delivered per (chat_id, message_id).
         # Once an oversized streaming edit saturates at the 2000-char preview
         # cap, every subsequent progressive edit truncates to the SAME text;
@@ -1879,6 +1935,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return
         try:
+            await self._catch_up_missed_mentions()
             sync_policy = self._get_discord_command_sync_policy()
             if sync_policy == "off":
                 logger.info("[%s] Skipping Discord slash command sync (policy=off)", self.name)
@@ -5924,6 +5981,80 @@ class DiscordAdapter(BasePlatformAdapter):
         except (ValueError, TypeError):
             return 50
 
+    def _discord_startup_catchup(self) -> bool:
+        configured = self.config.extra.get("startup_catchup")
+        if configured is not None:
+            return str(configured).lower() not in {"false", "0", "no", "off"}
+        return os.getenv("DISCORD_STARTUP_CATCHUP", "true").lower() in {"true", "1", "yes"}
+
+    def _discord_startup_catchup_limit(self) -> int:
+        configured = self.config.extra.get("startup_catchup_limit")
+        try:
+            return max(1, min(int(configured if configured is not None else os.getenv("DISCORD_STARTUP_CATCHUP_LIMIT", "50")), 200))
+        except (TypeError, ValueError):
+            return 50
+
+    async def _dispatch_discord_message(self, message: DiscordMessage) -> None:
+        """Dispatch catch-up traffic through the same message gate as live traffic."""
+        if not self._client or message.author == self._client.user:
+            return
+        if getattr(message, "type", None) not in {discord.MessageType.default, discord.MessageType.reply}:
+            return
+        if getattr(message.author, "bot", False):
+            allow_bots = os.getenv("DISCORD_ALLOW_BOTS", "none").lower().strip()
+            if allow_bots == "none":
+                return
+            if allow_bots == "mentions" and not self._self_is_explicitly_mentioned(message):
+                return
+            if self._discord_bots_require_inline_mention() and not self._self_is_raw_mentioned(message):
+                return
+            await self._handle_message(message)
+            return
+        is_dm = isinstance(message.channel, discord.DMChannel) or getattr(message, "guild", None) is None
+        channel_ids = None if is_dm else self._discord_channel_keys(message, self._get_parent_channel_id(message.channel))
+        if not self._is_allowed_user(
+            str(message.author.id), message.author, guild=getattr(message, "guild", None),
+            is_dm=is_dm, channel_ids=channel_ids,
+        ):
+            return
+        await self._handle_message(message, role_authorized=bool(getattr(self, "_allowed_role_ids", set())))
+
+    async def _catch_up_missed_mentions(self) -> None:
+        """Boundedly replay unseen post-checkpoint channel events exactly once."""
+        if not self._client or not self._discord_startup_catchup():
+            return
+        limit = self._discord_startup_catchup_limit()
+        channels = []
+        for guild in getattr(self._client, "guilds", []) or []:
+            channels.extend(getattr(guild, "text_channels", []) or [])
+            channels.extend(getattr(guild, "threads", []) or [])
+        for channel in channels:
+            channel_id = str(getattr(channel, "id", ""))
+            if not channel_id:
+                continue
+            try:
+                messages = [message async for message in channel.history(
+                    limit=limit, before=_Snowflake((1 << 63) - 1), oldest_first=True,
+                )]
+            except discord.Forbidden:
+                logger.debug("[%s] Missing permissions for startup catch-up in %s", self.name, channel_id)
+                continue
+            except Exception as exc:
+                logger.warning("[%s] Startup catch-up history fetch failed for %s: %s", self.name, channel_id, exc)
+                continue
+            if not self._startup_catchup.initialized(channel_id):
+                for message in messages:
+                    self._startup_catchup.mark_processed(str(message.id))
+                self._startup_catchup.mark_initialized(channel_id)
+                continue
+            for message in messages:
+                message_id = str(getattr(message, "id", ""))
+                if not message_id or self._startup_catchup.processed(message_id):
+                    continue
+                # Persist before dispatch so a crash/restart cannot replay the turn.
+                self._startup_catchup.mark_processed(message_id)
+                await self._dispatch_discord_message(message)
+
     async def _fetch_channel_context(
         self,
         channel: Any,
@@ -6113,7 +6244,22 @@ class DiscordAdapter(BasePlatformAdapter):
                     if mid:
                         seen_ids.add(mid)
 
-            if not collected and not reply_collected:
+            starter_collected: List[str] = []
+            if is_thread_channel:
+                parent = getattr(channel, "parent", None)
+                fetch_message = getattr(parent, "fetch_message", None)
+                if callable(fetch_message):
+                    try:
+                        starter = await fetch_message(int(getattr(channel, "id", 0)))
+                        line = _keep(starter)
+                        if line is not None and str(getattr(starter, "id", "")) not in seen_ids:
+                            starter_collected.append(line)
+                    except discord.Forbidden:
+                        logger.debug("[%s] Missing permissions to fetch thread starter", self.name)
+                    except Exception as exc:
+                        logger.debug("[%s] Failed to fetch thread starter: %s", self.name, exc)
+
+            if not collected and not reply_collected and not starter_collected:
                 return ""
 
             # channel.history returns newest-first; reverse each window for
@@ -6135,6 +6281,8 @@ class DiscordAdapter(BasePlatformAdapter):
                     "[Context around the replied-to message]\n"
                     + "\n".join(line for _id, line in reply_collected)
                 )
+            if starter_collected:
+                blocks.append("[Thread starter message]\n" + "\n".join(starter_collected))
             if collected:
                 blocks.append(
                     "[Recent channel messages]\n"
@@ -9434,6 +9582,11 @@ def _apply_yaml_config(yaml_cfg: dict, discord_cfg: dict) -> dict | None:
     hbl = discord_cfg.get("history_backfill_limit")
     if hbl is not None and not os.getenv("DISCORD_HISTORY_BACKFILL_LIMIT"):
         os.environ["DISCORD_HISTORY_BACKFILL_LIMIT"] = str(hbl)
+    if "startup_catchup" in discord_cfg and not os.getenv("DISCORD_STARTUP_CATCHUP"):
+        os.environ["DISCORD_STARTUP_CATCHUP"] = str(discord_cfg["startup_catchup"]).lower()
+    scl = discord_cfg.get("startup_catchup_limit")
+    if scl is not None and not os.getenv("DISCORD_STARTUP_CATCHUP_LIMIT"):
+        os.environ["DISCORD_STARTUP_CATCHUP_LIMIT"] = str(scl)
     # allow_mentions: granular control over what the bot can ping.
     # Safe defaults (no @everyone/roles) are applied in the adapter;
     # these YAML keys only override when set and let users opt back

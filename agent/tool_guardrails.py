@@ -59,6 +59,11 @@ MUTATING_TOOL_NAMES = frozenset(
     }
 )
 
+TOOL_GUARDRAIL_REQUEST_SCHEMA = "hermes.tool_guardrail.request/v1"
+_TOOL_GUARDRAIL_REQUEST_ACTIONS = frozenset({"halt"})
+_TOOL_GUARDRAIL_REQUEST_MAX_CODE_CHARS = 96
+_TOOL_GUARDRAIL_REQUEST_MAX_MESSAGE_CHARS = 512
+
 
 @dataclass(frozen=True)
 class ToolCallGuardrailConfig:
@@ -222,7 +227,7 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
 
 
 class ToolCallGuardrailController:
-    """Per-turn controller for repeated failed/non-progressing tool calls."""
+    """Per-turn controller for tool-requested and loop-detected halts."""
 
     def __init__(self, config: ToolCallGuardrailConfig | None = None):
         self.config = config or ToolCallGuardrailConfig()
@@ -294,6 +299,23 @@ class ToolCallGuardrailController:
         signature = ToolCallSignature.from_call(tool_name, args)
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
+
+        requested_halt = _parse_tool_guardrail_halt_request(
+            result,
+            current_tool_name=tool_name,
+            classified_failed=bool(failed),
+        )
+        if requested_halt is not None:
+            decision = ToolGuardrailDecision(
+                action="halt",
+                code=f"requested_{requested_halt['code']}",
+                message=requested_halt["message"],
+                tool_name=tool_name,
+                count=requested_halt["count"],
+                signature=signature,
+            )
+            self._halt_decision = decision
+            return decision
 
         if failed:
             exact_count = self._exact_failure_counts.get(signature, 0) + 1
@@ -421,6 +443,67 @@ def _tool_failure_recovery_hint(tool_name: str, count: int) -> str:
         "or a different tool that can make progress. If the blocker is external, report "
         "the blocker after one diagnostic attempt instead of repeating the same failing path."
     )
+
+
+def _parse_tool_guardrail_halt_request(
+    result: str | None,
+    *,
+    current_tool_name: str,
+    classified_failed: bool,
+) -> dict[str, Any] | None:
+    """Parse the generic plugin-to-core halt protocol.
+
+    The request is intentionally independent of any plugin name or outer
+    envelope version.  A native failure classification or an explicit failure
+    field in the envelope is required.  The request must also name the tool
+    that actually produced the result so stale or misrouted envelopes are
+    ignored.
+    """
+    payload = safe_json_loads(result or "")
+    if not isinstance(payload, Mapping):
+        return None
+    request = payload.get("guardrail_request")
+    if not isinstance(request, Mapping):
+        return None
+    declared_error = payload.get("error")
+    payload_declares_failure = (
+        payload.get("success") is False
+        or payload.get("failed") is True
+        or declared_error not in (None, "", False, 0, [], {})
+    )
+    if not classified_failed and not payload_declares_failure:
+        return None
+    if request.get("schema") != TOOL_GUARDRAIL_REQUEST_SCHEMA:
+        return None
+    if request.get("action") not in _TOOL_GUARDRAIL_REQUEST_ACTIONS:
+        return None
+
+    code = request.get("code")
+    message = request.get("message")
+    requested_tool_name = request.get("tool_name")
+    count = request.get("count")
+    if not isinstance(code, str) or not code.strip():
+        return None
+    if not isinstance(message, str) or not message.strip():
+        return None
+    if not isinstance(requested_tool_name, str):
+        return None
+    if requested_tool_name.strip() != current_tool_name:
+        return None
+    if isinstance(count, bool) or not isinstance(count, int) or count < 1:
+        return None
+
+    code = code.strip()
+    if len(code) > _TOOL_GUARDRAIL_REQUEST_MAX_CODE_CHARS:
+        return None
+    if not all(character.isalnum() or character in "._-" for character in code):
+        return None
+
+    return {
+        "code": code,
+        "message": message.strip()[:_TOOL_GUARDRAIL_REQUEST_MAX_MESSAGE_CHARS],
+        "count": count,
+    }
 
 
 def _coerce_args(args: Mapping[str, Any] | None) -> Mapping[str, Any]:

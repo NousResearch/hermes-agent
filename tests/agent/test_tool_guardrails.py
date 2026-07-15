@@ -11,6 +11,25 @@ from agent.tool_guardrails import (
 )
 
 
+def _generic_halt_result(**request_overrides):
+    request = {
+        "schema": "hermes.tool_guardrail.request/v1",
+        "action": "halt",
+        "code": "missing_credentials",
+        "message": "OpenAI API key is missing",
+        "tool_name": "terminal",
+        "count": 1,
+    }
+    request.update(request_overrides)
+    return json.dumps(
+        {
+            "vendor_envelope": "independent-plugin/v9",
+            "error": "MISSING_CREDENTIALS: OpenAI API key is missing",
+            "guardrail_request": request,
+        }
+    )
+
+
 def test_tool_call_signature_hashes_canonical_nested_unicode_args_without_exposing_raw_args():
     args_a = {
         "z": [{"β": "☤", "a": 1}],
@@ -256,3 +275,66 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+
+
+def test_failed_result_can_request_generic_halt_without_hard_stop_config():
+    controller = ToolCallGuardrailController()
+
+    decision = controller.after_call(
+        "terminal",
+        {"command": "deploy"},
+        _generic_halt_result(),
+        failed=True,
+    )
+
+    assert decision.action == "halt"
+    assert decision.code == "requested_missing_credentials"
+    assert decision.message == "OpenAI API key is missing"
+    assert decision.tool_name == "terminal"
+    assert decision.count == 1
+    assert controller.halt_decision == decision
+
+
+def test_generic_halt_request_is_independent_of_outer_plugin_identity():
+    controller = ToolCallGuardrailController()
+    payload = json.loads(_generic_halt_result())
+    payload.pop("vendor_envelope")
+    payload["another_outer_protocol"] = "different-plugin/v2"
+
+    decision = controller.after_call(
+        "terminal", {}, json.dumps(payload), failed=True
+    )
+
+    assert decision.action == "halt"
+    assert decision.code == "requested_missing_credentials"
+
+
+def test_generic_halt_request_requires_failed_result_and_exact_protocol():
+    no_failure_signal = json.loads(_generic_halt_result())
+    no_failure_signal.pop("error")
+    invalid_requests = (
+        (json.dumps(no_failure_signal), False),
+        (_generic_halt_result(schema="third-party.private/v1"), True),
+        (_generic_halt_result(action="warn"), True),
+        (_generic_halt_result(tool_name="execute_code"), True),
+        (_generic_halt_result(count=0), True),
+        (_generic_halt_result(count=True), True),
+        (_generic_halt_result(message=""), True),
+    )
+
+    for result, failed in invalid_requests:
+        controller = ToolCallGuardrailController()
+        decision = controller.after_call("terminal", {}, result, failed=failed)
+        assert decision.action != "halt"
+        assert controller.halt_decision is None
+
+
+def test_generic_halt_request_uses_explicit_envelope_error_when_native_classifier_misses_it():
+    controller = ToolCallGuardrailController()
+
+    decision = controller.after_call(
+        "terminal", {}, _generic_halt_result(), failed=False
+    )
+
+    assert decision.action == "halt"
+    assert decision.code == "requested_missing_credentials"

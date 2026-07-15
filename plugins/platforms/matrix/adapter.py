@@ -1917,13 +1917,17 @@ class MatrixAdapter(BasePlatformAdapter):
         images: list[tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None,
         human_delay: float = 0.0,
-    ) -> None:
+        reply_to: Optional[str] = None,
+    ) -> bool:
         """Send multiple Matrix images as one ordered logical batch."""
         if not images:
-            return
+            return False
         from urllib.parse import unquote as _unquote
 
         total = len(images)
+        remaining_reply_to = reply_to
+        reply_to_all_parts = getattr(self, "_reply_to_mode", None) == "all"
+        delivered = False
         for idx, (image_url, alt_text) in enumerate(images, start=1):
             if human_delay > 0 and idx > 1:
                 await asyncio.sleep(human_delay)
@@ -1935,6 +1939,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     chat_id=chat_id,
                     image_path=_unquote(image_url[7:]),
                     caption=caption,
+                    reply_to=remaining_reply_to,
                     metadata=metadata,
                 )
             else:
@@ -1942,10 +1947,16 @@ class MatrixAdapter(BasePlatformAdapter):
                     chat_id=chat_id,
                     image_url=image_url,
                     caption=caption,
+                    reply_to=remaining_reply_to,
                     metadata=metadata,
                 )
             if not result.success:
                 logger.warning("Matrix: failed to send image %d/%d: %s", idx, total, result.error)
+            elif not reply_to_all_parts:
+                remaining_reply_to = None
+            if result.success:
+                delivered = True
+        return delivered
 
     async def send_document(
         self,

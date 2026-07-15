@@ -1786,6 +1786,7 @@ from gateway.authz_mixin import GatewayAuthorizationMixin
 from gateway.kanban_watchers import GatewayKanbanWatchersMixin
 from gateway.slash_commands import GatewaySlashCommandsMixin
 from gateway.platforms.base import (
+    AnchoredReply,
     BasePlatformAdapter,
     EphemeralReply,
     MessageEvent,
@@ -12290,10 +12291,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 response = ""
 
+            queued_delivery_event = agent_result.get("delivery_event")
+            delivery_event = (
+                queued_delivery_event
+                if isinstance(queued_delivery_event, MessageEvent)
+                else event
+            )
+            delivery_source = getattr(delivery_event, "source", None) or source
+            delivery_reply_to = (
+                agent_result.get("delivery_reply_to_message_id")
+                if "delivery_reply_to_message_id" in agent_result
+                else self._reply_anchor_for_event(delivery_event)
+            )
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
-            if self._should_send_voice_reply(event, response, agent_messages, already_sent=_already_sent):
-                await self._send_voice_reply(event, response)
+            if self._should_send_voice_reply(delivery_event, response, agent_messages, already_sent=_already_sent):
+                await self._send_voice_reply(delivery_event, response)
 
             # If streaming already delivered the response, extract and
             # deliver any MEDIA: files before returning None.  Streaming
@@ -12308,10 +12321,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # users see the agent "stop responding without explanation."
             if agent_result.get("already_sent") and not agent_result.get("failed"):
                 if response:
-                    _media_adapter = self._adapter_for_source(source)
+                    _media_adapter = self._adapter_for_source(delivery_source)
                     if _media_adapter:
+                        media_kwargs = {}
+                        if getattr(_media_adapter, "_reply_to_mode", None) == "all":
+                            media_kwargs["reply_to"] = delivery_reply_to
                         await self._deliver_media_from_response(
-                            response, event, _media_adapter,
+                            response,
+                            delivery_event,
+                            _media_adapter,
+                            **media_kwargs,
                         )
                 # Streaming already delivered the body text, but the footer was
                 # intentionally held back (see the `not already_sent` gate above).
@@ -12319,17 +12338,37 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # still surface the runtime metadata on the final reply.
                 if _footer_line:
                     try:
-                        _foot_adapter = self._adapter_for_source(source)
+                        _foot_adapter = self._adapter_for_source(delivery_source)
                         if _foot_adapter:
+                            footer_kwargs = {
+                                "metadata": self._thread_metadata_for_source(
+                                    delivery_source,
+                                    delivery_reply_to,
+                                )
+                            }
+                            if getattr(_foot_adapter, "_reply_to_mode", None) == "all":
+                                footer_kwargs["reply_to"] = delivery_reply_to
                             await _foot_adapter.send(
-                                source.chat_id,
+                                delivery_source.chat_id,
                                 _footer_line,
-                                metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+                                **footer_kwargs,
                             )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
                 return None
 
+            if (
+                delivery_event is not event
+                or (
+                    "delivery_reply_to_message_id" in agent_result
+                    and delivery_reply_to != self._reply_anchor_for_event(event)
+                )
+            ):
+                return AnchoredReply(
+                    response,
+                    delivery_reply_to,
+                    delivery_event,
+                )
             return response
             
         except Exception as e:
@@ -13366,6 +13405,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         response: str,
         event: MessageEvent,
         adapter,
+        reply_to: Optional[str] = None,
     ) -> None:
         """Extract MEDIA: tags and local file paths from a response and deliver them.
 
@@ -13398,7 +13438,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             local_files, _ = adapter.extract_local_files(cleaned)
             local_files = BasePlatformAdapter.filter_local_delivery_paths(local_files)
 
-            _thread_meta = self._thread_metadata_for_source(event.source, self._reply_anchor_for_event(event))
+            _thread_meta = self._thread_metadata_for_source(
+                event.source,
+                self._reply_anchor_for_event(event),
+            )
 
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
             _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
@@ -13429,10 +13472,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if image_paths:
                 try:
                     images = [(f"file://{_quote(p)}", "") for p in image_paths]
-                    await adapter.send_multiple_images(
+                    await adapter._send_multiple_images_compat(
                         chat_id=event.source.chat_id,
                         images=images,
                         metadata=_thread_meta,
+                        reply_to=reply_to,
                     )
                 except Exception as e:
                     logger.warning("[%s] Post-stream image batch delivery failed: %s", adapter.name, e)
@@ -13440,23 +13484,31 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             for media_path, is_voice in non_image_media:
                 try:
                     ext = Path(media_path).suffix.lower()
+                    media_reply_kwargs = (
+                        {"reply_to": reply_to}
+                        if reply_to is not None
+                        else {}
+                    )
                     if should_send_media_as_audio(event.source.platform, ext, is_voice=is_voice):
                         await adapter.send_voice(
                             chat_id=event.source.chat_id,
                             audio_path=media_path,
                             metadata=_thread_meta,
+                            **media_reply_kwargs,
                         )
                     elif ext in _VIDEO_EXTS:
                         await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=media_path,
                             metadata=_thread_meta,
+                            **media_reply_kwargs,
                         )
                     else:
                         await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=media_path,
                             metadata=_thread_meta,
+                            **media_reply_kwargs,
                         )
                 except Exception as e:
                     logger.warning("[%s] Post-stream media delivery failed: %s", adapter.name, e)
@@ -13464,17 +13516,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             for file_path in non_image_local:
                 try:
                     ext = Path(file_path).suffix.lower()
+                    local_reply_kwargs = (
+                        {"reply_to": reply_to}
+                        if reply_to is not None
+                        else {}
+                    )
                     if ext in _VIDEO_EXTS:
                         await adapter.send_video(
                             chat_id=event.source.chat_id,
                             video_path=file_path,
                             metadata=_thread_meta,
+                            **local_reply_kwargs,
                         )
                     else:
                         await adapter.send_document(
                             chat_id=event.source.chat_id,
                             file_path=file_path,
                             metadata=_thread_meta,
+                            **local_reply_kwargs,
                         )
                 except Exception as e:
                     logger.warning("[%s] Post-stream file delivery failed: %s", adapter.name, e)
@@ -20119,6 +20178,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             await adapter.send(
                                 source.chat_id,
                                 first_response,
+                                reply_to=event_message_id,
                                 metadata=_status_thread_metadata,
                             )
                         except Exception as e:
@@ -20236,6 +20296,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     event_message_id=next_message_id,
                     channel_prompt=next_channel_prompt,
                 )
+                if isinstance(followup_result, dict) and pending_event is not None:
+                    # The recursive result's final response belongs to this
+                    # queued event. Preserve a deeper delivery context if that
+                    # recursive run drained another queued turn of its own.
+                    followup_result.setdefault(
+                        "delivery_reply_to_message_id",
+                        next_message_id,
+                    )
+                    followup_result.setdefault("delivery_event", pending_event)
                 return _preserve_queued_followup_history_offset(result, followup_result)
         finally:
             # Stop progress sender, interrupt monitor, and notification task

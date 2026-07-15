@@ -1173,7 +1173,8 @@ class SignalAdapter(BasePlatformAdapter):
         images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None,
         human_delay: float = 0.0,
-    ) -> None:
+        reply_to: Optional[str] = None,
+    ) -> bool:
         """Send a batch of images via chunked Signal RPC calls.
 
         Per-image alt texts are dropped — Signal's send RPC only carries
@@ -1183,7 +1184,7 @@ class SignalAdapter(BasePlatformAdapter):
         the rate-limit scheduler handles inter-batch pacing.
         """
         if not images:
-            return
+            return False
 
         scheduler = get_scheduler()
         logger.info(
@@ -1230,7 +1231,7 @@ class SignalAdapter(BasePlatformAdapter):
                 "(download=%d missing=%d oversize=%d)",
                 len(images), skipped_download, skipped_missing, skipped_oversize,
             )
-            return
+            return False
 
         logger.info(
             "Signal send_multiple_images: %d/%d images valid, sending in chunks",
@@ -1250,6 +1251,7 @@ class SignalAdapter(BasePlatformAdapter):
             attachments[i:i + SIGNAL_MAX_ATTACHMENTS_PER_MSG]
             for i in range(0, len(attachments), SIGNAL_MAX_ATTACHMENTS_PER_MSG)
         ]
+        delivered = False
 
         for idx, att_batch in enumerate(att_batches):
             n = len(att_batch)
@@ -1277,6 +1279,7 @@ class SignalAdapter(BasePlatformAdapter):
                     if result is not None:
                         success, err_msg = self._validate_send_result(result)
                         if success:
+                            delivered = True
                             self._track_sent_timestamp(result)
                             await scheduler.report_rpc_duration(_rpc_duration, n)
                             logger.info(
@@ -1339,6 +1342,7 @@ class SignalAdapter(BasePlatformAdapter):
                         attempt, SIGNAL_RATE_LIMIT_MAX_ATTEMPTS,
                         f"{e.retry_after:.0f}s" if e.retry_after else "unknown",
                     )
+        return delivered
 
     async def _notify_batch_pacing(
         self,

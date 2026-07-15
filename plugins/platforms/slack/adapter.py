@@ -1831,7 +1831,8 @@ class SlackAdapter(BasePlatformAdapter):
         images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None,
         human_delay: float = 0.0,
-    ) -> None:
+        reply_to: Optional[str] = None,
+    ) -> bool:
         """Send a batch of images as a single Slack message with multiple file uploads.
 
         Uses ``files_upload_v2`` with its ``file_uploads`` parameter so all
@@ -1842,22 +1843,24 @@ class SlackAdapter(BasePlatformAdapter):
         The batch limit is 10 file uploads per call (Slack server-side cap).
         """
         if not self._app:
-            return
+            return False
         if not images:
-            return
+            return False
 
         try:
             import httpx as _httpx
             from urllib.parse import unquote as _unquote
             from tools.url_safety import is_safe_url as _is_safe_url
         except Exception:
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
+            return await super().send_multiple_images(
+                chat_id, images, metadata, human_delay, reply_to
+            )
 
-        thread_ts = self._resolve_thread_ts(None, metadata)
+        thread_ts = self._resolve_thread_ts(reply_to, metadata)
 
         CHUNK = 10
         chunks = [images[i : i + CHUNK] for i in range(0, len(images), CHUNK)]
+        delivered = False
 
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
@@ -1939,6 +1942,7 @@ class SlackAdapter(BasePlatformAdapter):
                 )
                 self._record_uploaded_file_thread(chat_id, thread_ts)
                 _ = result
+                delivered = True
             except Exception as e:
                 logger.warning(
                     "[Slack] Multi-image files_upload_v2 failed (chunk %d/%d), falling back to per-image: %s",
@@ -1947,9 +1951,15 @@ class SlackAdapter(BasePlatformAdapter):
                     e,
                     exc_info=True,
                 )
-                await super().send_multiple_images(
-                    chat_id, chunk, metadata, human_delay=human_delay
+                fallback_delivered = await super().send_multiple_images(
+                    chat_id,
+                    chunk,
+                    metadata,
+                    human_delay=human_delay,
+                    reply_to=reply_to,
                 )
+                delivered = delivered or fallback_delivered
+        return delivered
 
     def _record_uploaded_file_thread(
         self, chat_id: str, thread_ts: Optional[str]

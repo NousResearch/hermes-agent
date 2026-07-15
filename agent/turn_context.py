@@ -29,13 +29,53 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.conversation_compression import conversation_history_after_compression
-from agent.iteration_budget import IterationBudget
+from agent.iteration_budget import (
+    ExecutionLease,
+    IterationBudget,
+    default_execution_lease_calls,
+)
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
     estimate_request_tokens_rough,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _neutralize_reserved_runtime_markers(
+    content: Any,
+    provenance: Any = None,
+    *,
+    compressed_summary_metadata: bool = False,
+) -> Any:
+    """Relabel unbound runtime-reserved markers before provider replay."""
+
+    from agent.context_compressor import (
+        neutralize_untrusted_compaction_summary_markers,
+    )
+    from agent.message_provenance import (
+        neutralize_untrusted_canonical_workspace_markers,
+        neutralize_untrusted_gateway_auto_continue_markers,
+        neutralize_untrusted_todo_snapshot_markers,
+    )
+
+    content = neutralize_untrusted_canonical_workspace_markers(
+        content,
+        provenance,
+    )
+    content = neutralize_untrusted_gateway_auto_continue_markers(
+        content,
+        provenance,
+    )
+    content = neutralize_untrusted_todo_snapshot_markers(
+        content,
+        provenance,
+    )
+    return neutralize_untrusted_compaction_summary_markers(
+        content,
+        provenance,
+        compressed_summary_metadata=compressed_summary_metadata,
+    )
 
 
 def _compression_made_progress(
@@ -106,6 +146,9 @@ class TurnContext:
     # Task / turn identifiers.
     effective_task_id: str
     turn_id: str
+    # Durable standing-goal authority for this exact model turn. Empty when
+    # the session has no active goal.
+    goal_generation_id: str
     # Index of the current user turn within ``messages``.
     current_turn_user_idx: int
     # Whether the post-turn memory review should fire.
@@ -125,6 +168,7 @@ def build_turn_context(
     stream_callback,
     persist_user_message: Optional[str],
     persist_user_timestamp: Optional[float] = None,
+    user_message_provenance: Optional[Dict[str, Any]] = None,
     *,
     restore_or_build_system_prompt,
     install_safe_stdio,
@@ -207,6 +251,38 @@ def build_turn_context(
     if isinstance(persist_user_message, str):
         persist_user_message = sanitize_surrogates(persist_user_message)
 
+    # Provider-visible reserved runtime markers must be distinguishable from
+    # text copied or authored by a user. Preserve only exact SHA-bound
+    # fragments; mechanically relabel every unbound lookalike. Apply the same
+    # transform to persistence and replay so cached prefixes remain stable.
+    user_message = _neutralize_reserved_runtime_markers(
+        user_message,
+        user_message_provenance,
+    )
+    if persist_user_message is not None:
+        persist_user_message = _neutralize_reserved_runtime_markers(
+            persist_user_message,
+            user_message_provenance,
+        )
+    if conversation_history:
+        normalized_history: List[Dict[str, Any]] = []
+        from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
+        from agent.message_provenance import MESSAGE_PROVENANCE_KEY
+
+        for raw_message in conversation_history:
+            message = dict(raw_message)
+            if "content" in message:
+                provenance = message.get(MESSAGE_PROVENANCE_KEY)
+                message["content"] = _neutralize_reserved_runtime_markers(
+                    message.get("content"),
+                    provenance,
+                    compressed_summary_metadata=bool(
+                        message.get(COMPRESSED_SUMMARY_METADATA_KEY)
+                    ),
+                )
+            normalized_history.append(message)
+        conversation_history = normalized_history
+
     # Store stream callback for _interruptible_api_call to pick up.
     agent._stream_callback = stream_callback
     agent._persist_user_message_idx = None
@@ -217,20 +293,34 @@ def build_turn_context(
     agent._current_task_id = effective_task_id
     turn_id = f"{agent.session_id or 'session'}:{effective_task_id}:{uuid.uuid4().hex[:8]}"
     agent._current_turn_id = turn_id
+    # Clear before any fallible prologue work so a cached agent can never carry
+    # authority from its prior turn into a new one.
+    agent._current_goal_generation_id = ""
     agent._current_api_request_id = ""
+    # A model-authored reasoning directive is authority for this exact turn
+    # only. Bind an empty state after minting the fresh turn id so cached agents,
+    # early-return paths, restarts, and resumes cannot inherit it.
+    from agent.adaptive_reasoning import reset_adaptive_reasoning_turn
+    from agent.delivery_outcome import reset_delivery_outcome_turn
 
-    # Reset retry counters and iteration budget at the start of each turn.
+    reset_adaptive_reasoning_turn(agent, turn_id)
+    reset_delivery_outcome_turn(agent, turn_id)
+
+    # Reset retry counters and the renewable per-agent slice at the start of
+    # each turn. A cached root owns its default lease and receives one fresh,
+    # finite aggregate allowance for this independent run_conversation call.
+    # An explicitly injected lease — including every descendant's inherited
+    # lease — retains exact object identity and state across calls.
     agent._invalid_tool_retries = 0
     agent._invalid_json_retries = 0
     agent._empty_content_retries = 0
     agent._incomplete_scratchpad_retries = 0
     agent._codex_incomplete_retries = 0
     agent._thinking_prefill_retries = 0
-    agent._post_tool_empty_retried = False
-    agent._last_content_with_tools = None
-    agent._last_content_tools_all_housekeeping = False
-    agent._mute_post_response = False
     agent._unicode_sanitization_passes = 0
+    agent._budget_exhausted_injected = False
+    agent._budget_grace_call = False
+    agent._budget_renewal_count = 0
     agent._tool_guardrails.reset_for_turn()
     agent._tool_guardrail_halt_decision = None
     _reset_consol = getattr(agent._memory_store, "reset_consolidation_failures", None)
@@ -256,6 +346,14 @@ def build_turn_context(
 
     # NOTE: _turns_since_memory and _iters_since_skill are NOT reset here.
     agent.iteration_budget = IterationBudget(agent.max_iterations)
+    if getattr(agent, "_owns_execution_lease", False):
+        # Gateway goal-continuation invocations also enter here; their existing
+        # goals.max_turns contract keeps that multi-turn aggregate finite
+        # (production disables automatic goal turns). No message text is
+        # inspected to decide lease ownership.
+        agent.execution_lease = ExecutionLease(
+            default_execution_lease_calls(agent.max_iterations)
+        )
 
     # Log conversation turn start for debugging/observability.
     _preview_text = summarize_user_message_for_log(user_message)
@@ -315,6 +413,17 @@ def build_turn_context(
 
     # Add user message.
     user_msg = {"role": "user", "content": user_message}
+    if user_message_provenance is not None:
+        from agent.message_provenance import (
+            MESSAGE_PROVENANCE_KEY,
+            normalize_message_provenance,
+        )
+
+        normalized_provenance = normalize_message_provenance(
+            user_message_provenance
+        )
+        if normalized_provenance is not None:
+            user_msg[MESSAGE_PROVENANCE_KEY] = normalized_provenance
     messages.append(user_msg)
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
@@ -469,9 +578,6 @@ def build_turn_context(
                 )
                 agent._empty_content_retries = 0
                 agent._thinking_prefill_retries = 0
-                agent._last_content_with_tools = None
-                agent._last_content_tools_all_housekeeping = False
-                agent._mute_post_response = False
                 if not _compressor.should_compress(_preflight_tokens):
                     break
 
@@ -531,8 +637,6 @@ def build_turn_context(
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()
-    agent._verification_stop_nudges = 0
-    agent._pre_verify_nudges = 0
 
     # Record the execution thread so interrupt()/clear_interrupt() can scope
     # the tool-level interrupt signal to THIS agent's thread only.
@@ -564,6 +668,27 @@ def build_turn_context(
         except Exception:
             pass
 
+    # Bind standing-goal writes only after preflight compression has had a
+    # chance to rotate ``agent.session_id`` and migrate the durable goal row.
+    # The exact generation is captured by tool dispatch and every writer is
+    # rejected if a later turn, resume, clear, or migration has revoked it.
+    goal_generation_id = ""
+    if getattr(agent, "session_id", None):
+        try:
+            from hermes_cli.goals import GoalManager
+
+            goal_generation_id = GoalManager(
+                session_id=agent.session_id
+            ).begin_model_turn(turn_id)
+        except Exception:
+            logger.warning(
+                "Could not bind standing-goal authority for session=%s turn=%s",
+                agent.session_id,
+                turn_id,
+                exc_info=True,
+            )
+    agent._current_goal_generation_id = goal_generation_id
+
     return TurnContext(
         user_message=user_message,
         original_user_message=original_user_message,
@@ -572,6 +697,7 @@ def build_turn_context(
         active_system_prompt=active_system_prompt,
         effective_task_id=effective_task_id,
         turn_id=turn_id,
+        goal_generation_id=goal_generation_id,
         current_turn_user_idx=current_turn_user_idx,
         should_review_memory=should_review_memory,
         plugin_user_context=plugin_user_context,

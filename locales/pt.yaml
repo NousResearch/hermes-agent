@@ -189,7 +189,7 @@ gateway:
     display_set_off:           "🧠 ✓ Visualização do raciocínio: **DESATIVADA** para **{platform}**"
     reset_global_unsupported:  "⚠️ `/reasoning reset --global` não é suportado. Usa `/reasoning <level> --global` para alterar o predefinido global."
     reset_done:                "🧠 ✓ Substituição de raciocínio da sessão removida; a regressar à configuração global."
-    unknown_arg:               "⚠️ Argumento desconhecido: `{arg}`\n\n**Níveis válidos:** none, minimal, low, medium, high, xhigh\n**Visualização:** show, hide\n**Persistir:** adiciona `--global` para guardar para além desta sessão"
+    unknown_arg:               "⚠️ Argumento desconhecido: `{arg}`\n\n**Níveis válidos:** none, minimal, low, medium, high, xhigh, max\n**Visualização:** show, hide\n**Persistir:** adiciona `--global` para guardar para além desta sessão"
     set_global:                "🧠 ✓ Esforço de raciocínio definido como `{effort}` (guardado na configuração)\n_(produz efeito na próxima mensagem)_"
     set_global_save_failed:    "🧠 ✓ Esforço de raciocínio definido como `{effort}` (apenas sessão — falha ao guardar a configuração)\n_(produz efeito na próxima mensagem)_"
     set_session:               "🧠 ✓ Esforço de raciocínio definido como `{effort}` (apenas sessão — adiciona `--global` para persistir)\n_(produz efeito na próxima mensagem)_"

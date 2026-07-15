@@ -661,7 +661,7 @@ def test_triage_aux_unavailable_silent_when_main_model_visible():
     config = {
         "auxiliary": {},
         "model": {"provider": "openrouter", "default": "qwen/qwen3"},
-        "kanban": {"auto_decompose": True},
+        "kanban": {"auxiliary_planning_enabled": True, "auto_decompose": True},
     }
     diags = kd.compute_task_diagnostics(_triage_task(), [], [], config=config)
     assert [d for d in diags if d.kind == "triage_aux_unavailable"] == []
@@ -673,7 +673,7 @@ def test_triage_aux_unavailable_silent_when_decomposer_explicit():
         "auxiliary": {
             "kanban_decomposer": {"provider": "openrouter", "model": "qwen/qwen3"},
         },
-        "kanban": {"auto_decompose": True},
+        "kanban": {"auxiliary_planning_enabled": True, "auto_decompose": True},
     }
     diags = kd.compute_task_diagnostics(_triage_task(), [], [], config=config)
     assert [d for d in diags if d.kind == "triage_aux_unavailable"] == []
@@ -683,7 +683,7 @@ def test_triage_aux_unavailable_fires_auto_decompose_on_no_fallback():
     """auto_decompose=True, no decomposer, no main model → warn about decomposer."""
     config = {
         "auxiliary": {},
-        "kanban": {"auto_decompose": True},
+        "kanban": {"auxiliary_planning_enabled": True, "auto_decompose": True},
     }
     diags = kd.compute_task_diagnostics(_triage_task(), [], [], config=config)
     triage = [d for d in diags if d.kind == "triage_aux_unavailable"]
@@ -702,7 +702,7 @@ def test_triage_aux_unavailable_fires_auto_decompose_off_points_at_specifier():
     """auto_decompose=False → primary is specifier, not decomposer."""
     config = {
         "auxiliary": {},
-        "kanban": {"auto_decompose": False},
+        "kanban": {"auxiliary_planning_enabled": True, "auto_decompose": False},
     }
     diags = kd.compute_task_diagnostics(_triage_task(), [], [], config=config)
     triage = [d for d in diags if d.kind == "triage_aux_unavailable"]
@@ -717,7 +717,10 @@ def test_triage_aux_unavailable_fires_auto_decompose_off_points_at_specifier():
 
 
 def test_triage_aux_unavailable_skips_non_triage_tasks():
-    config = {"auxiliary": {}, "kanban": {"auto_decompose": True}}
+    config = {
+        "auxiliary": {},
+        "kanban": {"auxiliary_planning_enabled": True, "auto_decompose": True},
+    }
     task = _task(status="todo")
     diags = kd.compute_task_diagnostics(task, [], [], config=config)
     assert [d for d in diags if d.kind == "triage_aux_unavailable"] == []
@@ -732,7 +735,9 @@ def test_triage_aux_status_recognises_auto_default_as_not_explicit():
         "kanban": {},
     })
     assert status is not None
+    assert status["auxiliary_planning_enabled"] is False
     assert status["decomposer_explicit"] is False
+    assert status["auto_decompose"] is False
 
 
 def test_triage_aux_status_recognises_explicit_model_only():

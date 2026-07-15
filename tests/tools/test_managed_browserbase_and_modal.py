@@ -101,6 +101,9 @@ def _install_fake_tools_package():
     sys.modules["agent.auxiliary_client"] = types.SimpleNamespace(
         call_llm=lambda *args, **kwargs: "",
     )
+    sys.modules["agent.tool_result_classification"] = types.SimpleNamespace(
+        terminal_exit_code_failure_adapter=lambda _result: (False, ""),
+    )
 
     # Stubs for the browser-provider plugin layer introduced in PR #25214.
     # The fake `agent` package has an empty __path__ so real submodules

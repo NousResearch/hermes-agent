@@ -374,6 +374,7 @@ class TestGatewaySurfacesNullResponse:
             "api_calls": 0,
             "failed": True,
             "error": "400 Bad Request: context length exceeded",
+            "compression_exhausted": True,
         }
 
         response = agent_result.get("final_response") or ""
@@ -383,6 +384,24 @@ class TestGatewaySurfacesNullResponse:
 
         assert "context window" in response
         assert "/compact" in response
+
+    def test_error_wording_alone_does_not_classify_context_failure(self):
+        """Gateway routing uses structured state, never provider/error prose."""
+        from gateway.run import _normalize_empty_agent_response
+
+        response = _normalize_empty_agent_response(
+            {
+                "final_response": None,
+                "api_calls": 0,
+                "failed": True,
+                "error": "400 Bad Request: context length exceeded",
+            },
+            "",
+            history_len=600,
+        )
+
+        assert "context window" not in response
+        assert "400 Bad Request: context length exceeded" in response
 
     def test_failed_generic_error(self):
         """Agent failed with non-context error → generic error message."""

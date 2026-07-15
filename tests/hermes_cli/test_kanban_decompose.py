@@ -21,6 +21,10 @@ from hermes_cli import kanban_decompose as decomp
 def kanban_home(tmp_path, monkeypatch):
     home = tmp_path / ".hermes"
     home.mkdir()
+    (home / "config.yaml").write_text(
+        "kanban:\n  auxiliary_planning_enabled: true\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     kb.init_db()
@@ -112,6 +116,42 @@ def test_decompose_with_fanout_creates_children(kanban_home):
     assert c1.assignee == "engineer"
 
 
+def test_decompose_default_policy_blocks_before_auxiliary_or_db_write(
+    kanban_home,
+):
+    with kb.connect() as conn:
+        tid = kb.create_task(conn, title="ship a feature", triage=True)
+
+    with patch(
+        "hermes_cli.kanban_decompose._load_config",
+        return_value={"kanban": {}},
+    ), patch(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        side_effect=AssertionError("auxiliary client must not be resolved"),
+    ), patch.object(
+        kb,
+        "decompose_triage_task",
+        side_effect=AssertionError("decomposition DB write must not run"),
+    ), patch.object(
+        kb,
+        "specify_triage_task",
+        side_effect=AssertionError("specifier DB write must not run"),
+    ):
+        outcome = decomp.decompose_task(tid)
+
+    assert outcome.ok is False
+    assert "auxiliary planning is disabled" in outcome.reason.lower()
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        children = conn.execute(
+            "SELECT COUNT(*) FROM tasks WHERE id != ?",
+            (tid,),
+        ).fetchone()[0]
+    assert task is not None
+    assert task.status == "triage"
+    assert children == 0
+
+
 def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="just one thing", triage=True)
@@ -129,7 +169,12 @@ def test_decompose_fanout_false_assigns_default_when_unassigned(kanban_home):
     try:
         with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
             "hermes_cli.kanban_decompose._load_config",
-            return_value={"kanban": {"default_assignee": "fallback"}},
+            return_value={
+                "kanban": {
+                    "auxiliary_planning_enabled": True,
+                    "default_assignee": "fallback",
+                }
+            },
         ):
             outcome = decomp.decompose_task(tid, author="me")
     finally:
@@ -171,7 +216,12 @@ def test_decompose_fanout_false_preserves_existing_assignee(kanban_home):
     try:
         with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
             "hermes_cli.kanban_decompose._load_config",
-            return_value={"kanban": {"default_assignee": "fallback"}},
+            return_value={
+                "kanban": {
+                    "auxiliary_planning_enabled": True,
+                    "default_assignee": "fallback",
+                }
+            },
         ):
             outcome = decomp.decompose_task(tid, author="me")
     finally:
@@ -204,7 +254,12 @@ def test_decompose_fanout_false_uses_valid_llm_assignee(kanban_home):
     try:
         with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
             "hermes_cli.kanban_decompose._load_config",
-            return_value={"kanban": {"default_assignee": "fallback"}},
+            return_value={
+                "kanban": {
+                    "auxiliary_planning_enabled": True,
+                    "default_assignee": "fallback",
+                }
+            },
         ):
             outcome = decomp.decompose_task(tid, author="me")
     finally:
@@ -236,7 +291,12 @@ def test_decompose_fanout_false_invalid_llm_assignee_uses_default(kanban_home):
     try:
         with _patch_aux_client(llm_payload), _patch_extra_body(), patch(
             "hermes_cli.kanban_decompose._load_config",
-            return_value={"kanban": {"default_assignee": "fallback"}},
+            return_value={
+                "kanban": {
+                    "auxiliary_planning_enabled": True,
+                    "default_assignee": "fallback",
+                }
+            },
         ):
             outcome = decomp.decompose_task(tid, author="me")
     finally:
@@ -274,6 +334,7 @@ def test_decompose_unknown_assignee_falls_back_to_default(kanban_home):
                 "hermes_cli.kanban_decompose._load_config",
                 return_value={
                     "kanban": {
+                        "auxiliary_planning_enabled": True,
                         "orchestrator_profile": "orchestrator",
                         "default_assignee": "fallback",
                     }

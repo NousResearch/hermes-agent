@@ -414,6 +414,7 @@ def run_codex_app_server_turn(
         except Exception:
             pass
         agent._codex_session = None
+        _hermes_turn_id = str(getattr(agent, "_current_turn_id", "") or "")
         return {
             "final_response": (
                 f"Codex app-server turn failed: {exc}. "
@@ -422,8 +423,11 @@ def run_codex_app_server_turn(
             "messages": messages,
             "api_calls": 0,
             "completed": False,
+            "failed": True,
             "partial": True,
             "error": str(exc),
+            "turn_id": _hermes_turn_id,
+            "delivery_outcome": None,
         }
 
     # If the turn signalled the underlying client is wedged (deadline
@@ -512,7 +516,8 @@ def run_codex_app_server_turn(
     # path (line ~15449). Only fires when a trigger actually tripped AND
     # we have a real final response.
     if (
-        turn.final_text
+        getattr(agent, "_background_review_enabled", True)
+        and turn.final_text
         and not turn.interrupted
         and (should_review_memory or should_review_skills)
     ):
@@ -525,13 +530,19 @@ def run_codex_app_server_turn(
         except Exception:
             logger.debug("background review spawn raised", exc_info=True)
 
+    from agent.delivery_outcome import get_delivery_outcome
+
+    _hermes_turn_id = str(getattr(agent, "_current_turn_id", "") or "")
     return {
         "final_response": turn.final_text,
         "messages": messages,
         "api_calls": api_calls,
         "completed": not turn.interrupted and turn.error is None,
+        "failed": turn.error is not None,
         "partial": turn.interrupted or turn.error is not None,
         "error": turn.error,
+        "turn_id": _hermes_turn_id,
+        "delivery_outcome": get_delivery_outcome(agent, _hermes_turn_id),
         # The codex app-server runtime IS an early-return path that bypasses
         # conversation_loop, but we flush the projected assistant/tool messages
         # ourselves above (see the _flush_messages_to_session_db call after

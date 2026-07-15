@@ -12,24 +12,72 @@ from __future__ import annotations
 import pytest
 
 from gateway.kanban_watchers import _resolve_auto_decompose_settings
+from hermes_cli.config import DEFAULT_CONFIG, _deep_merge
+from hermes_cli.kanban_planning_policy import auxiliary_planning_enabled
 
 
-def test_enabled_by_default_when_key_absent():
+def test_disabled_by_default_when_key_absent():
     enabled, per_tick = _resolve_auto_decompose_settings(lambda: {"kanban": {}})
+    assert enabled is False
+    assert per_tick == 3
+
+
+def test_legacy_cloud_shape_disables_semantic_planning_but_keeps_mechanical_dispatch():
+    """An existing install need not materialize the new key on disk.
+
+    Runtime config merging supplies the fork's fail-closed semantic policy,
+    while the pre-existing gateway dispatcher remains a mechanical executor.
+    """
+    legacy_user_config = {
+        "kanban": {
+            "auto_decompose": False,
+            "dispatch_in_gateway": True,
+        }
+    }
+    effective = _deep_merge(DEFAULT_CONFIG, legacy_user_config)
+
+    assert effective["kanban"]["auxiliary_planning_enabled"] is False
+    assert auxiliary_planning_enabled(effective) is False
+    assert _resolve_auto_decompose_settings(lambda: effective)[0] is False
+    assert effective["kanban"]["dispatch_in_gateway"] is True
+
+
+def test_explicit_true_enables_auto_decompose():
+    enabled, per_tick = _resolve_auto_decompose_settings(
+        lambda: {"kanban": {
+            "auxiliary_planning_enabled": True,
+            "auto_decompose": True,
+        }}
+    )
     assert enabled is True
     assert per_tick == 3
 
 
 def test_disabled_when_flag_false():
     enabled, per_tick = _resolve_auto_decompose_settings(
-        lambda: {"kanban": {"auto_decompose": False}}
+        lambda: {"kanban": {
+            "auxiliary_planning_enabled": True,
+            "auto_decompose": False,
+        }}
     )
     assert enabled is False
 
 
+def test_auto_decompose_requires_auxiliary_planning_opt_in():
+    enabled, per_tick = _resolve_auto_decompose_settings(
+        lambda: {"kanban": {"auto_decompose": True}}
+    )
+    assert enabled is False
+    assert per_tick == 3
+
+
 def test_per_tick_respected_and_clamped():
     enabled, per_tick = _resolve_auto_decompose_settings(
-        lambda: {"kanban": {"auto_decompose": True, "auto_decompose_per_tick": 7}}
+        lambda: {"kanban": {
+            "auxiliary_planning_enabled": True,
+            "auto_decompose": True,
+            "auto_decompose_per_tick": 7,
+        }}
     )
     assert (enabled, per_tick) == (True, 7)
 
@@ -66,17 +114,23 @@ def test_config_read_error_fails_safe_disabled():
     assert per_tick == 3
 
 
-def test_non_dict_config_fails_safe():
-    enabled, _ = _resolve_auto_decompose_settings(lambda: None)
-    assert enabled is True  # no kanban key → default-on (not an error path)
-    enabled2, _ = _resolve_auto_decompose_settings(lambda: ["not", "a", "dict"])
-    assert enabled2 is True
+@pytest.mark.parametrize(
+    "config",
+    [None, ["not", "a", "dict"], {"kanban": None}, {"kanban": "invalid"}],
+)
+def test_non_dict_config_or_kanban_section_fails_safe(config):
+    enabled, per_tick = _resolve_auto_decompose_settings(lambda: config)
+    assert enabled is False
+    assert per_tick == 3
 
 
 def test_live_toggle_takes_effect_between_calls():
     """Simulate a user flipping the flag while the dispatcher runs: a later
     resolution reflects the new value without any restart."""
-    state = {"kanban": {"auto_decompose": True}}
+    state = {"kanban": {
+        "auxiliary_planning_enabled": True,
+        "auto_decompose": True,
+    }}
     assert _resolve_auto_decompose_settings(lambda: state)[0] is True
     # User edits config.yaml mid-run.
     state["kanban"]["auto_decompose"] = False

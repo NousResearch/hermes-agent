@@ -1871,6 +1871,10 @@ class SendResult:
 #   not_found     the target chat/thread/message no longer exists.
 #   rate_limited  the platform throttled the send (flood control).
 #   transient     a connection-level failure that is safe to retry.
+#   dispatch_uncertain  bytes may have reached a privileged edge; never retry,
+#                 reformat, or send a failure notice automatically.
+#   blocked_before_dispatch  a mechanical policy/schema boundary rejected the
+#                 operation before provider I/O; changing text cannot fix it.
 #   unknown       classification did not match any known shape.
 SEND_ERROR_KINDS = frozenset(
     {
@@ -1880,6 +1884,8 @@ SEND_ERROR_KINDS = frozenset(
         "not_found",
         "rate_limited",
         "transient",
+        "dispatch_uncertain",
+        "blocked_before_dispatch",
         "unknown",
     }
 )
@@ -4106,6 +4112,17 @@ class BasePlatformAdapter(ABC):
         if result.success:
             return result
 
+        # Privileged execution boundaries distinguish a proven pre-dispatch
+        # block from an ambiguous post-dispatch outcome.  Neither can be fixed
+        # by the generic retry/plain-text/notice paths below.  In particular,
+        # an uncertain result may already be visible at the provider, so any
+        # automatic second send would be a blind duplicate.
+        if result.error_kind in {
+            "dispatch_uncertain",
+            "blocked_before_dispatch",
+        }:
+            return result
+
         error_str = result.error or ""
         is_network = result.retryable or self._is_retryable_error(error_str)
 
@@ -4138,6 +4155,16 @@ class BasePlatformAdapter(ABC):
                 )
                 if result.success:
                     logger.info("[%s] Send succeeded on retry %d", self.name, attempt)
+                    return result
+                if result.error_kind in {
+                    "dispatch_uncertain",
+                    "blocked_before_dispatch",
+                }:
+                    # A safe pre-dispatch transport retry may cross into a
+                    # privileged edge and then lose its receipt.  Re-evaluate
+                    # the structured boundary result after every attempt, not
+                    # only after the initial call, so the generic plain-text
+                    # fallback cannot become a second logical dispatch.
                     return result
                 error_str = result.error or ""
                 if result.retry_after is not None:

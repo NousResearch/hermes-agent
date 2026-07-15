@@ -15,7 +15,7 @@ import uuid
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 from agent.codex_responses_adapter import _normalize_codex_response
@@ -114,6 +114,31 @@ def agent():
         )
         a.client = MagicMock()
         return a
+
+
+def test_aiagent_preserves_injected_execution_lease_identity():
+    from agent.iteration_budget import ExecutionLease
+
+    lease = ExecutionLease(max_total=7)
+    with (
+        patch(
+            "run_agent.get_tool_definitions",
+            return_value=_make_tool_defs("web_search"),
+        ),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        injected = AIAgent(
+            api_key="test-key-1234567890",
+            base_url="https://openrouter.ai/api/v1",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            execution_lease=lease,
+        )
+
+    assert injected.execution_lease is lease
+    assert injected._owns_execution_lease is False
 
 
 def test_persist_user_message_override_rewrites_text_turns(agent):
@@ -1225,6 +1250,127 @@ class TestHydrateTodoStore:
             agent._hydrate_todo_store(history)
         assert not agent._todo_store.has_items()
 
+    def test_restores_exact_canonical_binding_from_paired_receipt(self, agent):
+        from tools.todo_tool import TodoStore, todo_tool
+
+        items = [{"id": "1", "content": "do thing", "status": "pending"}]
+        source = TodoStore()
+        source.write(items)
+        expected = source.bind_canonical_workspace(
+            case_id="case:hydrate",
+            plan_id="plan:hydrate",
+            plan_revision=3,
+            plan_state="active",
+            plan_event_id="event:hydrate",
+            canonical_content_sha256="a" * 64,
+            workspace_todos_sha256="b" * 64,
+            items=items,
+        )
+        history = [
+            self._assistant_todo_call("c1"),
+            {
+                "role": "tool",
+                "content": todo_tool(store=source),
+                "tool_call_id": "c1",
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.read() == items
+        assert agent._todo_store.canonical_binding_state() == expected
+        assert agent._todo_store.canonical_sync_receipt()["state"] == "clean"
+
+    def test_invalid_advertised_canonical_binding_rejects_whole_snapshot(
+        self,
+        agent,
+    ):
+        from tools.todo_tool import TodoStore, todo_tool
+
+        items = [{"id": "1", "content": "do thing", "status": "pending"}]
+        source = TodoStore()
+        source.write(items)
+        source.bind_canonical_workspace(
+            case_id="case:hydrate",
+            plan_id="plan:hydrate",
+            plan_revision=3,
+            plan_state="active",
+            plan_event_id="event:hydrate",
+            canonical_content_sha256="a" * 64,
+            workspace_todos_sha256="b" * 64,
+            items=items,
+        )
+        payload = json.loads(todo_tool(store=source))
+        payload["canonical_binding_state"]["binding_sha256"] = "0" * 64
+        history = [
+            self._assistant_todo_call("c1"),
+            {
+                "role": "tool",
+                "content": json.dumps(payload),
+                "tool_call_id": "c1",
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.read() == []
+        assert agent._todo_store.canonical_binding_state() is None
+
+    def test_non_object_advertised_binding_rejects_whole_snapshot(self, agent):
+        todos = [{"id": "1", "content": "INJECTED", "status": "pending"}]
+        history = [
+            self._assistant_todo_call("c1"),
+            {
+                "role": "tool",
+                "content": json.dumps(
+                    {"todos": todos, "canonical_binding_state": None}
+                ),
+                "tool_call_id": "c1",
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.read() == []
+
+    def test_restores_exact_canonical_writer_unavailable_blocker(self, agent):
+        from tools.todo_tool import TodoStore, todo_tool
+
+        items = [{"id": "1", "content": "do thing", "status": "pending"}]
+        source = TodoStore()
+        source.write(items)
+        source.bind_canonical_workspace(
+            case_id="case:hydrate",
+            plan_id="plan:hydrate",
+            plan_revision=3,
+            plan_state="active",
+            plan_event_id="event:hydrate",
+            canonical_content_sha256="a" * 64,
+            workspace_todos_sha256="b" * 64,
+            items=items,
+        )
+        expected = source.mark_canonical_sync_blocked(
+            "canonical_brain_unavailable"
+        )
+        history = [
+            self._assistant_todo_call("c1"),
+            {
+                "role": "tool",
+                "content": todo_tool(store=source),
+                "tool_call_id": "c1",
+            },
+        ]
+
+        with patch("run_agent._set_interrupt"):
+            agent._hydrate_todo_store(history)
+
+        assert agent._todo_store.read() == items
+        assert agent._todo_store.canonical_sync_blocked_state() == expected
+        assert agent._todo_store.has_active_items() is False
+
 
 class TestBuildSystemPrompt:
     def test_always_has_identity(self, agent):
@@ -1567,6 +1713,8 @@ class TestTaskCompletionGuidance:
         agent = self._make_agent(model="openai/gpt-5.4")
         prompt = agent._build_system_prompt()
         assert TASK_COMPLETION_GUIDANCE in prompt
+        assert "exhaust the reasonable safe alternatives" in prompt
+        assert "inside the approved scope" in prompt
 
     def test_false_disables(self):
         from agent.prompt_builder import TASK_COMPLETION_GUIDANCE
@@ -2962,6 +3110,470 @@ class TestConcurrentToolExecution:
             mock_todo.assert_called_once()
         assert "ok" in result
 
+    def test_invoke_tool_records_model_authored_delivery_outcome(self, agent):
+        from agent.delivery_outcome import (
+            get_delivery_outcome,
+            reset_delivery_outcome_turn,
+        )
+
+        agent._current_turn_id = "turn-delivery"
+        reset_delivery_outcome_turn(agent, "turn-delivery")
+        result = json.loads(
+            agent._invoke_tool(
+                "todo",
+                {
+                    "delivery_outcome": {
+                        "action": "suppress",
+                        "reason": "nothing worth sending",
+                    },
+                },
+                "task-1",
+                originating_turn_id="turn-delivery",
+            )
+        )
+
+        assert result["delivery_outcome"]["recorded"] is True
+        assert get_delivery_outcome(agent, "turn-delivery") == {
+            "action": "suppress",
+            "reason": "nothing worth sending",
+            "turn_id": "turn-delivery",
+        }
+
+    def test_request_middleware_cannot_inject_delivery_outcome(
+        self, agent, monkeypatch
+    ):
+        from agent.delivery_outcome import (
+            get_delivery_outcome,
+            reset_delivery_outcome_turn,
+        )
+
+        agent._current_turn_id = "turn-no-injection"
+        reset_delivery_outcome_turn(agent, "turn-no-injection")
+
+        monkeypatch.setattr(
+            "hermes_cli.middleware.apply_tool_request_middleware",
+            lambda *_args, **_kwargs: SimpleNamespace(
+                payload={
+                    "todos": [],
+                    "delivery_outcome": {
+                        "action": "suppress",
+                        "reason": "plugin injection",
+                    },
+                },
+                trace=[],
+            ),
+        )
+
+        result = json.loads(
+            agent._invoke_tool(
+                "todo",
+                {"todos": []},
+                "task-1",
+                originating_turn_id="turn-no-injection",
+            )
+        )
+
+        assert "delivery_outcome" not in result
+        assert get_delivery_outcome(agent, "turn-no-injection") is None
+
+    def test_invoke_tool_applies_turn_scoped_reasoning_to_later_calls(self, agent):
+        """The worker/invoke path applies only a successful todo directive."""
+        from agent.adaptive_reasoning import (
+            configure_adaptive_reasoning,
+            effective_reasoning_config,
+            reset_adaptive_reasoning_turn,
+        )
+
+        agent.api_mode = "codex_responses"
+        agent.model = "gpt-5.6-sol"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        configure_adaptive_reasoning(agent, {"adaptive_reasoning": {"enabled": True}})
+        agent._current_turn_id = "turn-worker"
+        reset_adaptive_reasoning_turn(agent, "turn-worker")
+
+        result = agent._invoke_tool(
+            "todo",
+            {"todos": [], "reasoning": {"effort": "xhigh"}},
+            "task-1",
+        )
+
+        payload = json.loads(result)
+        assert payload["reasoning_control"]["status"] == "applied"
+        assert effective_reasoning_config(agent) == {
+            "enabled": True,
+            "effort": "xhigh",
+        }
+
+    def test_invoke_tool_preserves_separate_canonical_controls_and_reasoning(
+        self, agent
+    ):
+        """The integrated todo path keeps each model-authored rail intact."""
+        from agent.adaptive_reasoning import (
+            configure_adaptive_reasoning,
+            effective_reasoning_config,
+            reset_adaptive_reasoning_turn,
+        )
+
+        agent.api_mode = "codex_responses"
+        agent.model = "gpt-5.6-sol"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        agent._gateway_session_key = "discord:channel:thread"
+        agent.user_id = "owner-1"
+        configure_adaptive_reasoning(agent, {"adaptive_reasoning": {"enabled": True}})
+        agent._current_turn_id = "turn-integrated-authority"
+        agent._current_goal_generation_id = "goal-gen-integrated-authority"
+        reset_adaptive_reasoning_turn(agent, "turn-integrated-authority")
+        plan_approval = {
+            "plan_id": "plan-1",
+            "plan_revision": 7,
+            "exact_commands": ["hermes config get model.default"],
+            "ttl_seconds": 3600,
+            "max_uses_per_command": 1,
+            "canonical_case_id": "case:integration-1",
+            "source_refs": {"message_id": "message-1"},
+        }
+        goal_outcome = {
+            "status": "continue",
+            "reason": "One verified step remains.",
+        }
+
+        with patch(
+            "tools.todo_tool.todo_tool",
+            side_effect=[
+                json.dumps(
+                    {
+                        "todos": [],
+                        "plan_approval": {"status": "granted", "revision": 7},
+                    }
+                ),
+                json.dumps({"todos": [], "goal_outcome": goal_outcome}),
+            ],
+        ) as mock_todo:
+            plan_result = agent._invoke_tool(
+                "todo",
+                {
+                    "reasoning": {"effort": "xhigh"},
+                    "plan_approval": plan_approval,
+                },
+                "task-1",
+                originating_turn_id="turn-integrated-authority",
+            )
+            goal_result = agent._invoke_tool(
+                "todo",
+                {"goal_outcome": goal_outcome},
+                "task-1",
+                originating_turn_id="turn-integrated-authority",
+            )
+
+        common = {
+            "merge": False,
+            "store": agent._todo_store,
+            "goal_contract": None,
+            "canonical_checkpoint": None,
+            "delivery_outcome": None,
+            "delivery_outcome_recorder": ANY,
+            "session_key": "discord:channel:thread",
+            "goal_session_id": agent.session_id,
+            "originating_turn_id": "turn-integrated-authority",
+            "goal_generation_id": "goal-gen-integrated-authority",
+            "user_id": "owner-1",
+        }
+        assert mock_todo.call_count == 2
+        assert mock_todo.call_args_list[0].kwargs == {
+            **common,
+            "todos": None,
+            "plan_approval": plan_approval,
+            "goal_outcome": None,
+        }
+        assert mock_todo.call_args_list[1].kwargs == {
+            **common,
+            "todos": None,
+            "plan_approval": None,
+            "goal_outcome": goal_outcome,
+        }
+        plan_payload = json.loads(plan_result)
+        goal_payload = json.loads(goal_result)
+        assert plan_payload["plan_approval"] == {
+            "status": "granted",
+            "revision": 7,
+        }
+        assert goal_payload["goal_outcome"] == goal_outcome
+        assert plan_payload["reasoning_control"]["status"] == "applied"
+        assert effective_reasoning_config(agent) == {
+            "enabled": True,
+            "effort": "xhigh",
+        }
+
+    def test_gateway_owner_plan_capability_reaches_todo_and_terminal_executor(
+        self, agent, tmp_path
+    ):
+        """The real agent-tool path uses only gateway-bound authority."""
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools import approval
+
+        routing_key = "agent:main:discord:channel:plan-dispatch-success"
+        owner_id = "owner-plan-dispatch"
+        case_id = "case:plan-dispatch-success"
+        plan_id = "plan:plan-dispatch-success"
+        target = tmp_path / "nonexistent-plan-capability-target"
+        exact_command = f"rm -rf {target}"
+        receipt = json.dumps({
+            "success": True,
+            "inserted": True,
+            "readback_verified": True,
+            "event_id": "11111111-1111-4111-8111-111111111111",
+        })
+        checks = []
+        session_tokens = set_session_vars(
+            platform="discord",
+            user_id=owner_id,
+            session_key=routing_key,
+            capability_epoch_sha256="a" * 64,
+            message_id="message-plan-dispatch-success",
+            thread_id="thread-plan-dispatch-success",
+        )
+        approval_token = approval.set_current_session_key(routing_key)
+        agent._gateway_session_key = routing_key
+        try:
+            with (
+                patch(
+                    "hermes_cli.config.load_config",
+                    return_value={
+                        "approvals": {"plan_owner_user_ids": [owner_id]},
+                    },
+                ),
+                patch(
+                    "gateway.canonical_writer_boundary.writer_boundary_configured",
+                    return_value=False,
+                ),
+                patch(
+                    "tools.canonical_brain_tool.canonical_active_plan_matches",
+                    return_value=True,
+                ),
+                patch(
+                    "tools.canonical_brain_tool.canonical_active_plan_revision",
+                    return_value=1,
+                ),
+                patch(
+                    "tools.canonical_brain_tool.record_plan_approval_receipt",
+                    return_value=receipt,
+                ),
+                patch(
+                    "tools.canonical_brain_tool.record_plan_capability_check",
+                    side_effect=lambda **kwargs: checks.append(kwargs) or receipt,
+                ),
+            ):
+                planned = json.loads(agent._invoke_tool(
+                    "todo",
+                    {
+                        "todos": [{
+                            "id": "execute",
+                            "content": "Execute the exact owner-approved command",
+                            "status": "in_progress",
+                        }],
+                    },
+                    "task-plan-dispatch",
+                ))
+                granted = json.loads(agent._invoke_tool(
+                    "todo",
+                    {
+                        "plan_approval": {
+                            "plan_id": plan_id,
+                            "plan_revision": 1,
+                            "exact_commands": [exact_command],
+                            "ttl_seconds": 7200,
+                            "max_uses_per_command": 1,
+                            "canonical_case_id": case_id,
+                        },
+                    },
+                    "task-plan-dispatch",
+                ))
+                executed = run_agent.handle_function_call(
+                    "terminal",
+                    {"command": exact_command},
+                    task_id="task-plan-dispatch",
+                    session_id=agent.session_id,
+                    skip_pre_tool_call_hook=True,
+                    skip_tool_request_middleware=True,
+                )
+        finally:
+            approval.clear_session_local(routing_key)
+            approval.reset_current_session_key(approval_token)
+            clear_session_vars(session_tokens)
+
+        assert planned["todos"][0]["id"] == "execute"
+        assert granted["plan_capability"]["state"] == "granted"
+        assert granted["plan_capability"]["approved_by_user_id"] == owner_id
+        assert len(checks) == 1
+        assert checks[0]["receipt"]["command_sha256"] in repr(granted)
+        assert "approval required" not in executed.casefold()
+        assert not target.exists()
+
+    def test_gateway_plan_capability_rejects_spoofed_caller_identity(self, agent):
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools import approval
+
+        routing_key = "agent:main:discord:channel:plan-dispatch-spoof"
+        session_tokens = set_session_vars(
+            platform="discord",
+            user_id="owner-plan-dispatch",
+            session_key=routing_key,
+            capability_epoch_sha256="b" * 64,
+            message_id="message-plan-dispatch-spoof",
+        )
+        agent._gateway_session_key = routing_key
+        agent.user_id = "spoofed-caller"
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "approvals": {"plan_owner_user_ids": ["owner-plan-dispatch"]},
+                },
+            ):
+                result = json.loads(agent._invoke_tool(
+                    "todo",
+                    {
+                        "plan_approval": {
+                            "plan_id": "plan:plan-dispatch-spoof",
+                            "plan_revision": 1,
+                            "exact_commands": ["git clean -fd"],
+                            "ttl_seconds": 3600,
+                            "max_uses_per_command": 1,
+                            "canonical_case_id": "case:plan-dispatch-spoof",
+                        },
+                    },
+                    "task-plan-dispatch-spoof",
+                ))
+        finally:
+            del agent.user_id
+            approval.clear_session_local(routing_key)
+            clear_session_vars(session_tokens)
+
+        assert "runtime-observed user" in result["error"]
+
+    def test_gateway_plan_capability_rejects_missing_observed_owner(self, agent):
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools import approval
+
+        routing_key = "agent:main:discord:channel:plan-dispatch-missing-owner"
+        session_tokens = set_session_vars(
+            platform="discord",
+            user_id="",
+            session_key=routing_key,
+            capability_epoch_sha256="c" * 64,
+            message_id="message-plan-dispatch-missing-owner",
+        )
+        agent._gateway_session_key = routing_key
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "approvals": {"plan_owner_user_ids": ["owner-plan-dispatch"]},
+                },
+            ):
+                result = json.loads(agent._invoke_tool(
+                    "todo",
+                    {
+                        "plan_approval": {
+                            "plan_id": "plan:plan-dispatch-missing-owner",
+                            "plan_revision": 1,
+                            "exact_commands": ["git clean -fd"],
+                            "ttl_seconds": 3600,
+                            "max_uses_per_command": 1,
+                            "canonical_case_id": "case:plan-dispatch-missing-owner",
+                        },
+                    },
+                    "task-plan-dispatch-missing-owner",
+                ))
+        finally:
+            approval.clear_session_local(routing_key)
+            clear_session_vars(session_tokens)
+
+        assert "runtime-observed owner identity" in result["error"]
+
+    def test_non_gateway_plan_capability_cannot_self_assert_owner(self, agent):
+        from gateway.session_context import clear_session_vars, set_session_vars
+        from tools import approval
+
+        session_tokens = set_session_vars(platform="", user_id="", session_key="")
+        approval_token = approval.set_current_session_key("cli-plan-dispatch")
+        agent._gateway_session_key = ""
+        try:
+            with patch(
+                "hermes_cli.config.load_config",
+                return_value={
+                    "approvals": {"plan_owner_user_ids": ["owner-plan-dispatch"]},
+                },
+            ):
+                result = json.loads(agent._invoke_tool(
+                    "todo",
+                    {
+                        "plan_approval": {
+                            "plan_id": "plan:cli-plan-dispatch",
+                            "plan_revision": 1,
+                            "exact_commands": ["git clean -fd"],
+                            "ttl_seconds": 3600,
+                            "max_uses_per_command": 1,
+                        },
+                    },
+                    "task-cli-plan-dispatch",
+                ))
+        finally:
+            approval.clear_session_local("cli-plan-dispatch")
+            approval.reset_current_session_key(approval_token)
+            clear_session_vars(session_tokens)
+
+        assert "authenticated configured owner" in result["error"]
+
+    def test_invoke_tool_middleware_cannot_originate_reasoning(self, agent, monkeypatch):
+        """Plugin middleware is mechanical and cannot author model effort."""
+        from agent.adaptive_reasoning import (
+            configure_adaptive_reasoning,
+            effective_reasoning_config,
+            reset_adaptive_reasoning_turn,
+        )
+
+        agent.api_mode = "codex_responses"
+        agent.model = "gpt-5.6-sol"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        configure_adaptive_reasoning(agent, {"adaptive_reasoning": {"enabled": True}})
+        agent._current_turn_id = "turn-middleware"
+        reset_adaptive_reasoning_turn(agent, "turn-middleware")
+
+        def request_middleware(**kwargs):
+            return {
+                "args": {
+                    **kwargs["args"],
+                    "reasoning": {"effort": "xhigh"},
+                },
+                "source": "cannot-author-effort",
+            }
+
+        manager = SimpleNamespace(
+            _middleware={"tool_request": [request_middleware], "tool_execution": []}
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_middleware",
+            lambda kind, **kwargs: (
+                [request_middleware(**kwargs)] if kind == "tool_request" else []
+            ),
+        )
+
+        result = agent._invoke_tool("todo", {"todos": []}, "task-1")
+
+        assert "reasoning_control" not in json.loads(result)
+        assert effective_reasoning_config(agent) == {
+            "enabled": True,
+            "effort": "high",
+        }
+
     def test_invoke_tool_agent_level_tool_emits_terminal_post_tool_hook(self, agent, monkeypatch):
         """Agent-owned tool paths should close observer tool spans."""
         hook_calls = []
@@ -3095,8 +3707,116 @@ class TestConcurrentToolExecution:
         assert post_call[1]["result"] == '{"ok":true}'
         assert post_call[1]["status"] == "ok"
 
-    def test_sequential_agent_level_tool_execution_middleware_wraps_inline_dispatch(self, agent, monkeypatch):
-        """Sequential built-in tool paths should expose the adaptive execution boundary."""
+    def test_sequential_todo_applies_turn_scoped_reasoning_to_later_calls(self, agent):
+        """The direct sequential path emits a receipt and updates the next call."""
+        from agent.adaptive_reasoning import (
+            configure_adaptive_reasoning,
+            effective_reasoning_config,
+            reset_adaptive_reasoning_turn,
+        )
+
+        agent.api_mode = "codex_responses"
+        agent.model = "gpt-5.6-sol"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        configure_adaptive_reasoning(agent, {"adaptive_reasoning": {"enabled": True}})
+        agent._current_turn_id = "turn-sequential"
+        reset_adaptive_reasoning_turn(agent, "turn-sequential")
+        tool_call = _mock_tool_call(
+            name="todo",
+            arguments=json.dumps(
+                {"todos": [], "reasoning": {"effort": "xhigh"}}
+            ),
+            call_id="todo-reasoning",
+        )
+        messages = []
+
+        agent._execute_tool_calls_sequential(
+            _mock_assistant_msg(content="", tool_calls=[tool_call]),
+            messages,
+            "task-1",
+        )
+
+        payload = json.loads(messages[-1]["content"])
+        assert payload["reasoning_control"]["status"] == "applied"
+        assert effective_reasoning_config(agent) == {
+            "enabled": True,
+            "effort": "xhigh",
+        }
+
+    def test_sequential_middleware_cannot_rewrite_model_reasoning(self, agent, monkeypatch):
+        """The receipt and state reflect raw model args, not plugin rewrites."""
+        from agent.adaptive_reasoning import (
+            configure_adaptive_reasoning,
+            effective_reasoning_config,
+            reset_adaptive_reasoning_turn,
+        )
+
+        agent.api_mode = "codex_responses"
+        agent.model = "gpt-5.6-sol"
+        agent.provider = "openai-codex"
+        agent.base_url = "https://chatgpt.com/backend-api/codex"
+        agent.reasoning_config = {"enabled": True, "effort": "high"}
+        configure_adaptive_reasoning(agent, {"adaptive_reasoning": {"enabled": True}})
+        agent._current_turn_id = "turn-model-provenance"
+        reset_adaptive_reasoning_turn(agent, "turn-model-provenance")
+
+        def request_middleware(**kwargs):
+            return {
+                "args": {**kwargs["args"], "reasoning": {"effort": "high"}},
+                "source": "request-rewrite",
+            }
+
+        def execution_middleware(**kwargs):
+            return kwargs["next_call"](
+                {**kwargs["args"], "reasoning": {"effort": "high"}}
+            )
+
+        manager = SimpleNamespace(
+            _middleware={
+                "tool_request": [request_middleware],
+                "tool_execution": [execution_middleware],
+            }
+        )
+        monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_middleware",
+            lambda kind, **kwargs: (
+                [request_middleware(**kwargs)] if kind == "tool_request" else []
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.resolve_pre_tool_block",
+            lambda *args, **kwargs: None,
+        )
+        tool_call = _mock_tool_call(
+            name="todo",
+            arguments=json.dumps(
+                {"todos": [], "reasoning": {"effort": "xhigh"}}
+            ),
+            call_id="todo-model-provenance",
+        )
+        messages = []
+
+        agent._execute_tool_calls_sequential(
+            _mock_assistant_msg(content="", tool_calls=[tool_call]),
+            messages,
+            "task-1",
+        )
+
+        payload = json.loads(messages[-1]["content"])
+        assert payload["reasoning_control"]["status"] == "applied"
+        assert payload["reasoning_control"]["effective"] == {"effort": "xhigh"}
+        assert effective_reasoning_config(agent) == {
+            "enabled": True,
+            "effort": "xhigh",
+        }
+
+    def test_sequential_todo_middleware_cannot_rewrite_model_authored_payload(self, agent, monkeypatch):
+        """Middleware may observe todo, but cannot author or rewrite its payload."""
+        agent._current_turn_id = "turn-sequential-todo"
+        agent._current_goal_generation_id = "goal-gen-sequential-todo"
         tool_call = _mock_tool_call(name="todo", arguments='{"todos":[]}', call_id="todo-1")
         mock_msg = _mock_assistant_msg(content="", tool_calls=[tool_call])
         messages = []
@@ -3105,13 +3825,22 @@ class TestConcurrentToolExecution:
 
         def request_middleware(**kwargs):
             return {
-                "args": {**kwargs["args"], "request_rewritten": True},
+                "args": {
+                    **kwargs["args"],
+                    "plan_approval": {"plan_id": "forged"},
+                    "canonical_checkpoint": {"case_id": "forged"},
+                },
                 "source": "request-test",
             }
 
         def execution_middleware(**kwargs):
             seen["middleware_args"] = kwargs["args"]
-            return kwargs["next_call"]({**kwargs["args"], "merge": True})
+            return kwargs["next_call"]({
+                **kwargs["args"],
+                "merge": True,
+                "goal_outcome": {"status": "complete", "reason": "forged"},
+                "goal_contract": {"outcome": "forged"},
+            })
 
         manager = SimpleNamespace(_middleware={
             "tool_request": [request_middleware],
@@ -3135,19 +3864,26 @@ class TestConcurrentToolExecution:
         with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:
             agent._execute_tool_calls_sequential(mock_msg, messages, "task-1")
 
-        assert seen["middleware_args"] == {"todos": [], "request_rewritten": True}
+        assert seen["middleware_args"] == {"todos": []}
         mock_todo.assert_called_once_with(
             todos=[],
-            merge=True,
+            merge=False,
             store=agent._todo_store,
             plan_approval=None,
             goal_outcome=None,
+            goal_contract=None,
+            canonical_checkpoint=None,
+            delivery_outcome=None,
+            delivery_outcome_recorder=ANY,
             session_key=agent.session_id,
+            goal_session_id=agent.session_id,
+            originating_turn_id="turn-sequential-todo",
+            goal_generation_id="goal-gen-sequential-todo",
             user_id="",
         )
         post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
         assert post_call[1]["tool_name"] == "todo"
-        assert post_call[1]["args"] == {"todos": [], "request_rewritten": True, "merge": True}
+        assert post_call[1]["args"] == {"todos": []}
         assert post_call[1]["middleware_trace"] == [{"source": "request-test"}]
 
     def test_concurrent_agent_level_tool_preserves_request_middleware_trace(self, agent, monkeypatch):
@@ -3183,7 +3919,7 @@ class TestConcurrentToolExecution:
 
         post_call = next(call for call in hook_calls if call[0] == "post_tool_call")
         assert post_call[1]["tool_name"] == "todo"
-        assert post_call[1]["args"] == {"todos": [], "request_rewritten": True}
+        assert post_call[1]["args"] == {"todos": []}
         assert post_call[1]["middleware_trace"] == [{"source": "request-test"}]
 
     def test_agent_runtime_post_hook_ownership_predicate_covers_agent_tools(self, agent):
@@ -3653,320 +4389,632 @@ class TestMcpParallelToolBatch:
 
 
 class TestHandleMaxIterations:
-    def test_returns_summary(self, agent):
-        resp = _mock_response(content="Here is a summary of what I did.")
-        agent.client.chat.completions.create.return_value = resp
-        agent._cached_system_prompt = "You are helpful."
+    def test_returns_non_model_runtime_receipt_without_dispatch(self, agent):
         messages = [{"role": "user", "content": "do stuff"}]
-        result = agent._handle_max_iterations(messages, 60)
-        assert isinstance(result, str)
-        assert len(result) > 0
-        assert "summary" in result.lower()
-
-    def test_api_failure_returns_error(self, agent):
-        agent.client.chat.completions.create.side_effect = Exception("API down")
-        agent._cached_system_prompt = "You are helpful."
-        messages = [{"role": "user", "content": "do stuff"}]
-        result = agent._handle_max_iterations(messages, 60)
-        assert isinstance(result, str)
-        assert "error" in result.lower()
-        assert "API down" in result
-
-    def test_summary_skips_reasoning_for_unsupported_openrouter_model(self, agent):
-        agent.base_url = "https://openrouter.ai/api/v1"
-        agent.model = "minimax/minimax-m2.5"
-        resp = _mock_response(content="Summary")
-        agent.client.chat.completions.create.return_value = resp
-        agent._cached_system_prompt = "You are helpful."
-        messages = [{"role": "user", "content": "do stuff"}]
+        before = [dict(message) for message in messages]
+        agent.client.reset_mock()
 
         result = agent._handle_max_iterations(messages, 60)
 
-        assert result == "Summary"
-        kwargs = agent.client.chat.completions.create.call_args.kwargs
-        assert "reasoning" not in kwargs.get("extra_body", {})
+        assert result.startswith(
+            "[RUNTIME BOUNDARY RECEIPT — NOT MODEL-AUTHORED]"
+        )
+        assert "task remains open" in result
+        assert messages == before
+        agent.client.chat.completions.create.assert_not_called()
 
-    def test_summary_request_removes_orphan_tool_result(self, agent):
-        """Regression: max-iterations summary request must NOT contain
-        orphan tool results (tool_call_id with no matching assistant tool_call)."""
-        resp = _mock_response(content="Summary of work done.")
-        agent.client.chat.completions.create.return_value = resp
-        agent._cached_system_prompt = "You are helpful."
-        messages = [
-            {"role": "user", "content": "Analyze finance-data-router"},
-            {"role": "assistant", "content": "[Session Arc Summary] ..."},
-            {"role": "tool", "tool_call_id": "call_cfedFhJjGmu1RvRc1OUC38j8", "content": "file content here"},
-            {"role": "assistant", "tool_calls": [{"id": "call_8fXBXsT592Vpvm7wnW4obPEu", "function": {"name": "patch", "arguments": "{}"}}]},
-            {"role": "tool", "tool_call_id": "call_8fXBXsT592Vpvm7wnW4obPEu", "content": "patch result"},
-            {"role": "assistant", "content": "Done."},
-        ]
-
-        result = agent._handle_max_iterations(messages, 120)
-
-        assert result == "Summary of work done."
-        kwargs = agent.client.chat.completions.create.call_args.kwargs
-        sent_msgs = kwargs.get("messages", [])
-        orphan_ids = [
-            m.get("tool_call_id") for m in sent_msgs
-            if m.get("role") == "tool" and m.get("tool_call_id") == "call_cfedFhJjGmu1RvRc1OUC38j8"
-        ]
-        assert len(orphan_ids) == 0, f"Orphan tool result still present: {orphan_ids}"
-
-    def test_summary_request_inserts_stub_for_missing_tool_result(self, agent):
-        """If an assistant tool_call has no matching tool result in the
-        summary request, a stub must be inserted to satisfy the API contract."""
-        resp = _mock_response(content="Summary")
-        agent.client.chat.completions.create.return_value = resp
-        agent._cached_system_prompt = "You are helpful."
-        messages = [
-            {"role": "user", "content": "do stuff"},
-            {"role": "assistant", "tool_calls": [{"id": "call_no_result", "function": {"name": "terminal", "arguments": "{}"}}]},
-            {"role": "assistant", "content": "Continuing..."},
-        ]
-
-        result = agent._handle_max_iterations(messages, 60)
-
-        assert result == "Summary"
-        kwargs = agent.client.chat.completions.create.call_args.kwargs
-        sent_msgs = kwargs.get("messages", [])
-        stub_ids = [
-            m.get("tool_call_id") for m in sent_msgs
-            if m.get("role") == "tool" and m.get("tool_call_id") == "call_no_result"
-        ]
-        assert len(stub_ids) >= 1, f"No stub result for assistant tool_call: {stub_ids}"
-
-    def test_summary_strips_strict_schema_foreign_fields(self, agent):
-        """Regression: the max-iterations summary request must NOT carry
-        Chat-Completions-schema-foreign keys — tool_name (SQLite FTS
-        bookkeeping), codex_* reasoning carriers, or internal _-prefixed
-        scaffolding. Strict gateways (Fireworks-backed OpenCode Go, Mistral,
-        Kimi) reject these with 'Extra inputs are not permitted, field:
-        messages[N].tool_name'. The transport's convert_messages() strips
-        them on the main loop; this hand-built summary path must mirror it."""
-        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
-        agent._cached_system_prompt = "You are helpful."
-        messages = [
-            {"role": "user", "content": "do stuff"},
-            {
-                "role": "assistant",
-                "tool_calls": [{"id": "call_1", "function": {"name": "execute_code", "arguments": "{}"}}],
-                "codex_reasoning_items": [{"id": "rs_1"}],
-            },
-            {"role": "tool", "tool_call_id": "call_1", "content": "result", "tool_name": "execute_code"},
-            {"role": "assistant", "content": "Done.", "_empty_recovery_synthetic": True},
-        ]
-
-        result = agent._handle_max_iterations(messages, 60)
-
-        assert result == "Summary"
-        sent_msgs = agent.client.chat.completions.create.call_args.kwargs.get("messages", [])
-        for m in sent_msgs:
-            assert "tool_name" not in m, m
-            assert "codex_reasoning_items" not in m, m
-            assert "codex_message_items" not in m, m
-            assert not any(isinstance(k, str) and k.startswith("_") for k in m), m
-        # Internal history is untouched — the path copies each message.
-        assert messages[2]["tool_name"] == "execute_code"
-        assert messages[1]["codex_reasoning_items"] == [{"id": "rs_1"}]
-
-    def test_summary_omits_provider_preferences_for_non_openrouter(self, agent):
-        agent.base_url = "https://api.openai.com/v1"
-        agent._base_url_lower = agent.base_url.lower()
-        agent.provider = "openai"
-        agent.providers_allowed = ["Anthropic"]
-        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
-        agent._cached_system_prompt = "You are helpful."
-
-        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
-
-        assert result == "Summary"
-        kwargs = agent.client.chat.completions.create.call_args.kwargs
-        assert "provider" not in kwargs.get("extra_body", {})
-
-    def test_summary_keeps_provider_preferences_for_openrouter(self, agent):
-        agent.base_url = "https://openrouter.ai/api/v1"
-        agent._base_url_lower = agent.base_url.lower()
-        agent.provider = "openrouter"
-        agent.providers_allowed = ["Anthropic"]
-        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
-        agent._cached_system_prompt = "You are helpful."
-
-        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
-
-        assert result == "Summary"
-        kwargs = agent.client.chat.completions.create.call_args.kwargs
-        assert kwargs["extra_body"]["provider"]["only"] == ["Anthropic"]
-
-    def test_summary_keeps_provider_preferences_for_nous(self, agent):
-        agent.base_url = "https://proxy.example.com/v1"
-        agent._base_url_lower = agent.base_url.lower()
-        agent.provider = "nous"
-        agent.providers_allowed = ["deepseek"]
-        agent.providers_ignored = ["deepinfra"]
-        agent.provider_sort = "throughput"
-        agent.provider_require_parameters = True
-        agent.provider_data_collection = "deny"
-        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
-        agent._cached_system_prompt = "You are helpful."
-
-        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
-
-        assert result == "Summary"
-        kwargs = agent.client.chat.completions.create.call_args.kwargs
-        from agent.portal_tags import nous_portal_tags
-
-        assert kwargs["extra_body"]["tags"] == nous_portal_tags()
-        assert kwargs["extra_body"]["provider"] == {
-            "only": ["deepseek"],
-            "ignore": ["deepinfra"],
-            "sort": "throughput",
-            "require_parameters": True,
-            "data_collection": "deny",
-        }
-
-    def test_summary_keeps_nous_profile_body_without_routing_preferences(self, agent):
-        agent.base_url = "https://proxy.example.com/v1"
-        agent._base_url_lower = agent.base_url.lower()
-        agent.provider = "nous"
-        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
-        agent._cached_system_prompt = "You are helpful."
-
-        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
-
-        assert result == "Summary"
-        kwargs = agent.client.chat.completions.create.call_args.kwargs
-        from agent.portal_tags import nous_portal_tags
-
-        assert kwargs["extra_body"] == {"tags": nous_portal_tags()}
-
-    def test_summary_drops_invalid_provider_sort(self, agent):
-        agent.base_url = "https://openrouter.ai/api/v1"
-        agent._base_url_lower = agent.base_url.lower()
-        agent.provider = "openrouter"
-        agent.provider_sort = "intelligence"
-        agent.client.chat.completions.create.return_value = _mock_response(content="Summary")
-        agent._cached_system_prompt = "You are helpful."
-
-        result = agent._handle_max_iterations([{"role": "user", "content": "do stuff"}], 60)
-
-        assert result == "Summary"
-        kwargs = agent.client.chat.completions.create.call_args.kwargs
-        assert "sort" not in kwargs.get("extra_body", {}).get("provider", {})
-
-    def test_codex_summary_sanitizes_orphan_tool_results(self, agent):
+    def test_never_dispatches_or_attests_for_codex_active_plan(self, agent):
         agent.api_mode = "codex_responses"
-        agent.provider = "openai-codex"
-        agent.base_url = "https://chatgpt.com/backend-api/codex"
-        agent._base_url_lower = agent.base_url.lower()
-        agent._base_url_hostname = "chatgpt.com"
-        agent.model = "gpt-5.5"
-        agent._cached_system_prompt = "You are helpful."
         agent._todo_store.write([
-            {"id": "canary", "content": "finish the plan", "status": "in_progress"}
-        ])
-        captured = {}
-
-        def fake_run_codex_stream(kwargs):
-            captured.update(kwargs)
-            return SimpleNamespace(
-                status="completed",
-                output=[
-                    SimpleNamespace(
-                        type="message",
-                        status="completed",
-                        content=[SimpleNamespace(type="output_text", text="Summary")],
-                    )
-                ],
-            )
-
-        messages = [
-            {"role": "user", "content": "do stuff"},
             {
-                "role": "tool",
-                "tool_call_id": "call_orphan",
-                "content": "orphaned result from compressed history",
-            },
-        ]
+                "id": "canary",
+                "content": "finish the plan",
+                "status": "in_progress",
+            }
+        ])
+        messages = [{"role": "user", "content": "do stuff"}]
 
-        with patch.object(agent, "_run_codex_stream", side_effect=fake_run_codex_stream):
+        with (
+            patch.object(agent, "_run_codex_stream") as run_codex,
+            patch(
+                "hermes_cli.config.attest_pinned_effective_config_projection"
+            ) as attest,
+        ):
             result = agent._handle_max_iterations(messages, 90)
 
-        assert result == "Summary"
-        assert "tools" not in captured
-        assert "tool_choice" not in captured
-        assert "parallel_tool_calls" not in captured
-        input_items = captured["input"]
-        assert not any(
-            item.get("type") == "function_call_output"
-            and item.get("call_id") == "call_orphan"
-            for item in input_items
+        assert "iteration budget" in result.lower()
+        run_codex.assert_not_called()
+        attest.assert_not_called()
+
+
+class TestRenewableIterationSlices:
+    @staticmethod
+    def _tool_call(name, arguments, call_id):
+        return SimpleNamespace(
+            id=call_id,
+            type="function",
+            function=SimpleNamespace(
+                name=name,
+                arguments=json.dumps(arguments),
+            ),
         )
 
-    def test_api_sanitizer_matches_responses_call_id_when_id_differs(self, agent):
-        messages = [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
-                    {
-                        "id": "fc_123",
-                        "call_id": "call_123",
-                        "response_item_id": "fc_123",
-                        "type": "function",
-                        "function": {"name": "web_search", "arguments": "{}"},
-                    }
-                ],
-            },
-            {"role": "tool", "tool_call_id": "call_123", "content": "result"},
+    @staticmethod
+    def _tool_response(*calls):
+        return _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=list(calls),
+        )
+
+    @staticmethod
+    def _prepare(agent):
+        agent.max_iterations = 1
+        agent._disable_streaming = True
+        agent.valid_tool_names = {"todo"}
+        agent.tools = _make_tool_defs("todo")
+        agent._persist_session = MagicMock()
+        agent._save_trajectory = MagicMock()
+        agent._cleanup_task_resources = MagicMock()
+
+    def test_cached_root_gets_fresh_owned_lease_for_unrelated_turn(self, agent):
+        agent._disable_streaming = True
+        agent._persist_session = MagicMock()
+        agent._save_trajectory = MagicMock()
+        agent._cleanup_task_resources = MagicMock()
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="first", finish_reason="stop"),
+            _mock_response(content="second", finish_reason="stop"),
         ]
 
-        sanitized = agent._sanitize_api_messages(messages)
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            first = agent.run_conversation("first unrelated task")
+            first_lease = agent.execution_lease
+            second = agent.run_conversation("second unrelated task")
+            second_lease = agent.execution_lease
 
-        assert [m.get("tool_call_id") for m in sanitized if m.get("role") == "tool"] == [
-            "call_123"
+        assert first["completed"] is True
+        assert second["completed"] is True
+        assert first_lease is not second_lease
+        assert first_lease.used == 1
+        assert second_lease.used == 1
+        assert first_lease.max_total == agent.max_iterations * 10
+        assert second_lease.max_total == agent.max_iterations * 10
+
+    def test_injected_lease_identity_and_state_survive_multiple_turns(self, agent):
+        from agent.iteration_budget import ExecutionLease
+
+        lease = ExecutionLease(max_total=4)
+        agent.execution_lease = lease
+        agent._owns_execution_lease = False
+        agent._disable_streaming = True
+        agent._persist_session = MagicMock()
+        agent._save_trajectory = MagicMock()
+        agent._cleanup_task_resources = MagicMock()
+        agent.client.chat.completions.create.side_effect = [
+            _mock_response(content="first", finish_reason="stop"),
+            _mock_response(content="second", finish_reason="stop"),
         ]
 
-    def test_api_sanitizer_repairs_tool_call_with_empty_function_name(self, agent):
-        """A tool_call with id but empty function.name makes the Responses-API
-        adapter drop the function_call while keeping its function_call_output,
-        causing the gateway's HTTP 400 'No tool call found for function call
-        output ...'. The sanitizer renames the blank name to a non-empty
-        sentinel so the call and its result stay PAIRED (no orphaned output,
-        no 400) while the result content is preserved — it must NOT drop the
-        call, because hermes' dispatch loop keeps empty-name calls paired with
-        an anti-priming result for self-correction (#47967). (#12807)"""
-        messages = [
-            {
-                "role": "assistant",
-                "content": "",
-                "tool_calls": [
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            first = agent.run_conversation("first leased task")
+            second = agent.run_conversation("second leased task")
+
+        assert first["completed"] is True
+        assert second["completed"] is True
+        assert agent.execution_lease is lease
+        assert lease.used == 2
+        assert first["execution_lease_used"] == 1
+        assert second["execution_lease_used"] == 2
+
+    @pytest.mark.parametrize(
+        ("status", "expected"),
+        [
+            ("pending", "required"),
+            ("in_progress", "required"),
+            ("completed", None),
+            ("cancelled", None),
+            ("blocked", None),
+        ],
+    )
+    def test_only_active_model_authored_status_requires_a_tool(
+        self, agent, status, expected
+    ):
+        agent.tools = _make_tool_defs("todo")
+        agent.valid_tool_names = {"todo"}
+        agent._todo_store.write(
+            [{"id": "1", "content": "work", "status": status}]
+        )
+
+        kwargs = agent._build_api_kwargs(
+            [{"role": "user", "content": "continue"}]
+        )
+
+        assert kwargs.get("tool_choice") == expected
+
+    def test_active_plan_renews_slice_then_closes_without_synthetic_user(
+        self, agent
+    ):
+        self._prepare(agent)
+        exact_tools = agent.tools
+        agent.client.chat.completions.create.side_effect = [
+            self._tool_response(
+                self._tool_call(
+                    "todo",
                     {
-                        "id": "call_good",
-                        "type": "function",
-                        "function": {"name": "web_search", "arguments": "{}"},
+                        "todos": [
+                            {
+                                "id": "1",
+                                "content": "finish",
+                                "status": "pending",
+                            }
+                        ]
                     },
+                    "c1",
+                )
+            ),
+            self._tool_response(
+                self._tool_call(
+                    "todo",
                     {
-                        "id": "call_bad",
-                        "type": "function",
-                        "function": {"name": "", "arguments": "{}"},
+                        "todos": [
+                            {
+                                "id": "1",
+                                "content": "finish",
+                                "status": "completed",
+                            }
+                        ]
                     },
-                ],
-            },
-            {"role": "tool", "tool_call_id": "call_good", "content": "ok"},
-            {"role": "tool", "tool_call_id": "call_bad", "content": "orphan"},
+                    "c2",
+                )
+            ),
+            _mock_response(content="verified final", finish_reason="stop"),
         ]
 
-        sanitized = agent._sanitize_api_messages(messages)
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            result = agent.run_conversation("do it")
 
-        # The good call is untouched; the malformed call is repaired in place
-        # (renamed to a non-empty sentinel) rather than dropped.
-        assistant = next(m for m in sanitized if m.get("role") == "assistant")
-        names = [tc["function"]["name"] for tc in assistant["tool_calls"]]
-        assert names == ["web_search", "invalid_tool_call"]
-        # Both calls now have non-empty names, so neither output is orphaned
-        # and both tool results survive — this is what prevents the 400.
-        tool_ids = [m.get("tool_call_id") for m in sanitized if m.get("role") == "tool"]
-        assert tool_ids == ["call_good", "call_bad"]
+        assert (
+            result["final_response"],
+            result["completed"],
+            result["failed"],
+            result["api_calls"],
+            result["iteration_budget_renewals"],
+        ) == ("verified final", True, False, 3, 1)
+        assert [
+            call.kwargs.get("tool_choice")
+            for call in agent.client.chat.completions.create.call_args_list
+        ] == [None, "required", None]
+        assert agent.tools is exact_tools
+        assert all(
+            call.kwargs.get("tools") == exact_tools
+            for call in agent.client.chat.completions.create.call_args_list
+        )
+        assert {
+            call.kwargs["messages"][0]["content"]
+            for call in agent.client.chat.completions.create.call_args_list
+            if call.kwargs["messages"][0]["role"] == "system"
+        } == {agent._cached_system_prompt}
+        assert [message["role"] for message in result["messages"]] == [
+            "user",
+            "assistant",
+            "tool",
+            "assistant",
+            "tool",
+            "assistant",
+        ]
+        assert sum(
+            message["role"] == "user" for message in result["messages"]
+        ) == 1
+        assert result["execution_lease_used"] == 3
+        assert result["execution_lease_max"] == 10
+
+    def test_endless_active_plan_hits_shared_execution_lease_resumably(
+        self, agent
+    ):
+        from agent.iteration_budget import ExecutionLease
+        from agent.message_provenance import (
+            RUNTIME_BOUNDARY_RECEIPT_KIND,
+            message_fragment_is_bound,
+        )
+
+        self._prepare(agent)
+        exact_tools = agent.tools
+        lease = ExecutionLease(max_total=3)
+        agent.execution_lease = lease
+        agent._owns_execution_lease = False
+        agent.client.chat.completions.create.side_effect = [
+            self._tool_response(
+                self._tool_call(
+                    "todo",
+                    {
+                        "todos": [
+                            {
+                                "id": "1",
+                                "content": "keep working",
+                                "status": "pending",
+                            }
+                        ]
+                    },
+                    call_id,
+                )
+            )
+            for call_id in ("c1", "c2", "c3")
+        ]
+
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            result = agent.run_conversation("do it")
+
+        assert agent.execution_lease is lease
+        assert lease.used == 3
+        assert result["api_calls"] == 3
+        assert result["iteration_budget_renewals"] == 2
+        assert result["execution_lease_used"] == 3
+        assert result["execution_lease_max"] == 3
+        assert result["completed"] is False
+        assert result["failed"] is True
+        assert result["partial"] is True
+        assert result["error"] == "execution_lease_exhausted"
+        assert result["turn_exit_reason"] == "execution_lease_exhausted"
+        assert agent._todo_store.has_active_items() is True
+        assert result["messages"][-1]["role"] == "assistant"
+        assert result["messages"][-1]["content"].startswith(
+            "[RUNTIME EXECUTION LEASE RECEIPT — NOT MODEL-AUTHORED]"
+        )
+        assert message_fragment_is_bound(
+            result["messages"][-1],
+            kind=RUNTIME_BOUNDARY_RECEIPT_KIND,
+            exact_text=result["messages"][-1]["content"],
+        )
+        assert [message["role"] for message in result["messages"]] == [
+            "user",
+            "assistant",
+            "tool",
+            "assistant",
+            "tool",
+            "assistant",
+            "tool",
+            "assistant",
+        ]
+        assert [
+            call.kwargs.get("tool_choice")
+            for call in agent.client.chat.completions.create.call_args_list
+        ] == [None, "required", "required"]
+        assert all(
+            call.kwargs.get("tools") == exact_tools
+            for call in agent.client.chat.completions.create.call_args_list
+        )
+        assert {
+            call.kwargs["messages"][0]["content"]
+            for call in agent.client.chat.completions.create.call_args_list
+            if call.kwargs["messages"][0]["role"] == "system"
+        } == {agent._cached_system_prompt}
+
+    def test_interrupt_before_renewal_preserves_open_plan_and_alternation(
+        self, agent
+    ):
+        from agent.iteration_budget import ExecutionLease
+
+        self._prepare(agent)
+        lease = ExecutionLease(max_total=5)
+        agent.execution_lease = lease
+        agent._owns_execution_lease = False
+        agent.client.chat.completions.create.return_value = self._tool_response(
+            self._tool_call(
+                "todo",
+                {
+                    "todos": [
+                        {
+                            "id": "1",
+                            "content": "resume later",
+                            "status": "pending",
+                        }
+                    ]
+                },
+                "c1",
+            )
+        )
+        execute_tools = agent._execute_tool_calls
+
+        def execute_then_interrupt(*args, **kwargs):
+            execute_tools(*args, **kwargs)
+            agent._interrupt_requested = True
+
+        with (
+            patch.object(
+                agent,
+                "_execute_tool_calls",
+                side_effect=execute_then_interrupt,
+            ),
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+        ):
+            result = agent.run_conversation("start it")
+
+        assert result["interrupted"] is True
+        assert result["completed"] is False
+        assert result["iteration_budget_renewals"] == 0
+        assert lease.used == 1
+        assert agent._todo_store.has_active_items() is True
+        assert [message["role"] for message in result["messages"]] == [
+            "user",
+            "assistant",
+            "tool",
+            "assistant",
+        ]
+        assert sum(
+            message["role"] == "user" for message in result["messages"]
+        ) == 1
+
+    def test_active_plan_renews_across_invalid_tool_correction(self, agent):
+        self._prepare(agent)
+        agent.client.chat.completions.create.side_effect = [
+            self._tool_response(
+                self._tool_call(
+                    "todo",
+                    {
+                        "todos": [
+                            {
+                                "id": "1",
+                                "content": "finish",
+                                "status": "pending",
+                            }
+                        ]
+                    },
+                    "c1",
+                )
+            ),
+            self._tool_response(
+                self._tool_call("bogus", {}, "c2")
+            ),
+            self._tool_response(
+                self._tool_call(
+                    "todo",
+                    {
+                        "todos": [
+                            {
+                                "id": "1",
+                                "content": "finish",
+                                "status": "completed",
+                            }
+                        ]
+                    },
+                    "c3",
+                )
+            ),
+            _mock_response(content="verified final", finish_reason="stop"),
+        ]
+
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            result = agent.run_conversation("do it")
+
+        assert result["final_response"] == "verified final"
+        assert result["completed"] is True
+        assert result["failed"] is False
+        assert result["api_calls"] == 4
+        assert result["iteration_budget_renewals"] == 2
+        assert [
+            call.kwargs.get("tool_choice")
+            for call in agent.client.chat.completions.create.call_args_list
+        ] == [None, "required", "required", None]
+        assert sum(
+            message["role"] == "user" for message in result["messages"]
+        ) == 1
+
+    def test_near_miss_mutation_tool_is_rejected_until_model_corrects_it(
+        self, agent
+    ):
+        agent.max_iterations = 2
+        agent._disable_streaming = True
+        agent.valid_tool_names = {"todo", "write_file"}
+        agent.tools = _make_tool_defs("todo", "write_file")
+        agent._persist_session = MagicMock()
+        agent._save_trajectory = MagicMock()
+        agent._cleanup_task_resources = MagicMock()
+        agent.client.chat.completions.create.side_effect = [
+            self._tool_response(
+                self._tool_call(
+                    "todo",
+                    {
+                        "todos": [
+                            {
+                                "id": "1",
+                                "content": "write exact file",
+                                "status": "pending",
+                            }
+                        ]
+                    },
+                    "c1",
+                )
+            ),
+            self._tool_response(
+                self._tool_call(
+                    "write_fille",
+                    {"path": "/tmp/x", "content": "wrong"},
+                    "c2",
+                )
+            ),
+            self._tool_response(
+                self._tool_call(
+                    "write_file",
+                    {"path": "/tmp/x", "content": "right"},
+                    "c3",
+                )
+            ),
+            self._tool_response(
+                self._tool_call(
+                    "todo",
+                    {
+                        "todos": [
+                            {
+                                "id": "1",
+                                "content": "write exact file",
+                                "status": "completed",
+                            }
+                        ]
+                    },
+                    "c4",
+                )
+            ),
+            _mock_response(content="verified final", finish_reason="stop"),
+        ]
+
+        with (
+            patch(
+                "run_agent.handle_function_call",
+                return_value={"success": True},
+            ) as execute_tool,
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+        ):
+            result = agent.run_conversation("write it")
+
+        execute_tool.assert_called_once()
+        assert execute_tool.call_args.args[0] == "write_file"
+        assert result["completed"] is True
+        assert result["failed"] is False
+        assert result["final_response"] == "verified final"
+        assert result["iteration_budget_renewals"] == 1
+        invalid_receipts = [
+            message["content"]
+            for message in result["messages"]
+            if message.get("role") == "tool"
+            and message.get("tool_call_id") == "c2"
+        ]
+        assert len(invalid_receipts) == 1
+        assert "does not exist" in invalid_receipts[0]
+
+    def test_model_blocked_plan_allows_closing_question_without_renewal(
+        self, agent
+    ):
+        self._prepare(agent)
+        agent.client.chat.completions.create.side_effect = [
+            self._tool_response(
+                self._tool_call(
+                    "todo",
+                    {
+                        "todos": [
+                            {
+                                "id": "1",
+                                "content": "need owner input",
+                                "status": "blocked",
+                            }
+                        ]
+                    },
+                    "c1",
+                )
+            ),
+            _mock_response(
+                content="I need the missing owner input.",
+                finish_reason="stop",
+            ),
+        ]
+
+        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            result = agent.run_conversation("do it")
+
+        assert result["final_response"] == (
+            "I need the missing owner input."
+        )
+        assert result["completed"] is True
+        assert result["iteration_budget_renewals"] == 0
+        assert result["api_calls"] == 2
+        assert [
+            call.kwargs.get("tool_choice")
+            for call in agent.client.chat.completions.create.call_args_list
+        ] == [None, None]
+
+    def test_non_plan_grace_receipt_is_transient_and_model_can_close(
+        self, agent
+    ):
+        agent.max_iterations = 1
+        agent._disable_streaming = True
+        agent.valid_tool_names = {"web_search"}
+        agent.tools = _make_tool_defs("web_search")
+        agent._persist_session = MagicMock()
+        agent._save_trajectory = MagicMock()
+        agent._cleanup_task_resources = MagicMock()
+        agent.client.chat.completions.create.side_effect = [
+            self._tool_response(
+                self._tool_call("web_search", {"query": "evidence"}, "c1")
+            ),
+            _mock_response(content="grounded final", finish_reason="stop"),
+        ]
+
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+        ):
+            result = agent.run_conversation("research it")
+
+        assert result["final_response"] == "grounded final"
+        assert result["completed"] is True
+        assert result["failed"] is False
+        assert result["api_calls"] == 2
+        assert result["iteration_budget_renewals"] == 0
+        assert sum(
+            message["role"] == "user" for message in result["messages"]
+        ) == 1
+        second_request = (
+            agent.client.chat.completions.create.call_args_list[1]
+            .kwargs["messages"]
+        )
+        assert "[RUNTIME ITERATION SLICE RECEIPT]" in (
+            second_request[-1]["content"]
+        )
+        assert all(
+            "[RUNTIME ITERATION SLICE RECEIPT]"
+            not in str(message.get("content", ""))
+            for message in result["messages"]
+        )
+
+    def test_grace_tool_request_is_not_executed_and_is_structured_partial(
+        self, agent
+    ):
+        agent.max_iterations = 1
+        agent._disable_streaming = True
+        agent.valid_tool_names = {"web_search"}
+        agent.tools = _make_tool_defs("web_search")
+        agent._persist_session = MagicMock()
+        agent._save_trajectory = MagicMock()
+        agent._cleanup_task_resources = MagicMock()
+        agent.client.chat.completions.create.side_effect = [
+            self._tool_response(
+                self._tool_call("web_search", {"query": "first"}, "c1")
+            ),
+            self._tool_response(
+                self._tool_call("web_search", {"query": "second"}, "c2")
+            ),
+        ]
+
+        with (
+            patch(
+                "run_agent.handle_function_call",
+                return_value="search result",
+            ) as execute_tool,
+            patch("hermes_cli.plugins.invoke_hook", return_value=[]),
+        ):
+            result = agent.run_conversation("research it")
+
+        assert execute_tool.call_count == 1
+        assert result["completed"] is False
+        assert result["failed"] is True
+        assert result["partial"] is True
+        assert result["error"] == "iteration_budget_exhausted"
+        assert result["turn_exit_reason"] == (
+            "budget_exhausted_after_grace_tool_request"
+        )
+        assert result["messages"][-1]["content"].startswith(
+            "[RUNTIME BOUNDARY RECEIPT — NOT MODEL-AUTHORED]"
+        )
+        from agent.message_provenance import (
+            RUNTIME_BOUNDARY_RECEIPT_KIND,
+            message_fragment_is_bound,
+        )
+
+        assert message_fragment_is_bound(
+            result["messages"][-1],
+            kind=RUNTIME_BOUNDARY_RECEIPT_KIND,
+            exact_text=result["messages"][-1]["content"],
+        )
 
 
 class TestRunConversation:
@@ -4039,6 +5087,58 @@ class TestRunConversation:
         assert result["api_calls"] == 2
         assert mock_handle_function_call.call_args.kwargs["tool_call_id"] == "c1"
         assert mock_handle_function_call.call_args.kwargs["session_id"] == agent.session_id
+
+    def test_tool_narration_is_not_promoted_when_followup_is_empty(self, agent):
+        """Only a later model-authored final answer may finish a tool turn.
+
+        Content carried beside a tool call is part of that assistant/tool
+        group.  An empty follow-up must be retried through the same primary
+        model context; runtime code must neither promote the earlier narration
+        to final output nor inject a synthetic user nudge mid-loop.
+        """
+        self._setup_agent(agent)
+        tc = _mock_tool_call(name="web_search", arguments="{}", call_id="c1")
+        responses = iter(
+            [
+                _mock_response(
+                    content="I'll inspect the evidence first.",
+                    finish_reason="tool_calls",
+                    tool_calls=[tc],
+                ),
+                _mock_response(content=None, finish_reason="stop"),
+                _mock_response(
+                    content="The evidence-backed result is ready.",
+                    finish_reason="stop",
+                ),
+            ]
+        )
+        request_messages = []
+
+        def create(*_args, **kwargs):
+            request_messages.append(
+                [dict(message) for message in kwargs.get("messages", [])]
+            )
+            return next(responses)
+
+        agent.client.chat.completions.create.side_effect = create
+        with (
+            patch("run_agent.handle_function_call", return_value="search result"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("research this")
+
+        assert result["final_response"] == "The evidence-backed result is ready."
+        assert result["final_response"] != "I'll inspect the evidence first."
+        assert len(request_messages) == 3
+        for messages in request_messages:
+            user_messages = [
+                message for message in messages if message.get("role") == "user"
+            ]
+            assert [message.get("content") for message in user_messages] == [
+                "research this"
+            ]
 
     def test_request_scoped_api_hooks_fire_for_each_api_call(self, agent):
         self._setup_agent(agent)
@@ -4217,7 +5317,7 @@ class TestRunConversation:
         assert result["api_calls"] == 2
 
     def test_reasoning_only_local_resumed_no_compression_triggered(self, agent):
-        """Reasoning-only responses no longer trigger compression — prefill then accepted."""
+        """Reasoning-only exhaustion is reported as a failure without compression."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
         agent.compression_enabled = True
@@ -4242,7 +5342,8 @@ class TestRunConversation:
             result = agent.run_conversation("hello", conversation_history=prefill)
 
         mock_compress.assert_not_called()  # no compression triggered
-        assert result["completed"] is True
+        assert result["completed"] is False
+        assert result["failed"] is True
         # #34452: the bare "(empty)" sentinel is now replaced by a
         # user-visible end-of-turn explanation so the failure isn't silent.
         assert result["final_response"] != "(empty)"
@@ -4251,7 +5352,7 @@ class TestRunConversation:
         assert result["api_calls"] == 6  # 1 original + 2 prefill + 3 retries
 
     def test_reasoning_only_response_prefill_then_empty(self, agent):
-        """Structured reasoning-only triggers prefill (2), then retries (3), then (empty)."""
+        """Structured reasoning-only exhaustion is a visible failed turn."""
         self._setup_agent(agent)
         empty_resp = _mock_response(
             content=None,
@@ -4266,7 +5367,8 @@ class TestRunConversation:
             patch.object(agent, "_cleanup_task_resources"),
         ):
             result = agent.run_conversation("answer me")
-        assert result["completed"] is True
+        assert result["completed"] is False
+        assert result["failed"] is True
         # #34452: explanation replaces the bare "(empty)" sentinel.
         assert result["final_response"] != "(empty)"
         assert "No reply:" in result["final_response"]
@@ -4301,7 +5403,7 @@ class TestRunConversation:
                 raise AssertionError("Consecutive assistant messages found in history")
 
     def test_truly_empty_response_retries_3_times_then_empty(self, agent):
-        """Truly empty response (no content, no reasoning) retries 3 times then falls through to (empty)."""
+        """A truly empty response becomes a visible failure after three retries."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
         empty_resp = _mock_response(content=None, finish_reason="stop")
@@ -4315,7 +5417,8 @@ class TestRunConversation:
             patch.object(agent, "_cleanup_task_resources"),
         ):
             result = agent.run_conversation("answer me")
-        assert result["completed"] is True
+        assert result["completed"] is False
+        assert result["failed"] is True
         # #34452: explanation replaces the bare "(empty)" sentinel.
         assert result["final_response"] != "(empty)"
         assert "No reply:" in result["final_response"]
@@ -4382,7 +5485,7 @@ class TestRunConversation:
         assert result["final_response"] == "Fallback answer."
 
     def test_empty_response_fallback_also_empty_returns_empty(self, agent):
-        """If fallback also returns empty, final response is (empty)."""
+        """If fallback also returns empty, the turn is a visible failure."""
         self._setup_agent(agent)
         agent.base_url = "http://127.0.0.1:1234/v1"
         agent._fallback_chain = [{"provider": "openrouter", "model": "anthropic/claude-sonnet-4"}]
@@ -4413,7 +5516,8 @@ class TestRunConversation:
             patch.object(agent, "_try_activate_fallback", side_effect=_mock_fallback),
         ):
             result = agent.run_conversation("answer me")
-        assert result["completed"] is True
+        assert result["completed"] is False
+        assert result["failed"] is True
         # #34452: explanation replaces the bare "(empty)" sentinel.
         assert result["final_response"] != "(empty)"
         assert "No reply:" in result["final_response"]
@@ -5294,12 +6398,16 @@ class TestRunConversation:
         tool_resp = _mock_response(
             content="", finish_reason="tool_calls", tool_calls=[tc],
         )
-        # Final summary response from _handle_max_iterations.
-        summary_resp = _mock_response(
-            content="Could not finish — budget exhausted.", finish_reason="stop",
+        # The one closing grace response still requests another tool, so the
+        # runtime records non-execution and returns a structured timeout.
+        grace_tc = _mock_tool_call(
+            name="web_search", arguments="{}", call_id="c3"
+        )
+        grace_tool_resp = _mock_response(
+            content="", finish_reason="tool_calls", tool_calls=[grace_tc],
         )
         agent.client.chat.completions.create.side_effect = [
-            tool_resp, tool_resp, summary_resp,
+            tool_resp, tool_resp, grace_tool_resp,
         ]
 
         mock_record_failure = MagicMock(return_value=False)
@@ -5558,6 +6666,34 @@ class TestRetryExhaustion:
         assert "error" in result
         assert "UnboundLocalError" not in result.get("error", "")
         assert "bad messages" in result["error"]
+
+    def test_outer_error_at_max_minus_one_is_terminal_failure(self, agent):
+        """A repeated outer-loop error must never be published as completed."""
+
+        self._setup_agent(agent)
+        agent.max_iterations = 2
+        agent.client.chat.completions.create.return_value = _mock_response(
+            content="unusable response",
+            finish_reason="stop",
+        )
+        with (
+            patch.object(
+                agent,
+                "_build_assistant_message",
+                side_effect=RuntimeError("assistant assembly failed"),
+            ),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["api_calls"] == agent.max_iterations - 1
+        assert result["failed"] is True
+        assert result["completed"] is False
+        assert result["turn_exit_reason"].startswith(
+            "error_near_max_iterations("
+        )
 
 
 # ---------------------------------------------------------------------------

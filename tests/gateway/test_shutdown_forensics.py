@@ -151,6 +151,29 @@ class TestFormatters:
 # ---------------------------------------------------------------------------
 
 class TestSpawnAsyncDiagnostic:
+    def test_uses_python_watchdog_without_coreutils_timeout(
+        self, tmp_path, monkeypatch
+    ):
+        captured = {}
+
+        class DummyProcess:
+            pid = 321
+
+        monkeypatch.setattr(sf.shutil, "which", lambda _name: None)
+
+        def capture(command, **kwargs):
+            captured["command"] = command
+            captured["kwargs"] = kwargs
+            return DummyProcess()
+
+        monkeypatch.setattr(sf.subprocess, "Popen", capture)
+
+        assert sf.spawn_async_diagnostic(tmp_path / "diag.log", "SIGTERM") == 321
+        assert captured["command"][0] == sys.executable
+        assert captured["command"][1] == "-c"
+        assert captured["command"][3] == "5.0"
+        assert captured["kwargs"]["start_new_session"] is True
+
     @pytest.mark.skipif(sys.platform == "win32", reason="POSIX-only diagnostic")
     def test_spawns_subprocess_and_writes_output(self, tmp_path):
         log_path = tmp_path / "diag.log"

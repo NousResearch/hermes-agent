@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from agent.delivery_outcome import record_delivery_outcome, reset_delivery_outcome_turn
 from agent.turn_finalizer import finalize_turn
 
 
@@ -79,6 +80,13 @@ def test_final_response_closes_tool_tail_before_persistence(monkeypatch):
     """
     monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
     agent = FakeAgent()
+    agent._current_turn_id = "turn"
+    reset_delivery_outcome_turn(agent, "turn")
+    record_delivery_outcome(
+        agent,
+        {"action": "suppress", "reason": "no outbound update needed"},
+        originating_turn_id="turn",
+    )
     messages = [
         {"role": "user", "content": "do it"},
         {
@@ -108,5 +116,46 @@ def test_final_response_closes_tool_tail_before_persistence(monkeypatch):
     )
 
     assert result["messages"][-1] == {"role": "assistant", "content": "Done."}
+    assert result["turn_id"] == "turn"
+    assert result["delivery_outcome"] == {
+        "action": "suppress",
+        "reason": "no outbound update needed",
+        "turn_id": "turn",
+    }
     assert agent.persisted_messages is not None
     assert agent.persisted_messages[-1] == {"role": "assistant", "content": "Done."}
+
+
+def test_model_sovereignty_runtime_never_spawns_auxiliary_background_review(
+    monkeypatch,
+):
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    agent._current_turn_id = "turn"
+    agent._background_review_enabled = False
+    agent._skill_nudge_interval = 1
+    agent._iters_since_skill = 1
+    agent.valid_tool_names = ["skill_manage"]
+    spawned = []
+    agent._spawn_background_review = lambda **kwargs: spawned.append(kwargs)
+
+    finalize_turn(
+        agent,
+        final_response="Done.",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=[
+            {"role": "user", "content": "do it"},
+            {"role": "assistant", "content": "Done."},
+        ],
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="do it",
+        original_user_message="do it",
+        _should_review_memory=True,
+        _turn_exit_reason="text_response(stop)",
+    )
+
+    assert spawned == []

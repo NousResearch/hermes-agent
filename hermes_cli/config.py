@@ -13,6 +13,7 @@ This module provides:
 """
 
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -27,7 +28,7 @@ import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Any, Optional, List, Tuple, Set
+from typing import Any, Dict, List, Mapping, Optional, Set, Tuple
 
 from hermes_cli.secret_prompt import masked_secret_prompt
 
@@ -37,6 +38,17 @@ logger = logging.getLogger(__name__)
 # so concurrent CLI/gateway loads of a broken config.yaml don't spam stderr
 # every time. Cleared automatically when the file changes (different mtime).
 _CONFIG_PARSE_WARNED: set = set()
+
+
+class PinnedEffectiveConfigError(RuntimeError):
+    """The process-pinned effective config can no longer be proven exact."""
+
+
+PINNED_EFFECTIVE_CONFIG_WRITE_BLOCKED = (
+    "Configuration changes are disabled while the sealed production "
+    "configuration is active. Apply the change through the reviewed "
+    "deployment configuration and restart the service."
+)
 
 
 def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
@@ -255,6 +267,20 @@ _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 # calls read_raw_config. Also covers mutation of the module-level cache
 # dicts above.
 _CONFIG_LOCK = threading.RLock()
+
+
+@dataclass(frozen=True)
+class _PinnedEffectiveConfig:
+    """One-way process authority for an exact on-disk config projection."""
+
+    path: Path
+    path_chain_identity: Tuple[Tuple[int, int, int], ...]
+    raw_sha256: str
+    raw_bytes: bytes
+    projection: Dict[str, Any]
+
+
+_PINNED_EFFECTIVE_CONFIG: Optional[_PinnedEffectiveConfig] = None
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
@@ -1018,6 +1044,20 @@ DEFAULT_CONFIG = {
         # on flaky primaries; raise it if you prefer to tolerate longer
         # provider hiccups on a single provider.
         "api_max_retries": 3,
+        # Empty preserves each provider's historical default. The exact
+        # GPT-5.6 Responses path mechanically applies a high baseline at API
+        # time without changing the default for any other model/provider.
+        "reasoning_effort": "",
+        "adaptive_reasoning": {
+            "enabled": True,
+            # GPT-5.6 Sol supports the full model-authored effort range.
+            "max_effort": "max",
+        },
+        # Post-turn memory/skill review runs a separate model fork after the
+        # primary answer. Keep the upstream feature available by default, but
+        # production model-sovereignty runtimes disable it so semantic memory
+        # and skill decisions remain inside the user's primary model loop.
+        "background_review_enabled": True,
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
@@ -1025,15 +1065,6 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
-        # Intent-ack continuation: when the model opens a turn by narrating an
-        # action it will take ("I'll go check the logs...") but emits no tool
-        # call, intercept the turn-end, inject a "continue now, execute the
-        # tools" nudge, and loop instead of ending the turn (capped at 2 nudges
-        # per turn). This is the corrective sibling of tool_use_enforcement (the
-        # preventive prompt-side guard). Values: "auto" (default — fires only on
-        # the codex_responses api_mode, the historical behavior), true (all
-        # api_modes — fixes the Gemini/Claude "stops after stating intent" case),
-        # false (never), or a list of model-name substrings to match.
         # Universal "finish the job" guidance — short prompt block applied to
         # all models that targets two cross-family failure modes: (1) stopping
         # after a stub instead of finishing the artifact, (2) fabricating
@@ -1218,6 +1249,13 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        # Config-only AF_UNIX boundary. Runtime UIDs/GIDs are deployment pins;
+        # no lease id or host workspace path is user-configurable.
+        "isolated_worker_socket": "/run/muncho-isolated-worker/worker.sock",
+        "isolated_worker_server_uid": 0,
+        "isolated_worker_server_gid": 0,
+        "isolated_worker_socket_uid": 0,
+        "isolated_worker_socket_gid": 0,
         # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
@@ -1424,17 +1462,10 @@ DEFAULT_CONFIG = {
                                       # 0 for long-running rolling-compaction sessions
                                       # where you want nothing pinned except the
                                       # system prompt + rolling summary + recent tail.
-        "abort_on_summary_failure": False,  # When True, auto-compression that fails
-                                      # to generate a summary (aux LLM errored / returned
-                                      # non-JSON / timed out) aborts entirely instead of
-                                      # dropping the middle window with a static
-                                      # "summary unavailable" placeholder.  Messages are
-                                      # preserved unchanged and the session "freezes" at
-                                      # its current size until the user runs /compress
-                                      # (which bypasses the failure cooldown) or /new.
-                                      # Default False matches historical behavior; set to
-                                      # True if you'd rather pause than silently lose
-                                      # context turns when your aux model is flaky.
+        "abort_on_summary_failure": True,   # Preserve the complete transcript when
+                                      # summarization fails. Never discard the middle
+                                      # window behind a placeholder; retry compression
+                                      # or start a new session instead.
         "codex_gpt55_autoraise": True,  # Historical key name kept for compatibility.
                                       # When True, gpt-5.4 / gpt-5.5 / gpt-5.6 on the
                                       # ChatGPT Codex OAuth route raise their compaction
@@ -1694,12 +1725,9 @@ DEFAULT_CONFIG = {
             "timeout": 600,
             "extra_body": {},
         },
-        # Monitor — urgency/importance classifier used by the important-mail
-        # monitor catalog automation (cron/scripts/classify_items.py). Scores
-        # candidate items 0-10 against the user's criteria so only above-
-        # threshold items get delivered. "auto" = main chat model; override to
-        # a cheap fast model (e.g. openrouter google/gemini-3-flash-preview,
-        # haiku) since per-item scoring is high-volume and a small model is fine.
+        # Monitor — generic auxiliary-client compatibility slot. Built-in cron
+        # catalogs use the scheduled primary AIAgent to judge importance; they
+        # never route that semantic decision through this auxiliary slot.
         "monitor": {
             "provider": "auto",
             "model": "",
@@ -2268,18 +2296,15 @@ DEFAULT_CONFIG = {
     "prefill_messages_file": "",
 
     # Goals — persistent cross-turn goals (Ralph-style loop).
-    # After every turn, a lightweight judge call asks the auxiliary model
-    # whether the active /goal is satisfied by the assistant's last
-    # response. If not, Hermes feeds a continuation prompt back into the
-    # same session and keeps working until the goal is done, the turn
-    # budget is exhausted, or the user pauses/clears it. Judge failures
-    # fail OPEN (continue) so a flaky judge never wedges progress — the
-    # turn budget is the real backstop.
+    # The primary model records a structured outcome through the todo tool.
+    # Hermes applies it mechanically and feeds a continuation prompt back
+    # into the same session until the model reports verified completion or
+    # blocking, the optional turn budget is exhausted, or the user pauses/clears it.
+    # Missing outcome state fails OPEN to continuation.
     "goals": {
-        # Max continuation turns before Hermes auto-pauses the goal and
-        # asks the user to /goal resume. Protects against judge false
-        # negatives (goal actually done but judge says continue) and
-        # unbounded model spend on fuzzy / unachievable goals.
+        # Max continuation turns before Hermes auto-pauses the goal and asks
+        # the user to /goal resume. Set 0 to continue until the model records
+        # verified completion/a genuine blocker or the user pauses/clears it.
         "max_turns": 20,
     },
 
@@ -2329,16 +2354,11 @@ DEFAULT_CONFIG = {
         "inline_shell": False,
         # Timeout (seconds) for each !`cmd` snippet when inline_shell is on.
         "inline_shell_timeout": 10,
-        # Run the keyword/pattern security scanner on skills the agent
-        # writes via skill_manage (create/edit/patch).  Off by default
-        # because the agent can already execute the same code paths via
-        # terminal() with no gate, so the scan adds friction (blocks
-        # skills that mention risky keywords in prose) without meaningful
-        # security.  Turn on if you want the belt-and-suspenders — a
-        # dangerous verdict will then surface as a tool error to the
-        # agent, which can retry with the flagged content removed.
-        # External hub installs (trusted/community sources) are always
-        # scanned regardless of this setting.
+        # Re-run the mechanical package preflight (path/symlink/type/
+        # permission/count/size) after skill_manage writes. The legacy key
+        # name is retained for config compatibility. Authored text is never
+        # keyword-scanned or semantically classified. External hub installs
+        # always run the package preflight regardless of this setting.
         "guard_agent_created": False,
         # Approval gate for skill_manage (create/edit/patch/write_file/delete/
         # remove_file), applied to BOTH foreground agent turns and the
@@ -2384,7 +2404,8 @@ DEFAULT_CONFIG = {
         # this for a single invocation.
         "consolidate": False,
         # Also prune (archive) bundled built-in skills after the inactivity
-        # period, not just agent-created ones. ON by default. Built-ins are
+        # period, not just agent-created ones. OFF by default: capability
+        # removal must be an explicit operator choice. Built-ins are
         # normally restored on every `hermes update`, so pruning them only
         # sticks because a suppression list tells the re-seeder to leave them
         # archived. Hub-installed skills are NEVER pruned here — they have an
@@ -2393,7 +2414,7 @@ DEFAULT_CONFIG = {
         # long-unused built-in is archived only after archive_after_days of
         # genuine non-use (never a mass-prune on the first run). Set to false
         # to keep all bundled built-ins permanently.
-        "prune_builtins": True,
+        "prune_builtins": False,
         # Pre-run backup: before every real curator pass (dry-run is
         # skipped), snapshot ~/.hermes/skills/ into
         # ~/.hermes/skills/.curator_backups/<utc-iso>/skills.tar.gz so the
@@ -2703,19 +2724,12 @@ DEFAULT_CONFIG = {
         "output_retention": 50,
     },
 
-    # Kanban multi-agent coordination — controls the dispatcher loop that
-    # spawns workers for ready tasks. The dispatcher ticks every N seconds
-    # (default 60), reclaims stale claims, promotes dependency-satisfied
-    # todos to ready, and fires `hermes -p <assignee> chat -q ...` for
-    # each claimable ready task. One dispatcher per profile is sufficient;
-    # running more than one on the same kanban.db will race for claims.
+    # Kanban multi-agent coordination. Worker dispatch is explicit opt-in;
+    # the primary model remains the semantic authority for planning/routing.
     "kanban": {
-        # Run the dispatcher inside the gateway process. On by default —
-        # the cost is ~300µs every `dispatch_interval_seconds` when idle,
-        # and gateway is the supervisor users already have. Set to false
-        # only if you run the dispatcher as a separate systemd unit or
-        # don't want the gateway to spawn workers.
-        "dispatch_in_gateway": True,
+        # Mechanical worker dispatch stays off unless an operator explicitly
+        # enables the Kanban execution service.
+        "dispatch_in_gateway": False,
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
@@ -2723,6 +2737,11 @@ DEFAULT_CONFIG = {
         # same task/profile (spawn_failed, timed_out, or crashed). Reassignment
         # resets the streak for the new profile.
         "failure_limit": 2,
+        # Master opt-in for the legacy auxiliary Kanban planner surfaces:
+        # triage specification, task decomposition/assignment, and automatic
+        # profile descriptions. The main Hermes model owns those semantic
+        # decisions by default; deterministic Kanban execution remains active.
+        "auxiliary_planning_enabled": False,
         # Worker stdout/stderr logs rotate at spawn time. Defaults preserve
         # the historical 2 MiB + one-backup behavior; long-running workers can
         # raise these to keep more early failure evidence.
@@ -2747,11 +2766,10 @@ DEFAULT_CONFIG = {
         # otherwise saturate one profile's local model / API quota /
         # browser pool while leaving other profiles idle.
         "max_in_progress_per_profile": None,
-        # When true, the kanban dispatcher auto-runs the decomposer on
-        # tasks that land in Triage (every dispatcher tick). When false,
-        # decomposition is manual via `hermes kanban decompose <id>` or
-        # the dashboard's Decompose button.
-        "auto_decompose": True,
+        # When true, and only while auxiliary_planning_enabled is also true,
+        # the dispatcher auto-runs the decomposer on Triage tasks. Disabled by
+        # default so background semantic planning is never enabled by omission.
+        "auto_decompose": False,
         # Max triage tasks to decompose per dispatcher tick. Prevents a
         # large bulk-load of triage tasks from spending a burst of aux
         # LLM calls in one tick. Excess tasks defer to the next tick.
@@ -6661,6 +6679,390 @@ def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> A
     return node
 
 
+_MAX_PINNED_CONFIG_BYTES = 2 * 1024 * 1024
+
+
+def _pinned_config_fs_error(action: str, exc: OSError) -> PinnedEffectiveConfigError:
+    """Normalize a filesystem failure without disclosing the sealed path."""
+    wrapped = PinnedEffectiveConfigError(
+        f"pinned effective config filesystem {action} failed"
+    )
+    wrapped.__cause__ = exc
+    return wrapped
+
+
+def _pinned_path_chain_identity(
+    config_path: Path,
+) -> Tuple[Tuple[int, int, int], ...]:
+    """Return exact non-symlink identities from the filesystem root to config."""
+    path = Path(config_path)
+    if not path.is_absolute() or not path.anchor:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config path is not absolute"
+        )
+    parts = path.parts
+    if not parts or parts[0] != path.anchor or any(
+        part in {"", ".", ".."} for part in parts[1:]
+    ):
+        raise PinnedEffectiveConfigError(
+            "pinned effective config path is not canonical"
+        )
+
+    current = Path(path.anchor)
+    chain: List[Tuple[int, int, int]] = []
+    for index, part in enumerate((path.anchor, *parts[1:])):
+        if index:
+            current /= part
+        try:
+            item = os.lstat(current)
+        except OSError as exc:
+            raise _pinned_config_fs_error("path inspection", exc)
+        if stat.S_ISLNK(item.st_mode):
+            raise PinnedEffectiveConfigError(
+                "pinned effective config path contains a symbolic link"
+            )
+        is_final = index == len(parts) - 1
+        if (not is_final and not stat.S_ISDIR(item.st_mode)) or (
+            is_final and not stat.S_ISREG(item.st_mode)
+        ):
+            raise PinnedEffectiveConfigError(
+                "pinned effective config path type is invalid"
+            )
+        chain.append(
+            (
+                int(item.st_dev),
+                int(item.st_ino),
+                int(stat.S_IFMT(item.st_mode)),
+            )
+        )
+    return tuple(chain)
+
+
+def _read_stable_pinned_config_bytes(
+    config_path: Path,
+    *,
+    expected_path_chain: Optional[Tuple[Tuple[int, int, int], ...]] = None,
+) -> bytes:
+    """Read pinned bytes and preserve every filesystem/cleanup failure."""
+    before_chain = _pinned_path_chain_identity(config_path)
+    if expected_path_chain is not None and before_chain != expected_path_chain:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config path identity drifted"
+        )
+    flags = (
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    try:
+        fd = os.open(config_path, flags)
+    except OSError as exc:
+        raise _pinned_config_fs_error("open", exc)
+
+    result: Optional[bytes] = None
+    primary_error: Optional[BaseException] = None
+    try:
+        try:
+            before = os.fstat(fd)
+        except OSError as exc:
+            raise _pinned_config_fs_error("fstat", exc)
+        opened_identity = (
+            int(before.st_dev),
+            int(before.st_ino),
+            int(stat.S_IFMT(before.st_mode)),
+        )
+        if not before_chain or opened_identity != before_chain[-1]:
+            raise PinnedEffectiveConfigError(
+                "pinned effective config path changed before open"
+            )
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or not 0 < before.st_size <= _MAX_PINNED_CONFIG_BYTES
+        ):
+            raise PinnedEffectiveConfigError(
+                "pinned effective config metadata is invalid"
+            )
+        chunks: List[bytes] = []
+        remaining = before.st_size
+        while remaining:
+            try:
+                chunk = os.read(fd, min(remaining, 128 * 1024))
+            except OSError as exc:
+                raise _pinned_config_fs_error("read", exc)
+            if not chunk:
+                raise PinnedEffectiveConfigError(
+                    "pinned effective config was truncated"
+                )
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        try:
+            grew = os.read(fd, 1)
+        except OSError as exc:
+            raise _pinned_config_fs_error("read", exc)
+        if grew:
+            raise PinnedEffectiveConfigError(
+                "pinned effective config grew during read"
+            )
+        try:
+            after = os.fstat(fd)
+        except OSError as exc:
+            raise _pinned_config_fs_error("fstat", exc)
+        before_identity = (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+            before.st_ctime_ns,
+        )
+        after_identity = (
+            after.st_dev,
+            after.st_ino,
+            after.st_size,
+            after.st_mtime_ns,
+            after.st_ctime_ns,
+        )
+        if before_identity != after_identity:
+            raise PinnedEffectiveConfigError(
+                "pinned effective config changed during read"
+            )
+        after_chain = _pinned_path_chain_identity(config_path)
+        if after_chain != before_chain or (
+            expected_path_chain is not None
+            and after_chain != expected_path_chain
+        ):
+            raise PinnedEffectiveConfigError(
+                "pinned effective config path identity drifted during read"
+            )
+        result = b"".join(chunks)
+    except OSError as exc:
+        primary_error = _pinned_config_fs_error("read", exc)
+    except BaseException as exc:
+        # Preserve our typed boundary failures and unexpected interpreter
+        # failures while still guaranteeing that the descriptor is closed.
+        primary_error = exc
+
+    close_error: Optional[PinnedEffectiveConfigError] = None
+    try:
+        os.close(fd)
+    except OSError as exc:
+        close_error = _pinned_config_fs_error("close", exc)
+
+    if primary_error is not None and close_error is not None:
+        group_type = (
+            ExceptionGroup
+            if isinstance(primary_error, Exception)
+            else BaseExceptionGroup
+        )
+        combined = group_type(
+            "pinned effective config read and descriptor cleanup both failed",
+            [primary_error, close_error],
+        )
+        raise PinnedEffectiveConfigError(
+            "pinned effective config read and cleanup failed"
+        ) from combined
+    if primary_error is not None:
+        raise primary_error
+    if close_error is not None:
+        raise close_error
+    if result is None:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config read produced no bytes"
+        )
+    return result
+
+
+def _parse_pinned_effective_config(raw_bytes: bytes) -> Dict[str, Any]:
+    """Parse pinned bytes with no fallback, normalization, or env expansion."""
+    try:
+        text = raw_bytes.decode("utf-8", errors="strict")
+        parsed = fast_safe_load(text)
+    except Exception as exc:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config parse failed"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise PinnedEffectiveConfigError(
+            "pinned effective config root is not a mapping"
+        )
+    return parsed
+
+
+def _pinned_effective_config_snapshot() -> Optional[Dict[str, Any]]:
+    """Return a defensive copy of the immutable in-memory authority."""
+    pin = _PINNED_EFFECTIVE_CONFIG
+    if pin is None:
+        return None
+    # The private projection is never returned by reference. In pinned mode all
+    # semantic reads consume this exact approved snapshot; filesystem state is
+    # checked only at explicit authority boundaries so legacy best-effort config
+    # catches cannot turn a transient I/O fault into defaults or alternate
+    # routing.
+    return copy.deepcopy(pin.projection)
+
+
+def _attest_pinned_effective_config() -> Optional[str]:
+    """Re-attest path, bytes, digest, and parse state for an active pin."""
+    pin = _PINNED_EFFECTIVE_CONFIG
+    if pin is None:
+        return None
+    if get_config_path() != pin.path:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config path drifted"
+        )
+
+    from hermes_cli import managed_scope
+
+    if managed_scope.get_managed_dir() is not None:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config managed scope appeared"
+        )
+    current_raw = _read_stable_pinned_config_bytes(
+        pin.path,
+        expected_path_chain=pin.path_chain_identity,
+    )
+    if current_raw != pin.raw_bytes:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config raw content drifted"
+        )
+    if hashlib.sha256(current_raw).hexdigest() != pin.raw_sha256:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config raw SHA-256 drifted"
+        )
+    if _parse_pinned_effective_config(current_raw) != pin.projection:
+        raise PinnedEffectiveConfigError(
+            "pinned effective config parsed projection drifted"
+        )
+    return pin.raw_sha256
+
+
+def pin_effective_config_projection(
+    *,
+    config_path: Path,
+    raw_bytes: bytes,
+    raw_sha256: str,
+    exact_mapping: Mapping[str, Any],
+) -> str:
+    """One-way pin ``load_config`` to an exact, already-validated projection.
+
+    This is an explicit runtime boundary, not an environment-controlled mode.
+    The caller supplies strict raw bytes, their independently computed SHA-256,
+    and the exact mapping already approved by its own schema validator. Once
+    active, semantic config reads receive only defensive copies of this exact
+    in-memory projection. Explicit runtime authority boundaries call
+    :func:`attest_pinned_effective_config_projection` to recheck path,
+    managed-scope, bytes, digest, parse, and mapping state. The normal defaults,
+    managed overlay, last-known-good fallback, normalization, and env expansion
+    pipeline remains untouched when no process pin is active.
+    """
+    global _PINNED_EFFECTIVE_CONFIG
+
+    path = Path(config_path)
+    if not path.is_absolute() or path != get_config_path():
+        raise PinnedEffectiveConfigError(
+            "effective config pin path is not the active config path"
+        )
+    if not isinstance(raw_bytes, bytes) or not raw_bytes:
+        raise PinnedEffectiveConfigError(
+            "effective config pin raw bytes are invalid"
+        )
+    claimed_sha256 = str(raw_sha256 or "").strip().lower()
+    if not re.fullmatch(r"[0-9a-f]{64}", claimed_sha256):
+        raise PinnedEffectiveConfigError(
+            "effective config pin SHA-256 is invalid"
+        )
+    actual_sha256 = hashlib.sha256(raw_bytes).hexdigest()
+    if actual_sha256 != claimed_sha256:
+        raise PinnedEffectiveConfigError(
+            "effective config pin SHA-256 does not match raw bytes"
+        )
+    if not isinstance(exact_mapping, Mapping):
+        raise PinnedEffectiveConfigError(
+            "effective config pin projection is not a mapping"
+        )
+    projection = copy.deepcopy(dict(exact_mapping))
+
+    with _CONFIG_LOCK:
+        from hermes_cli import managed_scope
+
+        if managed_scope.get_managed_dir() is not None:
+            raise PinnedEffectiveConfigError(
+                "effective config pin rejects managed scope"
+            )
+        path_chain_identity = _pinned_path_chain_identity(path)
+        current_raw = _read_stable_pinned_config_bytes(
+            path,
+            expected_path_chain=path_chain_identity,
+        )
+        if current_raw != raw_bytes:
+            raise PinnedEffectiveConfigError(
+                "effective config changed before pin activation"
+            )
+        if _parse_pinned_effective_config(current_raw) != projection:
+            raise PinnedEffectiveConfigError(
+                "effective config pin projection does not match raw bytes"
+            )
+
+        candidate = _PinnedEffectiveConfig(
+            path=path,
+            path_chain_identity=path_chain_identity,
+            raw_sha256=claimed_sha256,
+            raw_bytes=raw_bytes,
+            projection=projection,
+        )
+        existing = _PINNED_EFFECTIVE_CONFIG
+        if existing is not None and existing != candidate:
+            raise PinnedEffectiveConfigError(
+                "effective config projection is already pinned"
+            )
+        _PINNED_EFFECTIVE_CONFIG = candidate
+        path_key = str(path)
+        _LOAD_CONFIG_CACHE.pop(path_key, None)
+        _RAW_CONFIG_CACHE.pop(path_key, None)
+        _LAST_EXPANDED_CONFIG_BY_PATH.pop(path_key, None)
+        # Activate only after the same explicit authority attestation used at
+        # runtime succeeds, then prove the semantic snapshot is exact.
+        if (
+            _attest_pinned_effective_config() != claimed_sha256
+            or _pinned_effective_config_snapshot() != projection
+        ):
+            raise PinnedEffectiveConfigError(
+                "effective config projection attestation failed"
+            )
+        return claimed_sha256
+
+
+def effective_config_projection_is_pinned() -> bool:
+    """Return whether the one-way process config authority is active."""
+    with _CONFIG_LOCK:
+        return _PINNED_EFFECTIVE_CONFIG is not None
+
+
+def refuse_pinned_effective_config_write(
+    config_path: Optional[Path] = None,
+) -> None:
+    """Reject config writes after the process activates an immutable pin.
+
+    The optional path exists so every config-writing chokepoint can call the
+    same boundary before it performs any other side effect.  A production pin
+    seals the process, not merely one helper, so all ``config.yaml`` writes are
+    refused while it is active.  The deployment pipeline remains the only
+    authority allowed to replace the file, and does so out of process before a
+    fresh service start establishes a new pin.
+    """
+    del config_path  # Deliberately seal the process rather than one call path.
+    with _CONFIG_LOCK:
+        if _PINNED_EFFECTIVE_CONFIG is not None:
+            raise PinnedEffectiveConfigError(
+                PINNED_EFFECTIVE_CONFIG_WRITE_BLOCKED
+            )
+
+
+def attest_pinned_effective_config_projection() -> Optional[str]:
+    """Re-attest an active pin and return its SHA-256, or ``None`` when inactive."""
+    with _CONFIG_LOCK:
+        return _attest_pinned_effective_config()
+
 
 def read_raw_config() -> Dict[str, Any]:
     """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.
@@ -6675,6 +7077,9 @@ def read_raw_config() -> Dict[str, Any]:
     mutate the result before passing to ``save_config()``.
     """
     with _CONFIG_LOCK:
+        pinned = _pinned_effective_config_snapshot()
+        if pinned is not None:
+            return pinned
         try:
             config_path = get_config_path()
             st = config_path.stat()
@@ -6746,6 +7151,7 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     """
     from utils import atomic_yaml_write
 
+    refuse_pinned_effective_config_write(config_path)
     require_readable_config_before_write(config_path)
     atomic_yaml_write(config_path, data, **kwargs)
 
@@ -6763,6 +7169,12 @@ def load_config() -> Dict[str, Any]:
     Read-only callers should use ``load_config_readonly()`` to skip the
     defensive deepcopy — that path matters in agent-loop hot spots like
     ``get_provider_request_timeout`` which is called once per API turn.
+
+    A process may explicitly activate an exact effective-config projection via
+    :func:`pin_effective_config_projection`. In that mode this function bypasses
+    the ordinary defaults/overlay/fallback pipeline and returns a defensive copy
+    of the exact in-memory authority without filesystem I/O. Runtime boundaries
+    re-attest it explicitly via :func:`attest_pinned_effective_config_projection`.
     """
     return _load_config_impl(want_deepcopy=True)
 
@@ -6786,6 +7198,9 @@ def load_config_readonly() -> Dict[str, Any]:
     Note: this returns a plain ``dict`` (not ``MappingProxyType``) so
     existing ``isinstance(x, dict)`` guards downstream keep working. The
     safety guarantee is purely documented, not enforced — be careful.
+
+    Process-pinned projections are the exception: they always return a
+    defensive copy so a readonly caller cannot mutate the sealed authority.
     """
     return _load_config_impl(want_deepcopy=False)
 
@@ -6829,6 +7244,11 @@ TERMINAL_CONFIG_ENV_MAP = {
     "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
     "modal_image": "TERMINAL_MODAL_IMAGE",
     "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+    "isolated_worker_socket": "TERMINAL_ISOLATED_WORKER_SOCKET",
+    "isolated_worker_server_uid": "TERMINAL_ISOLATED_WORKER_SERVER_UID",
+    "isolated_worker_server_gid": "TERMINAL_ISOLATED_WORKER_SERVER_GID",
+    "isolated_worker_socket_uid": "TERMINAL_ISOLATED_WORKER_SOCKET_UID",
+    "isolated_worker_socket_gid": "TERMINAL_ISOLATED_WORKER_SOCKET_GID",
     "ssh_host": "TERMINAL_SSH_HOST",
     "ssh_user": "TERMINAL_SSH_USER",
     "ssh_port": "TERMINAL_SSH_PORT",
@@ -6909,6 +7329,9 @@ def apply_terminal_config_to_env(
 
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
     with _CONFIG_LOCK:
+        pinned = _pinned_effective_config_snapshot()
+        if pinned is not None:
+            return pinned
         ensure_hermes_home()
         config_path = get_config_path()
         path_key = str(config_path)
@@ -7144,6 +7567,7 @@ def save_config(
     default changes invisible to users.
     """
     with _CONFIG_LOCK:
+        refuse_pinned_effective_config_write(get_config_path())
         if is_managed():
             managed_error("save configuration")
             return
@@ -8070,6 +8494,7 @@ def edit_config():
         managed_error("edit configuration")
         return
     config_path = get_config_path()
+    refuse_pinned_effective_config_write(config_path)
     
     # Ensure config exists
     if not config_path.exists():
@@ -8147,6 +8572,7 @@ def set_config_value(key: str, value: str):
     # Read the raw user config (not merged with defaults) to avoid
     # dumping all default values back to the file
     config_path = get_config_path()
+    refuse_pinned_effective_config_write(config_path)
     require_readable_config_before_write(config_path)
     user_config = {}
     if config_path.exists():
@@ -8349,43 +8775,44 @@ def config_command(args):
 # ── Profile-driven env var injection ─────────────────────────────────────────
 # Any provider registered in providers/ with auth_type="api_key" automatically
 # gets its env_vars exposed in OPTIONAL_ENV_VARS without editing this file.
-# Runs once at import time.
+# Resolution is deliberately lazy: importing config helpers must not execute
+# provider plugins before a privileged runtime has pinned provider discovery.
 
 _profile_env_vars_injected = False
+_optional_env_vars_injection_lock = threading.RLock()
 
 
 def _inject_profile_env_vars() -> None:
     """Populate OPTIONAL_ENV_VARS from provider profiles not already listed.
 
-    Called once at module load time. Idempotent — repeated calls are no-ops.
+    Called on the first read of OPTIONAL_ENV_VARS. Idempotent — repeated calls
+    are no-ops.
     """
     global _profile_env_vars_injected
-    if _profile_env_vars_injected:
-        return
-    _profile_env_vars_injected = True
-    try:
-        from providers import list_providers
-        for _pp in list_providers():
-            if _pp.auth_type not in {"api_key",}:
-                continue
-            for _var in _pp.env_vars:
-                if _var in OPTIONAL_ENV_VARS:
+    with _optional_env_vars_injection_lock:
+        if _profile_env_vars_injected:
+            return
+        _profile_env_vars_injected = True
+        try:
+            from providers import list_providers
+            for _pp in list_providers():
+                if _pp.auth_type not in {"api_key",}:
                     continue
-                _is_key = not _var.endswith("_BASE_URL") and not _var.endswith("_URL")
-                OPTIONAL_ENV_VARS[_var] = {
-                    "description": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL override'}",
-                    "prompt": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL (leave empty for default)'}",
-                    "url": _pp.signup_url or None,
-                    "password": _is_key,
-                    "category": "provider",
-                    "advanced": True,
-                }
-    except Exception:
-        pass
-
-
-# Eagerly inject so that OPTIONAL_ENV_VARS is fully populated at import time.
-_inject_profile_env_vars()
+                for _var in _pp.env_vars:
+                    # Bypass the lazy mapping read hook while populating it.
+                    if dict.__contains__(OPTIONAL_ENV_VARS, _var):
+                        continue
+                    _is_key = not _var.endswith("_BASE_URL") and not _var.endswith("_URL")
+                    OPTIONAL_ENV_VARS[_var] = {
+                        "description": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL override'}",
+                        "prompt": f"{_pp.display_name or _pp.name} {'API key' if _is_key else 'base URL (leave empty for default)'}",
+                        "url": _pp.signup_url or None,
+                        "password": _is_key,
+                        "category": "provider",
+                        "advanced": True,
+                    }
+        except Exception:
+            pass
 
 
 # ── Platform-plugin env var injection ────────────────────────────────────────
@@ -8414,7 +8841,8 @@ _platform_plugin_env_vars_injected = False
 def _inject_platform_plugin_env_vars() -> None:
     """Populate OPTIONAL_ENV_VARS from bundled platform plugin manifests.
 
-    Called once at module load time. Idempotent — repeated calls are no-ops.
+    Called on the first read of OPTIONAL_ENV_VARS. Idempotent — repeated calls
+    are no-ops.
     Failures are swallowed so a malformed plugin.yaml can't break CLI import.
     """
     global _platform_plugin_env_vars_injected
@@ -8456,7 +8884,7 @@ def _inject_platform_plugin_env_vars() -> None:
                     meta = entry
                 else:
                     continue
-                if name in OPTIONAL_ENV_VARS:
+                if dict.__contains__(OPTIONAL_ENV_VARS, name):
                     continue  # hardcoded entry wins (back-compat)
                 # Heuristic: anything named *TOKEN, *SECRET, *KEY, *PASSWORD
                 # is a password field unless explicitly overridden.
@@ -8481,5 +8909,61 @@ def _inject_platform_plugin_env_vars() -> None:
         pass
 
 
-# Eagerly inject so that platform plugin env vars show up in the setup wizard.
-_inject_platform_plugin_env_vars()
+def _resolve_optional_env_vars() -> None:
+    """Populate dynamic provider/platform entries on first mapping read."""
+    with _optional_env_vars_injection_lock:
+        _inject_profile_env_vars()
+        _inject_platform_plugin_env_vars()
+
+
+class _LazyOptionalEnvVars(dict):
+    """A dict-compatible mapping whose dynamic entries resolve on first read."""
+
+    def _resolve(self) -> None:
+        _resolve_optional_env_vars()
+
+    def __contains__(self, key: object) -> bool:
+        self._resolve()
+        return dict.__contains__(self, key)
+
+    def __getitem__(self, key: str) -> Any:
+        self._resolve()
+        return dict.__getitem__(self, key)
+
+    def __iter__(self):
+        self._resolve()
+        return dict.__iter__(self)
+
+    def __len__(self) -> int:
+        self._resolve()
+        return dict.__len__(self)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        self._resolve()
+        return dict.get(self, key, default)
+
+    def keys(self):
+        self._resolve()
+        return dict.keys(self)
+
+    def items(self):
+        self._resolve()
+        return dict.items(self)
+
+    def values(self):
+        self._resolve()
+        return dict.values(self)
+
+    def copy(self):
+        self._resolve()
+        return dict.copy(self)
+
+    def __repr__(self) -> str:
+        self._resolve()
+        return dict.__repr__(self)
+
+
+# Preserve the public dict contract while moving executable provider/plugin
+# discovery out of module import. Existing callers transparently resolve the
+# same entries when they actually read OPTIONAL_ENV_VARS.
+OPTIONAL_ENV_VARS = _LazyOptionalEnvVars(OPTIONAL_ENV_VARS)

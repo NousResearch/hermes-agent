@@ -37,6 +37,16 @@ from gateway.platforms.api_server import (
 )
 
 
+def _confirmed_local_cleanup_ref() -> list[dict]:
+    return [{
+        "authority_created": True,
+        "durable_revoke_succeeded": True,
+        "local_clear_succeeded": True,
+        "authority_active": False,
+        "writer_required": False,
+    }]
+
+
 # ---------------------------------------------------------------------------
 # check_api_server_requirements
 # ---------------------------------------------------------------------------
@@ -309,6 +319,45 @@ class TestAdapterInit:
         assert adapter._api_key == "sk-test"
         assert adapter._cors_origins == ("http://localhost:3000",)
 
+    def test_control_bearer_cannot_also_be_owner_approval_passkey(self):
+        shared_secret = "s" * 32
+        with pytest.raises(ValueError, match="must be distinct"):
+            APIServerAdapter(
+                PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "key": shared_secret,
+                        "approval_passkey": shared_secret,
+                    },
+                )
+            )
+
+    def test_distinct_systemd_control_and_owner_credentials_are_wired(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(
+            "gateway.platforms.api_server._load_systemd_api_key_credential",
+            lambda name: "c" * 32 if name == "api-server.key" else "",
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.api_server._load_systemd_api_approval_credential",
+            lambda name: "p" * 32 if name == "api-approval-passkey" else "",
+        )
+
+        adapter = APIServerAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "key_credential": "api-server.key",
+                    "approval_passkey_credential": "api-approval-passkey",
+                },
+            )
+        )
+
+        assert adapter._api_key == "c" * 32
+        assert adapter._approval_passkey == "p" * 32
+
     def test_config_from_env(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_HOST", "10.0.0.1")
         monkeypatch.setenv("API_SERVER_PORT", "7777")
@@ -568,11 +617,16 @@ class TestConcurrencyCap:
         assert resp.headers.get("Retry-After")
 
     def test_cap_counts_both_buckets(self):
-        # /v1/runs (tracked by _run_streams) + chat/responses (inflight)
+        # /v1/runs task ownership + chat/responses (inflight).  Optional SSE
+        # subscriber queues are deliberately not an authority/liveness source.
         adapter = _make_adapter()
         adapter._max_concurrent_runs = 4
         adapter._inflight_agent_runs = 2
-        adapter._run_streams = {"r1": object(), "r2": object()}
+        adapter._active_run_tasks = {
+            "r1": MagicMock(done=lambda: False),
+            "r2": MagicMock(done=lambda: False),
+        }
+        adapter._run_streams = {}
         resp = adapter._concurrency_limited_response()
         assert resp is not None
         assert resp.status == 429
@@ -1024,11 +1078,17 @@ class TestToolsetsEndpoint:
             "hermes_cli.tools_config._toolset_has_keys",
             return_value=True,
         ), patch(
-            "toolsets.resolve_toolset",
+            "model_tools._compute_tool_definitions",
+            return_value=[
+                {"type": "function", "function": {"name": "terminal"}},
+                {"type": "function", "function": {"name": "read_file"}},
+            ],
+        ), patch(
+            "tools.registry.registry.get_toolset_for_tool",
             side_effect=lambda name: {
-                "default": ["terminal", "read_file"],
-                "web": ["web_search"],
-            }[name],
+                "terminal": "default",
+                "read_file": "default",
+            }.get(name),
         ):
             app = _create_app(adapter)
             async with TestClient(TestServer(app)) as cli:
@@ -1041,34 +1101,39 @@ class TestToolsetsEndpoint:
                 assert by_name["default"]["enabled"] is True
                 assert by_name["default"]["tools"] == ["read_file", "terminal"]
                 assert by_name["web"]["enabled"] is False
-                assert by_name["web"]["tools"] == ["web_search"]
+                assert by_name["web"]["tools"] == []
+                assert by_name["web"]["available"] is False
                 assert by_name["default"]["configured"] is True
+                assert [
+                    schema["function"]["name"]
+                    for schema in by_name["default"]["tool_schemas"]
+                ] == ["read_file", "terminal"]
 
     @pytest.mark.asyncio
-    async def test_toolsets_handles_resolution_failure_per_toolset(self, adapter):
-        """If one toolset fails to resolve, others still appear with empty tools."""
+    async def test_toolsets_keeps_unavailable_metadata_groups_empty(self, adapter):
+        """Configured metadata is visible without fabricating unavailable tools."""
         fake_toolsets = [
             ("broken", "Broken", "fails"),
             ("ok", "OK", "works"),
         ]
-
-        def _resolve(name):
-            if name == "broken":
-                raise RuntimeError("nope")
-            return ["some_tool"]
 
         with patch(
             "hermes_cli.tools_config._get_effective_configurable_toolsets",
             return_value=fake_toolsets,
         ), patch(
             "hermes_cli.tools_config._get_platform_tools",
-            return_value=set(),
+            return_value={"ok"},
         ), patch(
             "hermes_cli.tools_config._toolset_has_keys",
             return_value=False,
         ), patch(
-            "toolsets.resolve_toolset",
-            side_effect=_resolve,
+            "model_tools._compute_tool_definitions",
+            return_value=[
+                {"type": "function", "function": {"name": "some_tool"}},
+            ],
+        ), patch(
+            "tools.registry.registry.get_toolset_for_tool",
+            return_value="ok",
         ):
             app = _create_app(adapter)
             async with TestClient(TestServer(app)) as cli:
@@ -1078,6 +1143,59 @@ class TestToolsetsEndpoint:
                 by_name = {ts["name"]: ts for ts in data["data"]}
                 assert by_name["broken"]["tools"] == []
                 assert by_name["ok"]["tools"] == ["some_tool"]
+
+    @pytest.mark.asyncio
+    async def test_toolsets_projects_real_per_tool_check_fn_results(self, adapter):
+        from tools.registry import invalidate_check_fn_cache, registry
+
+        toolset = "api-check-fn-test"
+        visible = "api_check_visible"
+        hidden = "api_check_hidden"
+        schema = {
+            "description": "test",
+            "parameters": {"type": "object", "properties": {}},
+        }
+        registry.register(
+            visible,
+            toolset,
+            schema,
+            lambda **_kwargs: "ok",
+            check_fn=lambda: True,
+        )
+        registry.register(
+            hidden,
+            toolset,
+            schema,
+            lambda **_kwargs: "hidden",
+            check_fn=lambda: False,
+        )
+        invalidate_check_fn_cache()
+        try:
+            with patch(
+                "hermes_cli.tools_config._get_effective_configurable_toolsets",
+                return_value=[(toolset, "Check fn", "availability")],
+            ), patch(
+                "hermes_cli.tools_config._get_platform_tools",
+                return_value={toolset},
+            ), patch(
+                "hermes_cli.tools_config._toolset_has_keys",
+                return_value=True,
+            ):
+                app = _create_app(adapter)
+                async with TestClient(TestServer(app)) as cli:
+                    resp = await cli.get("/v1/toolsets")
+                    assert resp.status == 200
+                    data = await resp.json()
+                    by_name = {ts["name"]: ts for ts in data["data"]}
+                    assert by_name[toolset]["tools"] == [visible]
+                    assert hidden not in {
+                        schema["function"]["name"]
+                        for schema in by_name[toolset]["tool_schemas"]
+                    }
+        finally:
+            registry.deregister(visible)
+            registry.deregister(hidden)
+            invalidate_check_fn_cache()
 
     @pytest.mark.asyncio
     async def test_toolsets_requires_auth_when_key_configured(self, auth_adapter):
@@ -1243,10 +1361,11 @@ class TestChatCompletionsEndpoint:
                 )
                 assert resp.status == 200
 
-            assert len(fake_task.callbacks) == 1
+            assert len(fake_task.callbacks) == 2
             stream_q = mock_write_sse.call_args.args[4]
             assert stream_q.empty()
-            fake_task.callbacks[0](fake_task)
+            for callback in fake_task.callbacks:
+                callback(fake_task)
             assert stream_q.get_nowait() is None
 
     @pytest.mark.asyncio
@@ -2367,10 +2486,11 @@ class TestResponsesStreaming:
                 )
                 assert resp.status == 200
 
-            assert len(fake_task.callbacks) == 1
+            assert len(fake_task.callbacks) == 2
             stream_q = mock_write_sse.call_args.kwargs["stream_q"]
             assert stream_q.empty()
-            fake_task.callbacks[0](fake_task)
+            for callback in fake_task.callbacks:
+                callback(fake_task)
             assert stream_q.get_nowait() is None
 
     @pytest.mark.asyncio
@@ -2534,11 +2654,11 @@ class TestResponsesStreaming:
         assert stored_history.count({"role": "user", "content": "Now add 1 more"}) == 1
 
     @pytest.mark.asyncio
-    async def test_stream_cancelled_persists_incomplete_snapshot(self, adapter):
-        """Server-side asyncio.CancelledError (shutdown, request timeout) must
-        still leave an ``incomplete`` snapshot in ResponseStore so
-        GET /v1/responses/{id} and previous_response_id chaining keep
-        working.  Regression for PR #15171 follow-up.
+    async def test_stream_cancelled_keeps_nonterminal_snapshot(self, adapter):
+        """A cancelled agent wrapper cannot manufacture terminal cleanup truth.
+
+        The partial snapshot remains retrievable but nonterminal until a strong
+        completion owner confirms both durable revoke and local clear.
 
         Calls _write_sse_responses directly so the test can await the
         handler to completion (TestClient disconnection races the server
@@ -2591,14 +2711,14 @@ class TestResponsesStreaming:
                     conversation=None,
                     store=True,
                     session_id=None,
+                    cleanup_ref=_confirmed_local_cleanup_ref(),
                 )
 
-        # The in_progress snapshot was persisted on response.created,
-        # and the CancelledError handler must have updated it to
-        # ``incomplete`` with the partial text it saw.
+        # The in_progress snapshot remains nonterminal, with partial text.
         stored = adapter._response_store.get(response_id)
         assert stored is not None, "snapshot must be retrievable after cancellation"
-        assert stored["response"]["status"] == "incomplete"
+        assert stored["response"]["status"] == "in_progress"
+        assert stored["response"]["hermes"]["terminal"] is False
         # Partial text captured before cancel should be preserved.
         output_text = "".join(
             part.get("text", "")
@@ -2660,6 +2780,7 @@ class TestResponsesStreaming:
                 conversation=None,
                 store=True,
                 session_id=None,
+                cleanup_ref=_confirmed_local_cleanup_ref(),
             )
 
         stored = adapter._response_store.get(response_id)
@@ -3134,6 +3255,7 @@ class TestChatCompletionsAgentIncomplete:
             "final_response": "Here is part one of the answer",
             "completed": False,
             "partial": True,
+            "outcome_code": "output_truncated",
             "error": "Response truncated due to output length limit",
             "messages": [],
             "api_calls": 1,
@@ -4011,6 +4133,27 @@ class TestModelRoutesHandlers:
 
 
 class TestModelRoutesAgentCreation:
+    def test_isolated_runtime_forces_agent_memory_and_context_off(self, monkeypatch):
+        captured = {}
+
+        class FakeAgent:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        _patch_create_agent_runtime(monkeypatch, captured, FakeAgent)
+        monkeypatch.setattr(
+            "gateway.run._isolated_gateway_runtime_active",
+            lambda: True,
+        )
+        adapter = _make_routing_adapter({})
+        monkeypatch.setattr(adapter, "_ensure_session_db", lambda: None)
+        monkeypatch.setattr(adapter, "_session_model_override_for", lambda *_: None)
+
+        adapter._create_agent(session_id="isolated")
+
+        assert captured["skip_memory"] is True
+        assert captured["skip_context_files"] is True
+
     def test_route_overrides_model_and_credentials(self, monkeypatch):
         captured = {}
 

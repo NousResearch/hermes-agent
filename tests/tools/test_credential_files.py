@@ -310,6 +310,31 @@ class TestPathTraversalSecurity:
         assert result is False
         assert get_credential_file_mounts() == []
 
+    @pytest.mark.parametrize(
+        "relative_path",
+        [
+            "auth.json",
+            ".env",
+            ".anthropic_oauth.json",
+            "auth/google_oauth.json",
+            "mcp-tokens/provider.json",
+            "cache/bws_cache.json",
+        ],
+    )
+    def test_internal_hermes_credentials_cannot_be_registered_by_skill(
+        self, tmp_path, monkeypatch, relative_path
+    ):
+        """Model-authored skill metadata cannot mount Hermes control secrets."""
+
+        hermes_home = tmp_path / ".hermes"
+        target = hermes_home / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("secret")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        assert register_credential_file(relative_path) is False
+        assert get_credential_file_mounts() == []
+
 
 # ---------------------------------------------------------------------------
 # Config-based credential files — same containment checks
@@ -363,6 +388,18 @@ class TestConfigPathTraversal:
         mounts = get_credential_file_mounts()
         assert len(mounts) == 1
         assert "oauth.json" in mounts[0]["container_path"]
+
+    @pytest.mark.parametrize("relative_path", ["auth.json", ".env"])
+    def test_config_cannot_mount_internal_hermes_credentials(
+        self, tmp_path, monkeypatch, relative_path
+    ):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        (hermes_home / relative_path).write_text("secret")
+        self._write_config(hermes_home, [relative_path])
+
+        assert get_credential_file_mounts() == []
 
 
 # ---------------------------------------------------------------------------

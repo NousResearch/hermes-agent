@@ -12397,13 +12397,12 @@ async def preview_skill_hub(identifier: str = "", profile: Optional[str] = None)
 
 @app.get("/api/skills/hub/scan")
 async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
-    """Run the install-time security scan on a hub skill WITHOUT installing it.
+    """Run the install-time mechanical preflight without installing the skill.
 
-    Fetches the bundle, quarantines it, and runs the same `scan_skill` /
-    `should_allow_install` pipeline the CLI installer uses — then cleans up the
-    quarantine.  Returns the verdict, per-finding detail, trust tier, and the
-    install-policy decision so the dashboard can show a visual safety result
-    on demand (the 'scan' button the Browse-hub tab was missing).
+    Fetches the bundle, quarantines it, and runs the same structural
+    `scan_skill` / `should_allow_install` pipeline as the CLI installer, then
+    cleans up the quarantine. Authored text is not classified. The endpoint
+    keeps its existing route/response names for client compatibility.
 
     Scoped to ``profile`` so the bundle resolves against that profile's hub
     source router, matching where an install would pull it from.
@@ -12483,8 +12482,8 @@ async def scan_skill_hub(identifier: str = "", profile: Optional[str] = None):
     try:
         result = await asyncio.to_thread(_run)
     except Exception as exc:
-        _log.exception("skills hub scan failed")
-        raise HTTPException(status_code=502, detail=f"Hub scan failed: {exc}")
+        _log.exception("skills hub package preflight failed")
+        raise HTTPException(status_code=502, detail=f"Hub preflight failed: {exc}")
     if result is None:
         raise HTTPException(status_code=404, detail=f"Skill not found: {ident}")
     return result
@@ -13323,7 +13322,7 @@ async def create_skill(body: SkillCreate):
 
     Calls the same validated write path as the agent's ``skill_manage``
     tool (frontmatter validation, name/category validation, size limit,
-    optional security scan) — but bypasses the agent write-approval gate:
+    optional mechanical package preflight) — but bypasses the agent write-approval gate:
     a write from the authenticated dashboard IS the user acting directly.
     """
     from tools.skill_manager_tool import _create_skill

@@ -1,4 +1,4 @@
-"""Gateway noise/secret filtering across chat surfaces (Telegram + siblings)."""
+"""Gateway model-sovereignty and secret boundaries across chat surfaces."""
 
 import pytest
 
@@ -8,8 +8,8 @@ from gateway.run import (
     _sanitize_gateway_final_response,
 )
 
-# Every human-facing chat surface that must receive noise-filtered,
-# secret-redacted, provider-error-sanitized output (not just Telegram).
+# Every human-facing chat surface that must receive authored text unchanged
+# apart from the explicit secret-redaction safety boundary.
 CHAT_PLATFORMS = [
     "telegram",
     "whatsapp",
@@ -28,7 +28,7 @@ CHAT_PLATFORMS = [
     "sms",
 ]
 
-NOISY_STATUS_MESSAGES = [
+STATUS_MESSAGES = [
     "🗜️ Preflight compression check before sending...",
     "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
     "⚠️  Session compressed 12 times — accuracy may degrade. Consider /new to start fresh.",
@@ -38,9 +38,9 @@ NOISY_STATUS_MESSAGES = [
 ]
 
 
-def test_telegram_status_suppresses_auxiliary_and_retry_noise():
-    """Auxiliary failures and retry backoff chatter should not hit Telegram."""
-    noisy_messages = [
+def test_telegram_status_does_not_classify_auxiliary_or_retry_wording():
+    """Status wording is authored data, not a keyword-routing authority."""
+    messages = [
         "⚠ Auxiliary title generation failed: HTTP 400: Operation contains cybersecurity risk",
         "⚠ Compression summary failed: upstream error. Inserted a fallback context marker.",
         "🗜️ Compacting context — summarizing earlier conversation so I can continue...",
@@ -50,8 +50,8 @@ def test_telegram_status_suppresses_auxiliary_and_retry_noise():
         "⚠️ Max retries (3) exhausted — trying fallback...",
     ]
 
-    for message in noisy_messages:
-        assert _prepare_gateway_status_message(Platform.TELEGRAM, "warn", message) is None
+    for message in messages:
+        assert _prepare_gateway_status_message(Platform.TELEGRAM, "warn", message) == message
 
 
 def test_programmatic_surfaces_keep_raw_status():
@@ -69,10 +69,9 @@ def test_programmatic_surfaces_keep_raw_status():
 
 
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)
-@pytest.mark.parametrize("message", NOISY_STATUS_MESSAGES)
-def test_all_chat_gateways_suppress_noise(platform, message):
-    """Operational lifecycle/retry noise must be suppressed on every chat surface."""
-    assert _prepare_gateway_status_message(platform, "warn", message) is None
+@pytest.mark.parametrize("message", STATUS_MESSAGES)
+def test_all_chat_gateways_preserve_status_meaning(platform, message):
+    assert _prepare_gateway_status_message(platform, "warn", message) == message
 
 
 @pytest.mark.parametrize("platform", ["whatsapp", "slack", "signal", "matrix"])
@@ -92,9 +91,8 @@ def test_chat_gateways_redact_secret_in_provider_error(platform):
 
     assert "sk-ABCDEF0123456789abcdef0123" not in sanitized
     assert "sk-ABCDEF" not in sanitized
-    assert "HTTP 401" not in sanitized
-    # The user gets the safe provider-error category instead of the raw body.
-    assert "provider" in sanitized.lower()
+    assert "HTTP 401" in sanitized
+    assert "API call failed after 3 retries" in sanitized
 
 
 @pytest.mark.parametrize("platform", ["whatsapp", "slack", "signal", "matrix"])
@@ -129,11 +127,10 @@ def test_chat_gateways_redact_secret_in_non_error_body(platform):
     assert "here is the example request you asked for" in sanitized
 
 
-def test_plugin_platform_string_suppresses_noise():
-    """Unknown/plugin chat platforms fail closed to the chat-filter path."""
+def test_plugin_platform_string_preserves_status_and_redacts_as_chat():
     message = "⏳ Retrying in 4.2s (attempt 1/3)..."
 
-    assert _prepare_gateway_status_message("irc", "warn", message) is None
+    assert _prepare_gateway_status_message("irc", "warn", message) == message
 
 
 @pytest.mark.parametrize("platform", CHAT_PLATFORMS)
@@ -153,8 +150,7 @@ def test_chat_gateways_drop_interrupt_sentinel(platform):
     assert _sanitize_gateway_final_response("local", sentinel) == sentinel
 
 
-def test_telegram_status_sanitizes_raw_provider_security_errors():
-    """Provider policy/security bodies should be replaced before chat delivery."""
+def test_telegram_status_does_not_classify_provider_security_wording():
     raw = (
         "❌ API failed after 3 retries — HTTP 400: request blocked because "
         "Operation contains cybersecurity risk. request_id=req_123"
@@ -162,15 +158,10 @@ def test_telegram_status_sanitizes_raw_provider_security_errors():
 
     sanitized = _prepare_gateway_status_message(Platform.TELEGRAM, "lifecycle", raw)
 
-    assert sanitized is not None
-    assert "provider rejected" in sanitized.lower()
-    assert "cybersecurity risk" not in sanitized.lower()
-    assert "HTTP 400" not in sanitized
-    assert "req_123" not in sanitized
+    assert sanitized == raw
 
 
-def test_telegram_final_response_sanitizes_raw_provider_errors():
-    """Final Telegram replies should not expose raw provider/security details."""
+def test_telegram_final_response_preserves_authored_provider_error_wording():
     raw = (
         "API call failed after 3 retries: HTTP 400: This request was blocked "
         "under the provider cybersecurity risk policy. request_id=req_abc"
@@ -178,10 +169,7 @@ def test_telegram_final_response_sanitizes_raw_provider_errors():
 
     sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
 
-    assert "provider rejected" in sanitized.lower()
-    assert "cybersecurity risk" not in sanitized.lower()
-    assert "HTTP 400" not in sanitized
-    assert "req_abc" not in sanitized
+    assert sanitized == raw
 
 
 def test_telegram_final_response_redacts_auth_secrets():
@@ -194,7 +182,7 @@ def test_telegram_final_response_redacts_auth_secrets():
     sanitized = _sanitize_gateway_final_response(Platform.TELEGRAM, raw)
 
     assert "authentication failed" in sanitized.lower()
-    assert "check the configured credentials" in sanitized.lower()
+    assert "Incorrect API key provided" in sanitized
     assert "sk-live" not in sanitized
 
 

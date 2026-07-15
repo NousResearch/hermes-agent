@@ -754,6 +754,63 @@ def test_auth_reset_clears_provider_statuses(tmp_path, monkeypatch, capsys):
     assert entry["last_error_code"] is None
 
 
+def test_auth_reset_never_resurrects_terminally_dead_credential(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "openai-codex": [
+                    {
+                        "id": "cred-dead",
+                        "label": "invalidated",
+                        "auth_type": "oauth",
+                        "priority": 0,
+                        "source": "manual:device_code",
+                        "access_token": "dead-access",
+                        "refresh_token": "dead-refresh",
+                        "last_status": "dead",
+                        "last_status_at": 1711230000.0,
+                        "last_error_code": 401,
+                        "last_error_reason": "token_invalidated",
+                    },
+                    {
+                        "id": "cred-exhausted",
+                        "label": "quota-reset",
+                        "auth_type": "oauth",
+                        "priority": 1,
+                        "source": "manual:device_code",
+                        "access_token": "live-access",
+                        "refresh_token": "live-refresh",
+                        "last_status": "exhausted",
+                        "last_status_at": 1711230001.0,
+                        "last_error_code": 429,
+                        "last_error_reason": "usage_limit_reached",
+                    },
+                ]
+            },
+        },
+    )
+
+    from hermes_cli.auth_commands import auth_reset_command
+
+    class _Args:
+        provider = "openai-codex"
+
+    auth_reset_command(_Args())
+
+    assert "Reset status on 1 openai-codex credential" in capsys.readouterr().out
+    payload = json.loads((tmp_path / "hermes" / "auth.json").read_text())
+    dead, exhausted = payload["credential_pool"]["openai-codex"]
+    assert dead["last_status"] == "dead"
+    assert dead["last_error_reason"] == "token_invalidated"
+    assert exhausted["last_status"] is None
+    assert exhausted["last_error_reason"] is None
+
+
 def test_clear_provider_auth_removes_provider_pool_entries(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

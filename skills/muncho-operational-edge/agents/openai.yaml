@@ -1,0 +1,4 @@
+interface:
+  display_name: "Muncho Operational Edge"
+  short_description: "Run exact approved Cloud operations safely"
+  default_prompt: "Use $muncho-operational-edge to inspect or execute this SkyVision/Adventico operational task."

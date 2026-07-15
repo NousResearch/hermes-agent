@@ -33,11 +33,31 @@ def _tool(content):
 
 
 def test_is_interrupted_tool_result_markers():
-    assert is_interrupted_tool_result("[Command interrupted]")
-    assert is_interrupted_tool_result("foo\nexit_code: 130 (interrupt)\nbar")
-    assert not is_interrupted_tool_result("exit_code: 0\nclean output")
-    assert not is_interrupted_tool_result("ordinary tool output")
-    assert not is_interrupted_tool_result(None)
+    envelope = '{"exit_code": 130, "output": "partial\\n[Command interrupted]"}'
+
+    assert is_interrupted_tool_result("[Command interrupted]", "terminal")
+    assert is_interrupted_tool_result(envelope, "terminal")
+
+    # Result content has no authority until its call id is bound to the exact
+    # terminal tool name.
+    assert not is_interrupted_tool_result("[Command interrupted]")
+    assert not is_interrupted_tool_result(envelope, "read_file")
+
+    # Generic fields, coercible values, natural exit 130, and marker
+    # substrings are all ordinary opaque tool data.
+    assert not is_interrupted_tool_result(
+        '{"exit_code": -1, "status": "interrupted"}', "terminal"
+    )
+    assert not is_interrupted_tool_result(
+        '{"exit_code": "130", "output": "[Command interrupted]"}', "terminal"
+    )
+    assert not is_interrupted_tool_result(
+        '{"exit_code": 130, "output": "natural child exit"}', "terminal"
+    )
+    assert not is_interrupted_tool_result(
+        "prefix [Command interrupted] suffix", "terminal"
+    )
+    assert not is_interrupted_tool_result(None, "terminal")
 
 
 def test_strip_dangling_tool_call_tail_removes_unanswered_read_only_tail():
@@ -93,10 +113,10 @@ def test_strip_dangling_tool_call_tail_preserves_answered_pair():
     assert out == history  # answered -> untouched
 
 
-def test_strip_interrupted_tool_tails_removes_interrupted_read_only_block():
+def test_terminal_marker_from_non_terminal_tool_stays_opaque():
     history = [_user("hi"), _assistant_tc("read_file"), _tool("[Command interrupted]")]
     out = strip_interrupted_tool_tails(history)
-    assert out == [_user("hi")]
+    assert out == history
 
 
 def test_interrupted_side_effect_is_preserved_as_unknown():
@@ -116,10 +136,24 @@ def test_strip_interrupted_tool_tails_preserves_successful_block():
     assert out == history
 
 
-def test_strip_interrupted_tool_tails_removes_orphan_interrupted_tool():
-    history = [_user("hi"), _tool("[Command interrupted] exit_code: 130 interrupt")]
+def test_strip_interrupted_tool_tails_preserves_orphan_unknown_result():
+    history = [_user("hi"), _tool("[Command interrupted]")]
     out = strip_interrupted_tool_tails(history)
-    assert out == [_user("hi")]
+    assert out == history
+
+
+def test_terminal_envelope_with_unknown_call_id_stays_opaque():
+    history = [
+        _user("hi"),
+        _assistant_tc("terminal"),
+        {
+            "role": "tool",
+            "tool_call_id": "not-c1",
+            "content": '{"exit_code": 130, "output": "[Command interrupted]"}',
+        },
+    ]
+
+    assert strip_interrupted_tool_tails(history) == history
 
 
 def test_sanitize_replay_history_combines_both():

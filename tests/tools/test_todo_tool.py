@@ -78,6 +78,22 @@ class TestFormatForInjection:
         assert "Working" in text
         assert "context compression" in text.lower()
 
+    def test_blocked_item_survives_compression_without_forcing_current_loop(self):
+        store = TodoStore()
+        store.write([
+            {
+                "id": "1",
+                "content": "Continue after the owner supplies exact authority",
+                "status": "blocked",
+            }
+        ])
+
+        assert store.has_active_items() is False
+        text = store.format_for_injection()
+        assert "[!]" in text
+        assert "Continue after the owner supplies exact authority" in text
+        assert "not a runtime decision" in text
+
 
 class TestMergeMode:
     def test_update_existing_by_id(self):
@@ -151,7 +167,7 @@ class TestTodoStoreBounds:
         store.write([{"id": "1", "content": "A" * 50001, "status": "pending"}])
         inj = store.format_for_injection()
         # Before the fix this was ~50085 chars; now it tracks the cap.
-        assert len(inj) < MAX_TODO_CONTENT_CHARS + 200
+        assert len(inj) < MAX_TODO_CONTENT_CHARS + 300
 
     def test_merge_update_content_is_capped(self):
         """The merge path updates content directly, bypassing _validate —

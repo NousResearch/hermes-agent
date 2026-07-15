@@ -47,6 +47,7 @@ from hermes_cli.config import (
     get_hermes_home,
     get_config_path,
     read_raw_config,
+    refuse_pinned_effective_config_write,
     require_readable_config_before_write,
 )
 from hermes_constants import OPENROUTER_BASE_URL, secure_parent_dir
@@ -6540,6 +6541,11 @@ def _update_config_for_provider(
     mismatched model/provider (e.g. ``anthropic/claude-opus-4.6`` sent to
     MiniMax's API).
     """
+    config_path = get_config_path()
+    # Refuse before touching auth.json so a sealed process cannot be left with
+    # a half-applied provider change.
+    refuse_pinned_effective_config_write(config_path)
+
     # Set active_provider in auth.json so auto-resolution picks this provider
     with _auth_store_lock():
         auth_store = _load_auth_store()
@@ -6547,7 +6553,6 @@ def _update_config_for_provider(
         _save_auth_store(auth_store)
 
     # Update config.yaml model section
-    config_path = get_config_path()
     config_path.parent.mkdir(parents=True, exist_ok=True)
     require_readable_config_before_write(config_path)
 
@@ -6640,6 +6645,7 @@ def _logout_default_provider_from_config() -> Optional[str]:
 def _reset_config_provider() -> Path:
     """Reset config.yaml provider back to auto after logout."""
     config_path = get_config_path()
+    refuse_pinned_effective_config_write(config_path)
     if not config_path.exists():
         return config_path
     require_readable_config_before_write(config_path)
@@ -6925,6 +6931,10 @@ def _login_openai_codex(
 ) -> None:
     """OpenAI Codex login via device code flow. Tokens stored in ~/.hermes/auth.json."""
 
+    # Login also selects the provider in config.yaml.  Refuse before importing,
+    # refreshing, or saving any token so a sealed process cannot half-apply a
+    # credential change and then fail at the immutable config boundary.
+    refuse_pinned_effective_config_write(get_config_path())
     del args, pconfig  # kept for parity with other provider login helpers
 
     # Check for existing Hermes-owned credentials
@@ -6997,6 +7007,9 @@ def _login_xai_oauth(
     *,
     force_new_login: bool = False,
 ) -> None:
+    # This flow persists tokens and clears credential suppression before it
+    # selects the provider.  Seal it before either side effect.
+    refuse_pinned_effective_config_write(get_config_path())
     del pconfig
 
     if not force_new_login:
@@ -8102,6 +8115,11 @@ def step_up_nous_billing_scope(
 
 def _login_nous(args, pconfig: ProviderConfig) -> None:
     """Nous Portal device authorization flow."""
+    # The interactive flow persists auth.json/shared-pool state and then offers
+    # a model/provider switch.  Production credential deployment uses a
+    # separate unpinned collector process; the sealed gateway must never enter
+    # this half-applicable interactive path.
+    refuse_pinned_effective_config_write(get_config_path())
     timeout_seconds = getattr(args, "timeout", None) or 15.0
     insecure = bool(getattr(args, "insecure", False))
     ca_bundle = (
@@ -8321,6 +8339,12 @@ def logout_command(args) -> None:
 
     should_reset_config = _should_reset_config_provider_on_logout(target)
     provider_name = get_auth_provider_display_name(target)
+
+    # Refuse before deleting auth.json state.  Otherwise a sealed process can
+    # remove the active credential and only then discover that its matching
+    # provider config cannot be reset, taking the runtime offline.
+    if should_reset_config:
+        refuse_pinned_effective_config_write(get_config_path())
 
     if clear_provider_auth(target) or should_reset_config:
         if should_reset_config:

@@ -50,11 +50,13 @@ def _clarify_target_person_guidance(phrase: str | None = None) -> str:
             "Do not create the thread or claim delivery. Tell the requester: "
             f"\"Не изпратих съобщението, защото не съм сигурен кой е '{phrase}'. "
             "Моля уточнете човека/канала и ще го изпратя.\" "
-            "After the requester clarifies, record the new alias in durable memory/registry flow and retry."
+            "After the requester clarifies, append the exact person.alias.learned Canonical "
+            "Brain event and retry with the returned immediate_retry_target_person canonical key."
         )
     return (
         "Do not create the thread or claim delivery. Ask the requester to clarify the target person/channel, "
-        "then learn the alias and retry."
+        "then append person.alias.learned in Canonical Brain and retry with the returned "
+        "immediate_retry_target_person canonical key."
     )
 
 

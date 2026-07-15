@@ -810,7 +810,7 @@ interface SkillRowProps {
 }
 
 /* ------------------------------------------------------------------ */
-/*  Hub browser — search the skill hub, preview, scan, install         */
+/*  Hub browser — search, preview, package-preflight, install          */
 /* ------------------------------------------------------------------ */
 
 /** Map a trust level to a Badge tone + label + icon. */
@@ -830,7 +830,7 @@ function trustVisual(level: string): {
   }
 }
 
-/** Map a scan verdict to tone + icon. */
+/** Map a mechanical package-preflight verdict to tone + icon. */
 function verdictVisual(verdict: string): {
   tone: "success" | "warning" | "destructive";
   Icon: React.ComponentType<{ className?: string }>;
@@ -1334,7 +1334,7 @@ function HubResultCard({
   );
 }
 
-/* ---- Detail dialog: SKILL.md preview + on-demand security scan ---- */
+/* ---- Detail dialog: SKILL.md preview + package preflight ---- */
 function SkillDetailDialog({
   result,
   installed,
@@ -1377,7 +1377,7 @@ function SkillDetailDialog({
       const s = await api.scanSkillFromHub(result.identifier);
       setScan(s);
     } catch (e) {
-      showToast(`Scan failed: ${e}`, "error");
+      showToast(`Package preflight failed: ${e}`, "error");
     } finally {
       setScanning(false);
     }
@@ -1403,7 +1403,7 @@ function SkillDetailDialog({
             )}
           </DialogTitle>
           <DialogDescription className="sr-only">
-            Preview the SKILL.md source and run a security scan for {result.name}{" "}
+            Preview the SKILL.md source and run package preflight for {result.name}{" "}
             before installing.
           </DialogDescription>
         </DialogHeader>
@@ -1438,7 +1438,7 @@ function SkillDetailDialog({
               )
             }
           >
-            {scan ? "Re-scan" : "Security scan"}
+            {scan ? "Re-run preflight" : "Package preflight"}
           </Button>
           <div className="ml-auto flex items-center gap-3">
             {result.repo && (
@@ -1515,7 +1515,7 @@ function SkillDetailDialog({
   );
 }
 
-/* ---- Visual security-scan result ---- */
+/* ---- Visual package-preflight result ---- */
 function ScanPanel({
   scan,
   scanning,
@@ -1528,7 +1528,7 @@ function ScanPanel({
       <div className="flex flex-col items-center justify-center gap-2 py-12">
         <Loader2 className="h-6 w-6 animate-spin text-primary" />
         <span className="text-xs text-muted-foreground">
-          Fetching, quarantining, and scanning…
+          Fetching, quarantining, and checking package boundaries…
         </span>
       </div>
     );
@@ -1536,8 +1536,8 @@ function ScanPanel({
   if (!scan) {
     return (
       <p className="text-sm text-muted-foreground text-center py-10">
-        Run a security scan to inspect this skill for risky patterns before
-        installing.
+        Run package preflight to validate paths, symlinks, file types, sizes,
+        hashes, and provenance before installing. Authored text is not classified.
       </p>
     );
   }
@@ -1601,7 +1601,7 @@ function ScanPanel({
         {scan.findings.length === 0 && (
           <span className="flex items-center gap-1 text-xs text-emerald-400">
             <CheckCircle2 className="h-3.5 w-3.5" />
-            No risky patterns detected
+            No package-boundary violations
           </span>
         )}
       </div>

@@ -283,6 +283,14 @@ def _model_flow_moa(config, current_model=""):
 
 def _model_flow_nous(config, current_model="", args=None):
     """Nous Portal provider: ensure logged in, then pick model."""
+    from hermes_cli.config import (
+        get_config_path,
+        refuse_pinned_effective_config_write,
+    )
+
+    # This flow may authenticate before it persists the selected route.  Refuse
+    # before either side effect in a sealed process.
+    refuse_pinned_effective_config_write(get_config_path())
     from hermes_cli.auth import (
         get_provider_auth_state,
         _prompt_model_selection,
@@ -725,6 +733,12 @@ def _model_flow_qwen_oauth(_config, current_model=""):
 
 def _model_flow_minimax_oauth(config, current_model="", args=None):
     """MiniMax OAuth provider: ensure logged in, then pick model."""
+    from hermes_cli.config import (
+        get_config_path,
+        refuse_pinned_effective_config_write,
+    )
+
+    refuse_pinned_effective_config_write(get_config_path())
     from hermes_cli.auth import (
         get_provider_auth_state,
         _prompt_model_selection,

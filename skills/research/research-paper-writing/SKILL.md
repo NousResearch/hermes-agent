@@ -497,7 +497,7 @@ Monitor Prompt Template:
 7. Answer the key analytical question for this experiment
 ```
 
-**Silent mode**: If nothing has changed since the last check, respond with `[SILENT]` to suppress notification to the user. Only report when there's news.
+**Quiet mode**: If nothing has changed since the last check, call `todo` with `delivery_outcome` action `suppress` and a concrete reason. Only report when there's news.
 
 ### Step 3.3: Handle Failures
 
@@ -2240,11 +2240,11 @@ cronjob("create", {
     4. If complete: read results, compute Borda scores, 
        git add -A && git commit -m 'Add Haiku results' && git push
     5. Report: table of results, key finding, next step
-    6. If nothing changed: respond with [SILENT]"
+    6. If nothing changed: call todo with delivery_outcome action=suppress and a concrete reason"
 })
 ```
 
-**[SILENT] protocol**: When nothing has changed since the last check, respond with exactly `[SILENT]`. This suppresses notification delivery to the user. Only report when there are genuine changes worth knowing about.
+**Structured delivery protocol**: When nothing has changed since the last check, call `todo` with `delivery_outcome={"action":"suppress","reason":"..."}`. This same-turn model-authored choice suppresses notification delivery. Only report when there are genuine changes worth knowing about.
 
 **Deadline tracking**:
 ```
@@ -2266,8 +2266,8 @@ cronjob("create", {
 - Deadline approaching with incomplete tasks
 
 **When NOT to notify:**
-- Experiment still running, no new results → `[SILENT]`
-- Routine monitoring with no changes → `[SILENT]`
+- Experiment still running, no new results → structured `delivery_outcome` action `suppress`
+- Routine monitoring with no changes → structured `delivery_outcome` action `suppress`
 - Intermediate steps that don't need attention
 
 **Report format** — always include structured data:

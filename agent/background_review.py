@@ -477,23 +477,22 @@ def summarize_background_review_actions(
         target = data.get("target", "") or detail.get("target", "")
         is_skill = detail.get("tool") == "skill_manage"
 
-        message_lower = message.lower()
-        if not verbose:
-            if "created" in message_lower:
-                actions.append(message)
-                continue
-            if "updated" in message_lower:
-                actions.append(message)
-                continue
-            if is_skill and "patched" in message_lower:
-                actions.append(message)
-                continue
-
         if is_skill:
             label = "Skill"
         elif target:
             label = "Memory" if target == "memory" else "User profile" if target == "user" else target
+        elif message:
+            label = ""
         else:
+            continue
+
+        if not verbose:
+            # Notification routing follows structured tool identity/target,
+            # never words such as "created", "added", or "patched" in
+            # model/tool-authored prose. Legacy tool-only rows without that
+            # metadata are preserved verbatim instead of semantically
+            # reclassified.
+            actions.append(f"{label} updated" if label else str(message))
             continue
 
         if verbose:
@@ -575,15 +574,6 @@ def summarize_background_review_actions(
                 actions.append(f"{label} ➖ {preview}")
             else:
                 actions.append(f"{label} updated")
-        elif (
-            "added" in message_lower
-            or "replaced" in message_lower
-            or "removed" in message_lower
-            or "applied" in message_lower
-            or (target and "add" in message.lower())
-            or "Entry added" in message
-        ):
-            actions.append(f"{label} updated")
     return actions
 
 

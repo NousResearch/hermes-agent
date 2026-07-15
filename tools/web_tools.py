@@ -1046,43 +1046,74 @@ async def web_extract_tool(
         return tool_error(error_msg)
 
 
-# Convenience function to check Firecrawl credentials
-def check_web_api_key() -> bool:
-    """Check whether the configured web backend is available.
+def _available_web_provider(capability: str):
+    """Return the active runnable provider for one exact web capability.
 
-    Used as the ``check_fn`` gate for the ``web_search`` and ``web_extract``
-    tool registry entries — so a plugin-registered provider that reports
-    ``is_available()`` must light the tools up even when no built-in backend
-    has credentials (issues #28651, #31873). Resolution funnels through
-    :func:`_is_backend_available`, which delegates non-legacy names to the
-    registry.
+    Tool schemas are gated before dispatch.  Credential-only probing used to
+    expose both schemas even when plugin discovery was sealed (no executor was
+    registered), and a search-only provider exposed ``web_extract`` even
+    though every invocation necessarily failed.  Resolve through the same
+    registry dispatch uses, then require both capability support and the
+    provider's side-effect-free availability probe.
     """
-    # ``or ""``: a null ``web.backend`` value yields None from ``.get``, and
-    # ``None.lower()`` would raise. Mirrors ``_get_backend``.
+
+    if capability not in {"search", "extract"}:
+        raise ValueError("web capability must be search or extract")
+    try:
+        _ensure_web_plugins_loaded()
+        from agent.web_search_registry import (
+            get_active_extract_provider,
+            get_active_search_provider,
+        )
+
+        provider = (
+            get_active_search_provider()
+            if capability == "search"
+            else get_active_extract_provider()
+        )
+        if provider is None:
+            return None
+        supported = (
+            provider.supports_search()
+            if capability == "search"
+            else provider.supports_extract()
+        )
+        if not supported or not provider.is_available():
+            return None
+        return provider
+    except Exception as exc:  # noqa: BLE001 — availability gates fail closed
+        logger.debug(
+            "web %s provider availability check failed: %s", capability, exc
+        )
+        return None
+
+
+def check_web_search_available() -> bool:
+    """Return whether ``web_search`` has a registered runnable executor."""
+
+    return _available_web_provider("search") is not None
+
+
+def check_web_extract_available() -> bool:
+    """Return whether ``web_extract`` has a registered runnable executor."""
+
+    return _available_web_provider("extract") is not None
+
+
+def check_web_api_key() -> bool:
+    """Backward-compatible aggregate web availability probe.
+
+    New tool registrations use the capability-specific probes above.  Keep
+    this public helper for setup/status callers that only need to know whether
+    *any* web capability is runnable.
+    """
+
     configured = (_load_web_config().get("backend") or "").lower().strip()
     if configured and _is_backend_available(configured):
         return True
-    # Any built-in backend with credentials present. This is a boolean OR, so
-    # unlike _get_backend() the probe order is irrelevant.
     if any(_is_backend_available(backend) for backend in _LEGACY_WEB_BACKENDS):
         return True
-    # Any plugin-registered provider the registry considers active for either
-    # capability. Delegating to the registry's own availability-filtered
-    # resolvers keeps a single authority for "is a custom provider usable"
-    # rather than re-implementing the walk here.
-    try:
-        from agent.web_search_registry import (
-            get_active_search_provider,
-            get_active_extract_provider,
-        )
-
-        return (
-            get_active_search_provider() is not None
-            or get_active_extract_provider() is not None
-        )
-    except Exception as exc:  # noqa: BLE001 — registry optional; never fatal
-        logger.debug("web provider registry availability check failed: %s", exc)
-        return False
+    return check_web_search_available() or check_web_extract_available()
 
 
 if __name__ == "__main__":
@@ -1216,7 +1247,7 @@ registry.register(
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
     handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=args.get("limit", 5)),
-    check_fn=check_web_api_key,
+    check_fn=check_web_search_available,
     requires_env=_web_requires_env(),
     emoji="🔍",
     max_result_size_chars=100_000,
@@ -1230,7 +1261,7 @@ registry.register(
         "markdown",
         char_limit=args.get("char_limit"),
     ),
-    check_fn=check_web_api_key,
+    check_fn=check_web_extract_available,
     requires_env=_web_requires_env(),
     is_async=True,
     emoji="📄",

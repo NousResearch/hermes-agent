@@ -22,7 +22,7 @@ dashboard 是**你**观察系统最便捷的地方。dispatcher 生成的 agent 
 
 从左到右共六列：
 
-- **Triage（分类）** — 原始想法。默认情况下，dispatcher 会对此处的任务自动运行**分解器**（orchestrator 驱动的扇出）：它读取你的 profile 名册和描述，生成一张子任务图，将任务路由给最合适的专家，同时保持原始任务作为父任务存活，以便在所有子任务完成后 orchestrator 重新唤醒来判断完成情况。点击 kanban 页面顶部的 **Orchestration: Auto/Manual** 切换按钮来切换模式。在 Manual 模式下（或没有 orchestrator profile 的配置中），点击卡片上的 **⚗ Decompose**，或运行 `hermes kanban decompose <id>` / `/kanban decompose <id>`。对于不需要扇出的单个任务，**✨ Specify** 会进行一次性规格重写（目标、方法、验收标准）并将任务提升到 `todo`。在 `config.yaml` 的 `auxiliary.kanban_decomposer` 和 `auxiliary.triage_specifier` 下配置相关模型。参见主 Kanban 指南中的[自动与手动编排](./kanban#auto-vs-manual-orchestration)。
+- **Triage（分类）** — 原始想法。辅助 Kanban 规划默认关闭，因此任务会留在此处，直到 Hermes 主模型或人类进行规划。要使用旧版辅助规划器，请设置 `kanban.auxiliary_planning_enabled: true`。自动分解还要求 `kanban.auto_decompose: true`；分解器随后会读取 profile 名册和描述，并生成路由给最合适专家的子任务图。启用辅助规划但不启用自动分解时，可点击 **⚗ Decompose**，或运行 `hermes kanban decompose <id>` / `/kanban decompose <id>`。**✨ Specify** 受同一辅助规划开关门控，它会进行一次性规格重写（目标、方法、验收标准）并将任务提升到 `todo`。在 `config.yaml` 的 `auxiliary.kanban_decomposer` 和 `auxiliary.triage_specifier` 下配置相关模型。参见主 Kanban 指南中的[自动与手动编排](./kanban#auto-vs-manual-orchestration)。
 - **Todo（待办）** — 已创建但等待依赖项，或尚未分配。
 - **Ready（就绪）** — 已分配，等待 dispatcher 认领。
 - **In progress（进行中）** — worker 正在主动执行任务。开启"Lanes by profile"（默认开启）时，此列按负责人分组，让你一眼看出每个 worker 正在做什么。

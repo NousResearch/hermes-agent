@@ -82,6 +82,19 @@ _TELEGRAM_CAPTION_LIMIT = 1024
 _DEFAULT_CAPTION_LIMIT = 4096
 
 
+def _discord_privileged_connector_active() -> bool:
+    """Return whether Discord delivery has a live policy-enforcing relay."""
+
+    try:
+        from gateway.discord_guild_history_client import (
+            discord_guild_history_configured,
+        )
+
+        return discord_guild_history_configured()
+    except Exception:
+        return False
+
+
 def _media_caption_split(text, media_files, *, max_caption_len):
     """Decide whether the accompanying text should ride on the media bubble.
 
@@ -475,13 +488,21 @@ def _handle_send(args):
             })
 
     if platform_name == "discord":
-        from gateway.channel_directory import is_discord_public_target
-
         resolved_discord_target = str(thread_id or chat_id or "").strip()
-        if not is_discord_public_target(resolved_discord_target):
-            return json.dumps(_error(
-                "Discord delivery is restricted to directory-confirmed public guild channels/threads; DMs, groups, and unknown targets are forbidden."
-            ))
+        if not _discord_privileged_connector_active():
+            from gateway.channel_directory import is_discord_public_target
+
+            if not is_discord_public_target(resolved_discord_target):
+                return json.dumps(_error(
+                    "Direct Discord delivery is restricted to directory-confirmed "
+                    "public guild channels/threads; DMs, groups, and unknown "
+                    "targets are forbidden."
+                ))
+        # The pinned connector path deliberately does not trust the mutable
+        # local directory as an authorization oracle. It re-fetches this exact
+        # ID and proves the active public_only or guild_acl policy plus live bot
+        # permissions before dispatch, so newly ACL-authorized production
+        # channels work without a restart or a hardcoded lane list.
 
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:
@@ -713,6 +734,7 @@ async def _send_via_adapter(
     thread_id=None,
     media_files=None,
     force_document=False,
+    caption=None,
 ):
     """Send a message via a live gateway adapter, with a standalone fallback
     for out-of-process callers (e.g. cron running separately from the gateway).
@@ -740,14 +762,31 @@ async def _send_via_adapter(
             adapter = None
         if adapter is not None:
             try:
-                metadata = {}
-                if thread_id:
-                    metadata["thread_id"] = thread_id
-                if platform_name == "ntfy" and chat_id:
-                    metadata["publish_topic"] = chat_id
-                if not metadata:
-                    metadata = None
-                result = await adapter.send(chat_id=chat_id, content=chunk, metadata=metadata)
+                if (
+                    platform_name == "discord"
+                    and media_files
+                    and callable(getattr(adapter, "send_media_files", None))
+                ):
+                    result = await adapter.send_media_files(
+                        chat_id,
+                        chunk,
+                        media_files,
+                        thread_id=thread_id,
+                        caption=caption,
+                    )
+                else:
+                    metadata = {}
+                    if thread_id:
+                        metadata["thread_id"] = thread_id
+                    if platform_name == "ntfy" and chat_id:
+                        metadata["publish_topic"] = chat_id
+                    if not metadata:
+                        metadata = None
+                    result = await adapter.send(
+                        chat_id=chat_id,
+                        content=chunk,
+                        metadata=metadata,
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception as e:
@@ -765,13 +804,19 @@ async def _send_via_adapter(
 
     if entry is not None and entry.standalone_sender_fn is not None:
         try:
+            standalone_kwargs = {
+                "thread_id": thread_id,
+                "media_files": media_files,
+            }
+            if platform_name != "discord" or force_document:
+                standalone_kwargs["force_document"] = force_document
+            if platform_name == "discord" and caption is not None:
+                standalone_kwargs["caption"] = caption
             result = await entry.standalone_sender_fn(
                 pconfig,
                 chat_id,
                 chunk,
-                thread_id=thread_id,
-                media_files=media_files,
-                force_document=force_document,
+                **standalone_kwargs,
             )
         except asyncio.CancelledError:
             raise
@@ -881,18 +926,12 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             force_document=force_document,
         )
 
-    # --- Discord: chunked delivery via the registry's standalone_sender_fn.
-    # The plugin's ``_standalone_send`` (registered in
-    # plugins/platforms/discord/adapter.py) handles forum channels, threads,
-    # and multipart media uploads.  ``_send_via_adapter`` tries the live
-    # in-process adapter first via ``adapter.send()``, but Discord's elif
-    # historically went straight to the HTTP path; we preserve that by
-    # explicitly invoking the registry hook here so behavior is unchanged.
+    # --- Discord: prefer the live gateway adapter.
+    # The privileged Muncho policy forbids a model/tool process from bypassing
+    # the adapter's connector-policy proof with a raw bot-token REST POST. The
+    # registry standalone sender remains available to generic out-of-process
+    # Hermes cron, but it fails closed when the writer-boundary policy is on.
     if platform == Platform.DISCORD:
-        from gateway.platform_registry import platform_registry
-        entry = platform_registry.get("discord")
-        if entry is None or entry.standalone_sender_fn is None:
-            return {"error": "Discord plugin not registered or missing standalone_sender_fn"}
         # MEDIA:<path> caption: single captionable file + short text rides as
         # the media message content instead of a separate message before the
         # attachment (single enforced decision in _media_caption_split). Cap on
@@ -902,7 +941,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             max_caption_len=(max_len or _DEFAULT_CAPTION_LIMIT),
         )
         if _dc_caption is not None:
-            result = await entry.standalone_sender_fn(
+            result = await _send_via_adapter(
+                platform,
                 pconfig,
                 chat_id,
                 "",
@@ -916,7 +956,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         last_result = None
         for i, chunk in enumerate(chunks):
             is_last = (i == len(chunks) - 1)
-            result = await entry.standalone_sender_fn(
+            result = await _send_via_adapter(
+                platform,
                 pconfig,
                 chat_id,
                 chunk,

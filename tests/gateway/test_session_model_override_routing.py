@@ -16,6 +16,7 @@ import pytest
 
 import gateway.run as gateway_run
 from gateway.config import Platform
+from gateway.platforms.base import BasePlatformAdapter
 from gateway.session import SessionSource
 
 
@@ -34,6 +35,41 @@ class _CapturingAgent:
             "messages": [],
             "api_calls": 1,
         }
+
+
+class _TerminalStatusAgent(_CapturingAgent):
+    status_text = ""
+    final_text = ""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+    def run_conversation(self, user_message: str, conversation_history=None, task_id=None):
+        self.status_callback("terminal_final_mirror", type(self).status_text)
+        return {
+            "final_response": type(self).final_text,
+            "messages": [],
+            "api_calls": 1,
+            "failed": True,
+        }
+
+
+class _StatusAdapter:
+    SUPPORTS_MESSAGE_EDITING = False
+    edit_message = BasePlatformAdapter.edit_message
+
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, chat_id, content, **kwargs):
+        self.sent.append((chat_id, content, kwargs))
+        return types.SimpleNamespace(success=True, message_id="status-1")
+
+    async def send_typing(self, chat_id, **kwargs):
+        return None
+
+    def get_pending_message(self, session_key):
+        return None
 
 
 def _make_runner():
@@ -82,10 +118,27 @@ def _explode_runtime_resolution():
     )
 
 
+def _resolve_live_codex_override(provider, *, target_model=None):
+    assert provider == "openai-codex"
+    assert target_model == "gpt-5.4"
+    return {
+        "provider": provider,
+        "api_key": "***",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_mode": "codex_responses",
+        "credential_pool": None,
+    }
+
+
 def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", _explode_runtime_resolution)
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs_for_provider",
+        _resolve_live_codex_override,
+    )
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = _CapturingAgent
@@ -127,9 +180,76 @@ def test_run_agent_prefers_session_override_over_global_runtime(monkeypatch):
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("status_text", "final_text", "expected_statuses"),
+    [
+        ("Provider authentication failed.", "Provider authentication failed.", []),
+        (
+            "Provider failed before final delivery.",
+            "Authentication failed; credentials need refresh.",
+            ["Provider failed before final delivery."],
+        ),
+    ],
+)
+async def test_typed_terminal_status_is_exactly_deduped_at_turn_boundary(
+    monkeypatch,
+    status_text,
+    final_text,
+    expected_statuses,
+):
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(gateway_run, "load_dotenv", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        _explode_runtime_resolution,
+    )
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs_for_provider",
+        _resolve_live_codex_override,
+    )
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = _TerminalStatusAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    _TerminalStatusAgent.status_text = status_text
+    _TerminalStatusAgent.final_text = final_text
+    runner = _make_runner()
+    adapter = _StatusAdapter()
+    runner.adapters[Platform.DISCORD] = adapter
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="public-channel",
+        chat_type="channel",
+        user_id="user-1",
+    )
+    session_key = "agent:main:discord:channel:public-channel"
+    runner._session_model_overrides[session_key] = _codex_override()
+
+    result = await runner._run_agent(
+        message="ping",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="session-1",
+        session_key=session_key,
+    )
+
+    assert result["final_response"] == final_text
+    assert [content for _, content, _ in adapter.sent] == expected_statuses
+
+
+@pytest.mark.asyncio
 async def test_background_task_prefers_session_override_over_global_runtime(monkeypatch):
     monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
     monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", _explode_runtime_resolution)
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs_for_provider",
+        _resolve_live_codex_override,
+    )
 
     fake_run_agent = types.ModuleType("run_agent")
     fake_run_agent.AIAgent = _CapturingAgent
@@ -260,4 +380,3 @@ fallback_providers:
     assert runtime_kwargs["api_key"] == "env-secret"
     assert runtime_kwargs["base_url"] == "https://fallback.example/v1"
     assert runtime_kwargs["model"] == "fallback-model"
-

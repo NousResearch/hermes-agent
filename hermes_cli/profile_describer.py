@@ -33,6 +33,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli import kanban_planning_policy as planning_policy
 from hermes_cli import profiles as profiles_mod
 from agent.skill_utils import is_excluded_skill_path
 
@@ -171,6 +172,13 @@ def describe_profile(
     ``description_auto: false`` to protect curated text. Auto-generated
     descriptions (``description_auto: true``) are always replaceable.
     """
+    if not planning_policy.auxiliary_planning_enabled():
+        return DescribeOutcome(
+            profile_name,
+            False,
+            planning_policy.AUXILIARY_PLANNING_DISABLED_REASON,
+        )
+
     canon = profiles_mod.normalize_profile_name(profile_name)
     if not profiles_mod.profile_exists(canon):
         # Special case: "default" exists as a virtual profile name

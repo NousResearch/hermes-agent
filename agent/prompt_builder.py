@@ -34,37 +34,6 @@ from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Context file scanning — detect prompt injection / promptware in AGENTS.md,
-# .cursorrules, SOUL.md before they get injected into the system prompt.
-#
-# Patterns live in ``tools/threat_patterns.py`` — the single source of truth
-# shared with the memory-tool scanner and the tool-result delimiter system.
-# This module just chooses how to react when a match is found (block-with-
-# placeholder; the actual content never reaches the system prompt).
-# ---------------------------------------------------------------------------
-
-from tools.threat_patterns import scan_for_threats as _scan_for_threats
-
-
-def _scan_context_content(content: str, filename: str) -> str:
-    """Scan context file content for injection. Returns sanitized content.
-
-    Uses the "context" scope from the shared threat-pattern library, which
-    covers classic injection + promptware/C2 patterns + role-play hijack.
-    Strict-scope patterns (SSH backdoor, persistence, exfil-URL) are NOT
-    applied here — those are too aggressive for a context file in a
-    cloned repo (security research, infra docs).  Content matching is
-    BLOCKED at this layer because the file would otherwise enter the
-    system prompt verbatim and the user has no chance to intervene.
-    """
-    findings = _scan_for_threats(content, scope="context")
-    if findings:
-        logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
-        return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
-
-    return content
-
 
 def _find_git_root(start: Path) -> Optional[Path]:
     """Walk *start* and its parents looking for a ``.git`` directory.
@@ -326,7 +295,9 @@ TASK_COMPLETION_GUIDANCE = (
     "then report what real execution returned.\n"
     "If a tool, install, or network call fails and blocks the real path, say so "
     "directly and try an alternative (different package manager, different "
-    "approach, ask the user). NEVER substitute plausible-looking fabricated "
+    "approach, inspect the available system/data source). Before stopping or "
+    "asking the user, exhaust the reasonable safe alternatives available inside "
+    "the approved scope. NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) "
     "for results you couldn't actually produce. Reporting a blocker honestly "
     "is always better than inventing a result."
@@ -428,8 +399,10 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "- Correctness: does the output satisfy every stated requirement?\n"
     "- Grounding: are factual claims backed by tool outputs or provided context?\n"
     "- Formatting: does the output match the requested format or schema?\n"
-    "- Safety: if the next step has side effects (file writes, commands, API calls), "
-    "confirm scope before executing.\n"
+    "- Safety: before a side effect (file write, command, API call), use any exact "
+    "current plan/capability approval already bound to that step. Ask only when "
+    "required authority is missing, expired, or the action expands its scope; never "
+    "re-ask for authority already granted to the exact action.\n"
     "</verification>\n"
     "\n"
     "<missing_context>\n"
@@ -890,7 +863,7 @@ WSL_ENVIRONMENT_HINT = (
 # misleading — the agent should only see the machine it can actually touch.
 _REMOTE_TERMINAL_BACKENDS = frozenset({
     "docker", "singularity", "modal", "daytona", "ssh",
-    "managed_modal",
+    "managed_modal", "isolated_worker",
 })
 
 
@@ -905,6 +878,7 @@ _BACKEND_FALLBACK_DESCRIPTIONS: dict[str, str] = {
     "managed_modal": "a managed Modal sandbox (Linux)",
     "daytona": "a Daytona workspace (Linux)",
     "ssh": "a remote host reached over SSH (likely Linux)",
+    "isolated_worker": "a lease-isolated Linux worker",
 }
 
 
@@ -940,6 +914,13 @@ def _probe_remote_backend(env_type: str) -> str | None:
     cached = _BACKEND_PROBE_CACHE.get(cache_key)
     if cached is not None:
         return cached or None
+
+    if env_type == "isolated_worker":
+        # Prompt assembly has no canonical conversation identity available.
+        # Never invent a shared probe lease: the first real tool call carries
+        # the exact session ID and can inspect its own private workspace.
+        _BACKEND_PROBE_CACHE[cache_key] = ""
+        return None
 
     try:
         # Import locally: tools/ imports are heavy and only relevant when a
@@ -1833,10 +1814,9 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
     if not soul_path.exists():
         return None
     try:
-        content = soul_path.read_text(encoding="utf-8").strip()
-        if not content:
+        content = soul_path.read_text(encoding="utf-8")
+        if not content.strip():
             return None
-        content = _scan_context_content(content, "SOUL.md")
         content = _truncate_content(
             content, "SOUL.md", context_length=context_length,
             read_path=str(soul_path),
@@ -1853,8 +1833,8 @@ def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str
     if not hermes_md_path:
         return ""
     try:
-        content = hermes_md_path.read_text(encoding="utf-8").strip()
-        if not content:
+        content = hermes_md_path.read_text(encoding="utf-8")
+        if not content.strip():
             return ""
         content = _strip_yaml_frontmatter(content)
         rel = hermes_md_path.name
@@ -1862,7 +1842,6 @@ def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str
             rel = str(hermes_md_path.relative_to(cwd_path))
         except ValueError:
             pass
-        content = _scan_context_content(content, rel)
         result = f"## {rel}\n\n{content}"
         return _truncate_content(
             result, ".hermes.md", context_length=context_length,
@@ -1879,9 +1858,8 @@ def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str
         candidate = cwd_path / name
         if candidate.exists():
             try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
+                content = candidate.read_text(encoding="utf-8")
+                if content.strip():
                     result = f"## {name}\n\n{content}"
                     return _truncate_content(
                         result, "AGENTS.md", context_length=context_length,
@@ -1898,9 +1876,8 @@ def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str
         candidate = cwd_path / name
         if candidate.exists():
             try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
+                content = candidate.read_text(encoding="utf-8")
+                if content.strip():
                     result = f"## {name}\n\n{content}"
                     return _truncate_content(
                         result, "CLAUDE.md", context_length=context_length,
@@ -1917,9 +1894,8 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
     cursorrules_file = cwd_path / ".cursorrules"
     if cursorrules_file.exists():
         try:
-            content = cursorrules_file.read_text(encoding="utf-8").strip()
-            if content:
-                content = _scan_context_content(content, ".cursorrules")
+            content = cursorrules_file.read_text(encoding="utf-8")
+            if content.strip():
                 cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
         except Exception as e:
             logger.debug("Could not read .cursorrules: %s", e)
@@ -1929,9 +1905,8 @@ def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> s
         mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
         for mdc_file in mdc_files:
             try:
-                content = mdc_file.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
+                content = mdc_file.read_text(encoding="utf-8")
+                if content.strip():
                     cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
             except Exception as e:
                 logger.debug("Could not read %s: %s", mdc_file, e)

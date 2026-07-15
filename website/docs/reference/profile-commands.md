@@ -122,7 +122,7 @@ With no flags, prints the current description (or `(no description set for '<nam
 |-------------------|-------------|
 | `<name>` | Profile to describe. Required unless `--all --auto` is used. |
 | `--text "<text>"` | Set the description to this exact text (user-authored). Overwrites any existing description. |
-| `--auto` | Auto-generate a 1-2 sentence description via the auxiliary LLM, based on the profile's installed skills, configured model, and name. Configure the model under `auxiliary.profile_describer` in `config.yaml`. Auto-generated descriptions are marked `description_auto: true` so the dashboard can flag them for review. |
+| `--auto` | Auto-generate a 1-2 sentence description via the auxiliary LLM, based on the profile's installed skills, configured model, and name. Disabled by default; requires `kanban.auxiliary_planning_enabled: true`. Configure the model under `auxiliary.profile_describer` in `config.yaml`. Auto-generated descriptions are marked `description_auto: true` so the dashboard can flag them for review. |
 | `--overwrite` | With `--auto`, replace user-authored descriptions too (default: skip profiles whose description was set explicitly). |
 | `--all` | With `--auto`, sweep every profile missing a description. |
 

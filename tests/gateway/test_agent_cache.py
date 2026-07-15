@@ -530,6 +530,74 @@ class TestAgentCacheLifecycle:
         prompt2 = agent._cached_system_prompt
         assert prompt1 is prompt2  # same object — not invalidated by reasoning change
 
+    def test_adaptive_policy_refresh_revokes_live_cap_and_disable_in_place(self):
+        """Gateway per-turn refresh changes authority, never prompt/tool cache."""
+        from types import SimpleNamespace
+
+        from agent.adaptive_reasoning import (
+            apply_model_reasoning_directive,
+            configure_adaptive_reasoning,
+            effective_reasoning_config,
+            reset_adaptive_reasoning_turn,
+        )
+        from gateway.run import GatewayRunner
+
+        agent = SimpleNamespace(
+            provider="openai-codex",
+            api_mode="codex_responses",
+            model="gpt-5.6-sol",
+            base_url="https://chatgpt.com/backend-api/codex",
+            reasoning_config={"enabled": True, "effort": "high"},
+            _current_turn_id="turn-live-policy",
+            _cached_system_prompt="stable prompt",
+            tools=[{"type": "function", "name": "todo"}],
+        )
+        configure_adaptive_reasoning(
+            agent,
+            {"adaptive_reasoning": {"enabled": True, "max_effort": "xhigh"}},
+        )
+        reset_adaptive_reasoning_turn(agent, "turn-live-policy")
+        assert apply_model_reasoning_directive(
+            agent,
+            {"effort": "xhigh"},
+            originating_turn_id="turn-live-policy",
+        )["status"] == "applied"
+        prompt = agent._cached_system_prompt
+        tools = agent.tools
+
+        GatewayRunner._refresh_adaptive_reasoning_policy(
+            agent,
+            {
+                "agent": {
+                    "adaptive_reasoning": {
+                        "enabled": True,
+                        "max_effort": "high",
+                    }
+                }
+            },
+        )
+        assert effective_reasoning_config(agent) == {
+            "enabled": True,
+            "effort": "high",
+        }
+        assert apply_model_reasoning_directive(
+            agent,
+            {"effort": "xhigh"},
+            originating_turn_id="turn-live-policy",
+        )["reason"] == "above_policy_cap"
+
+        GatewayRunner._refresh_adaptive_reasoning_policy(
+            agent,
+            {"agent": {"adaptive_reasoning": False}},
+        )
+        assert apply_model_reasoning_directive(
+            agent,
+            {"effort": "high"},
+            originating_turn_id="turn-live-policy",
+        )["reason"] == "adaptive_reasoning_disabled"
+        assert agent._cached_system_prompt is prompt
+        assert agent.tools is tools
+
     def test_system_prompt_frozen_across_cache_reuse(self):
         """The cached agent's system prompt stays identical across turns."""
         from run_agent import AIAgent

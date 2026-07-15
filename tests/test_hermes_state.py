@@ -1159,6 +1159,44 @@ class TestMessageStorage:
 
         assert db.get_messages_as_conversation("s1")[0]["effect_disposition"] == "unknown"
 
+    def test_internal_message_provenance_round_trips_through_session_db(self, db):
+        from agent.message_provenance import (
+            CANONICAL_WORKSPACE_NOTE_KIND,
+            MESSAGE_PROVENANCE_KEY,
+            bind_message_fragment,
+        )
+
+        note = "[Canonical Task Workspace — test]\n{\"case_id\":\"case-1\"}"
+        provenance = bind_message_fragment(
+            None,
+            kind=CANONICAL_WORKSPACE_NOTE_KIND,
+            exact_text=note,
+        )
+        db.create_session(session_id="s1", source="cli")
+        db.replace_messages(
+            "s1",
+            [
+                {
+                    "role": "user",
+                    "content": note,
+                    MESSAGE_PROVENANCE_KEY: provenance,
+                }
+            ],
+        )
+
+        replayed = db.get_messages_as_conversation("s1")[0]
+        assert replayed[MESSAGE_PROVENANCE_KEY] == provenance
+
+        db.create_session(session_id="s2", source="cli")
+        db.append_message(
+            "s2",
+            role="user",
+            content=note,
+            internal_provenance=provenance,
+        )
+        appended = db.get_messages_as_conversation("s2")[0]
+        assert appended[MESSAGE_PROVENANCE_KEY] == provenance
+
     def test_replace_messages_handles_multimodal_content(self, db):
         """`replace_messages` (used by /retry, /undo, /compress) must also
         handle list content without crashing."""

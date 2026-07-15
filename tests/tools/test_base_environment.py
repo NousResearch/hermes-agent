@@ -114,34 +114,28 @@ class TestAtomicSnapshotWrite:
         assert f"export -p > {snap} " not in wrapped
         assert f"export -p > '{snap}'" not in wrapped
 
-    def test_temp_path_uses_bashpid_not_dollardollar(self):
-        """The temp name MUST use ``$BASHPID`` (the real subshell PID), not
-        ``$$``.  In ``&``-launched concurrent subshells ``$$`` stays the parent
-        shell's PID, so two writers would pick the same temp name, clobber each
-        other mid-write, and mv would publish a torn file — the corruption is
-        only narrowed, not closed.  This is the bug shared by every prior PR in
-        the #38249 cluster."""
+    def test_temp_path_uses_mktemp_not_shell_pid_variables(self):
+        """The temp name must be atomically unique even on macOS bash 3.2.
+
+        ``$BASHPID`` is unset there and ``$$`` stays the parent PID in
+        concurrent subshells, so neither is a portable uniqueness source.
+        """
         env = _TestableEnv()
         env._snapshot_ready = True
         wrapped = env._wrap_command("echo hi", "/tmp")
-        assert "$BASHPID" in wrapped
-        # The bare $$ temp form must be gone.
+        assert "mktemp " in wrapped
+        assert ".tmp.XXXXXX" in wrapped
+        assert "$BASHPID" not in wrapped
         assert ".tmp.$$" not in wrapped
 
-    def test_temp_path_static_part_is_quoted_bashpid_outside(self):
-        """The static path portion must be shlex-quoted (Windows/Git-Bash
-        ``C:/Users/...`` or spaces) while ``$BASHPID`` stays OUTSIDE the quotes
-        so it still expands."""
+    def test_temp_path_template_is_quoted(self):
+        """The mktemp template stays one shell word when its path has spaces."""
         env = _TestableEnv()
         env._snapshot_ready = True
         env._snapshot_path = "/tmp/has space/hermes-snap-x.sh"
         wrapped = env._wrap_command("echo hi", "/tmp")
-        # The static path (with its space) is shlex-quoted as a single word, with
-        # $BASHPID appended OUTSIDE the quotes so it still expands at runtime.
-        assert "'/tmp/has space/hermes-snap-x.sh.tmp.'$BASHPID" in wrapped
-        # The space must never appear bare/unquoted in the temp token (that would
-        # word-split into two args and break the redirect/mv).
-        assert " space/hermes-snap-x.sh.tmp.$BASHPID" not in wrapped
+        assert "mktemp '/tmp/has space/hermes-snap-x.sh.tmp.XXXXXX'" in wrapped
+        assert "mktemp /tmp/has space/" not in wrapped
 
     def test_wrap_command_mv_chained_on_export_success(self):
         """A failed/partial ``export -p`` must NOT mv a torn temp over a good
@@ -153,10 +147,10 @@ class TestAtomicSnapshotWrite:
         assert "export -p > " in wrapped and "&& mv -f " in wrapped
         assert "rm -f " in wrapped  # temp cleanup on failure
 
-    def test_init_session_bootstrap_also_atomic_and_bashpid(self):
+    def test_init_session_bootstrap_also_atomic_and_uses_mktemp(self):
         """The init_session bootstrap (first snapshot write) is the same shared
         file a concurrent command could source — it must be atomic and use
-        ``$BASHPID`` too."""
+        a same-directory ``mktemp`` too."""
         env = _TestableEnv()
         captured = {}
 
@@ -171,7 +165,8 @@ class TestAtomicSnapshotWrite:
             pass
         boot = captured.get("cmd", "")
         assert ".tmp." in boot and "mv -f " in boot, boot
-        assert "$BASHPID" in boot
+        assert "mktemp " in boot and ".tmp.XXXXXX" in boot
+        assert "$BASHPID" not in boot
         assert ".tmp.$$" not in boot
 
     def test_snapshot_writes_use_private_umask_after_user_command(self):
@@ -209,8 +204,8 @@ class TestAtomicSnapshotConcurrencyBehavioral:
     the emitted script's guarantee holds under real concurrency: N concurrent
     writers + readers, and the snapshot is ALWAYS a complete, parseable env
     dump — never truncated mid-line with a ``declare -x`` / ``export`` fragment
-    that would corrupt PATH.  Crucially it uses ``$BASHPID`` (per-subshell
-    unique), which is what closes the race; ``$$`` would still tear here.
+    that would corrupt PATH.  Crucially it uses a same-directory ``mktemp``;
+    PID-derived names are not portable to macOS bash 3.2.
     """
 
     def _run(self, script):
@@ -225,13 +220,14 @@ class TestAtomicSnapshotConcurrencyBehavioral:
         import shlex
         snap = str(tmp_path / "hermes-snap-x.sh")
         _q = shlex.quote
-        _snap_tmp = _q(snap + ".tmp.") + "$BASHPID"
+        _snap_template = _q(snap + ".tmp.XXXXXX")
         # One writer iteration = the exact atomic sequence _wrap_command emits.
         writer = (
             "for i in $(seq 1 80); do "
             "export BIG_$i=$(head -c 600 /dev/zero | tr '\\0' x); "
-            f"{{ export -p > {_snap_tmp} && mv -f {_snap_tmp} {_q(snap)}; }} "
-            f"2>/dev/null || rm -f {_snap_tmp} 2>/dev/null || true; "
+            f"__snap_tmp=$(mktemp {_snap_template}); "
+            f"{{ export -p > \"$__snap_tmp\" && mv -f \"$__snap_tmp\" {_q(snap)}; }} "
+            "2>/dev/null || rm -f \"${__snap_tmp:-}\" 2>/dev/null || true; "
             "done"
         )
         # Reader: repeatedly source the snapshot and check PATH never absorbs
@@ -266,10 +262,11 @@ class TestAtomicSnapshotConcurrencyBehavioral:
         self._run(f"echo 'export GOOD=1' > {_q(snap)}")  # seed good snapshot
         # Redirect export into an unwritable dir so the export side fails; mv
         # must then NOT run (&&) and not clobber snap.
-        bad_tmp = _q("/nonexistent-dir/snap.tmp.") + "$BASHPID"
+        bad_template = _q("/nonexistent-dir/snap.tmp.XXXXXX")
         script = (
-            f"{{ export -p > {bad_tmp} && mv -f {bad_tmp} {_q(snap)}; }} "
-            f"2>/dev/null || rm -f {bad_tmp} 2>/dev/null || true"
+            f"__snap_tmp=$(mktemp {bad_template}) && "
+            f"{{ export -p > \"$__snap_tmp\" && mv -f \"$__snap_tmp\" {_q(snap)}; }} "
+            "2>/dev/null || rm -f \"${__snap_tmp:-}\" 2>/dev/null || true"
         )
         self._run(script)
         out = self._run(f"cat {_q(snap)}")

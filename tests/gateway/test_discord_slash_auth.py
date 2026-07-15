@@ -85,6 +85,7 @@ def _ensure_discord_mock():
 
 _ensure_discord_mock()
 
+import plugins.platforms.discord.adapter as discord_adapter_module  # noqa: E402
 from plugins.platforms.discord.adapter import DiscordAdapter  # noqa: E402
 
 
@@ -209,6 +210,23 @@ async def test_no_allowlist_dm_denied_without_opt_in(adapter):
     interaction = _make_interaction("999999999", in_dm=True)
     assert await adapter._check_slash_authorization(interaction, "/help") is False
     interaction.response.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_writer_policy_rejects_dm_slash_without_discord_response(
+    adapter,
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        discord_adapter_module,
+        "_discord_public_only_policy_required",
+        lambda: True,
+    )
+    adapter._allowed_user_ids = {"100200300"}
+    interaction = _make_interaction("100200300", in_dm=True)
+
+    assert await adapter._check_slash_authorization(interaction, "/help") is False
+    interaction.response.send_message.assert_not_awaited()
 
 
 @pytest.mark.asyncio

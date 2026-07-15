@@ -211,9 +211,9 @@ def test_run_job_no_agent_success_returns_script_stdout(hermes_env):
 
 
 def test_run_job_no_agent_empty_output_is_silent(hermes_env):
-    """Empty stdout → SILENT_MARKER, which suppresses delivery downstream."""
+    """Empty stdout produces a mechanical structured suppression receipt."""
     from cron.jobs import create_job
-    from cron.scheduler import run_job, SILENT_MARKER
+    from cron.scheduler import run_job
 
     script_path = hermes_env / "scripts" / "quiet.sh"
     script_path.write_text("#!/bin/bash\n# nothing to say\n")
@@ -221,16 +221,19 @@ def test_run_job_no_agent_empty_output_is_silent(hermes_env):
     job = create_job(
         prompt=None, schedule="every 5m", script="quiet.sh", no_agent=True, deliver="local"
     )
-    success, doc, final_response, error = run_job(job)
+    run_result = run_job(job)
+    success, doc, final_response, error = run_result
     assert success is True
     assert error is None
-    assert final_response == SILENT_MARKER
+    assert final_response == ""
+    assert run_result.delivery_outcome["action"] == "suppress"
+    assert run_result.delivery_outcome["turn_id"] == run_result.turn_id
 
 
 def test_run_job_no_agent_wake_gate_is_silent(hermes_env):
     """wakeAgent=false gate in stdout triggers a silent run."""
     from cron.jobs import create_job
-    from cron.scheduler import run_job, SILENT_MARKER
+    from cron.scheduler import run_job
 
     script_path = hermes_env / "scripts" / "gated.sh"
     script_path.write_text('#!/bin/bash\necho \'{"wakeAgent": false}\'\n')
@@ -238,9 +241,11 @@ def test_run_job_no_agent_wake_gate_is_silent(hermes_env):
     job = create_job(
         prompt=None, schedule="every 5m", script="gated.sh", no_agent=True, deliver="local"
     )
-    success, doc, final_response, error = run_job(job)
+    run_result = run_job(job)
+    success, doc, final_response, error = run_result
     assert success is True
-    assert final_response == SILENT_MARKER
+    assert final_response == ""
+    assert run_result.delivery_outcome["action"] == "suppress"
 
 
 def test_run_job_no_agent_script_failure_delivers_error(hermes_env):
@@ -259,6 +264,131 @@ def test_run_job_no_agent_script_failure_delivers_error(hermes_env):
     assert error is not None
     assert "oops" in final_response or "exited with code 3" in final_response
     assert "Cron watchdog" in final_response  # alert header
+
+
+def test_failure_summary_does_not_classify_numeric_substrings(hermes_env):
+    """Transport must not mistake ``429`` inside a Git SHA for a rate limit."""
+    from cron.scheduler import _summarize_cron_failure_for_delivery
+
+    sha = "afa582956fd0429530642dd04798ec3c0ac63b39"
+    delivered = _summarize_cron_failure_for_delivery(
+        {"name": "Fork upstream auto sync PR routine"},
+        f"blocked_merge_conflicts at fork main {sha}",
+    )
+
+    assert delivered == (
+        "⚠️ Cron 'Fork upstream auto sync PR routine' failed. "
+        "Full details saved in cron output."
+    )
+    assert "rate limit" not in delivered.lower()
+    assert "fallback" not in delivered.lower()
+
+
+def test_no_agent_failure_delivery_preserves_authoritative_script_receipt(hermes_env):
+    from cron.scheduler import _cron_failure_delivery_content
+
+    receipt = (
+        "⚠ Cron watchdog 'Fork upstream auto sync PR routine' script failed\n\n"
+        "Status: blocked_merge_conflicts\nConflicts:\n- gateway/run.py"
+    )
+    delivered = _cron_failure_delivery_content(
+        {"name": "Fork upstream auto sync PR routine", "no_agent": True},
+        receipt,
+        "fork SHA contains 429 but this is not a provider error",
+        no_agent_script_failed=True,
+    )
+
+    assert delivered == receipt
+
+
+def test_no_agent_failure_delivery_is_bounded_but_saved_evidence_is_complete(
+    hermes_env,
+):
+    from cron.jobs import create_job
+    from cron.scheduler import (
+        _MAX_NO_AGENT_FAILURE_RECEIPT_CHARS,
+        _cron_failure_delivery_content,
+        run_job,
+    )
+
+    script_path = hermes_env / "scripts" / "oversized.py"
+    script_path.write_text(
+        "import sys\n"
+        "print('S' * 12000, file=sys.stderr)\n"
+        "print('O' * 12000)\n"
+        "raise SystemExit(9)\n"
+    )
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="oversized.py",
+        no_agent=True,
+        deliver="local",
+    )
+
+    success, doc, final_response, error = run_job(job)
+    assert success is False
+    assert len(doc) > _MAX_NO_AGENT_FAILURE_RECEIPT_CHARS
+    delivered = _cron_failure_delivery_content(
+        job,
+        final_response,
+        error,
+        no_agent_script_failed=True,
+    )
+    assert len(delivered) == _MAX_NO_AGENT_FAILURE_RECEIPT_CHARS
+    assert "failure receipt truncated for delivery" in delivered
+    assert "S" * 100 in delivered
+    assert "O" * 100 in delivered
+
+
+def test_run_one_job_delivers_no_agent_failure_receipt_without_reclassification(
+    hermes_env,
+):
+    import cron.scheduler as scheduler
+
+    job = {
+        "id": "808bddb875ee",
+        "name": "Fork upstream auto sync PR routine",
+        "no_agent": True,
+    }
+    receipt = (
+        "⚠ Cron watchdog 'Fork upstream auto sync PR routine' script failed\n\n"
+        "Status: blocked_merge_conflicts\n"
+        "fork_main: afa582956fd0429530642dd04798ec3c0ac63b39"
+    )
+
+    def confirmed_delivery(*_args, delivery_observation, **_kwargs):
+        delivery_observation.update(
+            {
+                "target_count": 1,
+                "attempted": True,
+                "confirmed_target_count": 1,
+                "confirmed": True,
+                "unconfirmed": False,
+            }
+        )
+        return None
+
+    with (
+        patch("cron.scheduler.claim_dispatch", return_value=True),
+        patch("agent.secret_scope.set_secret_scope", return_value=None),
+        patch("agent.secret_scope.build_profile_secret_scope", return_value=None),
+        patch("agent.secret_scope.reset_secret_scope"),
+        patch(
+            "cron.scheduler.run_job",
+            return_value=(False, "full output", receipt, "blocked_merge_conflicts"),
+        ),
+        patch("cron.scheduler.save_job_output", return_value="/tmp/output.md"),
+        patch(
+            "cron.scheduler._deliver_result", side_effect=confirmed_delivery
+        ) as deliver,
+        patch("cron.scheduler.mark_job_run") as mark,
+    ):
+        assert scheduler.run_one_job(job) is True
+
+    assert deliver.call_args.args[1] == receipt
+    assert "provider" not in deliver.call_args.args[1].lower()
+    assert mark.call_args.kwargs["delivery_status"] == "confirmed"
 
 
 def test_run_job_no_agent_never_invokes_aiagent(hermes_env):

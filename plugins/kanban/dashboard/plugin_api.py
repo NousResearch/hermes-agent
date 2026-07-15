@@ -2258,6 +2258,7 @@ def decompose_task_endpoint(
 class OrchestrationSettingsBody(BaseModel):
     orchestrator_profile: Optional[str] = None
     default_assignee: Optional[str] = None
+    auxiliary_planning_enabled: Optional[bool] = None
     auto_decompose: Optional[bool] = None
     auto_promote_children: Optional[bool] = None
 
@@ -2272,9 +2273,15 @@ def get_orchestration_settings():
     except Exception:
         cfg = {}
     kanban_cfg = (cfg.get("kanban") or {}) if isinstance(cfg, dict) else {}
+    if not isinstance(kanban_cfg, dict):
+        kanban_cfg = {}
     explicit_orch = (kanban_cfg.get("orchestrator_profile") or "").strip()
     explicit_default = (kanban_cfg.get("default_assignee") or "").strip()
-    auto_decompose = bool(kanban_cfg.get("auto_decompose", True))
+    from hermes_cli.kanban_planning_policy import auxiliary_planning_enabled
+
+    planning_enabled = auxiliary_planning_enabled(cfg)
+    auto_decompose = kanban_cfg.get("auto_decompose") is True
+    effective_auto_decompose = planning_enabled and auto_decompose
     auto_promote_children = bool(kanban_cfg.get("auto_promote_children", True))
 
     # Resolve fallbacks the same way the decomposer does.
@@ -2297,7 +2304,9 @@ def get_orchestration_settings():
     return {
         "orchestrator_profile": explicit_orch,
         "default_assignee": explicit_default,
+        "auxiliary_planning_enabled": planning_enabled,
         "auto_decompose": auto_decompose,
+        "effective_auto_decompose": effective_auto_decompose,
         "auto_promote_children": auto_promote_children,
         "resolved_orchestrator_profile": resolved_orch,
         "resolved_default_assignee": resolved_default,
@@ -2360,6 +2369,11 @@ def set_orchestration_settings(payload: OrchestrationSettingsBody):
             except Exception:
                 pass
         kanban_section["default_assignee"] = name
+
+    if payload.auxiliary_planning_enabled is not None:
+        kanban_section["auxiliary_planning_enabled"] = bool(
+            payload.auxiliary_planning_enabled
+        )
 
     if payload.auto_decompose is not None:
         kanban_section["auto_decompose"] = bool(payload.auto_decompose)

@@ -3666,19 +3666,6 @@ def _on_tool_progress(
         # the stable tool id and args. Emitting another id-less progress row
         # here makes the desktop live view diverge from hydrated history.
         return
-    if event_type == "tool.output_risk" and name:
-        metadata = _kwargs.get("risk_metadata")
-        if not isinstance(metadata, dict):
-            return
-        payload: dict[str, object] = {
-            "tool_id": str(_kwargs.get("tool_call_id") or ""),
-            "name": str(name),
-            "risk": str(metadata.get("risk") or "low"),
-            "findings": [str(item) for item in metadata.get("findings", [])],
-            "redacted": bool(metadata.get("redacted", False)),
-        }
-        _emit("tool.output_risk", sid, payload)
-        return
     if event_type == "reasoning.available" and preview:
         payload: dict[str, object] = {"text": str(preview)}
         if _session_verbose(sid):
@@ -8907,6 +8894,60 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
+        goal_turn_id = ""
+        goal_generation_id = ""
+        goal_turn_session_id = ""
+        goal_turn_handled = False
+        conversation_invoked = False
+
+        def _capture_goal_turn_authority(result_value=None) -> None:
+            nonlocal goal_turn_id, goal_generation_id, goal_turn_session_id
+            if not conversation_invoked:
+                return
+            agent_turn_id = str(
+                getattr(agent, "_current_turn_id", "") or ""
+            )
+            result_turn_id = (
+                str(result_value.get("turn_id", "") or "")
+                if isinstance(result_value, dict)
+                else ""
+            )
+            goal_turn_id = result_turn_id or agent_turn_id
+            goal_generation_id = (
+                str(
+                    getattr(agent, "_current_goal_generation_id", "") or ""
+                )
+                if goal_turn_id and goal_turn_id == agent_turn_id
+                else ""
+            )
+            goal_turn_session_id = str(
+                getattr(agent, "session_id", "")
+                or session.get("session_key")
+                or ""
+            )
+
+        def _abandon_goal_turn_if_needed() -> None:
+            nonlocal goal_turn_handled
+            if goal_turn_handled:
+                return
+            if not goal_turn_id or not goal_generation_id or not goal_turn_session_id:
+                return
+            try:
+                from hermes_cli.goals import GoalManager
+
+                GoalManager(goal_turn_session_id).abandon_model_turn(
+                    originating_turn_id=goal_turn_id,
+                    goal_generation_id=goal_generation_id,
+                )
+            except Exception as exc:
+                print(
+                    f"[tui_gateway] goal turn abandon failed: "
+                    f"{type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+            finally:
+                goal_turn_handled = True
+
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -9040,7 +9081,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                     run_kwargs["task_id"] = session["session_key"]
             except (TypeError, ValueError):
                 pass
+            conversation_invoked = True
             result = agent.run_conversation(run_message, **run_kwargs)
+            _capture_goal_turn_authority(result)
             if "moa_one_shot_restore" in session:
                 _restore = session.pop("moa_one_shot_restore", None)
                 # Restore the model the user was on before the /moa one-shot.
@@ -9167,11 +9210,11 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             # ("✓ Goal achieved" / "⏸ budget exhausted") is surfaced as
             # a system line so the user sees progress regardless of
             # outcome. Mirrors gateway/run._post_turn_goal_continuation.
-            if status == "complete" and isinstance(raw, str) and raw.strip():
+            if goal_turn_id and goal_generation_id and goal_turn_session_id:
                 try:
                     from hermes_cli.goals import GoalManager
 
-                    sid_key = session.get("session_key") or ""
+                    sid_key = goal_turn_session_id
                     if sid_key:
                         try:
                             goals_cfg = _load_cfg().get("goals") or {}
@@ -9182,7 +9225,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                             session_id=sid_key,
                             default_max_turns=goal_max_turns,
                         )
-                        if goal_mgr.is_active():
+                        if status == "complete" and isinstance(raw, str) and raw.strip():
                             try:
                                 from hermes_cli.goals import gather_background_processes as _gather_bg
                                 _bg_procs = _gather_bg()
@@ -9190,9 +9233,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                                 _bg_procs = None
                             decision = goal_mgr.evaluate_after_turn(
                                 raw,
+                                originating_turn_id=goal_turn_id,
+                                goal_generation_id=goal_generation_id,
                                 user_initiated=True,
                                 background_processes=_bg_procs,
                             )
+                            goal_turn_handled = True
                             verdict_msg = decision.get("message") or ""
                             if verdict_msg:
                                 _emit(
@@ -9204,6 +9250,12 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                                 cont_prompt = decision.get("continuation_prompt") or ""
                                 if cont_prompt:
                                     goal_followup = cont_prompt
+                        else:
+                            goal_mgr.abandon_model_turn(
+                                originating_turn_id=goal_turn_id,
+                                goal_generation_id=goal_generation_id,
+                            )
+                            goal_turn_handled = True
                 except Exception as _goal_exc:
                     print(
                         f"[tui_gateway] goal continuation hook failed: "
@@ -9283,6 +9335,10 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         except Exception as e:
             import traceback
 
+            if not goal_turn_id:
+                _capture_goal_turn_authority()
+            _abandon_goal_turn_if_needed()
+
             trace = traceback.format_exc()
             try:
                 os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
@@ -9299,6 +9355,9 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
             )
             _emit("error", sid, {"message": str(e)})
         finally:
+            if not goal_turn_id:
+                _capture_goal_turn_authority()
+            _abandon_goal_turn_if_needed()
             try:
                 if approval_token is not None:
                     reset_current_session_key(approval_token)
@@ -12038,7 +12097,14 @@ def _(rid, params: dict) -> dict:
 
         try:
             goals_cfg = _load_cfg().get("goals") or {}
-            max_turns = int(goals_cfg.get("max_turns", 20) or 20)
+            raw_max_turns = goals_cfg.get("max_turns", 20)
+            max_turns = (
+                20
+                if raw_max_turns is None or isinstance(raw_max_turns, bool)
+                else int(raw_max_turns)
+            )
+            if max_turns < 0:
+                max_turns = 20
         except Exception:
             max_turns = 20
         mgr = GoalManager(session_id=sid_key, default_max_turns=max_turns)
@@ -12081,9 +12147,20 @@ def _(rid, params: dict) -> dict:
         except ValueError as exc:
             return _err(rid, 4004, f"invalid goal: {exc}")
 
+        continuation_boundary = (
+            "the model records verified completion/a genuine blocker, or you pause/clear it"
+            if state.max_turns == 0
+            else "the goal is done, you pause/clear it, or the budget is exhausted"
+        )
         notice = (
-            f"⊙ Goal set ({state.max_turns}-turn budget): {state.goal}\n"
-            "I'll keep working until the goal is done, you pause/clear it, or the budget is exhausted.\n"
+            "⊙ Goal set ("
+            + (
+                "no automatic turn cap"
+                if state.max_turns == 0
+                else f"{state.max_turns}-turn budget"
+            )
+            + f"): {state.goal}\n"
+            f"I'll keep working until {continuation_boundary}.\n"
             "Controls: /goal status · /goal pause · /goal resume · /goal clear"
         )
         # Send the goal text as the kickoff prompt. The TUI client sees

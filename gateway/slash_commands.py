@@ -29,12 +29,12 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from agent.account_usage import fetch_account_usage, render_account_usage_lines
 from agent.i18n import t
 from gateway.config import HomeChannel, Platform, PlatformConfig
 from gateway.platforms.base import EphemeralReply, MessageEvent, MessageType
 from gateway.session import (
     AsyncSessionStore,
+    CapabilityEpochRotationBlocked,
     SessionSource,
     build_session_key,
     is_shared_multi_user_session,
@@ -47,6 +47,24 @@ from utils import (
 )
 
 logger = logging.getLogger("gateway.run")
+
+
+# /usage is the only consumer of the account/auth chain. Keep these names at
+# module scope for the established test/patch surface while deferring imports
+# until the command actually runs; privileged gateway bootstrap must be able to
+# validate its sealed environment before optional auth/config modules execute.
+def fetch_account_usage(*args: Any, **kwargs: Any) -> Any:
+    from agent.account_usage import fetch_account_usage as _fetch_account_usage
+
+    return _fetch_account_usage(*args, **kwargs)
+
+
+def render_account_usage_lines(*args: Any, **kwargs: Any) -> Any:
+    from agent.account_usage import (
+        render_account_usage_lines as _render_account_usage_lines,
+    )
+
+    return _render_account_usage_lines(*args, **kwargs)
 
 # Upper bound on the off-loop agent-resource cleanup during a /new or /reset
 # (see _handle_reset_command). A stuck teardown must not block the event loop;
@@ -89,6 +107,71 @@ class GatewaySlashCommandsMixin:
 
     async_session_store: AsyncSessionStore
 
+    async def _run_fenced_session_transition(
+        self,
+        event: MessageEvent,
+        *,
+        operation: str,
+        handler,
+    ):
+        """Run one routing transition while its local session slot is closed.
+
+        Cold-path slash commands are dispatched before ordinary turns claim the
+        gateway's running-agent sentinel. Claiming it here, synchronously before
+        the first await, prevents a new turn from starting between validation,
+        privileged epoch revocation, routing publication, and cache cleanup.
+        ``_session_transition_slots`` distinguishes this sentinel from the
+        setup sentinel of a real turn, which ``/new`` is allowed to interrupt.
+        """
+
+        from gateway.run import _AGENT_PENDING_SENTINEL
+
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        running_agents = getattr(self, "_running_agents", None)
+        if running_agents is None:
+            running_agents = {}
+            self._running_agents = running_agents
+        transition_slots = getattr(self, "_session_transition_slots", None)
+        if transition_slots is None:
+            transition_slots = {}
+            self._session_transition_slots = transition_slots
+        if session_key in running_agents or session_key in transition_slots:
+            return (
+                f"Session {operation} is blocked because another turn or "
+                "session transition is active. No routing change was made; "
+                "retry after it finishes."
+            )
+
+        token = object()
+        transition_slots[session_key] = token
+        running_agents[session_key] = _AGENT_PENDING_SENTINEL
+        running_ts = getattr(self, "_running_agents_ts", None)
+        if running_ts is None:
+            running_ts = {}
+            self._running_agents_ts = running_ts
+        running_ts[session_key] = time.time()
+        self._invalidate_session_run_generation(
+            session_key,
+            reason=f"session_{operation}_transition",
+        )
+        try:
+            try:
+                self._persist_active_agents()
+            except Exception:
+                logger.debug(
+                    "Failed to persist %s transition sentinel for %s",
+                    operation,
+                    session_key,
+                    exc_info=True,
+                )
+            return await handler(event)
+        finally:
+            if transition_slots.get(session_key) is token:
+                transition_slots.pop(session_key, None)
+                if running_agents.get(session_key) is _AGENT_PENDING_SENTINEL:
+                    self._release_running_agent_state(session_key)
+
     def _typed_command_prefix_for(self, platform) -> str:
         """Return the prefix users can always type to reach Hermes commands.
 
@@ -102,23 +185,105 @@ class GatewaySlashCommandsMixin:
         adapter = self.adapters.get(platform) if getattr(self, "adapters", None) else None
         return getattr(adapter, "typed_command_prefix", "/") if adapter is not None else "/"
 
-    async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+    async def _handle_reset_command(
+        self,
+        event: MessageEvent,
+    ) -> Union[str, EphemeralReply]:
+        """Fence a cold ``/new`` or reset the already-running old turn."""
+
+        session_key = self._session_key_for_source(event.source)
+        transition_slots = getattr(self, "_session_transition_slots", {})
+        if session_key in transition_slots:
+            return EphemeralReply(
+                "Session reset is blocked because another session transition "
+                "is active. No routing change was made; retry after it finishes."
+            )
+        if session_key in getattr(self, "_running_agents", {}):
+            # The active-session fast path intentionally allows /new to cancel
+            # a real turn (including its setup sentinel). The claimed handler
+            # keeps that slot closed until the old cache is evicted.
+            return await self._handle_reset_command_claimed(event)
+        return await self._run_fenced_session_transition(
+            event,
+            operation="reset",
+            handler=self._handle_reset_command_claimed,
+        )
+
+    async def _handle_reset_command_claimed(
+        self,
+        event: MessageEvent,
+    ) -> Union[str, EphemeralReply]:
         """Handle /new or /reset command."""
         source = event.source
-        
+
         # Get existing session key
         session_key = self._session_key_for_source(source)
-        self._invalidate_session_run_generation(session_key, reason="session_reset")
-        # Evict the running-agent slot now that the generation is bumped. The
-        # in-flight run's own guarded release (run_generation=old) will return
-        # False and leave its dead agent behind; clearing here keeps the slot
-        # from becoming a zombie that silently drops all later messages (#28686).
-        # Idempotent, so the run's finally calling it again is harmless.
-        self._release_running_agent_state(session_key)
 
         # Snapshot the old entry so on_session_finalize can report the
         # expiring session id before reset_session() rotates it.
         old_entry = self.session_store._entries.get(session_key)
+
+        # Snapshot the old cached agent without changing routing, execution,
+        # or cache state.  The privileged reset below is the first mutation:
+        # if its durable old-epoch tombstone cannot be written, the running
+        # task and every local queue/resource must remain untouched.
+        _old_agent = None
+        _cache_lock = getattr(self, "_agent_cache_lock", None)
+        if _cache_lock is not None:
+            with _cache_lock:
+                _cached = getattr(self, "_agent_cache", {}).get(session_key)
+                _old_agent = (
+                    _cached[0]
+                    if isinstance(_cached, tuple)
+                    else _cached if _cached else None
+                )
+
+        # Reset only after the privileged writer durably tombstones the exact
+        # old authority epoch.  A writer outage leaves the old routing entry,
+        # live turn, queues, delegations, and cached resources untouched.
+        try:
+            new_entry = await self.async_session_store.reset_session(
+                session_key,
+                source=source,
+                create_if_missing=True,
+            )
+        except CapabilityEpochRotationBlocked:
+            logger.warning(
+                "Session reset blocked because old-epoch revocation failed: %s",
+                session_key,
+            )
+            return EphemeralReply(
+                "Session reset is temporarily blocked because the durable "
+                "approval boundary is unavailable. No new session or authority "
+                "epoch was created; retry after the Canonical writer recovers."
+            )
+
+        if old_entry is None:
+            # The initial route has no old-epoch callback through which to clear
+            # orphaned process-local control state. Do it now, while the running
+            # slot is still closed to every successor turn.
+            self._clear_session_boundary_security_state(session_key)
+
+        if new_entry is None:
+            return EphemeralReply(
+                "Session reset could not initialize a fresh routing entry. "
+                "No successor session was exposed; retry after checking the "
+                "gateway session store."
+            )
+
+        # The durable boundary is now published. Promptly fence and interrupt
+        # the old run and discard adapter/runner pending input. Keep both its
+        # running slot and cache entry until hard resource cleanup completes;
+        # otherwise a successor turn could reuse the old cached agent in the
+        # gap between slot release and eviction.
+        await self._interrupt_and_clear_session(
+            session_key,
+            source,
+            interrupt_reason="Session reset requested",
+            invalidation_reason="session_reset",
+            release_running_state=False,
+            evict_cached_agent=False,
+        )
 
         # Close tool resources on the old agent (terminal sandboxes, browser
         # daemons, background processes) before evicting from cache.
@@ -132,11 +297,7 @@ class GatewaySlashCommandsMixin:
         # and the bot goes silent until restart (#35994). Offload it to a worker
         # thread (via the contextvar-preserving executor helper) with a bounded
         # timeout so the loop is never blocked.
-        _cache_lock = getattr(self, "_agent_cache_lock", None)
-        if _cache_lock is not None:
-            with _cache_lock:
-                _cached = self._agent_cache.get(session_key)
-                _old_agent = _cached[0] if isinstance(_cached, tuple) else _cached if _cached else None
+        try:
             if _old_agent is not None:
                 try:
                     await asyncio.wait_for(
@@ -161,7 +322,15 @@ class GatewaySlashCommandsMixin:
                         "reset: %s (#35994)",
                         session_key, cleanup_exc,
                     )
-        self._evict_cached_agent(session_key)
+        finally:
+            # Pop the cache while the old agent is still marked running, so
+            # _evict_cached_agent cannot start a concurrent soft teardown.
+            # Only then expose the slot to a successor turn. A cold-path reset
+            # owns a transition sentinel for the whole handler, so its wrapper
+            # performs the release after the remaining boundary cleanup/hooks.
+            self._evict_cached_agent(session_key)
+            if session_key not in getattr(self, "_session_transition_slots", {}):
+                self._release_running_agent_state(session_key)
 
         # Discard any /queue overflow for this session — /new is a
         # conversation-boundary operation, queued follow-ups from the
@@ -200,9 +369,6 @@ class GatewaySlashCommandsMixin:
         except Exception:
             pass
 
-        # Reset the session
-        new_entry = await self.async_session_store.reset_session(session_key)
-
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.
         self._session_model_overrides.pop(session_key, None)
@@ -216,11 +382,6 @@ class GatewaySlashCommandsMixin:
         _lrm = getattr(self, "_last_resolved_model", None)
         if _lrm is not None:
             _lrm.pop(session_key, None)
-
-        # Clear session-scoped dangerous-command approvals and /yolo state.
-        # /new is a conversation-boundary operation — approval state from the
-        # previous conversation must not survive the reset.
-        self._clear_session_boundary_security_state(session_key)
 
         _old_sid = old_entry.session_id if old_entry else None
 
@@ -262,11 +423,9 @@ class GatewaySlashCommandsMixin:
         except Exception:
             session_info = ""
 
-        if new_entry:
+        if old_entry is not None:
             header = await asyncio.to_thread(self._telegram_topic_new_header, source) or t("gateway.reset.header_default")
         else:
-            # No existing session, just create one
-            new_entry = await self.async_session_store.get_or_create_session(source, force_new=True)
             header = await asyncio.to_thread(self._telegram_topic_new_header, source) or t("gateway.reset.header_new")
 
         # Set session title if provided with /new <title>
@@ -2259,25 +2418,20 @@ class GatewaySlashCommandsMixin:
                 return "▶ Wait barrier cleared — goal loop resumes."
             return "No wait barrier set."
 
-        # /goal draft <objective> → draft a structured completion contract,
-        # then set it. The aux LLM call is sync; run it off the event loop.
-        draft_contract_obj = None
-        if lower.startswith("draft"):
+        # /goal draft <objective> starts an ordinary primary-model turn. The
+        # same Hermes/GPT instance authors the durable plan and goal contract
+        # through the todo tool; no auxiliary semantic planner participates.
+        draft_requested = lower.startswith("draft")
+        kickoff_text = args
+        if draft_requested:
             objective = args[len("draft"):].strip()
             if not objective:
                 return "Usage: /goal draft <objective in plain language>"
-            try:
-                import asyncio
-                from hermes_cli.goals import draft_contract
+            from hermes_cli.goals import PRIMARY_MODEL_DRAFT_PROMPT_TEMPLATE
 
-                draft_contract_obj = await asyncio.get_running_loop().run_in_executor(
-                    None, draft_contract, objective
-                )
-            except Exception as exc:
-                logger.debug("goal draft failed: %s", exc)
-                draft_contract_obj = None
-            args = objective  # the goal text is the objective
-            contract = draft_contract_obj
+            args = objective
+            contract = None
+            kickoff_text = PRIMARY_MODEL_DRAFT_PROMPT_TEMPLATE.format(goal=objective)
         else:
             # Inline `field: value` lines parse into a completion contract;
             # the remaining prose is the goal headline. Plain free-form goals
@@ -2287,12 +2441,15 @@ class GatewaySlashCommandsMixin:
             headline, parsed = parse_contract(args)
             args = headline or args
             contract = parsed if not parsed.is_empty() else None
+            kickoff_text = args
 
         # Otherwise — treat the remaining text as the new goal.
         try:
             state = mgr.set(args, contract=contract)
         except ValueError as exc:
             return t("gateway.goal.invalid", error=str(exc))
+        if not draft_requested:
+            kickoff_text = mgr.next_kickoff_prompt() or args
 
         # Queue the goal text as an immediate first turn so the agent
         # starts making progress. The post-turn hook takes over after.
@@ -2301,7 +2458,7 @@ class GatewaySlashCommandsMixin:
         if adapter and _quick_key:
             try:
                 kickoff_event = MessageEvent(
-                    text=state.goal,
+                    text=kickoff_text,
                     message_type=MessageType.TEXT,
                     source=event.source,
                     message_id=event.message_id,
@@ -2311,12 +2468,23 @@ class GatewaySlashCommandsMixin:
             except Exception as exc:
                 logger.debug("goal kickoff enqueue failed: %s", exc)
 
-        base = t("gateway.goal.set", budget=state.max_turns, goal=state.goal)
+        if state.max_turns == 0:
+            base = (
+                f"⊙ Goal set (no automatic turn cap): {state.goal}\n"
+                "I'll keep working until the goal is verified complete, the model "
+                "exhausts every safe approach and records a real blocker, or you "
+                "pause/clear it.\n"
+                "Controls: /goal status · /goal pause · /goal clear"
+            )
+        else:
+            base = t("gateway.goal.set", budget=state.max_turns, goal=state.goal)
         if state.has_contract():
             return f"{base}\nCompletion contract:\n{state.contract.render_block()}"
-        if lower.startswith("draft"):
-            # Drafting was requested but the aux model couldn't produce one.
-            return f"{base}\n(Couldn't draft a contract — running as a free-form goal.)"
+        if draft_requested:
+            return (
+                f"{base}\nHermes will author the completion contract and begin "
+                "the first concrete step in the queued primary-model turn."
+            )
         return base
 
     async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
@@ -2746,7 +2914,7 @@ class GatewaySlashCommandsMixin:
             return t("gateway.reasoning.reset_done")
         if effort == "none":
             parsed = {"enabled": False}
-        elif effort in {"minimal", "low", "medium", "high", "xhigh"}:
+        elif effort in {"minimal", "low", "medium", "high", "xhigh", "max"}:
             parsed = {"enabled": True, "effort": effort}
         else:
             return t(
@@ -2929,18 +3097,39 @@ class GatewaySlashCommandsMixin:
     async def _handle_yolo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /yolo — toggle dangerous command approval bypass for this session only."""
         from tools.approval import (
+            capture_session_authority_fence,
             disable_session_yolo,
             enable_session_yolo,
             is_session_yolo_enabled,
         )
 
         session_key = self._session_key_for_source(event.source)
+        try:
+            authority_generation, _epoch = capture_session_authority_fence(
+                session_key
+            )
+        except PermissionError:
+            return EphemeralReply(
+                "YOLO state was not changed because this session boundary is stale."
+            )
         current = is_session_yolo_enabled(session_key)
         if current:
-            disable_session_yolo(session_key)
+            if not disable_session_yolo(
+                session_key,
+                expected_generation=authority_generation,
+            ):
+                return EphemeralReply(
+                    "YOLO state was not changed because the session rotated."
+                )
             return EphemeralReply(t("gateway.yolo.disabled"))
         else:
-            enable_session_yolo(session_key)
+            if not enable_session_yolo(
+                session_key,
+                expected_generation=authority_generation,
+            ):
+                return EphemeralReply(
+                    "YOLO state was not changed because the session rotated."
+                )
             return EphemeralReply(t("gateway.yolo.enabled"))
 
     async def _handle_verbose_command(self, event: MessageEvent) -> str:
@@ -3540,6 +3729,15 @@ class GatewaySlashCommandsMixin:
                 return t("gateway.title.current_no_title", session_id=session_id)
 
     async def _handle_resume_command(self, event: MessageEvent) -> str:
+        """Run /resume under an exclusive routing-transition sentinel."""
+
+        return await self._run_fenced_session_transition(
+            event,
+            operation="resume",
+            handler=self._handle_resume_command_claimed,
+        )
+
+    async def _handle_resume_command_claimed(self, event: MessageEvent) -> str:
         """Handle /resume command — list or switch to a previous session."""
         if not self._session_db:
             from hermes_state import format_session_db_unavailable
@@ -3657,14 +3855,30 @@ class GatewaySlashCommandsMixin:
         if current_entry.session_id == target_id:
             return t("gateway.resume.already_on", name=name)
 
-        # Clear any running agent for this session key
-        self._release_running_agent_state(session_key)
-
         # Switch the session entry to point at the old session
-        new_entry = await self.async_session_store.switch_session(session_key, target_id)
+        try:
+            new_entry = await self.async_session_store.switch_session(
+                session_key,
+                target_id,
+            )
+        except CapabilityEpochRotationBlocked as exc:
+            logger.warning(
+                "Session resume blocked because old-epoch revocation failed: %s",
+                session_key,
+            )
+            if getattr(exc, "authority_rotated", False):
+                return (
+                    "Session resume was not published because concurrent session "
+                    "activity won the routing race. That activity was preserved "
+                    "with fresh authority; retry /resume after it finishes."
+                )
+            return (
+                "Session resume is temporarily blocked because the durable "
+                "approval boundary is unavailable. The current session and "
+                "authority epoch were not changed."
+            )
         if not new_entry:
             return t("gateway.resume.switch_failed")
-        self._clear_session_boundary_security_state(session_key)
 
         # Clear session-scoped model/reasoning overrides so the resumed
         # conversation picks up configured defaults instead of a /model
@@ -3695,10 +3909,26 @@ class GatewaySlashCommandsMixin:
         self._evict_cached_agent(session_key)
 
         # Get the title for confirmation
-        title = await self._session_db.get_session_title(target_id) or name
+        try:
+            title = await self._session_db.get_session_title(target_id) or name
+        except Exception:
+            logger.debug(
+                "Failed to read resumed session title for %s",
+                target_id,
+                exc_info=True,
+            )
+            title = name or target_id
 
         # Count messages for context
-        history = await self.async_session_store.load_transcript(target_id)
+        try:
+            history = await self.async_session_store.load_transcript(target_id)
+        except Exception:
+            logger.debug(
+                "Failed to read resumed transcript count for %s",
+                target_id,
+                exc_info=True,
+            )
+            history = []
         msg_count = len([m for m in history if m.get("role") == "user"]) if history else 0
         msg_part = f" ({msg_count} message{'s' if msg_count != 1 else ''})" if msg_count else ""
 
@@ -3782,6 +4012,15 @@ class GatewaySlashCommandsMixin:
         )
 
     async def _handle_branch_command(self, event: MessageEvent) -> str:
+        """Run /branch under an exclusive routing-transition sentinel."""
+
+        return await self._run_fenced_session_transition(
+            event,
+            operation="branch",
+            handler=self._handle_branch_command_claimed,
+        )
+
+    async def _handle_branch_command_claimed(self, event: MessageEvent) -> str:
         """Handle /branch [name] — fork the current session into a new independent copy.
 
         Copies conversation history to a new session so the user can explore
@@ -3821,12 +4060,36 @@ class GatewaySlashCommandsMixin:
             branch_title = await self._session_db.get_next_title_in_lineage(base)
 
         parent_session_id = current_entry.session_id
+        branch_staged = False
 
-        # Create the new session with parent link.
-        # Persist a stable ``_branched_from`` marker in model_config so
-        # list_sessions_rich() keeps the branch visible in /resume and
-        # /sessions even after the parent is reopened and re-ended with a
-        # different end_reason (e.g. tui_shutdown overwriting 'branched').
+        async def _remove_staged_branch() -> bool:
+            """Delete the not-yet-published branch row and all copied messages."""
+
+            if not branch_staged:
+                return True
+            try:
+                deleted = await self._session_db.delete_session(new_session_id)
+                if deleted is True:
+                    return True
+                logger.error(
+                    "Staged branch session %s was not confirmed deleted",
+                    new_session_id,
+                )
+                return False
+            except Exception:
+                logger.error(
+                    "Failed to remove staged branch session %s",
+                    new_session_id,
+                    exc_info=True,
+                )
+                return False
+
+        # Stage the complete branch before rotating routing authority. Every
+        # write is required: silently skipping one copied message would publish
+        # a branch that only looked complete. If staging or the later privileged
+        # switch fails, delete the artifact before reporting a blocked outcome.
+        # The stable ``_branched_from`` marker keeps a successfully published
+        # branch visible in /resume and /sessions.
         try:
             await self._session_db.create_session(
                 session_id=new_session_id,
@@ -3835,13 +4098,8 @@ class GatewaySlashCommandsMixin:
                 model_config={"_branched_from": parent_session_id},
                 parent_session_id=parent_session_id,
             )
-        except Exception as e:
-            logger.error("Failed to create branch session: %s", e)
-            return t("gateway.branch.create_failed", error=e)
-
-        # Copy conversation history to the new session
-        for msg in history:
-            try:
+            branch_staged = True
+            for msg in history:
                 await self._session_db.append_message(
                     session_id=new_session_id,
                     role=msg.get("role", "user"),
@@ -3856,20 +4114,63 @@ class GatewaySlashCommandsMixin:
                     codex_reasoning_items=msg.get("codex_reasoning_items"),
                     codex_message_items=msg.get("codex_message_items"),
                 )
-            except Exception:
-                pass  # Best-effort copy
-
-        # Set title
-        try:
-            await self._session_db.set_session_title(new_session_id, branch_title)
-        except Exception:
-            pass
+            title_written = await self._session_db.set_session_title(
+                new_session_id,
+                branch_title,
+            )
+            if title_written is not True:
+                raise RuntimeError("staged branch title write was not confirmed")
+        except Exception as exc:
+            logger.error("Failed to stage branch session: %s", exc)
+            cleaned = await _remove_staged_branch()
+            if not cleaned:
+                return (
+                    f"Branch creation failed and staged artifact "
+                    f"{new_session_id} could not be removed. The active session "
+                    "was not switched; operator cleanup is required."
+                )
+            return t("gateway.branch.create_failed", error=exc)
 
         # Switch the session store entry to the new session
-        new_entry = await self.async_session_store.switch_session(session_key, new_session_id)
+        try:
+            new_entry = await self.async_session_store.switch_session(
+                session_key,
+                new_session_id,
+            )
+        except CapabilityEpochRotationBlocked as exc:
+            logger.warning(
+                "Session branch transition was blocked for %s",
+                session_key,
+            )
+            cleaned = await _remove_staged_branch()
+            if not cleaned:
+                return (
+                    f"Session branch was not published, but staged artifact "
+                    f"{new_session_id} could not be removed. The active routing "
+                    "entry was not switched by this command; operator cleanup "
+                    "is required."
+                )
+            if getattr(exc, "authority_rotated", False):
+                return (
+                    "Session branch was not published because concurrent session "
+                    "activity won the routing race. The staged branch was removed "
+                    "and the concurrent activity was preserved with fresh "
+                    "authority; retry /branch after it finishes."
+                )
+            return (
+                "Session branch creation is temporarily blocked because the "
+                "durable approval boundary is unavailable. The current session "
+                "and authority epoch were not changed."
+            )
         if not new_entry:
+            cleaned = await _remove_staged_branch()
+            if not cleaned:
+                return (
+                    f"Session branch switch failed and staged artifact "
+                    f"{new_session_id} could not be removed. The active routing "
+                    "entry was not switched; operator cleanup is required."
+                )
             return t("gateway.branch.switch_failed")
-        self._clear_session_boundary_security_state(session_key)
 
         # Evict any cached agent for this session
         self._evict_cached_agent(session_key)
@@ -4189,21 +4490,44 @@ class GatewaySlashCommandsMixin:
         async def _on_confirm(choice: str) -> Optional[str]:
             if choice == "cancel":
                 return t("gateway.reload_mcp.cancelled")
+            always_persisted = False
+            always_blocked_by_pin = False
             if choice == "always":
                 # Persist the opt-out and run the reload.
                 try:
                     from cli import save_config_value
-                    save_config_value("approvals.mcp_reload_confirm", False)
-                    logger.info(
-                        "User opted out of /reload-mcp confirmation (session=%s)",
-                        session_key,
+                    from hermes_cli.config import (
+                        effective_config_projection_is_pinned,
                     )
+
+                    always_persisted = bool(
+                        save_config_value("approvals.mcp_reload_confirm", False)
+                    )
+                    always_blocked_by_pin = (
+                        effective_config_projection_is_pinned()
+                        and not always_persisted
+                    )
+                    if always_persisted:
+                        logger.info(
+                            "User opted out of /reload-mcp confirmation (session=%s)",
+                            session_key,
+                        )
                 except Exception as exc:
                     logger.warning("Failed to persist mcp_reload_confirm=false: %s", exc)
             # once / always → run the reload
             result = await self._execute_mcp_reload(event)
             if choice == "always":
-                return f"{result}\n\n" + t("gateway.reload_mcp.always_followup")
+                if always_persisted:
+                    return f"{result}\n\n" + t("gateway.reload_mcp.always_followup")
+                if always_blocked_by_pin:
+                    return (
+                        f"{result}\n\nThe action ran once; the confirmation setting "
+                        "was not changed because production configuration is sealed."
+                    )
+                return (
+                    f"{result}\n\nThe action ran once; the confirmation setting "
+                    "could not be changed."
+                )
             return result
 
         prompt_message = t("gateway.reload_mcp.confirm_prompt")
@@ -4369,24 +4693,57 @@ class GatewaySlashCommandsMixin:
             /approve all session  — approve all + remember for session
             /approve always       — approve oldest + remember permanently
             /approve all always   — approve all + remember permanently
+            /approve <id>         — approve one exact pending command
         """
         source = event.source
+        production_boundary = getattr(
+            self,
+            "_require_production_model_sovereignty",
+            False,
+        )
+        if production_boundary:
+            from gateway.production_access_policy import (
+                OWNER_ROLE,
+                production_discord_role,
+            )
+
+            if production_discord_role(source) != OWNER_ROLE:
+                return "⛔ /approve is owner-only in Cloud Muncho."
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            has_blocking_approval,
+            resolve_gateway_approval,
+            resolve_gateway_approval_by_id,
+            resolve_gateway_owner_escalation_by_id,
         )
-
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
-                return t("gateway.approval_expired")
-            return t("gateway.approve.no_pending")
 
         # Parse args: support "all", "all session", "all always", "session", "always"
         args = event.get_command_args().strip().lower().split()
         resolve_all = "all" in args
-        remaining = [a for a in args if a != "all"]
+        approval_ids = [value for value in args if re.fullmatch(r"[0-9a-f]{32}", value)]
+        if len(approval_ids) > 1 or (resolve_all and approval_ids):
+            return "Invalid approval selector: choose either one approval_id or `all`."
+        approval_id = approval_ids[0] if approval_ids else ""
+        remaining = [
+            value
+            for value in args
+            if value != "all" and value != approval_id
+        ]
+
+        # Sealed production never converts slash-command prose into a
+        # reusable command grant.  A reviewed plan capability is the only
+        # scoped authority mechanism there; /approve remains an exact
+        # one-shot control for one ID (or the currently visible pending set).
+        # Reject unknown/scope tokens instead of silently approving the oldest
+        # command on a typo.
+        if production_boundary and remaining:
+            return (
+                "Invalid production approval selector: use `/approve`, "
+                "`/approve all`, or `/approve <approval_id>`. Session and "
+                "permanent command authority must come from an owner-approved "
+                "Canonical plan capability."
+            )
 
         if any(a in {"always", "permanent", "permanently"} for a in remaining):
             choice = "always"
@@ -4395,7 +4752,35 @@ class GatewaySlashCommandsMixin:
         else:
             choice = "once"
 
-        count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
+        has_local_pending = has_blocking_approval(session_key)
+        if not has_local_pending and not (production_boundary and approval_id):
+            if session_key in self._pending_approvals:
+                self._pending_approvals.pop(session_key)
+                return t("gateway.approval_expired")
+            return t("gateway.approve.no_pending")
+
+        count = (
+            resolve_gateway_approval_by_id(
+                session_key,
+                approval_id,
+                choice,
+            )
+            if approval_id
+            else resolve_gateway_approval(
+                session_key,
+                choice,
+                resolve_all=resolve_all,
+            )
+        )
+        if not count and production_boundary and approval_id:
+            count = await asyncio.to_thread(
+                resolve_gateway_owner_escalation_by_id,
+                approval_id,
+                choice,
+                owner_user_id=str(source.user_id or ""),
+                owner_guild_id=str(source.scope_id or source.guild_id or ""),
+                response_lane_id=str(source.thread_id or source.chat_id or ""),
+            )
         if not count:
             return t("gateway.approve.no_pending")
 
@@ -4415,22 +4800,33 @@ class GatewaySlashCommandsMixin:
         a definitive BLOCKED message, same as the CLI deny flow.
 
         ``/deny`` denies the oldest; ``/deny all`` denies everything.
+        ``/deny <approval_id> [reason]`` denies one exact pending command.
         ``/deny <reason>`` (or ``/deny all <reason>``) attaches a one-line
         reason that is relayed back to the agent so it can adapt instead of
         only hearing "denied". Ported from qwibitai/nanoclaw#2832.
         """
         source = event.source
+        production_boundary = getattr(
+            self,
+            "_require_production_model_sovereignty",
+            False,
+        )
+        if production_boundary:
+            from gateway.production_access_policy import (
+                OWNER_ROLE,
+                production_discord_role,
+            )
+
+            if production_discord_role(source) != OWNER_ROLE:
+                return "⛔ /deny is owner-only in Cloud Muncho."
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            has_blocking_approval,
+            resolve_gateway_approval,
+            resolve_gateway_approval_by_id,
+            resolve_gateway_owner_escalation_by_id,
         )
-
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
-                return t("gateway.deny.stale")
-            return t("gateway.deny.no_pending")
 
         # Parse args: a leading "all" token denies every pending command;
         # anything after it (or the whole arg string when "all" is absent) is
@@ -4438,7 +4834,14 @@ class GatewaySlashCommandsMixin:
         raw_args = event.get_command_args().strip()
         tokens = raw_args.split()
         resolve_all = bool(tokens) and tokens[0].lower() == "all"
+        approval_id = (
+            tokens[0].lower()
+            if tokens and re.fullmatch(r"[0-9a-fA-F]{32}", tokens[0])
+            else ""
+        )
         if resolve_all:
+            reason = raw_args[len(tokens[0]):].strip()
+        elif approval_id:
             reason = raw_args[len(tokens[0]):].strip()
         else:
             reason = raw_args
@@ -4446,10 +4849,38 @@ class GatewaySlashCommandsMixin:
         if reason:
             reason = reason[:280].strip()
 
-        count = resolve_gateway_approval(
-            session_key, "deny", resolve_all=resolve_all,
-            reason=reason or None,
+        has_local_pending = has_blocking_approval(session_key)
+        if not has_local_pending and not (production_boundary and approval_id):
+            if session_key in self._pending_approvals:
+                self._pending_approvals.pop(session_key)
+                return t("gateway.deny.stale")
+            return t("gateway.deny.no_pending")
+
+        count = (
+            resolve_gateway_approval_by_id(
+                session_key,
+                approval_id,
+                "deny",
+                reason=reason or None,
+            )
+            if approval_id
+            else resolve_gateway_approval(
+                session_key,
+                "deny",
+                resolve_all=resolve_all,
+                reason=reason or None,
+            )
         )
+        if not count and production_boundary and approval_id:
+            count = await asyncio.to_thread(
+                resolve_gateway_owner_escalation_by_id,
+                approval_id,
+                "deny",
+                owner_user_id=str(source.user_id or ""),
+                owner_guild_id=str(source.scope_id or source.guild_id or ""),
+                response_lane_id=str(source.thread_id or source.chat_id or ""),
+                reason=reason or None,
+            )
         if not count:
             return t("gateway.deny.no_pending")
 

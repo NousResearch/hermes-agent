@@ -8,6 +8,7 @@ from agent.verification_evidence import (
     classify_verification_command,
     mark_workspace_edited,
     record_terminal_result,
+    verification_ledger_enabled,
     verification_status,
 )
 
@@ -24,6 +25,33 @@ def _node_project(root: Path) -> None:
 
 def _python_project(root: Path) -> None:
     (root / "pyproject.toml").write_text("[tool.pytest.ini_options]\n")
+
+
+def test_disabled_ledger_neither_classifies_nor_creates_state(
+    tmp_path, monkeypatch
+):
+    home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"agent": {"verification_ledger_enabled": False}},
+    )
+    _node_project(tmp_path)
+
+    assert verification_ledger_enabled() is False
+    assert record_terminal_result(
+        command="pnpm test",
+        cwd=tmp_path,
+        session_id="production",
+        exit_code=0,
+        output="green",
+    ) is None
+    assert mark_workspace_edited(
+        session_id="production",
+        cwd=tmp_path,
+        paths=[str(tmp_path / "src" / "app.ts")],
+    ) is None
+    assert not (home / "verification_evidence.db").exists()
 
 
 def test_classifies_targeted_project_verify_command(tmp_path, monkeypatch):
@@ -286,6 +314,10 @@ def test_file_tool_stales_evidence_by_session_id_for_absolute_edit(tmp_path, mon
     )
 
     from tools.file_tools import write_file_tool
+    # This regression owns verification-ledger invalidation, not the separate
+    # macOS /private/var system-path guard.  pytest's tmp_path resolves below
+    # /private/var/folders on macOS, so isolate the intended contract here.
+    monkeypatch.setattr("tools.file_tools._check_sensitive_path", lambda *_args: None)
 
     result = json.loads(
         write_file_tool(

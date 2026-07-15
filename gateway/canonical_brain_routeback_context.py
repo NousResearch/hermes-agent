@@ -9,11 +9,10 @@ instead of creating a duplicate.
 
 from __future__ import annotations
 
-import importlib.util
 import json
 import logging
+import re
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Iterable, Mapping, Optional
 
 try:
@@ -26,10 +25,17 @@ from gateway.session import SessionContext
 
 logger = logging.getLogger(__name__)
 
-CANONICAL_BRAIN_ROOT = Path("/opt/adventico-ai-platform/canonical-brain")
-CLOUD_SQL_HELPER = CANONICAL_BRAIN_ROOT / "bin" / "cloud_sql_synthetic_write_gate.py"
 EVENT_TABLE = "canonical_event_log"
 MAX_CONTEXT_CASES = 3
+MAX_CONTEXT_QUERY_CASES = MAX_CONTEXT_CASES + 1
+CANONICAL_BRAIN_IO_TIMEOUT_SECONDS = 12
+ROUTE_BACK_LIFECYCLE_TYPES = (
+    "route_back.required",
+    "route_back.intent.created",
+    "route_back.sent",
+    "route_back.blocked",
+)
+_CONTEXT_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9:._/-]{0,159}$")
 
 
 @dataclass(frozen=True)
@@ -38,18 +44,16 @@ class RouteBackCaseContext:
     source_thread_id: str
 
 
+@dataclass(frozen=True)
+class RouteBackContextLookup:
+    cases: tuple[RouteBackCaseContext, ...]
+    truncated: bool = False
+
+
 def _load_helper() -> Any:
-    if not CLOUD_SQL_HELPER.exists():
-        raise RuntimeError("canonical brain Cloud SQL helper missing")
-    spec = importlib.util.spec_from_file_location(
-        "canonical_brain_cloud_sql_helper",
-        CLOUD_SQL_HELPER,
-    )
-    if spec is None or spec.loader is None:
-        raise RuntimeError("could not load canonical brain Cloud SQL helper")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)  # type: ignore[union-attr]
-    return module
+    from gateway.canonical_writer_boundary import require_writer_database
+
+    return require_writer_database()
 
 
 def _routeback_context_enabled() -> bool:
@@ -72,7 +76,9 @@ def _routeback_context_enabled() -> bool:
 
 
 def _helper_available() -> bool:
-    return CLOUD_SQL_HELPER.exists()
+    from gateway.canonical_writer_boundary import writer_boundary_configured
+
+    return writer_boundary_configured()
 
 
 def _coerce_mapping(value: Any) -> dict[str, Any]:
@@ -99,97 +105,138 @@ def _row_get(row: Any, columns: list[str], name: str) -> Any:
     return None
 
 
-def _nested_get(mapping: Mapping[str, Any], *keys: str) -> Any:
-    current: Any = mapping
-    for key in keys:
-        if not isinstance(current, Mapping):
-            return None
-        current = current.get(key)
-    return current
-
-
 def _same_thread(value: Any, current_thread_id: str) -> bool:
     return bool(value) and str(value) == current_thread_id
 
 
-def _source_refs(source: Mapping[str, Any]) -> dict[str, Any]:
-    refs = source.get("source_refs")
-    return refs if isinstance(refs, dict) else {}
+def _safe_context_identifier(value: Any) -> str:
+    """Return a bounded inert identifier, or fail closed for legacy bad rows."""
+    candidate = str(value or "").strip()
+    return candidate if _CONTEXT_IDENTIFIER_RE.fullmatch(candidate) else ""
 
 
-def _route_back_target(payload: Mapping[str, Any]) -> dict[str, Any]:
-    target = _nested_get(payload, "route_back", "target_ref")
-    if isinstance(target, dict):
-        return target
-    target = payload.get("target_ref")
-    return target if isinstance(target, dict) else {}
-
-
-def _receipt(payload: Mapping[str, Any]) -> dict[str, Any]:
-    receipt = payload.get("receipt")
-    if isinstance(receipt, dict):
-        return receipt
-    receipt = payload.get("delivery_receipt")
-    if isinstance(receipt, dict):
-        return receipt
-    receipt = _nested_get(payload, "route_back", "receipt")
-    return receipt if isinstance(receipt, dict) else {}
+def _observed_session(source: Mapping[str, Any]) -> dict[str, Any]:
+    observed = source.get("observed_session")
+    return observed if isinstance(observed, dict) else {}
 
 
 def _row_targets_current_thread(
-    source: Mapping[str, Any],
     payload: Mapping[str, Any],
     current_thread_id: str,
 ) -> bool:
-    target = _route_back_target(payload)
-    receipt = _receipt(payload)
+    route_back = payload.get("route_back")
+    route_back = route_back if isinstance(route_back, Mapping) else {}
+    surfaces = (
+        payload.get("target_ref"),
+        route_back.get("target_ref"),
+        payload.get("receipt"),
+        payload.get("delivery_receipt"),
+        route_back.get("receipt"),
+    )
     return any(
-        _same_thread(value, current_thread_id)
-        for value in (
-            target.get("id"),
-            target.get("thread_id"),
-            target.get("channel_id"),
-            receipt.get("chat_id"),
-            receipt.get("thread_id"),
+        isinstance(surface, Mapping)
+        and any(
+            _same_thread(surface.get(key), current_thread_id)
+            for key in ("id", "chat_id", "thread_id", "channel_id")
         )
+        for surface in surfaces
     )
 
 
 def _row_source_thread(source: Mapping[str, Any]) -> str:
-    refs = _source_refs(source)
-    return str(refs.get("thread_id") or refs.get("chat_id") or "").strip()
+    observed = _observed_session(source)
+    if str(observed.get("platform") or "").strip().casefold() != "discord":
+        return ""
+    return str(observed.get("thread_id") or observed.get("chat_id") or "").strip()
 
 
 def _query_linked_rows(current_thread_id: str) -> list[Any]:
     helper = _load_helper()
-    password = helper.get_secret_value()
+    sock = helper.open_connection()
     try:
-        sock = helper.connect(password)
+        setter = getattr(sock, "settimeout", None)
+        if callable(setter):
+            setter(CANONICAL_BRAIN_IO_TIMEOUT_SECONDS)
         try:
             thread_sql = helper.sql_quote(current_thread_id)
+            lifecycle_sql = ", ".join(
+                helper.sql_quote(event_type) for event_type in ROUTE_BACK_LIFECYCLE_TYPES
+            )
             sql = f"""
-SELECT event_id::text, event_type, case_id, occurred_at::text, source, payload
-FROM {EVENT_TABLE}
-WHERE case_id IN (
-  SELECT DISTINCT case_id
-  FROM {EVENT_TABLE}
-  WHERE source->'source_refs'->>'thread_id' = {thread_sql}
-     OR source->'source_refs'->>'chat_id' = {thread_sql}
-     OR payload->'route_back'->'target_ref'->>'id' = {thread_sql}
-     OR payload->'route_back'->'target_ref'->>'thread_id' = {thread_sql}
-     OR payload->'route_back'->'target_ref'->>'channel_id' = {thread_sql}
-     OR payload->'receipt'->>'chat_id' = {thread_sql}
-     OR payload->'receipt'->>'thread_id' = {thread_sql}
-     OR payload->'receipt'->>'channel_id' = {thread_sql}
-     OR payload->'delivery_receipt'->>'chat_id' = {thread_sql}
-     OR payload->'delivery_receipt'->>'thread_id' = {thread_sql}
-     OR payload->'delivery_receipt'->>'channel_id' = {thread_sql}
-     OR payload->'route_back'->'receipt'->>'chat_id' = {thread_sql}
-     OR payload->'route_back'->'receipt'->>'thread_id' = {thread_sql}
-     OR payload->'route_back'->'receipt'->>'channel_id' = {thread_sql}
+WITH secure_linked_cases AS (
+  SELECT DISTINCT e.case_id
+  FROM {EVENT_TABLE} e
+  WHERE (
+    e.source->'observed_session'->>'platform' = 'discord'
+    AND (
+      e.source->'observed_session'->>'thread_id' = {thread_sql}
+      OR e.source->'observed_session'->>'chat_id' = {thread_sql}
+    )
+  ) OR (
+    e.event_type = 'route_back.sent'
+    AND e.evidence @> '[{{"verified":true,"attestation":"deterministic_runtime_receipt"}}]'::jsonb
+    AND (
+      e.payload->'target_ref'->>'id' = {thread_sql}
+      OR e.payload->'target_ref'->>'thread_id' = {thread_sql}
+      OR e.payload->'target_ref'->>'channel_id' = {thread_sql}
+      OR e.payload->'route_back'->'target_ref'->>'id' = {thread_sql}
+      OR e.payload->'route_back'->'target_ref'->>'thread_id' = {thread_sql}
+      OR e.payload->'route_back'->'target_ref'->>'channel_id' = {thread_sql}
+      OR e.payload->'receipt'->>'chat_id' = {thread_sql}
+      OR e.payload->'receipt'->>'thread_id' = {thread_sql}
+      OR e.payload->'receipt'->>'channel_id' = {thread_sql}
+      OR e.payload->'delivery_receipt'->>'chat_id' = {thread_sql}
+      OR e.payload->'delivery_receipt'->>'thread_id' = {thread_sql}
+      OR e.payload->'delivery_receipt'->>'channel_id' = {thread_sql}
+      OR e.payload->'route_back'->'receipt'->>'chat_id' = {thread_sql}
+      OR e.payload->'route_back'->'receipt'->>'thread_id' = {thread_sql}
+      OR e.payload->'route_back'->'receipt'->>'channel_id' = {thread_sql}
+    )
+  )
+), fair_case_rows AS (
+  SELECT
+    latest_route.event_id AS event_id,
+    latest_route.event_type,
+    linked.case_id,
+    latest_route.occurred_at AS occurred_at,
+    latest_route.source,
+    latest_route.payload
+  FROM secure_linked_cases linked
+  JOIN LATERAL (
+    SELECT e.event_id, e.event_type, e.occurred_at, e.source, e.payload
+    FROM {EVENT_TABLE} e
+    WHERE e.case_id = linked.case_id
+      AND e.event_type IN ({lifecycle_sql})
+    ORDER BY e.occurred_at DESC, e.event_id DESC
+    LIMIT 1
+  ) latest_route ON TRUE
+  WHERE latest_route.source->'observed_session'->>'platform' = 'discord'
+    AND COALESCE(
+      NULLIF(latest_route.source->'observed_session'->>'thread_id', ''),
+      NULLIF(latest_route.source->'observed_session'->>'chat_id', '')
+    ) <> {thread_sql}
+    AND (
+    latest_route.payload->'target_ref'->>'id' = {thread_sql}
+    OR latest_route.payload->'target_ref'->>'thread_id' = {thread_sql}
+    OR latest_route.payload->'target_ref'->>'channel_id' = {thread_sql}
+    OR latest_route.payload->'route_back'->'target_ref'->>'id' = {thread_sql}
+    OR latest_route.payload->'route_back'->'target_ref'->>'thread_id' = {thread_sql}
+    OR latest_route.payload->'route_back'->'target_ref'->>'channel_id' = {thread_sql}
+    OR latest_route.payload->'receipt'->>'chat_id' = {thread_sql}
+    OR latest_route.payload->'receipt'->>'thread_id' = {thread_sql}
+    OR latest_route.payload->'receipt'->>'channel_id' = {thread_sql}
+    OR latest_route.payload->'delivery_receipt'->>'chat_id' = {thread_sql}
+    OR latest_route.payload->'delivery_receipt'->>'thread_id' = {thread_sql}
+    OR latest_route.payload->'delivery_receipt'->>'channel_id' = {thread_sql}
+    OR latest_route.payload->'route_back'->'receipt'->>'chat_id' = {thread_sql}
+    OR latest_route.payload->'route_back'->'receipt'->>'thread_id' = {thread_sql}
+    OR latest_route.payload->'route_back'->'receipt'->>'channel_id' = {thread_sql}
+  )
 )
-ORDER BY occurred_at DESC
-LIMIT 80;
+SELECT event_id::text, event_type, case_id, occurred_at::text, source, payload
+FROM fair_case_rows
+ORDER BY occurred_at DESC, event_id DESC, case_id
+LIMIT {MAX_CONTEXT_QUERY_CASES};
 """
             result = helper.query(sock, sql)
             rows = result.get("rows", []) if isinstance(result, dict) else []
@@ -200,69 +247,92 @@ LIMIT 80;
             except Exception:
                 pass
     finally:
-        password = ""
+        pass
 
 
-def lookup_routeback_cases_for_thread(current_thread_id: str) -> list[RouteBackCaseContext]:
-    """Return exact cases where ``current_thread_id`` is a route-back target.
+def lookup_routeback_context_for_thread(
+    current_thread_id: str,
+) -> RouteBackContextLookup:
+    """Return bounded exact cases plus an explicit incomplete-context signal.
 
     The current thread must appear in a route-back target/receipt, and the same
-    case must have a different source/requester thread. Source-only matches are
-    deliberately ignored here; this context is for owner/resolver answer turns.
+    exact route lifecycle row must have a different observed requester thread.
+    Source-only matches and arbitrary older case participants are deliberately
+    ignored here; this context is for owner/resolver answer turns.
     """
     current_thread_id = str(current_thread_id or "").strip()
     if not current_thread_id:
-        return []
+        return RouteBackContextLookup(cases=())
+
+    from gateway.canonical_writer_boundary import (
+        canonical_writer_call,
+        in_writer_service,
+        writer_boundary_configured,
+    )
+    from gateway.canonical_writer_protocol import CanonicalWriterOperation
+
+    if writer_boundary_configured() and not in_writer_service():
+        result = canonical_writer_call(
+            CanonicalWriterOperation.ROUTEBACK_CONTEXT.value,
+            {"thread_id": current_thread_id},
+        )
+        raw_cases = result.get("cases")
+        if not isinstance(raw_cases, list):
+            raise RuntimeError("canonical_writer_routeback_context_invalid")
+        contexts = []
+        for item in raw_cases:
+            if not isinstance(item, Mapping):
+                raise RuntimeError("canonical_writer_routeback_context_invalid")
+            case_id = _safe_context_identifier(item.get("case_id"))
+            source_thread_id = _safe_context_identifier(
+                item.get("source_thread_id")
+            )
+            if not case_id or not source_thread_id:
+                raise RuntimeError("canonical_writer_routeback_context_invalid")
+            contexts.append(RouteBackCaseContext(case_id, source_thread_id))
+        return RouteBackContextLookup(
+            cases=tuple(contexts[:MAX_CONTEXT_CASES]),
+            truncated=bool(result.get("truncated")),
+        )
 
     columns = ["event_id", "event_type", "case_id", "occurred_at", "source", "payload"]
-    grouped: dict[str, dict[str, Any]] = {}
-    for row in _query_linked_rows(current_thread_id):
-        case_id = str(_row_get(row, columns, "case_id") or "").strip()
-        if not case_id:
+    contexts: list[RouteBackCaseContext] = []
+    seen_case_ids: set[str] = set()
+    rows = _query_linked_rows(current_thread_id)
+    truncated = len(rows) > MAX_CONTEXT_CASES
+    for row in rows:
+        case_id = _safe_context_identifier(_row_get(row, columns, "case_id"))
+        if not case_id or case_id in seen_case_ids:
             continue
         source = _coerce_mapping(_row_get(row, columns, "source"))
         payload = _coerce_mapping(_row_get(row, columns, "payload"))
-        entry = grouped.setdefault(
-            case_id,
-            {"latest_route_is_target": None, "source_threads": []},
-        )
         event_type = str(_row_get(row, columns, "event_type") or "")
-        is_route_lifecycle = event_type in {
-                "route_back.required",
-                "route_back.intent.created",
-                "route_back.sent",
-                "route_back.blocked",
-            } or bool(_route_back_target(payload) or _receipt(payload))
-        if (
-            is_route_lifecycle
-            and entry["latest_route_is_target"] is None
-        ):
-            # SQL rows are newest-first. Only the latest route-back lifecycle
-            # event may attach a case to this thread; an older historical
-            # target must not resurrect a case after it was routed elsewhere.
-            entry["latest_route_is_target"] = _row_targets_current_thread(
-                source, payload, current_thread_id
-            )
-        source_thread = _row_source_thread(source)
-        if source_thread and source_thread != current_thread_id:
-            entry["source_threads"].append(source_thread)
-
-    contexts: list[RouteBackCaseContext] = []
-    for case_id, data in grouped.items():
-        if data.get("latest_route_is_target") is not True:
+        if event_type not in ROUTE_BACK_LIFECYCLE_TYPES:
             continue
-        source_threads = list(dict.fromkeys(data.get("source_threads") or []))
-        if not source_threads:
+        if not _row_targets_current_thread(payload, current_thread_id):
             continue
-        contexts.append(RouteBackCaseContext(case_id=case_id, source_thread_id=source_threads[0]))
+        source_thread = _safe_context_identifier(_row_source_thread(source))
+        if not source_thread or source_thread == current_thread_id:
+            continue
+        seen_case_ids.add(case_id)
+        contexts.append(RouteBackCaseContext(case_id=case_id, source_thread_id=source_thread))
         if len(contexts) >= MAX_CONTEXT_CASES:
             break
-    return contexts
+    return RouteBackContextLookup(cases=tuple(contexts), truncated=truncated)
 
 
-def build_routeback_context_prompt(contexts: Iterable[RouteBackCaseContext]) -> str:
+def lookup_routeback_cases_for_thread(current_thread_id: str) -> list[RouteBackCaseContext]:
+    """Backward-compatible case-only view of the bounded context lookup."""
+    return list(lookup_routeback_context_for_thread(current_thread_id).cases)
+
+
+def build_routeback_context_prompt(
+    contexts: Iterable[RouteBackCaseContext],
+    *,
+    truncated: bool = False,
+) -> str:
     cases = list(contexts)
-    if not cases:
+    if not cases and not truncated:
         return ""
     lines = [
         "## Canonical Brain Route-Back Context",
@@ -271,6 +341,17 @@ def build_routeback_context_prompt(contexts: Iterable[RouteBackCaseContext]) -> 
     ]
     for item in cases:
         lines.append(f"- `{item.case_id}` (source/requester thread: `{item.source_thread_id}`)")
+    if truncated:
+        lines.extend(
+            [
+                "",
+                "INCOMPLETE CONTEXT: Additional exact linked cases exist beyond this bounded snapshot.",
+                "Do not assume the listed cases are exhaustive or select a case by keywords. "
+                "Use `canonical_brain_query` for the exact current Discord thread before "
+                "updating or routing a case; if the complete state cannot be read, report "
+                "that concrete blocker.",
+            ]
+        )
     lines.extend(
         [
             "",
@@ -279,8 +360,8 @@ def build_routeback_context_prompt(contexts: Iterable[RouteBackCaseContext]) -> 
             "- Record the answer/status as durable case state before any requester closeout.",
             "- Notify the source/requester thread at most once, with only the actionable delta.",
             "- Record `route_back.sent` only after a real delivery receipt/message_id.",
-            "- Muncho must not send route-backs by DM. Use only public approved Discord channels/threads; if no approved public target is available, record/report `route_back.blocked`.",
-            "- When the target is exact and public, prefer `route_back_execute`: it sends directly, then records `route_back.sent` with the real receipt, or records `route_back.blocked` if delivery cannot be completed.",
+            "- Muncho must not send route-backs by DM or group DM. Use an exact authorized Discord guild channel or eligible guild thread. Existing Discord ACLs remain authoritative; if the privileged edge cannot prove the exact guild target and live permissions, record/report `route_back.blocked`.",
+            "- When the guild target is exact, prefer `route_back_execute`: it sends directly, then records `route_back.sent` with the real receipt, or records `route_back.blocked` if delivery cannot be completed.",
             "- If a resolver asks you to forward/notify the requester, either actually notify the source/requester thread and record `route_back.sent`, or record/report `route_back.blocked` with the blocker. A reply like 'noted', 'marked', or 'for forwarding' is not a terminal outcome.",
             "- A `route_back.required` or `route_back.intent.created` tool result is not completion. Keep working in the same turn until there is a `route_back.sent` receipt or `route_back.blocked` blocker.",
             "- Never answer the resolver with only 'noted/marked for forwarding' after a concrete forward request; that leaves the requester uninformed.",
@@ -294,17 +375,72 @@ def build_routeback_context_prompt(contexts: Iterable[RouteBackCaseContext]) -> 
 
 
 def build_routeback_context_prompt_for_session(context: SessionContext) -> str:
-    """Build a fail-soft prompt fragment for the current gateway session."""
+    """Build a current-turn prompt fragment with explicit outage state."""
     try:
         if context.source.platform != Platform.DISCORD:
             return ""
         current_thread_id = str(context.source.thread_id or context.source.chat_id or "").strip()
         if not current_thread_id:
             return ""
-        if not _routeback_context_enabled() or not _helper_available():
+        if not _routeback_context_enabled():
             return ""
-        cases = lookup_routeback_cases_for_thread(current_thread_id)
-        return build_routeback_context_prompt(cases)
+        if not _helper_available():
+            return build_routeback_context_incomplete_prompt(
+                "the privileged Canonical writer is unavailable or misconfigured"
+            )
+        lookup = lookup_routeback_context_for_thread(current_thread_id)
+        return build_routeback_context_prompt(
+            lookup.cases,
+            truncated=lookup.truncated,
+        )
     except Exception as exc:
-        logger.debug("Canonical Brain route-back context lookup failed: %s", exc)
-        return ""
+        logger.warning("Canonical Brain route-back context lookup failed: %s", exc)
+        return build_routeback_context_incomplete_prompt(
+            "the exact route-back context lookup failed"
+        )
+
+
+def build_routeback_context_incomplete_prompt(reason: str) -> str:
+    """Return a replayable fail-closed current-turn context note."""
+
+    safe_reason = str(reason or "Canonical context is unavailable").strip()[:300]
+    return "\n".join(
+        [
+            "## Canonical Brain route-back context",
+            "",
+            f"INCOMPLETE/BLOCKED: {safe_reason}.",
+            "Do not infer that this Discord thread has no linked case and do not create a duplicate case.",
+            "Retry the exact Canonical Brain read. If it remains unavailable, report this blocker and preserve the continuation context.",
+        ]
+    )
+
+
+def attach_routeback_context_to_user_turn(
+    message_text: Any,
+    persist_user_message: Any,
+    context_prompt: str,
+) -> tuple[Any, Any]:
+    """Attach changing Brain state as a replayable current-turn snapshot.
+
+    No synthetic role is inserted and the frozen system prompt is untouched.
+    The exact decorated user content is persisted because replacing it with a
+    raw-only variant on the next turn would mutate the cached conversation
+    prefix.  Newer snapshots arrive as newer user turns; past API content stays
+    byte-stable.
+    """
+    if not context_prompt or not isinstance(message_text, str):
+        return message_text, persist_user_message
+    decorated = context_prompt + "\n\n## Current user message\n" + message_text
+    return decorated, decorated
+
+
+__all__ = [
+    "RouteBackCaseContext",
+    "RouteBackContextLookup",
+    "lookup_routeback_context_for_thread",
+    "lookup_routeback_cases_for_thread",
+    "build_routeback_context_prompt",
+    "build_routeback_context_incomplete_prompt",
+    "build_routeback_context_prompt_for_session",
+    "attach_routeback_context_to_user_turn",
+]

@@ -3418,14 +3418,16 @@ def test_legacy_migration_both_columns_already_present(tmp_path):
 # Gateway-embedded dispatcher: config, CLI warnings, daemon deprecation stub
 # ---------------------------------------------------------------------------
 
-def test_config_default_dispatch_in_gateway_is_true():
-    """Default config must enable gateway-embedded dispatch out of the box.
-    Flipping this default to false is a user-visible behaviour change and
-    should require a conscious migration."""
+def test_config_default_dispatch_in_gateway_is_opt_in():
+    """Generic Hermes must not start the embedded dispatcher implicitly.
+
+    Worker dispatch remains available as an explicit mechanical capability;
+    model-sovereign runtimes must opt into it deliberately.
+    """
     from hermes_cli.config import DEFAULT_CONFIG
     kanban = DEFAULT_CONFIG.get("kanban", {})
-    assert kanban.get("dispatch_in_gateway") is True, (
-        "kanban.dispatch_in_gateway default should be True; got "
+    assert kanban.get("dispatch_in_gateway") is False, (
+        "kanban.dispatch_in_gateway default should be False; got "
         f"{kanban.get('dispatch_in_gateway')!r}"
     )
     interval = kanban.get("dispatch_interval_seconds")
@@ -3754,13 +3756,11 @@ def test_gateway_dispatcher_disables_corrupt_board_without_traceback(
     assert sum("not a valid SQLite database" in msg for msg in messages) == 1
     assert not any("tick failed on board" in msg for msg in messages)
     assert not any(record.exc_info for record in caplog.records)
-    # First tick connect (dispatch) + two probes per `_has_ready_work` call
-    # (ready then review, both via _kb.connect). The second dispatch tick
-    # skips the dispatch connect because the corrupt board fingerprint is
-    # disabled, but the ready/review probes still each connect. PR f55d94a1e
-    # added the review-column probe alongside the existing ready-column
-    # probe, bumping this from 3 → 5.
-    assert calls["connect"] == 5
+    # Auxiliary auto-decomposition is fail-off by default, so each tick has
+    # only the mechanical dispatcher/health paths. The first tick connects for
+    # dispatch and then for the ready/review probe. The second tick skips the
+    # quarantined dispatch connect but still performs one health-probe connect.
+    assert calls["connect"] == 3
 
 
 def test_gateway_dispatcher_retries_corrupt_board_after_quarantine(

@@ -380,6 +380,26 @@ class TestLightpandaFallbackWarning:
         assert response["element_count"] == 1
         bt._last_active_session_key.pop("warn-test2", None)
 
+    def test_browser_navigate_does_not_classify_authored_page_title(self):
+        import json
+        import tools.browser_tool as bt
+
+        with patch("tools.browser_tool._is_local_backend", return_value=True), \
+             patch("tools.browser_tool._get_cloud_provider", return_value=None), \
+             patch("tools.browser_tool._get_session_info", return_value={
+                 "session_name": "test", "_first_nav": False, "features": {"local": True, "proxies": True}
+             }), \
+             patch("tools.browser_tool._run_browser_command", side_effect=[
+                 {"success": True, "data": {"title": "Access denied — captcha", "url": "https://example.com/"}},
+                 {"success": True, "data": {"snapshot": "- heading \"Access denied — captcha\" [ref=e1]", "refs": {"e1": {}}}},
+             ]):
+            response = json.loads(bt.browser_navigate("https://example.com", task_id="title-test"))
+
+        assert response["success"] is True
+        assert response["title"] == "Access denied — captcha"
+        assert "bot_detection_warning" not in response
+        bt._last_active_session_key.pop("title-test", None)
+
     def test_failed_fallback_warning_is_preserved_on_click_error(self):
         import json
         import tools.browser_tool as bt

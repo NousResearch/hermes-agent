@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import sys
 import threading
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -14,9 +15,11 @@ from gateway.channel_directory import (
     format_directory_for_display,
     load_directory,
     _apply_channel_aliases,
+    _build_discord,
     _build_from_sessions,
     _build_slack,
     is_discord_public_target,
+    lookup_discord_public_target,
 )
 
 
@@ -30,7 +33,15 @@ def _isolate_channel_aliases(tmp_path_factory):
     that exercise aliases patch CHANNEL_ALIASES_PATH themselves inside the
     test body, which takes precedence over this outer patch."""
     missing = tmp_path_factory.mktemp("aliases") / "none.json"
-    with patch("gateway.channel_directory.CHANNEL_ALIASES_PATH", missing):
+    with patch("gateway.channel_directory.CHANNEL_ALIASES_PATH", missing), \
+         patch(
+             "gateway.channel_directory._discord_public_directory_policy_required",
+             return_value=False,
+         ), \
+         patch(
+             "gateway.channel_directory._load_canonical_discord_channel_aliases",
+             return_value={},
+         ):
         yield
 
 
@@ -61,6 +72,7 @@ class TestLoadDirectory:
         cache_file = _write_directory(tmp_path, {
             "discord": [
                 {"id": "dm-1", "name": "Private", "type": "dm", "guild": None},
+                {"id": "private-thread-1", "name": "Secret thread", "type": "private_thread", "guild": "Guild"},
                 {"id": "public-1", "name": "ops", "type": "channel", "guild": "Guild"},
             ]
         })
@@ -68,6 +80,7 @@ class TestLoadDirectory:
             assert resolve_channel_name("discord", "Private") is None
             assert "Discord (DMs)" not in format_directory_for_display()
             assert is_discord_public_target("dm-1") is False
+            assert is_discord_public_target("private-thread-1") is False
             assert is_discord_public_target("public-1") is True
 
     def test_corrupt_file(self, tmp_path):
@@ -76,6 +89,42 @@ class TestLoadDirectory:
         with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
             result = load_directory()
         assert result["updated_at"] is None
+
+    def test_exact_public_edge_target_requires_unique_guild_metadata(self, tmp_path):
+        cache_file = _write_directory(tmp_path, {
+            "discord": [
+                {
+                    "id": "10:30",
+                    "thread_id": "30",
+                    "parent_channel_id": "10",
+                    "name": "public thread",
+                    "type": "thread",
+                    "target_type": "public_guild_thread",
+                    "guild_id": "1",
+                },
+                {
+                    "id": "40",
+                    "name": "ops",
+                    "type": "channel",
+                    "target_type": "public_guild_channel",
+                    "guild_id": "1",
+                },
+                {"id": "50", "name": "legacy", "type": "channel"},
+            ]
+        })
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file):
+            assert lookup_discord_public_target("30") == {
+                "target_type": "public_guild_thread",
+                "guild_id": "1",
+                "channel_id": "30",
+                "parent_channel_id": "10",
+            }
+            assert lookup_discord_public_target("40") == {
+                "target_type": "public_guild_channel",
+                "guild_id": "1",
+                "channel_id": "40",
+            }
+            assert lookup_discord_public_target("50") is None
 
 
 class TestBuildChannelDirectoryWrites:
@@ -135,6 +184,131 @@ class TestBuildChannelDirectoryOffload:
 
         assert [name for name, _ in calls] == ["telegram"]
         assert calls[0][1] != loop_thread
+
+
+class TestBuildDiscordPublicBoundary:
+    @staticmethod
+    def _channel(channel_id, name, guild, type_value, type_name, view_channel):
+        channel_type = SimpleNamespace(value=type_value, name=type_name)
+
+        def permissions_for(role):
+            assert role is guild.default_role
+            if view_channel == "raises":
+                raise RuntimeError("permission cache malformed")
+            if view_channel == "missing":
+                return SimpleNamespace()
+            return SimpleNamespace(view_channel=view_channel)
+
+        return SimpleNamespace(
+            id=channel_id,
+            name=name,
+            guild=guild,
+            type=channel_type,
+            permissions_for=permissions_for,
+            parent_id=10 if type_value in {10, 11, 12} else None,
+        )
+
+    def test_writer_policy_keeps_only_everyone_visible_public_surfaces(self):
+        role = object()
+        guild = SimpleNamespace(
+            id=1,
+            name="Guild",
+            default_role=role,
+            text_channels=[],
+            forum_channels=[],
+        )
+        public_text = self._channel(10, "public", guild, 0, "text", True)
+        private_text = self._channel(11, "staff", guild, 0, "text", False)
+        malformed_text = self._channel(12, "broken", guild, 0, "text", "missing")
+        raising_text = self._channel(13, "raising", guild, 0, "text", "raises")
+        public_forum = self._channel(20, "forum", guild, 15, "forum", True)
+        private_forum = self._channel(21, "staff-forum", guild, 15, "forum", False)
+        public_thread = self._channel(30, "public-thread", guild, 11, "public_thread", True)
+        private_thread = self._channel(31, "private-thread", guild, 12, "private_thread", True)
+        dm = SimpleNamespace(id=32, name="dm", guild=None, type=1)
+        guild.text_channels = [
+            public_text,
+            private_text,
+            malformed_text,
+            raising_text,
+        ]
+        guild.forum_channels = [public_forum, private_forum]
+        cached = {
+            target.id: target
+            for target in (public_text, public_thread, private_thread, dm)
+        }
+        client = SimpleNamespace(
+            guilds=[guild],
+            get_channel=lambda channel_id: cached.get(channel_id),
+        )
+        adapter = SimpleNamespace(_client=client)
+        sessions = [
+            {"id": "10", "name": "public-session", "type": "dm", "thread_id": None},
+            {"id": "10:30", "name": "thread-session", "type": "thread", "thread_id": "30"},
+            {"id": "10:31", "name": "private-thread-session", "type": "thread", "thread_id": "31"},
+            {"id": "32", "name": "dm-session", "type": "dm", "thread_id": None},
+            {"id": "999", "name": "uncached-session", "type": "channel", "thread_id": None},
+            {"id": "malformed", "name": "bad-session", "type": "channel", "thread_id": None},
+        ]
+
+        with patch.dict(sys.modules, {"discord": SimpleNamespace()}), patch(
+            "gateway.channel_directory._discord_public_directory_policy_required",
+            return_value=True,
+        ), patch(
+            "gateway.channel_directory._build_from_sessions",
+            return_value=sessions,
+        ):
+            channels = _build_discord(adapter)
+
+        assert [channel["id"] for channel in channels] == ["10", "20", "10", "10:30"]
+        assert channels[-2]["type"] == "channel"
+        assert channels[-1]["type"] == "thread"
+        assert channels[-1]["guild"] == "Guild"
+        serialized = json.dumps(channels)
+        assert "staff" not in serialized
+        assert "private-thread" not in serialized
+        assert "dm-session" not in serialized
+        assert "uncached-session" not in serialized
+
+    def test_writer_policy_fails_closed_when_live_cache_lookup_is_unavailable(self):
+        guild = SimpleNamespace(
+            name="Guild",
+            default_role=object(),
+            text_channels=[],
+            forum_channels=[],
+        )
+        adapter = SimpleNamespace(_client=SimpleNamespace(guilds=[guild]))
+        sessions = [{"id": "10:30", "name": "thread", "type": "thread", "thread_id": "30"}]
+
+        with patch.dict(sys.modules, {"discord": SimpleNamespace()}), patch(
+            "gateway.channel_directory._discord_public_directory_policy_required",
+            return_value=True,
+        ), patch(
+            "gateway.channel_directory._build_from_sessions",
+            return_value=sessions,
+        ):
+            assert _build_discord(adapter) == []
+
+    def test_generic_hermes_preserves_legacy_session_discovery(self):
+        guild = SimpleNamespace(
+            name="Guild",
+            text_channels=[SimpleNamespace(id=10, name="visible-to-bot")],
+            forum_channels=[],
+        )
+        adapter = SimpleNamespace(_client=SimpleNamespace(guilds=[guild]))
+        sessions = [{"id": "dm", "name": "legacy-dm", "type": "dm", "thread_id": None}]
+
+        with patch.dict(sys.modules, {"discord": SimpleNamespace()}), patch(
+            "gateway.channel_directory._discord_public_directory_policy_required",
+            return_value=False,
+        ), patch(
+            "gateway.channel_directory._build_from_sessions",
+            return_value=sessions,
+        ):
+            channels = _build_discord(adapter)
+
+        assert channels[-1] == sessions[0]
+        assert channels[0]["id"] == "10"
 
     def test_plugin_session_discovery_runs_off_event_loop_thread(self, tmp_path):
         cache_file = tmp_path / "channel_directory.json"
@@ -772,6 +946,103 @@ class TestChannelAliases:
             entries = load_directory()["platforms"]["whatsapp"]
             injected = [e for e in entries if e["id"] == "999@g.us"]
             assert injected and injected[0]["type"] == "group"
+
+    def test_production_ignores_mutable_discord_alias_overlay(self, tmp_path):
+        cache_file = _write_directory(tmp_path, {
+            "discord": [{
+                "id": "1527000000000000001",
+                "name": "incidents",
+                "guild": "Adventico",
+                "guild_id": "1282725267068157972",
+                "type": "channel",
+                "target_type": "guild_channel",
+            }]
+        })
+        local = {
+            "discord": {
+                "1527000000000000001": {
+                    "name": "attacker-name",
+                    "aliases": ["mutable-route"],
+                },
+                "1527000000000000009": "injected-route",
+            }
+        }
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+             self._setup_aliases(tmp_path, local), \
+             patch(
+                 "gateway.channel_directory._discord_public_directory_policy_required",
+                 return_value=True,
+             ):
+            result = load_directory()
+
+        assert result["platforms"]["discord"] == [{
+            "id": "1527000000000000001",
+            "name": "incidents",
+            "guild": "Adventico",
+            "guild_id": "1282725267068157972",
+            "type": "channel",
+            "target_type": "guild_channel",
+        }]
+
+    def test_canonical_alias_labels_only_exact_live_guild_target(self, tmp_path):
+        cache_file = _write_directory(tmp_path, {
+            "discord": [
+                {
+                    "id": "1527000000000000001",
+                    "name": "incidents",
+                    "guild": "Adventico",
+                    "guild_id": "1282725267068157972",
+                    "type": "channel",
+                    "target_type": "guild_channel",
+                },
+                {
+                    "id": "1527000000000000001:1527000000000000002",
+                    "thread_id": "1527000000000000002",
+                    "parent_channel_id": "1527000000000000001",
+                    "name": "july",
+                    "guild": "Adventico",
+                    "guild_id": "1282725267068157972",
+                    "type": "thread",
+                    "target_type": "guild_thread",
+                },
+            ]
+        })
+        canonical = {
+            "incident desk": {
+                "guild_id": "1282725267068157972",
+                "target_type": "guild_channel",
+                "channel_id": "1527000000000000001",
+            },
+            "july incidents": {
+                "guild_id": "1282725267068157972",
+                "target_type": "guild_thread",
+                "channel_id": "1527000000000000002",
+                "parent_channel_id": "1527000000000000001",
+            },
+            "not live": {
+                "guild_id": "1282725267068157972",
+                "target_type": "guild_channel",
+                "channel_id": "1527000000000000009",
+            },
+        }
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+             patch(
+                 "gateway.channel_directory._discord_public_directory_policy_required",
+                 return_value=True,
+             ), \
+             patch(
+                 "gateway.channel_directory._load_canonical_discord_channel_aliases",
+                 return_value=canonical,
+             ):
+            result = load_directory()
+
+        root, thread = result["platforms"]["discord"]
+        assert root["aliases"] == ["incident desk"]
+        assert thread["aliases"] == ["july incidents"]
+        assert all(
+            "not live" not in entry.get("aliases", [])
+            for entry in result["platforms"]["discord"]
+        )
 
     def test_no_alias_file_is_noop(self, tmp_path):
         cache_file = _write_directory(tmp_path, {

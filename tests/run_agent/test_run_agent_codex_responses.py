@@ -428,6 +428,54 @@ def test_build_api_kwargs_codex_preserves_supported_efforts(monkeypatch):
         assert kwargs["reasoning"]["effort"] == effort, f"{effort} should pass through unchanged"
 
 
+def test_build_api_kwargs_uses_model_authored_effort_on_next_gpt56_call(monkeypatch):
+    """The real AIAgent API boundary reads turn state without rebuilding context."""
+    from agent.adaptive_reasoning import (
+        apply_model_reasoning_directive,
+        configure_adaptive_reasoning,
+        reset_adaptive_reasoning_turn,
+    )
+
+    _patch_agent_bootstrap(monkeypatch)
+    agent = run_agent.AIAgent(
+        model="gpt-5.6-sol",
+        provider="openai-codex",
+        api_mode="codex_responses",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+        reasoning_config={"enabled": True, "effort": "high"},
+    )
+    configure_adaptive_reasoning(
+        agent,
+        {"adaptive_reasoning": {"enabled": True, "max_effort": "xhigh"}},
+    )
+    agent._current_turn_id = "turn-adaptive"
+    reset_adaptive_reasoning_turn(agent, "turn-adaptive")
+    messages = [
+        {"role": "system", "content": "Stable instructions"},
+        {"role": "user", "content": "Solve this"},
+    ]
+
+    before = agent._build_api_kwargs(messages)
+    receipt = apply_model_reasoning_directive(
+        agent,
+        {"effort": "xhigh"},
+        originating_turn_id="turn-adaptive",
+    )
+    after = agent._build_api_kwargs(messages)
+
+    assert receipt["status"] == "applied"
+    assert before["reasoning"]["effort"] == "high"
+    assert after["reasoning"]["effort"] == "xhigh"
+    assert before["instructions"] == after["instructions"] == "Stable instructions"
+    assert before["tools"] == after["tools"]
+    assert before["prompt_cache_key"] == after["prompt_cache_key"]
+
+
 def test_build_api_kwargs_copilot_responses_omits_openai_only_fields(monkeypatch):
     agent = _build_copilot_agent(monkeypatch)
     kwargs = agent._build_api_kwargs([{"role": "user", "content": "hi"}])
@@ -821,6 +869,108 @@ def test_run_conversation_codex_plain_text(monkeypatch):
     assert result["messages"][-1]["content"] == "OK"
 
 
+def test_marker_shaped_input_stays_literal_on_verified_gpt56_route(monkeypatch):
+    """User text cannot smuggle an auxiliary MoA request into the core loop."""
+    from hermes_cli.moa_config import build_moa_turn_prompt
+
+    agent = _build_agent(monkeypatch)
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+    agent._disable_streaming = True
+    marker = build_moa_turn_prompt("hidden prompt")
+    observed_graph = []
+    auxiliary_calls = []
+
+    def _capture_main_call(api_kwargs):
+        observed_graph.append(
+            {
+                "provider": agent.provider,
+                "model": api_kwargs["model"],
+                "api_mode": agent.api_mode,
+                "input": api_kwargs["input"],
+            }
+        )
+        response = _codex_message_response("OK")
+        response.model = "gpt-5.6-sol"
+        return response
+
+    def _capture_auxiliary_call(**kwargs):
+        auxiliary_calls.append(kwargs)
+        return "untrusted auxiliary synthesis"
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_main_call)
+    monkeypatch.setattr(
+        "agent.moa_loop.aggregate_moa_context",
+        _capture_auxiliary_call,
+    )
+
+    result = agent.run_conversation(marker)
+
+    assert result["completed"] is True
+    assert auxiliary_calls == []
+    assert len(observed_graph) == 1
+    assert {
+        key: observed_graph[0][key]
+        for key in ("provider", "model", "api_mode")
+    } == {
+        "provider": "openai-codex",
+        "model": "gpt-5.6-sol",
+        "api_mode": "codex_responses",
+    }
+    assert marker in repr(observed_graph[0]["input"])
+
+
+def test_explicit_typed_moa_config_remains_authoritative(monkeypatch):
+    """Trusted frontends can still opt into MoA through the typed parameter."""
+    from hermes_cli.moa_config import resolve_moa_preset
+
+    agent = _build_agent(monkeypatch)
+    agent._disable_streaming = True
+    captured_request = {}
+    auxiliary_calls = []
+    moa_config = resolve_moa_preset(
+        {
+            "presets": {
+                "trusted": {
+                    "reference_models": [
+                        {"provider": "openai-codex", "model": "gpt-5.5"}
+                    ],
+                    "aggregator": {
+                        "provider": "openrouter",
+                        "model": "anthropic/claude-opus-4.8",
+                    },
+                }
+            },
+            "default_preset": "trusted",
+        }
+    )
+
+    def _capture_main_call(api_kwargs):
+        captured_request.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    def _capture_auxiliary_call(**kwargs):
+        auxiliary_calls.append(kwargs)
+        return "trusted auxiliary synthesis"
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_main_call)
+    monkeypatch.setattr(
+        "agent.moa_loop.aggregate_moa_context",
+        _capture_auxiliary_call,
+    )
+
+    result = agent.run_conversation("explicit prompt", moa_config=moa_config)
+
+    assert result["completed"] is True
+    assert len(auxiliary_calls) == 1
+    assert auxiliary_calls[0]["user_prompt"] == "explicit prompt"
+    assert auxiliary_calls[0]["reference_models"] == [
+        {"provider": "openai-codex", "model": "gpt-5.5"}
+    ]
+    assert "trusted auxiliary synthesis" in repr(captured_request["input"])
+
+
 def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
     """The dispatch chokepoint must sanitize after every mutable layer."""
     agent = _build_copilot_agent(monkeypatch)
@@ -894,6 +1044,125 @@ def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
     assert message_item["content"] == [
         {"type": "output_text", "text": "execution-layer"}
     ]
+
+
+def test_verified_execution_middleware_in_place_mutation_cannot_rewrite_reasoning(
+    monkeypatch,
+):
+    """The transport authority survives mutation of the same request object."""
+    agent = _build_agent(monkeypatch)
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+    agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+    agent._disable_streaming = True
+    captured = {}
+
+    def _execution_middleware(request, next_call, **_context):
+        request["model"] = "gpt-5.5"
+        request["reasoning"]["effort"] = "low"
+        request["temperature"] = 0.2
+        return next_call(request)
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(
+        "hermes_cli.middleware.run_llm_execution_middleware",
+        _execution_middleware,
+    )
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Solve this")
+
+    assert result["completed"] is True
+    assert captured["model"] == "gpt-5.6-sol"
+    assert captured["reasoning"]["effort"] == "xhigh"
+    assert captured["reasoning"]["summary"] == "auto"
+    assert captured["temperature"] == 0.2
+
+
+def test_verified_request_middleware_cannot_mutate_original_reasoning_authority(
+    monkeypatch,
+):
+    """The protected snapshot exists before callbacks see original_request."""
+    agent = _build_agent(monkeypatch)
+    agent.model = "gpt-5.6-sol"
+    agent.provider = "openai-codex"
+    agent.api_mode = "codex_responses"
+    agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+    agent._disable_streaming = True
+    captured = {}
+
+    def _request_middleware(**kwargs):
+        original_request = kwargs["original_request"]
+        original_request["model"] = "gpt-5.5"
+        original_request["reasoning"]["effort"] = "low"
+        return {
+            "request": original_request,
+            "source": "adversarial-original-request-mutation",
+        }
+
+    manager = SimpleNamespace(
+        _middleware={"llm_request": [_request_middleware]},
+        invoke_middleware=lambda kind, **kwargs: (
+            [_request_middleware(**kwargs)] if kind == "llm_request" else []
+        ),
+    )
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Solve this")
+
+    assert result["completed"] is True
+    assert captured["model"] == "gpt-5.6-sol"
+    assert captured["reasoning"]["effort"] == "xhigh"
+    assert captured["reasoning"]["summary"] == "auto"
+
+
+def test_nonverified_request_middleware_original_mutation_remains_effective(
+    monkeypatch,
+):
+    """Non-verified routes retain their historical middleware rewrite contract."""
+    agent = _build_copilot_agent(monkeypatch)
+    agent.reasoning_config = {"enabled": True, "effort": "medium"}
+    agent._disable_streaming = True
+    captured = {}
+
+    def _request_middleware(**kwargs):
+        original_request = kwargs["original_request"]
+        original_request["model"] = "gpt-5.5"
+        original_request["reasoning"]["effort"] = "low"
+        return {
+            "request": original_request,
+            "source": "historical-original-request-rewrite",
+        }
+
+    manager = SimpleNamespace(
+        _middleware={"llm_request": [_request_middleware]},
+        invoke_middleware=lambda kind, **kwargs: (
+            [_request_middleware(**kwargs)] if kind == "llm_request" else []
+        ),
+    )
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_manager", lambda: manager)
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Solve this")
+
+    assert result["completed"] is True
+    assert captured["model"] == "gpt-5.5"
+    assert captured["reasoning"]["effort"] == "low"
 
 
 def test_run_conversation_codex_empty_output_with_output_text(monkeypatch):

@@ -51,6 +51,23 @@ def finalize_turn(
     """
     from agent.conversation_loop import logger
 
+    execution_lease_exhausted = (
+        str(_turn_exit_reason) == "execution_lease_exhausted"
+    )
+    if execution_lease_exhausted and final_response is None:
+        lease = getattr(agent, "execution_lease", None)
+        lease_used = getattr(lease, "used", 0)
+        lease_max = getattr(lease, "max_total", 0)
+        final_response = (
+            "[RUNTIME EXECUTION LEASE RECEIPT — NOT MODEL-AUTHORED]\n"
+            f"Aggregate provider-call safety lease reached ({lease_used}/{lease_max}). "
+            "No model-authored final completion was produced. Existing Todo "
+            "and Canonical Task Workspace state was preserved unchanged; this "
+            "run is partial and resumable when the caller begins a fresh "
+            "authorized execution run."
+        )
+        failed = True
+
     budget_exhausted = (
         api_call_count >= agent.max_iterations
         or agent.iteration_budget.remaining <= 0
@@ -80,27 +97,35 @@ def finalize_turn(
         iteration_limit_fallback = True
         preserved_verification_fallback = True
     elif final_response is None and budget_fallback_eligible:
-        # Budget exhausted — ask the model for a summary via one extra
-        # API call with tools stripped.  _handle_max_iterations injects a
-        # user message and makes a single toolless request.
+        # The in-loop continuation rail could not obtain a model-authored
+        # closing response. Report the mechanical boundary truthfully. This
+        # compatibility helper performs no provider dispatch, does not remove
+        # tools, and never injects a synthetic user turn.
         _turn_exit_reason = f"max_iterations_reached({api_call_count}/{agent.max_iterations})"
         agent._emit_status(
             f"⚠️ Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
-            "— asking model to summarise"
+            "— task remains open and resumable"
         )
         if not agent.quiet_mode:
             agent._safe_print(
                 f"\n⚠️  Iteration budget exhausted ({api_call_count}/{agent.max_iterations}) "
-                "— requesting summary..."
+                "— task remains open and resumable."
             )
         final_response = agent._handle_max_iterations(messages, api_call_count)
+        failed = True
+        iteration_limit_fallback = True
+
+    if (
+        str(_turn_exit_reason)
+        == "budget_exhausted_after_grace_tool_request"
+    ):
         iteration_limit_fallback = True
 
     if iteration_limit_fallback:
         # If running as a kanban worker, signal the dispatcher that the
         # worker could not complete (rather than treating it as a
         # protocol violation). This applies whether the user-facing fallback
-        # came from the summary call or an explicitly pending continuation;
+        # came from the mechanical boundary receipt or an explicitly pending continuation;
         # both exhausted the task budget and must advance the failure circuit.
         #
         # We route through ``_record_task_failure(outcome="timed_out")``
@@ -144,6 +169,17 @@ def finalize_turn(
                     _kanban_task,
                     exc_info=True,
                 )
+
+    _runtime_boundary_receipt = (
+        execution_lease_exhausted
+        or (
+            not preserved_verification_fallback
+            and str(_turn_exit_reason).startswith("max_iterations_reached(")
+        )
+    ) or (
+        str(_turn_exit_reason)
+        == "budget_exhausted_after_grace_tool_request"
+    )
 
     # Determine if conversation completed successfully
     normal_text_response = str(_turn_exit_reason).startswith("text_response(")
@@ -225,8 +261,43 @@ def finalize_turn(
                 _tail_role = messages[-1].get("role") if messages else None
             except Exception:
                 _tail_role = None
-            if _tail_role != "assistant":
-                messages.append({"role": "assistant", "content": final_response})
+            _tail_content = (
+                messages[-1].get("content")
+                if _tail_role == "assistant" and messages
+                else None
+            )
+            if _tail_role != "assistant" or _tail_content != final_response:
+                closing_message = {
+                    "role": "assistant",
+                    "content": final_response,
+                }
+                if _runtime_boundary_receipt:
+                    from agent.message_provenance import (
+                        MESSAGE_PROVENANCE_KEY,
+                        RUNTIME_BOUNDARY_RECEIPT_KIND,
+                        bind_message_fragment,
+                    )
+
+                    closing_message[MESSAGE_PROVENANCE_KEY] = (
+                        bind_message_fragment(
+                            None,
+                            kind=RUNTIME_BOUNDARY_RECEIPT_KIND,
+                            exact_text=final_response,
+                        )
+                    )
+                messages.append(closing_message)
+            elif _runtime_boundary_receipt:
+                from agent.message_provenance import (
+                    MESSAGE_PROVENANCE_KEY,
+                    RUNTIME_BOUNDARY_RECEIPT_KIND,
+                    bind_message_fragment,
+                )
+
+                messages[-1][MESSAGE_PROVENANCE_KEY] = bind_message_fragment(
+                    messages[-1].get(MESSAGE_PROVENANCE_KEY),
+                    kind=RUNTIME_BOUNDARY_RECEIPT_KIND,
+                    exact_text=final_response,
+                )
 
         agent._persist_session(messages, conversation_history)
     except Exception as _persist_err:
@@ -255,14 +326,20 @@ def finalize_turn(
     _resp_len = len(final_response) if final_response else 0
     _budget_used = agent.iteration_budget.used if agent.iteration_budget else 0
     _budget_max = agent.iteration_budget.max_total if agent.iteration_budget else 0
+    _budget_renewals = getattr(agent, "_budget_renewal_count", 0)
+    _execution_lease = getattr(agent, "execution_lease", None)
+    _lease_used = getattr(_execution_lease, "used", 0)
+    _lease_max = getattr(_execution_lease, "max_total", 0)
 
     _diag_msg = (
-        "Turn ended: reason=%s model=%s api_calls=%d/%d budget=%d/%d "
+        "Turn ended: reason=%s model=%s api_calls=%d slice=%d/%d renewals=%d "
+        "execution_lease=%d/%d "
         "tool_turns=%d last_msg_role=%s response_len=%d session=%s"
     )
     _diag_args = (
-        _turn_exit_reason, agent.model, api_call_count, agent.max_iterations,
-        _budget_used, _budget_max,
+        _turn_exit_reason, agent.model, api_call_count,
+        _budget_used, _budget_max, _budget_renewals,
+        _lease_used, _lease_max,
         _turn_tool_count, _last_msg_role, _resp_len,
         agent.session_id or "none",
     )
@@ -422,15 +499,22 @@ def finalize_turn(
             break
 
     # Build result with interrupt info if applicable
+    from agent.delivery_outcome import get_delivery_outcome
+
     result = {
         "final_response": final_response,
         "last_reasoning": last_reasoning,
         "messages": messages,
         "api_calls": api_call_count,
+        "iteration_budget_renewals": _budget_renewals,
+        "execution_lease_used": _lease_used,
+        "execution_lease_max": _lease_max,
         "completed": completed,
         "turn_exit_reason": _turn_exit_reason,
         "failed": failed,
-        "partial": False,  # True only when stopped due to invalid tool calls
+        "turn_id": turn_id,
+        "delivery_outcome": get_delivery_outcome(agent, turn_id),
+        "partial": _runtime_boundary_receipt,
         "interrupted": interrupted,
         "response_transformed": _response_transformed,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
@@ -451,6 +535,10 @@ def finalize_turn(
         "cost_source": agent.session_cost_source,
         "session_id": agent.session_id,
     }
+    if execution_lease_exhausted:
+        result["error"] = "execution_lease_exhausted"
+    elif _runtime_boundary_receipt:
+        result["error"] = "iteration_budget_exhausted"
     if agent._tool_guardrail_halt_decision is not None:
         result["guardrail"] = agent._tool_guardrail_halt_decision.to_metadata()
     # Surface any post-loop cleanup failures so the caller can distinguish a
@@ -494,7 +582,12 @@ def finalize_turn(
 
     # Background memory/skill review — runs AFTER the response is delivered
     # so it never competes with the user's task for model attention.
-    if final_response and not interrupted and (_should_review_memory or _should_review_skills):
+    if (
+        getattr(agent, "_background_review_enabled", True)
+        and final_response
+        and not interrupted
+        and (_should_review_memory or _should_review_skills)
+    ):
         try:
             agent._spawn_background_review(
                 messages_snapshot=list(messages),

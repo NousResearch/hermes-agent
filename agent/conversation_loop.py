@@ -530,6 +530,7 @@ def run_conversation(
     persist_user_message: Optional[str] = None,
     persist_user_timestamp: Optional[float] = None,
     moa_config: Optional[dict[str, Any]] = None,
+    user_message_provenance: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     """
     Run a complete conversation with tool calling until completion.
@@ -547,23 +548,27 @@ def run_conversation(
             synthetic prefixes.
         persist_user_timestamp: Optional platform event timestamp to store
             as metadata on that persisted user message.
-                or queuing follow-up prefetch work.
+        user_message_provenance: Optional trusted runtime binding for an exact
+            fragment attached to this user turn. It is internal metadata,
+            persisted beside the message, and stripped before provider calls.
+        moa_config: Optional explicitly-authorized, typed one-turn MoA
+            configuration supplied by a trusted frontend boundary. It is never
+            inferred from user-controlled message text.
 
     Returns:
         Dict: Complete conversation result with final response and message history
     """
-    if moa_config is None:
-        try:
-            from hermes_cli.moa_config import decode_moa_turn
+    # A process-pinned effective config is live runtime authority. Re-attest
+    # before the turn prologue so drift cannot reach preflight compression,
+    # plugin hooks, MCP refresh, or the codex app-server early-return path.
+    # This reads no prompt/message state and therefore cannot affect prefix
+    # caching or role alternation.
+    from hermes_cli.config import (
+        PinnedEffectiveConfigError,
+        attest_pinned_effective_config_projection,
+    )
 
-            _decoded_message, _decoded_moa_config = decode_moa_turn(user_message)
-            if _decoded_moa_config is not None:
-                user_message = _decoded_message
-                moa_config = _decoded_moa_config
-                if persist_user_message is None:
-                    persist_user_message = _decoded_message
-        except Exception:
-            pass
+    attest_pinned_effective_config_projection()
 
     # ── Per-turn setup (the prologue) ──
     # All once-per-turn setup — stdio guarding, retry-counter resets, user
@@ -582,6 +587,7 @@ def run_conversation(
         stream_callback,
         persist_user_message,
         persist_user_timestamp,
+        user_message_provenance,
         restore_or_build_system_prompt=_restore_or_build_system_prompt,
         install_safe_stdio=_install_safe_stdio,
         sanitize_surrogates=_sanitize_surrogates,
@@ -631,6 +637,7 @@ def run_conversation(
     # See agent/transports/codex_app_server_session.py for the adapter
     # and references/codex-app-server-runtime.md for the rationale.
     if agent.api_mode == "codex_app_server":
+        attest_pinned_effective_config_projection()
         return agent._run_codex_app_server_turn(
             user_message=user_message,
             original_user_message=original_user_message,
@@ -639,7 +646,7 @@ def run_conversation(
             should_review_memory=_should_review_memory,
         )
 
-    while (api_call_count < agent.max_iterations and agent.iteration_budget.remaining > 0) or agent._budget_grace_call:
+    while agent.iteration_budget.remaining > 0 or agent._budget_grace_call:
         # Reset per-turn checkpoint dedup so each iteration can take one snapshot
         agent._checkpoint_mgr.new_turn()
 
@@ -650,21 +657,60 @@ def run_conversation(
             if not agent.quiet_mode:
                 agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
             break
-        
-        api_call_count += 1
-        agent._api_call_count = api_call_count
-        agent._touch_activity(f"starting API call #{api_call_count}")
 
-        # Grace call: the budget is exhausted but we gave the model one
-        # more chance.  Consume the grace flag so the loop exits after
-        # this iteration regardless of outcome.
-        if agent._budget_grace_call:
+        # Reserve aggregate provider-call authority before renewing or
+        # consuming a local slice. This lease is shared atomically by the
+        # parent and every descendant; neither slice renewal nor execute_code
+        # refunds can replenish it.
+        execution_lease = getattr(agent, "execution_lease", None)
+        if execution_lease is None or not execution_lease.consume():
+            failed = True
+            _turn_exit_reason = "execution_lease_exhausted"
+            agent._budget_grace_call = False
+            agent._emit_status(
+                "⚠️ Aggregate execution safety lease reached — task remains "
+                "open and resumable"
+            )
+            break
+
+        # A model-authored active todo plan turns max_iterations into a
+        # renewable execution slice. Renewal changes only the counter; model,
+        # tools, prompt, transcript, permissions, and task identity stay exact.
+        # Completed/cancelled/blocked plans are terminal and do not renew.
+        if (
+            agent._budget_grace_call
+            and getattr(agent, "_todo_store", None) is not None
+            and agent._todo_store.has_active_items()
+        ):
+            agent._budget_renewal_count = (
+                getattr(agent, "_budget_renewal_count", 0) + 1
+            )
+            agent.iteration_budget = IterationBudget(agent.max_iterations)
+            agent._budget_grace_call = False
+            agent._budget_exhausted_injected = False
+            agent._emit_status(
+                "↻ Active model-authored plan continues — renewed the "
+                f"execution slice ({agent._budget_renewal_count})"
+            )
+
+        # When no active plan remains, one grace response lets the model close
+        # the turn without injecting a synthetic user message or swapping out
+        # its tools.
+        _budget_grace_iteration = bool(agent._budget_grace_call)
+        if _budget_grace_iteration:
             agent._budget_grace_call = False
         elif not agent.iteration_budget.consume():
             _turn_exit_reason = "budget_exhausted"
             if not agent.quiet_mode:
                 agent._safe_print(f"\n⚠️  Iteration budget exhausted ({agent.iteration_budget.used}/{agent.iteration_budget.max_total} iterations used)")
             break
+        elif agent.iteration_budget.remaining <= 0:
+            agent._budget_exhausted_injected = True
+            agent._budget_grace_call = True
+
+        api_call_count += 1
+        agent._api_call_count = api_call_count
+        agent._touch_activity(f"starting API call #{api_call_count}")
 
         # Fire step_callback for gateway hooks (agent:step event)
         if agent.step_callback is not None:
@@ -791,6 +837,30 @@ def run_conversation(
         api_messages = []
         for idx, msg in enumerate(messages):
             api_msg = msg.copy()
+
+            # The single closing grace call receives a transient mechanical
+            # receipt on the existing tool-result tail. It is never persisted
+            # and never masquerades as a user instruction. Active plans do not
+            # normally reach this rail: their execution slice is renewed after
+            # the prior tool result.
+            if (
+                _budget_grace_iteration
+                and idx == len(messages) - 1
+                and msg.get("role") == "tool"
+            ):
+                _budget_receipt = (
+                    "\n\n[RUNTIME ITERATION SLICE RECEIPT]\n"
+                    "execution_slice_remaining=0\n"
+                    "additional_tool_execution_authorized=false\n"
+                    "transcript_and_canonical_checkpoint_preserved=true"
+                )
+                _content = api_msg.get("content", "")
+                if isinstance(_content, str):
+                    api_msg["content"] = _content + _budget_receipt
+                elif isinstance(_content, list):
+                    api_msg["content"] = list(_content) + [
+                        {"type": "text", "text": _budget_receipt}
+                    ]
 
             # Inject ephemeral context into the current turn's user message.
             # Sources: memory manager prefetch + plugin pre_llm_call hooks
@@ -1041,9 +1111,6 @@ def run_conversation(
             # counters from the pre-compaction history.
             agent._empty_content_retries = 0
             agent._thinking_prefill_retries = 0
-            agent._last_content_with_tools = None
-            agent._last_content_tools_all_housekeeping = False
-            agent._mute_post_response = False
             # Re-baseline the flush cursor for the compaction mode that just
             # ran. Legacy session-rotation returns None (the child session has
             # not seen the compacted transcript, so the next flush writes it
@@ -1065,7 +1132,10 @@ def run_conversation(
         thinking_spinner = None
         
         if not agent.quiet_mode:
-            agent._vprint(f"\n{agent.log_prefix}🔄 Making API call #{api_call_count}/{agent.max_iterations}...")
+            agent._vprint(
+                f"\n{agent.log_prefix}🔄 Making API call #{api_call_count} "
+                f"(slice {agent.iteration_budget.used}/{agent.iteration_budget.max_total})..."
+            )
             agent._vprint(f"{agent.log_prefix}   📊 Request size: {len(api_messages)} messages, ~{approx_tokens:,} tokens (~{total_chars:,} chars)")
             agent._vprint(f"{agent.log_prefix}   🔧 Available tools: {len(agent.tools) if agent.tools else 0}")
         else:
@@ -1152,6 +1222,12 @@ def run_conversation(
                 except Exception:
                     pass  # Never let rate guard break the agent loop
 
+            # An explicit effective-config pin is a live runtime authority, not
+            # merely startup validation. Re-attest outside the provider retry
+            # handler so path/content/hash/parse drift can never be classified
+            # as a transient API error or followed by an LLM call.
+            attest_pinned_effective_config_projection()
+
             try:
                 agent._reset_stream_delivery_tracking()
                 # api_messages is built once, before this retry loop, while the
@@ -1179,6 +1255,23 @@ def run_conversation(
                     _xh["x-initiator"] = "user"
                     api_kwargs["extra_headers"] = _xh
                     agent._is_user_initiated_turn = False
+
+                from agent.adaptive_reasoning import (
+                    preserve_verified_reasoning_payload,
+                )
+
+                # Capture the verified model/reasoning authority before any
+                # middleware receives a request object. Request middleware is
+                # intentionally allowed to inspect and mutate its historical
+                # ``original_request`` argument, so that object cannot also be
+                # the authority used to restore the model-authored decision.
+                # The helper deep-copies only the protected fields on the exact
+                # verified route and remains a no-op for every other route.
+                _verified_reasoning_authority = preserve_verified_reasoning_payload(
+                    agent,
+                    api_kwargs,
+                    {},
+                )
                 try:
                     from hermes_cli.middleware import apply_llm_request_middleware
 
@@ -1202,6 +1295,19 @@ def run_conversation(
                     _original_api_kwargs = dict(api_kwargs)
                     _llm_middleware_trace = []
 
+                api_kwargs = preserve_verified_reasoning_payload(
+                    agent,
+                    _verified_reasoning_authority,
+                    api_kwargs,
+                )
+                # Execution middleware receives ``api_kwargs`` by reference and
+                # may mutate it in place before invoking the transport closure.
+                # Keep an independent, minimal authority snapshot so a nested
+                # mutation (for example ``reasoning["effort"] = "low"``) cannot
+                # rewrite the verified model-authored decision before the final
+                # dispatch boundary.  ``preserve_verified_reasoning_payload``
+                # deep-copies the protected values and is a no-op off the exact
+                # verified GPT-5.6 Codex route.
                 try:
                     from hermes_cli.plugins import (
                         has_hook,
@@ -1317,12 +1423,22 @@ def run_conversation(
                         _use_streaming = False
 
                 def _perform_api_call(next_api_kwargs):
+                    next_api_kwargs = preserve_verified_reasoning_payload(
+                        agent,
+                        _verified_reasoning_authority,
+                        next_api_kwargs,
+                    )
                     if agent.api_mode == "codex_responses":
                         next_api_kwargs = agent._get_transport().preflight_kwargs(
                             next_api_kwargs,
                             allow_stream=False,
                             is_github_responses=agent._is_copilot_url(),
                         )
+                    # Execution middleware may perform arbitrary work before
+                    # invoking this closure. Re-attest at the final transport
+                    # boundary so drift after request construction can never
+                    # reach either streaming or non-streaming provider I/O.
+                    attest_pinned_effective_config_projection()
                     if _use_streaming:
                         return agent._interruptible_streaming_api_call(
                             next_api_kwargs, on_first_delta=_stop_spinner
@@ -2321,6 +2437,11 @@ def run_conversation(
                 agent._persist_session(messages, conversation_history)
                 break
 
+            except PinnedEffectiveConfigError:
+                # A sealed runtime-authority violation is not a provider
+                # failure. Never retry, route to fallback, or downgrade it to
+                # a user-facing API error.
+                raise
             except Exception as api_error:
                 # Stop spinner silently — retry status is buffered and
                 # only flushed when every retry+fallback is exhausted.
@@ -3766,17 +3887,17 @@ def run_conversation(
                     # ~60KB Cloudflare challenge page as 31 Discord messages).
                     _nonretryable_summary = agent._summarize_api_error(api_error)
                     if classified.reason == FailoverReason.content_policy_blocked:
-                        agent._emit_status(
+                        agent._emit_terminal_status(
                             f"❌ Provider safety filter blocked this request: "
                             f"{_nonretryable_summary}"
                         )
                     elif classified.reason == FailoverReason.ssl_cert_verification:
-                        agent._emit_status(
+                        agent._emit_terminal_status(
                             f"❌ TLS certificate verification failed: "
                             f"{_nonretryable_summary}"
                         )
                     else:
-                        agent._emit_status(
+                        agent._emit_terminal_status(
                             f"❌ Non-retryable error (HTTP {status_code}): "
                             f"{_nonretryable_summary}"
                         )
@@ -3954,7 +4075,9 @@ def run_conversation(
                     _final_summary = agent._summarize_api_error(api_error)
                     _billing_guidance = ""
                     if classified.reason == FailoverReason.billing:
-                        agent._emit_status(f"❌ Billing or credits exhausted — {_final_summary}")
+                        agent._emit_terminal_status(
+                            f"❌ Billing or credits exhausted — {_final_summary}"
+                        )
                         _billing_guidance = _billing_or_entitlement_message(
                             capability="model access",
                             provider=_provider,
@@ -3969,9 +4092,13 @@ def run_conversation(
                             model=_model,
                         )
                     elif is_rate_limited:
-                        agent._emit_status(f"❌ Rate limited after {max_retries} retries — {_final_summary}")
+                        agent._emit_terminal_status(
+                            f"❌ Rate limited after {max_retries} retries — {_final_summary}"
+                        )
                     else:
-                        agent._emit_status(f"❌ API failed after {max_retries} retries — {_final_summary}")
+                        agent._emit_terminal_status(
+                            f"❌ API failed after {max_retries} retries — {_final_summary}"
+                        )
                     agent._vprint(f"{agent.log_prefix}   💀 Final error: {_final_summary}", force=True)
 
                     # Detect SSE stream-drop pattern (e.g. "Network
@@ -4444,6 +4571,48 @@ def run_conversation(
             
             # Check for tool calls
             if assistant_message.tool_calls:
+                if _budget_grace_iteration:
+                    # The closing grace response may use the normal tool schema
+                    # for cache and model-continuity reasons, but it has no
+                    # execution authority. Record every requested call and pair
+                    # it with a truthful non-execution receipt so transcript
+                    # alternation remains valid and no side effect can occur.
+                    assistant_msg = agent._build_assistant_message(
+                        assistant_message, finish_reason
+                    )
+                    messages.append(assistant_msg)
+                    for tc in assistant_message.tool_calls:
+                        tool_name = str(getattr(tc.function, "name", "") or "")
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "name": tool_name,
+                                "tool_call_id": tc.id,
+                                "content": json.dumps(
+                                    {
+                                        "success": False,
+                                        "executed": False,
+                                        "error": "iteration_budget_exhausted",
+                                        "tool": tool_name,
+                                    },
+                                    sort_keys=True,
+                                    separators=(",", ":"),
+                                ),
+                            }
+                        )
+                    failed = True
+                    _turn_exit_reason = (
+                        "budget_exhausted_after_grace_tool_request"
+                    )
+                    final_response = agent._handle_max_iterations(
+                        messages, api_call_count
+                    )
+                    agent._emit_status(
+                        "⚠️ Iteration boundary reached; requested grace-call "
+                        "tools were not executed. The task remains open and resumable."
+                    )
+                    break
+
                 if not agent.quiet_mode:
                     agent._vprint(f"{agent.log_prefix}🔧 Processing {len(assistant_message.tool_calls)} tool call(s)...")
                 
@@ -4451,14 +4620,11 @@ def run_conversation(
                     for tc in assistant_message.tool_calls:
                         logging.debug(f"Tool call: {tc.function.name} with args: {tc.function.arguments[:200]}...")
                 
-                # Validate tool call names - detect model hallucinations
-                # Repair mismatched tool names before validating
-                for tc in assistant_message.tool_calls:
-                    if tc.function.name not in agent.valid_tool_names:
-                        repaired = agent._repair_tool_call(tc.function.name)
-                        if repaired:
-                            print(f"{agent.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")
-                            tc.function.name = repaired
+                # Tool names are an exact model-authored dispatch contract.
+                # Unknown names are paired with a non-execution result and
+                # returned to the same model for correction. The runtime must
+                # never fuzzy-map a hallucinated or near-miss name onto a real
+                # tool, especially one with mutation authority.
                 invalid_tool_calls = [
                     tc.function.name for tc in assistant_message.tool_calls
                     if tc.function.name not in agent.valid_tool_names
@@ -4630,29 +4796,14 @@ def run_conversation(
 
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                 
-                # If this turn has both content AND tool_calls, capture the content
-                # as a fallback final response. Common pattern: model delivers its
-                # answer and calls memory/skill tools as a side-effect in the same
-                # turn. If the follow-up turn after tools is empty, we use this.
+                # Content alongside tool calls remains ordinary model-authored
+                # conversation content. The runtime must not classify tool names
+                # as "housekeeping" or infer that narration is a final answer;
+                # every tool result returns to the same model for the semantic
+                # decision about whether to continue or finish.
                 turn_content = assistant_message.content or ""
                 if turn_content and agent._has_content_after_think_block(turn_content):
-                    agent._last_content_with_tools = turn_content
-                    # Only mute subsequent output when EVERY tool call in
-                    # this turn is post-response housekeeping (memory, todo,
-                    # skill_manage, etc.).  If any substantive tool is present
-                    # (search_files, read_file, write_file, terminal, ...),
-                    # keep output visible so the user sees progress.
-                    _HOUSEKEEPING_TOOLS = frozenset({
-                        "memory", "todo", "skill_manage", "session_search",
-                    })
-                    _all_housekeeping = all(
-                        tc.function.name in _HOUSEKEEPING_TOOLS
-                        for tc in assistant_message.tool_calls
-                    )
-                    agent._last_content_tools_all_housekeeping = _all_housekeeping
-                    if _all_housekeeping and agent._has_stream_consumers():
-                        agent._mute_post_response = True
-                    elif agent._should_emit_quiet_tool_messages():
+                    if agent._should_emit_quiet_tool_messages():
                         clean = agent._strip_think_blocks(turn_content).strip()
                         if clean:
                             agent._vprint(f"  ┊ 💬 {clean}")
@@ -4681,7 +4832,6 @@ def run_conversation(
                 # Successful tool execution — reset the post-tool nudge
                 # flag so it can fire again if the model goes empty on
                 # a LATER tool round.
-                agent._post_tool_empty_retried = False
 
                 messages.append(assistant_msg)
                 agent._emit_interim_assistant_message(assistant_msg)
@@ -4755,6 +4905,11 @@ def run_conversation(
                 _tc_names = {tc.function.name for tc in assistant_message.tool_calls}
                 if _tc_names == {"execute_code"}:
                     agent.iteration_budget.refund()
+
+                if agent.iteration_budget.remaining > 0:
+                    # An execute_code-only call refunded the slice boundary.
+                    agent._budget_grace_call = False
+                    agent._budget_exhausted_injected = False
                 
                 # Use real token counts from the API response to decide
                 # compression.  prompt_tokens + completion_tokens is the
@@ -4813,13 +4968,6 @@ def run_conversation(
                 # No tool calls - this is the final response
                 final_response = assistant_message.content or ""
                 
-                # Fix: unmute output when entering the no-tool-call branch
-                # so the user can see empty-response warnings and recovery
-                # status messages.  _mute_post_response was set during a
-                # prior housekeeping tool turn and should not silence the
-                # final response path.
-                agent._mute_post_response = False
-                
                 # Check if response only has think block with no actual content after it
                 if not agent._has_content_after_think_block(final_response):
                     # ── Partial stream recovery ─────────────────────
@@ -4850,54 +4998,21 @@ def run_conversation(
                         agent._response_was_previewed = False
                         break
 
-                    # If the previous turn already delivered real content alongside
-                    # HOUSEKEEPING tool calls (e.g. "You're welcome!" + memory save),
-                    # the model has nothing more to say. Use the earlier content
-                    # immediately instead of wasting API calls on retries.
-                    # NOTE: Only use this shortcut when ALL tools in that turn were
-                    # housekeeping (memory, todo, etc.).  When substantive tools
-                    # were called (terminal, search_files, etc.), the content was
-                    # likely mid-task narration ("I'll scan the directory...") and
-                    # the empty follow-up means the model choked — let the
-                    # post-tool nudge below handle that instead of exiting early.
-                    fallback = getattr(agent, '_last_content_with_tools', None)
-                    if fallback and getattr(agent, '_last_content_tools_all_housekeeping', False):
-                        _turn_exit_reason = "fallback_prior_turn_content"
-                        logger.info("Empty follow-up after tool calls — using prior turn content as final response")
-                        agent._emit_status("↻ Empty response after tool calls — using earlier content as final answer")
-                        agent._last_content_with_tools = None
-                        agent._last_content_tools_all_housekeeping = False
-                        agent._empty_content_retries = 0
-                        # Do NOT modify the assistant message content — the
-                        # old code injected "Calling the X tools..." which
-                        # poisoned the conversation history.  Just use the
-                        # fallback text as the final response and break.
-                        final_response = agent._strip_think_blocks(fallback).strip()
-                        agent._response_was_previewed = True
-                        break
-
                     # ── Post-tool-call empty response nudge ───────────
                     # The model returned empty after executing tool calls.
-                    # This covers two cases:
-                    #  (a) No prior-turn content at all — model went silent
-                    #  (b) Prior turn had content + SUBSTANTIVE tools (the
-                    #      fallback above was skipped because the content
-                    #      was mid-task narration, not a final answer)
+                    # This covers both a wholly empty turn and an empty
+                    # follow-up after model-authored narration plus tools.
                     # Instead of giving up, nudge the model to continue by
                     # appending a user-level hint.  This is the #9400 case:
                     # weaker models (mimo-v2-pro, GLM-5, etc.) sometimes
                     # return empty after tool results instead of continuing
                     # to the next step.  One retry with a nudge usually
                     # fixes it.
-                    _prior_was_tool = any(
-                        m.get("role") == "tool"
-                        for m in messages[-5:]  # check recent messages
-                    )
                     # Detect Qwen3/Ollama-style in-content thinking blocks.
                     # Ollama puts <think> in the content field (not in
                     # reasoning_content), so _has_structured below would
-                    # miss it.  We check here so thinking-only responses
-                    # after tool calls route to prefill instead of nudge.
+                    # miss it. We check here so thinking-only responses can
+                    # use the provider-compatible assistant prefill path.
                     _has_inline_thinking = bool(
                         re.search(
                             r'<think>|<thinking>|<reasoning>',
@@ -4905,44 +5020,6 @@ def run_conversation(
                             re.IGNORECASE,
                         )
                     )
-                    if (
-                        _prior_was_tool
-                        and not getattr(agent, "_post_tool_empty_retried", False)
-                        and not _has_inline_thinking  # thinking model still working — let prefill handle
-                    ):
-                        agent._post_tool_empty_retried = True
-                        # Clear stale narration so it doesn't resurface
-                        # on a later empty response after the nudge.
-                        agent._last_content_with_tools = None
-                        agent._last_content_tools_all_housekeeping = False
-                        logger.info(
-                            "Empty response after tool calls — nudging model "
-                            "to continue processing"
-                        )
-                        agent._buffer_status(
-                            "⚠️ Model returned empty after tool calls — "
-                            "nudging to continue"
-                        )
-                        # Append the empty assistant message first so the
-                        # message sequence stays valid:
-                        #   tool(result) → assistant("(empty)") → user(nudge)
-                        # Without this, we'd have tool → user which most
-                        # APIs reject as an invalid sequence.
-                        _nudge_msg = agent._build_assistant_message(assistant_message, finish_reason)
-                        _nudge_msg["content"] = "(empty)"
-                        _nudge_msg["_empty_recovery_synthetic"] = True
-                        messages.append(_nudge_msg)
-                        messages.append({
-                            "role": "user",
-                            "content": (
-                                "You just executed tool calls but returned an "
-                                "empty response. Please process the tool "
-                                "results above and continue with the task."
-                            ),
-                            "_empty_recovery_synthetic": True,
-                        })
-                        continue
-
                     # ── Thinking-only prefill continuation ──────────
                     # The model produced structured reasoning (via API
                     # fields) but no visible text content.  Rather than
@@ -5045,6 +5122,11 @@ def run_conversation(
                     # user can see what was attempted before "(empty)".
                     agent._flush_status_buffer()
                     _turn_exit_reason = "empty_response_exhausted"
+                    # No visible model response is a failed turn even when the
+                    # provider returned HTTP success.  Mark it before
+                    # finalization so a stale model-authored suppress outcome
+                    # cannot hide the gateway's actionable failure notice.
+                    failed = True
                     reasoning_text = agent._extract_reasoning(assistant_message)
                     agent._drop_trailing_empty_response_scaffolding(messages)
                     assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
@@ -5105,11 +5187,9 @@ def run_conversation(
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 
-                # Pop thinking-only prefill and empty-response retry
-                # scaffolding before appending either a final response or a
-                # verification-stop follow-up. These internal turns are only
-                # for the next API retry and should not become durable
-                # transcript context.
+                # Pop legacy/temporary recovery scaffolding before appending
+                # the final response. It must never become durable transcript
+                # context or mutate a resumed conversation's role sequence.
                 while (
                     messages
                     and isinstance(messages[-1], dict)
@@ -5121,119 +5201,19 @@ def run_conversation(
                 ):
                     messages.pop()
 
-                try:
-                    from agent.verification_stop import (
-                        build_verify_on_stop_nudge,
-                        verify_on_stop_enabled,
-                    )
-
-                    if verify_on_stop_enabled():
-                        _verify_nudge = build_verify_on_stop_nudge(
-                            session_id=getattr(agent, "session_id", None),
-                            changed_paths=getattr(agent, "_turn_file_mutation_paths", set()),
-                            attempts=getattr(agent, "_verification_stop_nudges", 0),
-                        )
-                    else:
-                        _verify_nudge = None
-                except Exception:
-                    logger.debug("verification stop-loop check failed", exc_info=True)
-                    _verify_nudge = None
-
-                if _verify_nudge:
-                    agent._verification_stop_nudges = (
-                        getattr(agent, "_verification_stop_nudges", 0) + 1
-                    )
-                    final_msg["finish_reason"] = "verification_required"
-                    final_msg["_verification_stop_synthetic"] = True
-                    messages.append(final_msg)
-                    # Keep the attempted final answer in model history so the
-                    # synthetic user nudge preserves role alternation, but do
-                    # not surface it to the user as an interim answer. The
-                    # whole point of this guard is to prevent premature
-                    # "done" claims before checks run. Both the attempted
-                    # answer and the nudge are flagged synthetic so neither
-                    # persists — otherwise the resumed transcript keeps a
-                    # premature "done" with the nudge stripped, producing an
-                    # assistant→assistant adjacency. (#55733)
-                    messages.append({
-                        "role": "user",
-                        "content": _verify_nudge,
-                        "_verification_stop_synthetic": True,
-                    })
-                    agent._session_messages = messages
-                    # Run the verification-stop loop silently — the nudge is an
-                    # internal turn that should not add noise to the user's
-                    # terminal. Keep a debug breadcrumb in agent.log for tracing.
-                    logger.debug("verification stop-loop nudge issued (attempt %d)",
-                                 agent._verification_stop_nudges)
-                    # Keep the attempted answer only as an explicit fallback for
-                    # continuation-budget exhaustion.  ``final_response`` itself
-                    # must be cleared so the finalizer can distinguish this gate
-                    # from unrelated error/recovery exits. (#61631)
-                    _pending_verification_response = final_response
-                    final_response = None
-                    continue
-
-                # User verification-loop gate: when the agent edited code this
-                # turn, let a registered `pre_verify` hook (plugin/shell) keep it
-                # going one more turn. The shipped guidance is folded into the
-                # evidence-based verify-on-stop nudge above, so this path has no
-                # default continuation cost.
-                _verify_nudge2 = None
-                _edited = sorted(getattr(agent, "_turn_file_mutation_paths", set()) or [])
-                _attempt = getattr(agent, "_pre_verify_nudges", 0)
-                try:
-                    from agent.verify_hooks import max_verify_nudges
-                    from hermes_cli.plugins import get_pre_verify_continue_message, has_hook
-
-                    if _edited and has_hook("pre_verify") and _attempt < max_verify_nudges():
-                        # Posture is fixed for the session — resolve once + cache.
-                        coding = getattr(agent, "_resolved_is_coding", None)
-                        if coding is None:
-                            from agent.coding_context import is_coding_context
-                            coding = bool(is_coding_context(platform=getattr(agent, "platform", "") or ""))
-                            agent._resolved_is_coding = coding
-                        _verify_nudge2 = get_pre_verify_continue_message(
-                            session_id=getattr(agent, "session_id", None) or "",
-                            platform=getattr(agent, "platform", "") or "",
-                            model=getattr(agent, "model", "") or "",
-                            coding=coding,
-                            attempt=_attempt,
-                            final_response=final_response,
-                            changed_paths=_edited,
-                        )
-                except Exception:
-                    logger.debug("pre_verify hook check failed", exc_info=True)
-                    _verify_nudge2 = None
-
-                if _verify_nudge2:
-                    agent._pre_verify_nudges = _attempt + 1
-                    final_msg["finish_reason"] = "verify_hook_continue"
-                    final_msg["_pre_verify_synthetic"] = True
-                    # Same alternation contract as verify-on-stop: keep the
-                    # attempted answer in history, follow it with a synthetic
-                    # user nudge, and don't surface the premature answer. Both
-                    # are flagged synthetic so neither persists. (#55733)
-                    messages.append(final_msg)
-                    messages.append({
-                        "role": "user",
-                        "content": _verify_nudge2,
-                        "_pre_verify_synthetic": True,
-                    })
-                    agent._session_messages = messages
-                    logger.debug("pre_verify nudge issued (attempt %d)",
-                                 agent._pre_verify_nudges)
-                    _pending_verification_response = final_response
-                    final_response = None
-                    continue
-
                 messages.append(final_msg)
                 
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
+                agent._budget_grace_call = False
                 if not agent.quiet_mode:
                     agent._safe_print(f"🎉 Conversation completed after {api_call_count} OpenAI-compatible API call(s)")
                 break
             
+        except PinnedEffectiveConfigError:
+            # Post-tool compression runs inside this outer loop guard. A
+            # sealed-config violation from that provider boundary must retain
+            # the same fail-closed semantics as main-call and prologue checks.
+            raise
         except Exception as e:
             error_msg = f"Error during OpenAI-compatible API call #{api_call_count}: {str(e)}"
             try:
@@ -5282,8 +5262,11 @@ def run_conversation(
             # message pollutes history, burns tokens, and risks violating
             # role-alternation invariants.
 
-            # If we're near the limit, break to avoid infinite loops
-            if api_call_count >= agent.max_iterations - 1:
+            # If this execution slice is exhausted, stop the repeated-error
+            # path. Active-plan renewal is only granted after an actual paired
+            # tool result, never after a provider/runtime exception.
+            if agent.iteration_budget.remaining <= 1:
+                failed = True
                 _turn_exit_reason = f"error_near_max_iterations({error_msg[:80]})"
                 final_response = f"I apologize, but I encountered repeated errors: {error_msg}"
                 # Append as assistant so the history stays valid for

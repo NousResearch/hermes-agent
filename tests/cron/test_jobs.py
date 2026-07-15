@@ -609,6 +609,30 @@ class TestMarkJobRun:
         assert updated["last_status"] == "ok"
         assert updated["last_error"] is None
         assert updated["last_delivery_error"] == "platform 'telegram' not configured"
+        assert updated["last_delivery_status"] == "failed"
+        assert updated["last_delivery_confirmed_at"] is None
+
+    def test_delivery_receipt_is_explicit_and_bound_to_the_run(self, tmp_cron_dir):
+        job = create_job(prompt="Report", schedule="every 1h")
+
+        mark_job_run(
+            job["id"],
+            success=True,
+            delivery_status="confirmed",
+        )
+
+        updated = get_job(job["id"])
+        assert updated["last_delivery_status"] == "confirmed"
+        assert updated["last_delivery_confirmed_at"] == updated["last_run_at"]
+
+    def test_absent_delivery_error_never_invents_a_receipt(self, tmp_cron_dir):
+        job = create_job(prompt="Local report", schedule="every 1h")
+
+        mark_job_run(job["id"], success=True, delivery_error=None)
+
+        updated = get_job(job["id"])
+        assert updated["last_delivery_status"] == "none"
+        assert updated["last_delivery_confirmed_at"] is None
 
     def test_delivery_error_cleared_on_success(self, tmp_cron_dir):
         """Successful delivery clears the previous delivery error."""

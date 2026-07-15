@@ -79,6 +79,23 @@ def test_every_on_disk_subpackage_is_covered_by_packages_find():
     )
 
 
+def test_privileged_discord_edge_entry_modules_ship_in_gateway_package():
+    """The sealed canary must not depend on the source-only scripts namespace."""
+
+    include = _packages_find_include()
+    selected = set(find_packages(where=str(REPO_ROOT), include=include))
+    assert "gateway" in selected
+    for name in ("discord_edge_bootstrap.py", "discord_edge_service.py"):
+        module = REPO_ROOT / "gateway" / name
+        assert module.is_file() and module.stat().st_size > 0
+
+    template = (
+        REPO_ROOT / "scripts" / "canary" / "discord-egress-systemd.md"
+    ).read_text(encoding="utf-8")
+    assert "-m gateway.discord_edge_bootstrap" in template
+    assert "-m scripts.discord_edge_bootstrap" not in template
+
+
 def test_packaging_declared_as_core_dependency():
     """Regression for #40503.
 

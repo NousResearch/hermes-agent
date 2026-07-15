@@ -703,6 +703,32 @@ class TestUpdatePromptInterception:
         assert session_key not in runner._update_prompt_pending
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("reply", ["/yes", "/ok", "/confirm", "/no"])
+    async def test_unadvertised_update_slash_alias_is_not_translated(
+        self, tmp_path, reply,
+    ):
+        """Only advertised /approve and /deny carry update authority."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+        event = _make_event(text=reply, chat_id="67890")
+        session_key = "agent:main:telegram:dm:67890"
+        runner._update_prompt_pending[session_key] = True
+        runner._is_user_authorized = MagicMock(return_value=True)
+        runner._session_key_for_source = MagicMock(return_value=session_key)
+        (hermes_home / ".update_prompt.json").write_text(
+            json.dumps({"prompt": "test"})
+        )
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            result = await runner._handle_message(event)
+
+        # Legacy free-form update input remains verbatim; critically, these
+        # strings are not rewritten to the affirmative/negative y/n protocol.
+        assert (hermes_home / ".update_response").read_text() == reply
+        assert "Sent" in (result or "")
+
+    @pytest.mark.asyncio
     async def test_normal_message_when_no_prompt_pending(self, tmp_path):
         """Messages pass through normally when no prompt is pending."""
         runner = _make_runner()

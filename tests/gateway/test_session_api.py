@@ -118,7 +118,10 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
         "task_id": "request-session",
         "context_session_id": "request-session",
         "context_platform": "api_server",
-        "context_session_key": "request-key",
+        # Dangerous-action authority is exact-conversation scoped.  The
+        # caller-provided gateway key remains the stable memory key, but it
+        # must not become the approval namespace for a rotated conversation.
+        "context_session_key": "request-session",
         "child_session_id": "request-session",
     }
 

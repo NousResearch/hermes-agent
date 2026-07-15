@@ -13,6 +13,7 @@ extracted functions reach back through the ``run_agent`` module via
 from __future__ import annotations
 
 import concurrent.futures
+import copy
 import json
 import logging
 import os
@@ -30,7 +31,7 @@ from agent.display import (
     redact_tool_args_for_display as _redact_tool_args_for_display,
     _detect_tool_failure,
 )
-from agent.tool_guardrails import ToolGuardrailDecision
+from agent.tool_guardrails import ToolGuardrailDecision, classify_tool_failure
 from agent.tool_dispatch_helpers import (
     _is_destructive_command,
     _is_multimodal_tool_result,
@@ -330,6 +331,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     """
     tool_calls = assistant_message.tool_calls
     num_tools = len(tool_calls)
+    # Capture before any worker is submitted. A late worker must never acquire
+    # authority from whatever turn happens to be current when it completes.
+    _originating_turn_id = str(getattr(agent, "_current_turn_id", "") or "")
 
     # Resolve the context-scaled tool-output budget once per turn (cheap, but
     # avoids rebuilding it per result inside the loop below).
@@ -415,12 +419,40 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
+        from agent.model_authored_tool_args import (
+            capture_model_authored_tool_args,
+            restore_model_authored_tool_args,
+        )
+
+        _model_authored_args = capture_model_authored_tool_args(
+            function_name, function_args
+        )
+        _model_reasoning_present = (
+            function_name == "todo" and "reasoning" in function_args
+        )
+        _model_reasoning_directive = (
+            copy.deepcopy(function_args.get("reasoning"))
+            if _model_reasoning_present
+            else None
+        )
+        _model_delivery_outcome_present = (
+            function_name == "todo" and "delivery_outcome" in function_args
+        )
+        _model_delivery_outcome_directive = (
+            copy.deepcopy(function_args.get("delivery_outcome"))
+            if _model_delivery_outcome_present
+            else None
+        )
+
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
             agent,
             function_name=function_name,
             function_args=function_args,
             effective_task_id=effective_task_id,
             tool_call_id=getattr(tool_call, "id", "") or "",
+        )
+        function_args = restore_model_authored_tool_args(
+            function_name, function_args, _model_authored_args
         )
 
         # ── Block evaluation (BEFORE checkpoint preflight) ───────────
@@ -595,6 +627,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # submit site below (GHSA-qg5c-hvr5-hjgr, #13617).
         start = time.time()
         try:
+            tool_raised = False
             try:
                 result = agent._invoke_tool(
                     function_name,
@@ -605,6 +638,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                     pre_tool_block_checked=True,
                     skip_tool_request_middleware=True,
                     tool_request_middleware_trace=list(middleware_trace),
+                    originating_turn_id=_originating_turn_id,
                 )
             except KeyboardInterrupt:
                 try:
@@ -625,10 +659,12 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 results[index] = (function_name, function_args, result, duration, True, False, middleware_trace)
                 return
             except Exception as tool_error:
+                tool_raised = True
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
             duration = time.time() - start
-            is_error, _ = _detect_tool_failure(function_name, result)
+            is_error, _ = classify_tool_failure(function_name, result)
+            is_error = tool_raised or is_error
             if is_error:
                 logger.info("tool %s failed (%.2fs): %s", function_name, duration, result[:200])
             else:
@@ -976,23 +1012,6 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             effect_disposition=effect_disposition,
         )
         messages.append(tool_message)
-        risk_metadata = tool_message.get("_tool_output_risk")
-        if (
-            risk_metadata is not None
-            and risk_metadata.get("risk") != "low"
-            and agent.tool_progress_callback
-        ):
-            try:
-                agent.tool_progress_callback(
-                    "tool.output_risk",
-                    name,
-                    None,
-                    None,
-                    tool_call_id=tc.id,
-                    risk_metadata=risk_metadata,
-                )
-            except Exception as cb_err:
-                logging.debug("Tool output risk callback error: %s", cb_err)
         _flush_session_db_after_tool_progress(
             agent,
             messages,
@@ -1021,6 +1040,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
 def execute_tool_calls_sequential(agent, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
     """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
+    _originating_turn_id = str(getattr(agent, "_current_turn_id", "") or "")
+    _originating_goal_generation_id = str(
+        getattr(agent, "_current_goal_generation_id", "") or ""
+    )
     # Resolve the context-scaled tool-output budget once per turn.
     _tool_budget = _budget_for_agent(agent)
     for i, tool_call in enumerate(assistant_message.tool_calls, 1):
@@ -1087,12 +1110,40 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         except Exception:
             pass
 
+        from agent.model_authored_tool_args import (
+            capture_model_authored_tool_args,
+            restore_model_authored_tool_args,
+        )
+
+        _model_authored_args = capture_model_authored_tool_args(
+            function_name, function_args
+        )
+        _model_reasoning_present = (
+            function_name == "todo" and "reasoning" in function_args
+        )
+        _model_reasoning_directive = (
+            copy.deepcopy(function_args.get("reasoning"))
+            if _model_reasoning_present
+            else None
+        )
+        _model_delivery_outcome_present = (
+            function_name == "todo" and "delivery_outcome" in function_args
+        )
+        _model_delivery_outcome_directive = (
+            copy.deepcopy(function_args.get("delivery_outcome"))
+            if _model_delivery_outcome_present
+            else None
+        )
+
         function_args, middleware_trace = _apply_tool_request_middleware_for_agent(
             agent,
             function_name=function_name,
             function_args=function_args,
             effective_task_id=effective_task_id,
             tool_call_id=getattr(tool_call, "id", "") or "",
+        )
+        function_args = restore_model_authored_tool_args(
+            function_name, function_args, _model_authored_args
         )
 
         # Check plugin hooks for a block directive before executing.
@@ -1199,6 +1250,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 pass  # never block tool execution
 
         tool_start_time = time.time()
+        _tool_execution_raised = False
 
         if _block_msg is not None:
             # Tool blocked by plugin policy — return error without executing.
@@ -1235,15 +1287,43 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             )
         elif function_name == "todo":
             def _execute(next_args: dict) -> Any:
+                next_args = restore_model_authored_tool_args(
+                    function_name, next_args, _model_authored_args
+                )
+                from agent.adaptive_reasoning import attach_reasoning_receipt
+                from agent.delivery_outcome import record_delivery_outcome
                 from tools.todo_tool import todo_tool as _todo_tool
-                return _todo_tool(
+                result = _todo_tool(
                     todos=next_args.get("todos"),
                     merge=next_args.get("merge", False),
                     store=agent._todo_store,
                     plan_approval=next_args.get("plan_approval"),
                     goal_outcome=next_args.get("goal_outcome"),
+                    goal_contract=next_args.get("goal_contract"),
+                    canonical_checkpoint=next_args.get("canonical_checkpoint"),
+                    delivery_outcome=(
+                        _model_delivery_outcome_directive
+                        if _model_delivery_outcome_present
+                        else None
+                    ),
+                    delivery_outcome_recorder=(
+                        lambda directive: record_delivery_outcome(
+                            agent,
+                            directive,
+                            originating_turn_id=_originating_turn_id,
+                        )
+                    ),
                     session_key=str(getattr(agent, "_gateway_session_key", None) or agent.session_id or ""),
+                    goal_session_id=str(agent.session_id or ""),
+                    originating_turn_id=_originating_turn_id,
+                    goal_generation_id=_originating_goal_generation_id,
                     user_id=str(getattr(agent, "user_id", None) or ""),
+                )
+                return attach_reasoning_receipt(
+                    agent,
+                    result,
+                    _model_reasoning_directive if _model_reasoning_present else None,
+                    originating_turn_id=_originating_turn_id,
                 )
             function_result, function_args = _run_agent_tool_execution_middleware(
                 agent,
@@ -1252,6 +1332,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 effective_task_id=effective_task_id,
                 tool_call_id=getattr(tool_call, "id", "") or "",
                 execute=_execute,
+            )
+            function_args = restore_model_authored_tool_args(
+                function_name, function_args, _model_authored_args
             )
             tool_duration = time.time() - tool_start_time
             if agent._should_emit_quiet_tool_messages():
@@ -1507,6 +1590,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     pass
                 raise
             except Exception as tool_error:
+                _tool_execution_raised = True
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             finally:
@@ -1547,6 +1631,7 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                     pass
                 raise
             except Exception as tool_error:
+                _tool_execution_raised = True
                 function_result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
             tool_duration = time.time() - tool_start_time
@@ -1563,7 +1648,8 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
 
         # Log tool errors to the persistent error log so [error] tags
         # in the UI always have a corresponding detailed entry on disk.
-        _is_error_result, _ = _detect_tool_failure(function_name, function_result)
+        _is_error_result, _ = classify_tool_failure(function_name, function_result)
+        _is_error_result = _tool_execution_raised or _is_error_result
         # The agent-runtime tools above (todo, session_search, memory,
         # context-engine, memory-manager, clarify, delegate_task) are
         # dispatched inline — they never reach handle_function_call, so the
@@ -1659,23 +1745,6 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
         tool_message = make_tool_result_message(function_name, _tool_content, tool_call.id)
         messages.append(tool_message)
-        risk_metadata = tool_message.get("_tool_output_risk")
-        if (
-            risk_metadata is not None
-            and risk_metadata.get("risk") != "low"
-            and agent.tool_progress_callback
-        ):
-            try:
-                agent.tool_progress_callback(
-                    "tool.output_risk",
-                    function_name,
-                    None,
-                    None,
-                    tool_call_id=tool_call.id,
-                    risk_metadata=risk_metadata,
-                )
-            except Exception as cb_err:
-                logging.debug("Tool output risk callback error: %s", cb_err)
         _flush_session_db_after_tool_progress(
             agent,
             messages,

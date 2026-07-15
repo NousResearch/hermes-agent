@@ -6,8 +6,8 @@ Covers three layers:
    and a legacy DB (without the columns) migrates cleanly.
 2. Spawn: _default_spawn sets the HERMES_KANBAN_GOAL_MODE env vars only
    when the card opts in.
-3. Loop: goals.run_kanban_goal_loop continuation / completion / budget
-   behaviour, driven entirely through injected callbacks (no live model).
+3. Loop: goals.run_kanban_goal_loop follows the primary worker's structured
+   task lifecycle and budget, driven through callbacks (no auxiliary judge).
 """
 
 from __future__ import annotations
@@ -175,21 +175,8 @@ def test_spawn_no_goal_env_for_plain_task(kanban_home, monkeypatch):
 # Goal loop logic (callback-injected, no live model)
 # ---------------------------------------------------------------------------
 
-def _patch_judge(monkeypatch, verdicts):
-    """Make judge_goal return a scripted sequence of verdicts."""
-    seq = list(verdicts)
-
-    def _fake_judge(goal, response, subgoals=None, background_processes=None, **_kw):
-        v = seq.pop(0) if seq else "done"
-        # 4-tuple contract: (verdict, reason, parse_failed, wait_directive)
-        return v, f"scripted:{v}", False, None
-
-    monkeypatch.setattr(goals, "judge_goal", _fake_judge)
-
-
-def test_loop_stops_when_worker_already_completed(monkeypatch):
-    # Worker called kanban_complete on its first turn — no judging needed.
-    _patch_judge(monkeypatch, ["continue"])  # should never be consulted
+def test_loop_stops_when_worker_already_completed():
+    # Worker called kanban_complete on its first turn.
     turns = []
 
     res = goals.run_kanban_goal_loop(
@@ -204,8 +191,7 @@ def test_loop_stops_when_worker_already_completed(monkeypatch):
     assert turns == []  # no extra turns
 
 
-def test_loop_continues_then_worker_completes(monkeypatch):
-    _patch_judge(monkeypatch, ["continue", "continue"])
+def test_loop_continues_then_worker_completes():
     statuses = iter(["running", "running", "done"])
     turns = []
 
@@ -221,11 +207,11 @@ def test_loop_continues_then_worker_completes(monkeypatch):
     assert res["outcome"] == "completed_by_worker"
     # Two continuation turns fed before the worker completed.
     assert len(turns) == 2
-    assert all("not done yet" in p for p in turns)
+    assert all("open kanban task" in p for p in turns)
+    assert all("kanban_complete or kanban_block" in p for p in turns)
 
 
-def test_loop_blocks_on_budget_exhaustion(monkeypatch):
-    _patch_judge(monkeypatch, ["continue"] * 10)
+def test_loop_blocks_on_budget_exhaustion():
     blocked = {}
 
     def _block(reason):
@@ -245,10 +231,9 @@ def test_loop_blocks_on_budget_exhaustion(monkeypatch):
     assert "turn budget" in blocked["reason"].lower()
 
 
-def test_loop_finalize_nudge_when_judge_done_but_open(monkeypatch):
-    # Judge says done, but worker never terminated → one finalize nudge,
-    # then worker completes.
-    _patch_judge(monkeypatch, ["done", "done"])
+def test_loop_open_task_gets_lifecycle_nudge_then_completes():
+    # The task is still open after the first response, so the same primary
+    # worker receives one lifecycle nudge and then records completion.
     statuses = iter(["running", "done"])
     turns = []
 
@@ -266,10 +251,9 @@ def test_loop_finalize_nudge_when_judge_done_but_open(monkeypatch):
     assert "call kanban_complete or kanban_block" in turns[0]
 
 
-def test_loop_blocks_when_judge_done_but_never_finalizes(monkeypatch):
-    # Judge keeps saying done, worker never calls kanban_complete → block
-    # after the single finalize nudge.
-    _patch_judge(monkeypatch, ["done", "done"])
+def test_loop_blocks_when_worker_never_records_terminal_state():
+    # Prose that looks complete cannot close the card. The primary worker must
+    # call a structured lifecycle tool, otherwise the mechanical budget wins.
     blocked = {}
 
     res = goals.run_kanban_goal_loop(
@@ -278,15 +262,14 @@ def test_loop_blocks_when_judge_done_but_never_finalizes(monkeypatch):
         run_turn=lambda p: "still not finalizing",
         task_status_fn=lambda: "running",
         block_fn=lambda r: blocked.update(reason=r),
-        max_turns=10,
+        max_turns=3,
         first_response="looks done",
     )
     assert res["outcome"] == "blocked_budget"
     assert "turn budget" in blocked["reason"].lower()
 
 
-def test_loop_stops_if_task_reclaimed(monkeypatch):
-    _patch_judge(monkeypatch, ["continue"])
+def test_loop_stops_if_task_reclaimed():
     res = goals.run_kanban_goal_loop(
         task_id="t6",
         goal_text="task",

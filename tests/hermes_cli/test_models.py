@@ -2,6 +2,8 @@
 
 from unittest.mock import patch, MagicMock
 
+import pytest
+
 from hermes_cli.nous_account import NousPortalAccountInfo
 from hermes_cli.models import (
     OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
@@ -58,6 +60,14 @@ class TestOpenRouterModels:
 
 
 class TestFetchOpenRouterModels:
+    @pytest.fixture(autouse=True)
+    def _use_static_curated_catalog(self, monkeypatch):
+        """Keep live OpenRouter tests independent of the remote manifest."""
+        monkeypatch.setattr(
+            "hermes_cli.model_catalog.get_curated_openrouter_models",
+            lambda: None,
+        )
+
     def test_live_fetch_recomputes_free_tags(self, monkeypatch):
         class _Resp:
             def __enter__(self):

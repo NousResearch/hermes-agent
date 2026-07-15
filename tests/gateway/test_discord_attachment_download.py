@@ -93,6 +93,21 @@ def _make_attachment_without_read() -> SimpleNamespace:
     )
 
 
+def _make_public_channel(state: dict[str, bool]) -> SimpleNamespace:
+    """Guild channel whose @everyone visibility can flip during an await."""
+
+    default_role = object()
+    guild = SimpleNamespace(id=1, name="Guild", default_role=default_role)
+    return SimpleNamespace(
+        id=100,
+        name="public",
+        guild=guild,
+        permissions_for=lambda role: SimpleNamespace(
+            view_channel=bool(state["public"] and role is default_role)
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # _read_attachment_bytes
 # ---------------------------------------------------------------------------
@@ -132,6 +147,28 @@ class TestReadAttachmentBytes:
         result = await adapter._read_attachment_bytes(att)
 
         assert result is None
+
+    @pytest.mark.asyncio
+    async def test_discards_authenticated_bytes_if_public_visibility_is_revoked(self):
+        adapter = _make_adapter()
+        state = {"public": True}
+        channel = _make_public_channel(state)
+
+        async def _read_then_revoke():
+            state["public"] = False
+            return b"private after read"
+
+        att = _make_attachment_with_read(b"placeholder")
+        att.read = AsyncMock(side_effect=_read_then_revoke)
+
+        with patch(
+            "plugins.platforms.discord.adapter._discord_public_only_policy_required",
+            return_value=True,
+        ):
+            with pytest.raises(PermissionError, match="not publicly visible"):
+                await adapter._read_attachment_bytes(att, channel=channel)
+
+        att.read.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -238,6 +275,56 @@ class TestCacheDiscordAudio:
         mock_url.assert_awaited_once_with(att.url, ext=".ogg")
 
 
+@pytest.mark.parametrize(
+    ("method_name", "downloader_target", "extension"),
+    [
+        (
+            "_cache_discord_image",
+            "plugins.platforms.discord.adapter.cache_image_from_url",
+            ".png",
+        ),
+        (
+            "_cache_discord_audio",
+            "plugins.platforms.discord.adapter.cache_audio_from_url",
+            ".ogg",
+        ),
+    ],
+)
+@pytest.mark.asyncio
+async def test_url_attachment_cache_is_removed_if_visibility_is_revoked(
+    tmp_path,
+    method_name,
+    downloader_target,
+    extension,
+):
+    adapter = _make_adapter()
+    state = {"public": True}
+    channel = _make_public_channel(state)
+    att = _make_attachment_without_read()
+    cached_path = tmp_path / f"revoked{extension}"
+
+    async def _download_then_revoke(*_args, **_kwargs):
+        cached_path.write_bytes(b"private cache")
+        state["public"] = False
+        return str(cached_path)
+
+    with patch(
+        "plugins.platforms.discord.adapter._discord_public_only_policy_required",
+        return_value=True,
+    ), patch(
+        downloader_target,
+        new=AsyncMock(side_effect=_download_then_revoke),
+    ):
+        with pytest.raises(PermissionError, match="not publicly visible"):
+            await getattr(adapter, method_name)(
+                att,
+                extension,
+                channel=channel,
+            )
+
+    assert not cached_path.exists()
+
+
 # ---------------------------------------------------------------------------
 # _cache_discord_document
 # ---------------------------------------------------------------------------
@@ -300,6 +387,44 @@ class TestCacheDiscordDocument:
             result = await adapter._cache_discord_document(att, ".pdf")
 
         assert result == _PDF_BYTES
+
+    @pytest.mark.asyncio
+    async def test_fallback_discards_bytes_if_visibility_revoked_during_read(self):
+        adapter = _make_adapter()
+        state = {"public": True}
+        channel = _make_public_channel(state)
+        att = _make_attachment_without_read()
+
+        async def _read_then_revoke():
+            state["public"] = False
+            return _PDF_BYTES
+
+        resp = AsyncMock()
+        resp.status = 200
+        resp.read = AsyncMock(side_effect=_read_then_revoke)
+        resp.__aenter__ = AsyncMock(return_value=resp)
+        resp.__aexit__ = AsyncMock(return_value=False)
+
+        session = AsyncMock()
+        session.get = MagicMock(return_value=resp)
+        session.__aenter__ = AsyncMock(return_value=session)
+        session.__aexit__ = AsyncMock(return_value=False)
+
+        with patch(
+            "plugins.platforms.discord.adapter._discord_public_only_policy_required",
+            return_value=True,
+        ), patch(
+            "plugins.platforms.discord.adapter.is_safe_url",
+            return_value=True,
+        ), patch("aiohttp.ClientSession", return_value=session):
+            with pytest.raises(PermissionError, match="not publicly visible"):
+                await adapter._cache_discord_document(
+                    att,
+                    ".pdf",
+                    channel=channel,
+                )
+
+        resp.read.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -447,3 +572,59 @@ class TestHandleMessageUsesAuthenticatedRead:
         assert event.message_type == MessageType.AUDIO
         assert event.media_urls == ["/tmp/audio_from_read.ogg"]
         assert event.media_types == ["audio/ogg"]
+
+    @pytest.mark.asyncio
+    async def test_revoked_attachment_aborts_turn_without_cdn_fallback(
+        self,
+        monkeypatch,
+    ):
+        adapter = _make_adapter()
+        state = {"public": True}
+        channel = _make_public_channel(state)
+        adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+        adapter.handle_message = AsyncMock()
+
+        async def _read_then_revoke():
+            state["public"] = False
+            return _PNG_BYTES
+
+        att = SimpleNamespace(
+            url="https://cdn.discordapp.com/attachments/fake/private.png",
+            filename="private.png",
+            content_type="image/png",
+            size=len(_PNG_BYTES),
+            read=AsyncMock(side_effect=_read_then_revoke),
+        )
+        from datetime import datetime, timezone
+
+        msg = SimpleNamespace(
+            id=1,
+            content="inspect this",
+            attachments=[att],
+            mentions=[],
+            reference=None,
+            created_at=datetime.now(timezone.utc),
+            channel=channel,
+            guild=channel.guild,
+            author=SimpleNamespace(
+                id=42,
+                display_name="U",
+                name="U",
+                bot=False,
+            ),
+        )
+        monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+        monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "100")
+        monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
+
+        with patch(
+            "plugins.platforms.discord.adapter._discord_public_only_policy_required",
+            return_value=True,
+        ), patch(
+            "plugins.platforms.discord.adapter.cache_image_from_url",
+            new_callable=AsyncMock,
+        ) as cdn_fallback:
+            await adapter._handle_message(msg)
+
+        cdn_fallback.assert_not_awaited()
+        adapter.handle_message.assert_not_awaited()

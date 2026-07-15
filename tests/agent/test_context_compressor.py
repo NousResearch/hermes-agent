@@ -229,6 +229,77 @@ class TestCompress:
             f"#49307), found {count}x:\n{summary}"
         )
 
+    def test_fallback_blockers_require_structured_tool_failure(self):
+        """Words in opaque tool prose cannot become deterministic blockers."""
+        import tools.terminal_tool  # noqa: F401 - registers exact adapter
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test/model", quiet_mode=True)
+
+        prose = "The document explains why an old attempt failed with an error."
+        summary = c._build_static_fallback_summary(
+            [{"role": "tool", "tool_call_id": "call_1", "content": prose}],
+            reason="provider down",
+        )
+        blocked_section = summary.split("## Blocked\n", 1)[1].split("\n\n## Key Decisions", 1)[0]
+        assert blocked_section == "None."
+
+        business_json = c._build_static_fallback_summary(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_business",
+                            "function": {
+                                "name": "custom_business_tool",
+                                "arguments": "{}",
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_business",
+                    "content": '{"status":"failed","error":"quarterly target"}',
+                },
+            ],
+            reason="provider down",
+        )
+        business_blocked = business_json.split("## Blocked\n", 1)[1].split(
+            "\n\n## Key Decisions", 1
+        )[0]
+        assert business_blocked == "None."
+
+        structured = c._build_static_fallback_summary(
+            [
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "call_2",
+                            "function": {
+                                "name": "terminal",
+                                "arguments": '{"command":"false"}',
+                            },
+                        }
+                    ],
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "call_2",
+                    "content": '{"exit_code":7,"error":"remote unavailable"}',
+                }
+            ],
+            reason="provider down",
+        )
+        structured_blocked = structured.split("## Blocked\n", 1)[1].split(
+            "\n\n## Key Decisions", 1
+        )[0]
+        assert "remote unavailable" in structured_blocked
+
     def test_threshold_below_window_at_minimum_ctx(self):
         """Regression for #14690: at context_length == MINIMUM_CONTEXT_LENGTH
         the floored threshold used to equal the whole window, so

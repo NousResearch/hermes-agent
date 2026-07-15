@@ -227,20 +227,6 @@ class SkillReadinessStatus(str, Enum):
     UNSUPPORTED = "unsupported"
 
 
-# Prompt injection detection — shared by local-skill and plugin-skill paths.
-_INJECTION_PATTERNS: list = [
-    "ignore previous instructions",
-    "ignore all previous",
-    "you are now",
-    "disregard your",
-    "forget your instructions",
-    "new instructions:",
-    "system prompt:",
-    "<system>",
-    "]]>",
-]
-
-
 def set_secret_capture_callback(callback) -> None:
     global _secret_capture_callback
     _secret_capture_callback = callback
@@ -901,13 +887,6 @@ def _serve_plugin_skill(
             ensure_ascii=False,
         )
 
-    # Injection scan — log but still serve (matches local-skill behaviour)
-    if any(p in content.lower() for p in _INJECTION_PATTERNS):
-        logger.warning(
-            "Plugin skill '%s:%s' contains patterns that may indicate prompt injection",
-            namespace, bare,
-        )
-
     description = str(parsed_frontmatter.get("description", ""))
     if len(description) > MAX_DESCRIPTION_LENGTH:
         description = description[: MAX_DESCRIPTION_LENGTH - 3] + "..."
@@ -1246,18 +1225,13 @@ def skill_view(
             except ValueError:
                 continue
 
-        # Security: detect common prompt injection patterns
-        # (pattern list at module level as _INJECTION_PATTERNS)
-        _content_lower = content.lower()
-        _injection_detected = any(p in _content_lower for p in _INJECTION_PATTERNS)
-
-        if _outside_skills_dir or _injection_detected:
-            _warnings = []
-            if _outside_skills_dir:
-                _warnings.append(f"skill file is outside the trusted skills directory (~/.hermes/skills/): {skill_md}")
-            if _injection_detected:
-                _warnings.append("skill content contains patterns that may indicate prompt injection")
-            logging.getLogger(__name__).warning("Skill security warning for '%s': %s", name, "; ".join(_warnings))
+        if _outside_skills_dir:
+            logging.getLogger(__name__).warning(
+                "Skill source boundary warning for '%s': file is outside the "
+                "configured skills directories: %s",
+                name,
+                skill_md,
+            )
 
         parsed_frontmatter: Dict[str, Any] = {}
         try:

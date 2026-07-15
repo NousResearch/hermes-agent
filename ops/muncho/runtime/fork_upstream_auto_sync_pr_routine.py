@@ -25,6 +25,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+# The reviewed systemd rail invokes this file with ``-I -S -B``.  Isolated
+# mode intentionally omits the script directory from ``sys.path``; re-add only
+# this already digest-attested sibling directory so the pure hardening helper
+# remains importable without exposing a mutable PYTHONPATH.
+_RUNTIME_DIR = Path(__file__).resolve().parent
+if str(_RUNTIME_DIR) not in sys.path:
+    sys.path.insert(0, str(_RUNTIME_DIR))
+
 from auto_sync_hardening import (
     blocker_fingerprint,
     classify_stale_sync_pr,
@@ -36,13 +44,37 @@ FORK_REPO = "lomliev/hermes-agent"
 UPSTREAM_REPO = "NousResearch/hermes-agent"
 FORK_BRANCH = "main"
 UPSTREAM_BRANCH = "main"
+FORK_GIT_URL = "https://github.com/lomliev/hermes-agent.git"
+UPSTREAM_GIT_URL = "https://github.com/NousResearch/hermes-agent.git"
+AUTOMATION_GIT_NAME = "Muncho Fork Sync"
+AUTOMATION_GIT_EMAIL = "muncho-fork-sync@users.noreply.github.com"
 BRANCH_PREFIX = "codex/upstream-sync-auto-"
 WORKTREE_DIR_PREFIX = BRANCH_PREFIX.replace("/", "-")
 HERMES_HOME = Path(os.environ.get("HERMES_HOME", "/opt/adventico-ai-platform/hermes-home"))
-GH = HERMES_HOME / "bin" / "gh-hermes"
-STATE_DIR = Path("/opt/adventico-ai-platform/canonical-brain/state/private/upstream_sync_monitor")
-WORKTREE_ROOT = Path("/opt/adventico-ai-platform/canonical-brain/state/private/upstream_sync_worktrees")
-REPORT_DIR = Path("/opt/adventico-ai-platform/canonical-brain/state/reports")
+GH = Path(
+    os.environ.get(
+        "FORK_UPSTREAM_AUTO_SYNC_GH",
+        str(HERMES_HOME / "bin" / "gh-hermes"),
+    )
+)
+STATE_DIR = Path(
+    os.environ.get(
+        "FORK_UPSTREAM_AUTO_SYNC_STATE_DIR",
+        "/opt/adventico-ai-platform/canonical-brain/state/private/upstream_sync_monitor",
+    )
+)
+WORKTREE_ROOT = Path(
+    os.environ.get(
+        "FORK_UPSTREAM_AUTO_SYNC_WORKTREE_ROOT",
+        "/opt/adventico-ai-platform/canonical-brain/state/private/upstream_sync_worktrees",
+    )
+)
+REPORT_DIR = Path(
+    os.environ.get(
+        "FORK_UPSTREAM_AUTO_SYNC_REPORT_DIR",
+        "/opt/adventico-ai-platform/canonical-brain/state/reports",
+    )
+)
 MONITOR_LATEST = STATE_DIR / "fork-upstream-drift-latest.json"
 AUTO_STATE = STATE_DIR / "auto-sync-pr-state.json"
 BLOCKER_DEDUPE_STATE = STATE_DIR / "auto-sync-blocker-dedupe.json"
@@ -69,6 +101,9 @@ AUTHOR_ENTRY_RE = re.compile(
     r"(?P<value_quote>['\"])(?P<value>[^'\"]+)(?P=value_quote)\s*,(?:\s*#.*)?$"
 )
 CONFLICT_RE = re.compile(r"^<<<<<<< [^\n]*\n(?P<ours>.*?)^=======\n(?P<theirs>.*?)^>>>>>>> [^\n]*\n?", re.M | re.S)
+_TOKEN_PATTERN = re.compile(
+    r"(?i)(?:github_pat_[A-Za-z0-9_]{10,}|gh[pousr]_[A-Za-z0-9_]{10,})"
+)
 
 
 @dataclass
@@ -94,6 +129,17 @@ def env_int(name: str, default: int, *, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
+def redact_command_output(value: str) -> str:
+    """Remove credential material before output can reach reports or journals."""
+
+    redacted = value
+    for name in ("GH_TOKEN", "GITHUB_TOKEN"):
+        secret = os.environ.get(name)
+        if secret:
+            redacted = redacted.replace(secret, "[REDACTED]")
+    return _TOKEN_PATTERN.sub("[REDACTED]", redacted)
+
+
 def run(cmd: list[str], *, cwd: Path | None = None, check: bool = True, timeout: int | None = None) -> CmdResult:
     cp = subprocess.run(
         cmd,
@@ -103,15 +149,22 @@ def run(cmd: list[str], *, cwd: Path | None = None, check: bool = True, timeout:
         stderr=subprocess.PIPE,
         timeout=timeout,
     )
-    result = CmdResult(cmd=cmd, rc=cp.returncode, stdout=cp.stdout, stderr=cp.stderr)
+    result = CmdResult(
+        cmd=cmd,
+        rc=cp.returncode,
+        stdout=redact_command_output(cp.stdout),
+        stderr=redact_command_output(cp.stderr),
+    )
     if check and cp.returncode != 0:
-        raise RuntimeError(f"command failed rc={cp.returncode}: {' '.join(cmd)}\n{cp.stderr}")
+        raise RuntimeError(
+            f"command failed rc={cp.returncode}: {' '.join(cmd)}\n{result.stderr}"
+        )
     return result
 
 
 def gh_json(args: list[str]) -> Any:
     if not GH.exists():
-        raise RuntimeError(f"gh-hermes missing at {GH}")
+        raise RuntimeError(f"reviewed GitHub CLI missing at {GH}")
     cp = run([str(GH), *args], timeout=120)
     return json.loads(cp.stdout or "null")
 
@@ -473,26 +526,72 @@ def stale_sync_reason(pr: dict[str, Any], fresh: dict[str, Any]) -> str | None:
 def apply_blocker_notification_dedupe(
     report: dict[str, Any], pr: dict[str, Any]
 ) -> bool:
-    """Return True only when this blocker should reach the cron notifier."""
+    """Return True only when this blocker should reach the cron notifier.
+
+    The scheduler supplies a mechanical observation of the prior run's
+    delivery outcome.  ``emit`` below means stdout was selected for delivery;
+    confirmed platform delivery is recorded only after a later invocation
+    observes the scheduler's persisted success receipt.
+    """
 
     evaluation = report.get("auto_merge_deploy") or {}
     checks = evaluation.get("checks") or {}
+    # A pre-PR merge conflict has no PR/evaluation object. Its deterministic
+    # conflict-path set is the stable blocker identity; deliberately exclude
+    # volatile upstream SHAs and ahead/behind counts so ordinary upstream
+    # movement does not turn the same unresolved conflict into three-hour
+    # notification spam.
+    blockers = list(
+        evaluation.get("blockers") or report.get("conflicted_files") or []
+    )
+    if report.get("error_type"):
+        blockers.append(f"error_type:{str(report['error_type'])[:80]}")
+    for open_pr in report.get("open_sync_prs") or []:
+        if not isinstance(open_pr, dict):
+            continue
+        number = open_pr.get("number")
+        head = str(open_pr.get("headRefOid") or "")
+        blockers.append(f"open_pr:{number}:{head[:40]}")
+    for marker in report.get("conflict_markers") or []:
+        if isinstance(marker, str):
+            blockers.append(f"conflict_marker:{marker[:120]}")
+        elif isinstance(marker, dict) and marker.get("path"):
+            blockers.append(f"conflict_marker:{str(marker['path'])[:120]}")
+    fresh_refs = report.get("fresh_refs") or {}
+    stable_head_sha = (
+        str(pr.get("headRefOid") or "")
+        or str(fresh_refs.get("fork_main_ref") or "")
+        or None
+    )
     fingerprint = blocker_fingerprint(
         status=str(report.get("status") or "blocked_unknown"),
         pr_number=pr.get("number"),
-        head_sha=str(pr.get("headRefOid") or "") or None,
-        blockers=evaluation.get("blockers") or [],
+        head_sha=stable_head_sha,
+        blockers=blockers,
         failed_checks=checks.get("failure_like_checks") or [],
     )
+    previous_run_at = os.environ.get("HERMES_CRON_PREVIOUS_RUN_AT") or None
+    previous_delivery = os.environ.get("HERMES_CRON_PREVIOUS_DELIVERY") or None
+    if previous_delivery not in {"none", "confirmed", "failed"}:
+        previous_delivery = None
+    if previous_run_at is not None and not (0 < len(previous_run_at) <= 80):
+        previous_run_at = None
     decision = decide_blocker_delivery(
-        BLOCKER_DEDUPE_STATE, fingerprint=fingerprint
+        BLOCKER_DEDUPE_STATE,
+        fingerprint=fingerprint,
+        observed_previous_run_at=previous_run_at,
+        previous_delivery_status=previous_delivery,
     )
     report["blocker_notification"] = {
         "emit": decision["emit"],
+        "selected_for_delivery": decision["emit"],
         "reason": decision["reason"],
         "suppressed_runs": decision["suppressed_runs"],
         "repeat_after_seconds": decision["repeat_after_seconds"],
         "fingerprint_prefix": fingerprint[:12],
+        "delivery_confirmed_at": decision["delivery_confirmed_at"],
+        "pending_delivery": decision["pending_delivery"],
+        "prior_delivery_reconciled": decision["prior_delivery_reconciled"],
     }
     return bool(decision["emit"])
 
@@ -936,6 +1035,21 @@ def write_report(report: dict[str, Any]) -> None:
     )
 
 
+def finish_blocked_report(
+    report: dict[str, Any], pr: dict[str, Any] | None = None
+) -> int:
+    """Persist every terminal blocker and notify only through one dedupe path."""
+
+    if not str(report.get("status") or "").startswith("blocked_"):
+        raise ValueError("finish_blocked_report requires a blocked status")
+    selected = apply_blocker_notification_dedupe(report, pr or {})
+    write_report(report)
+    if selected:
+        print(render_summary(report).rstrip())
+        return 2
+    return 0
+
+
 def build_plan(args: argparse.Namespace) -> dict[str, Any]:
     ts = now_utc()
     monitor = load_monitor()
@@ -981,9 +1095,7 @@ def execute(args: argparse.Namespace) -> int:
         report = build_plan(args)
         report["status"] = "blocked_execute_env_missing"
         report["message"] = f"Missing {EXECUTE_ENV}=1"
-        write_report(report)
-        print(render_summary(report).rstrip())
-        return 3
+        return finish_blocked_report(report)
 
     report = build_plan(args)
     fresh = report["fresh_refs"]
@@ -1005,6 +1117,17 @@ def execute(args: argparse.Namespace) -> int:
         write_report(report)
         return 0
     if len(open_prs) == 1:
+        if os.environ.get(AUTO_MERGE_DEPLOY_ENV) != "1":
+            report["status"] = "open_sync_pr_exists_review_required_no_action"
+            report["pr_url"] = open_prs[0].get("url")
+            report["pr_number"] = open_prs[0].get("number")
+            report["message"] = (
+                "One fork-only sync PR is already open. The mechanical rail "
+                "does not merge or deploy it without the separate standing gate."
+            )
+            clear_blocker_delivery_state(BLOCKER_DEDUPE_STATE)
+            write_report(report)
+            return 0
         auto_merge_deploy = auto_merge_sync_pr_and_start_deploy(open_prs[0])
         public_result = {
             k: v
@@ -1031,9 +1154,7 @@ def execute(args: argparse.Namespace) -> int:
                 "Auto-owned upstream sync PR was clean/green and merged into fork main, "
                 "but the detached Cloud deploy unit did not start. Manual deploy reconciliation is required."
             )
-            write_report(report)
-            print(render_summary(report).rstrip())
-            return 2
+            return finish_blocked_report(report, open_prs[0])
         blockers = auto_merge_deploy.get("blockers") or []
         if set(blockers).issubset(WAITABLE_AUTO_MERGE_BLOCKERS):
             report["status"] = "open_sync_pr_exists_waiting_checks_no_action"
@@ -1042,17 +1163,10 @@ def execute(args: argparse.Namespace) -> int:
             return 0
         report["status"] = "blocked_auto_merge_deploy_gate"
         report["message"] = "Existing sync PR did not satisfy the standing auto-merge/deploy safety gate."
-        emit_blocker = apply_blocker_notification_dedupe(report, open_prs[0])
-        write_report(report)
-        if emit_blocker:
-            print(render_summary(report).rstrip())
-            return 2
-        return 0
+        return finish_blocked_report(report, open_prs[0])
     if len(open_prs) > 1:
         report["status"] = "blocked_multiple_open_sync_prs"
-        write_report(report)
-        print(render_summary(report).rstrip())
-        return 2
+        return finish_blocked_report(report)
 
     branch = report["proposed_branch"]
     worktree = WORKTREE_ROOT / branch.replace("/", "-")
@@ -1068,13 +1182,11 @@ def execute(args: argparse.Namespace) -> int:
             "worktree": str(worktree),
             "message": "Less than 5 GiB free before cloning upstream sync worktree.",
         })
-        write_report(report)
-        print(render_summary(report).rstrip())
-        return 2
+        return finish_blocked_report(report)
 
     try:
-        run(["git", "clone", "https://github.com/lomliev/hermes-agent.git", str(worktree)], timeout=300)
-        run(["git", "remote", "add", "upstream", "https://github.com/NousResearch/hermes-agent.git"], cwd=worktree)
+        run(["git", "clone", FORK_GIT_URL, str(worktree)], timeout=300)
+        run(["git", "remote", "add", "upstream", UPSTREAM_GIT_URL], cwd=worktree)
         run(["git", "fetch", "origin", FORK_BRANCH], cwd=worktree, timeout=300)
         run(["git", "fetch", "upstream", UPSTREAM_BRANCH], cwd=worktree, timeout=300)
         run(["git", "checkout", "-B", branch, f"origin/{FORK_BRANCH}"], cwd=worktree)
@@ -1097,16 +1209,12 @@ def execute(args: argparse.Namespace) -> int:
                     }
                 )
                 run(["git", "merge", "--abort"], cwd=worktree, check=False)
-                write_report(report)
-                print(render_summary(report).rstrip())
-                return 2
+                return finish_blocked_report(report)
 
         markers = marker_scan(worktree)
         if markers:
             report.update({"status": "blocked_conflict_markers_after_clean_merge", "branch": branch, "worktree": str(worktree), "conflict_markers": markers})
-            write_report(report)
-            print(render_summary(report).rstrip())
-            return 2
+            return finish_blocked_report(report)
 
         py_files = changed_python_files(worktree, f"origin/{FORK_BRANCH}")
         if py_files:
@@ -1122,14 +1230,29 @@ def execute(args: argparse.Namespace) -> int:
             "Boundaries: no upstream PR/push; may be auto-merged/deployed only by the "
             "standing Muncho auto-sync gate after CLEAN merge state, green checks, and exact SHA verification.\n"
         )
-        run(["git", "commit", "-m", title, "-m", body], cwd=worktree, timeout=300)
+        run(
+            [
+                "git",
+                "-c",
+                f"user.name={AUTOMATION_GIT_NAME}",
+                "-c",
+                f"user.email={AUTOMATION_GIT_EMAIL}",
+                "commit",
+                "-m",
+                title,
+                "-m",
+                body,
+            ],
+            cwd=worktree,
+            timeout=300,
+        )
         head = run(["git", "rev-parse", "HEAD"], cwd=worktree).stdout.strip()
         run([
             "git",
             "-c",
             f"credential.https://github.com.helper=!{GH} auth git-credential",
             "push",
-            "origin",
+            FORK_GIT_URL,
             f"HEAD:refs/heads/{branch}",
         ], cwd=worktree, timeout=300)
 
@@ -1173,7 +1296,7 @@ def execute(args: argparse.Namespace) -> int:
         write_json(AUTO_STATE, state)
 
         post_create_wait: dict[str, Any] | None = None
-        if pr_number is not None:
+        if pr_number is not None and os.environ.get(AUTO_MERGE_DEPLOY_ENV) == "1":
             post_create_wait = wait_for_pr_auto_merge_deploy(pr_number)
 
         report.update(
@@ -1188,6 +1311,12 @@ def execute(args: argparse.Namespace) -> int:
                 "post_create_wait": post_create_wait,
             }
         )
+        if os.environ.get(AUTO_MERGE_DEPLOY_ENV) != "1":
+            report["status"] = "sync_pr_opened_review_required"
+            report["message"] = (
+                "A fork-only upstream sync PR was opened. The mechanical rail "
+                "did not merge, deploy, restart, or mutate upstream."
+            )
         if post_create_wait:
             result = post_create_wait.get("result") or {}
             if result.get("merged") and result.get("deploy_started"):
@@ -1217,21 +1346,17 @@ def execute(args: argparse.Namespace) -> int:
                 report["auto_merge_deploy"] = {k: v for k, v in result.items() if k not in {"pr"}}
                 report["message"] = "Newly opened sync PR did not satisfy the standing auto-merge/deploy safety gate."
 
-        emit_blocker = True
-        if report["status"] == "blocked_post_create_auto_merge_deploy_gate":
-            emit_blocker = apply_blocker_notification_dedupe(
+        if report["status"].startswith("blocked_"):
+            return finish_blocked_report(
                 report,
                 {"number": pr_number, "headRefOid": head},
             )
         write_report(report)
-        if not report["status"].startswith("blocked_") or emit_blocker:
-            print(render_summary(report).rstrip())
-        return 2 if report["status"].startswith("blocked_") and emit_blocker else 0
+        print(render_summary(report).rstrip())
+        return 0
     except Exception as exc:
         report.update({"status": "blocked_execute_exception", "error_type": type(exc).__name__, "error": str(exc), "branch": branch, "worktree": str(worktree)})
-        write_report(report)
-        print(render_summary(report).rstrip())
-        return 2
+        return finish_blocked_report(report)
 
 
 def main() -> int:

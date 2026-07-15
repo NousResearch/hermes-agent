@@ -19,8 +19,6 @@ import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
-from agent.prompt_builder import _scan_context_content
-
 logger = logging.getLogger(__name__)
 
 # Context files to look for in subdirectories, in priority order.
@@ -227,11 +225,9 @@ class SubdirectoryHintTracker:
             except OSError:
                 continue
             try:
-                content = hint_path.read_text(encoding="utf-8").strip()
-                if not content:
+                content = hint_path.read_text(encoding="utf-8")
+                if not content.strip():
                     continue
-                # Same security scan as startup context loading
-                content = _scan_context_content(content, filename)
                 if len(content) > _MAX_HINT_CHARS:
                     content = (
                         content[:_MAX_HINT_CHARS]

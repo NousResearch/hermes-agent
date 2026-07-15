@@ -22,6 +22,28 @@ import os
 from typing import Optional
 
 
+_LOCAL_DISCORD_CONNECTOR_SCHEME = "unix://"
+
+
+def _local_discord_connector_path(value: str) -> Optional[str]:
+    """Return the one pinned local connector socket, else ``None``.
+
+    This is intentionally not a generic Unix relay URL parser: accepting an
+    arbitrary model/operator-selected socket would turn the gateway into a
+    local capability router.  Production uses one packaged service and path.
+    """
+
+    raw = str(value or "").strip()
+    if not raw.startswith(_LOCAL_DISCORD_CONNECTOR_SCHEME):
+        return None
+    from gateway.discord_connector_service import DEFAULT_DISCORD_CONNECTOR_SOCKET
+
+    expected = f"unix://{DEFAULT_DISCORD_CONNECTOR_SOCKET}"
+    if raw != expected:
+        raise ValueError("local Discord connector URL is not the pinned socket")
+    return str(DEFAULT_DISCORD_CONNECTOR_SOCKET)
+
+
 def relay_url() -> Optional[str]:
     """The connector relay endpoint URL, or None when relay is not configured.
 
@@ -555,6 +577,11 @@ def self_provision_relay() -> bool:
     dial_url = relay_url()
     if not dial_url:
         return False
+    if _local_discord_connector_path(dial_url) is not None:
+        # The local privileged connector is pre-packaged and authenticated by
+        # reciprocal Unix peer identity.  It has no HTTP provisioning plane and
+        # the gateway must not resolve or mint connector credentials.
+        return False
 
     # Respect an already-present (pinned/stamped) secret — don't stomp it. This
     # is also what makes a self-hosted, enrolled gateway skip self-provision.
@@ -707,6 +734,10 @@ def send_relay_policy() -> bool:
     dial_url = relay_url()
     if not dial_url:
         return False
+    if _local_discord_connector_path(dial_url) is not None:
+        # Public-guild allowlists are fixed in the token-owning service config.
+        # There is deliberately no semantic relevance-policy side channel.
+        return False
 
     gateway_id, secret = relay_connection_auth()
     if not gateway_id or not secret:
@@ -800,27 +831,54 @@ def register_relay_adapter(force: bool = False, url: Optional[str] = None) -> bo
         )
         transport = None
         if resolved_url:
-            from gateway.relay.ws_transport import WebSocketRelayTransport
+            local_socket = _local_discord_connector_path(resolved_url)
+            if local_socket is not None:
+                import pwd
 
-            gateway_id, upgrade_secret = relay_connection_auth()
-            transport = WebSocketRelayTransport(
-                resolved_url,
-                platform,
-                bot_id,
-                # Phase 1.5: the full SET of (platform, bot_id) this gateway fronts.
-                # The transport sends one hello per identity (the connector
-                # accumulates them) and resolves the per-frame egress botId from
-                # this set. A single-platform deploy passes a 1-element list, so
-                # behaviour is byte-identical to before.
-                identities=relay_platform_identities(),
-                gateway_id=gateway_id,
-                upgrade_secret=upgrade_secret,
-                # Phase 5 §5.3: re-dial + re-handshake after an unexpected socket
-                # close so a gateway that went idle/suspended re-establishes its
-                # relay socket — which triggers the connector's buffered-flip drain
-                # (the delivery-leg onResume) on the new handshake.
-                reconnect=True,
-            )
+                from gateway.canonical_writer_client import (
+                    ExactServerMainPidAuthorizer,
+                    SystemctlServerMainPidProvider,
+                )
+                from gateway.discord_connector_service import (
+                    DEFAULT_DISCORD_CONNECTOR_UNIT,
+                    DEFAULT_DISCORD_CONNECTOR_USER,
+                )
+                from gateway.relay.discord_connector_transport import (
+                    DiscordConnectorRelayTransport,
+                )
+
+                connector_uid = pwd.getpwnam(DEFAULT_DISCORD_CONNECTOR_USER).pw_uid
+                authorizer = ExactServerMainPidAuthorizer(
+                    server_unit=DEFAULT_DISCORD_CONNECTOR_UNIT,
+                    expected_server_uid=connector_uid,
+                    main_pid_provider=SystemctlServerMainPidProvider(),
+                )
+                transport = DiscordConnectorRelayTransport(
+                    local_socket,
+                    server_authorizer=authorizer,
+                )
+            else:
+                from gateway.relay.ws_transport import WebSocketRelayTransport
+
+                gateway_id, upgrade_secret = relay_connection_auth()
+                transport = WebSocketRelayTransport(
+                    resolved_url,
+                    platform,
+                    bot_id,
+                    # Phase 1.5: the full SET of (platform, bot_id) this gateway fronts.
+                    # The transport sends one hello per identity (the connector
+                    # accumulates them) and resolves the per-frame egress botId from
+                    # this set. A single-platform deploy passes a 1-element list, so
+                    # behaviour is byte-identical to before.
+                    identities=relay_platform_identities(),
+                    gateway_id=gateway_id,
+                    upgrade_secret=upgrade_secret,
+                    # Phase 5 §5.3: re-dial + re-handshake after an unexpected socket
+                    # close so a gateway that went idle/suspended re-establishes its
+                    # relay socket — which triggers the connector's buffered-flip drain
+                    # (the delivery-leg onResume) on the new handshake.
+                    reconnect=True,
+                )
         return RelayAdapter(config, placeholder, transport=transport)
 
     platform_registry.register(

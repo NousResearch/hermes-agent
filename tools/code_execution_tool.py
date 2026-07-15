@@ -676,7 +676,13 @@ def _get_or_create_env(task_id: str):
         cwd = overrides.get("cwd") or config["cwd"]
 
         container_config = None
-        if env_type in {"docker", "singularity", "modal", "daytona"}:
+        if env_type in {
+            "docker",
+            "singularity",
+            "modal",
+            "daytona",
+            "isolated_worker",
+        }:
             container_config = {
                 "container_cpu": config.get("container_cpu", 1),
                 "container_memory": config.get("container_memory", 5120),
@@ -685,6 +691,11 @@ def _get_or_create_env(task_id: str):
                 "docker_volumes": config.get("docker_volumes", []),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                 "docker_network": config.get("docker_network", True),
+                "isolated_worker_socket": config.get("isolated_worker_socket", ""),
+                "isolated_worker_server_uid": config.get("isolated_worker_server_uid", 0),
+                "isolated_worker_server_gid": config.get("isolated_worker_server_gid", 0),
+                "isolated_worker_socket_uid": config.get("isolated_worker_socket_uid", 0),
+                "isolated_worker_socket_gid": config.get("isolated_worker_socket_gid", 0),
             }
 
         ssh_config = None
@@ -1893,6 +1904,12 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None,
 EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 
 
+def _execution_task_id(kwargs: dict) -> str | None:
+    if (os.getenv("TERMINAL_ENV", "local").strip().lower() or "local") == "isolated_worker":
+        return kwargs.get("session_id") or kwargs.get("task_id")
+    return kwargs.get("task_id")
+
+
 # --- Registry ---
 from tools.registry import registry, tool_error
 
@@ -1902,7 +1919,7 @@ registry.register(
     schema=EXECUTE_CODE_SCHEMA,
     handler=lambda args, **kw: execute_code(
         code=args.get("code", ""),
-        task_id=kw.get("task_id"),
+        task_id=_execution_task_id(kw),
         enabled_tools=kw.get("enabled_tools")),
     check_fn=check_sandbox_requirements,
     emoji="🐍",

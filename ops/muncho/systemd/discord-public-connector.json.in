@@ -1,0 +1,50 @@
+{
+  "service": {
+    "socket_path": "/run/muncho-discord-connector/connector.sock",
+    "gateway_unit": "hermes-cloud-gateway.service",
+    "connector_unit": "muncho-discord-connector.service",
+    "gateway_uid": @GATEWAY_UID@,
+    "connector_uid": @CONNECTOR_UID@,
+    "connector_gid": @CONNECTOR_GID@,
+    "connection_timeout_seconds": 10
+  },
+  "discord": {
+    "token_file": "/etc/muncho/discord-connector-credentials/bot-token",
+    "credentials_directory": "/etc/muncho/discord-connector-credentials",
+    "allowed_guild_ids": ["1282725267068157972"],
+    "allowed_channel_ids": [
+      "1504852355588423801",
+      "1504852408227069993",
+      "1504852444407140402",
+      "1504852485083496561",
+      "1504852553031221391",
+      "1504852628373373028",
+      "1505499746939174993",
+      "1507239177350283274",
+      "1507239385010016308",
+      "1510888721614901358"
+    ],
+    "allowed_user_ids": [],
+    "allowed_role_ids": [],
+    "free_response_channel_ids": [
+      "1504852355588423801",
+      "1505499746939174993"
+    ],
+    "reviewed_cron_history_targets": {
+      "06ef64d72891": ["1504852355588423801"],
+      "e62f55ca93ca": ["1524321461714681976"]
+    },
+    "public_only": false,
+    "author_policy": "guild_acl",
+    "allow_bot_authors": false,
+    "require_mention": true,
+    "auto_thread": true,
+    "thread_require_mention": false,
+    "ready_timeout_seconds": 30,
+    "request_timeout_seconds": 15
+  },
+  "journal": {
+    "path": "/var/lib/muncho-discord-connector/connector.sqlite3",
+    "busy_timeout_ms": 5000
+  }
+}

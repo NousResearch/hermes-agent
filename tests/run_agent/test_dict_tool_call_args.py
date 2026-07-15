@@ -47,7 +47,12 @@ class _FakeClient:
 def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
     from run_agent import AIAgent
 
-    monkeypatch.setattr("run_agent.OpenAI", lambda **kwargs: _FakeClient())
+    # Reuse one provider client so the fixture returns a tool call once and a
+    # final answer on the following model turn.  Constructing a fresh fake for
+    # every request resets its call counter and tests budget exhaustion instead
+    # of the dict-argument contract this regression owns.
+    fake_client = _FakeClient()
+    monkeypatch.setattr("run_agent.OpenAI", lambda **kwargs: fake_client)
     monkeypatch.setattr(
         "run_agent.get_tool_definitions",
         lambda *args, **kwargs: [{"function": {"name": "read_file"}}],
@@ -70,9 +75,5 @@ def test_tool_call_validation_accepts_dict_arguments(monkeypatch):
 
     result = agent.run_conversation("read the file")
 
-    # The conversation hits max_iterations=3 (3 tool turns then forced summary).
-    # PR #34470 adds an explainer suffix to abnormal turn endings so users
-    # understand why the response is short instead of seeing a blank reply.
-    # The exact suffix wording is owned by conversation_loop; this test only
-    # cares that the model's actual text ('done') survives at the start.
-    assert result["final_response"].startswith("done")
+    assert result["final_response"] == "done"
+    assert fake_client.chat.completions.calls == 2

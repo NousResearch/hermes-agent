@@ -121,7 +121,7 @@ hermes profile describe [<name>] [options]
 |-------------------|-------------|
 | `<name>` | 要描述的 profile。除非使用 `--all --auto`，否则必填。 |
 | `--text "<text>"` | 将描述设置为此精确文本（用户编写）。覆盖已有描述。 |
-| `--auto` | 通过辅助 LLM 自动生成 1-2 句描述，依据为该 profile 已安装的 skill、配置的模型和名称。在 `config.yaml` 的 `auxiliary.profile_describer` 下配置模型。自动生成的描述会标记 `description_auto: true`，以便 dashboard 标记供审查。 |
+| `--auto` | 通过辅助 LLM 自动生成 1-2 句描述，依据为该 profile 已安装的 skill、配置的模型和名称。默认关闭；需要 `kanban.auxiliary_planning_enabled: true`。在 `config.yaml` 的 `auxiliary.profile_describer` 下配置模型。自动生成的描述会标记 `description_auto: true`，以便 dashboard 标记供审查。 |
 | `--overwrite` | 与 `--auto` 配合使用时，也替换用户编写的描述（默认：跳过已明确设置描述的 profile）。 |
 | `--all` | 与 `--auto` 配合使用时，扫描所有缺少描述的 profile。 |
 

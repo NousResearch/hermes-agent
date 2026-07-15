@@ -263,13 +263,27 @@ class TestResolveSessionAgentRuntimePriority:
                  "api_key": "k",
                  "base_url": "https://openrouter.ai/api/v1",
                  "api_mode": "chat_completions",
-             }):
+             }), \
+             patch(
+                 "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+                 return_value={
+                     "provider": "anthropic",
+                     "api_key": "live-k",
+                     "base_url": "https://api.anthropic.com",
+                     "api_mode": "anthropic_messages",
+                     "credential_pool": None,
+                 },
+             ) as resolve_override:
             model, runtime = runner._resolve_session_agent_runtime(
                 source=source,
                 session_key=session_key,
             )
         assert model == "session/model"
         assert runtime["provider"] == "anthropic"
+        resolve_override.assert_called_once_with(
+            "anthropic",
+            target_model="session/model",
+        )
 
     def test_parent_channel_model_inherited_in_thread(self):
         runner = object.__new__(GatewayRunner)

@@ -382,6 +382,35 @@ class TestReactiveOverflowDetection:
         assert len(edit_calls) >= 1
 
     @pytest.mark.asyncio
+    async def test_reactive_retry_rechecks_public_visibility(self, monkeypatch):
+        """A server-rejected edit must not retry after the target turns private."""
+        adapter = _make_adapter()
+        edit_calls = []
+
+        async def edit_effect(*, content):
+            edit_calls.append(content)
+            raise RuntimeError(
+                "400 Bad Request (error code: 50035): Invalid Form Body\n"
+                "In content: Must be 2000 or fewer in length."
+            )
+
+        msg = SimpleNamespace(id=42, edit=AsyncMock(side_effect=edit_effect))
+        _wire_channel(adapter, original_msg=msg)
+        attestations = iter((None, None, "Discord target is no longer public."))
+        monkeypatch.setattr(
+            "plugins.platforms.discord.adapter._discord_policy_public_target_error",
+            lambda _channel: next(attestations),
+        )
+
+        result = await adapter.edit_message(
+            "555", "42", "u" * 1500, finalize=True,
+        )
+
+        assert result.success is False
+        assert result.error == "Discord target is no longer public."
+        assert len(edit_calls) == 1
+
+    @pytest.mark.asyncio
     async def test_unrelated_50035_is_not_treated_as_overflow(self):
         adapter = _make_adapter()
         msg = SimpleNamespace(

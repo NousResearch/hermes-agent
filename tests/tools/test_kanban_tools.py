@@ -739,7 +739,7 @@ def test_block_goal_mode_rejects_missing_kind(monkeypatch, tmp_path):
 
 def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
     """`capability` / `transient` are valid kinds in general but must not
-    let a goal_mode worker exit the loop without going through the judge."""
+    let a goal_mode worker exit without an allowed structured terminal state."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 
@@ -953,6 +953,20 @@ def test_create_happy_path(worker_env):
         assert child.assignee == "peer"
     finally:
         conn.close()
+
+
+def test_model_authored_create_unaffected_by_auxiliary_planning_default(worker_env):
+    """The main model's explicit Kanban write path stays available."""
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_create({
+        "title": "model-authored follow-up",
+        "assignee": "peer",
+        "body": "Explicit plan step authored by the main model.",
+        "idempotency_key": "model-authored-aux-gate-off",
+    }))
+    assert out["ok"] is True
+    assert out["task_id"]
 
 
 def test_create_inherits_worker_dir_workspace(monkeypatch, worker_env):

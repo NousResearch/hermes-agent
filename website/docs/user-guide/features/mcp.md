@@ -667,14 +667,14 @@ Only enable parallel calls for MCP servers whose tools are safe to run at the sa
 
 MCP servers can request LLM inference from Hermes via the `sampling/createMessage` protocol. This allows an MCP server to ask Hermes to generate text on its behalf — useful for servers that need LLM capabilities but don't have their own model access.
 
-Sampling is **enabled by default** for all MCP servers (when the MCP SDK supports it). Configure it per-server under the `sampling` key:
+Sampling is **disabled by default**. A server receives model access only after an explicit per-server opt-in under the `sampling` key:
 
 ```yaml
 mcp_servers:
   my_server:
     command: "my-mcp-server"
     sampling:
-      enabled: true            # Enable sampling (default: true)
+      enabled: true            # Explicit opt-in (default: false)
       model: "openai/gpt-4o"  # Override model for sampling requests (optional)
       max_tokens_cap: 4096     # Max tokens per sampling response (default: 4096)
       timeout: 30              # Timeout in seconds per request (default: 30)
@@ -686,7 +686,7 @@ mcp_servers:
 
 The sampling handler includes a sliding-window rate limiter, per-request timeouts, and tool-loop depth limits to prevent runaway usage. Metrics (request count, errors, tokens used) are tracked per server instance.
 
-To disable sampling for a specific server:
+To keep sampling disabled explicitly for a server:
 
 ```yaml
 mcp_servers:

@@ -881,8 +881,8 @@ export const en: Translations = {
       updateAll: 'Update installed',
       updating: 'Updating...',
       preview: 'Preview',
-      scan: 'Scan',
-      scanning: 'Scanning...',
+      scan: 'Package preflight',
+      scanning: 'Checking package...',
       close: 'Close',
       files: 'Files',
       noReadme: 'This skill has no SKILL.md preview.',
@@ -898,7 +898,7 @@ export const en: Translations = {
       policyAsk: 'Review before installing',
       policyBlock: 'Install blocked by policy',
       findings: count => `${count} finding${count === 1 ? '' : 's'}`,
-      noFindings: 'No security findings.',
+      noFindings: 'No package-boundary violations.',
       installStarted: name => `Installing ${name}...`,
       uninstallStarted: name => `Uninstalling ${name}...`,
       updateStarted: 'Updating installed skills...',
@@ -906,7 +906,7 @@ export const en: Translations = {
       actionLog: 'Action log',
       loadFailed: 'Skill hub failed to load',
       previewFailed: 'Skill preview failed',
-      scanFailed: 'Security scan failed',
+      scanFailed: 'Package preflight failed',
       searchFailed: 'Hub search failed'
     }
   },

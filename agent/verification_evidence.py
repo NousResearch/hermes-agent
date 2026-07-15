@@ -59,6 +59,28 @@ def _db_path() -> Path:
     return get_hermes_home() / "verification_evidence.db"
 
 
+def verification_ledger_enabled(config: dict[str, Any] | None = None) -> bool:
+    """Return the exact mechanical ledger gate.
+
+    The ledger historically ran for every terminal result, even when
+    ``verify_on_stop`` was disabled.  Production may now seal this separate
+    gate to ``False`` so no command parser or classifier runs and no inferred
+    verification metadata is exposed to the model.  Missing config preserves
+    the existing local-development behavior.
+    """
+
+    if config is None:
+        try:
+            from hermes_cli.config import load_config
+
+            config = load_config()
+        except Exception:
+            config = {}
+    agent = config.get("agent") if isinstance(config, dict) else None
+    value = agent.get("verification_ledger_enabled") if isinstance(agent, dict) else None
+    return value is not False
+
+
 def _connect() -> sqlite3.Connection:
     path = _db_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -437,6 +459,9 @@ def record_terminal_result(
 ) -> Optional[dict[str, Any]]:
     """Record a foreground terminal result when it is verification evidence."""
 
+    if not verification_ledger_enabled():
+        return None
+
     evidence = classify_verification_command(
         command,
         cwd=cwd,
@@ -499,6 +524,9 @@ def mark_workspace_edited(
     paths: list[str] | tuple[str, ...] | None = None,
 ) -> Optional[dict[str, Any]]:
     """Mark verification evidence stale after a successful file edit."""
+
+    if not verification_ledger_enabled():
+        return None
 
     try:
         from agent.coding_context import project_facts_for

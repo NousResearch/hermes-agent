@@ -67,6 +67,7 @@ _HERMES_CORE_TOOLS = [
     "cronjob",
     # Canonical Brain operational persistence (private/runtime-gated on Cloud SQL helper + profile config)
     "canonical_brain_query", "canonical_event_append", "route_back_state",
+    "route_back_execute",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
     # Kanban multi-agent coordination — only in schema when the agent is
@@ -170,6 +171,15 @@ TOOLSETS = {
         "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
+
+    "skills_readonly": {
+        "description": (
+            "Read shared skill documents without exposing the profile-global "
+            "skill mutation tool"
+        ),
+        "tools": ["skills_list", "skill_view"],
+        "includes": [],
+    },
     
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
@@ -191,7 +201,10 @@ TOOLSETS = {
 
     "canonical_brain": {
         "description": "Canonical Brain operational persistence: append Cloud SQL events and record route-back state. Hermes decides meaning; these tools only validate/persist/receipt state.",
-        "tools": ["canonical_brain_query", "canonical_event_append", "route_back_state"],
+        "tools": [
+            "canonical_brain_query", "canonical_event_append",
+            "route_back_state", "route_back_execute",
+        ],
         "includes": []
     },
     
@@ -287,6 +300,16 @@ TOOLSETS = {
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
         "tools": ["discord"],
+        "includes": [],
+    },
+
+    "discord_guild_read": {
+        "description": (
+            "Credential-free bounded reads from exact Discord guild channels and "
+            "type-10/11 threads authorized by live requester ACL or an exact "
+            "reviewed cron binding"
+        ),
+        "tools": ["discord_guild_history"],
         "includes": [],
     },
 

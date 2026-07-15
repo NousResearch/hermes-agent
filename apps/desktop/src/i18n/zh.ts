@@ -1063,8 +1063,8 @@ export const zh: Translations = {
       updateAll: '更新已安装',
       updating: '更新中…',
       preview: '预览',
-      scan: '扫描',
-      scanning: '扫描中…',
+      scan: '包预检',
+      scanning: '正在检查包…',
       close: '关闭',
       files: '文件',
       noReadme: '该技能没有 SKILL.md 预览。',
@@ -1080,7 +1080,7 @@ export const zh: Translations = {
       policyAsk: '安装前请复查',
       policyBlock: '安装被策略阻止',
       findings: count => `${count} 项发现`,
-      noFindings: '无安全发现。',
+      noFindings: '未发现包边界违规。',
       installStarted: name => `正在安装 ${name}…`,
       uninstallStarted: name => `正在卸载 ${name}…`,
       updateStarted: '正在更新已安装技能…',
@@ -1088,7 +1088,7 @@ export const zh: Translations = {
       actionLog: '操作日志',
       loadFailed: '技能中心加载失败',
       previewFailed: '技能预览失败',
-      scanFailed: '安全扫描失败',
+      scanFailed: '包预检失败',
       searchFailed: '技能中心搜索失败'
     }
   },

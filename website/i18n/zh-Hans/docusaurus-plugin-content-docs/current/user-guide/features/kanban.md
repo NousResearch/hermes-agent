@@ -369,7 +369,7 @@ hermes dashboard        # 导航栏中出现 "Kanban" 标签页，位于 "Skills
 ### 插件提供的功能
 
 - 一个 **Kanban** 标签页，每个状态显示一列：`triage`、`todo`、`ready`、`running`、`blocked`、`done`（开启切换时还有 `archived`）。
-  - `triage` 是粗略想法的停车列。默认情况下（`kanban.auto_decompose: true`），调度器会自动对落在这里的任务运行**分解器** —— 编排器配置文件读取粗略想法，查看你的配置文件名册（含描述），并将任务扇出为路由到最合适专家的小型子任务图。原始任务作为每个子任务的父级保持存活，因此当所有子任务完成时，编排器会重新唤醒以判断完成情况，并在工作未完成时添加更多任务。点击页面顶部的 **Orchestration: Auto/Manual** 切换按钮（或设置 `kanban.auto_decompose: false`）切换到手动模式，在手动模式下分诊任务保持原位，直到你点击卡片上的 **⚗ Decompose** 或运行 `hermes kanban decompose <id>`。对于不需要扇出的任务（或没有编排器配置文件的设置），**✨ Specify** 按钮通过相同的 LLM 机制进行单任务规格重写（标题 + 正文，包含目标、方法、验收标准）。详见下方[自动与手动编排](#auto-vs-manual-orchestration)。
+  - `triage` 是粗略想法的停车列。辅助 Kanban 规划默认关闭，因此任务会留在此处，直到 Hermes 主模型或人类进行规划。设置 `kanban.auxiliary_planning_enabled: true` 才会启用旧版辅助分解器、规格器和 profile 自动描述器。自动分解还要求 `kanban.auto_decompose: true`；此时分解器会读取 profile 名册（含描述），并将任务扇出为路由到最合适专家的子任务图。
 - 卡片显示任务 id、标题、优先级徽章、租户标签、分配的配置文件、评论/链接计数、**进度标签**（任务有依赖项时显示 `N/M` 子任务已完成）以及"N 前创建"。每张卡片的复选框启用多选。
 - **Running 列内的按配置文件分组** —— 工具栏复选框切换 Running 列按受让人的子分组。
 - **通过 WebSocket 实时更新** —— 插件以短轮询间隔追踪仅追加的 `task_events` 表；任何配置文件（CLI、gateway 或另一个仪表盘标签页）操作后，看板立即反映变化。重新加载经过防抖处理，因此一批事件只触发一次重新获取。
@@ -381,7 +381,7 @@ hermes dashboard        # 导航栏中出现 "Kanban" 标签页，位于 "Skills
   - **可编辑受让人 / 优先级** —— 点击元数据行进行修改。
   - **可编辑描述** —— 默认以 markdown 渲染（标题、粗体、斜体、内联代码、围栏代码、`http(s)` / `mailto:` 链接、项目符号列表），带有"编辑"按钮可切换到文本区域。Markdown 渲染是一个微型、防 XSS 的渲染器 —— 每次替换都在 HTML 转义的输入上运行，只有 `http(s)` / `mailto:` 链接通过，并且始终设置 `target="_blank"` + `rel="noopener noreferrer"`。
   - **依赖编辑器** —— 父级和子级的芯片列表，每个都有 `×` 用于取消链接，加上所有其他任务的下拉菜单用于添加新的父级或子级。循环尝试在服务器端被拒绝并给出清晰的消息。
-  - **状态操作行**（→ triage / → ready / → running / block / unblock / complete / archive），破坏性转换有确认提示。对于 **Triage** 列中的卡片，该行还提供两个 LLM 驱动的操作：**⚗ Decompose** 将任务扇出为路由到专家配置文件（按描述）的子任务图（编排器驱动路径），**✨ Specify** 进行单任务规格重写。当 LLM 判断任务不需要扇出时，Decompose 会回退到类似 specify 的推进，因此它是严格的超集。两者都可以从 CLI（`hermes kanban decompose <id>` / `specify <id>` / `--all`）、任何 gateway 平台（`/kanban decompose <id>`）以及通过 `POST /api/plugins/kanban/tasks/:id/decompose` 和 `…/specify` 以编程方式访问。在 `config.yaml` 的 `auxiliary.kanban_decomposer` 和 `auxiliary.triage_specifier` 下配置模型。
+  - **状态操作行**（→ triage / → ready / → running / block / unblock / complete / archive），破坏性转换有确认提示。对于 **Triage** 列中的卡片，该行还提供两个 LLM 驱动的操作：**⚗ Decompose** 将任务扇出为路由到专家 profile（按描述）的子任务图，**✨ Specify** 进行单任务规格重写。当 LLM 判断任务不需要扇出时，Decompose 会回退到类似 specify 的推进。无论从 dashboard、CLI（`hermes kanban decompose <id>` / `specify <id>` / `--all`）、gateway（`/kanban decompose <id>`）还是 REST API 调用，两个操作都要求 `kanban.auxiliary_planning_enabled: true`。在 `config.yaml` 的 `auxiliary.kanban_decomposer` 和 `auxiliary.triage_specifier` 下配置模型。
   - 结果部分（也以 markdown 渲染）、带 Enter 提交的评论线程、最近 20 个事件。
 - **工具栏过滤器** —— 自由文本搜索、租户下拉菜单（默认为 `config.yaml` 中的 `dashboard.kanban.default_tenant`）、受让人下拉菜单、"显示已归档"切换、"按配置文件分组"切换，以及**推动调度器**按钮，这样你就不必等待下一个 60 秒 tick。
 
@@ -389,31 +389,40 @@ hermes dashboard        # 导航栏中出现 "Kanban" 标签页，位于 "Skills
 
 ### 自动与手动编排 {#auto-vs-manual-orchestration}
 
-看板有两种方式处理你放入 Triage 列的任务：
+默认由 Hermes 主模型负责规划和分配。旧版辅助规划器默认关闭；要启用它，请明确设置：
 
-**自动（默认）** —— `kanban.auto_decompose: true`。Gateway 内嵌调度器在每个 tick 运行**分解器**，受 `kanban.auto_decompose_per_tick`（默认每 tick 3 个任务）限制，以防批量加载分诊任务时突发消耗辅助 LLM。分解器读取粗略想法，查看你安装的配置文件及其描述，并要求 LLM 生成 JSON 任务图：要启动哪些任务、分配给谁，以及哪些依赖哪些。原始分诊任务成为图中每个叶节点的父级，因此它保持存活直到整个图完成 —— 然后推进回 `ready`，让其受让人（编排器配置文件）判断完成情况，并在工作未完成时添加更多任务。这是"丢一行描述，走开"的流程。
+```yaml
+kanban:
+  auxiliary_planning_enabled: true
+```
 
-**手动** —— `kanban.auto_decompose: false`。分诊任务保持在分诊中，直到你操作。点击卡片上的 **⚗ Decompose** 按钮，运行 `hermes kanban decompose <id>`（或 `--all`），或从聊天中使用 `/kanban decompose <id>`。这与看板的预分解器行为一致，适合需要完全控制运行时机的场景。
+打开该开关后，辅助规划器有两种处理 Triage 任务的模式：
 
-从 kanban 页面顶部的 **Orchestration: Auto/Manual** 切换按钮（翠绿色 = 自动，静音灰色 = 手动）在两种模式之间切换，或直接编辑 `config.yaml`。两种模式都与 `hermes kanban specify` 共存 —— 当你不想扇出时，它仍然可用作单任务规格重写。
+**自动辅助分解（显式启用）** —— 还要设置 `kanban.auto_decompose: true`。Gateway 内嵌调度器在每个 tick 运行**分解器**，受 `kanban.auto_decompose_per_tick`（默认每 tick 3 个任务）限制，以防批量加载分诊任务时突发消耗辅助 LLM。分解器读取粗略想法，查看你安装的 profile 及其描述，并要求 LLM 生成 JSON 任务图。
 
-分解器的路由决策依赖于配置文件描述，这是一个每配置文件的标签原语，通过 `hermes profile create --description "..."`、`hermes profile describe <name> --text "..."`、`hermes profile describe <name> --auto`（LLM 从配置文件安装的 skill + 模型自动生成），或仪表盘展开的 **Orchestration settings** 面板中的每配置文件编辑器来设置。没有描述的配置文件仍然出现在名册中 —— 它们可以按名称路由，只是精度较低。分解器**绝不**会将子任务落地为 `assignee=None`：当 LLM 选择未知配置文件时，子任务路由到 `kanban.default_assignee`（如果未设置，则路由到活动默认配置文件）。
+**手动辅助规划** —— 保持 `kanban.auxiliary_planning_enabled: true`，但将 `kanban.auto_decompose` 留为 false 或不设置。分诊任务会留在原位，直到你点击 **⚗ Decompose**、运行 `hermes kanban decompose <id>`（或 `--all`），或从聊天中使用 `/kanban decompose <id>`。`hermes kanban specify` 和 dashboard 的 **✨ Specify** 操作受同一开关门控；该开关为 false 或缺失时，这些辅助操作都会拒绝运行。
+
+页面顶部的 **Orchestration: Auto/Manual** 按钮用于切换自动与手动行为。点击 **Auto** 是 dashboard 对 `auxiliary_planning_enabled` 和 `auto_decompose` 的显式双重启用；切回 **Manual** 会停止自动运行，但保留手动辅助操作。要关闭所有旧版辅助规划操作，请在展开的设置面板中关闭独立的 **Auxiliary planning** 复选框。
+
+分解器的路由决策依赖于 profile 描述，可通过 `hermes profile create --description "..."`、`hermes profile describe <name> --text "..."`、`hermes profile describe <name> --auto` 或 dashboard 编辑器设置。`--auto` 也是辅助规划功能，需要 `kanban.auxiliary_planning_enabled: true`；显式 `--text` 描述不需要该开关。
 
 配置项（均在 `~/.hermes/config.yaml` 的 `kanban:` 下）：
 
 | 键 | 默认值 | 用途 |
 |---|---|---|
-| `auto_decompose` | `true` | 调度器每 tick 自动运行分解器。 |
+| `auxiliary_planning_enabled` | `false` | 选择启用辅助 decompose、specify 和 profile 自动描述调用。默认由 Hermes 主模型规划。 |
+| `auto_decompose` | `false` | 仅当此项和 `auxiliary_planning_enabled` 都明确为 `true` 时，调度器才会每 tick 自动运行分解器。 |
 | `auto_decompose_per_tick` | `3` | 每个调度器 tick 的分解上限。超出部分推迟到下一个 tick。 |
 | `orchestrator_profile` | `""` | 拥有分解权的配置文件。空 = 回退到活动默认配置文件。 |
 | `default_assignee` | `""` | LLM 选择未知配置文件时子任务的落地位置。空 = 回退到活动默认配置文件。 |
 | `auto_subscribe_on_create` | `true` | 当 worker 在具有持久投递通道的会话（消息网关或 TUI）内调用 `kanban_create` 时，原始会话会自动订阅新任务的完成/阻塞事件。调度器仍负责驱动投递 —— 此设置只决定调用者的聊天/密钥是否出现在通知订阅表中。设为 `false` 则要求对每个任务显式调用 `kanban_notify-subscribe`。 |
 
-以及两个辅助 LLM 槽：
+以及三个辅助 LLM 槽：
 
 | 键 | 用途 |
 |---|---|
 | `auxiliary.kanban_decomposer` | 生成任务图的模型（由 Decompose 调用）。设置 `provider`/`model` 以覆盖主聊天模型。 |
+| `auxiliary.triage_specifier` | 将单个 triage 任务重写为具体规格的模型（由 Specify 调用）。 |
 | `auxiliary.profile_describer` | 自动生成配置文件描述的模型（由 `hermes profile describe --auto` 调用）。 |
 
 ### 架构

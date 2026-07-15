@@ -651,6 +651,24 @@ _PLATFORM_CONNECTED_CHECKERS: dict[Platform, Callable[[PlatformConfig], bool]] =
 }
 
 
+def _gateway_plugin_discovery_kwargs(
+    *,
+    isolated_runtime: Any,
+    allowlist: Any,
+) -> Dict[str, Any]:
+    """Return one strict discovery mode for every gateway config call site."""
+
+    if isolated_runtime is not True:
+        return {}
+    if (
+        not isinstance(allowlist, (list, tuple, frozenset))
+        or not allowlist
+        or any(not isinstance(item, str) or not item for item in allowlist)
+    ):
+        raise RuntimeError("isolated gateway plugin allowlist is invalid")
+    return {"isolated_allowlist": frozenset(allowlist)}
+
+
 @dataclass
 class GatewayConfig:
     """
@@ -684,13 +702,6 @@ class GatewayConfig:
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
-    # Drop outbound "silence narration" messages (e.g. *(silent)*, 🔇, a bare
-    # ".") pre-send. These are model hallucinations emitted when a persona has
-    # nothing actionable to say; in bot-to-bot channels they mirror back and
-    # forth, burning tokens and crashing models. Substrate-level guard that
-    # survives SOUL.md/prompt drift across providers. Opt out with False for
-    # raw passthrough.
-    filter_silence_narration: bool = True
 
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
@@ -707,6 +718,13 @@ class GatewayConfig:
     # phases) per-profile adapters/credentials are resolved. When False, the
     # gateway behaves exactly as before — single HERMES_HOME, no profile stamping.
     multiplex_profiles: bool = False
+
+    # Opt-in clean-room startup for sealed single-task runtimes.  This leaves
+    # normal gateways unchanged while allowing a caller to suppress legacy
+    # user-authored startup inputs (hooks, process recovery, and synthetic
+    # session auto-resume) before the first requested model turn.
+    isolated_runtime: bool = False
+    isolated_plugin_allowlist: tuple[str, ...] = ()
 
     # Unauthorized DM policy
     unauthorized_dm_behavior: str = "pair"  # "pair" or "ignore"
@@ -758,9 +776,15 @@ class GatewayConfig:
             from gateway.platform_registry import platform_registry
             try:
                 from hermes_cli.plugins import discover_plugins
-                discover_plugins()
+                discover_plugins(
+                    **_gateway_plugin_discovery_kwargs(
+                        isolated_runtime=self.isolated_runtime,
+                        allowlist=self.isolated_plugin_allowlist,
+                    )
+                )
             except Exception:
-                pass
+                if self.isolated_runtime is True:
+                    raise
             entry = platform_registry.get(platform.value)
             if entry:
                 if entry.is_connected is not None:
@@ -769,7 +793,9 @@ class GatewayConfig:
                     return entry.validate_config(config)
                 return True
         except Exception:
-            pass  # Registry not yet initialised during early import
+            if self.isolated_runtime is True:
+                raise
+            # Registry not yet initialised during early import.
 
         return False
     
@@ -817,13 +843,14 @@ class GatewayConfig:
             "sessions_dir": str(self.sessions_dir),
             "write_sessions_json": self.write_sessions_json,
             "always_log_local": self.always_log_local,
-            "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
             "stt_echo_transcripts": self.stt_echo_transcripts,
             "group_sessions_per_user": self.group_sessions_per_user,
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
+            "isolated_runtime": self.isolated_runtime,
+            "isolated_plugin_allowlist": list(self.isolated_plugin_allowlist),
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
@@ -886,6 +913,19 @@ class GatewayConfig:
             # Also honor gateway.multiplex_profiles written by
             # ``hermes config set gateway.multiplex_profiles true``.
             multiplex_profiles = nested_gateway.get("multiplex_profiles")
+        isolated_runtime = data.get("isolated_runtime")
+        if isolated_runtime is None and isinstance(nested_gateway, dict):
+            isolated_runtime = nested_gateway.get("isolated_runtime")
+        isolated_plugin_allowlist = data.get("isolated_plugin_allowlist")
+        if isolated_plugin_allowlist is None:
+            plugins = data.get("plugins")
+            if isinstance(plugins, dict):
+                isolated_plugin_allowlist = plugins.get("enabled")
+        if not isinstance(isolated_plugin_allowlist, list) or any(
+            not isinstance(item, str) or not item
+            for item in isolated_plugin_allowlist
+        ):
+            isolated_plugin_allowlist = []
         # Operator override: GATEWAY_MULTIPLEX_PROFILES wins over config.yaml when
         # set to a recognized value. Hosted deployments (Nous Portal / Fly) stamp
         # it on the container so the single multiplexed gateway — which the
@@ -929,14 +969,15 @@ class GatewayConfig:
             sessions_dir=sessions_dir,
             write_sessions_json=_coerce_bool(data.get("write_sessions_json"), True),
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
-            filter_silence_narration=_coerce_bool(
-                data.get("filter_silence_narration"), True
-            ),
             stt_enabled=_coerce_bool(stt_enabled, True),
             stt_echo_transcripts=_coerce_bool(stt_echo_transcripts, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
+            # Deliberately strict: unlike user-convenience toggles, the
+            # clean-room boundary activates only from a literal YAML boolean.
+            isolated_runtime=isolated_runtime is True,
+            isolated_plugin_allowlist=tuple(isolated_plugin_allowlist),
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
@@ -985,6 +1026,7 @@ def load_gateway_config() -> GatewayConfig:
     """
     _home = get_hermes_home()
     gw_data: dict = {}
+    isolated_runtime_requested = False
 
     # Legacy fallback: gateway.json provides the base layer.
     # config.yaml keys always win when both specify the same setting.
@@ -997,6 +1039,13 @@ def load_gateway_config() -> GatewayConfig:
                 "Loaded legacy %s — consider moving settings to config.yaml",
                 gateway_json_path,
             )
+            legacy_gateway = gw_data.get("gateway")
+            isolated_runtime_requested = gw_data.get(
+                "isolated_runtime"
+            ) is True or (
+                isinstance(legacy_gateway, dict)
+                and legacy_gateway.get("isolated_runtime") is True
+            )
         except Exception as e:
             logger.warning("Failed to load %s: %s", gateway_json_path, e)
 
@@ -1007,6 +1056,11 @@ def load_gateway_config() -> GatewayConfig:
         if config_yaml_path.exists():
             with open(config_yaml_path, encoding="utf-8") as f:
                 yaml_cfg = yaml.safe_load(f) or {}
+            yaml_gateway = yaml_cfg.get("gateway")
+            isolated_runtime_requested = isolated_runtime_requested or (
+                isinstance(yaml_gateway, dict)
+                and yaml_gateway.get("isolated_runtime") is True
+            )
 
             # Managed scope: overlay administrator-pinned values so the gateway
             # honors them too. This loader builds its own dict instead of going
@@ -1060,6 +1114,14 @@ def load_gateway_config() -> GatewayConfig:
                     gw_data["multiplex_profiles"] = gateway_section["multiplex_profiles"]
                 if "max_concurrent_sessions" in gateway_section:
                     gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
+                if "isolated_runtime" in gateway_section:
+                    gw_data["isolated_runtime"] = gateway_section["isolated_runtime"]
+                    if gateway_section["isolated_runtime"] is True:
+                        plugins_cfg = yaml_cfg.get("plugins")
+                        if isinstance(plugins_cfg, dict):
+                            gw_data["isolated_plugin_allowlist"] = plugins_cfg.get(
+                                "enabled"
+                            )
 
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]
@@ -1089,11 +1151,6 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["write_sessions_json"] = yaml_cfg["write_sessions_json"]
             elif isinstance(_gw_section, dict) and "write_sessions_json" in _gw_section:
                 gw_data["write_sessions_json"] = _gw_section["write_sessions_json"]
-
-            if "filter_silence_narration" in yaml_cfg:
-                gw_data["filter_silence_narration"] = yaml_cfg[
-                    "filter_silence_narration"
-                ]
 
             if "unauthorized_dm_behavior" in yaml_cfg:
                 gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(
@@ -1137,9 +1194,16 @@ def load_gateway_config() -> GatewayConfig:
             # so plugin authors get the same shared-key bridging (#24836).
             try:
                 from hermes_cli.plugins import discover_plugins
-                discover_plugins()  # idempotent
+                discover_plugins(
+                    **_gateway_plugin_discovery_kwargs(
+                        isolated_runtime=gw_data.get("isolated_runtime"),
+                        allowlist=gw_data.get("isolated_plugin_allowlist", ()),
+                    )
+                )
                 from gateway.platform_registry import platform_registry as _pr
             except Exception as e:
+                if gw_data.get("isolated_runtime") is True:
+                    raise
                 logger.debug("plugin discovery skipped: %s", e)
                 _pr = None
 
@@ -1358,6 +1422,8 @@ def load_gateway_config() -> GatewayConfig:
             # #41112 / #3823.
 
     except Exception as e:
+        if isolated_runtime_requested:
+            raise
         logger.warning(
             "Failed to process config.yaml — falling back to .env / gateway.json values. "
             "Check %s for syntax errors. Error: %s",
@@ -2137,7 +2203,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     # counterpart.
     try:
         from hermes_cli.plugins import discover_plugins
-        discover_plugins()  # idempotent
+        discover_plugins(
+            **_gateway_plugin_discovery_kwargs(
+                isolated_runtime=config.isolated_runtime,
+                allowlist=config.isolated_plugin_allowlist,
+            )
+        )
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
             try:
@@ -2269,6 +2340,8 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                         ),
                     )
     except Exception as e:
+        if config.isolated_runtime is True:
+            raise
         logger.debug("Plugin platform enable pass failed: %s", e)
 
     # Relay (generic connector-fronted platform, EXPERIMENTAL). Enabled when a

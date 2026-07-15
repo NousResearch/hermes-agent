@@ -184,8 +184,8 @@ export function SkillsHub({ query }: SkillsHubProps) {
   const activeLogKey = useStore($hubActiveLog)
   const activeLog = activeLogKey ? actions[activeLogKey] : undefined
 
-  // Preview/scan dialog. Preview is cache-worthy (keyed by identifier); scan is
-  // an explicit, on-demand security pass so it stays imperative.
+  // Preview/preflight dialog. Preview is cache-worthy (keyed by identifier);
+  // package preflight is explicit and on-demand, so it stays imperative.
   const [detail, setDetail] = useState<null | SkillHubResult>(null)
   const [scan, setScan] = useState<null | SkillHubScanResult>(null)
   const [scanning, setScanning] = useState(false)

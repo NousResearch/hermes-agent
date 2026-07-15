@@ -1657,9 +1657,9 @@ class ProcessRegistry:
             # background processes a user may have forgotten about (#29177).
             if task_id and session_key and s.task_id != task_id and s.session_key == session_key:
                 entry["session_scoped"] = True
-            # Trigger metadata so a goal-loop judge can decide to wait on this
-            # process's OWN signal (a watch-pattern match or completion), not
-            # just its exit. A watcher with watch_patterns may never exit.
+            # Trigger metadata lets callers mechanically track this process's
+            # OWN signal (a watch-pattern match or completion), not just its
+            # exit. A watcher with watch_patterns may never exit.
             if s.watch_patterns and not s._watch_disabled:
                 entry["watch_patterns"] = list(s.watch_patterns)
                 entry["watch_hit"] = s._watch_hits > 0

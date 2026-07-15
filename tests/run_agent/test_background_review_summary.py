@@ -58,6 +58,34 @@ def test_includes_genuinely_new_actions():
     assert actions == ["Memory entry created."]
 
 
+def test_notification_does_not_classify_message_keywords():
+    review_messages = [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_memory",
+                    "function": {
+                        "name": "memory",
+                        "arguments": json.dumps(
+                            {"action": "add", "target": "memory", "content": "x"}
+                        ),
+                    },
+                }
+            ],
+        },
+        _tool_msg(
+            "call_memory",
+            {"success": True, "message": "No action keyword here.", "target": "memory"},
+        ),
+    ]
+
+    assert _summarize(review_messages, prior_snapshot=[]) == ["Memory updated"]
+
+    opaque_legacy = [_tool_msg("legacy", {"success": True, "message": "Review complete."})]
+    assert _summarize(opaque_legacy, prior_snapshot=[]) == ["Review complete."]
+
+
 def test_falls_back_to_content_equality_when_tool_call_id_missing():
     """If a tool message has no tool_call_id, match prior entries by content."""
     payload = {"success": True, "message": "Cron job 'X' created."}

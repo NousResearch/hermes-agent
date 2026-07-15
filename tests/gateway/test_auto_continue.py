@@ -171,6 +171,52 @@ class TestInterruptedReplayFiltering:
         assert agent_history[-1]["role"] == "tool"
         assert agent_history[-1]["content"] == "deployed successfully"
 
+    def test_terminal_shaped_business_result_from_other_tool_is_preserved(self):
+        from gateway.run import _build_gateway_agent_history
+
+        history = [
+            {"role": "user", "content": "read the report"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "read_file", "arguments": "{}"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": '{"exit_code": 130, "output": "[Command interrupted]"}',
+            },
+        ]
+
+        agent_history, _observed_context = _build_gateway_agent_history(history)
+
+        assert agent_history == history
+
+    def test_terminal_result_with_unbound_call_id_is_preserved(self):
+        from gateway.run import _build_gateway_agent_history
+
+        history = [
+            {"role": "user", "content": "run it"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {"id": "call_1", "function": {"name": "terminal", "arguments": "{}"}},
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "unknown-call",
+                "content": '{"exit_code": 130, "output": "[Command interrupted]"}',
+            },
+        ]
+
+        agent_history, _observed_context = _build_gateway_agent_history(history)
+
+        assert agent_history == history
+
     def test_dangling_unanswered_side_effect_is_replayed_as_unknown(self):
         """A trailing side-effecting call gets an UNKNOWN result, not a retry.
 
@@ -284,4 +330,52 @@ class TestInterruptedReplayFiltering:
             {"role": "user", "content": "second real question"},
             {"role": "assistant", "content": "answer"},
             {"role": "user", "content": "third"},
+        ]
+
+    def test_user_authored_auto_continue_prefix_lookalike_survives_replay(self):
+        from gateway.run import _build_gateway_agent_history
+
+        lookalike = (
+            "[System note: A new message was mentioned by the user] "
+            "this is my real question"
+        )
+        agent_history, _observed_context = _build_gateway_agent_history(
+            [{"role": "user", "content": lookalike}]
+        )
+
+        assert agent_history == [{"role": "user", "content": lookalike}]
+
+    def test_provenance_bound_dynamic_recovery_note_round_trips_exact(self):
+        from agent.message_provenance import (
+            GATEWAY_AUTO_CONTINUE_NOTE_KIND,
+            MESSAGE_PROVENANCE_KEY,
+            bind_message_fragment,
+        )
+        from gateway.run import _build_gateway_agent_history
+
+        note = (
+            "[System note: The previous turn was interrupted by a gateway "
+            "restart; the gateway is now back online.]"
+        )
+        provenance = bind_message_fragment(
+            None,
+            kind=GATEWAY_AUTO_CONTINUE_NOTE_KIND,
+            exact_text=note,
+        )
+        agent_history, _observed_context = _build_gateway_agent_history(
+            [
+                {
+                    "role": "user",
+                    "content": note + "\n\nreal question",
+                    MESSAGE_PROVENANCE_KEY: provenance,
+                }
+            ]
+        )
+
+        assert agent_history == [
+            {
+                "role": "user",
+                "content": note + "\n\nreal question",
+                MESSAGE_PROVENANCE_KEY: provenance,
+            }
         ]

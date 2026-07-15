@@ -69,8 +69,8 @@ class _StreamConsumer:
     async def run(self):
         return None
 
-    def finish(self):
-        pass
+    def finish(self, *, suppress_delivery: bool = False):
+        assert suppress_delivery is False
 
 
 class _Adapter:

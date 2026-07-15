@@ -28,6 +28,8 @@ these paths see no behavioural change.
 
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
 import os
 import tempfile
@@ -401,9 +403,8 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
     Jinja) then fail with "No user query found in messages" (#55677).
 
     The restored turn is appended at the END: the guard only runs when
-    ``compressed`` currently ends with an assistant/tool message (any existing
-    user turn — including a todo-snapshot append — short-circuits the
-    ``any()`` check), so appending a user message never creates consecutive
+    ``compressed`` currently ends with an assistant/tool message, so appending
+    a user message never creates consecutive
     same-role messages. ``_fresh_compaction_message_copy`` copies the message
     and strips the ``_db_persisted`` marker so the rotation/in-place flush
     still persists the restored row to the new session (#57491).
@@ -430,6 +431,291 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
             "no preserved user turn."
         ),
     })
+
+
+def _attach_todo_snapshot_to_last_user_turn(
+    compressed: list,
+    todo_snapshot: Optional[str],
+) -> None:
+    """Replace the bound Todo snapshot without adding a message.
+
+    The current real user request remains the final text in the same turn.
+    Existing bound snapshots are mechanically replaced so repeated compaction
+    cannot accumulate synthetic context. Passing ``None`` removes a stale
+    bound snapshot when there is no active Todo state. No task text or status
+    is interpreted.
+    """
+
+    from agent.context_compressor import _append_text_to_content
+    from agent.message_provenance import (
+        MESSAGE_PROVENANCE_KEY,
+        TODO_SNAPSHOT_KIND,
+        bind_message_fragment,
+        neutralize_untrusted_todo_snapshot_markers,
+        remove_bound_todo_snapshot,
+    )
+
+    for message in compressed:
+        if not isinstance(message, dict) or "content" not in message:
+            continue
+        content, provenance = remove_bound_todo_snapshot(
+            message.get("content"),
+            message.get(MESSAGE_PROVENANCE_KEY),
+        )
+        message["content"] = neutralize_untrusted_todo_snapshot_markers(
+            content,
+            provenance,
+        )
+        if provenance is None:
+            message.pop(MESSAGE_PROVENANCE_KEY, None)
+        else:
+            message[MESSAGE_PROVENANCE_KEY] = provenance
+
+    if not todo_snapshot:
+        return
+
+    target = next(
+        (
+            message
+            for message in reversed(compressed)
+            if isinstance(message, dict) and message.get("role") == "user"
+        ),
+        None,
+    )
+    if target is None:
+        raise AssertionError("compressed transcript has no user turn")
+    target["content"] = _append_text_to_content(
+        target.get("content"),
+        todo_snapshot + "\n\n",
+        prepend=True,
+    )
+    target[MESSAGE_PROVENANCE_KEY] = bind_message_fragment(
+        target.get(MESSAGE_PROVENANCE_KEY),
+        kind=TODO_SNAPSHOT_KIND,
+        exact_text=todo_snapshot,
+    )
+
+
+def _todo_call_parts(tool_call: Any) -> tuple[str, str] | None:
+    """Return exact call id/arguments for one structured ``todo`` call."""
+
+    if isinstance(tool_call, dict):
+        function = tool_call.get("function")
+        if not isinstance(function, dict) or function.get("name") != "todo":
+            return None
+        call_id = str(
+            tool_call.get("call_id") or tool_call.get("id") or ""
+        ).strip()
+        arguments = function.get("arguments", "{}")
+    else:
+        function = getattr(tool_call, "function", None)
+        if getattr(function, "name", None) != "todo":
+            return None
+        call_id = str(
+            getattr(tool_call, "call_id", None)
+            or getattr(tool_call, "id", None)
+            or ""
+        ).strip()
+        arguments = getattr(function, "arguments", "{}")
+    if not call_id:
+        return None
+    if not isinstance(arguments, str):
+        arguments = json.dumps(
+            arguments,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            default=str,
+        )
+    return call_id, arguments
+
+
+def _latest_paired_todo_receipt(messages: list) -> Optional[dict[str, str]]:
+    """Return the latest hydration-eligible Todo result and call arguments.
+
+    This deliberately mirrors ``AIAgent._hydrate_todo_store``'s trust shape:
+    a JSON Todo result alone is never enough.  It must carry a tool_call_id
+    paired to the nearest prior assistant ``todo`` call without crossing a
+    user/system boundary.  No user-visible snapshot or task prose is parsed.
+    """
+
+    from tools.todo_tool import MAX_TODO_RESULT_CHARS
+
+    for index in range(len(messages) - 1, -1, -1):
+        tool_message = messages[index]
+        if not isinstance(tool_message, dict) or tool_message.get("role") != "tool":
+            continue
+        content = tool_message.get("content")
+        call_id = str(tool_message.get("tool_call_id") or "").strip()
+        if (
+            not isinstance(content, str)
+            or not call_id
+            or len(content) > MAX_TODO_RESULT_CHARS
+            or '"todos"' not in content
+        ):
+            continue
+        try:
+            payload = json.loads(content)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("todos"),
+            list,
+        ):
+            continue
+
+        for prior_index in range(index - 1, -1, -1):
+            prior = messages[prior_index]
+            if not isinstance(prior, dict):
+                continue
+            role = prior.get("role")
+            if role in {"user", "system"}:
+                break
+            if role != "assistant":
+                continue
+            calls = prior.get("tool_calls")
+            if not isinstance(calls, list):
+                break
+            for tool_call in calls:
+                parts = _todo_call_parts(tool_call)
+                if parts is not None and parts[0] == call_id:
+                    return {
+                        "content": content,
+                        "arguments": parts[1],
+                    }
+            break
+    return None
+
+
+def _live_todo_hydration_receipt(todo_store: Any) -> Optional[dict[str, str]]:
+    """Render trusted live Todo state through the ordinary read-only tool path.
+
+    Canonical restart recovery can bind a fresh store before the model has made
+    another Todo call, so there may be no pair in the pre-compaction transcript
+    yet.  The in-memory store is already the runtime's validated state; a Todo
+    read serializes it through the same receipt schema used by hydration and
+    performs no external or local mutation.
+    """
+
+    if todo_store is None:
+        return None
+    has_items = getattr(todo_store, "has_items", None)
+    binding_reader = getattr(todo_store, "canonical_binding_state", None)
+    sync_reader = getattr(todo_store, "canonical_sync_blocked_state", None)
+    fence_reader = getattr(todo_store, "canonical_fence_receipt", None)
+    if not any(
+        callable(value)
+        for value in (has_items, binding_reader, sync_reader, fence_reader)
+    ):
+        return None
+    has_state = bool(callable(has_items) and has_items())
+    has_state = has_state or bool(
+        callable(binding_reader) and binding_reader() is not None
+    )
+    has_state = has_state or bool(
+        callable(sync_reader) and sync_reader() is not None
+    )
+    has_state = has_state or bool(
+        callable(fence_reader) and fence_reader() is not None
+    )
+    if not has_state:
+        return None
+
+    from tools.todo_tool import todo_tool
+
+    content = todo_tool(store=todo_store)
+    payload = json.loads(content)
+    if not isinstance(payload, dict) or not isinstance(
+        payload.get("todos"),
+        list,
+    ):
+        raise ValueError("live TodoStore returned an invalid hydration receipt")
+    return {"content": content, "arguments": "{}"}
+
+
+def _todo_anchor_insertion_index(compressed: list) -> int:
+    """Choose the latest position that preserves assistant/tool validity."""
+
+    for index in range(len(compressed), -1, -1):
+        left_role = (
+            compressed[index - 1].get("role")
+            if index > 0 and isinstance(compressed[index - 1], dict)
+            else None
+        )
+        right_role = (
+            compressed[index].get("role")
+            if index < len(compressed) and isinstance(compressed[index], dict)
+            else None
+        )
+        # The inserted span starts with assistant and ends with tool. Avoid
+        # creating assistant/assistant or tool/tool adjacency at its edges.
+        if left_role != "assistant" and right_role != "tool":
+            return index
+    raise AssertionError("compressed transcript has no valid Todo anchor position")
+
+
+def _preserve_todo_hydration_anchor(
+    original_messages: list,
+    compressed: list,
+    *,
+    todo_store: Any = None,
+) -> bool:
+    """Preserve the latest paired Todo receipt as machine-restorable state.
+
+    Compression may summarize away the assistant/tool pair that carries an
+    exact Canonical binding, writer-unavailable blocker, or uncertainty fence.
+    The human-readable Todo snapshot is model context only and is intentionally
+    never a hydration source.  Instead, preserve one minimal structured pair
+    rendered from the validated live store; the latest eligible original pair
+    is the fallback for compatibility with lightweight/custom stores.
+
+    Returns ``True`` only when a new pair was inserted.  Repeated compaction is
+    idempotent when the latest exact pair is already present.
+    """
+
+    source = (
+        _live_todo_hydration_receipt(todo_store)
+        or _latest_paired_todo_receipt(original_messages)
+    )
+    if source is None:
+        return False
+    current = _latest_paired_todo_receipt(compressed)
+    if current is not None and current["content"] == source["content"]:
+        return False
+
+    digest = hashlib.sha256(
+        (
+            source["arguments"]
+            + "\0"
+            + source["content"]
+        ).encode("utf-8")
+    ).hexdigest()[:24]
+    call_id = f"call_hermes_todo_{digest}"
+    anchor = [
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "todo",
+                        "arguments": source["arguments"],
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "content": source["content"],
+            "tool_call_id": call_id,
+            "tool_name": "todo",
+        },
+    ]
+    insertion_index = _todo_anchor_insertion_index(compressed)
+    compressed[insertion_index:insertion_index] = anchor
+    return True
 
 
 def compress_context(
@@ -465,6 +751,14 @@ def compress_context(
         prompt — the session is NOT rotated.  Callers should detect the
         no-op via ``len(returned) == len(input)`` and stop the retry loop.
     """
+    # Compression may make an auxiliary model call before the main turn call.
+    # Re-attest the same process authority at this boundary so post-pin config
+    # drift cannot be downgraded by the compressor's model-fallback handling.
+    # No conversation or prompt state is touched by this check.
+    from hermes_cli.config import attest_pinned_effective_config_projection
+
+    attest_pinned_effective_config_projection()
+
     # Codex app-server sessions: the codex agent owns the real thread context;
     # Hermes' summarizer would only rewrite a local mirror without shrinking
     # the actual thread (#36801). Route compaction to the app server's own
@@ -714,10 +1008,17 @@ def compress_context(
                         "check auxiliary.compression.model in config.yaml."
                     )
 
-        todo_snapshot = agent._todo_store.format_for_injection()
-        if todo_snapshot:
-            compressed.append({"role": "user", "content": todo_snapshot})
         _ensure_compressed_has_user_turn(messages, compressed)
+        todo_snapshot = agent._todo_store.format_for_injection()
+        _attach_todo_snapshot_to_last_user_turn(
+            compressed,
+            todo_snapshot,
+        )
+        _preserve_todo_hydration_anchor(
+            messages,
+            compressed,
+            todo_store=agent._todo_store,
+        )
 
         agent._invalidate_system_prompt()
         new_system_prompt = agent._build_system_prompt(system_message)

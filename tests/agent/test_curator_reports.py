@@ -46,6 +46,20 @@ def _make_llm_meta(**overrides):
     return base
 
 
+def _delete_call(name: str, absorbed_into: str) -> dict:
+    """Return the model-authored structured deletion contract."""
+    return {
+        "name": "skill_manage",
+        "arguments": json.dumps(
+            {
+                "action": "delete",
+                "name": name,
+                "absorbed_into": absorbed_into,
+            }
+        ),
+    }
+
+
 def test_reports_root_is_under_logs_not_skills(curator_env):
     """Reports live in logs/curator/, not skills/ — operational telemetry
     belongs with the logs, not with user-authored skill data."""
@@ -157,17 +171,7 @@ def test_report_md_is_human_readable(curator_env):
             model="claude-opus-4.7",
             provider="openrouter",
             tool_calls=[
-                # Evidence that `foo` was absorbed into `foo-umbrella`:
-                # write_file under foo-umbrella referencing foo.
-                {
-                    "name": "skill_manage",
-                    "arguments": json.dumps({
-                        "action": "write_file",
-                        "name": "foo-umbrella",
-                        "file_path": "references/foo.md",
-                        "file_content": "# foo\nContent absorbed from the old foo skill.\n",
-                    }),
-                },
+                _delete_call("foo", "foo-umbrella"),
             ],
         ),
     )
@@ -331,17 +335,7 @@ def test_curator_rewrites_cron_skills_when_skill_consolidated(curator_env_with_c
         after_report=after,
         llm_meta=_make_llm_meta(
             final="Consolidated foo into foo-umbrella.",
-            tool_calls=[
-                {
-                    "name": "skill_manage",
-                    "arguments": json.dumps({
-                        "action": "write_file",
-                        "name": "foo-umbrella",
-                        "file_path": "references/foo.md",
-                        "file_content": "from foo",
-                    }),
-                },
-            ],
+            tool_calls=[_delete_call("foo", "foo-umbrella")],
         ),
     )
 
@@ -394,7 +388,9 @@ def test_curator_drops_pruned_skill_from_cron_job(curator_env_with_cron):
         before_report=before,
         before_names={"stale-one"},
         after_report=after,
-        llm_meta=_make_llm_meta(),  # no tool calls → classifier marks it pruned
+        llm_meta=_make_llm_meta(
+            tool_calls=[_delete_call("stale-one", "")],
+        ),
     )
 
     loaded = jobs.get_job(job["id"])
@@ -404,6 +400,51 @@ def test_curator_drops_pruned_skill_from_cron_job(curator_env_with_cron):
     assert payload["cron_rewrites"]["jobs_updated"] == 1
     rewrites = payload["cron_rewrites"]["rewrites"]
     assert rewrites[0]["dropped"] == ["stale-one"]
+
+
+def test_unclassified_removal_does_not_rewrite_cron_refs(curator_env_with_cron):
+    """Opaque prose/content cannot silently redirect or drop a cron dependency."""
+    curator = curator_env_with_cron["curator"]
+    jobs = curator_env_with_cron["jobs"]
+    job = jobs.create_job(
+        prompt="",
+        schedule="every 1h",
+        skills=["narrow"],
+    )
+
+    run_dir = curator._write_run_report(
+        started_at=datetime.now(timezone.utc),
+        elapsed_seconds=1.0,
+        auto_counts={"checked": 1, "marked_stale": 0, "archived": 1, "reactivated": 0},
+        auto_summary="1 archived",
+        before_report=[{"name": "narrow", "state": "active", "pinned": False}],
+        before_names={"narrow"},
+        after_report=[{"name": "umbrella", "state": "active", "pinned": False}],
+        llm_meta=_make_llm_meta(
+            final="The prose says narrow was consolidated into umbrella.",
+            tool_calls=[
+                {
+                    "name": "skill_manage",
+                    "arguments": json.dumps(
+                        {
+                            "action": "write_file",
+                            "name": "umbrella",
+                            "file_path": "references/narrow.md",
+                            "file_content": "absorbed narrow",
+                        }
+                    ),
+                }
+            ],
+        ),
+    )
+
+    assert jobs.get_job(job["id"])["skills"] == ["narrow"]
+    payload = json.loads((run_dir / "run.json").read_text())
+    assert payload["consolidated"] == []
+    assert payload["pruned"] == []
+    assert payload["unclassified"][0]["name"] == "narrow"
+    assert payload["cron_rewrites"]["jobs_updated"] == 0
+    assert not (run_dir / "cron_rewrites.json").exists()
 
 
 def test_curator_report_has_no_cron_section_when_nothing_changes(curator_env_with_cron):

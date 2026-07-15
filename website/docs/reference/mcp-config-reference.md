@@ -60,7 +60,7 @@ mcp_servers:
 | `skip_preflight` | bool | HTTP | Bypass the fail-fast content-type probe for valid Streamable HTTP endpoints whose HEAD/GET answers a non-MCP content type (default: `false`) |
 | `tools` | mapping | both | Filtering and utility-tool policy |
 | `auth` | string | HTTP | Authentication method. Set to `oauth` to enable OAuth 2.1 with PKCE |
-| `sampling` | mapping | both | Server-initiated LLM request policy (see MCP guide) |
+| `sampling` | mapping | both | Server-initiated LLM request policy; disabled unless `sampling.enabled: true` (see MCP guide) |
 
 ## `tools` policy keys
 

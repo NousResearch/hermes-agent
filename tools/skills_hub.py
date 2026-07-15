@@ -1327,7 +1327,8 @@ class UrlSource(SkillSource):
 
     The skill name is read from the ``name:`` field in the SKILL.md YAML
     frontmatter (with a URL-slug fallback). Trust level is always
-    ``community`` and the same security scan runs as for every other source.
+    ``community`` and the same mechanical package preflight runs as for every
+    other source.
     """
 
     def source_id(self) -> str:
@@ -3241,8 +3242,8 @@ def _write_index_cache(key: str, data: Any) -> None:
     index_cache_dir = _index_cache_dir()
     index_cache_dir.mkdir(parents=True, exist_ok=True)
     # Ensure .ignore exists so ripgrep (and tools respecting .ignore) skip
-    # this directory.  Cache files contain unvetted community content that
-    # could include adversarial text (prompt injection via catalog entries).
+    # this directory. Cache files are untrusted registry metadata and stay
+    # outside ordinary workspace search results as a uniform source boundary.
     ignore_file = _hub_dir() / ".ignore"
     if not ignore_file.exists():
         try:

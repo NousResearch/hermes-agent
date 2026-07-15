@@ -29,6 +29,35 @@ class TestBuildReplayEntry:
         )
         assert entry == {"role": "user", "content": "hello"}
 
+    def test_user_message_preserves_valid_internal_provenance(self):
+        from agent.message_provenance import (
+            CANONICAL_WORKSPACE_NOTE_KIND,
+            MESSAGE_PROVENANCE_KEY,
+            bind_message_fragment,
+        )
+
+        note = "[Canonical Task Workspace — test]\n{\"case_id\":\"case-1\"}"
+        provenance = bind_message_fragment(
+            None,
+            kind=CANONICAL_WORKSPACE_NOTE_KIND,
+            exact_text=note,
+        )
+        entry = _build_replay_entry(
+            "user",
+            note,
+            {
+                "role": "user",
+                "content": note,
+                MESSAGE_PROVENANCE_KEY: provenance,
+            },
+        )
+
+        assert entry == {
+            "role": "user",
+            "content": note,
+            MESSAGE_PROVENANCE_KEY: provenance,
+        }
+
     def test_tool_message_has_only_role_and_content(self):
         # Tool messages aren't routed through this helper in production
         # (they take the rich-passthrough branch), but the helper itself
@@ -48,6 +77,40 @@ class TestBuildReplayEntry:
             {"role": "assistant", "content": "ok"},
         )
         assert entry == {"role": "assistant", "content": "ok"}
+
+    def test_assistant_runtime_boundary_receipt_preserves_exact_provenance(
+        self,
+    ):
+        from agent.message_provenance import (
+            MESSAGE_PROVENANCE_KEY,
+            RUNTIME_BOUNDARY_RECEIPT_KIND,
+            bind_message_fragment,
+        )
+
+        receipt = (
+            "[RUNTIME BOUNDARY RECEIPT — NOT MODEL-AUTHORED]\n"
+            "task remains open"
+        )
+        provenance = bind_message_fragment(
+            None,
+            kind=RUNTIME_BOUNDARY_RECEIPT_KIND,
+            exact_text=receipt,
+        )
+        entry = _build_replay_entry(
+            "assistant",
+            receipt,
+            {
+                "role": "assistant",
+                "content": receipt,
+                MESSAGE_PROVENANCE_KEY: provenance,
+            },
+        )
+
+        assert entry == {
+            "role": "assistant",
+            "content": receipt,
+            MESSAGE_PROVENANCE_KEY: provenance,
+        }
 
     def test_assistant_preserves_reasoning(self):
         msg = {

@@ -90,24 +90,6 @@ class TestVisionToolsContentNone:
         assert content == ""
 
 
-# ── skills_guard (line 963) ───────────────────────────────────────────────
-
-class TestSkillsGuardContentNone:
-    """tools/skills_guard.py — _llm_audit_skill() llm_text extraction"""
-
-    def test_none_content_raises_before_fix(self):
-        response = _make_response(None)
-
-        with pytest.raises(AttributeError):
-            response.choices[0].message.content.strip()
-
-    def test_none_content_safe_with_or_guard(self):
-        response = _make_response(None)
-
-        content = (response.choices[0].message.content or "").strip()
-        assert content == ""
-
-
 # ── integration: verify the actual source lines are guarded ───────────────
 
 class TestSourceLinesAreGuarded:
@@ -137,14 +119,6 @@ class TestSourceLinesAreGuarded:
             "tools/vision_tools.py still has unguarded "
             ".content.strip() — apply `(... or \"\").strip()` guard"
         )
-
-    def test_skills_guard_guarded(self):
-        src = self._read_file("tools/skills_guard.py")
-        assert ".message.content.strip()" not in src, (
-            "tools/skills_guard.py still has unguarded "
-            ".content.strip() — apply `(... or \"\").strip()` guard"
-        )
-
 
 # ── extract_content_or_reasoning() ────────────────────────────────────────
 

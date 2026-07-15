@@ -34,6 +34,8 @@ from typing import Any, Callable, Iterable, Optional
 import json
 import time
 
+from hermes_cli.kanban_planning_policy import auxiliary_planning_enabled
+
 
 # Severity rungs, ordered least → most urgent. The UI colors them
 # amber (warning), orange (error), red (critical). Sorted outputs put
@@ -301,12 +303,15 @@ def triage_aux_status(config: Optional[dict]) -> Optional[dict]:
         decomposer_explicit = _aux_slot_explicit(aux.get("kanban_decomposer"))
         specifier_explicit = _aux_slot_explicit(aux.get("triage_specifier"))
 
-    # ``auto_decompose`` defaults to True per kanban DEFAULT_CONFIG.
-    auto_decompose = True
-    if isinstance(kanban_cfg, dict) and "auto_decompose" in kanban_cfg:
-        auto_decompose = bool(kanban_cfg.get("auto_decompose"))
+    planning_enabled = auxiliary_planning_enabled(config)
+    auto_decompose = (
+        planning_enabled
+        and isinstance(kanban_cfg, dict)
+        and kanban_cfg.get("auto_decompose") is True
+    )
 
     return {
+        "auxiliary_planning_enabled": planning_enabled,
         "auto_decompose": auto_decompose,
         "decomposer_explicit": decomposer_explicit,
         "specifier_explicit": specifier_explicit,
@@ -372,7 +377,7 @@ def _rule_hallucinated_cards(task, events, runs, now, cfg) -> list[Diagnostic]:
 def _rule_triage_aux_unavailable(task, events, runs, now, cfg) -> list[Diagnostic]:
     """A triage task cannot leave triage without an auxiliary helper.
 
-    With the auto-decompose dispatcher (kanban.auto_decompose, default True),
+    With explicitly enabled auto-decompose (kanban.auto_decompose=true),
     triage tasks fan out via ``auxiliary.kanban_decomposer`` and fall back to
     ``auxiliary.triage_specifier`` when the decomposer returns ``fanout=false``.
     With auto-decompose off, the user must run ``hermes kanban specify``,
@@ -393,6 +398,8 @@ def _rule_triage_aux_unavailable(task, events, runs, now, cfg) -> list[Diagnosti
     if status is None:
         return []
 
+    if not bool(status.get("auxiliary_planning_enabled")):
+        return []
     auto_decompose = bool(status.get("auto_decompose"))
     decomposer_explicit = bool(status.get("decomposer_explicit"))
     specifier_explicit = bool(status.get("specifier_explicit"))

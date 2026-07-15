@@ -2,10 +2,29 @@
 set -euo pipefail
 
 OWNER="ai-platform-brain"
-REPO_URL="${MUNCHO_REPO_URL:-https://github.com/lomliev/hermes-agent.git}"
+REPO_URL="https://github.com/lomliev/hermes-agent.git"
 RELEASES="/opt/adventico-ai-platform/hermes-agent-releases"
 ACTIVE_LINK="/opt/adventico-ai-platform/hermes-agent"
 SERVICE="hermes-cloud-gateway.service"
+GATEWAY_FRAGMENT="/etc/systemd/system/hermes-cloud-gateway.service"
+GATEWAY_CONNECTOR_DROP_IN="/etc/systemd/system/hermes-cloud-gateway.service.d/20-discord-connector.conf"
+CUTOVER_PLAN_PATH="/var/lib/muncho-production-legacy-cutover/staged/cutover-plan.json"
+CUTOVER_UNIT_INPUT_PLAN_PATH="/var/lib/muncho-production-legacy-cutover/staged/unit-input-plan.json"
+CUTOVER_UNIT_INPUT_APPROVAL_PATH="/var/lib/muncho-production-legacy-cutover/staged/unit-input-approval.json"
+CUTOVER_UNIT_INPUTS_PATH="/var/lib/muncho-production-legacy-cutover/staged/production-unit-inputs.json"
+CUTOVER_STAGED_TRUSTED_UID=0
+CUTOVER_STAGED_TRUSTED_GID=0
+GATEWAY_FRAGMENT_TRUSTED_UID=0
+GATEWAY_FRAGMENT_TRUSTED_GID=0
+SYSTEMCTL="/usr/bin/systemctl"
+SYSTEM_PYTHON="/usr/bin/python3"
+SYSTEM_GIT="/usr/bin/git"
+SYSTEM_ID="/usr/bin/id"
+CUTOVER_BOOTSTRAP_RUNTIME_DIR="/run"
+CUTOVER_BOOTSTRAP_REPOSITORY_PATH="ops/muncho/cutover/production_unit_input_bootstrap.py"
+AGENT_BROWSER_CONFIG_RELATIVE_PATH="ops/muncho/runtime/dependencies/agent-browser.json"
+RUNTIME_CONFIG_ROOT_UID=0
+RUNTIME_CONFIG_ROOT_GID=0
 HERMES_HOME="/opt/adventico-ai-platform/hermes-home"
 PLANNED_RESTART_HELPER="$HERMES_HOME/scripts/planned_gateway_restart.sh"
 STATE_DIR="/opt/adventico-ai-platform/canonical-brain/state/private/upstream_sync_monitor"
@@ -14,6 +33,7 @@ KEEP_RELEASES="${MUNCHO_AUTO_DEPLOY_KEEP_RELEASES:-8}"
 VOICE_CALL_GUARD_PATH="${MUNCHO_VOICE_CALL_GUARD_PATH:-/opt/adventico-ai-platform/canonical-brain/state/runtime/voice-skyai-active-calls.json}"
 VOICE_CALL_LEASE_TOOL="${MUNCHO_VOICE_CALL_LEASE_TOOL:-/opt/adventico-ai-platform/hermes-home/bin/voice-skyai-call-lease}"
 VOICE_CALL_GUARD_BYPASS="${MUNCHO_IGNORE_ACTIVE_VOICE_CALLS:-0}"
+DEPLOY_HEALTH_WAIT_SECONDS="${MUNCHO_DEPLOY_HEALTH_WAIT_SECONDS:-8}"
 
 usage() {
   cat >&2 <<'EOF'
@@ -197,6 +217,1727 @@ validate_args() {
     echo "BLOCKED: PR number must be numeric." >&2
     exit 2
   fi
+  if [[ ! "$KEEP_RELEASES" =~ ^[0-9]{1,3}$ ]] \
+    || [ "$KEEP_RELEASES" -lt 2 ] \
+    || [ "$KEEP_RELEASES" -gt 100 ]; then
+    echo "BLOCKED: release retention must be an integer from 2 through 100." >&2
+    exit 2
+  fi
+  if [[ ! "$DEPLOY_HEALTH_WAIT_SECONDS" =~ ^[0-9]{1,3}$ ]] \
+    || [ "$DEPLOY_HEALTH_WAIT_SECONDS" -gt 300 ]; then
+    echo "BLOCKED: deploy health wait must be an integer from 0 through 300 seconds." >&2
+    exit 2
+  fi
+}
+
+gateway_deploy_topology_json() {
+  local observation=""
+  observation="$($SYSTEMCTL show --no-pager \
+    --property=Names,FragmentPath,LoadState,UnitFileState,DropInPaths,NeedDaemonReload,TriggeredBy,Triggers \
+    -- "$SERVICE" 2>/dev/null || true)"
+  python3 - \
+    "$GATEWAY_FRAGMENT" \
+    "$GATEWAY_CONNECTOR_DROP_IN" \
+    "$CUTOVER_PLAN_PATH" \
+    "$ACTIVE_LINK" \
+    "$RELEASES" \
+    "$SERVICE" \
+    "$GATEWAY_FRAGMENT_TRUSTED_UID" \
+    "$GATEWAY_FRAGMENT_TRUSTED_GID" \
+    "$observation" <<'PY'
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+SCHEMA = "muncho-legacy-auto-deploy-topology.v1"
+PINNED_HEADER = "# Exact SHA-bound Cloud Muncho production gateway; do not edit."
+PLAN_SCHEMA = "muncho-production-legacy-cutover-plan.v2"
+CONFIG_PATH = "/opt/adventico-ai-platform/hermes-home/config.yaml"
+STARTUP_FLAG = "--require-production-model-sovereignty"
+REVISION = re.compile(r"^[0-9a-f]{40}$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+MAX_UNIT_BYTES = 1024 * 1024
+MAX_PLAN_BYTES = 8 * 1024 * 1024
+MAX_SYSTEMD_BYTES = 64 * 1024
+
+fragment = Path(sys.argv[1])
+drop_in = Path(sys.argv[2])
+plan_path = Path(sys.argv[3])
+active_link = Path(sys.argv[4])
+releases = Path(sys.argv[5])
+service = sys.argv[6]
+trusted_uid = int(sys.argv[7])
+trusted_gid = int(sys.argv[8])
+systemd_raw = sys.argv[9]
+
+
+class GateError(RuntimeError):
+    pass
+
+
+def emit(classification, reason_code, **extra):
+    value = {
+        "schema": SCHEMA,
+        "classification": classification,
+        "reason_code": reason_code,
+        "fragment_path": str(fragment),
+        "secret_material_recorded": False,
+        "secret_digest_recorded": False,
+        **extra,
+    }
+    print(json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+
+
+def identity(item):
+    return (
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_uid,
+        item.st_gid,
+        item.st_nlink,
+        item.st_size,
+        item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
+
+
+def read_exact(path, *, modes, owners, groups, maximum):
+    try:
+        before = path.lstat()
+        resolved = path.resolve(strict=True)
+    except OSError as exc:
+        raise GateError("trusted_file_unavailable") from exc
+    if (
+        resolved != path
+        or not stat.S_ISREG(before.st_mode)
+        or stat.S_ISLNK(before.st_mode)
+        or before.st_nlink != 1
+        or stat.S_IMODE(before.st_mode) not in modes
+        or before.st_uid not in owners
+        or before.st_gid not in groups
+        or not 0 < before.st_size <= maximum
+    ):
+        raise GateError("trusted_file_identity_invalid")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise GateError("trusted_file_open_failed") from exc
+    try:
+        opened = os.fstat(descriptor)
+        raw = bytearray()
+        while len(raw) <= maximum:
+            chunk = os.read(descriptor, min(64 * 1024, maximum + 1 - len(raw)))
+            if not chunk:
+                break
+            raw.extend(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        reachable = path.lstat()
+    except OSError as exc:
+        raise GateError("trusted_file_replaced") from exc
+    if (
+        len(raw) != before.st_size
+        or len(raw) > maximum
+        or identity(before) != identity(opened)
+        or identity(before) != identity(after)
+        or identity(before) != identity(reachable)
+    ):
+        raise GateError("trusted_file_changed")
+    return bytes(raw)
+
+
+def parse_systemd(raw):
+    if not raw or len(raw.encode("utf-8", errors="strict")) > MAX_SYSTEMD_BYTES:
+        raise GateError("systemd_observation_unavailable")
+    expected = {
+        "Names",
+        "FragmentPath",
+        "LoadState",
+        "UnitFileState",
+        "DropInPaths",
+        "NeedDaemonReload",
+        "TriggeredBy",
+        "Triggers",
+    }
+    values = {}
+    for line in raw.splitlines():
+        name, separator, value = line.partition("=")
+        if not separator or name in values:
+            raise GateError("systemd_observation_invalid")
+        values[name] = value
+    if set(values) != expected:
+        raise GateError("systemd_observation_invalid")
+    if (
+        values["Names"] != service
+        or values["FragmentPath"] != str(fragment)
+        or values["LoadState"] != "loaded"
+        or values["UnitFileState"] != "enabled"
+        or values["NeedDaemonReload"] != "no"
+        or values["TriggeredBy"]
+        or values["Triggers"]
+    ):
+        raise GateError("systemd_identity_drifted")
+    values["drop_in_paths"] = (
+        [] if not values["DropInPaths"] else sorted(values["DropInPaths"].split())
+    )
+    return values
+
+
+def decode_plan(raw):
+    def pairs(items):
+        value = {}
+        for name, item in items:
+            if name in value:
+                raise GateError("cutover_plan_duplicate_key")
+            value[name] = item
+        return value
+
+    def constant(_value):
+        raise GateError("cutover_plan_nonfinite_number")
+
+    try:
+        value = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=pairs,
+            parse_constant=constant,
+        )
+    except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise GateError("cutover_plan_invalid") from exc
+    if not isinstance(value, dict):
+        raise GateError("cutover_plan_invalid")
+    try:
+        canonical = json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8", errors="strict")
+    except (TypeError, ValueError, UnicodeError) as exc:
+        raise GateError("cutover_plan_invalid") from exc
+    if canonical != raw:
+        raise GateError("cutover_plan_not_canonical")
+    plan_sha256 = value.get("plan_sha256")
+    unsigned = {name: item for name, item in value.items() if name != "plan_sha256"}
+    if (
+        not isinstance(plan_sha256, str)
+        or SHA256.fullmatch(plan_sha256) is None
+        or hashlib.sha256(
+            json.dumps(
+                unsigned,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ).encode("utf-8", errors="strict")
+        ).hexdigest()
+        != plan_sha256
+    ):
+        raise GateError("cutover_plan_digest_invalid")
+    return value
+
+
+try:
+    systemd = parse_systemd(systemd_raw)
+    fragment_raw = read_exact(
+        fragment,
+        modes={0o644},
+        owners={trusted_uid},
+        groups={trusted_gid},
+        maximum=MAX_UNIT_BYTES,
+    )
+    try:
+        fragment_text = fragment_raw.decode("utf-8", errors="strict")
+    except UnicodeError as exc:
+        raise GateError("gateway_fragment_not_utf8") from exc
+    lines = fragment_text.splitlines()
+    pinned_signal = (
+        os.path.lexists(plan_path)
+        or PINNED_HEADER in lines
+        or any(line.startswith("# ReleaseRevision=") for line in lines)
+        or STARTUP_FLAG in fragment_text
+        or str(releases) + "/hermes-agent-" in fragment_text
+        or bool(systemd["drop_in_paths"])
+    )
+    if not pinned_signal:
+        legacy_working_directory = [
+            line for line in lines if line.startswith("WorkingDirectory=")
+        ]
+        legacy_exec_start = [
+            line for line in lines if line.startswith("ExecStart=")
+        ]
+        if (
+            legacy_working_directory != [f"WorkingDirectory={active_link}"]
+            or len(legacy_exec_start) != 1
+            or not legacy_exec_start[0].startswith(
+                f"ExecStart={active_link}/.venv/bin/python "
+            )
+        ):
+            raise GateError("legacy_topology_not_symlink_bound")
+        emit(
+            "legacy",
+            "trusted_legacy_symlink_topology",
+            fragment_sha256=hashlib.sha256(fragment_raw).hexdigest(),
+        )
+        raise SystemExit(0)
+    if not os.path.lexists(plan_path):
+        raise GateError("pinned_topology_cutover_plan_missing")
+    plan_raw = read_exact(
+        plan_path,
+        modes={0o400},
+        owners={trusted_uid},
+        groups={trusted_gid},
+        maximum=MAX_PLAN_BYTES,
+    )
+    plan = decode_plan(plan_raw)
+    revision = plan.get("release_revision")
+    runtime_attestation = plan.get("owner_runtime_attestation")
+    runtime_fields = {
+        "schema", "revision", "manifest_sha256", "tree_sha256",
+        "interpreter_sha256", "pyvenv_cfg_sha256", "sys_path_sha256",
+        "required_modules_sha256", "module_origins_release_local",
+        "ambient_python_environment_present", "secret_material_recorded",
+        "secret_digest_recorded", "attestation_sha256",
+    }
+    runtime_unsigned = (
+        {
+            name: item
+            for name, item in runtime_attestation.items()
+            if name != "attestation_sha256"
+        }
+        if isinstance(runtime_attestation, dict)
+        else {}
+    )
+    runtime_digest = hashlib.sha256(
+        json.dumps(
+            runtime_unsigned,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8", errors="strict")
+    ).hexdigest()
+    if (
+        plan.get("schema") != PLAN_SCHEMA
+        or not isinstance(revision, str)
+        or REVISION.fullmatch(revision) is None
+        or plan.get("secret_material_recorded") is not False
+        or not isinstance(runtime_attestation, dict)
+        or set(runtime_attestation) != runtime_fields
+        or runtime_attestation.get("schema")
+        != "muncho-production-owner-runtime-attestation.v1"
+        or runtime_attestation.get("revision") != revision
+        or runtime_attestation.get("attestation_sha256") != runtime_digest
+        or any(
+            SHA256.fullmatch(str(runtime_attestation.get(name))) is None
+            for name in (
+                "manifest_sha256", "tree_sha256", "interpreter_sha256",
+                "pyvenv_cfg_sha256", "sys_path_sha256",
+                "required_modules_sha256",
+            )
+        )
+        or runtime_attestation.get("module_origins_release_local") is not True
+        or runtime_attestation.get("ambient_python_environment_present")
+        is not False
+        or runtime_attestation.get("secret_material_recorded") is not False
+        or runtime_attestation.get("secret_digest_recorded") is not False
+    ):
+        raise GateError("cutover_plan_revision_invalid")
+    target = plan.get("gateway_target_identity")
+    target_fields = {
+        "name",
+        "fragment_path",
+        "fragment_sha256",
+        "load_state",
+        "unit_file_state",
+        "drop_in_paths",
+        "drop_in_sha256",
+        "need_daemon_reload",
+        "triggered_by",
+        "triggers",
+    }
+    if not isinstance(target, dict) or set(target) != target_fields:
+        raise GateError("cutover_gateway_target_invalid")
+    fragment_sha256 = hashlib.sha256(fragment_raw).hexdigest()
+    if (
+        target["name"] != service
+        or target["fragment_path"] != str(fragment)
+        or target["fragment_sha256"] != fragment_sha256
+        or target["load_state"] != "loaded"
+        or target["unit_file_state"] != "enabled"
+        or target["drop_in_paths"] != [str(drop_in)]
+        or not isinstance(target["drop_in_sha256"], dict)
+        or set(target["drop_in_sha256"]) != {str(drop_in)}
+        or target["need_daemon_reload"] is not False
+        or target["triggered_by"] != []
+        or target["triggers"] != []
+        or systemd["drop_in_paths"] != [str(drop_in)]
+    ):
+        raise GateError("cutover_gateway_target_drifted")
+    drop_in_raw = read_exact(
+        drop_in,
+        modes={0o644},
+        owners={trusted_uid},
+        groups={trusted_gid},
+        maximum=MAX_UNIT_BYTES,
+    )
+    drop_in_sha256 = hashlib.sha256(drop_in_raw).hexdigest()
+    if target["drop_in_sha256"][str(drop_in)] != drop_in_sha256:
+        raise GateError("cutover_gateway_drop_in_drifted")
+    release = releases / f"hermes-agent-{revision[:12]}"
+    interpreter = release / ".venv/bin/python"
+    marker = release / ".codex-source-commit"
+    config_matches = [
+        line.removeprefix("# ConfigSHA256=")
+        for line in lines
+        if line.startswith("# ConfigSHA256=")
+    ]
+    revision_lines = [line for line in lines if line.startswith("# ReleaseRevision=")]
+    if len(config_matches) != 1 or SHA256.fullmatch(config_matches[0]) is None:
+        raise GateError("gateway_fragment_config_identity_invalid")
+    config_sha256 = config_matches[0]
+    expected_exec = (
+        f"ExecStart={interpreter} -B -P -s -m gateway.run "
+        f"--config {CONFIG_PATH} {STARTUP_FLAG} "
+        f"--production-release-revision {revision} "
+        f"--production-config-sha256 {config_sha256}"
+    )
+    expected_pre = (
+        f"ExecStartPre=+{interpreter} -B -P -s -m "
+        "gateway.production_capability_prerequisites collect "
+        f"--revision {revision} --config-sha256 {config_sha256} "
+        "--lifecycle-phase committed"
+    )
+    required_once = {
+        PINNED_HEADER,
+        f"# ReleaseRevision={revision}",
+        f"# ConfigSHA256={config_sha256}",
+        f"AssertPathExists={interpreter}",
+        f"AssertPathExists={marker}",
+        f"WorkingDirectory={release}",
+        f"Environment=PYTHONPATH={release}",
+        expected_pre,
+        expected_exec,
+        f"ReadOnlyPaths={release}",
+    }
+    if revision_lines != [f"# ReleaseRevision={revision}"] or any(
+        lines.count(item) != 1 for item in required_once
+    ):
+        raise GateError("gateway_fragment_revision_contract_drifted")
+    marker_raw = read_exact(
+        marker,
+        modes={0o400, 0o440, 0o444, 0o600, 0o640, 0o644},
+        owners={trusted_uid, marker.lstat().st_uid},
+        groups={trusted_gid, marker.lstat().st_gid},
+        maximum=128,
+    )
+    if marker_raw != (revision + "\n").encode("ascii"):
+        raise GateError("release_source_commit_drifted")
+    emit(
+        "sha_pinned",
+        "signed_sha_pinned_topology",
+        release_revision=revision,
+        release_root=str(release),
+        fragment_sha256=fragment_sha256,
+        connector_drop_in_sha256=drop_in_sha256,
+        cutover_plan_sha256=plan["plan_sha256"],
+    )
+except SystemExit:
+    raise
+except GateError as exc:
+    emit("ambiguous", str(exc))
+except BaseException:
+    emit("ambiguous", "topology_gate_failed")
+PY
+}
+
+gateway_topology_gate_extra_json() {
+  local stage="$1"
+  local topology_json="$2"
+  python3 - "$stage" "$topology_json" <<'PY'
+import json
+import sys
+
+stage = sys.argv[1]
+topology = json.loads(sys.argv[2])
+print(json.dumps({
+    "stage": stage,
+    "legacy_symlink_deploy_allowed": False,
+    "replacement_gate": "owner_approved_signed_cutover_only",
+    "gateway_topology": topology,
+}, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+PY
+}
+
+require_legacy_deploy_topology() {
+  local sha="$1"
+  local pr="$2"
+  local stage="$3"
+  local topology_json
+  local classification
+  topology_json="$(gateway_deploy_topology_json)"
+  classification="$(printf '%s' "$topology_json" | python3 -c \
+    'import json,sys; print(json.load(sys.stdin).get("classification", "ambiguous"))' \
+    2>/dev/null || printf 'ambiguous')"
+  case "$classification" in
+    legacy)
+      return 0
+      ;;
+    sha_pinned)
+      write_status "blocked_legacy_deploy_sha_pinned_topology" "$sha" "$pr" \
+        "$(gateway_topology_gate_extra_json "$stage" "$topology_json")"
+      echo "BLOCKED_SHA_PINNED_TOPOLOGY: legacy symlink deploy is retired for the signed production gateway." >&2
+      return 8
+      ;;
+    *)
+      write_status "blocked_gateway_deploy_topology_ambiguous" "$sha" "$pr" \
+        "$(gateway_topology_gate_extra_json "$stage" "$topology_json")"
+      echo "BLOCKED_GATEWAY_TOPOLOGY_AMBIGUOUS: gateway unit identity is unavailable or drifted." >&2
+      return 8
+      ;;
+  esac
+}
+
+validate_cutover_unit_inputs() {
+  local expected_revision="$1"
+  python3 - \
+    "$CUTOVER_UNIT_INPUTS_PATH" \
+    "$CUTOVER_UNIT_INPUT_PLAN_PATH" \
+    "$CUTOVER_UNIT_INPUT_APPROVAL_PATH" \
+    "$CUTOVER_STAGED_TRUSTED_UID" \
+    "$CUTOVER_STAGED_TRUSTED_GID" \
+    "$expected_revision" <<'PY'
+import hashlib
+import ipaddress
+import json
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+UNIT_SCHEMA = "muncho-production-cutover-unit-inputs.v2"
+PLAN_SCHEMA = "muncho-production-cutover-unit-input-plan.v2"
+PAYLOAD_SCHEMA = "muncho-production-cutover-unit-input-payload.v2"
+APPROVAL_SCHEMA = "muncho-production-cutover-unit-input-approval.v2"
+REVISION = re.compile(r"^[0-9a-f]{40}$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+UNIT_FIELDS = {
+    "schema", "release_revision", "authority_plan_sha256",
+    "authority_approval_sha256", "database_ip", "target", "gateway", "routeback",
+    "mac_ops", "browser", "worker", "worker_client_group",
+    "worker_client_gid", "operational_edge_identities",
+    "operational_edge_socket_groups", "writer_capability_public_key_id",
+    "operational_edge_key_foundation_sha256",
+    "operational_edge_receipt_public_key_ids", "release_owner_uid",
+    "release_owner_gid", "bwrap_sha256", "shell_sha256",
+    "secret_material_recorded", "secret_digest_recorded",
+}
+IDENTITY_FIELDS = {"user", "group", "uid", "gid"}
+APPROVAL_FIELDS = {
+    "schema", "purpose", "plan_sha256", "release_revision",
+    "owner_subject_sha256",
+    "owner_public_key_ed25519_hex", "owner_key_id", "nonce_sha256",
+    "issued_at_unix", "expires_at_unix", "approved",
+    "signature_ed25519_hex", "approval_sha256",
+}
+PLAN_FIELDS = {
+    "schema", "release_revision", "unit_inputs", "owner_subject_sha256",
+    "owner_public_key_ed25519_hex", "owner_key_id", "owner_runtime_attestation",
+    "created_at_unix",
+    "secret_material_recorded", "secret_digest_recorded", "plan_sha256",
+}
+RUNTIME_ATTESTATION_FIELDS = {
+    "schema", "revision", "manifest_sha256", "tree_sha256",
+    "interpreter_sha256", "pyvenv_cfg_sha256", "sys_path_sha256",
+    "required_modules_sha256", "module_origins_release_local",
+    "ambient_python_environment_present", "secret_material_recorded",
+    "secret_digest_recorded", "attestation_sha256",
+}
+PAYLOAD_FIELDS = {
+    "schema", "database_ip", "target", "gateway", "routeback", "mac_ops",
+    "browser", "worker", "worker_client_group", "worker_client_gid",
+    "operational_edge_identities", "operational_edge_socket_groups",
+    "writer_capability_public_key_id",
+    "operational_edge_key_foundation_sha256",
+    "operational_edge_receipt_public_key_ids",
+    "release_owner_uid", "release_owner_gid", "bwrap_sha256", "shell_sha256",
+    "secret_material_recorded",
+    "secret_digest_recorded",
+}
+IDENTITY = re.compile(r"^[a-z_][a-z0-9_-]{0,63}$")
+TARGET_FIELDS = {
+    "project", "zone", "vm", "database", "sql_instance", "sql_host",
+    "tls_server_name", "port", "writer_login",
+}
+OPERATIONAL_EDGE_DOMAINS = {
+    "adventico_email", "bitrix", "canonical", "github", "infrastructure",
+    "skyvision_db", "skyvision_email", "skyvision_gitlab", "skyvision_panel",
+}
+
+unit_path = Path(sys.argv[1])
+plan_path = Path(sys.argv[2])
+approval_path = Path(sys.argv[3])
+trusted_uid = int(sys.argv[4])
+trusted_gid = int(sys.argv[5])
+expected_revision = sys.argv[6]
+
+
+class GateError(RuntimeError):
+    pass
+
+
+def identity(item):
+    return (
+        item.st_dev, item.st_ino, item.st_mode, item.st_nlink,
+        item.st_uid, item.st_gid, item.st_size, item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
+
+
+def read_exact(path, *, mode, maximum):
+    descriptor = None
+    try:
+        before = path.lstat()
+        if (
+            path.resolve(strict=True) != path
+            or not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or before.st_nlink != 1
+            or before.st_uid != trusted_uid
+            or before.st_gid != trusted_gid
+            or stat.S_IMODE(before.st_mode) != mode
+            or not 0 < before.st_size <= maximum
+        ):
+            raise GateError("trusted_staged_identity_invalid")
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+        descriptor = os.open(path, flags)
+        opened = os.fstat(descriptor)
+        raw = bytearray()
+        while len(raw) <= maximum:
+            chunk = os.read(
+                descriptor,
+                min(64 * 1024, maximum + 1 - len(raw)),
+            )
+            if not chunk:
+                break
+            raw.extend(chunk)
+        after = os.fstat(descriptor)
+        reachable = path.lstat()
+    except GateError:
+        raise
+    except OSError as exc:
+        raise GateError("trusted_staged_unavailable") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+    if (
+        len(raw) != before.st_size
+        or len(raw) > maximum
+        or identity(before) != identity(opened)
+        or identity(before) != identity(after)
+        or identity(before) != identity(reachable)
+    ):
+        raise GateError("trusted_staged_changed")
+    return bytes(raw)
+
+
+def canonical(value):
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8", errors="strict")
+
+
+def decode(raw, *, newline):
+    def pairs(items):
+        value = {}
+        for name, item in items:
+            if name in value:
+                raise GateError("trusted_staged_duplicate_key")
+            value[name] = item
+        return value
+
+    def constant(_value):
+        raise GateError("trusted_staged_nonfinite_number")
+
+    try:
+        value = json.loads(
+            raw.decode("utf-8", errors="strict"),
+            object_pairs_hook=pairs,
+            parse_constant=constant,
+        )
+    except GateError:
+        raise
+    except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise GateError("trusted_staged_json_invalid") from exc
+    if not isinstance(value, dict) or raw != canonical(value) + (b"\n" if newline else b""):
+        raise GateError("trusted_staged_json_not_canonical")
+    return value
+
+
+def self_digest(value, field):
+    digest = value.get(field)
+    if SHA256.fullmatch(str(digest)) is None:
+        raise GateError("trusted_staged_digest_invalid")
+    unsigned = {name: item for name, item in value.items() if name != field}
+    if hashlib.sha256(canonical(unsigned)).hexdigest() != digest:
+        raise GateError("trusted_staged_digest_invalid")
+    return digest
+
+
+if REVISION.fullmatch(expected_revision) is None:
+    raise GateError("expected_revision_invalid")
+unit_raw = read_exact(unit_path, mode=0o444, maximum=128 * 1024)
+plan_raw = read_exact(plan_path, mode=0o400, maximum=1024 * 1024)
+approval_raw = read_exact(approval_path, mode=0o400, maximum=1024 * 1024)
+unit = decode(unit_raw, newline=True)
+plan = decode(plan_raw, newline=False)
+approval = decode(approval_raw, newline=False)
+plan_sha256 = self_digest(plan, "plan_sha256")
+approval_sha256 = self_digest(approval, "approval_sha256")
+runtime_attestation = plan.get("owner_runtime_attestation")
+if not isinstance(runtime_attestation, dict):
+    raise GateError("cutover_unit_inputs_owner_runtime_invalid")
+self_digest(runtime_attestation, "attestation_sha256")
+
+if set(unit) != UNIT_FIELDS or unit.get("schema") != UNIT_SCHEMA:
+    raise GateError("cutover_unit_inputs_fields_invalid")
+identities = []
+for name in ("gateway", "routeback", "mac_ops", "browser", "worker"):
+    item = unit.get(name)
+    if (
+        not isinstance(item, dict)
+        or set(item) != IDENTITY_FIELDS
+        or IDENTITY.fullmatch(str(item.get("user"))) is None
+        or IDENTITY.fullmatch(str(item.get("group"))) is None
+        or type(item.get("uid")) is not int
+        or type(item.get("gid")) is not int
+        or item["uid"] <= 0
+        or item["gid"] <= 0
+    ):
+        raise GateError("cutover_unit_inputs_identity_invalid")
+    identities.append(item)
+operational_identities = unit.get("operational_edge_identities")
+operational_socket_groups = unit.get("operational_edge_socket_groups")
+if (
+    not isinstance(operational_identities, dict)
+    or set(operational_identities) != OPERATIONAL_EDGE_DOMAINS
+    or not isinstance(operational_socket_groups, dict)
+    or set(operational_socket_groups) != OPERATIONAL_EDGE_DOMAINS
+):
+    raise GateError("cutover_unit_inputs_identity_invalid")
+socket_gids = set()
+for domain in sorted(OPERATIONAL_EDGE_DOMAINS):
+    item = operational_identities[domain]
+    socket = operational_socket_groups[domain]
+    expected_name = f"muncho-edge-{domain}"
+    expected_socket_group = f"muncho-edge-{domain}-c"
+    if (
+        not isinstance(item, dict)
+        or set(item) != IDENTITY_FIELDS
+        or item.get("user") != expected_name
+        or item.get("group") != expected_name
+        or type(item.get("uid")) is not int
+        or type(item.get("gid")) is not int
+        or item["uid"] <= 0
+        or item["gid"] <= 0
+        or not isinstance(socket, dict)
+        or set(socket) != {"group", "gid"}
+        or socket.get("group") != expected_socket_group
+        or type(socket.get("gid")) is not int
+        or socket["gid"] <= 0
+    ):
+        raise GateError("cutover_unit_inputs_identity_invalid")
+    identities.append(item)
+    socket_gids.add(socket["gid"])
+target = unit.get("target")
+receipt_key_ids = unit.get("operational_edge_receipt_public_key_ids")
+try:
+    target_address = ipaddress.ip_address(str(target.get("sql_host")))
+except (AttributeError, ValueError) as exc:
+    raise GateError("cutover_unit_inputs_target_invalid") from exc
+if (
+    not isinstance(target, dict)
+    or set(target) != TARGET_FIELDS
+    or target.get("project") != "adventico-ai-platform"
+    or target.get("zone") != "europe-west3-a"
+    or target.get("vm") != "ai-platform-runtime-01"
+    or target.get("database") != "ai_platform_brain"
+    or target.get("port") != 5432
+    or str(target_address) != target.get("sql_host")
+    or target.get("sql_host") != unit.get("database_ip")
+    or re.fullmatch(r"[a-z][a-z0-9-]{0,62}", str(target.get("sql_instance")))
+    is None
+    or not isinstance(target.get("tls_server_name"), str)
+    or len(target["tls_server_name"]) > 253
+    or re.fullmatch(r"[A-Za-z0-9.-]+", target["tls_server_name"]) is None
+    or IDENTITY.fullmatch(str(target.get("writer_login"))) is None
+):
+    raise GateError("cutover_unit_inputs_target_invalid")
+if (
+    unit["release_revision"] != expected_revision
+    or unit["authority_plan_sha256"] != plan_sha256
+    or unit["authority_approval_sha256"] != approval_sha256
+    or unit["secret_material_recorded"] is not False
+    or unit["secret_digest_recorded"] is not False
+    or SHA256.fullmatch(str(unit["bwrap_sha256"])) is None
+    or SHA256.fullmatch(str(unit["shell_sha256"])) is None
+    or type(unit["worker_client_gid"]) is not int
+    or unit["worker_client_gid"] <= 0
+    or unit["worker_client_group"] != "muncho-worker-clients"
+    or SHA256.fullmatch(str(unit["writer_capability_public_key_id"])) is None
+    or SHA256.fullmatch(
+        str(unit["operational_edge_key_foundation_sha256"])
+    ) is None
+    or not isinstance(receipt_key_ids, dict)
+    or set(receipt_key_ids) != OPERATIONAL_EDGE_DOMAINS
+    or any(
+        SHA256.fullmatch(str(key_id)) is None
+        for key_id in receipt_key_ids.values()
+    )
+    or len(set(receipt_key_ids.values())) != len(receipt_key_ids)
+    or unit["writer_capability_public_key_id"]
+    in set(receipt_key_ids.values())
+    or type(unit["release_owner_uid"]) is not int
+    or type(unit["release_owner_gid"]) is not int
+    or unit["release_owner_uid"] != unit["gateway"]["uid"]
+    or unit["release_owner_gid"] != unit["gateway"]["gid"]
+    or len({item["uid"] for item in identities}) != len(identities)
+    or len(
+        {item["gid"] for item in identities}
+        | {unit["worker_client_gid"]}
+        | socket_gids
+    )
+    != len(identities) + 1 + len(OPERATIONAL_EDGE_DOMAINS)
+):
+    raise GateError("cutover_unit_inputs_policy_invalid")
+if (
+    set(plan) != PLAN_FIELDS
+    or plan.get("schema") != PLAN_SCHEMA
+    or plan.get("release_revision") != expected_revision
+    or SHA256.fullmatch(str(plan.get("owner_subject_sha256"))) is None
+    or re.fullmatch(
+        r"[0-9a-f]{64}",
+        str(plan.get("owner_public_key_ed25519_hex")),
+    ) is None
+    or plan.get("owner_key_id") != hashlib.sha256(
+        bytes.fromhex(plan["owner_public_key_ed25519_hex"])
+    ).hexdigest()
+    or type(plan.get("created_at_unix")) is not int
+    or plan["created_at_unix"] <= 0
+    or plan.get("secret_material_recorded") is not False
+    or plan.get("secret_digest_recorded") is not False
+    or set(runtime_attestation) != RUNTIME_ATTESTATION_FIELDS
+    or runtime_attestation.get("schema")
+    != "muncho-production-owner-runtime-attestation.v1"
+    or runtime_attestation.get("revision") != expected_revision
+    or any(
+        SHA256.fullmatch(str(runtime_attestation.get(name))) is None
+        for name in (
+            "manifest_sha256", "tree_sha256", "interpreter_sha256",
+            "pyvenv_cfg_sha256", "sys_path_sha256",
+            "required_modules_sha256",
+        )
+    )
+    or runtime_attestation.get("module_origins_release_local") is not True
+    or runtime_attestation.get("ambient_python_environment_present") is not False
+    or runtime_attestation.get("secret_material_recorded") is not False
+    or runtime_attestation.get("secret_digest_recorded") is not False
+    or not isinstance(plan.get("unit_inputs"), dict)
+    or set(plan["unit_inputs"]) != PAYLOAD_FIELDS
+    or plan["unit_inputs"].get("schema") != PAYLOAD_SCHEMA
+    or plan["unit_inputs"].get("secret_material_recorded") is not False
+    or plan["unit_inputs"].get("secret_digest_recorded") is not False
+):
+    raise GateError("cutover_unit_input_plan_invalid")
+if set(approval) != APPROVAL_FIELDS or (
+    approval.get("schema") != APPROVAL_SCHEMA
+    or approval.get("purpose") != "production_cutover_unit_inputs"
+    or approval.get("plan_sha256") != plan_sha256
+    or approval.get("release_revision") != expected_revision
+    or approval.get("owner_subject_sha256") != plan.get("owner_subject_sha256")
+    or approval.get("owner_public_key_ed25519_hex")
+    != plan.get("owner_public_key_ed25519_hex")
+    or approval.get("owner_key_id") != plan.get("owner_key_id")
+    or SHA256.fullmatch(str(approval.get("nonce_sha256"))) is None
+    or type(approval.get("issued_at_unix")) is not int
+    or type(approval.get("expires_at_unix")) is not int
+    or not 1 <= approval["expires_at_unix"] - approval["issued_at_unix"] <= 3600
+    or re.fullmatch(
+        r"[0-9a-f]{128}", str(approval.get("signature_ed25519_hex"))
+    ) is None
+    or approval.get("approved") is not True
+):
+    raise GateError("cutover_unit_inputs_owner_approval_invalid")
+expected = {
+    "schema": UNIT_SCHEMA,
+    "release_revision": plan["release_revision"],
+    "authority_plan_sha256": plan_sha256,
+    "authority_approval_sha256": approval_sha256,
+    **{
+        name: item
+        for name, item in plan["unit_inputs"].items()
+        if name != "schema"
+    },
+}
+if unit != expected:
+    raise GateError("cutover_unit_inputs_authority_drifted")
+print(json.dumps({
+    "schema": "muncho-auto-deploy-cutover-unit-inputs.v1",
+    "release_revision": expected_revision,
+    "unit_inputs_path": str(unit_path),
+    "unit_inputs_sha256": hashlib.sha256(unit_raw).hexdigest(),
+    "authority_plan_sha256": plan_sha256,
+    "authority_approval_sha256": approval_sha256,
+    "ok": True,
+    "secret_material_recorded": False,
+    "secret_digest_recorded": False,
+}, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+PY
+}
+
+require_cutover_unit_inputs() {
+  local sha="$1"
+  local pr="$2"
+  local observation=""
+  if ! observation="$(validate_cutover_unit_inputs "$sha" 2>/dev/null)"; then
+    write_status "blocked_cutover_unit_inputs_invalid" "$sha" "$pr" \
+      "{\"stage\": \"pre_release_packaging\", \"unit_inputs_path\": \"$CUTOVER_UNIT_INPUTS_PATH\"}"
+    echo "BLOCKED_CUTOVER_UNIT_INPUTS: fixed owner-approved production unit inputs are unavailable or invalid." >&2
+    return 11
+  fi
+  printf '%s\n' "$observation"
+}
+
+bootstrap_cutover_unit_inputs_from_target() {
+  local source="$1"
+  local revision="$2"
+  local expected_blob=""
+  local observed_blob=""
+  local temporary=""
+  local receipt=""
+  if [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]] \
+    || [ ! -d "$source/.git" ]; then
+    echo "BLOCKED_CUTOVER_UNIT_INPUT_BOOTSTRAP: target source identity is invalid." >&2
+    return 4
+  fi
+  expected_blob="$(
+    sudo -n -u "$OWNER" "$SYSTEM_GIT" -C "$source" rev-parse \
+      "$revision:$CUTOVER_BOOTSTRAP_REPOSITORY_PATH" 2>/dev/null || true
+  )"
+  if [[ ! "$expected_blob" =~ ^[0-9a-f]{40,64}$ ]]; then
+    echo "BLOCKED_CUTOVER_UNIT_INPUT_BOOTSTRAP: target bootstrap blob is unavailable." >&2
+    return 4
+  fi
+  temporary="$(mktemp \
+    "$CUTOVER_BOOTSTRAP_RUNTIME_DIR/muncho-unit-input-bootstrap.XXXXXX")"
+  if ! sudo -n -u "$OWNER" "$SYSTEM_GIT" -C "$source" cat-file blob \
+      "$expected_blob" >"$temporary"; then
+    rm -f -- "$temporary"
+    return 4
+  fi
+  chown 0:0 "$temporary"
+  chmod 0500 "$temporary"
+  observed_blob="$("$SYSTEM_GIT" hash-object -- "$temporary")"
+  if [ "$observed_blob" != "$expected_blob" ]; then
+    rm -f -- "$temporary"
+    echo "BLOCKED_CUTOVER_UNIT_INPUT_BOOTSTRAP: extracted bootstrap digest drifted." >&2
+    return 4
+  fi
+  if ! receipt="$("$SYSTEM_PYTHON" -I "$temporary")"; then
+    rm -f -- "$temporary"
+    echo "BLOCKED_CUTOVER_UNIT_INPUT_BOOTSTRAP: signed unit-input bootstrap failed." >&2
+    return 11
+  fi
+  rm -f -- "$temporary"
+  validate_cutover_unit_inputs "$revision" >/dev/null
+  printf '%s\n' "$receipt"
+}
+
+seal_agent_browser_config() {
+  local release="$1"
+  local revision="$2"
+  local owner_uid=""
+  local owner_gid=""
+  owner_uid="$("$SYSTEM_ID" -u "$OWNER")"
+  owner_gid="$("$SYSTEM_ID" -g "$OWNER")"
+  "$SYSTEM_PYTHON" -I -S - \
+    "$release" \
+    "$RELEASES" \
+    "$revision" \
+    "$AGENT_BROWSER_CONFIG_RELATIVE_PATH" \
+    "$owner_uid" \
+    "$owner_gid" \
+    "$RUNTIME_CONFIG_ROOT_UID" \
+    "$RUNTIME_CONFIG_ROOT_GID" <<'PY'
+import hashlib
+import json
+import os
+import re
+import stat
+import sys
+from pathlib import Path
+
+release = Path(sys.argv[1])
+releases = Path(sys.argv[2])
+revision = sys.argv[3]
+relative = Path(sys.argv[4])
+owner_uid, owner_gid, root_uid, root_gid = map(int, sys.argv[5:9])
+
+
+class SealError(RuntimeError):
+    pass
+
+
+def identity(item):
+    return (
+        item.st_dev, item.st_ino, item.st_mode, item.st_nlink,
+        item.st_uid, item.st_gid, item.st_size, item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
+
+
+if (
+    re.fullmatch(r"[0-9a-f]{40}", revision) is None
+    or relative != Path("ops/muncho/runtime/dependencies/agent-browser.json")
+    or not release.is_absolute()
+    or not releases.is_absolute()
+    or min(owner_uid, owner_gid, root_uid, root_gid) < 0
+):
+    raise SealError("runtime_config_seal_arguments_invalid")
+try:
+    releases_state = releases.lstat()
+    release_state = release.lstat()
+    if (
+        releases.resolve(strict=True) != releases
+        or release.resolve(strict=True) != release
+        or stat.S_ISLNK(releases_state.st_mode)
+        or not stat.S_ISDIR(releases_state.st_mode)
+        or stat.S_ISLNK(release_state.st_mode)
+        or not stat.S_ISDIR(release_state.st_mode)
+        or release.parent != releases
+        or (
+            release.name != f"hermes-agent-{revision[:12]}"
+            and re.fullmatch(
+                rf"\.hermes-agent-{revision[:12]}\.tmp\.[1-9][0-9]*",
+                release.name,
+            ) is None
+        )
+    ):
+        raise SealError("runtime_config_release_invalid")
+except OSError as exc:
+    raise SealError("runtime_config_release_unavailable") from exc
+
+path = release / relative
+descriptor = None
+try:
+    before = path.lstat()
+    if (
+        path.resolve(strict=True) != path
+        or stat.S_ISLNK(before.st_mode)
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or before.st_uid != owner_uid
+        or before.st_gid != owner_gid
+        or stat.S_IMODE(before.st_mode) != 0o444
+        or before.st_size != 3
+    ):
+        raise SealError("runtime_config_prepared_identity_invalid")
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    opened = os.fstat(descriptor)
+    payload = os.read(descriptor, 4)
+    if payload != b"{}\n" or os.read(descriptor, 1):
+        raise SealError("runtime_config_prepared_payload_invalid")
+    if identity(before) != identity(opened):
+        raise SealError("runtime_config_prepared_identity_changed")
+    os.fchown(descriptor, root_uid, root_gid)
+    os.fchmod(descriptor, 0o444)
+    os.fsync(descriptor)
+    sealed = os.fstat(descriptor)
+    reachable = path.lstat()
+finally:
+    if descriptor is not None:
+        os.close(descriptor)
+if (
+    sealed.st_dev != before.st_dev
+    or sealed.st_ino != before.st_ino
+    or reachable.st_dev != sealed.st_dev
+    or reachable.st_ino != sealed.st_ino
+    or stat.S_ISLNK(reachable.st_mode)
+    or not stat.S_ISREG(reachable.st_mode)
+    or reachable.st_nlink != 1
+    or reachable.st_uid != root_uid
+    or reachable.st_gid != root_gid
+    or stat.S_IMODE(reachable.st_mode) != 0o444
+    or reachable.st_size != 3
+):
+    raise SealError("runtime_config_root_seal_invalid")
+receipt = {
+    "schema": "muncho-production-runtime-config-root-seal.v1",
+    "release_revision": revision,
+    "path": str(path),
+    "sha256": hashlib.sha256(payload).hexdigest(),
+    "prepared_owner_uid": owner_uid,
+    "prepared_group_gid": owner_gid,
+    "sealed_owner_uid": root_uid,
+    "sealed_group_gid": root_gid,
+    "mode": "0444",
+    "regular_one_link": True,
+    "secret_material_recorded": False,
+    "secret_digest_recorded": False,
+}
+print(json.dumps(receipt, ensure_ascii=True, sort_keys=True, separators=(",", ":")))
+PY
+}
+
+release_path_is_bounded() {
+  local release="${1:-}"
+  case "$release" in
+    "$RELEASES"/hermes-agent-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f])
+      return 0
+      ;;
+  esac
+  return 1
+}
+
+release_venv_site_boundary() {
+  local action="$1"
+  local release="$2"
+  local inherited_release="$3"
+  local owner_uid=""
+  local owner_gid=""
+  owner_uid="$("$SYSTEM_ID" -u "$OWNER")"
+  owner_gid="$("$SYSTEM_ID" -g "$OWNER")"
+  "$SYSTEM_PYTHON" -I -S - \
+    "$action" \
+    "$release" \
+    "$inherited_release" \
+    "$owner_uid" \
+    "$owner_gid" <<'PY'
+import json
+import os
+import re
+import stat
+import sys
+import tomllib
+import urllib.parse
+from pathlib import Path
+
+action = sys.argv[1]
+release = Path(sys.argv[2])
+inherited_release = Path(sys.argv[3])
+owner_uid = int(sys.argv[4])
+owner_gid = int(sys.argv[5])
+
+EDITABLE_PTH = re.compile(
+    r"^__editable__\.hermes_agent-[0-9][A-Za-z0-9._+!-]*\.pth$"
+)
+EDITABLE_FINDER = re.compile(
+    r"^__editable___hermes_agent_[A-Za-z0-9_]+_finder\.py$"
+)
+EDITABLE_FINDER_CACHE = re.compile(
+    r"^__editable___hermes_agent_[A-Za-z0-9_]+_finder\..+\.pyc$"
+)
+EDITABLE_IMPORT = re.compile(
+    r"import (?P<module>__editable___hermes_agent_[A-Za-z0-9_]+_finder); "
+    r"(?P=module)\.install\(\)"
+)
+RELEASE_NAME = re.compile(
+    r"^(?:hermes-agent-|\.hermes-agent-)(?P<short>[0-9a-f]{12})"
+    r"(?:\.tmp\.[1-9][0-9]*)?$"
+)
+VERSION = re.compile(r"^[0-9]+(?:\.[0-9]+){2}(?:[A-Za-z0-9.+!-]*)?$")
+DISTUTILS_SHIM = (
+    "import os; var = 'SETUPTOOLS_USE_DISTUTILS'; enabled = "
+    "os.environ.get(var, 'local') == 'local'; enabled and "
+    "__import__('_distutils_hack').add_shim();"
+)
+MAX_HOOK_BYTES = 1024 * 1024
+MAX_METADATA_BYTES = 4 * 1024 * 1024
+
+
+class BoundaryError(RuntimeError):
+    pass
+
+
+def fail(code):
+    raise BoundaryError(code)
+
+
+def identity(item):
+    return (
+        item.st_dev,
+        item.st_ino,
+        item.st_mode,
+        item.st_nlink,
+        item.st_uid,
+        item.st_gid,
+        item.st_size,
+        item.st_mtime_ns,
+        item.st_ctime_ns,
+    )
+
+
+def inside(path, root):
+    return path == root or root in path.parents
+
+
+def checked_directory(path, code):
+    try:
+        before = path.lstat()
+        resolved = path.resolve(strict=True)
+    except OSError:
+        fail(code)
+    if (
+        resolved != path
+        or stat.S_ISLNK(before.st_mode)
+        or not stat.S_ISDIR(before.st_mode)
+        or before.st_uid != owner_uid
+        or before.st_gid != owner_gid
+        or stat.S_IMODE(before.st_mode) & 0o022
+    ):
+        fail(code)
+    return before
+
+
+def stable_read(path, *, maximum, code):
+    try:
+        before = path.lstat()
+        resolved = path.resolve(strict=True)
+    except OSError:
+        fail(code)
+    if (
+        resolved != path
+        or stat.S_ISLNK(before.st_mode)
+        or not stat.S_ISREG(before.st_mode)
+        or before.st_nlink != 1
+        or before.st_uid != owner_uid
+        or before.st_gid != owner_gid
+        or stat.S_IMODE(before.st_mode) & 0o022
+        or before.st_size < 0
+        or before.st_size > maximum
+    ):
+        fail(code)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError:
+        fail(code)
+    try:
+        opened = os.fstat(descriptor)
+        raw = bytearray()
+        while len(raw) <= maximum:
+            chunk = os.read(
+                descriptor,
+                min(64 * 1024, maximum + 1 - len(raw)),
+            )
+            if not chunk:
+                break
+            raw.extend(chunk)
+        after = os.fstat(descriptor)
+    finally:
+        os.close(descriptor)
+    try:
+        reachable = path.lstat()
+    except OSError:
+        fail(code)
+    if (
+        len(raw) != before.st_size
+        or len(raw) > maximum
+        or identity(before) != identity(opened)
+        or identity(before) != identity(after)
+        or identity(before) != identity(reachable)
+    ):
+        fail(code)
+    return bytes(raw), identity(before)
+
+
+def remove_exact(path, expected, code):
+    try:
+        current = path.lstat()
+    except OSError:
+        fail(code)
+    if identity(current) != expected:
+        fail(code)
+    try:
+        path.unlink()
+    except OSError:
+        fail(code)
+
+
+def remove_reviewed_file(path, identity_code, changed_code):
+    _, expected = stable_read(
+        path,
+        maximum=MAX_HOOK_BYTES,
+        code=identity_code,
+    )
+    remove_exact(path, expected, changed_code)
+
+
+def fsync_directory(path, code):
+    try:
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_DIRECTORY", 0),
+        )
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError:
+        fail(code)
+
+
+def decode_utf8(raw, code):
+    try:
+        return raw.decode("utf-8", errors="strict")
+    except UnicodeError:
+        fail(code)
+
+
+def source_path_allowed(value, roots):
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        return False
+    try:
+        resolved = candidate.resolve(strict=False)
+    except OSError:
+        return False
+    return any(inside(resolved, root) for root in roots)
+
+
+def remove_known_editable_pth(path, roots, site):
+    raw, pth_identity = stable_read(
+        path,
+        maximum=MAX_HOOK_BYTES,
+        code="editable_pth_identity_invalid",
+    )
+    text = decode_utf8(raw, "editable_pth_not_utf8")
+    line = text.strip()
+    match = EDITABLE_IMPORT.fullmatch(line)
+    if match is not None:
+        module = match.group("module")
+        finder = site / f"{module}.py"
+        if finder.exists():
+            remove_reviewed_file(
+                finder,
+                "editable_finder_identity_invalid",
+                "editable_finder_changed",
+            )
+        cache = site / "__pycache__"
+        if cache.exists():
+            checked_directory(cache, "editable_cache_identity_invalid")
+            for cached in sorted(cache.glob(f"{module}.*.pyc")):
+                remove_reviewed_file(
+                    cached,
+                    "editable_cache_file_invalid",
+                    "editable_cache_file_changed",
+                )
+            fsync_directory(cache, "editable_cache_sync_failed")
+    elif not source_path_allowed(line, roots):
+        fail("editable_pth_payload_unreviewed")
+    remove_exact(path, pth_identity, "editable_pth_changed")
+
+
+def remove_known_egg_link(path, roots):
+    normalized = re.sub(r"[-_.]+", "-", path.name[:-9]).lower()
+    if normalized != "hermes-agent":
+        fail("non_hermes_egg_link_present")
+    raw, link_identity = stable_read(
+        path,
+        maximum=MAX_HOOK_BYTES,
+        code="egg_link_identity_invalid",
+    )
+    lines = [
+        line.strip()
+        for line in decode_utf8(raw, "egg_link_not_utf8").splitlines()
+        if line.strip()
+    ]
+    if (
+        not 1 <= len(lines) <= 2
+        or (len(lines) == 2 and lines[1] != ".")
+        or not source_path_allowed(lines[0], roots)
+    ):
+        fail("egg_link_payload_unreviewed")
+    remove_exact(path, link_identity, "egg_link_changed")
+
+
+def assert_internal_module(path, code):
+    stable_read(path, maximum=MAX_HOOK_BYTES, code=code)
+
+
+def assert_no_site_customizers(root):
+    for name in (
+        "sitecustomize.py",
+        "sitecustomize.pyc",
+        "usercustomize.py",
+        "usercustomize.pyc",
+    ):
+        if os.path.lexists(root / name):
+            fail("site_customizer_present")
+    cache = root / "__pycache__"
+    if cache.exists() and (
+        list(cache.glob("sitecustomize.*.pyc"))
+        or list(cache.glob("usercustomize.*.pyc"))
+    ):
+        fail("site_customizer_present")
+
+
+def validate_remaining_pth(site):
+    for path in sorted(site.glob("*.pth")):
+        raw, _ = stable_read(
+            path,
+            maximum=MAX_HOOK_BYTES,
+            code="pth_identity_invalid",
+        )
+        text = decode_utf8(raw, "pth_not_utf8")
+        if path.name == "distutils-precedence.pth":
+            if text.strip() != DISTUTILS_SHIM:
+                fail("distutils_pth_payload_invalid")
+            assert_internal_module(
+                site / "_distutils_hack" / "__init__.py",
+                "distutils_hack_not_internal",
+            )
+            continue
+        if path.name == "_virtualenv.pth":
+            if text.strip() != "import _virtualenv":
+                fail("virtualenv_pth_payload_invalid")
+            assert_internal_module(
+                site / "_virtualenv.py",
+                "virtualenv_module_not_internal",
+            )
+            continue
+        for line in text.splitlines():
+            value = line.strip()
+            if not value or value.startswith("#"):
+                continue
+            if value.startswith("import ") or value.startswith("import\t"):
+                fail("unreviewed_pth_import_hook")
+            candidate = Path(value)
+            if candidate.is_absolute():
+                fail("absolute_pth_path_present")
+            try:
+                resolved = (site / candidate).resolve(strict=True)
+            except OSError:
+                fail("pth_path_unavailable")
+            if not inside(resolved, site):
+                fail("outside_site_pth_path_present")
+            checked_directory(resolved, "pth_target_identity_invalid")
+            assert_no_site_customizers(resolved)
+
+
+def parse_project_identity(release):
+    raw, _ = stable_read(
+        release / "pyproject.toml",
+        maximum=MAX_METADATA_BYTES,
+        code="target_pyproject_identity_invalid",
+    )
+    try:
+        project = tomllib.loads(raw.decode("utf-8", errors="strict"))["project"]
+    except (KeyError, TypeError, UnicodeError, ValueError):
+        fail("target_pyproject_invalid")
+    name = project.get("name")
+    version = project.get("version")
+    if (
+        name != "hermes-agent"
+        or not isinstance(version, str)
+        or VERSION.fullmatch(version) is None
+    ):
+        fail("target_project_identity_invalid")
+    return version
+
+
+def validate_direct_url(path, release_short, releases):
+    raw, _ = stable_read(
+        path,
+        maximum=MAX_HOOK_BYTES,
+        code="direct_url_identity_invalid",
+    )
+    try:
+        value = json.loads(raw.decode("utf-8", errors="strict"))
+    except (UnicodeError, ValueError, json.JSONDecodeError):
+        fail("direct_url_invalid")
+    if (
+        not isinstance(value, dict)
+        or set(value) != {"dir_info", "url"}
+        or value["dir_info"] != {}
+        or not isinstance(value["url"], str)
+    ):
+        fail("direct_url_not_noneditable_local_source")
+    parsed = urllib.parse.urlsplit(value["url"])
+    if parsed.scheme != "file" or parsed.netloc not in {"", "localhost"}:
+        fail("direct_url_not_local_source")
+    source = Path(urllib.parse.unquote(parsed.path))
+    try:
+        source = source.resolve(strict=False)
+    except OSError:
+        fail("direct_url_source_invalid")
+    # pip records the staging directory used to build the non-editable wheel.
+    # The release is atomically renamed afterwards, so that now-absent .tmp
+    # path is valid only when it has the same release parent and SHA prefix.
+    match = RELEASE_NAME.fullmatch(source.name)
+    if (
+        source.parent != releases
+        or match is None
+        or match.group("short") != release_short
+    ):
+        fail("direct_url_source_outside_target_release")
+
+
+def attest_installed_distribution(site, release, releases, release_short):
+    version = parse_project_identity(release)
+    dist_infos = sorted(site.glob("hermes_agent-*.dist-info"))
+    if len(dist_infos) != 1:
+        fail("hermes_dist_info_count_invalid")
+    dist_info = dist_infos[0]
+    checked_directory(dist_info, "hermes_dist_info_identity_invalid")
+    if dist_info.name != f"hermes_agent-{version}.dist-info":
+        fail("hermes_dist_info_version_mismatch")
+    metadata, _ = stable_read(
+        dist_info / "METADATA",
+        maximum=MAX_METADATA_BYTES,
+        code="hermes_metadata_identity_invalid",
+    )
+    text = decode_utf8(metadata, "hermes_metadata_not_utf8")
+    if (
+        re.findall(r"(?m)^Name: (.+)$", text) != ["hermes-agent"]
+        or re.findall(r"(?m)^Version: (.+)$", text) != [version]
+    ):
+        fail("hermes_metadata_identity_mismatch")
+    installer, _ = stable_read(
+        dist_info / "INSTALLER",
+        maximum=128,
+        code="hermes_installer_identity_invalid",
+    )
+    if decode_utf8(installer, "hermes_installer_not_utf8").strip() != "pip":
+        fail("hermes_installer_invalid")
+    stable_read(
+        dist_info / "RECORD",
+        maximum=MAX_METADATA_BYTES,
+        code="hermes_record_identity_invalid",
+    )
+    validate_direct_url(
+        dist_info / "direct_url.json",
+        release_short,
+        releases,
+    )
+    for relative in (
+        "gateway/__init__.py",
+        "gateway/production_capability_prerequisites.py",
+        "run_agent.py",
+    ):
+        stable_read(
+            site / relative,
+            maximum=MAX_METADATA_BYTES,
+            code="hermes_target_module_identity_invalid",
+        )
+
+
+def run():
+    if action not in {"prepare", "attest"} or min(owner_uid, owner_gid) < 0:
+        fail("arguments_invalid")
+    if not release.is_absolute() or not inherited_release.is_absolute():
+        fail("release_path_not_absolute")
+    release_match = RELEASE_NAME.fullmatch(release.name)
+    inherited_match = RELEASE_NAME.fullmatch(inherited_release.name)
+    if (
+        release_match is None
+        or inherited_match is None
+        or release.parent != inherited_release.parent
+    ):
+        fail("release_path_unbounded")
+    releases = release.parent
+    checked_directory(release, "release_identity_invalid")
+    checked_directory(inherited_release, "inherited_release_identity_invalid")
+    for path, code in (
+        (release / ".venv", "venv_identity_invalid"),
+        (release / ".venv" / "lib", "venv_lib_identity_invalid"),
+    ):
+        checked_directory(path, code)
+    python_dirs = []
+    for candidate in (release / ".venv" / "lib").iterdir():
+        if re.fullmatch(r"python3\.(?:11|12|13)", candidate.name):
+            python_dirs.append(candidate)
+    if len(python_dirs) != 1:
+        fail("venv_python_site_count_invalid")
+    checked_directory(python_dirs[0], "venv_python_dir_identity_invalid")
+    site = python_dirs[0] / "site-packages"
+    checked_directory(site, "site_packages_identity_invalid")
+    if not inside(site, release):
+        fail("site_packages_outside_release")
+    roots = {
+        release.resolve(strict=True),
+        inherited_release.resolve(strict=True),
+    }
+
+    if action == "prepare":
+        for path in sorted(site.glob("__editable__*.pth")):
+            if EDITABLE_PTH.fullmatch(path.name) is None:
+                fail("unreviewed_editable_pth_present")
+            remove_known_editable_pth(path, roots, site)
+        for path in sorted(site.glob("*.egg-link")):
+            remove_known_egg_link(path, roots)
+        for path in sorted(site.glob("__editable__*finder.py")):
+            if EDITABLE_FINDER.fullmatch(path.name) is None:
+                fail("unreviewed_editable_finder_present")
+            remove_reviewed_file(
+                path,
+                "orphan_editable_finder_identity_invalid",
+                "orphan_editable_finder_changed",
+            )
+        cache = site / "__pycache__"
+        if cache.exists():
+            checked_directory(cache, "editable_cache_identity_invalid")
+            for path in sorted(cache.glob("__editable__*finder*.pyc")):
+                if EDITABLE_FINDER_CACHE.fullmatch(path.name) is None:
+                    fail("unreviewed_editable_finder_cache_present")
+                remove_reviewed_file(
+                    path,
+                    "orphan_editable_cache_identity_invalid",
+                    "orphan_editable_cache_changed",
+                )
+            fsync_directory(cache, "editable_cache_sync_failed")
+        fsync_directory(site, "site_packages_sync_failed")
+
+    if list(site.glob("__editable__*.pth")):
+        fail("editable_pth_survived")
+    if list(site.glob("__editable__*finder.py")):
+        fail("editable_finder_survived")
+    cache = site / "__pycache__"
+    if cache.exists() and list(cache.glob("__editable__*finder*.pyc")):
+        fail("editable_finder_cache_survived")
+    if list(site.glob("*.egg-link")):
+        fail("egg_link_survived")
+    assert_no_site_customizers(site)
+    validate_remaining_pth(site)
+    if action == "attest":
+        attest_installed_distribution(
+            site,
+            release,
+            releases,
+            release_match.group("short"),
+        )
+    print(site)
+
+
+try:
+    run()
+except BoundaryError as exc:
+    print(f"BLOCKED_RELEASE_VENV_SITE_BOUNDARY:{exc}", file=sys.stderr)
+    raise SystemExit(12) from None
+except Exception:
+    print(
+        "BLOCKED_RELEASE_VENV_SITE_BOUNDARY:unexpected_error",
+        file=sys.stderr,
+    )
+    raise SystemExit(12) from None
+PY
+}
+
+attest_target_release_venv() {
+  local release="$1"
+  local inherited_release="${2:-$1}"
+  local site=""
+  if ! site="$(
+    release_venv_site_boundary attest "$release" "$inherited_release"
+  )"; then
+    return 1
+  fi
+  sudo -n -u "$OWNER" "$release/.venv/bin/python" -I -P -s - \
+    "$site" <<'PY'
+import importlib
+import sys
+from pathlib import Path
+
+site = Path(sys.argv[1]).resolve(strict=True)
+modules = (
+    importlib.import_module("gateway"),
+    importlib.import_module("gateway.production_capability_prerequisites"),
+    importlib.import_module("run_agent"),
+)
+for module in modules:
+    origin = Path(module.__file__).resolve(strict=True)
+    if site not in origin.parents:
+        raise SystemExit("BLOCKED_RELEASE_VENV_IMPORT_OUTSIDE_TARGET_SITE")
+print("target_release_venv_imports=ok")
+PY
+}
+
+install_target_release_wheel() {
+  local release="$1"
+  local inherited_release="$2"
+  release_venv_site_boundary \
+    prepare "$release" "$inherited_release" >/dev/null \
+    || return 1
+  sudo -n -u "$OWNER" "$release/.venv/bin/python" -I -P -s -m pip \
+    --isolated install \
+    --no-index \
+    --no-deps \
+    --no-build-isolation \
+    --no-cache-dir \
+    --force-reinstall \
+    --no-warn-script-location \
+    "$release" >/dev/null \
+    || return 1
+  attest_target_release_venv "$release" "$inherited_release"
+}
+
+release_identity_matches() {
+  local release="$1"
+  local expected_head="$2"
+  local observed_head=""
+  local observed_source=""
+  if [[ ! "$expected_head" =~ ^[0-9a-f]{40}$ ]] \
+    || ! release_path_is_bounded "$release" \
+    || [ "$release" != "$RELEASES/hermes-agent-${expected_head:0:12}" ] \
+    || [ ! -d "$release" ] \
+    || [ ! -x "$release/.venv/bin/python" ]; then
+    return 1
+  fi
+  observed_head="$(
+    sudo -n -u "$OWNER" git -C "$release" rev-parse HEAD 2>/dev/null || true
+  )"
+  observed_source="$(cat "$release/.codex-source-commit" 2>/dev/null || true)"
+  [[ "$observed_head" =~ ^[0-9a-f]{40}$ ]] \
+    && [ "$observed_head" = "$expected_head" ] \
+    && [ "$observed_source" = "$expected_head" ]
+}
+
+cutover_artifacts_match() {
+  local release="$1"
+  local expected_head="$2"
+  if ! release_identity_matches "$release" "$expected_head" \
+    || [ ! -f "$release/scripts/canary/package_production_cutover_artifacts.py" ]; then
+    return 1
+  fi
+  validate_cutover_unit_inputs "$expected_head" >/dev/null \
+    && sudo -n -u "$OWNER" "$release/.venv/bin/python" -I \
+    "$release/scripts/canary/package_production_runtime_dependencies.py" verify \
+    --release-root "$release" \
+    --revision "$expected_head" >/dev/null \
+    && sudo -n -u "$OWNER" "$release/.venv/bin/python" -I \
+    "$release/scripts/canary/package_production_cutover_artifacts.py" verify \
+    --release-root "$release" \
+    --revision "$expected_head" \
+    --unit-inputs "$CUTOVER_UNIT_INPUTS_PATH" >/dev/null
 }
 
 cleanup_old_releases() {
@@ -235,6 +1976,7 @@ start_unit() {
   local sha="$1"
   local pr="$2"
   validate_args "$sha" "$pr"
+  require_legacy_deploy_topology "$sha" "$pr" "pre_unit_start" || return $?
   require_no_active_voice_call "$sha" "$pr" "pre_unit_start"
   local unit="muncho-auto-deploy-${sha:0:12}-pr${pr}"
   write_status "deploy_unit_starting" "$sha" "$pr" "{\"unit\": \"$unit\"}"
@@ -246,18 +1988,109 @@ start_unit() {
   write_status "deploy_unit_started" "$sha" "$pr" "{\"unit\": \"$unit\"}"
 }
 
+rollback_release() {
+  local sha="$1"
+  local pr="$2"
+  local previous="$3"
+  local failure_stage="$4"
+  local previous_head="$5"
+  local marker_state="not_needed"
+  local marker_output=""
+  local restored_link=""
+  local restored_state=""
+  local restored_head=""
+  local restored_source=""
+
+  if ! release_identity_matches "$previous" "$previous_head"; then
+    write_status "deploy_rollback_failed" "$sha" "$pr" \
+      "{\"failure_stage\": \"$failure_stage\", \"rollback_error\": \"previous_release_identity_invalid\"}"
+    return 1
+  fi
+
+  if [ -x "$PLANNED_RESTART_HELPER" ]; then
+    if marker_output="$($PLANNED_RESTART_HELPER "$ACTIVE_LINK" "$SERVICE" "$OWNER" "$HERMES_HOME")"; then
+      marker_state="written_or_not_needed"
+    else
+      marker_state="write_failed_but_rollback_continued"
+    fi
+  else
+    marker_state="helper_missing_but_rollback_continued"
+  fi
+
+  if ! ln -sfn "$previous" "$ACTIVE_LINK.rollback" \
+    || ! mv -Tf "$ACTIVE_LINK.rollback" "$ACTIVE_LINK"; then
+    rm -f "$ACTIVE_LINK.rollback"
+    write_status "deploy_rollback_failed" "$sha" "$pr" \
+      "{\"failure_stage\": \"$failure_stage\", \"rollback_error\": \"previous_link_restore_failed\", \"marker_state\": \"$marker_state\"}"
+    return 1
+  fi
+  if ! systemctl restart "$SERVICE"; then
+    write_status "deploy_rollback_failed" "$sha" "$pr" \
+      "{\"failure_stage\": \"$failure_stage\", \"rollback_error\": \"previous_restart_failed\", \"marker_state\": \"$marker_state\"}"
+    return 1
+  fi
+  sleep "$DEPLOY_HEALTH_WAIT_SECONDS"
+  restored_link="$(readlink -f "$ACTIVE_LINK" 2>/dev/null || true)"
+  restored_state="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
+  restored_head="$(sudo -n -u "$OWNER" git -C "$ACTIVE_LINK" rev-parse HEAD 2>/dev/null || true)"
+  restored_source="$(cat "$ACTIVE_LINK/.codex-source-commit" 2>/dev/null || true)"
+  if [ "$restored_link" != "$previous" ] || [ "$restored_state" != "active" ] \
+    || [ "$restored_head" != "$previous_head" ] \
+    || [ "$restored_source" != "$previous_head" ]; then
+    local restored_link_matches="false"
+    local restored_service_active="false"
+    local restored_head_matches="false"
+    local restored_source_matches="false"
+    [ "$restored_link" = "$previous" ] && restored_link_matches="true"
+    [ "$restored_state" = "active" ] && restored_service_active="true"
+    [ "$restored_head" = "$previous_head" ] && restored_head_matches="true"
+    [ "$restored_source" = "$previous_head" ] && restored_source_matches="true"
+    write_status "deploy_rollback_failed" "$sha" "$pr" \
+      "{\"failure_stage\": \"$failure_stage\", \"rollback_error\": \"previous_health_or_identity_failed\", \"marker_state\": \"$marker_state\", \"restored_link_matches\": $restored_link_matches, \"restored_service_active\": $restored_service_active, \"restored_head_matches\": $restored_head_matches, \"restored_source_matches\": $restored_source_matches}"
+    return 1
+  fi
+  write_status "deploy_rolled_back" "$sha" "$pr" \
+    "{\"failure_stage\": \"$failure_stage\", \"restored_release\": \"$previous\", \"restored_head\": \"$previous_head\", \"marker_state\": \"$marker_state\", \"marker_output\": $(printf '%s' "$marker_output" | json_escape)}"
+  return 0
+}
+
+fail_after_activation() {
+  local sha="$1"
+  local pr="$2"
+  local previous="$3"
+  local failure_stage="$4"
+  local previous_head="$5"
+
+  if rollback_release "$sha" "$pr" "$previous" "$failure_stage" "$previous_head"; then
+    return 9
+  fi
+  return 10
+}
+
 run_deploy() {
   local sha="$1"
   local pr="$2"
   validate_args "$sha" "$pr"
+  require_legacy_deploy_topology "$sha" "$pr" "pre_deploy" || return $?
   local short="${sha:0:12}"
   local new="$RELEASES/hermes-agent-$short"
   local tmp="$RELEASES/.hermes-agent-$short.tmp.$$"
   local active
+  local active_head
+  local active_source
   local remote_main
+  local rollback_rc
 
   write_status "deploy_running" "$sha" "$pr" "{}"
   active="$(readlink -f "$ACTIVE_LINK" 2>/dev/null || true)"
+  active_head="$(sudo -n -u "$OWNER" git -C "$active" rev-parse HEAD 2>/dev/null || true)"
+  active_source="$(cat "$active/.codex-source-commit" 2>/dev/null || true)"
+  if [[ ! "$active_head" =~ ^[0-9a-f]{40}$ ]] \
+    || [ "$active_source" != "$active_head" ] \
+    || ! release_identity_matches "$active" "$active_head"; then
+    write_status "blocked_active_release_identity_invalid" "$sha" "$pr" "{}"
+    exit 4
+  fi
   remote_main="$(sudo -n -u "$OWNER" git ls-remote "$REPO_URL" refs/heads/main | awk '{print $1}')"
   if [ "$remote_main" != "$sha" ]; then
     write_status "blocked_target_not_current_fork_main" "$sha" "$pr" "{\"remote_main\": \"$remote_main\"}"
@@ -280,6 +2113,52 @@ run_deploy() {
     fi
     sudo -n -u "$OWNER" cp -a "$active/.venv" "$tmp/.venv"
     sudo -n -u "$OWNER" bash -lc "printf '%s\n' '$sha' > '$tmp/.codex-source-commit'"
+    if ! validate_cutover_unit_inputs "$sha" >/dev/null 2>&1; then
+      if ! bootstrap_cutover_unit_inputs_from_target "$tmp" "$sha" >/dev/null; then
+        rm -rf "$tmp"
+        write_status "blocked_cutover_unit_input_bootstrap_failed" "$sha" "$pr" \
+          "{\"stage\": \"pre_release_packaging\", \"unit_inputs_path\": \"$CUTOVER_UNIT_INPUTS_PATH\"}"
+        exit 11
+      fi
+    fi
+    require_cutover_unit_inputs "$sha" "$pr" >/dev/null || {
+      rm -rf "$tmp"
+      return 11
+    }
+    if ! install_target_release_wheel "$tmp" "$active" >/dev/null; then
+      rm -rf "$tmp"
+      write_status "blocked_target_release_venv_invalid" "$sha" "$pr" \
+        "{\"stage\": \"pre_release_packaging\"}"
+      exit 5
+    fi
+    sudo -n -u "$OWNER" "$tmp/.venv/bin/python" -I \
+      "$tmp/scripts/canary/package_production_runtime_dependencies.py" prepare \
+      --release-root "$tmp" \
+      --release-address "$new" \
+      --revision "$sha" >/dev/null
+    seal_agent_browser_config "$tmp" "$sha" >/dev/null
+    sudo -n -u "$OWNER" "$tmp/.venv/bin/python" -I \
+      "$tmp/scripts/canary/package_production_runtime_dependencies.py" build-manifest \
+      --release-root "$tmp" \
+      --release-address "$new" \
+      --revision "$sha" >/dev/null
+    sudo -n -u "$OWNER" "$tmp/.venv/bin/python" -I \
+      "$tmp/scripts/canary/package_production_cutover_artifacts.py" build \
+      --release-root "$tmp" \
+      --release-address "$new" \
+      --revision "$sha" \
+      --unit-inputs "$CUTOVER_UNIT_INPUTS_PATH" >/dev/null
+    sudo -n -u "$OWNER" "$tmp/.venv/bin/python" -I \
+      "$tmp/scripts/canary/package_production_runtime_dependencies.py" verify \
+      --release-root "$tmp" \
+      --release-address "$new" \
+      --revision "$sha" >/dev/null
+    sudo -n -u "$OWNER" "$tmp/.venv/bin/python" -I \
+      "$tmp/scripts/canary/package_production_cutover_artifacts.py" verify \
+      --release-root "$tmp" \
+      --release-address "$new" \
+      --revision "$sha" \
+      --unit-inputs "$CUTOVER_UNIT_INPUTS_PATH" >/dev/null
     sudo -n -u "$OWNER" bash -lc "cd '$tmp' && .venv/bin/python -m py_compile gateway/run.py hermes_cli/main.py scripts/run_tests_parallel.py"
     sudo -n -u "$OWNER" bash -lc "cd '$tmp' && .venv/bin/python - <<'PY'
 from gateway.canonical_brain_routeback_context import RouteBackCaseContext, build_routeback_context_prompt
@@ -288,6 +2167,27 @@ assert 'concrete next-action artifact' in build_routeback_context_prompt([ctx])
 print('routeback_context_import_smoke=ok')
 PY"
     sudo -n -u "$OWNER" mv "$tmp" "$new"
+  fi
+  if ! validate_cutover_unit_inputs "$sha" >/dev/null 2>&1; then
+    bootstrap_cutover_unit_inputs_from_target "$new" "$sha" >/dev/null || {
+      write_status "blocked_cutover_unit_input_bootstrap_failed" "$sha" "$pr" \
+        "{\"stage\": \"existing_release_preflight\", \"unit_inputs_path\": \"$CUTOVER_UNIT_INPUTS_PATH\"}"
+      exit 11
+    }
+  fi
+  require_cutover_unit_inputs "$sha" "$pr" >/dev/null || return $?
+  if ! release_identity_matches "$new" "$sha"; then
+    write_status "blocked_target_release_identity_invalid" "$sha" "$pr" "{}"
+    exit 5
+  fi
+  if ! attest_target_release_venv "$new" "$new" >/dev/null; then
+    write_status "blocked_target_release_venv_invalid" "$sha" "$pr" \
+      "{\"stage\": \"pre_activation\"}"
+    exit 5
+  fi
+  if ! cutover_artifacts_match "$new" "$sha"; then
+    write_status "blocked_target_cutover_artifacts_invalid" "$sha" "$pr" "{}"
+    exit 5
   fi
 
   require_no_active_voice_call "$sha" "$pr" "pre_restart"
@@ -302,54 +2202,85 @@ PY"
     write_status "blocked_planned_stop_marker_failed" "$sha" "$pr" "{}"
     exit 7
   fi
-  ln -sfn "$new" "$ACTIVE_LINK.next"
-  mv -Tf "$ACTIVE_LINK.next" "$ACTIVE_LINK"
-  systemctl restart "$SERVICE"
-  sleep 8
-  systemctl is-active --quiet "$SERVICE"
+  if ! ln -sfn "$new" "$ACTIVE_LINK.next"; then
+    rm -f "$HERMES_HOME/.gateway-planned-stop.json"
+    write_status "blocked_target_link_stage_failed" "$sha" "$pr" "{}"
+    exit 7
+  fi
+  if ! mv -Tf "$ACTIVE_LINK.next" "$ACTIVE_LINK"; then
+    rm -f "$ACTIVE_LINK.next"
+    if [ "$(readlink -f "$ACTIVE_LINK" 2>/dev/null || true)" = "$active" ]; then
+      rm -f "$HERMES_HOME/.gateway-planned-stop.json"
+      write_status "blocked_target_link_activation_failed" "$sha" "$pr" "{}"
+      exit 7
+    fi
+    rollback_rc=0
+    fail_after_activation "$sha" "$pr" "$active" \
+      "target_link_activation_uncertain" "$active_head" || rollback_rc=$?
+    exit "$rollback_rc"
+  fi
+  if ! systemctl restart "$SERVICE"; then
+    rollback_rc=0
+    fail_after_activation "$sha" "$pr" "$active" "target_restart_failed" "$active_head" || rollback_rc=$?
+    exit "$rollback_rc"
+  fi
+  sleep "$DEPLOY_HEALTH_WAIT_SECONDS"
+  if ! systemctl is-active --quiet "$SERVICE"; then
+    rollback_rc=0
+    fail_after_activation "$sha" "$pr" "$active" "target_health_failed" "$active_head" || rollback_rc=$?
+    exit "$rollback_rc"
+  fi
   if [ -e "$HERMES_HOME/.gateway-planned-stop.json" ]; then
-    write_status "blocked_planned_stop_marker_not_consumed" "$sha" "$pr" "{}"
-    exit 8
+    rollback_rc=0
+    fail_after_activation "$sha" "$pr" "$active" "planned_stop_marker_not_consumed" "$active_head" || rollback_rc=$?
+    exit "$rollback_rc"
   fi
 
   local deployed_head
   local deployed_source
   local service_active
-  deployed_head="$(sudo -n -u "$OWNER" git -C "$ACTIVE_LINK" rev-parse HEAD)"
-  deployed_source="$(cat "$ACTIVE_LINK/.codex-source-commit")"
-  service_active="$(systemctl is-active "$SERVICE")"
+  deployed_head="$(sudo -n -u "$OWNER" git -C "$ACTIVE_LINK" rev-parse HEAD 2>/dev/null || true)"
+  deployed_source="$(cat "$ACTIVE_LINK/.codex-source-commit" 2>/dev/null || true)"
+  service_active="$(systemctl is-active "$SERVICE" 2>/dev/null || true)"
   if [ "$deployed_head" != "$sha" ] || [ "$deployed_source" != "$sha" ] || [ "$service_active" != "active" ]; then
-    write_status "blocked_post_smoke_failed" "$sha" "$pr" "{\"deployed_head\": \"$deployed_head\", \"deployed_source\": \"$deployed_source\", \"service_active\": \"$service_active\"}"
-    exit 6
+    rollback_rc=0
+    fail_after_activation "$sha" "$pr" "$active" "target_post_smoke_failed" "$active_head" || rollback_rc=$?
+    exit "$rollback_rc"
   fi
   local cleanup_output
   cleanup_output="$(cleanup_old_releases || true)"
   write_status "deploy_pass" "$sha" "$pr" "{\"deployed_release\": \"$new\", \"deployed_head\": \"$deployed_head\", \"service_active\": \"$service_active\", \"release_cleanup\": $(printf '%s' "$cleanup_output" | json_escape)}"
 }
 
-if [ "$#" -eq 1 ] && [ "$1" = "check-voice-guard" ]; then
-  voice_guard_json="$(voice_call_guard_json)"
-  printf '%s\n' "$voice_guard_json"
-  if [ "$(printf '%s' "$voice_guard_json" | voice_call_guard_active)" = "true" ]; then
-    exit 7
+main() {
+  if [ "$#" -eq 1 ] && [ "$1" = "check-voice-guard" ]; then
+    voice_guard_json="$(voice_call_guard_json)"
+    printf '%s\n' "$voice_guard_json"
+    if [ "$(printf '%s' "$voice_guard_json" | voice_call_guard_active)" = "true" ]; then
+      return 7
+    fi
+    return 0
   fi
-  exit 0
-fi
 
-if [ "$#" -ne 3 ]; then
-  usage
-  exit 2
-fi
-
-case "$1" in
-  start)
-    start_unit "$2" "$3"
-    ;;
-  run)
-    run_deploy "$2" "$3"
-    ;;
-  *)
+  if [ "$#" -ne 3 ]; then
     usage
-    exit 2
-    ;;
-esac
+    return 2
+  fi
+
+  case "$1" in
+    start)
+      start_unit "$2" "$3"
+      ;;
+    run)
+      run_deploy "$2" "$3"
+      ;;
+    *)
+      usage
+      return 2
+      ;;
+  esac
+}
+
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

@@ -90,8 +90,8 @@ def _reset_background_review_read_marks() -> None:
     """Test helper: clear read-before-write marks for the current context."""
     _background_review_read_paths.set(frozenset())
 
-# Import security scanner — external hub installs always get scanned;
-# agent-created skills only get scanned when skills.guard_agent_created is on.
+# Import the mechanical package preflight. External hub installs always run it;
+# agent-created skills run it when the legacy-named guard flag is enabled.
 try:
     from tools.skills_guard import scan_skill, should_allow_install, format_scan_report
     _GUARD_AVAILABLE = True
@@ -102,10 +102,9 @@ except ImportError:
 def _guard_agent_created_enabled() -> bool:
     """Read skills.guard_agent_created from config (default False).
 
-    Off by default because the agent can already execute the same code
-    paths via terminal() with no gate, so the scan adds friction without
-    meaningful security.  Users who want belt-and-suspenders can turn it
-    on via `hermes config set skills.guard_agent_created true`.
+    The setting name is retained for config compatibility. It enables only
+    mechanical package checks (path/symlink/type/permission/size), never a
+    classifier over authored skill text.
     """
     try:
         from hermes_cli.config import load_config
@@ -118,8 +117,8 @@ def _guard_agent_created_enabled() -> bool:
         return False
 
 
-def _security_scan_skill(skill_dir: Path) -> Optional[str]:
-    """Scan a skill directory after write. Returns error string if blocked, else None.
+def _mechanical_preflight_skill(skill_dir: Path) -> Optional[str]:
+    """Preflight a skill after write; return an error for mechanical blockers.
 
     No-op when skills.guard_agent_created is disabled (the default).
     """
@@ -132,16 +131,18 @@ def _security_scan_skill(skill_dir: Path) -> Optional[str]:
         allowed, reason = should_allow_install(result)
         if allowed is False:
             report = format_scan_report(result)
-            return f"Security scan blocked this skill ({reason}):\n{report}"
+            return f"Mechanical package preflight blocked this skill ({reason}):\n{report}"
         if allowed is None:
-            # "ask" verdict — for agent-created skills this means dangerous
-            # findings were detected.  Surface as an error so the agent can
-            # retry with the flagged content removed.
+            # "ask" means an owner decision is required for a mechanically
+            # dangerous package. The normal write-approval workflow can then
+            # be used with a corrected package or explicit owner direction.
             report = format_scan_report(result)
-            logger.warning("Agent-created skill blocked (dangerous findings): %s", reason)
-            return f"Security scan blocked this skill ({reason}):\n{report}"
+            logger.warning(
+                "Agent-created skill package requires owner confirmation: %s", reason
+            )
+            return f"Mechanical package preflight requires confirmation ({reason}):\n{report}"
     except Exception as e:
-        logger.warning("Security scan failed for %s: %s", skill_dir, e, exc_info=True)
+        logger.warning("Mechanical package preflight failed for %s: %s", skill_dir, e, exc_info=True)
     return None
 
 import yaml
@@ -826,8 +827,8 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     skill_md = skill_dir / "SKILL.md"
     _atomic_write_text(skill_md, content)
 
-    # Security scan — roll back on block
-    scan_error = _security_scan_skill(skill_dir)
+    # Mechanical package preflight — roll back on block
+    scan_error = _mechanical_preflight_skill(skill_dir)
     if scan_error:
         shutil.rmtree(skill_dir, ignore_errors=True)
         return {"success": False, "error": scan_error}
@@ -886,8 +887,8 @@ def _edit_skill(name: str, content: str) -> Dict[str, Any]:
     original_content = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
     _atomic_write_text(skill_md, content)
 
-    # Security scan — roll back on block
-    scan_error = _security_scan_skill(existing["path"])
+    # Mechanical package preflight — roll back on block
+    scan_error = _mechanical_preflight_skill(existing["path"])
     if scan_error:
         if original_content is not None:
             _atomic_write_text(skill_md, original_content)
@@ -1006,8 +1007,8 @@ def _patch_skill(
     original_content = content  # for rollback
     _atomic_write_text(target, new_content)
 
-    # Security scan — roll back on block
-    scan_error = _security_scan_skill(skill_dir)
+    # Mechanical package preflight — roll back on block
+    scan_error = _mechanical_preflight_skill(skill_dir)
     if scan_error:
         _atomic_write_text(target, original_content)
         return {"success": False, "error": scan_error}
@@ -1175,8 +1176,8 @@ def _write_file(name: str, file_path: str, file_content: str) -> Dict[str, Any]:
     original_content = target.read_text(encoding="utf-8") if target.exists() else None
     _atomic_write_text(target, file_content)
 
-    # Security scan — roll back on block
-    scan_error = _security_scan_skill(existing["path"])
+    # Mechanical package preflight — roll back on block
+    scan_error = _mechanical_preflight_skill(existing["path"])
     if scan_error:
         if original_content is not None:
             _atomic_write_text(target, original_content)
@@ -1528,7 +1529,8 @@ SKILL_MANAGE_SCHEMA = {
                     "being pruned with no forwarding target. Omitting the arg "
                     "on delete is supported for backward compatibility but "
                     "downstream tooling (e.g. cron-job skill reference "
-                    "rewriting) will have to guess at intent."
+                    "rewriting) will leave the outcome unclassified and will "
+                    "not redirect or drop references."
                 )
             },
         },

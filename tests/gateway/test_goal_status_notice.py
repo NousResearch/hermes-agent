@@ -37,12 +37,14 @@ def _goal_continuation_event(source, goal="finish the task"):
         text=CONTINUATION_PROMPT_TEMPLATE.format(goal=goal),
         message_type=MessageType.TEXT,
         source=source,
+        internal=True,
+        metadata={"hermes_internal_event": "goal_continuation"},
     )
 
 
 @pytest.mark.asyncio
 async def test_goal_status_notice_uses_adapter_send_with_thread_metadata():
-    """Regression: /goal judge status must use BasePlatformAdapter.send().
+    """Regression: /goal lifecycle status must use BasePlatformAdapter.send().
 
     The old implementation checked for a non-existent send_message() method,
     so the goal could be marked done in state_meta without the visible
@@ -113,7 +115,7 @@ async def test_goal_status_notice_defers_until_post_delivery_callback():
 def test_clear_goal_pending_continuations_removes_slot_and_overflow_only():
     """Regression: /goal pause/clear must cancel queued self-continuations.
 
-    A user-issued /goal pause can arrive after the judge queued the next
+    A user-issued /goal pause can arrive after the goal loop queued the next
     continuation but before that queued turn runs.  The queued synthetic goal
     continuation should be removed without dropping normal user /queue items.
     """

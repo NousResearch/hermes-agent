@@ -79,6 +79,48 @@ def test_board_empty(client):
     assert data["latest_event_id"] == 0
 
 
+def test_orchestration_defaults_auto_decompose_off(client):
+    response = client.get("/api/plugins/kanban/orchestration")
+    assert response.status_code == 200
+    settings = response.json()
+    assert settings["auxiliary_planning_enabled"] is False
+    assert settings["auto_decompose"] is False
+    assert settings["effective_auto_decompose"] is False
+
+
+def test_orchestration_auto_requires_and_can_enable_master_gate(client):
+    raw_only = client.put(
+        "/api/plugins/kanban/orchestration",
+        json={"auto_decompose": True},
+    )
+    assert raw_only.status_code == 200
+    assert raw_only.json()["auto_decompose"] is True
+    assert raw_only.json()["effective_auto_decompose"] is False
+
+    enabled = client.put(
+        "/api/plugins/kanban/orchestration",
+        json={
+            "auxiliary_planning_enabled": True,
+            "auto_decompose": True,
+        },
+    )
+    assert enabled.status_code == 200
+    settings = enabled.json()
+    assert settings["auxiliary_planning_enabled"] is True
+    assert settings["auto_decompose"] is True
+    assert settings["effective_auto_decompose"] is True
+
+
+def test_dashboard_auto_control_sets_master_and_uses_effective_state():
+    repo_root = Path(__file__).resolve().parents[2]
+    bundle = repo_root / "plugins" / "kanban" / "dashboard" / "dist" / "index.js"
+    js = bundle.read_text()
+
+    assert "settings.auxiliary_planning_enabled" in js
+    assert "settings.effective_auto_decompose" in js
+    assert "{ auxiliary_planning_enabled: true, auto_decompose: true }" in js
+
+
 # ---------------------------------------------------------------------------
 # POST /tasks then GET /board sees it
 # ---------------------------------------------------------------------------
@@ -2094,9 +2136,17 @@ def _patch_specifier_response(monkeypatch, *, content, model="test-model"):
     return fake_client
 
 
-def test_specify_happy_path(client, monkeypatch):
+def _enable_auxiliary_planning(kanban_home):
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n  auxiliary_planning_enabled: true\n",
+        encoding="utf-8",
+    )
+
+
+def test_specify_happy_path(client, kanban_home, monkeypatch):
     import json as jsonlib
 
+    _enable_auxiliary_planning(kanban_home)
     # Create a triage task.
     t = client.post(
         "/api/plugins/kanban/tasks",
@@ -2128,10 +2178,13 @@ def test_specify_happy_path(client, monkeypatch):
     assert "**Goal**" in (detail["body"] or "")
 
 
-def test_specify_non_triage_returns_ok_false_not_http_error(client, monkeypatch):
+def test_specify_non_triage_returns_ok_false_not_http_error(
+    client, kanban_home, monkeypatch,
+):
     """The endpoint intentionally returns ``{ok: false, reason: ...}`` for
     "task not in triage" rather than a 4xx — the dashboard renders the
     reason inline so the user can fix it without a page reload."""
+    _enable_auxiliary_planning(kanban_home)
     # Create a normal (ready) task — not in triage.
     t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
 
@@ -2147,7 +2200,8 @@ def test_specify_non_triage_returns_ok_false_not_http_error(client, monkeypatch)
     assert "not in triage" in body["reason"]
 
 
-def test_specify_no_aux_client_surfaces_reason(client, monkeypatch):
+def test_specify_no_aux_client_surfaces_reason(client, kanban_home, monkeypatch):
+    _enable_auxiliary_planning(kanban_home)
     t = client.post(
         "/api/plugins/kanban/tasks",
         json={"title": "rough", "triage": True},
@@ -2169,6 +2223,29 @@ def test_specify_no_aux_client_surfaces_reason(client, monkeypatch):
     assert "auxiliary client" in body["reason"]
 
     # Task must stay in triage — nothing was touched.
+    detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()["task"]
+    assert detail["status"] == "triage"
+
+
+def test_specify_default_policy_surfaces_disabled_reason(client, monkeypatch):
+    t = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "rough", "triage": True},
+    ).json()["task"]
+
+    monkeypatch.setattr(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        lambda *a, **kw: (_ for _ in ()).throw(
+            AssertionError("auxiliary client must not be resolved")
+        ),
+    )
+
+    r = client.post(f"/api/plugins/kanban/tasks/{t['id']}/specify", json={})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["ok"] is False
+    assert "auxiliary planning is disabled" in body["reason"].lower()
+
     detail = client.get(f"/api/plugins/kanban/tasks/{t['id']}").json()["task"]
     assert detail["status"] == "triage"
 

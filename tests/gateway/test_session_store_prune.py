@@ -21,10 +21,20 @@ from unittest.mock import patch
 
 
 from gateway.config import GatewayConfig, Platform, SessionResetPolicy
-from gateway.session import SessionEntry, SessionStore
+from gateway.session import (
+    CapabilityEpochRotationBlocked,
+    SessionEntry,
+    SessionStore,
+)
 
 
-def _make_store(tmp_path, max_age_days: int = 90, has_active_processes_fn=None):
+def _make_store(
+    tmp_path,
+    max_age_days: int = 90,
+    has_active_processes_fn=None,
+    has_active_turn_fn=None,
+    rotation_hook=None,
+):
     """Build a SessionStore bypassing SQLite/disk-load side effects."""
     config = GatewayConfig(
         default_reset_policy=SessionResetPolicy(mode="none"),
@@ -35,6 +45,8 @@ def _make_store(tmp_path, max_age_days: int = 90, has_active_processes_fn=None):
             sessions_dir=tmp_path,
             config=config,
             has_active_processes_fn=has_active_processes_fn,
+            has_active_turn_fn=has_active_turn_fn,
+            before_capability_epoch_rotation_fn=rotation_hook,
         )
     store._db = None
     store._loaded = True
@@ -172,7 +184,7 @@ class TestPruneBasics:
         store._entries["fresh2"] = _entry("fresh2", age_days=2)
 
         save_calls = []
-        store._save = lambda: save_calls.append(1)
+        store._save_entries = lambda: save_calls.append(1)
 
         assert store.prune_old_entries(max_age_days=90) == 0
         assert save_calls == []
@@ -183,7 +195,7 @@ class TestPruneBasics:
         store._entries["fresh"] = _entry("fresh", age_days=1)
 
         save_calls = []
-        store._save = lambda: save_calls.append(1)
+        store._save_entries = lambda: save_calls.append(1)
 
         store.prune_old_entries(max_age_days=90)
         assert save_calls == [1]
@@ -219,6 +231,97 @@ class TestPruneBasics:
         for i in range(20):
             if i % 2 == 1:  # fresh
                 assert f"s{i}" in store._entries
+
+    def test_prune_runs_durable_rotation_hook_outside_lock(self, tmp_path):
+        observed = []
+        store = None
+
+        def _rotation_hook(entry, reason):
+            assert store is not None
+            acquired = store._lock.acquire(blocking=False)
+            assert acquired is True
+            store._lock.release()
+            observed.append((entry.session_key, reason))
+
+        store = _make_store(tmp_path, rotation_hook=_rotation_hook)
+        store._entries["old"] = _entry("old", age_days=100)
+
+        assert store.prune_old_entries(max_age_days=90) == 1
+        assert observed == [("old", "maintenance_prune")]
+        assert "old" not in store._entries
+
+    def test_prune_writer_outage_retains_exact_entry(self, tmp_path):
+        def _blocked(_entry, _reason):
+            raise CapabilityEpochRotationBlocked("writer unavailable")
+
+        store = _make_store(tmp_path, rotation_hook=_blocked)
+        old = _entry("old", age_days=100)
+        store._entries["old"] = old
+
+        assert store.prune_old_entries(max_age_days=90) == 0
+        assert store._entries["old"] is old
+        assert old.capability_rotation_deferred is False
+
+    def test_prune_skips_live_foreground_turn_before_revocation(self, tmp_path):
+        hook_calls = []
+        store = _make_store(
+            tmp_path,
+            has_active_turn_fn=lambda key: key == "old",
+            rotation_hook=lambda entry, reason: hook_calls.append((entry, reason)),
+        )
+        old = _entry("old", age_days=100)
+        store._entries["old"] = old
+
+        assert store.prune_old_entries(max_age_days=90) == 0
+        assert store._entries["old"] is old
+        assert hook_calls == []
+
+    def test_prune_cas_loss_after_revoke_marks_same_epoch_deferred(self, tmp_path):
+        store = None
+
+        def _revoke_then_concurrent_activity(entry, _reason):
+            assert store is not None
+            with store._lock:
+                assert store._entries[entry.session_key] is entry
+                entry.updated_at = datetime.now()
+
+        store = _make_store(
+            tmp_path,
+            rotation_hook=_revoke_then_concurrent_activity,
+        )
+        old = _entry("old", age_days=100)
+        old_epoch = old.capability_epoch
+        store._entries["old"] = old
+
+        assert store.prune_old_entries(max_age_days=90) == 0
+        assert store._entries["old"] is old
+        assert old.capability_epoch == old_epoch
+        assert old.capability_rotation_deferred is True
+
+    def test_prune_session_id_cas_loss_keeps_live_compression_child(self, tmp_path):
+        store = None
+
+        def _revoke_while_compression_finishes(entry, _reason):
+            assert store is not None
+            with store._lock:
+                assert store._entries[entry.session_key] is entry
+                # Trusted live compression updates session_id in-place without
+                # necessarily changing updated_at.
+                entry.session_id = "compressed-child"
+
+        store = _make_store(
+            tmp_path,
+            rotation_hook=_revoke_while_compression_finishes,
+        )
+        old = _entry("old", age_days=100, session_id="compressed-parent")
+        old_epoch = old.capability_epoch
+        store._entries["old"] = old
+
+        assert store.prune_old_entries(max_age_days=90) == 0
+        assert store._entries["old"] is old
+        assert old.session_id == "compressed-child"
+        assert old.capability_epoch == old_epoch
+        assert old.capability_rotation_deferred is True
 
 
 class TestPrunePersistsToDisk:

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from typing import Any, Callable, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
@@ -494,6 +495,43 @@ class RelayAdapter(BasePlatformAdapter):
             success=bool(result.get("success")),
             message_id=result.get("message_id"),
             error=result.get("error"),
+            retryable=result.get("retryable") is True,
+            retry_after=result.get("retry_after"),
+            error_kind=result.get("error_kind"),
+        )
+
+    async def _send_with_retry(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Any = None,
+        max_retries: int = 2,
+        base_delay: float = 2.0,
+    ) -> SendResult:
+        """Keep one connector idempotency key for one logical send attempt.
+
+        The generic retry loop reuses ``metadata`` but invokes ``send`` again.
+        A privileged local connector must therefore receive the same key across
+        every safe transport retry and any generic fallback branch.  A fresh key
+        here is per logical ``_send_with_retry`` invocation, so separate chunks
+        and later replies remain separate operations.
+        """
+
+        if getattr(self._transport, "requires_stable_idempotency_key", False):
+            scoped_metadata = dict(metadata or {})
+            scoped_metadata.setdefault(
+                "connector_idempotency_key",
+                f"gateway:{uuid.uuid4()}",
+            )
+            metadata = scoped_metadata
+        return await super()._send_with_retry(
+            chat_id=chat_id,
+            content=content,
+            reply_to=reply_to,
+            metadata=metadata,
+            max_retries=max_retries,
+            base_delay=base_delay,
         )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:

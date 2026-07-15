@@ -395,7 +395,7 @@ Hermes can *propose* automations and let you accept them with one tap, instead o
 
 Accepting a suggestion calls the same `cron.jobs.create_job` the `cronjob` tool uses — there is no second job engine. Suggestions **never** auto-create jobs; acceptance is always explicit. Dismissed suggestions latch by a stable key so the same proposal is never re-offered. The pending list is capped so it never becomes a nag wall.
 
-The **important-mail monitor** catalog entry is the poll→classify→surface pattern: it scores inbox items with a cheap classifier model (`auxiliary.monitor` in `config.yaml`) and delivers only the ones above an urgency threshold, staying silent otherwise.
+The **important-mail monitor** catalog entry keeps the judgment inside the scheduled primary AIAgent: it reads inbox candidates, applies the user's criteria with full task context, and returns exactly `[SILENT]` when nothing deserves delivery. The deprecated `cron/scripts/classify_items.py` auxiliary helper remains available only for backwards compatibility with explicitly authored jobs.
 
 ## Publishing Skills
 

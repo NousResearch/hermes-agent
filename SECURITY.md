@@ -146,11 +146,13 @@ are useful. They are not boundaries.
   adversarial output.
 - **Output redaction** strips secret-like patterns from display.
   A motivated output producer will defeat it.
-- **Skills Guard** scans installable skill content for injection
-  patterns. It is a review aid; the boundary for third-party skills
-  is operator review before install. Reviewing a skill means
-  reading its Python code and scripts, not just its SKILL.md
-  description — skills execute arbitrary Python at import time.
+
+Skill installation has a separate mechanical package preflight for
+path containment, symlinks, file types, executable bits, and size
+limits. It does not classify authored instructions. The boundary for
+third-party skills is operator review before install. Reviewing a skill
+means reading its Python code and scripts, not just its SKILL.md
+description — skills execute arbitrary Python at import time.
 
 ### 2.5 Plugin Trust Model
 
@@ -254,8 +256,8 @@ can always be tightened. These items just don't go through the
 private-disclosure channel and don't receive advisories.
 
 - **Bypasses of in-process heuristics (§2.4)** — approval-gate regex
-  bypasses, redaction bypasses, Skills Guard pattern bypasses, and
-  analogous reports against future heuristics. These components are
+  bypasses, redaction bypasses, and analogous reports against future
+  heuristics. These components are
   not boundaries; defeating them is not a vulnerability under this
   policy.
 - **Prompt injection per se.** Getting the LLM to emit unusual
@@ -314,8 +316,9 @@ that:
   you enable (§2.6).
 - Review third-party skills and plugins before install (§2.4,
   §2.5). For skills, this means reading the Python and scripts,
-  not just SKILL.md. Skills Guard reports and the install audit
-  log are the review surface.
+  not just SKILL.md. The mechanical package-preflight report and
+  install audit log supplement that review; they do not interpret
+  authored content.
 - Hermes Agent includes supply-chain guards for MCP server
   launches and for dependency / bundled-package changes in CI; see
   `CONTRIBUTING.md` for specifics.

@@ -2694,6 +2694,11 @@ DEFAULT_CONFIG = {
         # recent .md files and prunes older ones. 0 or negative disables
         # pruning (for operators who manage cleanup externally). Default 50.
         "output_retention": 50,
+        # Default True: cron does not load memory providers. Set false to allow
+        # external memory providers (mem0/etc.) for cron jobs. Local MEMORY.md
+        # and USER.md injection remains disabled either way (provider-only
+        # opt-in; see #9763 / #52897).
+        "skip_memory": True,
     },
 
     # Kanban multi-agent coordination — controls the dispatcher loop that

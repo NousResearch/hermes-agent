@@ -320,6 +320,7 @@ def init_agent(
     skip_context_files: bool = False,
     load_soul_identity: bool = False,
     skip_memory: bool = False,
+    skip_local_memory: bool = False,
     session_db=None,
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
@@ -1326,15 +1327,20 @@ def init_agent(
     agent._aux_compression_context_length_config = None
 
     # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
+    # ``skip_memory`` disables *all* memory (local + providers).
+    # ``skip_local_memory`` disables only MEMORY.md/USER.md injection while
+    # still allowing external memory providers (e.g. mem0) — used by cron so
+    # system prompts cannot corrupt user representations (005e0ec / #9763).
     agent._memory_store = None
     agent._memory_enabled = False
     agent._user_profile_enabled = False
     agent._memory_nudge_interval = 10
     agent._turns_since_memory = 0
     agent._iters_since_skill = 0
-    if not skip_memory:
+    mem_config = {}
+    if not skip_memory and not skip_local_memory:
         try:
-            mem_config = _agent_cfg.get("memory", {})
+            mem_config = _agent_cfg.get("memory", {}) or {}
             agent._memory_enabled = mem_config.get("memory_enabled", False)
             agent._user_profile_enabled = mem_config.get("user_profile_enabled", False)
             agent._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
@@ -1347,14 +1353,22 @@ def init_agent(
                 agent._memory_store.load_from_disk()
         except Exception:
             pass  # Memory is optional -- don't break agent init
-    
-
+    elif not skip_memory:
+        # Provider-only path still needs mem_config for the provider name.
+        try:
+            mem_config = _agent_cfg.get("memory", {}) or {}
+        except Exception:
+            mem_config = {}
 
     # Memory provider plugin (external — one at a time, alongside built-in)
     # Reads memory.provider from config to select which plugin to activate.
+    # Gated only by ``skip_memory`` so ``skip_local_memory=True`` can still
+    # enable providers (cron provider-only opt-in).
     agent._memory_manager = None
     if not skip_memory:
         try:
+            if not mem_config:
+                mem_config = _agent_cfg.get("memory", {}) or {}
             _mem_provider_name = mem_config.get("provider", "") if mem_config else ""
 
             if _mem_provider_name and _mem_provider_name.strip():

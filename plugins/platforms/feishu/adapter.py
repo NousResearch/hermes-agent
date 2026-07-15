@@ -2928,9 +2928,16 @@ class FeishuAdapter(BasePlatformAdapter):
 
         # "Other" → enter free-text capture; the next chat message is the answer.
         if raw_action == _CLARIFY_OTHER_ACTION:
-            self._clarify_state.pop(clarify_id, None)
             from tools.clarify_gateway import mark_awaiting_text
-            mark_awaiting_text(clarify_id)
+            marked = mark_awaiting_text(clarify_id)
+            self._clarify_state.pop(clarify_id, None)
+            # The gateway may have already dropped the entry (e.g. timeout). Do
+            # not show a "type your answer" card the next message cannot resolve.
+            if not marked:
+                logger.debug(
+                    "[Feishu] Clarify %s no longer awaiting; skipping text-capture card", clarify_id
+                )
+                return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
             if P2CardActionTriggerResponse is None:
                 return None
             response = P2CardActionTriggerResponse()
@@ -2943,20 +2950,28 @@ class FeishuAdapter(BasePlatformAdapter):
 
         choices = state.get("choices") or []
         try:
-            choice = choices[int(raw_action)]
-        except (ValueError, IndexError):
+            index = int(raw_action)
+        except ValueError:
             logger.debug("[Feishu] Clarify %s invalid choice index=%r", clarify_id, raw_action)
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        # Reject out-of-range indices explicitly; a negative index is a valid
+        # Python subscript and would otherwise silently pick the last choice.
+        if not 0 <= index < len(choices):
+            logger.debug(
+                "[Feishu] Clarify %s choice index out of range=%r (choices=%d)",
+                clarify_id, raw_action, len(choices),
+            )
+            return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
+        choice = choices[index]
 
-        if not self._submit_on_loop(
-            loop,
-            self._resolve_clarify(
-                clarify_id=clarify_id,
-                choice=choice,
-                user_name=user_name,
-                open_id=open_id,
-                chat_id=callback_chat_id,
-            ),
+        # Resolve synchronously so the green "answer recorded" card is only
+        # returned once the gateway confirms the waiting agent was unblocked.
+        if not self._resolve_clarify(
+            clarify_id=clarify_id,
+            choice=choice,
+            user_name=user_name,
+            open_id=open_id,
+            chat_id=callback_chat_id,
         ):
             return P2CardActionTriggerResponse() if P2CardActionTriggerResponse else None
 
@@ -2970,7 +2985,7 @@ class FeishuAdapter(BasePlatformAdapter):
             response.card = card
         return response
 
-    async def _resolve_clarify(
+    def _resolve_clarify(
         self,
         clarify_id: str,
         choice: str,
@@ -2978,28 +2993,34 @@ class FeishuAdapter(BasePlatformAdapter):
         *,
         open_id: str = "",
         chat_id: str = "",
-    ) -> None:
-        """Pop clarify state and unblock the waiting agent thread."""
+    ) -> bool:
+        """Pop clarify state and unblock the waiting agent thread.
+
+        Returns True only when the gateway confirmed the clarify was resolved,
+        so callers can gate the green "answer recorded" card on real success.
+        The gateway resolution is a fast in-memory, lock-guarded operation, so
+        this runs synchronously on the card-callback thread.
+        """
         state = self._clarify_state.get(clarify_id)
         if not state:
             logger.debug("[Feishu] Clarify %s already resolved or unknown", clarify_id)
-            return
+            return False
         if not self._is_interactive_operator_authorized(open_id):
             logger.warning(
                 "[Feishu] Unauthorized clarify click by %s for clarify %s", open_id or "<unknown>", clarify_id
             )
-            return
+            return False
         expected_chat_id = str(state.get("chat_id", "") or "")
         if expected_chat_id and chat_id and expected_chat_id != chat_id:
             logger.warning(
                 "[Feishu] Clarify %s chat mismatch (expected=%s, got=%s)",
                 clarify_id, expected_chat_id, chat_id,
             )
-            return
+            return False
         state = self._clarify_state.pop(clarify_id, None)
         if not state:
             logger.debug("[Feishu] Clarify %s already resolved while validating callback", clarify_id)
-            return
+            return False
         try:
             from tools.clarify_gateway import resolve_gateway_clarify
             resolved = resolve_gateway_clarify(clarify_id, choice)
@@ -3007,8 +3028,10 @@ class FeishuAdapter(BasePlatformAdapter):
                 "Feishu button resolved clarify %s for session %s (choice=%s, user=%s, ok=%s)",
                 clarify_id, state["session_key"], choice, user_name, resolved,
             )
+            return bool(resolved)
         except Exception as exc:
             logger.error("Failed to resolve gateway clarify from Feishu button: %s", exc)
+            return False
 
     async def _resolve_approval(
         self,

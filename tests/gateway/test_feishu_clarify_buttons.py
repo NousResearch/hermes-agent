@@ -74,11 +74,6 @@ def _make_card_action_data(
     )
 
 
-def _close_submitted_coro(coro, _loop):
-    coro.close()
-    return SimpleNamespace(add_done_callback=lambda *_a, **_kw: None)
-
-
 # ===========================================================================
 # send_clarify — interactive card with buttons
 # ===========================================================================
@@ -209,50 +204,63 @@ class TestSendClarify:
 # ===========================================================================
 
 class TestResolveClarify:
-    @pytest.mark.asyncio
-    async def test_resolves_once(self):
+    def test_resolves_once(self):
         adapter = _make_adapter()
         adapter._clarify_state["cid"] = {
             "session_key": "sess", "message_id": "m", "chat_id": "oc_12345", "choices": ["a", "b"],
         }
         with patch("tools.clarify_gateway.resolve_gateway_clarify", return_value=True) as mock_resolve:
-            await adapter._resolve_clarify(
+            resolved = adapter._resolve_clarify(
                 clarify_id="cid", choice="b", user_name="Bob", open_id="ou_user1", chat_id="oc_12345",
             )
+        assert resolved is True
         mock_resolve.assert_called_once_with("cid", "b")
         assert "cid" not in adapter._clarify_state
 
-    @pytest.mark.asyncio
-    async def test_unknown_id_drops_silently(self):
+    def test_gateway_false_returns_false(self):
+        adapter = _make_adapter()
+        adapter._clarify_state["cid"] = {
+            "session_key": "sess", "message_id": "m", "chat_id": "oc_12345", "choices": ["a", "b"],
+        }
+        with patch("tools.clarify_gateway.resolve_gateway_clarify", return_value=False) as mock_resolve:
+            resolved = adapter._resolve_clarify(
+                clarify_id="cid", choice="b", user_name="Bob", open_id="ou_user1", chat_id="oc_12345",
+            )
+        assert resolved is False
+        mock_resolve.assert_called_once_with("cid", "b")
+        assert "cid" not in adapter._clarify_state
+
+    def test_unknown_id_drops_silently(self):
         adapter = _make_adapter()
         with patch("tools.clarify_gateway.resolve_gateway_clarify") as mock_resolve:
-            await adapter._resolve_clarify(clarify_id="nope", choice="x", user_name="N", open_id="ou_user1")
+            resolved = adapter._resolve_clarify(clarify_id="nope", choice="x", user_name="N", open_id="ou_user1")
+        assert resolved is False
         mock_resolve.assert_not_called()
 
-    @pytest.mark.asyncio
-    async def test_unauthorized_click_does_not_resolve(self):
+    def test_unauthorized_click_does_not_resolve(self):
         adapter = _make_adapter()
         adapter._admins = {"ou_admin"}
         adapter._clarify_state["cid"] = {
             "session_key": "sess", "message_id": "m", "chat_id": "oc_12345", "choices": ["a"],
         }
         with patch("tools.clarify_gateway.resolve_gateway_clarify") as mock_resolve:
-            await adapter._resolve_clarify(
+            resolved = adapter._resolve_clarify(
                 clarify_id="cid", choice="a", user_name="Mallory", open_id="ou_intruder", chat_id="oc_12345",
             )
+        assert resolved is False
         mock_resolve.assert_not_called()
         assert "cid" in adapter._clarify_state
 
-    @pytest.mark.asyncio
-    async def test_chat_mismatch_does_not_resolve(self):
+    def test_chat_mismatch_does_not_resolve(self):
         adapter = _make_adapter()
         adapter._clarify_state["cid"] = {
             "session_key": "sess", "message_id": "m", "chat_id": "oc_expected", "choices": ["a"],
         }
         with patch("tools.clarify_gateway.resolve_gateway_clarify") as mock_resolve:
-            await adapter._resolve_clarify(
+            resolved = adapter._resolve_clarify(
                 clarify_id="cid", choice="a", user_name="Bob", open_id="ou_user1", chat_id="oc_wrong",
             )
+        assert resolved is False
         mock_resolve.assert_not_called()
         assert "cid" in adapter._clarify_state
 
@@ -295,7 +303,7 @@ class TestClarifyCardActionResponse:
         data = _make_card_action_data(
             {"hermes_clarify_action": "1", "clarify_id": "cid"}, open_id="ou_bob",
         )
-        with patch("asyncio.run_coroutine_threadsafe", side_effect=_close_submitted_coro):
+        with patch("tools.clarify_gateway.resolve_gateway_clarify", return_value=True):
             response = adapter._on_card_action_trigger(data)
 
         assert response is not None
@@ -305,6 +313,42 @@ class TestClarifyCardActionResponse:
         assert card["header"]["template"] == "green"
         assert "prod" in card["elements"][0]["content"]
         assert "Bob" in card["elements"][0]["content"]
+        assert "cid" not in adapter._clarify_state
+
+    def test_no_green_card_when_gateway_resolution_fails(self, _patch_callback_card_types):
+        # A stale click (gateway already dropped the entry after timeout) must
+        # not surface the green "answer recorded" card.
+        adapter = self._ready_adapter()
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._clarify_state["cid"] = {
+            "session_key": "sess", "message_id": "m", "chat_id": "oc_12345", "choices": ["staging", "prod"],
+        }
+        adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+        data = _make_card_action_data(
+            {"hermes_clarify_action": "1", "clarify_id": "cid"}, open_id="ou_bob",
+        )
+        with patch("tools.clarify_gateway.resolve_gateway_clarify", return_value=False):
+            response = adapter._on_card_action_trigger(data)
+
+        assert response.card is None
+        assert "cid" not in adapter._clarify_state
+
+    def test_rejects_negative_choice_index(self, _patch_callback_card_types):
+        # int("-1") is a valid Python subscript and would silently pick the
+        # last choice; it must be rejected like any out-of-range index.
+        adapter = self._ready_adapter()
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._clarify_state["cid"] = {
+            "session_key": "sess", "message_id": "m", "chat_id": "oc_12345", "choices": ["a", "b"],
+        }
+        data = _make_card_action_data(
+            {"hermes_clarify_action": "-1", "clarify_id": "cid"}, open_id="ou_bob",
+        )
+        with patch("tools.clarify_gateway.resolve_gateway_clarify") as mock_resolve:
+            response = adapter._on_card_action_trigger(data)
+        assert response.card is None
+        mock_resolve.assert_not_called()
+        assert "cid" in adapter._clarify_state
 
     def test_other_button_enters_text_capture(self, _patch_callback_card_types):
         adapter = self._ready_adapter()
@@ -316,7 +360,7 @@ class TestClarifyCardActionResponse:
         data = _make_card_action_data(
             {"hermes_clarify_action": _CLARIFY_OTHER_ACTION, "clarify_id": "cid"}, open_id="ou_bob",
         )
-        with patch("tools.clarify_gateway.mark_awaiting_text") as mock_mark:
+        with patch("tools.clarify_gateway.mark_awaiting_text", return_value=True) as mock_mark:
             response = adapter._on_card_action_trigger(data)
 
         mock_mark.assert_called_once_with("cid")
@@ -324,6 +368,25 @@ class TestClarifyCardActionResponse:
         assert response.card.data["header"]["template"] == "blue"
         assert "type your response" in response.card.data["elements"][0]["content"].lower()
         # state cleared — the next text message resolves it via the gateway intercept
+        assert "cid" not in adapter._clarify_state
+
+    def test_other_button_no_card_when_entry_gone(self, _patch_callback_card_types):
+        # The gateway already dropped the entry (timeout); do not show a
+        # "type your answer" card the next message cannot resolve.
+        adapter = self._ready_adapter()
+        adapter._allowed_group_users = {"ou_bob"}
+        adapter._clarify_state["cid"] = {
+            "session_key": "sess", "message_id": "m", "chat_id": "oc_12345", "choices": ["a", "b"],
+        }
+        adapter._sender_name_cache["ou_bob"] = ("Bob", 9999999999)
+        data = _make_card_action_data(
+            {"hermes_clarify_action": _CLARIFY_OTHER_ACTION, "clarify_id": "cid"}, open_id="ou_bob",
+        )
+        with patch("tools.clarify_gateway.mark_awaiting_text", return_value=False) as mock_mark:
+            response = adapter._on_card_action_trigger(data)
+
+        mock_mark.assert_called_once_with("cid")
+        assert response.card is None
         assert "cid" not in adapter._clarify_state
 
     def test_ignores_missing_clarify_id(self, _patch_callback_card_types):

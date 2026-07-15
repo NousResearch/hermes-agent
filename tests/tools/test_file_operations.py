@@ -457,6 +457,7 @@ def _make_subprocess_env(cwd="/"):
             shell=True,
             text=True,
             capture_output=True,
+            input=kwargs.get("stdin_data"),
         )
         return {
             "output": completed.stdout,
@@ -664,6 +665,31 @@ class TestSearchPathValidation:
 
 
 class TestSearchFilesIncludesDirectories:
+    def test_rg_file_results_work_without_find(self, mock_env, monkeypatch):
+        executed_commands = []
+        availability_checks = []
+
+        def execute(command, **kwargs):
+            executed_commands.append(command)
+            if command.startswith("rg --files --sortr=modified"):
+                return {"output": "/repo/match.txt\n", "returncode": 0}
+            pytest.fail(f"Unexpected command: {command}")
+
+        def has_command(command):
+            availability_checks.append(command)
+            return command == "rg"
+
+        mock_env.execute.side_effect = execute
+        ops = ShellFileOperations(mock_env)
+        monkeypatch.setattr(ops, "_has_command", has_command)
+
+        result = ops._search_files("*.txt", "/repo", limit=50, offset=0)
+
+        assert result.error is None
+        assert result.files == ["/repo/match.txt"]
+        assert availability_checks == ["rg", "find"]
+        assert not any("find " in command for command in executed_commands)
+
     @pytest.mark.skipif(
         shutil.which("rg") is None,
         reason="ripgrep not installed",
@@ -763,6 +789,32 @@ class TestSearchFilesIncludesDirectories:
         assert result.error is None
         assert set(result.files) == {str(one), str(two)}
         assert result.truncated is False
+
+    @pytest.mark.skipif(
+        shutil.which("rg") is None,
+        reason="ripgrep not installed",
+    )
+    def test_rg_sorts_files_and_directories_before_pagination(self, tmp_path):
+        root = tmp_path / "repo"
+        older_file = root / "older.log"
+        newer_dir = root / "alpha-newer"
+        older_dirs = [root / "zulu-older", root / "yankee-older"]
+        root.mkdir()
+        older_file.write_text("x")
+        newer_dir.mkdir()
+        for older_dir in older_dirs:
+            older_dir.mkdir()
+        os.utime(older_file, (1_000, 1_000))
+        for older_dir in older_dirs:
+            os.utime(older_dir, (1_000, 1_000))
+        os.utime(newer_dir, (2_000, 2_000))
+
+        ops = ShellFileOperations(_make_subprocess_env())
+        result = ops.search("*", path=str(root), target="files", limit=1)
+
+        assert result.error is None
+        assert result.files == [str(newer_dir)]
+        assert result.truncated is True
 
     def test_find_target_files_includes_matching_empty_directory(self, tmp_path, monkeypatch):
         root = tmp_path / "repo"

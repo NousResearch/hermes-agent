@@ -688,15 +688,17 @@ class TestDetectOpenclawProcesses:
         with patch.object(claw_mod, "sys") as mock_sys:
             mock_sys.platform = "linux"
             with patch.object(claw_mod, "subprocess") as mock_subprocess:
-                # systemd check misses, pgrep finds openclaw
+                # systemd check misses, pgrep -f finds, pgrep -x misses
                 mock_subprocess.run.side_effect = [
                     MagicMock(returncode=1, stdout=""),  # systemctl
-                    MagicMock(returncode=0, stdout="1234\n"),  # pgrep
+                    MagicMock(returncode=0, stdout="1234\n"),  # pgrep -f
+                    MagicMock(returncode=1, stdout=""),  # pgrep -x
                 ]
                 mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
-                result = claw_mod._detect_openclaw_processes()
-                assert len(result) == 1
-                assert "1234" in result[0]
+                with patch.object(claw_mod, "_get_process_cmdline", return_value="node openclaw"):
+                    result = claw_mod._detect_openclaw_processes()
+                    assert len(result) == 1
+                    assert "1234" in result[0]
 
     def test_returns_empty_when_pgrep_finds_nothing(self):
         with patch.object(claw_mod, "sys") as mock_sys:
@@ -704,7 +706,8 @@ class TestDetectOpenclawProcesses:
             with patch.object(claw_mod, "subprocess") as mock_subprocess:
                 mock_subprocess.run.side_effect = [
                     MagicMock(returncode=1, stdout=""),  # systemctl (not found)
-                    MagicMock(returncode=1, stdout=""),  # pgrep
+                    MagicMock(returncode=1, stdout=""),  # pgrep -f
+                    MagicMock(returncode=1, stdout=""),  # pgrep -x
                 ]
                 mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
                 result = claw_mod._detect_openclaw_processes()
@@ -716,12 +719,38 @@ class TestDetectOpenclawProcesses:
             with patch.object(claw_mod, "subprocess") as mock_subprocess:
                 mock_subprocess.run.side_effect = [
                     MagicMock(returncode=0, stdout="active\n"),  # systemctl
-                    MagicMock(returncode=1, stdout=""),  # pgrep
+                    MagicMock(returncode=1, stdout=""),  # pgrep -f
+                    MagicMock(returncode=1, stdout=""),  # pgrep -x
                 ]
                 mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
                 result = claw_mod._detect_openclaw_processes()
                 assert len(result) == 1
                 assert "systemd" in result[0]
+
+    def test_returns_empty_when_unrelated_process_contains_openclaw_in_cmdline(self):
+        with patch.object(claw_mod, "sys") as mock_sys:
+            mock_sys.platform = "linux"
+            with patch.object(claw_mod, "subprocess") as mock_subprocess:
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=1, stdout=""),  # systemctl
+                    MagicMock(returncode=0, stdout="1234\n"),  # pgrep -f
+                    MagicMock(returncode=1, stdout=""),  # pgrep -x
+                ]
+                mock_subprocess.TimeoutExpired = subprocess.TimeoutExpired
+                # Test wrapper/grep exclusion
+                with patch.object(claw_mod, "_get_process_cmdline", return_value="grep openclaw"):
+                    result = claw_mod._detect_openclaw_processes()
+                    assert result == []
+
+                # Test lack of word boundary (e.g. openclawbot_helper)
+                mock_subprocess.run.side_effect = [
+                    MagicMock(returncode=1, stdout=""),  # systemctl
+                    MagicMock(returncode=0, stdout="1234\n"),  # pgrep -f
+                    MagicMock(returncode=1, stdout=""),  # pgrep -x
+                ]
+                with patch.object(claw_mod, "_get_process_cmdline", return_value="openclawbot_helper"):
+                    result = claw_mod._detect_openclaw_processes()
+                    assert result == []
 
     def test_returns_match_on_windows_when_openclaw_exe_running(self):
         with patch.object(claw_mod, "sys") as mock_sys:

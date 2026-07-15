@@ -8865,8 +8865,11 @@ class TestResolveRuntimeWithFallback:
             "hermes_cli.runtime_provider.resolve_runtime_provider",
             lambda **kw: expected,
         )
-        result = server._resolve_runtime_with_fallback({"requested": "openai"})
-        assert result == expected
+        runtime, fallback_model = server._resolve_runtime_with_fallback(
+            {"requested": "openai"}
+        )
+        assert runtime == expected
+        assert fallback_model is None
 
     def test_auth_error_tries_fallback_chain(self, monkeypatch):
         """On AuthError from primary, walk fallback_providers chain."""
@@ -8888,10 +8891,11 @@ class TestResolveRuntimeWithFallback:
             "_load_fallback_model",
             lambda: [{"provider": "deepseek", "model": "deepseek-v4-pro"}],
         )
-        result = server._resolve_runtime_with_fallback(
+        runtime, fallback_model = server._resolve_runtime_with_fallback(
             {"requested": "openai-codex"},
         )
-        assert result == fallback_runtime
+        assert runtime == fallback_runtime
+        assert fallback_model == "deepseek-v4-pro"
 
     def test_auth_error_all_fallbacks_fail_raises(self, monkeypatch):
         """When all fallbacks also fail, re-raise the original AuthError."""
@@ -8939,10 +8943,11 @@ class TestResolveRuntimeWithFallback:
                 {"provider": "anthropic", "model": "claude-sonnet-4-6"},
             ],
         )
-        result = server._resolve_runtime_with_fallback(
+        runtime, fallback_model = server._resolve_runtime_with_fallback(
             {"requested": "openai-codex"},
         )
-        assert result == fallback_runtime
+        assert runtime == fallback_runtime
+        assert fallback_model == "claude-sonnet-4-6"
 
     def test_make_agent_uses_fallback_on_auth_error(self, monkeypatch):
         """Integration: _make_agent falls back to configured fallback
@@ -8952,10 +8957,14 @@ class TestResolveRuntimeWithFallback:
         from hermes_cli.auth import AuthError
 
         captured = {}
-        fallback_runtime = {"provider": "deepseek", "api_key": "fb-tok"}
+        fallback_runtime = {
+            "provider": "deepseek",
+            "api_key": "fb-tok",
+            "base_url": "https://fallback.invalid/v1",
+        }
 
         def fake_resolve(**kwargs):
-            if kwargs.get("requested") == "openai-codex":
+            if kwargs.get("requested") in (None, "openai-codex"):
                 raise AuthError("No Codex credentials stored")
             return fallback_runtime
 
@@ -8984,10 +8993,21 @@ class TestResolveRuntimeWithFallback:
         monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: ["file"])
         monkeypatch.setattr(server, "_get_db", lambda: None)
 
-        agent = server._make_agent("sid", "session-key")
+        agent = server._make_agent(
+            "sid",
+            "session-key",
+            model_override={
+                "model": "gpt-5.5",
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "stale-codex-token",
+            },
+        )
 
-        assert agent.model == "gpt-5.5"
+        assert agent.model == "deepseek-v4-pro"
         assert captured["provider"] == "deepseek"
+        assert captured["base_url"] == "https://fallback.invalid/v1"
+        assert captured["api_key"] == "fb-tok"
 
 
 def test_get_usage_does_not_substitute_cumulative_total_for_context_used():

@@ -25,6 +25,19 @@ def build_model_parser(subparsers, *, cmd_model: Callable) -> None:
         help="Wipe the model picker disk cache and re-fetch every provider's live /v1/models list.",
     )
     model_parser.add_argument(
+        "--preflight",
+        action="store_true",
+        help=(
+            "Read-only check that profile config, gateway process, source tree, "
+            "and provider auth structure refer to the same runtime"
+        ),
+    )
+    model_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit --preflight result as stable JSON",
+    )
+    model_parser.add_argument(
         "--portal-url",
         help="Portal base URL for Nous login (default: production portal)",
     )

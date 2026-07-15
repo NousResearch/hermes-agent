@@ -37,6 +37,8 @@ def is_readonly_diagnostic_argv(argv: list[str] | tuple[str, ...] | None = None)
     for index, arg in enumerate(normalized[:-1]):
         if arg == "security" and normalized[index + 1] == "audit":
             return True
+    if "model" in normalized and "--preflight" in normalized:
+        return True
     return False
 
 

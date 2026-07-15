@@ -2765,6 +2765,15 @@ def cmd_postinstall(args):
 
 def cmd_model(args):
     """Select default model — starts with provider selection, then model picker."""
+    if getattr(args, "preflight", False):
+        from hermes_cli.model_preflight import (
+            collect_model_preflight,
+            format_model_preflight,
+        )
+
+        result = collect_model_preflight()
+        print(format_model_preflight(result, as_json=getattr(args, "json", False)))
+        return 0 if result.status == "PASS" else 2
     _require_tty("model")
     if getattr(args, "refresh", False):
         try:

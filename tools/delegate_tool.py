@@ -17,8 +17,11 @@ never the child's intermediate tool calls or reasoning.
 """
 
 import enum
+import hashlib
 import json
 import logging
+import shutil
+import subprocess
 
 logger = logging.getLogger(__name__)
 import os
@@ -1060,6 +1063,9 @@ def _build_child_agent(
     # ACP transport overrides from trusted delegation config.
     override_acp_command: Optional[str] = None,
     override_acp_args: Optional[List[str]] = None,
+    # Selected operator-configured route. Avoids a second config load that
+    # would discard target-specific effort and budget.
+    delegation_config: Optional[dict] = None,
     # Per-call role controlling whether the child can further delegate.
     # 'leaf' (default) cannot; 'orchestrator' retains the delegation
     # toolset subject to depth/kill-switch bounds applied below.
@@ -1097,7 +1103,7 @@ def _build_child_agent(
     parent_subagent_id = getattr(parent_agent, "_subagent_id", None)
     tui_depth = max(0, child_depth - 1)  # 0 = first-level child for the UI
 
-    delegation_cfg = _load_config()
+    delegation_cfg = delegation_config if delegation_config is not None else _load_config()
 
     # When no explicit toolsets given, inherit from parent's enabled toolsets
     # so disabled tools (e.g. web) don't leak to subagents.
@@ -2139,6 +2145,7 @@ def _run_single_child(
             "api_calls": api_calls,
             "duration_seconds": duration,
             "model": _model if isinstance(_model, str) else None,
+            "target": getattr(child, "_delegation_target", None),
             "exit_reason": exit_reason,
             "tokens": {
                 "input": (
@@ -2372,6 +2379,7 @@ def delegate_task(
     tasks: Optional[List[Dict[str, Any]]] = None,
     max_iterations: Optional[int] = None,
     role: Optional[str] = None,
+    target: Optional[str] = None,
     background: Optional[bool] = None,
     parent_agent=None,
 ) -> str:
@@ -2428,31 +2436,18 @@ def delegate_task(
             }
         )
 
-    # Load config
+    # Load the base configuration once. Each task may select an allowlisted
+    # target profile, but all non-routing policy stays rooted here.
     cfg = _load_config()
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
-    # Model-supplied max_iterations is ignored — the config value is authoritative
-    # so users get predictable budgets. The kwarg is retained for internal callers
-    # and tests; a model-emitted value here would only shrink the budget and
-    # surprise the user mid-run. Log and drop it if one slips through from a
-    # cached tool schema or a stale provider.
+    # Model-supplied max_iterations is ignored — route configuration is
+    # authoritative so users get predictable budgets.
     if max_iterations is not None and max_iterations != default_max_iter:
         logger.debug(
             "delegate_task: ignoring caller-supplied max_iterations=%s; "
             "using delegation.max_iterations=%s from config",
             max_iterations, default_max_iter,
         )
-    effective_max_iter = default_max_iter
-
-    # Resolve delegation credentials (provider:model pair).
-    # When delegation.provider is configured, this resolves the full credential
-    # bundle (base_url, api_key, api_mode) via the same runtime provider system
-    # used by CLI/gateway startup.  When unconfigured, returns None values so
-    # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2473,7 +2468,12 @@ def delegate_task(
             )
         task_list = tasks
     elif goal and isinstance(goal, str) and goal.strip():
-        task_list = [{"goal": goal, "context": context, "role": top_role}]
+        task_list = [{
+            "goal": goal,
+            "context": context,
+            "role": top_role,
+            "target": target,
+        }]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
 
@@ -2512,6 +2512,26 @@ def delegate_task(
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
             effective_role = _normalize_role(t.get("role") or top_role)
+            selected_target = t.get("target")
+            try:
+                # Validate a requested allowlisted lane, then apply the local
+                # classifier as a safety floor. Explicit escalation is kept;
+                # explicit cheap/standard can never suppress a higher-risk lane.
+                _resolve_delegation_target_config(cfg, selected_target)
+                auto_target = _auto_select_delegation_target(
+                    t["goal"], cfg, context=t.get("context")
+                )
+                if auto_target is not None and (
+                    selected_target is None
+                    or _DELEGATION_TARGET_RANK[auto_target]
+                    > _DELEGATION_TARGET_RANK[selected_target]
+                ):
+                    selected_target = auto_target
+                selected_cfg = _resolve_delegation_target_config(cfg, selected_target)
+                creds = _resolve_delegation_credentials(selected_cfg, parent_agent)
+            except ValueError as exc:
+                return tool_error(str(exc))
+            effective_max_iter = selected_cfg.get("max_iterations", default_max_iter)
             child = _build_child_agent(
                 task_index=i,
                 goal=t["goal"],
@@ -2531,8 +2551,10 @@ def delegate_task(
                 override_max_tokens=creds.get("max_output_tokens"),
                 override_acp_command=creds.get("command"),
                 override_acp_args=creds.get("args"),
+                delegation_config=selected_cfg,
                 role=effective_role,
             )
+            child._delegation_target = selected_target
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
             children.append((i, t, child))
@@ -2890,6 +2912,11 @@ def delegate_task(
                     pass
 
         _goals = [t["goal"] for t in task_list]
+        _models = {
+            str(getattr(child, "model", "") or "")
+            for child in _child_agents
+        }
+        _dispatch_model = next(iter(_models)) if len(_models) == 1 else "mixed"
         dispatch = dispatch_async_delegation_batch(
             goals=_goals,
             context=context,
@@ -2897,7 +2924,7 @@ def delegate_task(
             # parent's toolsets (no model-facing toolsets arg).
             toolsets=None,
             role=top_role,
-            model=creds["model"],
+            model=_dispatch_model,
             session_key=_session_key,
             origin_ui_session_id=_origin_ui_session_id,
             parent_session_id=_parent_session_id,
@@ -3036,6 +3063,169 @@ def _resolve_child_credential_pool(
             exc,
         )
     return None
+
+
+_DELEGATION_TARGET_FIELDS = frozenset({
+    "enabled",
+    "model",
+    "provider",
+    "base_url",
+    "api_key",
+    "api_mode",
+    "reasoning_effort",
+    "max_iterations",
+    "child_timeout_seconds",
+    "max_summary_chars",
+})
+_DELEGATION_TARGET_RANK = {"cheap": 0, "standard": 1, "escalated": 2}
+_ROUTE_MODEL_TARGET = {
+    "luna": ("gpt-5.6-luna", "cheap"),
+    "terra": ("gpt-5.6-terra", "standard"),
+    "sol": ("gpt-5.6-sol", "escalated"),
+}
+_ROUTING_REASON_CODES = frozenset({
+    "SOL_SECURITY_SENSITIVE",
+    "SOL_PRODUCTION",
+    "SOL_DESTRUCTIVE",
+    "SOL_IRREVERSIBLE_DATA",
+    "SOL_INCIDENT",
+    "SOL_ARCHITECTURE",
+    "SOL_AMBIGUOUS",
+    "SOL_EXTERNAL_SIDE_EFFECT",
+    "SOL_CONTEXTLESS_FOLLOWUP",
+    "OVERRIDE_SOL",
+    "OVERRIDE_TERRA",
+    "OVERRIDE_LUNA",
+    "OVERRIDE_LUNA_REJECTED_UNBOUNDED",
+    "LUNA_BOUNDED_MECHANICAL",
+    "TERRA_GENERAL",
+})
+
+
+def _delegation_target_names(cfg: dict) -> list[str]:
+    """Return valid configured route names in config order."""
+    targets = cfg.get("targets") if isinstance(cfg, dict) else None
+    if not isinstance(targets, dict):
+        return []
+    return [
+        name
+        for name, value in targets.items()
+        if isinstance(name, str)
+        and name.strip()
+        and isinstance(value, dict)
+        and value.get("enabled") is True
+    ]
+
+
+def _auto_select_delegation_target(
+    goal: str, cfg: dict, context: Optional[str] = None
+) -> Optional[str]:
+    """Classify an unpinned delegated goal through the local codex-relay CLI.
+
+    Automatic routing is enabled only when the canonical operator-owned
+    targets are present. Classifier failures are surfaced to the parent as a
+    tool error; they never silently fall back to the base/default model.
+    """
+    available = set(_delegation_target_names(cfg))
+    canonical = {"cheap", "standard", "escalated"}
+    if not canonical.issubset(available):
+        return None
+
+    relay = str(os.environ.get("CODEX_RELAY_PATH") or "").strip()
+    if not relay:
+        relay = shutil.which("codex-relay") or ""
+    if not relay:
+        raise ValueError("Automatic delegation routing is unavailable (codex-relay not found).")
+
+    routing_prompt = goal
+    if isinstance(context, str) and context.strip():
+        routing_prompt = f"{goal}\n\nDelegation context:\n{context.strip()}"
+    request = {
+        "schema_version": "1.0",
+        "task": {"prompt": routing_prompt},
+        "context": {"runtime": "hermes", "intent": "execute"},
+    }
+    try:
+        completed = subprocess.run(
+            [relay, "classify"],
+            input=json.dumps(request),
+            text=True,
+            capture_output=True,
+            timeout=1.0,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError("Automatic delegation routing failed.") from exc
+    if completed.returncode != 0:
+        raise ValueError("Automatic delegation routing failed.")
+    try:
+        decision = json.loads(completed.stdout)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise ValueError("Automatic delegation routing returned an invalid response.") from exc
+
+    if not isinstance(decision, dict):
+        raise ValueError("Automatic delegation routing returned an invalid response.")
+    route = decision.get("route")
+    expected = _ROUTE_MODEL_TARGET.get(route)
+    target = decision.get("hermes_target")
+    reasons = decision.get("reason_codes")
+    expected_hash = hashlib.sha256(routing_prompt.encode("utf-8")).hexdigest()
+    if (
+        decision.get("schema_version") != "1.0"
+        or decision.get("classifier_version") != "1.0.0"
+        or decision.get("provider") != "openai-codex"
+        or expected is None
+        or decision.get("model") != expected[0]
+        or target != expected[1]
+        or target not in canonical
+        or target not in available
+        or not isinstance(reasons, list)
+        or not reasons
+        or not all(isinstance(reason, str) and reason in _ROUTING_REASON_CODES for reason in reasons)
+        or decision.get("prompt_sha256") != expected_hash
+    ):
+        raise ValueError("Automatic delegation routing returned an invalid response.")
+    logger.info(
+        "delegate_task automatic route: target=%s reasons=%s prompt_sha256=%s",
+        target,
+        reasons,
+        expected_hash,
+    )
+    return target
+
+
+def _resolve_delegation_target_config(cfg: dict, target: Optional[str]) -> dict:
+    """Overlay one allowlisted target onto the base delegation config.
+
+    Targets are operator-owned config names, never arbitrary model IDs. They
+    may change only routing and budget fields; tools and approvals stay under
+    the base delegation policy.
+    """
+    base = {key: value for key, value in cfg.items() if key != "targets"}
+    if target is None:
+        return base
+    if not isinstance(target, str) or not target.strip():
+        raise ValueError("Delegation target must be a non-empty configured name.")
+
+    target_name = target.strip()
+    targets = cfg.get("targets")
+    available_targets = _delegation_target_names(cfg)
+    if not isinstance(targets, dict) or target_name not in available_targets:
+        available = ", ".join(available_targets) or "none"
+        raise ValueError(
+            f"Unknown delegation target '{target_name}'. Configured targets: {available}."
+        )
+    override = targets[target_name]
+    if not isinstance(override, dict):
+        raise ValueError(f"Delegation target '{target_name}' must be a mapping.")
+
+    unknown = sorted(set(override) - _DELEGATION_TARGET_FIELDS)
+    if unknown:
+        raise ValueError(
+            f"Delegation target '{target_name}' has unsupported field(s): {', '.join(unknown)}."
+        )
+    base.update({key: value for key, value in override.items() if key != "enabled"})
+    return base
 
 
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
@@ -3327,6 +3517,22 @@ def _build_tasks_param_description() -> str:
     )
 
 
+def _build_target_param_description(targets: list[str]) -> str:
+    """Describe fixed, operator-configured routing choices for the model."""
+    if not targets:
+        return "No named delegation routes are configured; omit this field."
+    names = ", ".join(targets)
+    return (
+        f"Choose one operator-configured route: {names}. Use a cheap route only "
+        "for bounded mechanical work; use the default/standard route for code, "
+        "debugging, or synthesis; use an escalated route for ambiguous, "
+        "high-risk, destructive, production, security-sensitive, incident, or "
+        "architectural work. Omit the field to let the local deterministic "
+        "router choose. This selects a configured profile, never an arbitrary "
+        "model or provider."
+    )
+
+
 def _build_role_param_description() -> str:
     """Compose the 'role' parameter description with current spawn-depth limit."""
     try:
@@ -3365,21 +3571,30 @@ def _build_role_param_description() -> str:
 
 
 def _build_dynamic_schema_overrides() -> dict:
-    """Return per-call schema overrides reflecting current config.
+    """Return per-call schema overrides reflecting current config."""
+    overrides_params = {**DELEGATE_TASK_SCHEMA["parameters"]}
+    props = {
+        key: dict(value)
+        for key, value in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()
+    }
+    task_spec = dict(props["tasks"])
+    task_items = dict(task_spec["items"])
+    task_items["properties"] = dict(task_items["properties"])
+    task_spec["items"] = task_items
+    props["tasks"] = task_spec
+    overrides_params["properties"] = props
 
-    Plugged into ToolEntry.dynamic_schema_overrides so every
-    get_definitions() pass rewrites the description fields to the user's
-    actual limits.
-    """
-    overrides_params = {
-        **DELEGATE_TASK_SCHEMA["parameters"],
-    }
-    # Deep-copy properties so we don't mutate the static schema dict.
-    overrides_params["properties"] = {
-        k: dict(v) for k, v in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()
-    }
-    overrides_params["properties"]["tasks"]["description"] = _build_tasks_param_description()
-    overrides_params["properties"]["role"]["description"] = _build_role_param_description()
+    cfg = _load_config()
+    targets = _delegation_target_names(cfg)
+    target_description = _build_target_param_description(targets)
+    props["tasks"]["description"] = _build_tasks_param_description()
+    props["role"]["description"] = _build_role_param_description()
+    for target_spec in (props["target"], task_items["properties"]["target"]):
+        target_spec["description"] = target_description
+        if targets:
+            target_spec["enum"] = targets
+        else:
+            target_spec.pop("enum", None)
 
     return {
         "description": _build_top_level_description(),
@@ -3421,6 +3636,10 @@ DELEGATE_TASK_SCHEMA = {
                     "specific you are, the better the subagent performs."
                 ),
             },
+            "target": {
+                "type": "string",
+                "description": "Operator-configured delegation route (rebuilt at get_definitions() time).",
+            },
             "tasks": {
                 "type": "array",
                 "items": {
@@ -3430,6 +3649,10 @@ DELEGATE_TASK_SCHEMA = {
                         "context": {
                             "type": "string",
                             "description": "Task-specific context",
+                        },
+                        "target": {
+                            "type": "string",
+                            "description": "Operator-configured route for this task.",
                         },
                         "role": {
                             "type": "string",
@@ -3519,6 +3742,7 @@ registry.register(
         tasks=_strip_model_hidden_task_fields(args.get("tasks")),
         max_iterations=args.get("max_iterations"),
         role=args.get("role"),
+        target=args.get("target"),
         background=_model_background_value(args, kw.get("parent_agent")),
         parent_agent=kw.get("parent_agent"),
     ),

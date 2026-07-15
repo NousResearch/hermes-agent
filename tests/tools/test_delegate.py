@@ -9,6 +9,7 @@ Run with:  python -m pytest tests/test_delegate.py -v
    or:     python tests/test_delegate.py
 """
 
+import hashlib
 import json
 import os
 import threading
@@ -34,6 +35,8 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _resolve_delegation_target_config,
+    _auto_select_delegation_target,
     _inherit_parent_base_url,
 )
 
@@ -87,6 +90,28 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertNotIn("acp_command", props["tasks"]["items"]["properties"])
         self.assertNotIn("acp_args", props["tasks"]["items"]["properties"])
         self.assertNotIn("maxItems", props["tasks"])  # removed — limit is now runtime-configurable
+
+    @patch("tools.delegate_tool._load_config")
+    def test_schema_exposes_only_configured_delegation_targets(self, mock_cfg):
+        """The model may choose only operator-configured route names, never an
+        arbitrary provider or model ID."""
+        from tools.delegate_tool import _build_dynamic_schema_overrides
+
+        mock_cfg.return_value = {
+            "targets": {
+                "cheap": {"enabled": True, "model": "gpt-5.6-luna"},
+                "standard": {"enabled": True, "model": "gpt-5.6-terra"},
+                "legacy": {"model": "old-model"},
+            }
+        }
+
+        props = _build_dynamic_schema_overrides()["parameters"]["properties"]
+        self.assertEqual(props["target"]["enum"], ["cheap", "standard"])
+        self.assertEqual(
+            props["tasks"]["items"]["properties"]["target"]["enum"],
+            ["cheap", "standard"],
+        )
+        self.assertNotIn("legacy", props["target"]["enum"])
 
     def test_schema_description_advertises_runtime_limits(self):
         """The model must see the user's actual concurrency / spawn-depth caps,
@@ -1097,6 +1122,143 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["base_url"])
         self.assertIsNone(creds["api_key"])
 
+    def test_named_target_overlays_only_routing_fields(self):
+        cfg = {
+            "model": "gpt-5.6-terra",
+            "provider": "openai-codex",
+            "base_url": "http://127.0.0.1:18788/v1",
+            "api_mode": "codex_responses",
+            "max_iterations": 50,
+            "targets": {
+                "cheap": {
+                    "enabled": True,
+                    "model": "gpt-5.6-luna",
+                    "reasoning_effort": "low",
+                    "max_iterations": 12,
+                }
+            },
+        }
+
+        selected = _resolve_delegation_target_config(cfg, "cheap")
+
+        self.assertEqual(selected["model"], "gpt-5.6-luna")
+        self.assertEqual(selected["provider"], "openai-codex")
+        self.assertEqual(selected["base_url"], "http://127.0.0.1:18788/v1")
+        self.assertEqual(selected["api_mode"], "codex_responses")
+        self.assertEqual(selected["reasoning_effort"], "low")
+        self.assertEqual(selected["max_iterations"], 12)
+        self.assertNotIn("targets", selected)
+
+    def test_unknown_target_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "Unknown delegation target 'expensive'"):
+            _resolve_delegation_target_config(
+                {"targets": {"cheap": {"enabled": True, "model": "gpt-5.6-luna"}}},
+                "expensive",
+            )
+
+    @patch("tools.delegate_tool.subprocess.run")
+    @patch("tools.delegate_tool.shutil.which", return_value="/usr/local/bin/codex-relay")
+    def test_unpinned_goal_uses_local_router_target(self, _mock_which, mock_run):
+        cfg = {
+            "targets": {
+                "cheap": {"enabled": True},
+                "standard": {"enabled": True},
+                "escalated": {"enabled": True},
+            }
+        }
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps({
+                "schema_version": "1.0",
+                "classifier_version": "1.0.0",
+                "route": "sol",
+                "model": "gpt-5.6-sol",
+                "provider": "openai-codex",
+                "hermes_target": "escalated",
+                "reason_codes": ["SOL_PRODUCTION"],
+                "prompt_sha256": hashlib.sha256(b"Deploy to production").hexdigest(),
+            }),
+        )
+
+        selected = _auto_select_delegation_target("Deploy to production", cfg)
+
+        self.assertEqual(selected, "escalated")
+        args, kwargs = mock_run.call_args
+        self.assertEqual(args[0], ["/usr/local/bin/codex-relay", "classify"])
+        self.assertNotIn("Deploy to production", args[0])
+        self.assertEqual(kwargs["timeout"], 1.0)
+
+    @patch("tools.delegate_tool.subprocess.run")
+    @patch("tools.delegate_tool.shutil.which", return_value="/usr/local/bin/codex-relay")
+    def test_router_rejects_malformed_metadata_before_logging(self, _mock_which, mock_run):
+        cfg = {
+            "targets": {
+                "cheap": {"enabled": True},
+                "standard": {"enabled": True},
+                "escalated": {"enabled": True},
+            }
+        }
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps({
+                "hermes_target": "cheap",
+                "reason_codes": ["prompt text must not reach logs"],
+                "prompt_sha256": "not-a-hash",
+            }),
+        )
+        with self.assertRaisesRegex(ValueError, "invalid response"):
+            _auto_select_delegation_target("Format this JSON: {}", cfg)
+
+    @patch("tools.delegate_tool.subprocess.run")
+    @patch("tools.delegate_tool.shutil.which", return_value="/usr/local/bin/codex-relay")
+    def test_router_includes_context_in_safety_decision(self, _mock_which, mock_run):
+        cfg = {
+            "targets": {
+                "cheap": {"enabled": True},
+                "standard": {"enabled": True},
+                "escalated": {"enabled": True},
+            }
+        }
+        routing_prompt = "Review the plan\n\nDelegation context:\nProduction database migration"
+        mock_run.return_value = MagicMock(
+            returncode=0,
+            stdout=json.dumps({
+                "schema_version": "1.0",
+                "classifier_version": "1.0.0",
+                "route": "sol",
+                "model": "gpt-5.6-sol",
+                "provider": "openai-codex",
+                "hermes_target": "escalated",
+                "reason_codes": ["SOL_PRODUCTION"],
+                "prompt_sha256": hashlib.sha256(routing_prompt.encode()).hexdigest(),
+            }),
+        )
+        self.assertEqual(
+            _auto_select_delegation_target(
+                "Review the plan", cfg, context="Production database migration"
+            ),
+            "escalated",
+        )
+        routed_request = json.loads(mock_run.call_args.kwargs["input"])
+        self.assertEqual(routed_request["task"]["prompt"], routing_prompt)
+
+    @patch("tools.delegate_tool.shutil.which", return_value=None)
+    def test_unpinned_goal_fails_closed_when_router_missing(self, _mock_which):
+        cfg = {
+            "targets": {
+                "cheap": {"enabled": True},
+                "standard": {"enabled": True},
+                "escalated": {"enabled": True},
+            }
+        }
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "codex-relay not found"):
+                _auto_select_delegation_target("Review the parser", cfg)
+
+    def test_noncanonical_targets_preserve_existing_default_behavior(self):
+        cfg = {"targets": {"cheap": {"enabled": True}}}
+        self.assertIsNone(_auto_select_delegation_target("Review the parser", cfg))
+
 
 
     def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
@@ -1368,6 +1530,92 @@ class TestDelegationCredentialResolution(unittest.TestCase):
 
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""
+
+    @patch("tools.delegate_tool._load_config")
+    def test_named_target_reaches_child_with_own_model_budget_and_audit_label(self, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 50,
+            "model": "gpt-5.6-terra",
+            "provider": "openai-codex",
+            "base_url": "http://127.0.0.1:18788/v1",
+            "api_mode": "codex_responses",
+            "targets": {
+                "cheap": {
+                    "enabled": True,
+                    "model": "gpt-5.6-luna",
+                    "reasoning_effort": "low",
+                    "max_iterations": 12,
+                }
+            },
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.base_url = "https://chatgpt.com/backend-api/codex"
+        parent.provider = "openai-codex"
+        parent.api_mode = "codex_responses"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            child = MagicMock()
+            child.model = "gpt-5.6-luna"
+            child.session_prompt_tokens = 0
+            child.session_completion_tokens = 0
+            child.run_conversation.return_value = {
+                "final_response": "done", "completed": True,
+                "interrupted": False, "api_calls": 1, "messages": [],
+            }
+            MockAgent.return_value = child
+
+            result = json.loads(
+                delegate_task(goal="List source files", target="cheap", parent_agent=parent)
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "gpt-5.6-luna")
+        self.assertEqual(kwargs["max_iterations"], 12)
+        self.assertEqual(kwargs["base_url"], "http://127.0.0.1:18788/v1")
+        self.assertEqual(result["results"][0]["target"], "cheap")
+
+    @patch("tools.delegate_tool._load_config")
+    def test_unknown_named_target_returns_tool_error_before_child_creation(self, mock_cfg):
+        mock_cfg.return_value = {"targets": {"cheap": {"enabled": True, "model": "gpt-5.6-luna"}}}
+        result = json.loads(
+            delegate_task(goal="List source files", target="missing", parent_agent=_make_mock_parent())
+        )
+        self.assertIn("Unknown delegation target 'missing'", result["error"])
+
+    @patch("tools.delegate_tool._auto_select_delegation_target", return_value="escalated")
+    @patch("tools.delegate_tool._load_config")
+    def test_explicit_cheap_target_cannot_bypass_escalated_safety_floor(
+        self, mock_cfg, _mock_auto_route
+    ):
+        mock_cfg.return_value = {
+            "provider": "openai-codex",
+            "base_url": "http://127.0.0.1:18788/v1",
+            "api_mode": "codex_responses",
+            "targets": {
+                "cheap": {"enabled": True, "model": "gpt-5.6-luna"},
+                "standard": {"enabled": True, "model": "gpt-5.6-terra"},
+                "escalated": {"enabled": True, "model": "gpt-5.6-sol"},
+            },
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            child = MagicMock()
+            child.model = "gpt-5.6-sol"
+            child.session_prompt_tokens = 0
+            child.session_completion_tokens = 0
+            child.run_conversation.return_value = {
+                "final_response": "done", "completed": True,
+                "interrupted": False, "api_calls": 1, "messages": [],
+            }
+            MockAgent.return_value = child
+            result = json.loads(delegate_task(
+                goal="Deploy to production", target="cheap", parent_agent=parent
+            ))
+
+        _, kwargs = MockAgent.call_args
+        self.assertEqual(kwargs["model"], "gpt-5.6-sol")
+        self.assertEqual(result["results"][0]["target"], "escalated")
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

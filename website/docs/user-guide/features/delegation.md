@@ -157,6 +157,43 @@ delegation:
 
 If omitted, subagents use the same model as the parent.
 
+### Named routing targets
+
+For fixed, user-controlled model lanes, configure named targets and pass their
+name through `delegate_task(target="...")`. The model can select only a name
+present in this configuration; it cannot supply arbitrary provider or model
+IDs. A target may override routing, reasoning effort, and child budgets only —
+it cannot expand tools or approval authority.
+
+```yaml
+# Keep the base/default lane on Terra.
+delegation:
+  model: gpt-5.6-terra
+  provider: openai-codex
+  base_url: http://127.0.0.1:18788/v1
+  api_mode: codex_responses
+  targets:
+    cheap:
+      enabled: true
+      model: gpt-5.6-luna
+      reasoning_effort: low
+      max_iterations: 12
+    standard:
+      enabled: true
+      model: gpt-5.6-terra
+      reasoning_effort: high
+    escalated:
+      enabled: true
+      model: gpt-5.6-sol
+      reasoning_effort: high
+```
+
+Use `cheap` only for bounded, mechanical work. Use `standard` for normal code,
+tests, debugging, and synthesis; reserve `escalated` for ambiguity or hard
+diagnosis. When all three canonical targets are enabled, omitting `target`
+invokes the local deterministic router. An explicit target remains subject to
+the router's safety floor, so risky work cannot force a cheaper lane.
+
 ## Toolset Selection Tips
 
 The `toolsets` parameter controls what tools the subagent has access to. Choose based on the task:

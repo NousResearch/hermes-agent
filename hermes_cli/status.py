@@ -548,7 +548,7 @@ def show_status(args):
     _session_count = None
     try:
         from hermes_state import SessionDB
-        _db = SessionDB()
+        _db = SessionDB(read_only=True)
         try:
             _lister = getattr(_db, "list_gateway_sessions", None)
             if callable(_lister):

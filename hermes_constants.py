@@ -31,7 +31,19 @@ def is_readonly_diagnostic() -> bool:
 def is_readonly_diagnostic_argv(argv: list[str] | tuple[str, ...] | None = None) -> bool:
     """Recognize CLI commands whose contract is inspection-only."""
     args = list(sys.argv if argv is None else argv)
-    normalized = [str(arg).strip().lower() for arg in args[1:]]
+    raw_normalized = [str(arg).strip().lower() for arg in args[1:]]
+    normalized: list[str] = []
+    index = 0
+    while index < len(raw_normalized):
+        arg = raw_normalized[index]
+        if arg in {"--profile", "-p"} and index + 1 < len(raw_normalized):
+            index += 2
+            continue
+        if arg.startswith("--profile="):
+            index += 1
+            continue
+        normalized.append(arg)
+        index += 1
     if "doctor" in normalized:
         return "--fix" not in normalized and "--ack" not in normalized
     if "prompt-size" in normalized:

@@ -603,7 +603,13 @@ def find_gateway_pids(
         try:
             from gateway.status import get_running_pid
 
-            _append_unique_pid(pids, get_running_pid(), _exclude)
+            from hermes_constants import is_readonly_diagnostic
+
+            if is_readonly_diagnostic():
+                pid = get_running_pid(cleanup_stale=False)
+            else:
+                pid = get_running_pid()
+            _append_unique_pid(pids, pid, _exclude)
         except Exception:
             pass
     for pid in _get_service_pids():

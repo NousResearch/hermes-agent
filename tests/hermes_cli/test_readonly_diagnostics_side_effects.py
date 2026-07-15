@@ -16,6 +16,9 @@ def test_readonly_argv_detection():
     assert is_readonly_diagnostic_argv(["hermes", "security", "audit"])
     assert is_readonly_diagnostic_argv(["hermes", "prompt-size", "--json"])
     assert is_readonly_diagnostic_argv(["hermes", "status"])
+    assert is_readonly_diagnostic_argv(
+        ["hermes", "--profile", "main-gateway-v2", "status"]
+    )
     assert is_readonly_diagnostic_argv(["hermes", "gateway", "status"])
     assert is_readonly_diagnostic_argv(["hermes", "model", "--preflight"])
     assert is_readonly_diagnostic_argv(
@@ -66,6 +69,11 @@ def test_readonly_cli_diagnostics_leave_isolated_filesystem_unchanged(tmp_path):
         "model:\n  default: openai/gpt-4o-mini\n  provider: openrouter\n",
         encoding="utf-8",
     )
+    (hermes_home / "gateway.pid").write_text(
+        json.dumps({"pid": 999_999_999, "start_time": 0}),
+        encoding="utf-8",
+    )
+    (hermes_home / "gateway.lock").write_text("stale-lock\n", encoding="utf-8")
 
     env = os.environ.copy()
     env.update(
@@ -81,7 +89,7 @@ def test_readonly_cli_diagnostics_leave_isolated_filesystem_unchanged(tmp_path):
     before = _tree_snapshot(sandbox)
 
     entrypoint = "from hermes_cli.main import main; raise SystemExit(main() or 0)"
-    for args in (("prompt-size", "--json"), ("gateway", "status")):
+    for args in (("prompt-size", "--json"), ("status",), ("gateway", "status")):
         result = subprocess.run(
             [sys.executable, "-c", entrypoint, *args],
             cwd=project_root,
@@ -97,7 +105,7 @@ def test_readonly_cli_diagnostics_leave_isolated_filesystem_unchanged(tmp_path):
             payload = json.loads(result.stdout[json_start:])
             assert payload["system_prompt"]["bytes"] > 0
         else:
-            assert "Gateway" in result.stdout
+            assert result.stdout.strip()
         assert _tree_snapshot(sandbox) == before
         assert not (hermes_home / "state.db-wal").exists()
         assert not (hermes_home / "state.db-shm").exists()

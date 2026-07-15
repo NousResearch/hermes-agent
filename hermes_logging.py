@@ -190,6 +190,9 @@ def _redact_log_record_text(text: str) -> str:
 
 
 _LOG_PRIMITIVE_TYPES = (type(None), bool, int, float, complex)
+_LOG_RECORD_STANDARD_KEYS = frozenset(
+    logging.LogRecord("", 0, "", 0, "", (), None).__dict__
+) | {"asctime", "message"}
 
 
 def _safe_log_value_text(value: Any, fallback: str) -> str:
@@ -394,10 +397,41 @@ def _install_logger_make_record_sanitizer() -> None:
     logging.Logger.makeRecord = _hermes_make_record
 
 
+def _install_make_log_record_sanitizer() -> None:
+    """Sanitize records reconstructed from dictionaries after field updates.
+
+    ``logging.makeLogRecord`` first asks the active record factory for a
+    placeholder and then overwrites its ``__dict__``.  That second step can
+    replace the already-sanitized message, arguments, exception, and extra
+    fields, so sanitize the completed record before returning it.
+    """
+    current_make_log_record = logging.makeLogRecord
+    if getattr(current_make_log_record, "_hermes_record_sanitizer", False):
+        return
+
+    def _hermes_make_log_record(record_dict):
+        record = current_make_log_record(record_dict)
+        _sanitize_log_record(record)
+        try:
+            extras = {
+                key: value
+                for key, value in record_dict.items()
+                if key not in _LOG_RECORD_STANDARD_KEYS
+            }
+        except Exception:
+            extras = None
+        _sanitize_log_record_extra(record, extras)
+        return record
+
+    _hermes_make_log_record._hermes_record_sanitizer = True  # type: ignore[attr-defined]
+    logging.makeLogRecord = _hermes_make_log_record
+
+
 # Install immediately on import — session_tag is available on all records
 # from this point forward, even before setup_logging() is called.
 _install_session_record_factory()
 _install_logger_make_record_sanitizer()
+_install_make_log_record_sanitizer()
 
 
 # ---------------------------------------------------------------------------

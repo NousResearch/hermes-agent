@@ -925,6 +925,45 @@ class TestRecordFactory:
         assert stack_secret not in output
         assert "..." in output
 
+    def test_make_log_record_redacts_overwritten_fields_for_plain_handlers(self):
+        """Dictionary reconstruction cannot bypass the global sanitizer."""
+        message_secret = "sk-" + "p" * 32
+        extra_secret = "ghp_" + "q" * 36
+        exception_secret = "sk-" + "r" * 32
+        stream = io.StringIO()
+        handler = logging.StreamHandler(stream)
+        handler.setFormatter(
+            logging.Formatter("%(message)s %(payload)s %(session_tag)s")
+        )
+
+        record = logging.makeLogRecord(
+            {
+                "name": "_test_make_log_record_redaction",
+                "levelno": logging.ERROR,
+                "levelname": "ERROR",
+                "msg": "assembled %s%s",
+                "args": ("sk-", "p" * 32),
+                "exc_info": (
+                    RuntimeError,
+                    RuntimeError(f"provider returned {exception_secret}"),
+                    None,
+                ),
+                "payload": {"Authorization": f"Bearer {extra_secret}"},
+                "session_tag": f" [{message_secret}]",
+            }
+        )
+
+        handler.handle(record)
+        handler.close()
+
+        output = stream.getvalue()
+        assert "assembled" in output
+        assert "RuntimeError" in output
+        assert message_secret not in output
+        assert extra_secret not in output
+        assert exception_secret not in output
+        assert output.count("...") >= 3
+
 
 class TestComponentFilter:
     """Unit tests for _ComponentFilter."""

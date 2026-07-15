@@ -411,11 +411,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     // when callers omit it (session.set_cwd, config.set, session.title). These
     // session-scoped events would bleed into whichever session is active.
     const sid = getUiState().sid
-    const evSid = ev.session_id ?? ''
+    const hasSessionId = Object.prototype.hasOwnProperty.call(ev, 'session_id')
+    const evSid = ev.session_id
     const GLOBAL_PREFIXES = ['gateway.', 'pet.', 'skin.', 'billing.']
-    const isGlobal = GLOBAL_PREFIXES.some((p) => ev.type.startsWith(p))
+    const isGlobal = GLOBAL_PREFIXES.some(p => ev.type.startsWith(p))
 
-    if (evSid && (!sid || evSid !== sid) && !isGlobal) {
+    if (hasSessionId && (!sid || !evSid || evSid !== sid) && !isGlobal) {
       return
     }
 

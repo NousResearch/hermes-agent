@@ -5,6 +5,7 @@ import { getOverlayState, patchOverlayState, resetOverlayState } from '../app/ov
 import { turnController } from '../app/turnController.js'
 import { getTurnState, resetTurnState } from '../app/turnStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import type { GatewayEvent } from '../gatewayTypes.js'
 import { estimateTokensRough } from '../lib/text.js'
 import type { Msg } from '../types.js'
 
@@ -1758,69 +1759,69 @@ describe('createGatewayEventHandler', () => {
       // Turn continues without finalizing or throwing
       expect(getUiState().busy).toBe(true)
       expect(appended).toHaveLength(0)
+    })
+  })
   describe('cross-session event filtering', () => {
-    it('drops events from a different session_id', () => {
+    it.each([
+      ['foreign session', 'sess-active', 'sess-other'],
+      ['foreign session during the null-sid switch window', null, 'sess-other'],
+      ['explicit empty session id', 'sess-active', '']
+    ])('drops the %s transcript sequence', (_case, activeSid, eventSid) => {
+      const appended: Msg[] = []
+      const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+      patchUiState({ sid: activeSid })
+      onEvent({ payload: { text: 'leaked delta' }, session_id: eventSid, type: 'message.delta' } satisfies GatewayEvent)
+      onEvent({
+        payload: { text: 'leaked answer' },
+        session_id: eventSid,
+        type: 'message.complete'
+      } satisfies GatewayEvent)
+
+      expect(appended).toEqual([])
+    })
+
+    it('accepts the transcript sequence matching the active session', () => {
       const appended: Msg[] = []
       const onEvent = createGatewayEventHandler(buildCtx(appended))
 
       patchUiState({ sid: 'sess-active' })
-      onEvent({ payload: { text: 'other session' }, session_id: 'sess-other', type: 'message.delta' } as any)
+      onEvent({
+        payload: { text: 'current delta' },
+        session_id: 'sess-active',
+        type: 'message.delta'
+      } satisfies GatewayEvent)
+      onEvent({
+        payload: { text: 'current answer' },
+        session_id: 'sess-active',
+        type: 'message.complete'
+      } satisfies GatewayEvent)
 
-      expect(appended.filter(m => m.role === 'assistant')).toHaveLength(0)
+      expect(appended).toEqual([{ role: 'assistant', text: 'current answer' }])
     })
 
-    it('drops session-scoped events with empty-string session_id', () => {
+    it('accepts a truly unscoped transcript sequence', () => {
       const appended: Msg[] = []
       const onEvent = createGatewayEventHandler(buildCtx(appended))
 
       patchUiState({ sid: 'sess-active' })
-      onEvent({ payload: { text: 'orphan' }, session_id: '', type: 'message.delta' } as any)
+      onEvent({ payload: { text: 'unscoped delta' }, type: 'message.delta' } satisfies GatewayEvent)
+      onEvent({ payload: { text: 'unscoped answer' }, type: 'message.complete' } satisfies GatewayEvent)
 
-      expect(appended.filter(m => m.role === 'assistant')).toHaveLength(0)
+      expect(appended).toEqual([{ role: 'assistant', text: 'unscoped answer' }])
     })
 
-    it('drops all non-gateway events when sid is null (switch window)', () => {
-      const appended: Msg[] = []
-      const onEvent = createGatewayEventHandler(buildCtx(appended))
-
-      // sid is null during session switch/reset
-      patchUiState({ sid: null as any })
-      onEvent({ payload: { text: 'leaked' }, session_id: 'sess-other', type: 'message.delta' } as any)
-
-      expect(appended.filter(m => m.role === 'assistant')).toHaveLength(0)
-    })
-
-    it('passes gateway.* events through even when sid is null', () => {
-      const appended: Msg[] = []
-      const onEvent = createGatewayEventHandler(buildCtx(appended))
-
-      patchUiState({ sid: null as any })
-      onEvent({ payload: {}, type: 'gateway.ready' } as any)
-
-      // gateway.ready should not throw and should be processed
-      expect(appended.length).toBeGreaterThanOrEqual(0)
-    })
-
-    it('passes pet.* and skin.* global events through with empty session_id', () => {
-      const appended: Msg[] = []
-      const onEvent = createGatewayEventHandler(buildCtx(appended))
+    it('accepts an explicit empty session id for a global skin event', () => {
+      const onEvent = createGatewayEventHandler(buildCtx([]))
 
       patchUiState({ sid: 'sess-active' })
-      onEvent({ payload: {}, session_id: '', type: 'skin.changed' } as any)
+      onEvent({
+        payload: { branding: { agent_name: 'Event Contract Skin' } },
+        session_id: '',
+        type: 'skin.changed'
+      } satisfies GatewayEvent)
 
-      // Should not throw — global event passes through
-      expect(appended.length).toBeGreaterThanOrEqual(0)
-    })
-
-    it('accepts events matching the active session_id', () => {
-      const appended: Msg[] = []
-      const onEvent = createGatewayEventHandler(buildCtx(appended))
-
-      patchUiState({ sid: 'sess-active' })
-      onEvent({ payload: { text: 'hello' }, session_id: 'sess-active', type: 'message.delta' } as any)
-      onEvent({ payload: { text: 'hello' }, session_id: 'sess-active', type: 'message.complete' } as any)
-
-      expect(appended.filter(m => m.role === 'assistant')).toHaveLength(1)
+      expect(getUiState().theme.brand.name).toBe('Event Contract Skin')
     })
   })
 })

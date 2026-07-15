@@ -6,7 +6,12 @@ import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { closeAgentTerminalByProc } from '@/app/right-sidebar/terminal/terminals'
 import { burstVibeHearts } from '@/components/chat/vibe-hearts'
 import { translateNow } from '@/i18n'
-import { type GatewayEventPayload, textPart } from '@/lib/chat-messages'
+import {
+  type GatewayEventPayload,
+  preserveLocalAssistantErrors,
+  textPart,
+  toChatMessages
+} from '@/lib/chat-messages'
 import { coerceGatewayText, coerceThinkingText, normalizePersonalityValue } from '@/lib/chat-runtime'
 import { playCompletionSound } from '@/lib/completion-sound'
 import { resolveGatewayEventSessionId } from '@/lib/gateway-events'
@@ -144,6 +149,24 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       }
 
       if (event.type === 'gateway.ready') {
+        return
+      } else if (event.type === 'session.history.updated') {
+        if (!sessionId || !Array.isArray(payload?.messages)) {
+          return
+        }
+
+        const refreshedMessages = toChatMessages(payload.messages)
+        updateSessionState(sessionId, state => {
+          if (state.busy || state.awaitingResponse) {
+            return state
+          }
+
+          return {
+            ...state,
+            messages: preserveLocalAssistantErrors(refreshedMessages, state.messages)
+          }
+        })
+
         return
       } else if (event.type === 'session.info') {
         // Apply session-scoped fields when the event targets the active

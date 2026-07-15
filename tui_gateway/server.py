@@ -165,6 +165,7 @@ except (ValueError, TypeError):
 _WS_ORPHAN_REAP_GRACE_S = max(0.0, _ws_orphan_reap_grace)
 _DETAIL_SECTION_NAMES = ("thinking", "tools", "subagents", "activity")
 _DETAIL_MODES = frozenset({"hidden", "collapsed", "expanded"})
+_SESSION_HISTORY_REFRESH_SECONDS = 2.0
 
 # ── Async RPC dispatch (#12546) ──────────────────────────────────────
 # A handful of handlers block the dispatcher loop in entry.py for seconds
@@ -558,6 +559,9 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
     stop_event = session.get("_notif_stop")
     if stop_event is not None:
         stop_event.set()
+    history_stop_event = session.get("_history_refresh_stop")
+    if history_stop_event is not None:
+        history_stop_event.set()
 
     agent = session.get("agent")
     lock = session.get("history_lock")
@@ -1447,6 +1451,9 @@ def _start_agent_build(sid: str, session: dict) -> None:
             with _sessions_lock:
                 if sid in _sessions:
                     _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
+                    _sessions[sid]["_history_refresh_stop"] = _start_history_refresh_poller(
+                        sid, _sessions[sid]
+                    )
             _notify_session_boundary("on_session_reset", key, _session_source(current))
 
             info = _session_info(agent, current)
@@ -4776,6 +4783,9 @@ def _init_session(
     with _sessions_lock:
         if sid in _sessions:
             _sessions[sid]["_notif_stop"] = _start_notification_poller(sid, _sessions[sid])
+            _sessions[sid]["_history_refresh_stop"] = _start_history_refresh_poller(
+                sid, _sessions[sid]
+            )
     _notify_session_boundary("on_session_reset", key, _session_source(_sessions.get(sid, {})))
     _emit("session.info", sid, _session_info(agent, _sessions.get(sid, {})))
     _schedule_mcp_late_refresh(sid, agent)
@@ -6108,6 +6118,89 @@ def _live_session_payload(
     if inflight:
         payload["inflight"] = inflight
     return payload
+
+
+def _refresh_session_history_from_db(sid: str, session: dict) -> dict | None:
+    """Refresh an idle live session after another surface durably extends it."""
+    key = str(session.get("session_key") or "")
+    lock = session.get("history_lock")
+    if not key or lock is None:
+        return None
+
+    with lock:
+        if session.get("running"):
+            return None
+        previous_history = list(session.get("history") or [])
+        previous_prefix = list(session.get("display_history_prefix") or [])
+
+    try:
+        with _session_db(session) as db:
+            if db is None:
+                return None
+            history = db.get_messages_as_conversation(key)
+            display_history = db.get_messages_as_conversation(
+                key,
+                include_ancestors=True,
+            )
+    except Exception:
+        logger.debug("failed to refresh live session history", exc_info=True)
+        return None
+
+    display_prefix = display_history[: max(0, len(display_history) - len(history))]
+    with lock:
+        if session.get("running"):
+            return None
+        if (
+            list(session.get("history") or []) != previous_history
+            or list(session.get("display_history_prefix") or []) != previous_prefix
+        ):
+            return None
+        if len(history) < len(previous_history):
+            return None
+        if len(history) == len(previous_history) and history != previous_history:
+            return None
+        if history == previous_history and display_prefix == previous_prefix:
+            return None
+
+        session["history"] = history
+        session["display_history_prefix"] = display_prefix
+        session["history_version"] = int(session.get("history_version", 0)) + 1
+        session["last_active"] = time.time()
+
+    messages = list(display_prefix) + list(history)
+    return {
+        "message_count": len(messages),
+        "messages": _history_to_messages(messages),
+        "running": False,
+        "session_key": _session_lookup_key(session, fallback=sid),
+        "status": _session_live_status(sid, session),
+        "updated_at": time.time(),
+    }
+
+
+def _poll_session_history_once(sid: str, session: dict) -> dict | None:
+    payload = _refresh_session_history_from_db(sid, session)
+    if payload is not None:
+        _emit("session.history.updated", sid, payload)
+    return payload
+
+
+def _history_refresh_loop(stop_event: threading.Event, sid: str, session: dict) -> None:
+    while not stop_event.wait(_SESSION_HISTORY_REFRESH_SECONDS):
+        if session.get("_finalized"):
+            return
+        _poll_session_history_once(sid, session)
+
+
+def _start_history_refresh_poller(sid: str, session: dict) -> threading.Event:
+    stop = threading.Event()
+    thread = threading.Thread(
+        target=_history_refresh_loop,
+        args=(stop, sid, session),
+        daemon=True,
+    )
+    thread.start()
+    return stop
 
 
 @method("session.active_list")

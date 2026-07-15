@@ -51,6 +51,12 @@ def test_normalize_codex_response_drops_transient_rs_tmp_reasoning_items():
 
 
 def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
+    """Summary-only reasoning keeps the continuation path for Codex backends.
+
+    Since #64434, an unrecognized issuer with ``response.status="completed"``
+    trusts the provider and returns ``stop`` — so this test pins the Codex
+    backend explicitly, where reasoning-only still means "still thinking".
+    """
     response = SimpleNamespace(
         status="completed",
         output=[
@@ -63,7 +69,9 @@ def test_normalize_codex_response_treats_summary_only_reasoning_as_incomplete():
         ],
     )
 
-    assistant_message, finish_reason = _normalize_codex_response(response)
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="codex_backend"
+    )
 
     assert finish_reason == "incomplete"
     assert assistant_message.content == ""

@@ -109,10 +109,19 @@ def test_tombstoned_session_is_revived_and_retried_once():
 def test_empty_inventory_is_transport_error_but_no_match_is_typed_result():
     backend = CuaDriverBackend()
     backend._session = MagicMock()
+    # Successful empty inventory over both transports = legitimate empty desktop.
     backend._session.call_tool.return_value = {"structuredContent": {"windows": []}}
     backend._session._call_tool_via_cli.return_value = {"structuredContent": {"windows": []}}
+    empty = backend.capture(app="Safari")
+    assert empty.width == 0
+    assert "empty window inventory" in empty.window_title
+
+    # Empty MCP + CLI transport failure = unhealthy.
+    backend._session._call_tool_via_cli.side_effect = RuntimeError("cli down")
     with pytest.raises(RuntimeError, match="unhealthy"):
         backend.capture(app="Safari")
+    backend._session._call_tool_via_cli.side_effect = None
+    backend._session._call_tool_via_cli.return_value = {"structuredContent": {"windows": []}}
 
     backend._session.call_tool.return_value = {"structuredContent": {"windows": [
         {"app_name": "Safari", "pid": 7, "window_id": 1}

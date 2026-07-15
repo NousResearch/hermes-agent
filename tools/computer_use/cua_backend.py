@@ -1355,6 +1355,7 @@ class CuaDriverBackend(ComputerUseBackend):
                 "cua-driver list_windows returned no windows over MCP; "
                 "re-fetching via CLI transport",
             )
+            cli_inventory_failed = False
             try:
                 cli_lw = self._session._call_tool_via_cli(
                     "list_windows",
@@ -1363,12 +1364,31 @@ class CuaDriverBackend(ComputerUseBackend):
                 )
                 windows = _windows_from(cli_lw)
             except Exception as cli_exc:
+                cli_inventory_failed = True
                 logger.error("cua-driver CLI re-fetch for list_windows failed: %s", cli_exc)
 
         if not windows:
-            raise RuntimeError(
-                "cua-driver unhealthy: list_windows returned an empty inventory "
-                "over both MCP and CLI transports"
+            # Successful empty inventory (MCP+CLI both returned empty) is
+            # legitimate on locked/headless/empty desktops — return a typed
+            # empty CaptureResult. Only treat as transport-unhealthy when the
+            # CLI path failed after an empty MCP inventory.
+            if cli_inventory_failed:
+                raise RuntimeError(
+                    "cua-driver unhealthy: list_windows empty over MCP and CLI "
+                    "inventory transport failed"
+                )
+            return CaptureResult(
+                mode=mode,
+                width=0,
+                height=0,
+                png_b64=None,
+                elements=[],
+                app=(app or "").strip(),
+                window_title=(
+                    "<empty window inventory: no on-screen windows "
+                    "(locked/headless/empty desktop); not a transport failure>"
+                ),
+                png_bytes_len=0,
             )
 
         # Filter by exact canonical app name or an advertised bundle/PID alias.

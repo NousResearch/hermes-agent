@@ -882,7 +882,8 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         self.assertIn("content", r2)
 
     @patch("tools.file_tools._get_file_ops")
-    def test_write_invalidates_all_offsets(self, mock_ops):
+    @patch("tools.file_tools.file_state.check_stale", return_value=None)
+    def test_write_invalidates_all_offsets(self, mock_stale, mock_ops):
         """A write invalidates dedup entries for ALL offset/limit combos."""
         fake = MagicMock()
         fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
@@ -898,6 +899,7 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         read_file_tool(self._tmpfile, offset=50, limit=100, task_id="off")
 
         # Write — should invalidate BOTH dedup entries.
+        # Mock check_stale to avoid blocking write on partial-read staleness.
         write_file_tool(self._tmpfile, "replaced\n", task_id="off")
 
         # Both reads should return fresh content.

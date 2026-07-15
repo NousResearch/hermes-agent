@@ -103,7 +103,8 @@ class TestStalenessCheck(unittest.TestCase):
         self.assertNotIn("_warning", result)
 
     @patch("tools.file_tools._get_file_ops")
-    def test_warning_when_file_modified_externally(self, mock_ops):
+    @patch("tools.file_tools.file_state.check_stale", return_value=None)
+    def test_warning_when_file_modified_externally(self, mock_stale, mock_ops):
         """Read, then external modify, then write — should warn."""
         mock_ops.return_value = _make_fake_ops("original content\n", 18)
         read_file_tool(self._tmpfile, task_id="t1")
@@ -150,7 +151,8 @@ class TestStalenessCheck(unittest.TestCase):
         self.assertNotIn("_warning", result)
 
     @patch("tools.file_tools._get_file_ops")
-    def test_relative_path_uses_live_cwd_for_staleness_tracking(self, mock_ops):
+    @patch("tools.file_tools.file_state.check_stale", return_value=None)
+    def test_relative_path_uses_live_cwd_for_staleness_tracking(self, mock_stale, mock_ops):
         """Relative-path stale tracking must follow the live terminal cwd."""
         start_dir = os.path.join(self._tmpdir, "start")
         live_dir = os.path.join(self._tmpdir, "worktree")
@@ -221,7 +223,8 @@ class TestPatchStaleness(unittest.TestCase):
             pass
 
     @patch("tools.file_tools._get_file_ops")
-    def test_patch_warns_on_stale_file(self, mock_ops):
+    @patch("tools.file_tools.file_state.check_stale", return_value=None)
+    def test_patch_warns_on_stale_file(self, mock_stale, mock_ops):
         """Patch should warn if the target file changed since last read."""
         mock_ops.return_value = _make_fake_ops("original line\n", 15)
         read_file_tool(self._tmpfile, task_id="p1")

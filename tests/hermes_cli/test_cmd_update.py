@@ -455,6 +455,9 @@ class TestCmdUpdateBranchFallback:
         import subprocess as _subprocess
         build_ok = _subprocess.CompletedProcess([], 0, stdout="", stderr="")
         with patch.object(hm, "_is_termux_env", return_value=False), \
+             patch.object(hm, "_web_ui_build_needed", return_value=True), \
+             patch.object(hm, "_desktop_packaged_executable", return_value=None), \
+             patch.object(hm, "_desktop_dist_exists", return_value=False), \
              patch.object(hm, "_run_with_idle_timeout", return_value=build_ok) as mock_idle:
             cmd_update(mock_args)
 
@@ -643,6 +646,87 @@ class TestCmdUpdateMigrationPrompt:
             assert "FOO_API_KEY" in out
             assert "Foo service API key" in out
             assert "display.new_widget" in out
+
+
+class TestCmdUpdateLocalHotfixPreservation:
+    def test_update_rebases_local_commits_instead_of_resetting_them(self, mock_args, capsys):
+        from hermes_cli import main as hm
+
+        mock_args.yes = True
+        commands = []
+
+        def fake_run(cmd, **kwargs):
+            commands.append(" ".join(str(part) for part in cmd))
+            joined = commands[-1]
+            if "rev-parse --abbrev-ref HEAD" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+            if "rev-parse HEAD" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="before-sha\n", stderr="")
+            if "rev-list" in joined and "HEAD..origin/main" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="2\n", stderr="")
+            if "rev-list" in joined and "origin/main..HEAD" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="1\n", stderr="")
+            if "pull --ff-only origin main" in joined:
+                return subprocess.CompletedProcess(
+                    cmd, 1, stdout="", stderr="Not possible to fast-forward"
+                )
+            if "rebase origin/main" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with (
+            patch("shutil.which", return_value=None),
+            patch("subprocess.run", side_effect=fake_run),
+            patch("tools.skills_sync.sync_skills", return_value={"copied": [], "updated": [], "user_modified": [], "cleaned": []}),
+            patch("hermes_cli.config.get_missing_env_vars", return_value=[]),
+            patch("hermes_cli.config.get_missing_config_fields", return_value=[]),
+            patch("hermes_cli.config.check_config_version", return_value=(27, 27)),
+            patch("hermes_cli.gateway.supports_systemd_services", return_value=False),
+            patch("hermes_cli.gateway.is_macos", return_value=False),
+            patch("hermes_cli.gateway._get_service_pids", return_value=set()),
+            patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
+            patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]),
+            patch.object(hm, "_kill_stale_dashboard_processes", lambda: None),
+        ):
+            cmd_update(mock_args)
+
+        assert any("rebase origin/main" in command for command in commands)
+        assert not any("reset --hard origin/main" in command for command in commands)
+        assert "Rebased 1 local commit(s) over origin/main" in capsys.readouterr().out
+
+
+class TestCmdUpdateMacOSLaunchdRestart:
+    def test_update_restarts_all_loaded_launchd_gateway_labels(self, mock_args, capsys):
+        """macOS update restarts default and named profile LaunchAgents."""
+        from hermes_cli import main as hm
+
+        mock_args.yes = True
+        restarted = ["ai.hermes.gateway", "ai.hermes.gateway-bingo"]
+        with (
+            patch("shutil.which", return_value=None),
+            patch("subprocess.run") as mock_run,
+            patch("tools.skills_sync.sync_skills", return_value={"copied": [], "updated": [], "user_modified": [], "cleaned": []}),
+            patch("hermes_cli.config.get_missing_env_vars", return_value=[]),
+            patch("hermes_cli.config.get_missing_config_fields", return_value=[]),
+            patch("hermes_cli.config.check_config_version", return_value=(27, 27)),
+            patch("hermes_cli.gateway.supports_systemd_services", return_value=False),
+            patch("hermes_cli.gateway.is_macos", return_value=True),
+            patch("hermes_cli.gateway.launchd_restart_loaded_gateways", return_value=restarted) as launchd_restart_all,
+            patch("hermes_cli.gateway._get_service_pids", return_value=set()),
+            patch("hermes_cli.gateway.find_gateway_pids", return_value=[]),
+            patch("hermes_cli.gateway.find_profile_gateway_processes", return_value=[]),
+            patch.object(hm, "_kill_stale_dashboard_processes", lambda: None),
+        ):
+            mock_run.side_effect = _make_run_side_effect(
+                branch="main", verify_ok=True, commit_count="1"
+            )
+
+            cmd_update(mock_args)
+
+        launchd_restart_all.assert_called_once_with()
+        out = capsys.readouterr().out
+        assert "Restarted ai.hermes.gateway" in out
+        assert "Restarted ai.hermes.gateway-bingo" in out
 
 
 class TestCmdUpdateProfileSkillSync:

@@ -1054,6 +1054,8 @@ class TestLaunchdServiceRecovery:
                 raise gateway_cli.subprocess.CalledProcessError(
                     5, cmd, stderr="Input/output error"
                 )
+            if cmd[:2] in (["launchctl", "print"], ["launchctl", "list"]):
+                return SimpleNamespace(returncode=113, stdout="", stderr="Could not find service")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
@@ -1091,6 +1093,8 @@ class TestLaunchdServiceRecovery:
                 raise gateway_cli.subprocess.CalledProcessError(
                     5, cmd, stderr="Input/output error"
                 )
+            if cmd[:2] in (["launchctl", "print"], ["launchctl", "list"]):
+                return SimpleNamespace(returncode=113, stdout="", stderr="Could not find service")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
@@ -1121,6 +1125,8 @@ class TestLaunchdServiceRecovery:
                 raise gateway_cli.subprocess.CalledProcessError(
                     5, cmd, stderr="Input/output error"
                 )
+            if cmd == ["launchctl", "print", target] or cmd[:2] == ["launchctl", "list"]:
+                return SimpleNamespace(returncode=113, stdout="", stderr="Could not find service")
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
@@ -1135,45 +1141,259 @@ class TestLaunchdServiceRecovery:
         assert spawned == [True]
         assert gateway_cli._launchd_unsupported_marker_exists()
 
-    def test_launchd_restart_boots_out_stale_registration_before_bootstrap(
-        self, tmp_path, monkeypatch
-    ):
-        plist_path = tmp_path / "ai.hermes.gateway.plist"
-        plist_path.write_text(gateway_cli.generate_launchd_plist(), encoding="utf-8")
-        label = gateway_cli.get_launchd_label()
+    def test_discover_loaded_launchd_gateway_labels_finds_all_profiles(self, monkeypatch):
+        def fake_run(cmd, **kwargs):
+            assert cmd == ["launchctl", "list"]
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "41231\t0\tai.hermes.gateway\n"
+                    "60531\t0\tai.hermes.gateway-bingo\n"
+                    "-\t0\tcom.apple.unrelated\n"
+                    "60628\t0\tai.hermes.gateway-rusty\n"
+                    "60531\t0\tai.hermes.gateway-bingo\n"
+                ),
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._discover_loaded_launchd_gateway_labels() == [
+            "ai.hermes.gateway",
+            "ai.hermes.gateway-bingo",
+            "ai.hermes.gateway-rusty",
+        ]
+
+    def test_launchd_restart_loaded_gateways_restarts_every_loaded_label(self, monkeypatch):
+        labels = ["ai.hermes.gateway", "ai.hermes.gateway-bingo"]
         domain = gateway_cli._launchd_domain()
-        target = f"{domain}/{label}"
-
-        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: plist_path)
-        monkeypatch.setattr(gateway_cli, "_get_restart_drain_timeout", lambda: 5.0)
-        monkeypatch.setattr(gateway_cli, "_request_gateway_self_restart", lambda pid: False)
-        monkeypatch.setattr(
-            gateway_cli, "_wait_for_gateway_exit", lambda timeout, force_after=None: True
-        )
-        monkeypatch.setattr(gateway_cli, "terminate_pid", lambda pid, force=False: None)
-        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 321)
-
         calls = []
 
+        monkeypatch.setattr(gateway_cli, "_discover_loaded_launchd_gateway_labels", lambda: labels)
+        monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_for_label_if_needed", lambda label: False)
+        monkeypatch.setattr(gateway_cli, "_launchd_pid_for_label", lambda label: 123)
+
         def fake_run(cmd, check=False, **kwargs):
-            if cmd and cmd[0] == "launchctl":
-                calls.append(cmd)
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli.launchd_restart_loaded_gateways() == labels
+        assert calls == [
+            ["launchctl", "kickstart", "-k", f"{domain}/ai.hermes.gateway"],
+            ["launchctl", "kickstart", "-k", f"{domain}/ai.hermes.gateway-bingo"],
+        ]
+
+    def test_launchd_pid_parser_accepts_modern_dict_output(self):
+        output = '{\n\t"Label" = "ai.hermes.gateway";\n\t"PID" = 41231;\n};\n'
+
+        assert gateway_cli._launchd_pid_from_list_output(output, "ai.hermes.gateway") == 41231
+
+    def test_get_service_pids_includes_all_loaded_launchd_labels(self, monkeypatch):
+        labels = ["ai.hermes.gateway", "ai.hermes.gateway-bingo"]
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli, "_discover_loaded_launchd_gateway_labels", lambda: labels)
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            label = cmd[-1]
+            pid = 100 if label == "ai.hermes.gateway" else 200
+            return SimpleNamespace(
+                returncode=0,
+                stdout=f'{{\n\t"Label" = "{label}";\n\t"PID" = {pid};\n}};\n',
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._get_service_pids() == {100, 200}
+        assert calls == [
+            ["launchctl", "list", "ai.hermes.gateway"],
+            ["launchctl", "list", "ai.hermes.gateway-bingo"],
+        ]
+
+    def test_refresh_launchd_plist_for_label_rewrites_stale_named_profile(self, tmp_path, monkeypatch):
+        label = "ai.hermes.gateway-bingo"
+        profile_home = tmp_path / ".hermes" / "profiles" / "bingo"
+        plist_path = tmp_path / f"{label}.plist"
+        profile_home.mkdir(parents=True)
+        plist_path.write_text(
+            f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+    <key>Label</key><string>{label}</string>
+    <key>EnvironmentVariables</key>
+    <dict><key>HERMES_HOME</key><string>{profile_home}</string></dict>
+</dict>
+</plist>
+""",
+            encoding="utf-8",
+        )
+        expected = "<plist><dict><key>Label</key><string>new</string></dict></plist>"
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_launchd_plist_path_for_label", lambda label: plist_path)
+        monkeypatch.setattr(
+            gateway_cli,
+            "_generate_launchd_plist_for_home",
+            lambda home: expected if home == profile_home else "wrong",
+        )
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli.refresh_launchd_plist_for_label_if_needed(label) is True
+        assert plist_path.read_text(encoding="utf-8") == expected
+        domain = gateway_cli._launchd_domain()
+        # bootout, then a VERIFIED re-bootstrap: the retry helper follows its
+        # bootstrap with a `launchctl list <label>` registration probe, so the
+        # call list is bootout → bootstrap → list (order-pinned, extras from
+        # the verification loop tolerated).
+        assert calls[0] == ["launchctl", "bootout", f"{domain}/{label}"]
+        assert ["launchctl", "bootstrap", domain, str(plist_path)] in calls
+        boot_at = calls.index(["launchctl", "bootstrap", domain, str(plist_path)])
+        assert ["launchctl", "list", label] in calls[boot_at:]
+
+    def test_launchd_restart_loaded_gateways_does_not_claim_loaded_same_pid_as_restarted(self, monkeypatch, capsys, tmp_path):
+        # No plist on disk → no recovery possible; a loaded label whose PID
+        # never changed must be reported honestly, not claimed as restarted.
+        label = "ai.hermes.gateway"
+        target = f"{gateway_cli._launchd_domain()}/{label}"
+        pids = iter([123, 123])
+
+        monkeypatch.setattr(gateway_cli, "_discover_loaded_launchd_gateway_labels", lambda: [label])
+        monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_for_label_if_needed", lambda label: False)
+        monkeypatch.setattr(gateway_cli, "_launchd_pid_for_label", lambda label: next(pids))
+        monkeypatch.setattr(
+            gateway_cli, "_launchd_plist_path_for_label", lambda label: tmp_path / "absent.plist"
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_launchd_loaded_after_bootstrap_failure",
+            lambda label, domain: True,
+        )
+
+        def fake_run(cmd, check=False, **kwargs):
             if cmd == ["launchctl", "kickstart", "-k", target]:
                 raise gateway_cli.subprocess.CalledProcessError(
-                    3, cmd, stderr="Could not find service"
+                    5, cmd, stderr="Input/output error"
                 )
             return SimpleNamespace(returncode=0, stdout="", stderr="")
 
         monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
 
-        gateway_cli.launchd_restart()
+        assert gateway_cli.launchd_restart_loaded_gateways() == []
+        assert "restart was not proven" in capsys.readouterr().out
 
-        assert calls == [
-            ["launchctl", "kickstart", "-k", target],
-            ["launchctl", "bootout", target],
-            ["launchctl", "bootstrap", domain, str(plist_path)],
-            ["launchctl", "kickstart", target],
-        ]
+    def test_launchd_restart_recovers_booted_out_label_via_bootstrap(self, monkeypatch, tmp_path):
+        # Regression pin for the first production run: the per-label refresh
+        # booted a named gateway out, the re-bootstrap raced the settling
+        # domain, and kickstart then failed with "Could not find service".
+        # The loaded-probe ALSO races that window, so recovery must be tried
+        # first whenever a plist exists — not gated behind the probe.
+        label = "ai.hermes.gateway-frank"
+        domain = gateway_cli._launchd_domain()
+        target = f"{domain}/{label}"
+        plist_path = tmp_path / f"{label}.plist"
+        plist_path.write_text("<plist/>", encoding="utf-8")
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "_discover_loaded_launchd_gateway_labels", lambda: [label])
+        monkeypatch.setattr(gateway_cli, "refresh_launchd_plist_for_label_if_needed", lambda label: True)
+        monkeypatch.setattr(gateway_cli, "_launchd_pid_for_label", lambda label: 555)
+        monkeypatch.setattr(gateway_cli, "_launchd_plist_path_for_label", lambda label: plist_path)
+        # The racy probe claims "still loaded" — recovery must run anyway.
+        monkeypatch.setattr(
+            gateway_cli,
+            "_launchd_loaded_after_bootstrap_failure",
+            lambda label, domain: True,
+        )
+
+        def fake_run(cmd, check=False, **kwargs):
+            calls.append(cmd)
+            if cmd == ["launchctl", "kickstart", "-k", target]:
+                raise gateway_cli.subprocess.CalledProcessError(
+                    113, cmd, stderr="Could not find service"
+                )
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli.launchd_restart_loaded_gateways() == [label]
+        assert ["launchctl", "bootstrap", domain, str(plist_path)] in calls
+        assert ["launchctl", "kickstart", target] in calls
+
+    def test_refresh_for_label_verifies_rebootstrap(self, tmp_path, monkeypatch, capsys):
+        # The rewrite path must never fire-and-forget the re-bootstrap: a
+        # failed bootstrap after bootout leaves the gateway dead and outside
+        # KeepAlive supervision. The retry helper must be consulted and its
+        # failure surfaced.
+        label = "ai.hermes.gateway-frank"
+        profile_home = tmp_path / ".hermes" / "profiles" / "frank"
+        profile_home.mkdir(parents=True)
+        plist_path = tmp_path / f"{label}.plist"
+        plist_path.write_text(
+            f"""<?xml version=\"1.0\" encoding=\"UTF-8\"?>
+<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">
+<plist version=\"1.0\">
+<dict>
+    <key>Label</key><string>{label}</string>
+    <key>EnvironmentVariables</key>
+    <dict><key>HERMES_HOME</key><string>{profile_home}</string></dict>
+</dict>
+</plist>
+""",
+            encoding="utf-8",
+        )
+        retry_calls = []
+
+        monkeypatch.setattr(gateway_cli, "_launchd_plist_path_for_label", lambda label: plist_path)
+        monkeypatch.setattr(
+            gateway_cli, "_generate_launchd_plist_for_home", lambda home: "<plist>new</plist>"
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_retry_launchctl_bootstrap_until_registered",
+            lambda domain, path, label, deadline: retry_calls.append((label, str(path))) or False,
+        )
+
+        def fake_run(cmd, check=False, **kwargs):
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli.refresh_launchd_plist_for_label_if_needed(label) is True
+        assert retry_calls == [(label, str(plist_path))]
+        assert "did not re-register" in capsys.readouterr().out
+
+    def test_scan_gateway_pids_uses_bsd_ps_flags_on_macos(self, monkeypatch):
+        calls = []
+
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
+        monkeypatch.setattr(gateway_cli.os.path, "isdir", lambda path: False)
+        monkeypatch.setattr(gateway_cli, "_get_ancestor_pids", lambda: set())
+
+        def fake_run(cmd, **kwargs):
+            calls.append(cmd)
+            return SimpleNamespace(
+                returncode=0,
+                stdout="123 /Users/openclaw/.hermes/hermes-agent/venv/bin/python -m hermes_cli.main gateway run --replace\n",
+                stderr="",
+            )
+
+        monkeypatch.setattr(gateway_cli.subprocess, "run", fake_run)
+
+        assert gateway_cli._scan_gateway_pids(set(), all_profiles=True) == [123]
+        assert calls == [["ps", "-A", "-ww", "-o", "pid=,command="]]
 
     def test_launchd_stop_tolerates_domain_unsupported_bootout(self, monkeypatch, capsys):
         """bootout exit 125 (macOS 26) must fall through to PID-based kill, not raise."""

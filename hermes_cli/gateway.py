@@ -143,33 +143,26 @@ def _get_service_pids() -> set:
 
     # --- launchd (macOS) ---
     if is_macos():
-        try:
-            label = get_launchd_label()
-            result = subprocess.run(
-                ["launchctl", "list", label],
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            if result.returncode == 0:
-                # Try plist format first (macOS 26+): "PID" = <N>;
-                pid = _parse_launchd_pid_from_list_output(result.stdout)
-                if pid is not None and pid > 0:
-                    pids.add(pid)
-                else:
-                    # Fall back to legacy tab-separated format:
-                    # "PID\tStatus\tLabel"
-                    for line in result.stdout.strip().splitlines():
-                        parts = line.split()
-                        if len(parts) >= 3 and parts[2] == label:
-                            try:
-                                pid = int(parts[0])
-                                if pid > 0:
-                                    pids.add(pid)
-                            except ValueError:
-                                pass
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+        # Sweep every loaded gateway label, not just the active profile's:
+        # a post-update restart bounces ALL of them, and any freshly
+        # restarted named-profile PID must be spared by the stale-process
+        # sweep exactly like the default one.
+        labels = _discover_loaded_launchd_gateway_labels() or [get_launchd_label()]
+        for label in labels:
+            try:
+                result = subprocess.run(
+                    ["launchctl", "list", label],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                )
+            except (FileNotFoundError, subprocess.TimeoutExpired):
+                continue
+            if result.returncode != 0:
+                continue
+            pid = _launchd_pid_from_list_output(result.stdout, label)
+            if pid is not None and pid > 0:
+                pids.add(pid)
 
     return pids
 
@@ -501,8 +494,16 @@ def _scan_gateway_pids(
                     pass
 
             if not _found_via_proc:
+                # BSD ps (macOS) reads bare `eww` as "display env + wide" and
+                # can garble the command column; `-ww` is the portable
+                # unlimited-width spelling there. procps (Linux) keeps `eww`.
+                ps_cmd = (
+                    ["ps", "-A", "-ww", "-o", "pid=,command="]
+                    if is_macos()
+                    else ["ps", "-A", "eww", "-o", "pid=,command="]
+                )
                 result = subprocess.run(
-                    ["ps", "-A", "eww", "-o", "pid=,command="],
+                    ps_cmd,
                     capture_output=True,
                     text=True,
                     timeout=10,
@@ -1731,11 +1732,16 @@ def _profile_suffix() -> str:
     ``<root>/profiles/<name>``, or a short hash for any other path.
     Works correctly in Docker (HERMES_HOME=/opt/data) and standard deployments.
     """
+    return _profile_suffix_for_home(get_hermes_home())
+
+
+def _profile_suffix_for_home(home: Path) -> str:
+    """Home-parametrized :func:`_profile_suffix` (used for per-label service work)."""
     import hashlib
     import re
     from hermes_constants import get_default_hermes_root
 
-    home = get_hermes_home().resolve()
+    home = Path(home).resolve()
     default = get_default_hermes_root().resolve()
     if home == default:
         return ""
@@ -3584,7 +3590,12 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
 
 def get_launchd_label() -> str:
     """Return the launchd service label, scoped per profile."""
-    suffix = _profile_suffix()
+    return _launchd_label_for_home(get_hermes_home())
+
+
+def _launchd_label_for_home(home: Path) -> str:
+    """Launchd label for a specific HERMES_HOME (default or named profile)."""
+    suffix = _profile_suffix_for_home(home)
     return f"ai.hermes.gateway-{suffix}" if suffix else "ai.hermes.gateway"
 
 
@@ -3942,15 +3953,28 @@ def _launchd_fallback_to_detached(reason: str, *, exit_on_failure: bool = True) 
 
 
 def generate_launchd_plist() -> str:
+    return _generate_launchd_plist_for_home(get_hermes_home())
+
+
+def _generate_launchd_plist_for_home(home: Path) -> str:
+    """Generate the launchd plist for a specific HERMES_HOME.
+
+    The default and every named profile share one checkout/venv, so all
+    environment-derived pieces (python, PATH, venv) come from this process;
+    only the home-scoped pieces (HERMES_HOME, label, --profile, log paths)
+    vary. Lets ``hermes update`` refresh named-profile plists without
+    mutating its own HERMES_HOME.
+    """
     python_path = get_python_path()
     # Stable cwd anchor — never the volatile source checkout. See
     # _stable_service_working_dir() for the rationale (same rot risk applies
     # to launchd's WorkingDirectory as to systemd's).
     working_dir = _stable_service_working_dir()
-    hermes_home = str(get_hermes_home().resolve())
-    log_dir = get_hermes_home() / "logs"
+    home = Path(home)
+    hermes_home = str(home.resolve())
+    log_dir = home / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
-    label = get_launchd_label()
+    label = _launchd_label_for_home(home)
     profile_arg = _profile_arg(hermes_home)
     # Build a sane PATH for the launchd plist.  launchd provides only a
     # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
@@ -4396,6 +4420,230 @@ def _wait_for_gateway_exit(
         )
         return False
     return True
+
+
+def _launchd_pid_from_list_output(output: str, label: str) -> int | None:
+    """Parse the gateway PID out of ``launchctl list <label>`` output.
+
+    Modern macOS prints a plist-style dict (handled by
+    :func:`_parse_launchd_pid_from_list_output`); older releases print the
+    legacy tab-separated ``PID\\tStatus\\tLabel`` table, matched per label.
+    """
+    pid = _parse_launchd_pid_from_list_output(output)
+    if pid is not None and pid > 0:
+        return pid
+    for line in output.strip().splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[2] == label:
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            if pid > 0:
+                return pid
+    return None
+
+
+def _launchd_pid_for_label(label: str) -> int | None:
+    """Current PID of a loaded launchd job, or ``None`` when not running."""
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", label],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    return _launchd_pid_from_list_output(result.stdout, label)
+
+
+def _discover_loaded_launchd_gateway_labels() -> list[str]:
+    """Every Hermes gateway label currently loaded in launchd, in list order.
+
+    ``hermes update`` mutates one shared checkout that the default gateway
+    AND every named-profile gateway run from, so post-update restarts must
+    enumerate the loaded labels rather than assume the active profile is the
+    only one.
+    """
+    try:
+        result = subprocess.run(
+            ["launchctl", "list"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return []
+    if result.returncode != 0:
+        return []
+    labels: list[str] = []
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+        label = parts[2]
+        if label == "ai.hermes.gateway" or label.startswith("ai.hermes.gateway-"):
+            if label not in labels:
+                labels.append(label)
+    return labels
+
+
+def _launchd_plist_path_for_label(label: str) -> Path:
+    """Installed plist path for a launchd label (sibling of the current one)."""
+    return get_launchd_plist_path().parent / f"{label}.plist"
+
+
+def _launchd_home_from_plist(plist_text: str) -> Path | None:
+    """Extract the HERMES_HOME a gateway plist was generated for."""
+    import plistlib
+
+    try:
+        data = plistlib.loads(plist_text.encode("utf-8"))
+        home = data.get("EnvironmentVariables", {}).get("HERMES_HOME")
+    except Exception:
+        return None
+    return Path(home) if home else None
+
+
+def _launchd_loaded_after_bootstrap_failure(label: str, domain: str) -> bool:
+    """True when the job is still registered despite a failed launchctl call."""
+    return _launchctl_label_registered(label)
+
+
+def refresh_launchd_plist_for_label_if_needed(label: str) -> bool:
+    """Per-label :func:`refresh_launchd_plist_if_needed` for post-update restarts.
+
+    The current profile's label delegates to the existing helper — its
+    self-process deferral and bootstrap retry machinery must stay in the
+    loop when the bootout could tear down our own process tree. Other
+    (named-profile) labels are regenerated from the HERMES_HOME recorded in
+    their installed plist; their process trees never contain this CLI, so a
+    plain bootout/bootstrap cycle is safe.
+    """
+    if label == get_launchd_label():
+        return refresh_launchd_plist_if_needed()
+
+    plist_path = _launchd_plist_path_for_label(label)
+    if not plist_path.exists():
+        return False
+    installed = plist_path.read_text(encoding="utf-8")
+    home = _launchd_home_from_plist(installed)
+    if home is None:
+        return False
+    expected = _generate_launchd_plist_for_home(home)
+    if _normalize_launchd_plist_for_comparison(
+        installed
+    ) == _normalize_launchd_plist_for_comparison(expected):
+        return False
+    if _refuse_temp_home_service_write(expected, f"launchd plist for {label}"):
+        return False
+
+    plist_path.write_text(expected, encoding="utf-8")
+    domain = _launchd_domain()
+    subprocess.run(
+        ["launchctl", "bootout", f"{domain}/{label}"],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    # The re-bootstrap MUST be verified: right after a bootout the domain can
+    # still be settling and bootstrap fails with EIO — a fire-and-forget call
+    # here leaves the gateway booted out, dead, and outside KeepAlive
+    # supervision (observed live on the first production run of this path:
+    # four named-profile gateways unloaded until manually re-bootstrapped).
+    # _retry_launchctl_bootstrap_until_registered wraps _launchctl_bootstrap
+    # (EIO bootout+retry) and only trusts `launchctl list`, not exit codes.
+    if not _retry_launchctl_bootstrap_until_registered(
+        domain, plist_path, label, deadline=time.monotonic() + 30.0
+    ):
+        print(
+            f"  ⚠ {label}: plist refreshed but the service did not re-register; "
+            f"recover with: launchctl bootstrap {domain} {plist_path}"
+        )
+    return True
+
+
+def launchd_restart_loaded_gateways() -> list[str]:
+    """Restart every loaded Hermes launchd gateway and prove each restart.
+
+    ``hermes update`` changes one shared checkout used by the default and
+    all named-profile gateways; restarting only the active label leaves the
+    others running old code until reboot. Works by label so it never mutates
+    HERMES_HOME. A label only counts as restarted when the kickstart
+    succeeded or the PID observably changed — a loaded-but-unbounced service
+    is reported, not claimed.
+    """
+    domain = _launchd_domain()
+    restarted: list[str] = []
+    for label in _discover_loaded_launchd_gateway_labels():
+        target = f"{domain}/{label}"
+        try:
+            refresh_launchd_plist_for_label_if_needed(label)
+        except subprocess.CalledProcessError as exc:
+            stderr = (getattr(exc, "stderr", "") or "").strip()
+            print(f"  ⚠ Failed to refresh {label}: {stderr or exc}")
+        before_pid = _launchd_pid_for_label(label)
+        restart_proven = False
+        try:
+            subprocess.run(
+                ["launchctl", "kickstart", "-k", target],
+                check=True,
+                timeout=90,
+            )
+            restart_proven = True
+        except (FileNotFoundError, subprocess.TimeoutExpired) as exc:
+            print(f"  ⚠ Failed to restart {label}: {exc}")
+            continue
+        except subprocess.CalledProcessError as exc:
+            plist_path = _launchd_plist_path_for_label(label)
+            if plist_path.exists():
+                # Recovery-first: a kickstart failure right after a plist
+                # refresh usually means the label is unloaded or mid-settle
+                # from the bootout, and `launchctl list` races that window —
+                # probing "is it still registered?" here answered yes on a
+                # label that was actually gone (observed live), which skipped
+                # this recovery and stranded the gateway. _launchctl_bootstrap
+                # is idempotent for a genuinely-loaded label (EIO → bootout +
+                # re-bootstrap), so recovering unconditionally is safe and a
+                # successful bootstrap + kickstart IS a proven restart.
+                try:
+                    _launchctl_bootstrap(domain, plist_path, label)
+                    subprocess.run(
+                        ["launchctl", "kickstart", target],
+                        check=True,
+                        timeout=30,
+                    )
+                    restart_proven = True
+                except subprocess.CalledProcessError as boot_exc:
+                    if not _launchd_loaded_after_bootstrap_failure(label, domain):
+                        stderr = (getattr(boot_exc, "stderr", "") or "").strip()
+                        print(f"  ⚠ Failed to restart {label}: {stderr or boot_exc}")
+                        continue
+            elif _launchd_loaded_after_bootstrap_failure(label, domain):
+                # No plist to recover from, but the job is still registered
+                # (EIO / domain quirk) — fall through and let the PID
+                # comparison decide whether the restart actually happened.
+                pass
+            else:
+                stderr = (getattr(exc, "stderr", "") or "").strip()
+                print(f"  ⚠ Failed to restart {label}: {stderr or exc}")
+                continue
+        after_pid = _launchd_pid_for_label(label)
+        if restart_proven and after_pid:
+            restarted.append(label)
+            continue
+        if after_pid and before_pid is not None and after_pid != before_pid:
+            restarted.append(label)
+            continue
+        print(
+            f"  ⚠ {label} is loaded but the restart was not proven "
+            f"(PID unchanged); restart it manually: launchctl kickstart -k {target}"
+        )
+    return restarted
 
 
 def launchd_restart():

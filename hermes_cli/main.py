@@ -10132,26 +10132,76 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 text=True,
             )
             if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                local_ahead = _count_commits_between(
+                    git_cmd, PROJECT_ROOT, f"origin/{branch}", "HEAD"
                 )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
+                if local_ahead > 0:
                     print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        "  ⚠ Fast-forward not possible; preserving "
+                        f"{local_ahead} local commit(s) by rebasing over origin/{branch}..."
+                    )
+                    rebase_result = subprocess.run(
+                        git_cmd + ["rebase", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if rebase_result.returncode != 0:
+                        subprocess.run(
+                            git_cmd + ["rebase", "--abort"],
+                            cwd=PROJECT_ROOT,
+                            capture_output=True,
+                            text=True,
+                            check=False,
+                        )
+                        print(
+                            f"✗ Failed to rebase local commit(s) over origin/{branch}."
+                        )
+                        detail = (
+                            rebase_result.stderr or rebase_result.stdout or ""
+                        ).strip()
+                        if detail:
+                            print(f"  {detail.splitlines()[0]}")
+                        print("  Your local changes were not discarded.")
+                        print(
+                            f"  Resolve manually: cd {PROJECT_ROOT} && git rebase origin/{branch}"
+                        )
+                        sys.exit(1)
+                    print(
+                        f"  ✓ Rebased {local_ahead} local commit(s) over origin/{branch}"
+                    )
+                elif local_ahead < 0:
+                    print(
+                        "✗ Fast-forward not possible and Hermes could not prove whether "
+                        "local commits exist."
+                    )
+                    print("  Refusing to reset automatically so local hotfixes are not lost.")
+                    print(
+                        f"  Resolve manually: cd {PROJECT_ROOT} && git status && git pull --ff-only origin {branch}"
                     )
                     sys.exit(1)
+                else:
+                    # ff-only failed — local and remote have diverged without
+                    # any local commits to preserve (e.g. upstream force-pushed
+                    # or rebase). Since local changes are already stashed,
+                    # reset to match the remote exactly.
+                    print(
+                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    )
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if reset_result.returncode != 0:
+                        print(f"✗ Failed to reset to origin/{branch}.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip()}")
+                        print(
+                            f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
+                        )
+                        sys.exit(1)
 
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit
@@ -11194,27 +11244,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # --- Launchd services (macOS) ---
             if is_macos():
                 try:
-                    from hermes_cli.gateway import (
-                        launchd_restart,
-                        get_launchd_label,
-                        get_launchd_plist_path,
-                    )
+                    from hermes_cli.gateway import launchd_restart_loaded_gateways
 
-                    plist_path = get_launchd_plist_path()
-                    if plist_path.exists():
-                        check = subprocess.run(
-                            ["launchctl", "list", get_launchd_label()],
-                            capture_output=True,
-                            text=True,
-                            timeout=5,
-                        )
-                        if check.returncode == 0:
-                            try:
-                                launchd_restart()
-                                restarted_services.append(get_launchd_label())
-                            except subprocess.CalledProcessError as e:
-                                stderr = (getattr(e, "stderr", "") or "").strip()
-                                print(f"  ⚠ Gateway restart failed: {stderr}")
+                    restarted_services.extend(launchd_restart_loaded_gateways())
                 except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
                     pass
 

@@ -32,6 +32,7 @@ def _make_db(tmp_path, sessions):
                 id TEXT PRIMARY KEY,
                 title TEXT,
                 started_at REAL NOT NULL,
+                ended_at REAL,
                 archived INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE messages (
@@ -45,12 +46,15 @@ def _make_db(tmp_path, sessions):
             """
         )
         for session in sessions:
+            started_at = _ts(session.get("date", "2026-01-01"))
             conn.execute(
-                "INSERT INTO sessions (id, title, started_at, archived) VALUES (?, ?, ?, ?)",
+                "INSERT INTO sessions (id, title, started_at, ended_at, archived) "
+                "VALUES (?, ?, ?, ?, ?)",
                 (
                     session["id"],
                     session.get("title", ""),
-                    _ts(session.get("date", "2026-01-01")),
+                    started_at,
+                    session.get("ended_at", started_at + 60),
                     session.get("archived", 0),
                 ),
             )
@@ -170,6 +174,28 @@ def test_skips_short_empty_and_artifact_only_sessions(tmp_path):
 
     assert [s.session_id for s in sessions] == ["ok"]
     assert skipped == 2
+
+
+def test_excludes_active_sessions_without_ended_at(tmp_path):
+    _make_db(
+        tmp_path,
+        [
+            {
+                "id": "active",
+                "ended_at": None,
+                "messages": [
+                    {"role": "user", "content": "this active session has enough useful content"},
+                    {"role": "assistant", "content": "and a long enough assistant reply too"},
+                ],
+            },
+            {"id": "done", "messages": [{"role": "user", "content": "this session has enough useful content"}]},
+        ],
+    )
+
+    sessions, skipped = load_sessions(tmp_path / "state.db", config={}, options=ImportOptions())
+
+    assert [s.session_id for s in sessions] == ["done"]
+    assert skipped == 0
 
 
 def test_build_transcript_strips_context_compaction_and_system_notes():

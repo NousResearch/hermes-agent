@@ -276,7 +276,7 @@ def load_sessions(
     options: ImportOptions,
 ) -> tuple[list[SessionCandidate], int]:
     since_ts, until_ts = _date_bounds(options)
-    clauses = ["COALESCE(archived, 0) = 0"]
+    clauses = ["COALESCE(archived, 0) = 0", "ended_at IS NOT NULL"]
     params: list[Any] = []
     if since_ts is not None:
         clauses.append("started_at >= ?")

@@ -40,6 +40,7 @@ import { pickRevealLabel } from '../file-actions'
 import { buildReviewFlatList, buildReviewTree, type ReviewTreeNode } from './tree-data'
 
 const INDENT = 12
+const PATH_TOOLTIP_CLASS = 'max-w-[42rem] whitespace-normal break-all text-left leading-snug'
 
 // Per git status letter: a tinted diff codicon so the file's nature reads at a
 // glance (added / modified / deleted / renamed / untracked).
@@ -215,9 +216,9 @@ function ReviewDirRow({
           name={open ? 'folder-opened' : 'folder'}
           size="0.8rem"
         />
-        <span className="min-w-0 flex-1 truncate" title={node.name}>
-          {node.name}
-        </span>
+        <Tip className={PATH_TOOLTIP_CLASS} label={node.id || node.name} side="left">
+          <span className="min-w-0 flex-1 truncate">{node.name}</span>
+        </Tip>
       </div>
       {open && node.children && (
         <ReviewNodeList animate={animate} depth={depth + 1} motion={useMotion} nodes={node.children} />
@@ -317,19 +318,20 @@ function ReviewFileRow({ node, depth }: { node: ReviewTreeNode; depth: number })
           event.dataTransfer.setData('text/plain', dragPath)
         }}
         style={rowStyle(depth)}
-        title={dragPath}
       >
         <Codicon className={cn('shrink-0', glyph.tone)} name={glyph.icon} size="0.8rem" />
         {/* Dir collapses first (huge shrink); the name only ellipsizes once the
             dir is gone — either way neither runs into the diff count. */}
         <span className="flex min-w-0 flex-1 items-baseline gap-1.5">
-          <span className="min-w-0 shrink truncate" title={node.name}>
-            {node.name}
-          </span>
+          <Tip className={PATH_TOOLTIP_CLASS} label={file.path} side="left">
+            <span className="min-w-0 shrink truncate">{node.name}</span>
+          </Tip>
           {node.dir && (
-            <span className="min-w-0 shrink-[9999] truncate text-[0.68rem] text-(--ui-text-tertiary)" title={node.dir}>
-              {node.dir}
-            </span>
+            <Tip className={PATH_TOOLTIP_CLASS} label={file.path} side="left">
+              <span className="min-w-0 shrink-[9999] truncate text-[0.68rem] text-(--ui-text-tertiary)">
+                {node.dir}
+              </span>
+            </Tip>
           )}
         </span>
 

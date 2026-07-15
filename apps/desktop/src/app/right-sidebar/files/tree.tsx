@@ -4,6 +4,7 @@ import { type NodeApi, type NodeRendererProps, type RowRendererProps, Tree, type
 
 import { TreeSkeleton } from '@/components/chat/skeletons'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import { useResizeObserver } from '@/hooks/use-resize-observer'
 import { cn } from '@/lib/utils'
 import { $repoChangeByPath, type RepoChangeKind } from '@/store/coding-status'
@@ -19,6 +20,7 @@ const ROW_HEIGHT = 22
 const INDENT = 10
 /** Fixed base inset (`px-6.5`) layered on top of arborist's depth indent. */
 const TREE_ROW_INSET = '17px'
+const PATH_TOOLTIP_CLASS = 'max-w-[42rem] whitespace-normal break-all text-left leading-snug'
 
 function withTreeInset(paddingLeft: number | string | undefined): string {
   if (typeof paddingLeft === 'number') {
@@ -327,7 +329,6 @@ function ProjectTreeRow({
         ...style,
         paddingLeft: withTreeInset(style.paddingLeft)
       }}
-      title={node.data.id}
     >
       {/* No chevron column — the folder icon (open/closed) already carries the
           expand state, so the extra glyph was pure noise. */}
@@ -347,7 +348,9 @@ function ProjectTreeRow({
       ) : (
         // Git decoration (VS Code-style): tint changed files; the explicit color
         // wins over the row's hover/selected text color, so it persists.
-        <span className={cn('min-w-0 flex-1 truncate', changeKind && CHANGE_TINT[changeKind])}>{node.data.name}</span>
+        <Tip className={PATH_TOOLTIP_CLASS} label={node.data.id} side="left">
+          <span className={cn('min-w-0 flex-1 truncate', changeKind && CHANGE_TINT[changeKind])}>{node.data.name}</span>
+        </Tip>
       )}
     </div>
   )

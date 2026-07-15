@@ -4433,7 +4433,7 @@ def _print_version_info(*, check_updates: bool = True) -> None:
 
 def cmd_version(args):
     """Show version."""
-    _print_version_info(check_updates=True)
+    _print_version_info(check_updates=sys.stdout.isatty())
 
 
 def cmd_uninstall(args):

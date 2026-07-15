@@ -2,8 +2,11 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from cli import HermesCLI
 from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS, resolve_command
+from hermes_cli.main import cmd_version
 
 
 def test_version_command_is_registered():
@@ -26,3 +29,16 @@ def test_process_command_version_prints_version_info():
         assert cli_obj.process_command("/version") is True
 
     mock_print.assert_called_once_with(check_updates=True)
+
+
+@pytest.mark.parametrize(("is_tty", "check_updates"), [(True, True), (False, False)])
+def test_top_level_version_only_checks_updates_for_interactive_stdout(
+    is_tty, check_updates
+):
+    with (
+        patch("hermes_cli.main.sys.stdout.isatty", return_value=is_tty),
+        patch("hermes_cli.main._print_version_info") as mock_print,
+    ):
+        cmd_version(None)
+
+    mock_print.assert_called_once_with(check_updates=check_updates)

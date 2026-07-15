@@ -661,6 +661,7 @@ export function ChatBar({
     focusInput,
     insertText,
     maxRecordingSeconds,
+    onCancel,
     onSubmit,
     onTranscribeAudio,
     sessionId

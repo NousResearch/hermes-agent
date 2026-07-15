@@ -164,6 +164,7 @@ function ConversationPill({
   const { t } = useI18n()
   const c = t.composer
   const speaking = status === 'speaking'
+  const thinking = status === 'thinking'
   const listening = status === 'listening' && !muted
 
   const label =
@@ -213,7 +214,7 @@ function ConversationPill({
           <span>{c.stopShort}</span>
         </Button>
       )}
-      {speaking && (
+      {(speaking || thinking) && (
         <Button
           aria-label={c.stop}
           className="h-(--composer-control-size) shrink-0 gap-1.5 rounded-full px-2.5 text-xs text-muted-foreground hover:bg-accent hover:text-foreground"

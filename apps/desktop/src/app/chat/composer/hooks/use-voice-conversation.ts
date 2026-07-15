@@ -17,6 +17,7 @@ interface PendingVoiceResponse {
 interface VoiceConversationOptions {
   busy: boolean
   enabled: boolean
+  onCancel?: () => Promise<void> | void
   onFatalError?: () => void
   onSubmit: (text: string) => Promise<void> | void
   onTranscribeAudio?: (audio: Blob) => Promise<string>
@@ -27,6 +28,7 @@ interface VoiceConversationOptions {
 export function useVoiceConversation({
   busy,
   enabled,
+  onCancel,
   onFatalError,
   onSubmit,
   onTranscribeAudio,
@@ -286,8 +288,9 @@ export function useVoiceConversation({
     }
   }, [handleTurn])
 
-  const interruptResponse = useCallback(() => {
-    if (statusRef.current !== 'speaking' && statusRef.current !== 'thinking') {
+  const interruptResponse = useCallback(async () => {
+    const currentStatus = statusRef.current
+    if (currentStatus !== 'speaking' && currentStatus !== 'thinking') {
       return
     }
 
@@ -296,12 +299,16 @@ export function useVoiceConversation({
     resetSpeechBuffer()
     consumePendingResponse()
 
-    if (enabledRef.current && !mutedRef.current && !busyRef.current) {
+    if (currentStatus === 'thinking' && busyRef.current) {
+      await Promise.resolve(onCancel?.())
+    }
+
+    if (enabledRef.current && !mutedRef.current) {
       pendingStartRef.current = true
     }
 
     setStatus('idle')
-  }, [consumePendingResponse])
+  }, [consumePendingResponse, onCancel])
 
   const toggleMute = useCallback(() => {
     setMuted(value => {

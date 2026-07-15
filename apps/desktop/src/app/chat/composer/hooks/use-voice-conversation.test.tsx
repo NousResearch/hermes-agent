@@ -165,14 +165,56 @@ describe('useVoiceConversation', () => {
 
     await waitFor(() => expect(result.current.status).toBe('thinking'))
 
-    act(() => {
-      result.current.interruptResponse()
+    await act(async () => {
+      await result.current.interruptResponse()
     })
 
     expect(playback.stopVoicePlayback).toHaveBeenCalled()
     expect(consumePendingResponse).toHaveBeenCalled()
-    expect(result.current.status).toBe('idle')
+    await waitFor(() => expect(result.current.status).toBe('listening'))
 
-    await waitFor(() => expect(recorder.handle.start).toHaveBeenCalledTimes(2))
+    expect(recorder.handle.start).toHaveBeenCalledTimes(2)
+  })
+
+  it('cancels a busy backend turn before re-listening from thinking state', async () => {
+    const onCancel = vi.fn().mockResolvedValue(undefined)
+    const consumePendingResponse = vi.fn()
+
+    const { result, rerender } = renderHook(
+      ({ busy }) =>
+        useVoiceConversation({
+          busy,
+          consumePendingResponse,
+          enabled: true,
+          onCancel,
+          onSubmit: vi.fn().mockResolvedValue(undefined),
+          onTranscribeAudio: vi.fn().mockResolvedValue('interrupt test'),
+          pendingResponse: () => ({ id: 'assistant-1', pending: true, text: 'partial assistant words' })
+        }),
+      { initialProps: { busy: false } }
+    )
+
+    await act(async () => {
+      await result.current.start()
+    })
+
+    const startOptions = recorder.handle.start.mock.calls.at(-1)?.[0]
+
+    await act(async () => {
+      startOptions.onSilence()
+    })
+
+    await waitFor(() => expect(result.current.status).toBe('thinking'))
+
+    rerender({ busy: true })
+
+    await act(async () => {
+      await result.current.interruptResponse()
+    })
+
+    expect(onCancel).toHaveBeenCalledTimes(1)
+    expect(playback.stopVoicePlayback).toHaveBeenCalled()
+    expect(consumePendingResponse).toHaveBeenCalled()
+    expect(result.current.status).toBe('idle')
   })
 })

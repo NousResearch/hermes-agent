@@ -30,6 +30,8 @@ from concurrent.futures import (
 )
 from typing import Any, Dict, List, Optional, TypedDict
 
+from dotenv import dotenv_values
+
 from toolsets import TOOLSETS
 
 # Sentinel value used by the runtime provider system for providers that are
@@ -3301,9 +3303,6 @@ def _resolve_per_call_credentials(
     api_key_var = provider_key_map.get(provider, f"{provider.upper()}_API_KEY")  # provider is non-None here (early return above)
 
     # Read env from .env files using python-dotenv (bundled with Hermes)
-    # to handle edge cases: values with = signs, quoted values, comments,
-    # export prefix, etc.
-    from dotenv import dotenv_values
 
     env_vars = {}
     for env_path in [profile_dir / ".env", hermes_home / ".env"]:

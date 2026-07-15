@@ -3177,15 +3177,19 @@ class TestPerCallCredentialOverride(unittest.TestCase):
 
     def test_resolve_model_with_provider_no_profile(self):
         """When provider is set but profile is None, attempts to resolve
-        from default profile directories. Credential fields may be None
-        if no .env/config.yaml is configured."""
+        from default profile directories. Credential fields are None
+        when no .env/config.yaml is configured."""
         result = _resolve_per_call_credentials(
             model="deepseek-v4-flash",
             provider="opencode-go",
         )
         self.assertEqual(result["model"], "deepseek-v4-flash")
         self.assertEqual(result["provider"], "opencode-go")
-        # base_url/api_key/api_mode are None when no .env is configured
+        # base_url and api_mode come from config.yaml (not .env),
+        # so they should be None in a test environment.
+        # api_key may resolve from the global .env — that's fine.
+        self.assertIsNone(result["base_url"])
+        self.assertIsNone(result["api_mode"])
 
     def test_resolve_model_with_provider_explicitly(self):
         """Passing both model and provider returns both in the result."""
@@ -3313,6 +3317,7 @@ class TestEndToEndOverride(unittest.TestCase):
         )
 
         result_data = json.loads(result)
+        self.assertEqual(result_data["results"][0]["status"], "completed")
         mock_build.assert_called_once()
         call_kwargs = mock_build.call_args[1]
         self.assertEqual(
@@ -3342,6 +3347,7 @@ class TestEndToEndOverride(unittest.TestCase):
         )
 
         result_data = json.loads(result)
+        self.assertEqual(result_data["results"][0]["status"], "completed")
         mock_build.assert_called_once()
         call_kwargs = mock_build.call_args[1]
         self.assertEqual(
@@ -3372,6 +3378,7 @@ class TestEndToEndOverride(unittest.TestCase):
         )
 
         result_data = json.loads(result)
+        self.assertEqual(result_data["results"][0]["status"], "completed")
         mock_build.assert_called_once()
         call_kwargs = mock_build.call_args[1]
         self.assertIsNone(

@@ -1,4 +1,5 @@
 import { useStore } from '@nanostores/react'
+import type { KeyboardEvent } from 'react'
 import { useEffect, useMemo } from 'react'
 
 import type { SetTitlebarToolGroup } from '@/app/shell/titlebar-controls'
@@ -78,6 +79,40 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
 
   const activeTab = tabs.find(tab => tab.id === activeTabId) ?? tabs[0]
 
+  const selectAndFocusTab = (tabId: RightRailTabId) => {
+    selectRightRailTab(tabId)
+    window.requestAnimationFrame(() => {
+      document.getElementById(`preview-tab-${tabId}`)?.focus()
+    })
+  }
+
+  const handleTabKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
+    let nextIndex: number | null = null
+
+    switch (event.key) {
+      case 'ArrowLeft':
+        nextIndex = index === 0 ? tabs.length - 1 : index - 1
+        break
+      case 'ArrowRight':
+        nextIndex = index === tabs.length - 1 ? 0 : index + 1
+        break
+      case 'Home':
+        nextIndex = 0
+        break
+      case 'End':
+        nextIndex = tabs.length - 1
+        break
+      default:
+        return
+    }
+
+    event.preventDefault()
+    const nextTab = tabs[nextIndex]
+    if (nextTab) {
+      selectAndFocusTab(nextTab.id)
+    }
+  }
+
   useEffect(() => {
     if (activeTab && activeTab.id !== activeTabId) {
       selectRightRailTab(activeTab.id)
@@ -134,6 +169,7 @@ export function ChatPreviewRail({ onRestartServer, setTitlebarToolGroup }: ChatP
                         className="normal-case tracking-normal"
                         id={tabButtonId}
                         onClick={() => selectRightRailTab(tab.id)}
+                        onKeyDown={event => handleTabKeyDown(event, index)}
                         role="tab"
                         tabIndex={active ? 0 : -1}
                         type="button"

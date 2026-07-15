@@ -10211,6 +10211,29 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin, CLIBillingMixin):
                 from hermes_cli.commands import COMMANDS
                 typed_base = cmd_lower.split()[0]
                 all_known = set(COMMANDS) | set(skill_commands) | set(skill_bundles)
+                # Model-alias shortcut: /<alias> -> /model <alias>. Done BEFORE
+                # prefix-matching so a typed alias like /ds-flash expands to
+                # /model ds-flash (and then to the resolved provider/model),
+                # instead of being misclassified as an unknown /d token.
+                # Mirrors the gateway's behaviour and reuses the same alias
+                # dictionaries. Done AFTER built-in / quick / plugin / skill
+                # checks above so a registered command with the same name
+                # always wins.
+                try:
+                    from hermes_cli.model_switch import (
+                        _ensure_direct_aliases,
+                        DIRECT_ALIASES,
+                        MODEL_ALIASES,
+                    )
+
+                    _ensure_direct_aliases()
+                    _alias_key = typed_base.lstrip("/").strip().lower()
+                    if _alias_key in DIRECT_ALIASES or _alias_key in MODEL_ALIASES:
+                        remainder = cmd_original[len(typed_base):].strip()
+                        aliased = f"/model {_alias_key} {remainder}".strip()
+                        return self.process_command(aliased)
+                except ImportError:
+                    pass
                 matches = [c for c in all_known if c.startswith(typed_base)]
                 if len(matches) > 1:
                     # Prefer an exact match (typed the full command name)

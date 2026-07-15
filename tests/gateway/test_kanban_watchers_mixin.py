@@ -67,3 +67,81 @@ def test_singleton_dispatcher_lock_is_exclusive(tmp_path):
     h3, st3 = _acquire_singleton_lock(lock)
     assert st3 == "held" and h3 is not None
     _release_singleton_lock(h3)
+
+
+# ── _rate_limited_log — controlled-time rate-limit tests ────────────────────
+
+
+def test_rate_limit_initial_warning(caplog):
+    """First failure logs at WARNING level."""
+    import logging
+
+    from gateway.kanban_watchers import _rate_limited_log
+
+    warn_state = [0]
+    caplog.set_level(logging.DEBUG, logger="gateway.run")
+    _rate_limited_log(warn_state, 500, "test skipped: %s", "no client")
+    assert warn_state[0] == 500  # timestamp updated
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "test skipped: no client" in warnings[0].message
+
+
+def test_rate_limit_debug_suppression(caplog):
+    """Subsequent failures within 5 minutes stay at DEBUG."""
+    import logging
+
+    from gateway.kanban_watchers import _rate_limited_log
+
+    warn_state = [100]  # last warn at t=100
+    caplog.set_level(logging.DEBUG, logger="gateway.run")
+    _rate_limited_log(warn_state, 200, "test skipped: %s", "no client")
+    assert warn_state[0] == 100  # timestamp NOT updated (still suppressed)
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 0
+    debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+    assert len(debugs) == 1
+    assert "test skipped: no client" in debugs[0].message
+
+
+def test_rate_limit_warning_after_five_minutes(caplog):
+    """After 300 seconds, the WARNING boundary resets."""
+    import logging
+
+    from gateway.kanban_watchers import _rate_limited_log
+
+    warn_state = [100]  # last warn at t=100
+    caplog.set_level(logging.DEBUG, logger="gateway.run")
+    _rate_limited_log(warn_state, 400, "test skipped: %s", "no client")
+    assert warn_state[0] == 400  # timestamp updated
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+    assert "test skipped: no client" in warnings[0].message
+
+
+def test_rate_limit_exact_boundary(caplog):
+    """Exactly 300 seconds since last warn triggers WARNING."""
+    import logging
+
+    from gateway.kanban_watchers import _rate_limited_log
+
+    warn_state = [100]
+    caplog.set_level(logging.DEBUG, logger="gateway.run")
+    _rate_limited_log(warn_state, 400, "test skipped: %s", "no client")  # 300s >= 300
+    assert warn_state[0] == 400  # updated
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
+    assert len(warnings) == 1
+
+
+def test_rate_limit_just_under_boundary(caplog):
+    """299 seconds since last warn stays at DEBUG."""
+    import logging
+
+    from gateway.kanban_watchers import _rate_limited_log
+
+    warn_state = [100]
+    caplog.set_level(logging.DEBUG, logger="gateway.run")
+    _rate_limited_log(warn_state, 399, "test skipped: %s", "no client")  # 299s < 300
+    assert warn_state[0] == 100  # NOT updated
+    debugs = [r for r in caplog.records if r.levelno == logging.DEBUG]
+    assert len(debugs) == 1

@@ -75,6 +75,24 @@ def _release_singleton_lock(handle) -> None:
         pass
 
 
+def _rate_limited_log(
+    warn_state: list,  # [last_warn_epoch]; mutable for caller-side closure
+    now: int,
+    message: str,
+    *args: object,
+) -> None:
+    """Rate-limit warning logs: first occurrence at WARNING, then once every 5 minutes.
+
+    Used by the dispatcher watcher so persistent misconfigurations (e.g. no
+    auxiliary client configured) are visible without spamming every tick.
+    """
+    if now - warn_state[0] >= 300:
+        logger.warning(message, *args)
+        warn_state[0] = now
+    else:
+        logger.debug(message, *args)
+
+
 class GatewayKanbanWatchersMixin:
     """Kanban watcher / notifier / dispatcher loops for GatewayRunner."""
 
@@ -1063,18 +1081,12 @@ class GatewayKanbanWatchersMixin:
                             # First failure at WARNING, then once every 5 min
                             # so persistent misconfigurations are visible
                             # without spamming on transient hiccups.
-                            now = int(time.time())
-                            if now - _decompose_warn_state[0] >= 300:
-                                logger.warning(
-                                    "kanban auto-decompose [%s]: %s skipped: %s",
-                                    slug, tid, outcome.reason,
-                                )
-                                _decompose_warn_state[0] = now
-                            else:
-                                logger.debug(
-                                    "kanban auto-decompose [%s]: %s skipped: %s",
-                                    slug, tid, outcome.reason,
-                                )
+                            _rate_limited_log(
+                                _decompose_warn_state,
+                                int(time.time()),
+                                "kanban auto-decompose [%s]: %s skipped: %s",
+                                slug, tid, outcome.reason,
+                            )
                 finally:
                     if prev_env is None:
                         os.environ.pop("HERMES_KANBAN_BOARD", None)

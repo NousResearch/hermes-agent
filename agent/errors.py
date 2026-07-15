@@ -11,3 +11,14 @@ class EmptyStreamError(RuntimeError):
 
 class MoAPresetNotFoundError(ValueError):
     """Raised when a persisted MoA preset no longer exists in config."""
+
+
+class WrongModelServedError(Exception):
+    """The provider answered with a different model than the one requested.
+
+    Deterministic per request (LM Studio serves whatever is loaded when the
+    requested identifier isn't) — retrying reproduces it, and falling back
+    would just pick ANOTHER unrequested model, so the classifier marks this
+    non-retryable with no fallback.
+    """
+    pass

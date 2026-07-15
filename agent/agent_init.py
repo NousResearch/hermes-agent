@@ -35,6 +35,8 @@ from agent.iteration_budget import IterationBudget
 from agent.memory_manager import StreamingContextScrubber
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
+    check_lmstudio_model_served,
+    detect_local_server_type,
     fetch_model_metadata,
     is_local_endpoint,
     query_ollama_num_ctx,
@@ -1946,6 +1948,46 @@ def init_agent(
             f"model.context_length in config.yaml to the real value "
             f"(this must be at least {MINIMUM_CONTEXT_LENGTH // 1000}K)."
         )
+
+    # Fail fast when LM Studio is not actually serving the configured model.
+    # LM Studio answers chat requests for unknown model ids with whichever
+    # model IS loaded (verified live, 0.4.19) — without this check a
+    # mis-targeted session runs on the wrong weights/context window and
+    # surfaces only as a baffling downstream error (context overflow), or
+    # worse, succeeds silently on the wrong model.
+    # Fails OPEN on "unknown" (server down → the connection error that follows
+    # is already a clear symptom). Escape hatch: HERMES_LMSTUDIO_ALLOW_UNLOADED=1.
+    _is_lmstudio = (agent.provider or "").strip().lower() == "lmstudio" or (
+        agent.base_url
+        and is_local_endpoint(agent.base_url)
+        and detect_local_server_type(
+            agent.base_url, api_key=getattr(agent, "api_key", "") or ""
+        ) == "lm-studio"
+    )
+    if _is_lmstudio and os.getenv("HERMES_LMSTUDIO_ALLOW_UNLOADED", "") != "1":
+        _served_status, _served_ids = check_lmstudio_model_served(
+            agent.model or "",
+            agent.base_url or "",
+            api_key=getattr(agent, "api_key", "") or "",
+        )
+        if _served_status == "missing":
+            _served_str = ", ".join(_served_ids) if _served_ids else "(none)"
+            raise ValueError(
+                f"Model {agent.model!r} is not currently loaded in LM Studio at "
+                f"{agent.base_url} (unloaded or replaced by another process?). "
+                f"LM Studio would "
+                f"silently serve this chat with a different loaded model. "
+                f"Currently serving: {_served_str}. Load the model (e.g. "
+                f"`lms load <model-key> --identifier {agent.model}`) or switch "
+                f"models. Set HERMES_LMSTUDIO_ALLOW_UNLOADED=1 to bypass."
+            )
+        if _served_status == "fuzzy":
+            _ra().logger.warning(
+                "LM Studio at %s serves %s but not the exact id %r — LM Studio "
+                "routes by exact identifier, so requests may be answered by a "
+                "different loaded model.",
+                agent.base_url, _served_ids, agent.model,
+            )
 
     # Nous Hermes 3/4 are chat models, not tool-call-tuned. The interactive
     # CLI already warns via cli.py show_banner() (richer output + /model hint),

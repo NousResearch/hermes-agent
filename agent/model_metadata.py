@@ -1477,6 +1477,87 @@ def _model_id_matches(candidate_id: str, lookup_model: str) -> bool:
     return False
 
 
+def fetch_lmstudio_serving_state(
+    base_url: str, api_key: str = ""
+) -> Optional[Tuple[List[str], List[str]]]:
+    """Return (loaded_instance_ids, downloaded_keys) from LM Studio's native API.
+
+    Uses ``/api/v1/models`` because the OpenAI-compat ``/v1/models`` listing
+    merges downloaded catalog keys with loaded-instance identifiers and cannot
+    distinguish them (verified live on 0.4.19) — but only LOADED instance ids
+    are what chat POSTs actually route to. Deliberately uncached: this is live
+    serving state, and a stale answer defeats the wrong-model guard.
+
+    Returns None when the endpoint can't be queried (offline / not LM Studio);
+    callers must treat None as "unknown", never as "nothing loaded".
+    """
+    import httpx
+
+    server_url = _lmstudio_server_root(base_url)
+    if not server_url:
+        return None
+    try:
+        with httpx.Client(timeout=3.0, headers=_auth_headers(api_key)) as client:
+            resp = client.get(server_url.rstrip("/") + "/api/v1/models")
+            if resp.status_code != 200:
+                return None
+            data = resp.json()
+    except Exception:
+        return None
+    loaded: List[str] = []
+    keys: List[str] = []
+    for m in data.get("models", []):
+        if not isinstance(m, dict):
+            continue
+        for field in ("key", "id"):
+            value = m.get(field)
+            if isinstance(value, str) and value and value not in keys:
+                keys.append(value)
+        for inst in m.get("loaded_instances", []) or []:
+            if not isinstance(inst, dict):
+                continue
+            inst_id = inst.get("id") or inst.get("identifier")
+            if isinstance(inst_id, str) and inst_id and inst_id not in loaded:
+                loaded.append(inst_id)
+    return loaded, keys
+
+
+def check_lmstudio_model_served(
+    model: str, base_url: str, api_key: str = ""
+) -> Tuple[str, List[str]]:
+    """Check whether *model* will actually be served by the LM Studio at *base_url*.
+
+    LM Studio (verified live on 0.4.19) answers /v1/chat/completions requests
+    naming an UNKNOWN model id with whichever model IS loaded — only
+    GET /v1/models/{id} 404s. A mis-targeted chat therefore doesn't fail; it
+    silently runs on the wrong weights and the wrong context window. Routing
+    is by exact loaded-instance identifier: in the 2026-07-14 incident the
+    requested id basename-matched a *downloaded* catalog key and LM Studio
+    still served the request with the unrelated loaded model, so a
+    downloaded-but-not-loaded basename match is a misroute, not a pass.
+
+    Returns (status, loaded_instance_ids):
+      "ok"      — exact match on a loaded instance identifier
+      "jit"     — exact match on a downloaded catalog key (JIT will load it)
+      "fuzzy"   — basename match on a LOADED instance id; may or may not route
+      "missing" — neither loaded nor an exact downloaded key; a chat POST WILL
+                  be answered by whichever model is loaded
+      "unknown" — endpoint unreachable / not LM Studio; can't tell
+    """
+    bare = _strip_provider_prefix(model)
+    state = fetch_lmstudio_serving_state(base_url, api_key=api_key)
+    if state is None:
+        return "unknown", []
+    loaded, keys = state
+    if any(inst_id == bare for inst_id in loaded):
+        return "ok", loaded
+    if any(key == bare for key in keys):
+        return "jit", loaded
+    if any(_model_id_matches(inst_id, bare) for inst_id in loaded):
+        return "fuzzy", loaded
+    return "missing", loaded
+
+
 def query_ollama_num_ctx(model: str, base_url: str, api_key: str = "") -> Optional[int]:
     """Query an Ollama server for the model's context length.
 

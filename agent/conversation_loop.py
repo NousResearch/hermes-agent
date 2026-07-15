@@ -1563,6 +1563,41 @@ def run_conversation(
                         else:
                             error_details.append("response.choices is empty")
 
+                # LM Studio wrong-model guard: LM Studio serves requests naming
+                # an unloaded id with whichever model IS loaded (verified live,
+                # 0.4.19). If the response says a different model answered,
+                # abort loudly instead of continuing on the wrong weights.
+                # Scoped to lmstudio; fails open when the response carries no
+                # model field. Escape hatch: HERMES_SKIP_MODEL_IDENTITY_CHECK=1.
+                if (
+                    not response_invalid
+                    and (agent.provider or "").strip().lower() == "lmstudio"
+                    and os.getenv("HERMES_SKIP_MODEL_IDENTITY_CHECK", "") != "1"
+                ):
+                    _served_model = str(getattr(response, "model", "") or "")
+                    if _served_model and agent.model:
+                        from agent.model_metadata import (
+                            _model_id_matches,
+                            _strip_provider_prefix,
+                        )
+                        _req_model = _strip_provider_prefix(agent.model)
+                        if not (
+                            _served_model == _req_model
+                            or _model_id_matches(_served_model, _req_model)
+                            or _model_id_matches(_req_model, _served_model)
+                        ):
+                            from agent.errors import WrongModelServedError
+                            raise WrongModelServedError(
+                                f"LM Studio served this request with "
+                                f"{_served_model!r} instead of the requested "
+                                f"{_req_model!r} — the requested model is not "
+                                f"loaded (unloaded or replaced by another "
+                                f"process?). Refusing "
+                                f"to continue on the wrong model. Load it with "
+                                f"`lms load <model-key> --identifier {_req_model}` "
+                                f"or switch models."
+                            )
+
                 if response_invalid:
                     agent._invoke_api_request_error_hook(
                         task_id=effective_task_id,
@@ -3918,6 +3953,8 @@ def run_conversation(
                             agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
                         elif classified.reason == FailoverReason.ssl_cert_verification:
                             agent._buffer_status("⚠️ TLS certificate verification failed — trying fallback...")
+                        elif type(api_error).__name__ == "WrongModelServedError":
+                            agent._buffer_status("⚠️ LM Studio served a different model than requested — trying fallback...")
                         else:
                             agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
                     if agent._try_activate_fallback():

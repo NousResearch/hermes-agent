@@ -794,6 +794,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     profile_name TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
+    last_heartbeat REAL,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -2189,6 +2190,41 @@ class SessionDB:
             conn.execute(
                 "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
                 (session_id,),
+            )
+        self._execute_write(_do)
+
+    def touch_session_heartbeat(self, session_id: str) -> None:
+        """Stamp ``last_heartbeat`` on a session so it reads as active.
+
+        Written from within a live agent turn (e.g. at turn start) and from
+        the background-process heartbeat sweep, so a session with no new
+        messages for minutes (a farmed-out Claude Code build) still shows
+        active in the dashboard. No-op if the id doesn't match any row.
+        """
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET last_heartbeat = ? WHERE id = ?",
+                (time.time(), session_id),
+            )
+        self._execute_write(_do)
+
+    def touch_session_heartbeat_by_key(self, session_key: str) -> None:
+        """Stamp ``last_heartbeat`` on the newest session row for a session_key.
+
+        Used by the process-registry heartbeat sweep, which only knows the
+        gateway ``session_key`` (not the current ``session_id``). Resolves the
+        same "newest row per session_key" row that ``list_gateway_sessions``
+        uses. No-op if no session row matches.
+        """
+        def _do(conn):
+            conn.execute(
+                """UPDATE sessions SET last_heartbeat = ?
+                   WHERE session_key = ?
+                     AND started_at = (
+                         SELECT MAX(s2.started_at) FROM sessions s2
+                         WHERE s2.session_key = sessions.session_key
+                     )""",
+                (time.time(), session_key),
             )
         self._execute_write(_do)
 

@@ -75,6 +75,12 @@ WATCH_GLOBAL_MAX_PER_WINDOW = 15
 WATCH_GLOBAL_WINDOW_SECONDS = 10
 WATCH_GLOBAL_COOLDOWN_SECONDS = 30
 
+# Activity-heartbeat sweep interval. A silent background build (no output for
+# minutes) produces no reader-thread ticks, so session "last active" in
+# state.db would otherwise age out past the dashboard's 300s liveness window
+# even though real work is in flight. See set_heartbeat_callback().
+HEARTBEAT_INTERVAL_S = 30
+
 
 def format_uptime_short(seconds: int) -> str:
     s = max(0, int(seconds))
@@ -212,6 +218,67 @@ class ProcessRegistry:
         # terminal tab. Distinct from kill — the process keeps running; only the
         # UI view is dropped (the user can reopen it from the status stack).
         self.on_close = None
+
+        # Activity-heartbeat sweep. Set via set_heartbeat_callback() by the
+        # process driving this registry (the gateway), which owns a SessionDB
+        # handle — this module must not import SessionDB itself (layering).
+        self._heartbeat_callback = None
+        self._heartbeat_thread: Optional[threading.Thread] = None
+        self._heartbeat_thread_lock = threading.Lock()
+
+    def set_heartbeat_callback(self, cb) -> None:
+        """Register ``cb(session_key: str)`` to be invoked periodically for
+        every gateway session with a live background process.
+
+        Lazily starts the sweep thread on first registration. Only one sweep
+        thread ever runs per registry instance.
+        """
+        self._heartbeat_callback = cb
+        with self._heartbeat_thread_lock:
+            if self._heartbeat_thread is not None and self._heartbeat_thread.is_alive():
+                return
+            thread = threading.Thread(
+                target=self._heartbeat_loop, name="process-registry-heartbeat", daemon=True,
+            )
+            self._heartbeat_thread = thread
+            thread.start()
+
+    def _heartbeat_loop(self) -> None:
+        while True:
+            time.sleep(HEARTBEAT_INTERVAL_S)
+            try:
+                self._run_heartbeat_once()
+            except Exception:
+                logger.debug("Heartbeat sweep tick failed", exc_info=True)
+
+    def _run_heartbeat_once(self) -> None:
+        """One heartbeat sweep: ping the callback for every alive session_key.
+
+        Exposed separately from ``_heartbeat_loop`` so tests can trigger a
+        sweep synchronously instead of sleeping.
+        """
+        cb = self._heartbeat_callback
+        if cb is None:
+            return
+
+        with self._lock:
+            sessions = list(self._running.values())
+        for session in sessions:
+            self._refresh_detached_session(session)
+
+        with self._lock:
+            session_keys = {
+                s.session_key for s in self._running.values()
+                if s.session_key and not s.exited
+            }
+
+        for session_key in session_keys:
+            try:
+                cb(session_key)
+            except Exception:
+                logger.debug(
+                    "Heartbeat callback failed for session_key=%s", session_key, exc_info=True,
+                )
 
     @staticmethod
     def _clean_shell_noise(text: str) -> str:

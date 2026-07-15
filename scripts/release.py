@@ -435,6 +435,7 @@ AUTHOR_MAP = {
     "470766206@qq.com": "youjunxiaji",
     "mharris@parallel.ai": "NormallyGaussian",
     "roger@roger.local": "mollusk",
+    "mollusk@users.noreply.github.com": "mollusk",
     "ted.malone@outlook.com": "temalo",
     "adityamalik2833@gmail.com": "alarcritty",
     "islam666@users.noreply.github.com": "islam666",

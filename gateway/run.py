@@ -7115,6 +7115,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception as e:
             logger.warning("Process checkpoint recovery: %s", e)
 
+        # Activity heartbeat: while a background process (e.g. a farmed-out
+        # Claude Code build) is alive, periodically stamp last_heartbeat on
+        # its session so the dashboard's activity window doesn't age it out
+        # just because the process is silently working and writing no new
+        # messages. process_registry never imports SessionDB directly (layering)
+        # — it calls back into this closure instead. Uses the sync SessionDB
+        # (._db) since the sweep runs from a plain daemon thread, not asyncio.
+        try:
+            session_db = getattr(self, "_session_db", None)
+            if session_db is not None:
+                from tools.process_registry import process_registry
+                process_registry.set_heartbeat_callback(
+                    session_db._db.touch_session_heartbeat_by_key
+                )
+        except Exception:
+            logger.debug("Activity heartbeat wiring skipped", exc_info=True)
+
         # Suspend sessions that were active when the gateway last exited.
         # This prevents stuck sessions from being blindly resumed on restart,
         # which can create an unrecoverable loop (#7536).  Suspended sessions

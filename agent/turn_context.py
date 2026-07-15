@@ -380,6 +380,17 @@ def build_turn_context(
         agent._ensure_db_session()
         agent._persist_session(messages, conversation_history)
 
+    # Activity heartbeat: stamp last_heartbeat at turn start so a session
+    # blocked inside a long foreground tool call (e.g. Claude Code run via a
+    # blocking terminal call) still reads as active in the dashboard even
+    # though no new message row is written until the turn completes.
+    _session_db = getattr(agent, "_session_db", None)
+    if _session_db and agent.session_id:
+        try:
+            _session_db.touch_session_heartbeat(agent.session_id)
+        except Exception:
+            logger.debug("Turn-start activity heartbeat failed", exc_info=True)
+
     # Crash-resilience: persist the inbound user turn as soon as the session row exists.
     try:
         if persist_lock is None:

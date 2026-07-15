@@ -63,6 +63,11 @@ except ImportError:  # pragma: no cover - plugin loaded outside package context
 
 logger = logging.getLogger(__name__)
 
+_THREAD_CONTEXT_MARKER = (
+    "[Thread context — prior messages in this thread "
+    "(not yet in conversation history)"
+)
+
 # ContextVar carrying the user_id of the slash-command invoker.
 # Set in _handle_slash_command, read in send() to match the correct
 # stashed response_url when multiple users issue commands on the same
@@ -2581,6 +2586,14 @@ class SlackAdapter(BasePlatformAdapter):
 
     # ----- Internal handlers -----
 
+    def _message_has_thread_context_marker(self, text: str) -> bool:
+        """Return whether a message already contains injected thread context."""
+        return _THREAD_CONTEXT_MARKER in (text or "")
+
+    def _is_investigate_thread_trigger(self, text: str) -> bool:
+        """Return whether a thread message should force thread-context fetch."""
+        return bool(re.match(r"^\s*investigate(?:\s|:|$)", text or "", re.IGNORECASE))
+
     @staticmethod
     def _workspace_thread_key(
         team_id: str, channel_id: str, thread_ts: str
@@ -3408,14 +3421,21 @@ class SlackAdapter(BasePlatformAdapter):
                     for t in to_remove:
                         self._mentioned_threads.discard(t)
 
-        # When entering a thread for the first time (no existing session),
-        # fetch thread context so the agent understands the conversation.
-        if is_thread_reply and not self._has_active_session_for_thread(
+        has_active_session = is_thread_reply and self._has_active_session_for_thread(
             channel_id=channel_id,
             thread_ts=event_thread_ts,
             user_id=user_id,
             team_id=team_id,
-        ):
+        )
+        # Normally context is prepended only on the first turn. Investigation
+        # prompts force a refresh because an interrupted earlier turn may have
+        # created the session without ever hydrating its Slack parent/thread.
+        force_thread_context = (
+            is_thread_reply
+            and self._is_investigate_thread_trigger(text)
+            and not self._message_has_thread_context_marker(text)
+        )
+        if is_thread_reply and (not has_active_session or force_thread_context):
             thread_context = await self._fetch_thread_context(
                 channel_id=channel_id,
                 thread_ts=event_thread_ts,
@@ -4297,11 +4317,12 @@ class SlackAdapter(BasePlatformAdapter):
         """Fetch recent thread messages to provide context when the bot is
         mentioned mid-thread for the first time.
 
-        This method is only called when there is NO active session for the
-        thread (guarded at the call site by _has_active_session_for_thread).
-        That guard ensures thread messages are prepended only on the very
-        first turn — after that the session history already holds them, so
-        there is no duplication across subsequent turns.
+        This method is normally called only when there is NO active session
+        for the thread. Explicit investigation requests may also call it for
+        an existing session so an interrupted first turn cannot leave the
+        agent without the Slack parent/thread context. The call site rejects
+        messages that already contain the context marker to avoid duplicate
+        hydration.
 
         Results are cached for _THREAD_CACHE_TTL seconds per thread to avoid
         hammering conversations.replies (Tier 3, ~50 req/min).

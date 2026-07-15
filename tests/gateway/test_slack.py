@@ -3312,6 +3312,80 @@ class TestThreadReplyHandling:
         assert msg_event.text == "Follow-up question"
 
     @pytest.mark.asyncio
+    async def test_investigate_thread_reply_with_session_prepends_context(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        session_key = "agent:main:slack:group:C123:123.000:U_USER"
+        mock_session_store._entries = {session_key: MagicMock()}
+        event = {
+            "text": "investigate why this failed",
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+
+        with patch.object(
+            adapter_with_session_store,
+            "_fetch_thread_context",
+            new=AsyncMock(return_value="[Thread context]\n"),
+        ) as fetch_mock:
+            await adapter_with_session_store._handle_slack_message(event)
+
+        fetch_mock.assert_awaited_once_with(
+            channel_id="C123",
+            thread_ts="123.000",
+            current_ts="123.456",
+            team_id="T_TEAM",
+        )
+        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
+        assert msg_event.text.startswith("[Thread context]\n")
+        assert msg_event.text.endswith("investigate why this failed")
+
+    @pytest.mark.asyncio
+    async def test_investigate_thread_reply_with_existing_marker_skips_refetch(
+        self, adapter_with_session_store, mock_session_store
+    ):
+        session_key = "agent:main:slack:group:C123:123.000:U_USER"
+        mock_session_store._entries = {session_key: MagicMock()}
+        event = {
+            "text": (
+                "[Thread context — prior messages in this thread "
+                "(not yet in conversation history):]\n"
+                "Alice: original issue\n"
+                "[End of thread context]\n\n"
+                "investigate: why this failed"
+            ),
+            "user": "U_USER",
+            "channel": "C123",
+            "ts": "123.456",
+            "thread_ts": "123.000",
+            "channel_type": "channel",
+            "team": "T_TEAM",
+        }
+
+        with (
+            patch.object(
+                adapter_with_session_store,
+                "_is_investigate_thread_trigger",
+                return_value=True,
+            ) as trigger_mock,
+            patch.object(
+                adapter_with_session_store,
+                "_fetch_thread_context",
+                new=AsyncMock(),
+            ) as fetch_mock,
+        ):
+            await adapter_with_session_store._handle_slack_message(event)
+
+        trigger_mock.assert_called_once_with(event["text"])
+        fetch_mock.assert_not_awaited()
+        msg_event = adapter_with_session_store.handle_message.call_args[0][0]
+        assert msg_event.text == event["text"]
+
+    @pytest.mark.asyncio
     async def test_thread_reply_with_mention_strips_bot_id(
         self, adapter_with_session_store, mock_session_store
     ):

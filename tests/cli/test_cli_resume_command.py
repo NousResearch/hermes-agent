@@ -351,3 +351,32 @@ class TestResumeFlushesBeforeEndSession:
             [{"role": "user", "content": "hello"}, {"role": "assistant", "content": "hi"}]
         )
         cli_obj._session_db.end_session.assert_called_once()
+
+
+class TestCjkAlignment:
+    """CJK character alignment in _show_recent_sessions output."""
+
+    def test_cjk_titles_render_through_cprint(self):
+        cli_obj = _make_cli()
+        cli_obj._list_recent_sessions = MagicMock(return_value=[
+            {
+                "id": "sess_cn",
+                "title": "整理论文和更新README #4",
+                "preview": "我更新了paper/和README，整理了参考文献",
+                "last_active": None,
+            },
+        ])
+
+        running_app = SimpleNamespace(_is_running=True)
+        with (
+            patch("prompt_toolkit.application.get_app_or_none", return_value=running_app),
+            patch("cli._cprint") as mock_cprint,
+        ):
+            shown = cli_obj._show_recent_sessions(reason="resume")
+
+        assert shown is True
+        printed = "\n".join(call.args[0] for call in mock_cprint.call_args_list)
+        # CJK characters should appear in the output (Rich handles double-width)
+        assert "整理论文" in printed or "论文" in printed
+        assert "README" in printed
+        assert "sess_cn" in printed

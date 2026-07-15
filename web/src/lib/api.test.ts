@@ -1,10 +1,22 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { api } from "./api";
+import {
+  DASHBOARD_UNREACHABLE_CODE,
+  api,
+  fetchJSON,
+  isDashboardUnreachableError,
+} from "./api";
+import {
+  getDashboardReachability,
+  markDashboardReachable,
+  markDashboardUnreachable,
+  subscribeDashboardReachability,
+} from "./dashboard-reachability";
 
 const SESSION_HEADER = "X-Hermes-Session-Token";
 
 afterEach(() => {
+  markDashboardReachable();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -46,6 +58,70 @@ describe("api.getModelOptions", () => {
       "/api/model/options?profile=default&refresh=1&include_unconfigured=1",
       expect.objectContaining({ credentials: "include" }),
     );
+  });
+});
+
+describe("fetchJSON reachability", () => {
+  it("turns network failures into a structured dashboard error", async () => {
+    vi.stubGlobal("window", { location: { origin: "http://localhost:3000" } });
+    const cause = new TypeError("Failed to fetch");
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockRejectedValue(cause));
+    const listener = vi.fn();
+    const unsubscribe = subscribeDashboardReachability(listener);
+
+    try {
+      const request = fetchJSON("/api/status");
+      await expect(request).rejects.toMatchObject({
+        baseUrl: "http://localhost:3000",
+        code: DASHBOARD_UNREACHABLE_CODE,
+        name: "DashboardUnreachableError",
+      });
+      await expect(request).rejects.toSatisfy(isDashboardUnreachableError);
+      await expect(request).rejects.toHaveProperty("cause", cause);
+      expect(getDashboardReachability()).toBe("unreachable");
+      expect(listener).toHaveBeenCalledTimes(1);
+
+      await expect(fetchJSON("/api/status")).rejects.toSatisfy(
+        isDashboardUnreachableError,
+      );
+      expect(listener).toHaveBeenCalledTimes(1);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("clears the outage state when the backend returns any HTTP response", async () => {
+    vi.stubGlobal("window", {});
+    markDashboardUnreachable();
+    const fetchMock = vi.fn<typeof fetch>(
+      async () => new Response("temporarily unavailable", { status: 503 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const listener = vi.fn();
+    const unsubscribe = subscribeDashboardReachability(listener);
+
+    try {
+      const request = fetchJSON("/api/status");
+      await expect(request).rejects.toThrow("503: temporarily unavailable");
+      await expect(request).rejects.not.toSatisfy(isDashboardUnreachableError);
+      expect(getDashboardReachability()).toBe("reachable");
+      expect(listener).toHaveBeenCalledTimes(1);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("preserves aborted requests without changing reachability", async () => {
+    vi.stubGlobal("window", {});
+    const controller = new AbortController();
+    controller.abort();
+    const abortError = new DOMException("This operation was aborted", "AbortError");
+    vi.stubGlobal("fetch", vi.fn<typeof fetch>().mockRejectedValue(abortError));
+
+    await expect(
+      fetchJSON("/api/status", { signal: controller.signal }),
+    ).rejects.toBe(abortError);
+    expect(getDashboardReachability()).toBe("reachable");
   });
 });
 

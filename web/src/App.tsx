@@ -70,6 +70,7 @@ import { ProfileProvider } from "@/contexts/ProfileProvider";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ProfileSwitcher } from "@/components/ProfileSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
+import { DashboardOfflineBanner } from "@/components/DashboardOfflineBanner";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
 import ConfigPage from "@/pages/ConfigPage";
@@ -540,6 +541,7 @@ export default function App() {
       <ProfileScopeBanner />
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
+        <DashboardOfflineBanner />
         <div className="flex min-h-0 min-w-0 flex-1">
           <aside
             id="app-sidebar"

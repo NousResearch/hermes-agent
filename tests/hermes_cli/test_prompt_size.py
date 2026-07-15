@@ -116,3 +116,30 @@ def test_json_serializable(isolated_home):
     data = compute_prompt_breakdown("cli")
     # Round-trips cleanly for ``--json`` output.
     assert json.loads(json.dumps(data)) == json.loads(json.dumps(data))
+
+
+def test_tool_schemas_respect_platform_toolsets(isolated_home):
+    """The inspection agent must mirror gateway/cron toolset resolution.
+
+    Regression: _build_inspection_agent used to omit enabled_toolsets, so the
+    reported tool schemas were the FULL default set regardless of the
+    platform_toolsets config — overstating the wire payload (androux-y7ufv).
+    """
+    (isolated_home / "config.yaml").write_text(
+        "platform_toolsets:\n"
+        "  telegram:\n"
+        "  - clarify\n"
+        "  - todo\n"
+        "  - no_mcp\n",
+        encoding="utf-8",
+    )
+    scoped = compute_prompt_breakdown("telegram")
+    unscoped = compute_prompt_breakdown("cli")  # cli has no explicit config here
+
+    assert scoped["tools"]["count"] < unscoped["tools"]["count"], (
+        "explicitly scoped platform should ship fewer tool schemas than an "
+        "unconfigured one"
+    )
+    # The scoped platform's tools must be a small set — clarify + todo only
+    # (plus nothing smuggled in by plugins/MCP defaults).
+    assert scoped["tools"]["count"] <= 4

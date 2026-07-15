@@ -193,6 +193,61 @@ class TestToolBlockReason:
         assert plan_mode.tool_block_reason("gx", "read_file", {"path": "a"}) is None
 
 
+class TestIsPlanPath:
+    """Resolved-path containment — traversal and symlink escapes must fail.
+
+    ``file_tools`` resolves relative paths (and follows symlinks) before
+    writing, so a raw substring test on ``.hermes/plans`` let escapes through.
+    ``is_plan_path`` now resolves both the candidate and the plans-dir root
+    and requires containment.
+    """
+
+    def test_legit_nested_plan_path_passes(self, tmp_path, monkeypatch):
+        from hermes_cli.plan_mode import is_plan_path
+
+        monkeypatch.chdir(tmp_path)
+        # Relative and nested forms that genuinely live under the plans dir.
+        assert is_plan_path(".hermes/plans/p.md") is True
+        assert is_plan_path(".hermes/plans/feature/step-1/plan.md") is True
+        assert is_plan_path("work/.hermes/plans/p.md") is True
+
+    def test_dotdot_traversal_escapes_and_is_rejected(self, tmp_path, monkeypatch):
+        from hermes_cli.plan_mode import is_plan_path
+
+        monkeypatch.chdir(tmp_path)
+        # Contains the ".hermes/plans" segment but resolves OUTSIDE it.
+        assert is_plan_path(".hermes/plans/../../src/app.py") is False
+        assert is_plan_path(".hermes/plans/../plans-evil/app.py") is False
+
+    def test_absolute_path_outside_is_rejected(self):
+        from hermes_cli.plan_mode import is_plan_path
+
+        # No ".hermes/plans" segment at all → not a plan path.
+        assert is_plan_path("/etc/passwd") is False
+        assert is_plan_path("/tmp/src/app.py") is False
+
+    def test_symlink_inside_plans_dir_pointing_outside_is_rejected(self, tmp_path):
+        from hermes_cli.plan_mode import is_plan_path
+
+        plans = tmp_path / ".hermes" / "plans"
+        plans.mkdir(parents=True)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        # A symlink placed INSIDE the plans dir that points outside it: a write
+        # "under" the plans dir would land in `outside/` after resolution.
+        link = plans / "escape"
+        link.symlink_to(outside, target_is_directory=True)
+
+        # The literal string sits under ".hermes/plans", but resolves outside.
+        escaped = str(link / "app.py")
+        assert ".hermes/plans" in escaped.replace("\\", "/")
+        assert is_plan_path(escaped) is False
+
+        # A real (non-symlinked) sibling under the plans dir still passes.
+        legit = plans / "real" / "plan.md"
+        assert is_plan_path(str(legit)) is True
+
+
 # ──────────────────────────────────────────────────────────────────────
 # Toolset policy (layer a)
 # ──────────────────────────────────────────────────────────────────────

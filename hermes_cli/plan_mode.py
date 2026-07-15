@@ -311,13 +311,37 @@ def apply_session_toolset_policy(
 def is_plan_path(path: Optional[str]) -> bool:
     """True when ``path`` targets the plans dir (``.hermes/plans/``).
 
-    Normalises separators and matches the ``.hermes/plans`` segment anywhere
-    in the path so relative, backend-workspace, and absolute forms all work.
+    Containment is checked on the RESOLVED path, not by a substring match:
+    ``file_tools`` resolves relative paths (and follows symlinks) before it
+    writes, so a substring test on the raw string lets a traversal like
+    ``.hermes/plans/../../src/app.py`` — or a symlink placed inside the plans
+    dir that points outside it — escape the guard. We instead derive the
+    intended plans-dir root from the literal ``.hermes/plans`` segment, resolve
+    both it and the candidate (collapsing ``..`` and following symlinks), and
+    require the candidate to sit inside that resolved root. The segment is
+    matched anywhere in the path so relative, backend-workspace, and absolute
+    forms all work.
     """
     if not path or not isinstance(path, str):
         return False
     normalized = path.replace("\\", "/")
-    return PLANS_DIR_SEGMENT in normalized
+    # The plans segment must appear literally somewhere; its position also
+    # fixes the plans-dir root every write must resolve inside of.
+    idx = normalized.find(PLANS_DIR_SEGMENT)
+    if idx < 0:
+        return False
+    root_str = normalized[: idx + len(PLANS_DIR_SEGMENT)]
+    try:
+        from pathlib import Path
+
+        root = Path(root_str).resolve()
+        candidate = Path(normalized).resolve()
+    except (OSError, ValueError, RuntimeError) as exc:
+        # Unresolvable path (e.g. a resolution loop): fail closed — not a
+        # provably-contained plan path, so the guard blocks the write.
+        logger.debug("is_plan_path: could not resolve %r: %s", path, exc)
+        return False
+    return candidate.is_relative_to(root)
 
 
 _BLOCK_MESSAGE = (

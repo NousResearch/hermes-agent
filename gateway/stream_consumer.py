@@ -1220,10 +1220,11 @@ class GatewayStreamConsumer:
         ``MAX_MESSAGE_LENGTH`` (4096 default) for everyone else.
         """
         base = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
-        fn = getattr(self.adapter, "streaming_overflow_limit", None)
-        if callable(fn):
+        # isinstance gate: MagicMock adapters return mock objects (truthy, not
+        # ints) for arbitrary attribute access — keep them on the base limit.
+        if isinstance(self.adapter, _BasePlatformAdapter):
             try:
-                cap = fn()
+                cap = self.adapter.streaming_overflow_limit()
             except Exception as e:
                 logger.debug("streaming_overflow_limit check failed: %s", e)
                 cap = None
@@ -1485,31 +1486,6 @@ class GatewayStreamConsumer:
                         )
                     ):
                         return True
-                    # Some adapters can send/finalize messages above their
-                    # legacy edit cap (e.g. Telegram rich final delivery), but
-                    # *streaming* edits still hit the lower MAX_MESSAGE_LENGTH.
-                    # Split-and-delivering overflow continuations on every
-                    # mid-stream tick produces repeated partial bubbles. Freeze
-                    # the preview once it reaches the legacy edit cap and wait
-                    # for the final finalize=True send/edit path instead.
-                    if not finalize:
-                        _legacy_edit_limit = getattr(self.adapter, "MAX_MESSAGE_LENGTH", 4096)
-                        _len_fn: "Callable[[str], int]" = (
-                            self.adapter.message_len_fn
-                            if isinstance(self.adapter, _BasePlatformAdapter)
-                            else len
-                        )
-                        if (
-                            isinstance(_legacy_edit_limit, int)
-                            and _legacy_edit_limit > 0
-                            and _len_fn(text) > _legacy_edit_limit
-                            and self._raw_message_limit() > _legacy_edit_limit
-                        ):
-                            logger.debug(
-                                "Skipping mid-stream edit beyond legacy cap (%d > %d); waiting for final delivery",
-                                _len_fn(text), _legacy_edit_limit,
-                            )
-                            return False
                     # Edit existing message
                     result = await self._edit_message(
                         message_id=self._message_id,

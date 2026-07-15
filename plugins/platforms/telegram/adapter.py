@@ -3394,6 +3394,7 @@ class TelegramAdapter(BasePlatformAdapter):
         thread_id = self._metadata_thread_id(metadata)
         for chunk in chunks[1:]:
             sent_msg = None
+            continuation_error: Exception | None = None
             reply_to_id = int(prev_id) if prev_id else None
             thread_kwargs = self._thread_kwargs_for_send(
                 chat_id,
@@ -3449,6 +3450,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 "[%s] Overflow continuation no-reply retry failed: %s",
                                 self.name, _retry_err,
                             )
+                            continuation_error = _retry_err
                             sent_msg = None
                             break
                     if use_markdown:
@@ -3456,12 +3458,14 @@ class TelegramAdapter(BasePlatformAdapter):
                             # try plain text on next loop iteration
                             lossy_markdown_fallback = True
                             continue
+                        continuation_error = send_err
                         sent_msg = None
                         break
                     logger.warning(
                         "[%s] Overflow continuation send failed: %s",
                         self.name, send_err,
                     )
+                    continuation_error = send_err
                     sent_msg = None
                     break
             if sent_msg is None:
@@ -3479,11 +3483,18 @@ class TelegramAdapter(BasePlatformAdapter):
                     re.sub(r" \(\d+/\d+\)$", "", delivered)
                     for delivered in delivered_chunks
                 )
+                error_text = "overflow_continuation_failed"
+                retry_after = None
+                if continuation_error is not None:
+                    retry_after = getattr(continuation_error, "retry_after", None)
+                    if retry_after is not None or "retry after" in str(continuation_error).lower():
+                        error_text = str(continuation_error)
                 return SendResult(
                     success=False,
                     message_id=prev_id,
-                    error="overflow_continuation_failed",
+                    error=error_text,
                     retryable=True,
+                    retry_after=retry_after,
                     raw_response={
                         "partial_overflow": True,
                         "delivered_chunks": 1 + len(continuation_ids),

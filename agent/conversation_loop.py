@@ -534,6 +534,80 @@ def _sync_failover_system_message(agent, api_messages, active_system_prompt):
     return sp
 
 
+def _expand_inline_skills_for_turn(
+    agent,
+    user_message: Any,
+    task_id: Optional[str],
+    persist_user_message: Optional[Any],
+) -> tuple[Any, Optional[Any]]:
+    text = None
+    text_index = None
+    mention_text = None
+    if isinstance(user_message, str):
+        text = user_message
+        mention_text = user_message
+    elif isinstance(user_message, list):
+        text_parts = []
+        for index, part in enumerate(user_message):
+            if (
+                isinstance(part, dict)
+                and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+            ):
+                text_parts.append((index, part["text"]))
+        if text_parts:
+            text_index, text = text_parts[0]
+            mention_text = "\n".join(value for _, value in text_parts)
+
+    if text is None:
+        return user_message, persist_user_message
+
+    if isinstance(persist_user_message, str):
+        mention_text = persist_user_message
+    elif isinstance(persist_user_message, list):
+        persisted_text_parts = []
+        for part in persist_user_message:
+            if (
+                isinstance(part, dict)
+                and part.get("type") == "text"
+                and isinstance(part.get("text"), str)
+            ):
+                persisted_text_parts.append(part["text"])
+        mention_text = "\n".join(persisted_text_parts)
+
+    if not mention_text or "$" not in mention_text:
+        return user_message, persist_user_message
+
+    try:
+        from agent.skill_commands import expand_inline_skill_mentions
+
+        expanded = expand_inline_skill_mentions(
+            text,
+            task_id=task_id,
+            platform=getattr(agent, "platform", None),
+            mention_text=mention_text,
+        )
+    except Exception:
+        logger.debug("Inline skill mention expansion failed", exc_info=True)
+        return user_message, persist_user_message
+
+    if expanded is None:
+        return user_message, persist_user_message
+
+    expanded_text, _loaded, _missing = expanded
+    if text_index is None:
+        model_message = expanded_text
+    else:
+        model_message = [
+            dict(part) if isinstance(part, dict) else part for part in user_message
+        ]
+        model_message[text_index]["text"] = expanded_text
+
+    if persist_user_message is None:
+        persist_user_message = user_message
+    return model_message, persist_user_message
+
+
 def run_conversation(
     agent,
     user_message: Any,
@@ -578,6 +652,13 @@ def run_conversation(
                     persist_user_message = _decoded_message
         except Exception:
             pass
+
+    user_message, persist_user_message = _expand_inline_skills_for_turn(
+        agent,
+        user_message,
+        task_id,
+        persist_user_message,
+    )
 
     # ── Per-turn setup (the prologue) ──
     # All once-per-turn setup — stdio guarding, retry-counter resets, user

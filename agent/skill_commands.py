@@ -21,10 +21,42 @@ from agent.skill_preprocessing import (
 logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
+_inline_skill_commands: Dict[str, Dict[str, Any]] = {}
 _skill_commands_platform: Optional[str] = None
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+_INLINE_SKILL_TOKEN = re.compile(
+    r"(?P<ticks>`+)|(?<![\w\\$])\$(?P<name>[A-Za-z][A-Za-z0-9_-]*)"
+)
+_INLINE_SHELL_NAMES = frozenset({
+    "BASH_SOURCE",
+    "EDITOR",
+    "FUNCNAME",
+    "HOME",
+    "HOSTNAME",
+    "HOSTTYPE",
+    "IFS",
+    "LANG",
+    "LINENO",
+    "MACHTYPE",
+    "OLDPWD",
+    "PAGER",
+    "PATH",
+    "PS1",
+    "PS2",
+    "PWD",
+    "RANDOM",
+    "SHELL",
+    "SHLVL",
+    "TERM",
+    "TMPDIR",
+    "USER",
+    "VISUAL",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_DATA_HOME",
+})
 
 # ---------------------------------------------------------------------------
 # Skill-scaffolding markers and the canonical extractor.
@@ -323,9 +355,11 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     Returns:
         Dict mapping "/skill-name" to {name, description, skill_md_path, skill_dir}.
     """
-    global _skill_commands, _skill_commands_platform
+    global _skill_commands, _inline_skill_commands, _skill_commands_platform
     _skill_commands_platform = _resolve_skill_commands_platform()
     _skill_commands = {}
+    _inline_skill_commands = {}
+    inline_ambiguous: set[str] = set()
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, skill_matches_environment, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
@@ -375,6 +409,19 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
                     if not cmd_name:
                         continue
+                    cmd_key = f"/{cmd_name}"
+                    skill_info = {
+                        "name": name,
+                        "description": description or f"Invoke the {name} skill",
+                        "skill_md_path": str(skill_md),
+                        "skill_dir": str(skill_md.parent),
+                    }
+                    existing_inline = _inline_skill_commands.get(cmd_key)
+                    if existing_inline is None and cmd_key not in inline_ambiguous:
+                        _inline_skill_commands[cmd_key] = skill_info
+                    elif existing_inline and existing_inline.get("name") != name:
+                        _inline_skill_commands.pop(cmd_key, None)
+                        inline_ambiguous.add(cmd_key)
                     # Skip if this skill's auto-generated /command collides
                     # with a core Hermes slash command (name or alias). The
                     # skill remains fully loadable via /skill <name>.
@@ -392,7 +439,6 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     # distinct frontmatter names can normalize to the same
                     # slug (e.g. "git_helper" vs "git-helper"). First-wins
                     # preserves local-before-external precedence.
-                    cmd_key = f"/{cmd_name}"
                     if cmd_key in _skill_commands:
                         logger.warning(
                             "Skill %r maps to slash command %s already claimed "
@@ -400,12 +446,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                             name, cmd_key, _skill_commands[cmd_key]["name"],
                         )
                         continue
-                    _skill_commands[cmd_key] = {
-                        "name": name,
-                        "description": description or f"Invoke the {name} skill",
-                        "skill_md_path": str(skill_md),
-                        "skill_dir": str(skill_md.parent),
-                    }
+                    _skill_commands[cmd_key] = skill_info
                 except Exception:
                     continue
     except Exception:
@@ -426,6 +467,15 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     ):
         scan_skill_commands()
     return _skill_commands
+
+
+def get_inline_skill_commands() -> Dict[str, Dict[str, Any]]:
+    if (
+        not _inline_skill_commands
+        or _skill_commands_platform != _resolve_skill_commands_platform()
+    ):
+        scan_skill_commands()
+    return _inline_skill_commands
 
 
 def reload_skills() -> Dict[str, Any]:
@@ -517,6 +567,7 @@ def build_skill_invocation_message(
     user_instruction: str = "",
     task_id: str | None = None,
     runtime_note: str = "",
+    _command_map: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Optional[str]:
     """Build the user message content for a skill slash command invocation.
 
@@ -527,7 +578,7 @@ def build_skill_invocation_message(
     Returns:
         The formatted message string, or None if the skill wasn't found.
     """
-    commands = get_skill_commands()
+    commands = get_skill_commands() if _command_map is None else _command_map
     skill_info = commands.get(cmd_key)
     if not skill_info:
         return None
@@ -612,6 +663,7 @@ def build_stacked_skill_invocation_message(
     cmd_keys: list[str],
     user_instruction: str = "",
     task_id: str | None = None,
+    _command_map: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Optional[tuple[str, list[str], list[str]]]:
     """Build the user message for a stacked multi-skill slash invocation.
 
@@ -623,7 +675,7 @@ def build_stacked_skill_invocation_message(
         ``(message, loaded_skill_names, missing_skill_names)`` or ``None``
         when no skill could be loaded at all.
     """
-    commands = get_skill_commands()
+    commands = get_skill_commands() if _command_map is None else _command_map
 
     loaded_names: list[str] = []
     missing: list[str] = []
@@ -688,6 +740,96 @@ def build_stacked_skill_invocation_message(
 
     header = "\n".join(header_lines)
     return ("\n\n".join([header, *skill_blocks]), loaded_names, missing)
+
+
+def _resolve_inline_skill_command_keys(
+    text: str,
+    platform: str | None = None,
+) -> list[str]:
+    if not text or text.startswith(_SKILL_INVOCATION_PREFIX):
+        return []
+
+    mentions = extract_skill_mentions(text)
+    if not mentions:
+        return []
+
+    commands = get_inline_skill_commands()
+    try:
+        from agent.skill_utils import get_disabled_skill_names
+
+        disabled = get_disabled_skill_names(platform=platform)
+    except Exception:
+        disabled = set()
+
+    keys: list[str] = []
+    for name in mentions:
+        cmd_key = f"/{name.lower().replace('_', '-')}"
+        skill_info = commands.get(cmd_key)
+        if not skill_info or skill_info.get("name") in disabled:
+            continue
+        if cmd_key not in keys:
+            keys.append(cmd_key)
+        if len(keys) == _MAX_STACKED_SKILLS:
+            break
+    return keys
+
+
+def extract_skill_mentions(text: str) -> list[str]:
+    if not text or "$" not in text:
+        return []
+
+    mentions: list[str] = []
+    code_ticks: int | None = None
+    for match in _INLINE_SKILL_TOKEN.finditer(text):
+        ticks = match.group("ticks")
+        if ticks is not None:
+            width = len(ticks)
+            if code_ticks is None:
+                code_ticks = width
+            elif code_ticks == width:
+                code_ticks = None
+            continue
+        if code_ticks is not None:
+            continue
+
+        name = match.group("name")
+        if name in _INLINE_SHELL_NAMES:
+            continue
+        mentions.append(name)
+    return mentions
+
+
+def expand_inline_skill_mentions(
+    text: str,
+    task_id: str | None = None,
+    platform: str | None = None,
+    mention_text: str | None = None,
+) -> Optional[tuple[str, list[str], list[str]]]:
+    cmd_keys = _resolve_inline_skill_command_keys(
+        text if mention_text is None else mention_text,
+        platform=platform,
+    )
+    if not cmd_keys:
+        return None
+
+    if len(cmd_keys) == 1:
+        message = build_skill_invocation_message(
+            cmd_keys[0],
+            text,
+            task_id=task_id,
+            _command_map=get_inline_skill_commands(),
+        )
+        if message is None:
+            return None
+        skill_name = str(get_inline_skill_commands()[cmd_keys[0]].get("name") or "")
+        return message, [skill_name], []
+
+    return build_stacked_skill_invocation_message(
+        cmd_keys,
+        text,
+        task_id=task_id,
+        _command_map=get_inline_skill_commands(),
+    )
 
 
 def build_preloaded_skills_prompt(

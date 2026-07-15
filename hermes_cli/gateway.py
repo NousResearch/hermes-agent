@@ -2744,7 +2744,8 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=0
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple
@@ -2783,7 +2784,8 @@ WantedBy=multi-user.target
 Description={SERVICE_DESCRIPTION}
 After=network-online.target
 Wants=network-online.target
-StartLimitIntervalSec=0
+StartLimitIntervalSec=60
+StartLimitBurst=5
 
 [Service]
 Type=simple

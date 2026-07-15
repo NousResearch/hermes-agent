@@ -2,7 +2,9 @@
 Cron job storage and management.
 
 Jobs are stored in ~/.hermes/cron/jobs.json
-Output is saved to ~/.hermes/cron/output/{job_id}/{timestamp}.md
+Output is saved to ~/.hermes/cron/output/{name-slug}-{job_id}/{timestamp}.md
+(plain {job_id} when the job name slugifies to empty; legacy {job_id}
+directories are migrated on the next output write).
 """
 
 import contextlib
@@ -341,6 +343,103 @@ def _job_output_dir(job_id: str) -> Path:
     if Path(text).is_absolute() or Path(text).drive:
         raise ValueError(f"Invalid cron job id for output path: {job_id!r}")
     return _current_cron_store().output_dir / text
+
+
+# Cap on the slugified-name prefix of an output directory. Keeps
+# ``{name-slug}-{job_id}`` comfortably short even for verbose job names.
+_OUTPUT_SLUG_MAX_CHARS = 40
+
+
+def _slugify_job_name(name: Optional[Any]) -> str:
+    """Slugify a job name for use as an output-directory prefix.
+
+    Strictly sanitized so a hostile job name can never influence the path
+    beyond a cosmetic prefix: lowercase ``[a-z0-9]`` runs joined by single
+    hyphens, everything else stripped, capped at ``_OUTPUT_SLUG_MAX_CHARS``.
+    Returns ``""`` when nothing survives (callers fall back to the plain
+    ``{job_id}`` directory name).
+    """
+    runs = re.findall(r"[a-z0-9]+", str(name or "").lower())
+    return "-".join(runs)[:_OUTPUT_SLUG_MAX_CHARS].rstrip("-")
+
+
+def _existing_job_output_dirs(job_id: str) -> List[Path]:
+    """Return every existing output directory belonging to *job_id*.
+
+    Covers the legacy ``{job_id}`` form and any ``{slug}-{job_id}`` form
+    (including stale slugs from before a job rename). Validates *job_id*
+    via :func:`_job_output_dir` first so unsafe legacy IDs fail closed
+    before any path is composed. Order is deterministic: legacy dir first,
+    then slug dirs sorted by name.
+    """
+    legacy_dir = _job_output_dir(job_id)
+    dirs: List[Path] = []
+    if legacy_dir.is_dir():
+        dirs.append(legacy_dir)
+    suffix = f"-{job_id}"
+    try:
+        siblings = sorted(legacy_dir.parent.iterdir())
+    except OSError:
+        siblings = []
+    for candidate in siblings:
+        if candidate.name.endswith(suffix) and candidate.is_dir():
+            dirs.append(candidate)
+    return dirs
+
+
+def resolve_job_output_dir(
+    job_id: str,
+    job_name: Optional[str] = None,
+    *,
+    create: bool = False,
+) -> Path:
+    """Resolve the validated output directory for a job.
+
+    The canonical directory name is ``{name-slug}-{job_id}`` (plain
+    ``{job_id}`` when the name slugifies to empty). The job ID is validated
+    exactly like :func:`_job_output_dir` — unsafe legacy IDs fail closed —
+    and the slug is strictly sanitized, so the result can never escape the
+    cron output root.
+
+    When *job_name* is omitted, the job's current name is looked up from the
+    store (best effort; unknown jobs resolve by ID alone).
+
+    With ``create=True`` (write path) an existing legacy ``{job_id}`` or
+    stale ``{old-slug}-{job_id}`` directory is migrated (renamed) to the
+    canonical name; if the rename fails the existing directory is reused so
+    output is never split across directories. With ``create=False`` (read
+    path) nothing is renamed — the existing directory is merely located.
+    """
+    legacy_dir = _job_output_dir(job_id)  # validates job_id, fails closed
+    if job_name is None:
+        # Best effort — a broken store must never turn into a failure to
+        # save/read output; we just fall back to ID-only resolution.
+        try:
+            job = get_job(job_id)
+        except Exception:
+            job = None
+        if job:
+            job_name = job.get("name")
+    slug = _slugify_job_name(job_name)
+    preferred = legacy_dir.parent / f"{slug}-{job_id}" if slug else legacy_dir
+    if preferred.exists():
+        return preferred
+    existing = [d for d in _existing_job_output_dirs(job_id) if d != preferred]
+    if not existing:
+        return preferred
+    current = existing[0]
+    if not create:
+        return current
+    try:
+        current.rename(preferred)
+    except OSError as exc:
+        logger.warning(
+            "Failed to migrate cron output dir %s -> %s: %s",
+            current.name, preferred.name, exc,
+        )
+        return current
+    logger.info("Migrated cron output dir %s -> %s", current.name, preferred.name)
+    return preferred
 
 
 def _normalize_skill_list(skill: Optional[str] = None, skills: Optional[Any] = None) -> List[str]:
@@ -1459,14 +1558,16 @@ def remove_job(job_id: str) -> bool:
         original_len = len(jobs)
         jobs = [j for j in jobs if j["id"] != canonical_id]
         if len(jobs) < original_len:
-            # Resolve the output dir BEFORE saving so a legacy unsafe ID (e.g.
+            # Resolve the output dirs BEFORE saving so a legacy unsafe ID (e.g.
             # left over from before the create-time guard) fails closed without
             # half-applying the removal.
-            job_output_dir = _job_output_dir(canonical_id)
+            job_output_dirs = _existing_job_output_dirs(canonical_id)
             save_jobs(jobs)
-            # Clean up output directory to prevent orphaned dirs accumulating
-            if job_output_dir.exists():
-                shutil.rmtree(job_output_dir)
+            # Clean up output directories (new-style {slug}-{id} and legacy
+            # {id} alike) to prevent orphaned dirs accumulating
+            for job_output_dir in job_output_dirs:
+                if job_output_dir.exists():
+                    shutil.rmtree(job_output_dir)
             return True
     return False
 
@@ -2164,10 +2265,15 @@ def _prune_job_output(job_output_dir: Path, keep: int) -> int:
     return deleted
 
 
-def save_job_output(job_id: str, output: str):
-    """Save job output to file."""
+def save_job_output(job_id: str, output: str, job_name: Optional[str] = None):
+    """Save job output to file under the job's ``{name-slug}-{job_id}`` dir.
+
+    ``job_name`` is looked up from the store when omitted. Existing legacy
+    ``{job_id}`` (or stale-slug) directories are migrated on the way in —
+    see :func:`resolve_job_output_dir`.
+    """
     ensure_dirs()
-    job_output_dir = _job_output_dir(job_id)
+    job_output_dir = resolve_job_output_dir(job_id, job_name, create=True)
     job_output_dir.mkdir(parents=True, exist_ok=True)
     _secure_dir(job_output_dir)
 

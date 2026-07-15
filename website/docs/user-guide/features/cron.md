@@ -490,7 +490,7 @@ cronjob(
 
 **How it works:**
 
-- When Job 2 fires, Hermes reads Job 1's most recent output from `~/.hermes/cron/output/{job1_id}/*.md`
+- When Job 2 fires, Hermes reads Job 1's most recent output from `~/.hermes/cron/output/{job1-name-slug}-{job1_id}/*.md` (legacy `{job1_id}` directories are found too)
 - That output is prepended to Job 2's prompt automatically
 - Job 2 doesn't need to hardcode "read this file" — it receives the content as context
 - The chain can be any length: Job 1 → Job 2 → Job 3 → ...
@@ -730,7 +730,7 @@ The referenced jobs' most recent completed outputs are injected above the prompt
 
 ## Job storage
 
-Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
+Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to `~/.hermes/cron/output/{name-slug}-{job_id}/{timestamp}.md`, where `{name-slug}` is the job name lowercased and reduced to hyphen-separated alphanumeric runs (capped at 40 characters). When the name contains no usable characters, the directory is plain `{job_id}`. Directories created under the old `{job_id}`-only scheme are renamed automatically the next time the job saves output.
 
 :::tip
 Ask the agent to manage jobs through the `cronjob` tool, `hermes cron edit`, or `/cron` — not by patching `jobs.json` directly. Direct edits can fail silently when [file write safety](../security.md#file-write-safety) blocks the path (for example when `HERMES_WRITE_SAFE_ROOT` is set), and the [file-mutation verifier](../configuration.md#file-mutation-verifier) footer is the authoritative signal that nothing was saved.

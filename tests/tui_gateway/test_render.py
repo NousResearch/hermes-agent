@@ -31,9 +31,7 @@ def test_render_message_uses_cols_when_supported(monkeypatch):
 
 
 def test_render_message_falls_back_for_legacy_signature(monkeypatch):
-    def format_response(text, *, cols=None):
-        if cols is not None:
-            raise TypeError("cols unsupported")
+    def format_response(text):
         return text.upper()
 
     _install_rich_output(monkeypatch, format_response=format_response)
@@ -78,9 +76,7 @@ def test_render_diff_uses_cols_when_supported(monkeypatch):
 
 
 def test_render_diff_falls_back_for_legacy_signature(monkeypatch):
-    def render_diff(text, *, cols=None):
-        if cols is not None:
-            raise TypeError("cols unsupported")
+    def render_diff(text):
         return f"legacy:{text}"
 
     _install_rich_output(monkeypatch, render_diff=render_diff)
@@ -115,9 +111,7 @@ def test_make_stream_renderer_uses_cols_when_supported(monkeypatch):
 
 def test_make_stream_renderer_falls_back_for_legacy_signature(monkeypatch):
     class StreamingRenderer:
-        def __init__(self, *, cols=None):
-            if cols is not None:
-                raise TypeError("cols unsupported")
+        def __init__(self):
             self.legacy = True
 
     _install_rich_output(monkeypatch, StreamingRenderer=StreamingRenderer)

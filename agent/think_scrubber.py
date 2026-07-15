@@ -123,10 +123,15 @@ class StreamingThinkScrubber:
                     buf, self._CLOSE_TAGS,
                 )
                 if close_idx == -1:
-                    # No close yet — hold back a potential partial
-                    # close-tag prefix; discard everything else.
-                    held = self._max_partial_suffix(buf, self._CLOSE_TAGS)
-                    self._buf = buf[-held:] if held else ""
+                    # No close yet — accumulate everything into _buf
+                    # so flush() can recover the final answer if the
+                    # model inlined reasoning + answer inside an
+                    # unclosed <think> (see flush() docstring).
+                    # _max_partial_suffix is no longer needed here
+                    # because we keep the full buffer; the next feed()
+                    # will prepend _buf to the new text and re-scan
+                    # for close tags across the boundary.
+                    self._buf = (self._buf or "") + buf
                     return "".join(out)
                 # Found close: discard block content + tag, continue.
                 buf = buf[close_idx + close_len:]
@@ -204,14 +209,64 @@ class StreamingThinkScrubber:
     def flush(self) -> str:
         """End-of-stream flush.
 
-        If still inside an unterminated block, held-back content is
-        discarded — leaking partial reasoning is worse than a
-        truncated answer.  Otherwise the held-back partial-tag tail is
-        emitted verbatim (it turned out not to be a real tag prefix).
+        If still inside an unterminated block, the default behaviour is
+        to discard held-back content — leaking partial reasoning is
+        worse than a truncated answer.
+
+        However, some OpenAI-compatible LLM gateways (e.g. relays
+        fronting MiniMax-M1 / Step-3.7-Flash / Intern-S2-Preview)
+        inline the model's reasoning AND the final answer inside
+        ``delta.content`` wrapped in a single ``<think>`` open tag with
+        NO matching ``</think>`` close. In that pattern the model
+        intends:
+
+            reasoning = "The user is asking for 2+2. The answer is 4."
+            final_answer = "4"
+
+        …and streams it as a single content sequence with the answer
+        on the line after the reasoning prose. Discarding everything
+        at flush() time throws away the final answer too, leaving the
+        agent with an empty ``content`` and forcing an "Empty response
+        from model — retrying" loop.
+
+        To recover the answer in this case without leaking reasoning
+        on truncated streams, we look for the last newline in the
+        held-back buffer and emit whatever came after it as the
+        visible response. Reasoning models that follow the
+        reasoning-then-newline-then-answer pattern are recovered; if
+        there is no newline (e.g. pure truncated reasoning with no
+        answer) the original discard-everything behaviour is
+        preserved.
+
+        Set ``recover_unclosed_final_answer=False`` on the scrubber
+        instance (or via the ``AICQ_HERMES_RECOVER_UNCLOSED_FINAL_ANSWER``
+        env var, see aicq-hermes plugin) to opt out and restore the
+        strict discard behaviour.
         """
         if self._in_block:
+            held = self._buf
             self._buf = ""
             self._in_block = False
+            if not held:
+                return ""
+            # Opt-out knob for plugins/users who want the strict
+            # discard behaviour (e.g. when running against a gateway
+            # that emits properly closed tags).
+            if not getattr(self, "recover_unclosed_final_answer", True):
+                return ""
+            # Find the last newline; emit whatever came after it as
+            # the visible response. Reasoning models that follow the
+            # reasoning-then-newline-then-answer pattern are recovered.
+            last_nl = held.rfind("\n")
+            if last_nl != -1 and last_nl + 1 < len(held):
+                tail = held[last_nl + 1:]
+                tail = self._strip_orphan_close_tags(tail)
+                if tail:
+                    self._last_emitted_ended_newline = tail.endswith("\n")
+                return tail
+            # No newline — fall through to the original discard
+            # behaviour. This preserves the existing test contract:
+            #   _drive(s, ["<think>reasoning text with no close"]) == ""
             return ""
         tail = self._buf
         self._buf = ""

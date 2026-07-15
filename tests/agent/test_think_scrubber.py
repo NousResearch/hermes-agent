@@ -192,6 +192,61 @@ class TestFlushBehaviour:
         s = StreamingThinkScrubber()
         assert s.flush() == ""
 
+    def test_flush_recovers_final_answer_after_newline_in_unclosed_block(self) -> None:
+        """Unclosed <think> with reasoning + newline + final answer.
+
+        Some OpenAI-compatible LLM gateways (e.g. relays fronting
+        MiniMax-M1 / Step-3.7-Flash / Intern-S2-Preview) inline the
+        model's reasoning AND the final answer inside ``delta.content``
+        wrapped in a single ``<think>`` open tag with NO matching
+        ``</think>`` close. The model intends:
+
+            reasoning = "The user is asking for 2+2. The answer is 4."
+            final_answer = "4"
+
+        …and streams it as a single content sequence with the answer
+        on the line after the reasoning prose. flush() should recover
+        the final answer rather than discarding it.
+        """
+        s = StreamingThinkScrubber()
+        deltas = ["<think>The user is asking for 2+2. The answer is 4.\n4"]
+        assert _drive(s, deltas) == "4"
+
+    def test_flush_recovers_final_answer_split_across_deltas(self) -> None:
+        """Same recovery, but reasoning and answer arrive in separate deltas."""
+        s = StreamingThinkScrubber()
+        deltas = [
+            "<think>The user is asking for 2+2.",
+            " The answer is 4.\n",
+            "4",
+        ]
+        assert _drive(s, deltas) == "4"
+
+    def test_flush_recovers_final_answer_multiline_reasoning(self) -> None:
+        """Multi-line reasoning followed by the final answer.
+
+        The recovery picks the LAST newline, so multi-line reasoning
+        prose is correctly stripped and only the final answer is
+        emitted.
+        """
+        s = StreamingThinkScrubber()
+        deltas = [
+            "<think>Let me think about this.\n",
+            "2+2 is definitely 4.\n",
+            "I'm confident the answer is 4.\n",
+            "4",
+        ]
+        assert _drive(s, deltas) == "4"
+
+    def test_flush_opt_out_recovers_unclosed_final_answer(self) -> None:
+        """Plugins can opt out of the recovery by setting
+        ``recover_unclosed_final_answer=False`` on the scrubber instance.
+        """
+        s = StreamingThinkScrubber()
+        s.recover_unclosed_final_answer = False
+        deltas = ["<think>reasoning\nfinal answer"]
+        assert _drive(s, deltas) == ""
+
 
 class TestRealisticStreaming:
     """Character-by-character streaming must work as well as larger chunks."""

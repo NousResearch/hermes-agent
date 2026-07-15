@@ -18,6 +18,20 @@ function isWslEnvironment(env = process.env, platform = process.platform, kernel
   }
 }
 
+function isVirtualizedGpuEnvironment(platform = process.platform) {
+  if (platform !== 'linux') {
+    return false
+  }
+
+  try {
+    const vendor = fs.readFileSync('/sys/class/dmi/id/sys_vendor', 'utf8').trim()
+
+    return /qemu/i.test(vendor)
+  } catch {
+    return false
+  }
+}
+
 function isWindowsBinaryPathInWsl(
   filePath,
   options: { isWsl?: boolean; env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform } = {}
@@ -92,6 +106,10 @@ function detectRemoteDisplay(options: { env?: NodeJS.ProcessEnv; platform?: Node
     if (display.includes(':') && display.split(':')[0]) {
       return `x11-forwarding (DISPLAY=${display})`
     }
+
+    if (isVirtualizedGpuEnvironment(platform)) {
+      return 'virtualized-gpu (QEMU/UTM detected via DMI sys_vendor)'
+    }
   }
 
   if (platform === 'win32') {
@@ -107,4 +125,10 @@ function detectRemoteDisplay(options: { env?: NodeJS.ProcessEnv; platform?: Node
   return null
 }
 
-export { bundledRuntimeImportCheck, detectRemoteDisplay, isWindowsBinaryPathInWsl, isWslEnvironment }
+export {
+  bundledRuntimeImportCheck,
+  detectRemoteDisplay,
+  isVirtualizedGpuEnvironment,
+  isWindowsBinaryPathInWsl,
+  isWslEnvironment
+}

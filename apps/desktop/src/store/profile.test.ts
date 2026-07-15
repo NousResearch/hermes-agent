@@ -2,11 +2,13 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { HermesConnection } from '@/global'
+import type { ProfileInfo } from '@/types/hermes'
 
 // Keep profile.ts's side-effecting imports inert: the gateway socket layer and
 // the REST query client must not run for real in a unit test.
 const ensureGatewayForProfile = vi.fn(async () => undefined)
 const $gateway = atom<unknown>({ id: 'live-socket' })
+const resetStarmapGraph = vi.fn()
 
 vi.mock('@/store/gateway', () => ({ $gateway, ensureGatewayForProfile }))
 vi.mock('@/hermes', () => ({
@@ -14,9 +16,22 @@ vi.mock('@/hermes', () => ({
   setApiRequestProfile: vi.fn()
 }))
 vi.mock('@/lib/query-client', () => ({ queryClient: { invalidateQueries: vi.fn() } }))
+vi.mock('@/store/starmap', () => ({ resetStarmapGraph }))
 
-const { $activeGatewayProfile, ensureGatewayProfile } = await import('./profile')
+const { $activeGatewayProfile, $profiles, ensureGatewayProfile, refreshProfiles } = await import('./profile')
 const { $connection } = await import('./session')
+const { queryClient } = await import('@/lib/query-client')
+const { getProfiles } = await import('@/hermes')
+
+const profile = (name: string, isDefault = false): ProfileInfo => ({
+  has_env: false,
+  is_default: isDefault,
+  model: null,
+  name,
+  path: `/tmp/hermes/${name}`,
+  provider: null,
+  skill_count: 0
+})
 
 const remoteConn = (over: Partial<HermesConnection> = {}): HermesConnection =>
   ({ baseUrl: 'https://hermes-roy.tail.ts.net', mode: 'remote', profile: 'vps-remote', ...over }) as HermesConnection
@@ -32,7 +47,10 @@ beforeEach(() => {
   $gateway.set({ id: 'live-socket' })
   $activeGatewayProfile.set('default')
   $connection.set(localConn())
+  $profiles.set([])
   vi.stubGlobal('window', { hermesDesktop: { getConnection } })
+  vi.mocked(queryClient.invalidateQueries).mockClear()
+  resetStarmapGraph.mockClear()
 })
 
 afterEach(() => {
@@ -85,5 +103,34 @@ describe('ensureGatewayProfile → $connection sync (#46651)', () => {
     expect(getConnection).not.toHaveBeenCalled()
     expect(ensureGatewayForProfile).not.toHaveBeenCalled()
     expect($connection.get()?.mode).toBe('remote')
+  })
+})
+
+describe('profile-scoped cache invalidation', () => {
+  it('drops the memory graph cache when the active gateway profile changes', () => {
+    $activeGatewayProfile.set('coder')
+
+    expect(queryClient.invalidateQueries).toHaveBeenCalled()
+    expect(resetStarmapGraph).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('refreshProfiles shared rail list (#49289)', () => {
+  it('removes a deleted profile from the shared $profiles cache after Manage Profiles refreshes', async () => {
+    $profiles.set([profile('default', true), profile('test1')])
+    vi.mocked(getProfiles).mockResolvedValueOnce({ profiles: [profile('default', true)] })
+
+    await refreshProfiles()
+
+    expect($profiles.get().map(profile => profile.name)).toEqual(['default'])
+  })
+
+  it('leaves the shared $profiles cache intact when the refresh fails', async () => {
+    $profiles.set([profile('default', true), profile('test1')])
+    vi.mocked(getProfiles).mockRejectedValueOnce(new Error('backend unavailable'))
+
+    await expect(refreshProfiles()).rejects.toThrow('backend unavailable')
+
+    expect($profiles.get().map(profile => profile.name)).toEqual(['default', 'test1'])
   })
 })

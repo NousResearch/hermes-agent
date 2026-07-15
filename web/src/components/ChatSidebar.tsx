@@ -31,7 +31,7 @@ import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
 import { ReasoningPicker } from "@/components/ReasoningPicker";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
-import { api, HERMES_BASE_PATH, buildWsAuthParam } from "@/lib/api";
+import { api, buildWsUrl } from "@/lib/api";
 import { titleFromSessionInfoPayload } from "@/lib/chat-title";
 
 import { cn } from "@/lib/utils";
@@ -72,7 +72,7 @@ const STATE_TONE: Record<
 
 interface ChatSidebarProps {
   channel: string;
-  /** Management profile from the dashboard switcher — scopes session.create. */
+  /** Chat profile from the dashboard switcher / URL scope. */
   profile?: string;
   className?: string;
   onDashboardNewSessionRequest?: () => void;
@@ -103,8 +103,9 @@ export function ChatSidebar({
   // session boots from. We deliberately don't use the sidecar's `session.info`
   // model: that's a one-time snapshot of the throwaway sidecar agent taken when
   // its session is created, and it never updates when the model is changed
-  // elsewhere, so the badge would go stale. `/api/model/info` is profile-scoped
-  // by `fetchJSON`, so it reads the same profile this sidebar is scoped to.
+  // elsewhere, so the badge would go stale. Pass the chat profile explicitly so
+  // this card stays scoped to the PTY even if the global dashboard switcher
+  // changes while the chat is open.
   const [effectiveModel, setEffectiveModel] = useState("");
   // Whether the effective model supports reasoning effort — gates the
   // ReasoningPicker. Read from the same `/api/model/info` capabilities the
@@ -125,7 +126,7 @@ export function ChatSidebar({
 
   const refreshEffectiveModel = useCallback(() => {
     void api
-      .getModelInfo()
+      .getModelInfo(profile)
       .then((r) => {
         if (r?.model) setEffectiveModel(String(r.model));
         setSupportsReasoning(!!r?.capabilities?.supports_reasoning);
@@ -135,7 +136,7 @@ export function ChatSidebar({
       .catch(() => {
         // Best-effort: keep the last known label rather than blanking it.
       });
-  }, []);
+  }, [profile]);
 
   // Profile or PTY channel change tears down both WebSockets. Bump `version`
   // (same path as the manual Reconnect button) so the gateway client is
@@ -208,6 +209,7 @@ export function ChatSidebar({
       gw.close();
     };
     // `profile` is read from render; scope changes bump `version` → new `gw`.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [gw]);
 
   // Event subscriber WebSocket — receives the rebroadcast of every
@@ -230,15 +232,11 @@ export function ChatSidebar({
     let unmounting = false;
     let ws: WebSocket | null = null;
     void (async () => {
-      const [authName, authValue] = await buildWsAuthParam();
-      if (!authValue || unmounting) {
+      const url = await buildWsUrl("/api/events", { channel });
+      if (unmounting) {
         return;
       }
-      const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const qs = new URLSearchParams({ [authName]: authValue, channel });
-      ws = new WebSocket(
-        `${proto}//${window.location.host}${HERMES_BASE_PATH}/api/events?${qs.toString()}`,
-      );
+      ws = new WebSocket(url);
 
       // `unmounting` suppresses the banner during cleanup — `ws.close()`
       // from the effect's return fires a close event with code 1005 that
@@ -348,6 +346,7 @@ export function ChatSidebar({
         <Card className="py-0">
           <ReasoningPicker
             currentModel={modelName}
+            profile={profile}
             refreshKey={modelRefreshKey}
             onChanged={(effort) =>
               setModelNotice(
@@ -383,7 +382,7 @@ export function ChatSidebar({
                 onClick={reconnect}
                 prefix={<RefreshCw />}
               >
-                reconnect
+                reconnect tools feed
               </Button>
             )}
           </div>
@@ -395,17 +394,20 @@ export function ChatSidebar({
           // Same path the Models page uses (REST /api/model/set), not the
           // sidecar config.set RPC, which didn't reliably land in the
           // config.yaml the agent boots from. Always persisted (alwaysGlobal).
-          loader={api.getModelOptions}
+          loader={() => api.getModelOptions(profile)}
           alwaysGlobal
           onApply={async ({ provider, model, confirmExpensiveModel }) => {
             setModelNotice(null);
             setPendingReloadModel(null);
-            const result = await api.setModelAssignment({
-              confirm_expensive_model: confirmExpensiveModel,
-              scope: "main",
-              provider,
-              model,
-            });
+            const result = await api.setModelAssignment(
+              {
+                confirm_expensive_model: confirmExpensiveModel,
+                scope: "main",
+                provider,
+                model,
+              },
+              profile,
+            );
             // confirm_required => the dialog shows the expensive-model prompt
             // and calls back; don't announce until the user confirms.
             if (!result.confirm_required) {

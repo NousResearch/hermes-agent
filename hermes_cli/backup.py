@@ -450,7 +450,7 @@ def run_backup(args) -> None:
             print(f"    {p}")
 
     if skipped_dirs:
-        print(f"\n  Excluded directories:")
+        print("\n  Excluded directories:")
         for d in sorted(skipped_dirs):
             print(f"    {d}/")
 
@@ -721,8 +721,8 @@ def run_import(args) -> None:
             except ImportError:
                 # hermes_cli.profiles might not be available (fresh install)
                 if any(profiles_dir.iterdir()):
-                    print(f"\n  Profiles detected but aliases could not be created.")
-                    print(f"  Run: hermes profile list  (after installing hermes)")
+                    print("\n  Profiles detected but aliases could not be created.")
+                    print("  Run: hermes profile list  (after installing hermes)")
 
         # Guidance
         print()
@@ -762,6 +762,19 @@ _QUICK_STATE_FILES = (
     "channel_directory.json",
     "channel_aliases.json",
     "processes.json",
+    # Per-profile user-created stores that live outside the git checkout and
+    # are therefore destroyed if the update flow removes/replaces the file and
+    # the post-update schema-init re-creates an empty one (issue #52889). All
+    # are at $HERMES_HOME/<name> for the default/root profile; on non-root
+    # profiles the real path is outside HERMES_HOME and the entry is silently
+    # skipped (best-effort, same as the pairing stores). SQLite DBs are copied
+    # WAL-safely via _safe_copy_db.
+    "projects.db",                      # per-profile project store
+    "response_store.db",                # gateway conversation history / tool payloads
+    "memory_store.db",                  # holographic memory facts/entities
+    "verification_evidence.db",         # agent verification audit trail
+    "kanban.db",                        # default board (back-compat <root>/kanban.db)
+    "kanban/boards",                    # non-default boards: each <slug>/kanban.db + board metadata (workspaces/ + attachments/ are skipped as regenerable)
     # Pairing stores (generic + per-platform JSONs outside state.db)
     "pairing",                          # legacy location (gateway/pairing.py)
     "platforms/pairing",                # new location (gateway/pairing.py)
@@ -813,10 +826,22 @@ def create_quick_snapshot(
                 if not sub.is_file():
                     continue
                 sub_rel = sub.relative_to(home).as_posix()
+                # Skip heavy, regenerable per-board subtrees (scratch
+                # workspaces and task attachments can be large); we only need
+                # the board databases + their metadata to restore a board.
+                if "/workspaces/" in f"/{sub_rel}/" or "/attachments/" in f"/{sub_rel}/":
+                    continue
                 dst = snap_dir / sub_rel
                 dst.parent.mkdir(parents=True, exist_ok=True)
                 try:
-                    shutil.copy2(sub, dst)
+                    # Route SQLite DBs through the WAL-safe backup() path so a
+                    # board DB with an open WAL (the gateway may hold it at
+                    # snapshot time) is captured consistently.
+                    if sub.suffix == ".db":
+                        if not _safe_copy_db(sub, dst):
+                            continue
+                    else:
+                        shutil.copy2(sub, dst)
                     manifest[sub_rel] = dst.stat().st_size
                 except (OSError, PermissionError) as exc:
                     logger.warning("Could not snapshot %s: %s", sub_rel, exc)
@@ -1005,17 +1030,18 @@ def restore_cron_jobs_if_emptied(
 
     Config-version migrations have been observed to leave ``cron/jobs.json``
     valid-but-empty after an update, silently dropping every scheduled job
-    (issue #34600). The existing malformed-shape guards in ``cron/jobs.py``
-    don't catch this case because ``{"jobs": []}`` is perfectly valid JSON.
+    (issue #34600). The desktop scheduler can also overwrite the file with its
+    own small set of internally-tracked crons, causing partial loss (issue
+    #52144).
 
     This compares the *current* job count against the pre-update snapshot. If
-    the live file now has **zero** jobs while the snapshot captured **one or
-    more**, the snapshot copy of ``cron/jobs.json`` is restored in place.
+    the live file now has **fewer** jobs than the snapshot, the snapshot copy
+    of ``cron/jobs.json`` is restored in place.
 
     The check is deliberately conservative — it only ever restores when there
-    is unambiguous evidence of loss (snapshot had jobs, live file has none),
-    so a user who genuinely deleted all their jobs during/after the update is
-    never second-guessed, and an unreadable live file (count ``None``) is left
+    is unambiguous evidence of loss (snapshot had more jobs than live file),
+    so a user who genuinely deleted jobs during/after the update is never
+    second-guessed, and an unreadable live file (count ``None``) is left
     untouched so real corruption still surfaces.
 
     Args:
@@ -1035,15 +1061,21 @@ def restore_cron_jobs_if_emptied(
     live_path = home / _CRON_JOBS_REL
 
     live_count = _count_cron_jobs(live_path)
-    # Only act when the live file is readable AND empty. ``None`` (missing or
-    # unparseable) is intentionally left alone — that's a different failure
-    # mode the user should see rather than have papered over.
-    if live_count is None or live_count > 0:
+    # ``None`` (missing or unparseable) is intentionally left alone — that's a
+    # different failure mode the user should see rather than have papered over.
+    if live_count is None:
         return None
 
     snap_path = _quick_snapshot_root(home) / snapshot_id / _CRON_JOBS_REL
     snap_count = _count_cron_jobs(snap_path)
     if not snap_count:  # None or 0 — nothing worth restoring
+        return None
+
+    # Restore when live has FEWER jobs than the pre-update snapshot.
+    # Catches both total loss (0 vs N) and partial loss (1 vs 19) — the
+    # desktop scheduler can overwrite jobs.json with its own small set of
+    # internally-tracked crons after an update/restart.
+    if live_count >= snap_count:
         return None
 
     try:
@@ -1057,9 +1089,11 @@ def restore_cron_jobs_if_emptied(
 
     logger.warning(
         "Restored %d cron job(s) from pre-update snapshot %s "
-        "(cron/jobs.json was emptied during migration)",
+        "(live file had %d job(s), snapshot had %d — jobs were lost during migration)",
         snap_count,
         snapshot_id,
+        live_count,
+        snap_count,
     )
     return {"restored": True, "job_count": snap_count, "snapshot_id": snapshot_id}
 

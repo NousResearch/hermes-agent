@@ -955,6 +955,62 @@ class TestResolvePreToolBlock:
         )
         assert resolve_pre_tool_block("write_file", {}) is None
 
+    def test_approve_passes_plugin_rule_key_to_gate(self, monkeypatch):
+        from hermes_cli.plugins import resolve_pre_tool_block
+
+        seen = {}
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [
+                {
+                    "action": "approve",
+                    "message": "why",
+                    "rule_key": "write_file:ssh",
+                }
+            ],
+        )
+
+        def _approve(tool_name, reason, **kwargs):
+            seen["tool_name"] = tool_name
+            seen["reason"] = reason
+            seen["rule_key"] = kwargs.get("rule_key")
+            return {"approved": True, "message": None}
+
+        monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
+
+        assert resolve_pre_tool_block("write_file", {}) is None
+        assert seen == {
+            "tool_name": "write_file",
+            "reason": "why",
+            "rule_key": "write_file:ssh",
+        }
+
+    @pytest.mark.parametrize("rule_key", [None, "", "   ", 123, object()])
+    def test_approve_falls_back_to_tool_name_without_valid_rule_key(
+        self, monkeypatch, rule_key
+    ):
+        from hermes_cli.plugins import resolve_pre_tool_block
+
+        seen = {}
+        directive = {"action": "approve", "message": "why"}
+        if rule_key is not None:
+            directive["rule_key"] = rule_key
+
+        monkeypatch.setattr(
+            "hermes_cli.plugins.invoke_hook",
+            lambda hook_name, **kwargs: [directive],
+        )
+
+        def _approve(tool_name, reason, **kwargs):
+            seen["rule_key"] = kwargs.get("rule_key")
+            return {"approved": True, "message": None}
+
+        monkeypatch.setattr("tools.approval.request_tool_approval", _approve)
+
+        assert resolve_pre_tool_block("write_file", {}) is None
+        assert seen["rule_key"] == "write_file"
+
     def test_approve_gate_exception_fails_closed(self, monkeypatch):
         from hermes_cli.plugins import resolve_pre_tool_block
         monkeypatch.setattr(

@@ -1706,8 +1706,9 @@ class ElicitationHandler:
 
 
 def _make_redirect_secret_scrubber(original_url, header_keys):
-    """Build an httpx ``response`` event hook that strips secret headers on a
-    cross-origin redirect.
+    """Build an httpx ``request`` event hook that strips configured secret
+    headers from any outgoing request whose origin differs from the original
+    configured server URL.
 
     httpx only auto-strips the standard ``Authorization`` header (and not even
     that on an http->https same-host upgrade); it never strips custom auth
@@ -1715,27 +1716,33 @@ def _make_redirect_secret_scrubber(original_url, header_keys):
     for remote MCP servers (often ``${VAR}``-resolved secrets). Without this, a
     server URL that 30x-redirects to a foreign origin exfiltrates every
     configured secret header. The hook removes ALL caller-supplied header keys
-    whenever the redirect target's (scheme, host, port) differs from the
-    original, so the same shared policy covers the Streamable-HTTP, SSE,
-    deprecated, and preflight-probe transports.
+    whenever a request's (scheme, host, port) differs from the original, so the
+    same shared policy covers the Streamable-HTTP, SSE, deprecated, and
+    preflight-probe transports.
+
+    This MUST be a ``request`` hook, not a ``response`` hook. With
+    ``follow_redirects=True`` httpx builds and sends the followed redirect
+    request internally and never populates ``response.next_request`` (it sets
+    that only in the non-following branch), so a response hook cannot see — let
+    alone scrub — the request that is actually sent. A request hook runs for
+    every outgoing request, including each redirect hop, and can mutate its
+    headers in place before the request goes out.
     """
     import httpx as _httpx
 
     orig = original_url if isinstance(original_url, _httpx.URL) else _httpx.URL(original_url)
+    orig_origin = (orig.scheme, orig.host, orig.port)
     keys = {str(k).lower() for k in (header_keys or ())}
 
-    async def _scrub(response):
+    async def _scrub(request):
         if not keys:
             return
-        if response.is_redirect and response.next_request is not None:
-            target = response.next_request.url
-            if (target.scheme, target.host, target.port) != (
-                orig.scheme, orig.host, orig.port,
-            ):
-                hdrs = response.next_request.headers
-                for name in list(hdrs.keys()):
-                    if name.lower() in keys:
-                        del hdrs[name]
+        target = request.url
+        if (target.scheme, target.host, target.port) != orig_origin:
+            hdrs = request.headers
+            for name in list(hdrs.keys()):
+                if name.lower() in keys:
+                    del hdrs[name]
 
     return _scrub
 
@@ -2499,7 +2506,7 @@ class MCPServerTask:
             # foreign origin — this HEAD/GET is the earliest egress carrying
             # the configured auth headers, before the SDK handshake.
             "event_hooks": {
-                "response": [
+                "request": [
                     _make_redirect_secret_scrubber(url, (headers or {}).keys())
                 ]
             },
@@ -2686,7 +2693,7 @@ class MCPServerTask:
                     kwargs: dict = {
                         "follow_redirects": True,
                         "verify": _verify_for_factory,
-                        "event_hooks": {"response": [_sse_scrubber]},
+                        "event_hooks": {"request": [_sse_scrubber]},
                     }
                     if timeout is not None:
                         kwargs["timeout"] = timeout
@@ -2742,7 +2749,7 @@ class MCPServerTask:
                 "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
                 "verify": ssl_verify,
                 "event_hooks": {
-                    "response": [
+                    "request": [
                         _make_redirect_secret_scrubber(url, _secret_header_keys)
                     ]
                 },
@@ -2818,7 +2825,7 @@ class MCPServerTask:
                         kwargs: dict = {
                             "follow_redirects": True,
                             "verify": _dep_verify,
-                            "event_hooks": {"response": [_dep_scrubber]},
+                            "event_hooks": {"request": [_dep_scrubber]},
                         }
                         kwargs["timeout"] = (
                             timeout

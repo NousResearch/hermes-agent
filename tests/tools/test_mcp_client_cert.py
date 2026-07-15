@@ -431,8 +431,6 @@ class TestSSEClientCert:
         cross-origin redirect. The auto-seeded mcp-protocol-version header
         alone must NOT trigger this (covered by test_no_factory_when_defaults),
         and the scrubber must only strip the configured keys."""
-        import httpx
-
         from tools.mcp_tool import MCPServerTask
 
         server = MCPServerTask("sse-test")
@@ -461,29 +459,19 @@ class TestSSEClientCert:
             "expected httpx_client_factory when secret headers are configured"
         )
 
-        # The factory's client must carry a response hook that scrubs the
-        # configured secret header on a cross-origin redirect but leaves the
-        # (non-secret) seeded protocol header alone.
+        # The factory's client must carry a *request* hook that scrubs secret
+        # headers. It has to be a request hook, not a response hook: under
+        # follow_redirects=True httpx never populates response.next_request, so
+        # a response hook can't touch the request that is actually sent. The
+        # end-to-end scrubbing behaviour is exercised against httpx's real
+        # redirect machinery in TestRedirectSecretScrubber below.
         client = factory(headers=None, timeout=None, auth=None)
-        hooks = client.event_hooks.get("response") or []
-        assert hooks, "expected a redirect-scrubbing response hook"
-
-        next_request = httpx.Request(
-            "GET", "https://evil.example.net/landing",
-            headers={
-                "X-API-Key": "sekrit",
-                "mcp-protocol-version": "2025-11-25",
-            },
+        request_hooks = client.event_hooks.get("request") or []
+        assert request_hooks, "expected a redirect-scrubbing request hook"
+        assert not (client.event_hooks.get("response") or []), (
+            "scrubber must not be installed as a response hook — it would be a "
+            "no-op on followed redirects"
         )
-        redirect = httpx.Response(
-            302,
-            headers={"location": "https://evil.example.net/landing"},
-            request=httpx.Request("GET", "https://example.com/mcp/sse"),
-        )
-        redirect.next_request = next_request
-        asyncio.run(hooks[0](redirect))
-        assert "X-API-Key" not in next_request.headers
-        assert "mcp-protocol-version" in next_request.headers
 
     def test_factory_injected_when_cert_set(self, patch_sse_client, tmp_path):
         """With client_cert set, an httpx_client_factory is injected that
@@ -579,3 +567,105 @@ class TestSSEClientCert:
 
         assert captured_client_kwargs["verify"] == str(ca_bundle)
         assert "cert" not in captured_client_kwargs
+
+
+# ---------------------------------------------------------------------------
+# Cross-origin secret-header scrubber — real httpx redirect lifecycle
+# ---------------------------------------------------------------------------
+
+
+class TestRedirectSecretScrubber:
+    """End-to-end coverage for ``_make_redirect_secret_scrubber``.
+
+    These drive httpx's real redirect-following machinery through a
+    ``MockTransport`` and observe the headers that are *actually sent* at each
+    hop, instead of hand-calling the hook with a synthetic ``next_request``.
+    Because httpx invokes ``response`` hooks before it builds the followed
+    redirect request (and only sets ``response.next_request`` in the
+    non-following branch), a response-hook implementation is a silent no-op
+    here; the scrubber must be a request hook to strip the followed hop.
+    """
+
+    def _drive(self, original_url, secret_keys, headers, redirect_to):
+        import httpx
+
+        from tools.mcp_tool import _make_redirect_secret_scrubber
+
+        sent = []  # headers actually seen by the transport, per hop
+
+        def handler(request: "httpx.Request") -> "httpx.Response":
+            sent.append((str(request.url), dict(request.headers)))
+            if str(request.url) == original_url:
+                return httpx.Response(302, headers={"location": redirect_to})
+            return httpx.Response(200, text="landed")
+
+        scrubber = _make_redirect_secret_scrubber(original_url, secret_keys)
+
+        async def run():
+            async with httpx.AsyncClient(
+                transport=httpx.MockTransport(handler),
+                follow_redirects=True,
+                event_hooks={"request": [scrubber]},
+                headers=headers,
+            ) as client:
+                resp = await client.get(original_url)
+                assert resp.status_code == 200
+
+        asyncio.run(run())
+        return sent
+
+    def test_strips_secret_on_followed_cross_origin_redirect(self):
+        sent = self._drive(
+            "https://example.com/mcp",
+            {"x-api-key"},
+            {"X-API-Key": "sekrit"},
+            "https://evil.example.net/landing",
+        )
+        # Two real hops: original request, then the followed redirect.
+        assert len(sent) == 2
+        first_url, first_headers = sent[0]
+        assert first_url == "https://example.com/mcp"
+        # Same origin -> secret preserved on the initial request.
+        assert first_headers.get("x-api-key") == "sekrit"
+        second_url, second_headers = sent[1]
+        assert second_url == "https://evil.example.net/landing"
+        # Foreign origin reached via a followed redirect -> secret stripped.
+        assert "x-api-key" not in second_headers
+
+    def test_strips_secret_on_same_host_different_port(self):
+        sent = self._drive(
+            "https://example.com/mcp",
+            {"x-api-key"},
+            {"X-API-Key": "sekrit"},
+            "https://example.com:8443/landing",
+        )
+        assert len(sent) == 2
+        second_url, second_headers = sent[1]
+        assert second_url == "https://example.com:8443/landing"
+        assert "x-api-key" not in second_headers
+
+    def test_preserves_secret_on_same_origin_redirect(self):
+        sent = self._drive(
+            "https://example.com/mcp",
+            {"x-api-key"},
+            {"X-API-Key": "sekrit"},
+            "https://example.com/mcp/v2",
+        )
+        assert len(sent) == 2
+        second_url, second_headers = sent[1]
+        assert second_url == "https://example.com/mcp/v2"
+        # Same origin (scheme, host, default port) -> secret must survive.
+        assert second_headers.get("x-api-key") == "sekrit"
+
+    def test_only_configured_keys_are_stripped(self):
+        sent = self._drive(
+            "https://example.com/mcp",
+            {"x-api-key"},
+            {"X-API-Key": "sekrit", "mcp-protocol-version": "2025-11-25"},
+            "https://evil.example.net/landing",
+        )
+        _, second_headers = sent[1]
+        assert "x-api-key" not in second_headers
+        # A non-secret protocol header that wasn't in the configured key set is
+        # left untouched.
+        assert second_headers.get("mcp-protocol-version") == "2025-11-25"

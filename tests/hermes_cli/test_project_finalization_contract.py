@@ -164,6 +164,140 @@ def test_partial_migration_is_repaired_deterministically():
         _close_and_unlink(conn, path)
 
 
+def test_populated_partial_table_is_rejected_without_writing_marker():
+    conn, path = _make_temp_db()
+    try:
+        conn.executescript("""
+            CREATE TABLE project_finalizations (
+                board_id TEXT NOT NULL,
+                root_task_id TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                final_checker_task_id TEXT NOT NULL,
+                PRIMARY KEY (board_id, root_task_id, generation)
+            );
+            INSERT INTO project_finalizations
+                (board_id, root_task_id, generation, state, final_checker_task_id)
+            VALUES ('board', 'root', 1, 'open', 'checker');
+        """)
+
+        with pytest.raises(ValueError, match="cannot safely repair populated table"):
+            ensure_project_finalization_schema(conn)
+
+        assert conn.execute("SELECT COUNT(*) FROM project_finalizations").fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='project_finalization_meta'"
+        ).fetchone()[0] == 0
+    finally:
+        _close_and_unlink(conn, path)
+
+
+def test_empty_compatible_partial_table_is_additively_repaired():
+    conn, path = _make_temp_db()
+    try:
+        # All non-defaulted required columns and the identity constraint are present.
+        # Missing columns are nullable or have defaults, so ALTER ADD is safe.
+        conn.executescript("""
+            CREATE TABLE project_finalizations (
+                board_id TEXT NOT NULL,
+                root_task_id TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                final_checker_task_id TEXT NOT NULL,
+                notification_policy TEXT NOT NULL,
+                retention_days INTEGER NOT NULL,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                PRIMARY KEY (board_id, root_task_id, generation)
+            );
+        """)
+
+        ensure_project_finalization_schema(conn)
+
+        columns = {row["name"] for row in conn.execute("PRAGMA table_info(project_finalizations)")}
+        assert {"checker_verdict", "repair_generation", "version"} <= columns
+        assert conn.execute("SELECT COUNT(*) FROM project_finalizations").fetchone()[0] == 0
+        assert get_project_finalization_migration_marker(conn) == "hof002-v1"
+    finally:
+        _close_and_unlink(conn, path)
+
+
+def test_missing_required_index_is_recreated_without_rewriting_rows():
+    conn, path = _make_temp_db()
+    try:
+        ensure_project_finalization_schema(conn)
+        create_project_finalization(conn, board_id="board", root_task_id="root", final_checker_task_id="checker")
+        conn.execute("DROP INDEX idx_pfinal_board_state")
+
+        ensure_project_finalization_schema(conn)
+
+        indexes = {row["name"] for row in conn.execute("PRAGMA index_list(project_finalizations)")}
+        assert "idx_pfinal_board_state" in indexes
+        assert conn.execute("SELECT COUNT(*) FROM project_finalizations").fetchone()[0] == 1
+    finally:
+        _close_and_unlink(conn, path)
+
+
+def test_drifted_primary_key_shape_is_rejected_before_marker_write():
+    conn, path = _make_temp_db()
+    try:
+        conn.executescript("""
+            CREATE TABLE project_finalizations (
+                board_id TEXT NOT NULL,
+                root_task_id TEXT NOT NULL,
+                generation INTEGER NOT NULL,
+                state TEXT NOT NULL,
+                terminal_outcome TEXT,
+                final_checker_task_id TEXT NOT NULL,
+                checker_verdict TEXT,
+                repair_generation INTEGER NOT NULL DEFAULT 0,
+                repair_budget INTEGER NOT NULL DEFAULT 1,
+                notification_policy TEXT NOT NULL,
+                retention_days INTEGER NOT NULL,
+                final_report_path TEXT,
+                final_report_sha256 TEXT,
+                manifest_path TEXT,
+                manifest_sha256 TEXT,
+                usage_summary_json TEXT,
+                blocker_json TEXT,
+                created_at INTEGER NOT NULL,
+                updated_at INTEGER NOT NULL,
+                evaluated_at INTEGER,
+                finalized_at INTEGER,
+                cleanup_after TEXT,
+                cleaned_at INTEGER,
+                lock_owner TEXT,
+                lock_expires_at INTEGER,
+                version INTEGER NOT NULL DEFAULT 1,
+                PRIMARY KEY (board_id, root_task_id)
+            );
+        """)
+
+        with pytest.raises(ValueError, match="incompatible primary key"):
+            ensure_project_finalization_schema(conn)
+
+        assert conn.execute(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='project_finalization_meta'"
+        ).fetchone()[0] == 0
+    finally:
+        _close_and_unlink(conn, path)
+
+
+def test_future_schema_version_is_rejected_without_changing_marker():
+    conn, path = _make_temp_db()
+    try:
+        ensure_project_finalization_schema(conn)
+        conn.execute("UPDATE project_finalization_meta SET value='2' WHERE key='version'")
+
+        with pytest.raises(ValueError, match="unsupported future schema version"):
+            ensure_project_finalization_schema(conn)
+
+        assert get_project_finalization_schema_version(conn) == "2"
+        assert get_project_finalization_migration_marker(conn) == "hof002-v1"
+    finally:
+        _close_and_unlink(conn, path)
+
+
 def test_create_returns_idempotent_gen1_and_board_root_separation():
     conn, path = _make_temp_db()
     try:

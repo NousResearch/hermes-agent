@@ -307,41 +307,339 @@ CREATE INDEX IF NOT EXISTS idx_pcleanup_root ON project_cleanup_journal(board_id
 """
 
 
-def ensure_project_finalization_schema(conn: sqlite3.Connection) -> None:
-    """Idempotent creation of project finalization tables + migration marker.
+@dataclass(frozen=True)
+class _SchemaColumn:
+    name: str
+    ddl: str
+    type_name: str
+    not_null: bool = False
+    default: str | None = None
+    primary_key_position: int = 0
 
-    Uses normal connection pragmas (caller must have set WAL/FK/FULL).
-    Detects/repairs partial column sets on the new tables via additive ALTER.
-    Sets queryable marker in project_finalization_meta.
-    """
-    conn.executescript(PROJECT_SCHEMA_SQL)
 
-    # Ensure meta marker rows exist (idempotent)
-    conn.execute(
-        "INSERT OR IGNORE INTO project_finalization_meta (key, value) VALUES (?, ?)",
-        ("version", SCHEMA_VERSION),
+def _schema_column(
+    name: str,
+    ddl: str,
+    *,
+    not_null: bool = False,
+    default: str | None = None,
+    primary_key_position: int = 0,
+) -> _SchemaColumn:
+    return _SchemaColumn(
+        name=name,
+        ddl=ddl,
+        type_name=ddl.split()[1],
+        not_null=not_null,
+        default=default,
+        primary_key_position=primary_key_position,
     )
-    conn.execute(
-        "INSERT OR IGNORE INTO project_finalization_meta (key, value) VALUES (?, ?)",
-        ("migration", MIGRATION_MARKER),
+
+
+_PROJECT_FINALIZATION_COLUMNS = (
+    _schema_column("board_id", "board_id TEXT NOT NULL", not_null=True, primary_key_position=1),
+    _schema_column("root_task_id", "root_task_id TEXT NOT NULL", not_null=True, primary_key_position=2),
+    _schema_column("generation", "generation INTEGER NOT NULL", not_null=True, primary_key_position=3),
+    _schema_column("state", "state TEXT NOT NULL", not_null=True),
+    _schema_column("terminal_outcome", "terminal_outcome TEXT"),
+    _schema_column("final_checker_task_id", "final_checker_task_id TEXT NOT NULL", not_null=True),
+    _schema_column("checker_verdict", "checker_verdict TEXT"),
+    _schema_column("repair_generation", "repair_generation INTEGER NOT NULL DEFAULT 0", not_null=True, default="0"),
+    _schema_column("repair_budget", "repair_budget INTEGER NOT NULL DEFAULT 1", not_null=True, default="1"),
+    _schema_column("notification_policy", "notification_policy TEXT NOT NULL", not_null=True),
+    _schema_column("retention_days", "retention_days INTEGER NOT NULL", not_null=True),
+    _schema_column("final_report_path", "final_report_path TEXT"),
+    _schema_column("final_report_sha256", "final_report_sha256 TEXT"),
+    _schema_column("manifest_path", "manifest_path TEXT"),
+    _schema_column("manifest_sha256", "manifest_sha256 TEXT"),
+    _schema_column("usage_summary_json", "usage_summary_json TEXT"),
+    _schema_column("blocker_json", "blocker_json TEXT"),
+    _schema_column("created_at", "created_at INTEGER NOT NULL", not_null=True),
+    _schema_column("updated_at", "updated_at INTEGER NOT NULL", not_null=True),
+    _schema_column("evaluated_at", "evaluated_at INTEGER"),
+    _schema_column("finalized_at", "finalized_at INTEGER"),
+    _schema_column("cleanup_after", "cleanup_after TEXT"),
+    _schema_column("cleaned_at", "cleaned_at INTEGER"),
+    _schema_column("lock_owner", "lock_owner TEXT"),
+    _schema_column("lock_expires_at", "lock_expires_at INTEGER"),
+    _schema_column("version", "version INTEGER NOT NULL DEFAULT 1", not_null=True, default="1"),
+)
+
+_PROJECT_MEMBER_COLUMNS = (
+    _schema_column("board_id", "board_id TEXT NOT NULL", not_null=True, primary_key_position=1),
+    _schema_column("root_task_id", "root_task_id TEXT NOT NULL", not_null=True, primary_key_position=2),
+    _schema_column("generation", "generation INTEGER NOT NULL", not_null=True, primary_key_position=3),
+    _schema_column("task_id", "task_id TEXT NOT NULL", not_null=True, primary_key_position=4),
+    _schema_column("membership_kind", "membership_kind TEXT NOT NULL", not_null=True),
+    _schema_column("required", "required INTEGER NOT NULL DEFAULT 0", not_null=True, default="0"),
+    _schema_column("created_at", "created_at INTEGER NOT NULL", not_null=True),
+)
+
+_PROJECT_DELIVERY_COLUMNS = (
+    _schema_column("id", "id INTEGER PRIMARY KEY AUTOINCREMENT", primary_key_position=1),
+    _schema_column("board_id", "board_id TEXT NOT NULL", not_null=True),
+    _schema_column("root_task_id", "root_task_id TEXT NOT NULL", not_null=True),
+    _schema_column("generation", "generation INTEGER NOT NULL", not_null=True),
+    _schema_column("idempotency_key", "idempotency_key TEXT NOT NULL", not_null=True),
+    _schema_column("platform", "platform TEXT NOT NULL", not_null=True),
+    _schema_column("destination_reference", "destination_reference TEXT"),
+    _schema_column("thread_reference", "thread_reference TEXT"),
+    _schema_column("attempt_number", "attempt_number INTEGER NOT NULL", not_null=True),
+    _schema_column("delivery_state", "delivery_state TEXT NOT NULL", not_null=True),
+    _schema_column("accepted", "accepted INTEGER"),
+    _schema_column("provider_message_id", "provider_message_id TEXT"),
+    _schema_column("redacted_error", "redacted_error TEXT"),
+    _schema_column("created_at", "created_at INTEGER NOT NULL", not_null=True),
+    _schema_column("completed_at", "completed_at INTEGER"),
+    _schema_column("next_retry_at", "next_retry_at INTEGER"),
+)
+
+_PROJECT_FAILURE_COLUMNS = (
+    _schema_column("id", "id INTEGER PRIMARY KEY AUTOINCREMENT", primary_key_position=1),
+    _schema_column("board_id", "board_id TEXT NOT NULL", not_null=True),
+    _schema_column("root_task_id", "root_task_id TEXT NOT NULL", not_null=True),
+    _schema_column("generation", "generation INTEGER NOT NULL", not_null=True),
+    _schema_column("task_id", "task_id TEXT NOT NULL", not_null=True),
+    _schema_column("run_id", "run_id INTEGER"),
+    _schema_column("provider", "provider TEXT"),
+    _schema_column("model", "model TEXT"),
+    _schema_column("failure_class", "failure_class TEXT"),
+    _schema_column("status_code", "status_code INTEGER"),
+    _schema_column("retry_after", "retry_after INTEGER"),
+    _schema_column("redacted_error", "redacted_error TEXT"),
+    _schema_column("error_fingerprint", "error_fingerprint TEXT"),
+    _schema_column("created_at", "created_at INTEGER NOT NULL", not_null=True),
+)
+
+_PROJECT_CLEANUP_COLUMNS = (
+    _schema_column("id", "id INTEGER PRIMARY KEY AUTOINCREMENT", primary_key_position=1),
+    _schema_column("board_id", "board_id TEXT NOT NULL", not_null=True),
+    _schema_column("root_task_id", "root_task_id TEXT NOT NULL", not_null=True),
+    _schema_column("generation", "generation INTEGER NOT NULL", not_null=True),
+    _schema_column("plan_sha256", "plan_sha256 TEXT"),
+    _schema_column("mode", "mode TEXT"),
+    _schema_column("status", "status TEXT NOT NULL", not_null=True),
+    _schema_column("retention_cutoff", "retention_cutoff INTEGER"),
+    _schema_column("eligible_task_count", "eligible_task_count INTEGER NOT NULL DEFAULT 0", not_null=True, default="0"),
+    _schema_column("excluded_task_count", "excluded_task_count INTEGER NOT NULL DEFAULT 0", not_null=True, default="0"),
+    _schema_column("deleted_task_count", "deleted_task_count INTEGER NOT NULL DEFAULT 0", not_null=True, default="0"),
+    _schema_column("archived_task_count", "archived_task_count INTEGER NOT NULL DEFAULT 0", not_null=True, default="0"),
+    _schema_column("evidence_path", "evidence_path TEXT"),
+    _schema_column("created_at", "created_at INTEGER NOT NULL", not_null=True),
+    _schema_column("executed_at", "executed_at INTEGER"),
+    _schema_column("redacted_error", "redacted_error TEXT"),
+)
+
+_PROJECT_META_COLUMNS = (
+    _schema_column("key", "key TEXT PRIMARY KEY", primary_key_position=1),
+    _schema_column("value", "value TEXT NOT NULL", not_null=True),
+)
+
+_TABLE_COLUMNS: dict[str, tuple[_SchemaColumn, ...]] = {
+    "project_finalizations": _PROJECT_FINALIZATION_COLUMNS,
+    "project_finalization_members": _PROJECT_MEMBER_COLUMNS,
+    "project_delivery_attempts": _PROJECT_DELIVERY_COLUMNS,
+    "project_failure_envelopes": _PROJECT_FAILURE_COLUMNS,
+    "project_cleanup_journal": _PROJECT_CLEANUP_COLUMNS,
+    "project_finalization_meta": _PROJECT_META_COLUMNS,
+}
+
+_TABLE_PRIMARY_KEYS = {
+    table: tuple(column.name for column in columns if column.primary_key_position)
+    for table, columns in _TABLE_COLUMNS.items()
+}
+_TABLE_UNIQUE_CONSTRAINTS = {
+    "project_delivery_attempts": (("idempotency_key", "attempt_number"),),
+}
+_AUTOINCREMENT_TABLES = {
+    "project_delivery_attempts",
+    "project_failure_envelopes",
+    "project_cleanup_journal",
+}
+_REQUIRED_INDEXES = {
+    "idx_pfinal_board_state": ("project_finalizations", ("board_id", "state")),
+    "idx_pfinal_root_gen": ("project_finalizations", ("board_id", "root_task_id", "generation")),
+    "idx_pmembers_root": ("project_finalization_members", ("board_id", "root_task_id", "generation")),
+    "idx_pdelivery_key": ("project_delivery_attempts", ("idempotency_key", "attempt_number")),
+    "idx_pfailure_root": ("project_failure_envelopes", ("board_id", "root_task_id")),
+    "idx_pcleanup_root": ("project_cleanup_journal", ("board_id", "root_task_id")),
+}
+
+
+def _schema_statements(keyword: str) -> tuple[str, ...]:
+    return tuple(
+        statement.strip()
+        for statement in PROJECT_SCHEMA_SQL.split(";")
+        if keyword in statement.upper()
     )
 
-    # Robust repair for any pre-existing partial table definition
-    _ensure_full_project_finalization_columns(conn)
+
+_CREATE_TABLE_STATEMENTS = _schema_statements("CREATE TABLE")
+_CREATE_INDEX_STATEMENTS = _schema_statements("CREATE INDEX")
 
 
-def _ensure_full_project_finalization_columns(conn: sqlite3.Connection) -> None:
-    """Ensure all required columns exist on project_finalizations (for partial migration cases)."""
-    try:
-        cols = {row["name"] for row in conn.execute("PRAGMA table_info(project_finalizations)")}
-    except Exception:
+def _normalize_default(value: object) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    while normalized.startswith("(") and normalized.endswith(")"):
+        normalized = normalized[1:-1].strip()
+    return normalized.strip("'\"")
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> dict[str, sqlite3.Row]:
+    return {row["name"]: row for row in conn.execute(f"PRAGMA table_info({table})")}
+
+
+def _table_is_populated(conn: sqlite3.Connection, table: str) -> bool:
+    return conn.execute(f"SELECT 1 FROM {table} LIMIT 1").fetchone() is not None
+
+
+def _validate_primary_key(conn: sqlite3.Connection, table: str) -> None:
+    actual = tuple(
+        row["name"]
+        for row in sorted(conn.execute(f"PRAGMA table_info({table})"), key=lambda row: row["pk"])
+        if row["pk"]
+    )
+    expected = _TABLE_PRIMARY_KEYS[table]
+    if actual != expected:
+        raise ValueError(f"incompatible primary key for {table}: expected {expected}, got {actual}")
+
+
+def _validate_existing_columns(conn: sqlite3.Connection, table: str) -> tuple[_SchemaColumn, ...]:
+    _validate_primary_key(conn, table)
+    actual = _table_columns(conn, table)
+    missing: list[_SchemaColumn] = []
+    for expected in _TABLE_COLUMNS[table]:
+        current = actual.get(expected.name)
+        if current is None:
+            missing.append(expected)
+            continue
+        if (
+            current["type"].upper() != expected.type_name
+            or bool(current["notnull"]) != expected.not_null
+            or _normalize_default(current["dflt_value"]) != expected.default
+        ):
+            raise ValueError(f"incompatible column shape for {table}.{expected.name}")
+    return tuple(missing)
+
+
+def _repair_missing_columns(conn: sqlite3.Connection, table: str) -> None:
+    missing = _validate_existing_columns(conn, table)
+    if not missing:
         return
-    for col_name, ddl_type in PROJECT_FINALIZATIONS_COLS:
-        if col_name not in cols:
-            try:
-                _add_column_if_missing(conn, "project_finalizations", col_name, f"{col_name} {ddl_type}")
-            except Exception:
-                pass  # best effort; CREATE path covers fresh
+    unsafe_missing = tuple(column for column in missing if column.not_null and column.default is None)
+    if unsafe_missing:
+        if _table_is_populated(conn, table):
+            names = ", ".join(column.name for column in unsafe_missing)
+            raise ValueError(f"cannot safely repair populated table {table}: missing {names}")
+        # An empty table has no durable row history. Recreate only after the
+        # existing identity and all present columns were validated above.
+        conn.execute(f"DROP TABLE {table}")
+        table_statement = next(
+            statement for statement in _CREATE_TABLE_STATEMENTS if f"CREATE TABLE IF NOT EXISTS {table}" in statement
+        )
+        conn.execute(table_statement)
+        return
+    for column in missing:
+        _add_column_if_missing(conn, table, column.name, column.ddl)
+
+
+def _index_columns(conn: sqlite3.Connection, index_name: str) -> tuple[str, ...]:
+    return tuple(row["name"] for row in conn.execute(f"PRAGMA index_info({index_name})"))
+
+
+def _validate_unique_constraints(conn: sqlite3.Connection, table: str) -> None:
+    required = _TABLE_UNIQUE_CONSTRAINTS.get(table, ())
+    if not required:
+        return
+    indexes = tuple(conn.execute(f"PRAGMA index_list({table})"))
+    for expected_columns in required:
+        if not any(row["unique"] and _index_columns(conn, row["name"]) == expected_columns for row in indexes):
+            raise ValueError(f"incompatible unique constraint for {table}: expected {expected_columns}")
+
+
+def _validate_table(conn: sqlite3.Connection, table: str) -> None:
+    if _validate_existing_columns(conn, table):
+        raise ValueError(f"incomplete schema for {table}")
+    _validate_unique_constraints(conn, table)
+    if table in _AUTOINCREMENT_TABLES:
+        sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()[0]
+        if "AUTOINCREMENT" not in sql.upper():
+            raise ValueError(f"incompatible autoincrement constraint for {table}")
+
+
+def _ensure_required_indexes(conn: sqlite3.Connection) -> None:
+    statements = {}
+    for statement in _CREATE_INDEX_STATEMENTS:
+        match = re.search(r"CREATE\s+INDEX\s+IF\s+NOT\s+EXISTS\s+(\w+)", statement, re.IGNORECASE)
+        if match:
+            statements[match.group(1)] = statement
+    for index_name, (table, columns) in _REQUIRED_INDEXES.items():
+        current = next(
+            (row for row in conn.execute(f"PRAGMA index_list({table})") if row["name"] == index_name),
+            None,
+        )
+        if current is None:
+            conn.execute(statements[index_name])
+        elif current["unique"] or _index_columns(conn, index_name) != columns:
+            raise ValueError(f"incompatible index shape for {index_name}")
+
+
+def _validate_required_indexes(conn: sqlite3.Connection) -> None:
+    for index_name, (table, columns) in _REQUIRED_INDEXES.items():
+        current = next(
+            (row for row in conn.execute(f"PRAGMA index_list({table})") if row["name"] == index_name),
+            None,
+        )
+        if current is None or current["unique"] or _index_columns(conn, index_name) != columns:
+            raise ValueError(f"incomplete required index {index_name}")
+
+
+def _validate_migration_metadata(conn: sqlite3.Connection) -> None:
+    metadata = dict(conn.execute("SELECT key, value FROM project_finalization_meta"))
+    version = metadata.get("version")
+    if version is not None:
+        try:
+            if int(version) > int(SCHEMA_VERSION):
+                raise ValueError("unsupported future schema version")
+        except ValueError as exc:
+            if str(exc) == "unsupported future schema version":
+                raise
+            raise ValueError(f"unsupported schema version: {version!r}") from exc
+        if version != SCHEMA_VERSION:
+            raise ValueError(f"unsupported schema version: {version!r}")
+    migration = metadata.get("migration")
+    if migration is not None and migration != MIGRATION_MARKER:
+        raise ValueError(f"unsupported migration marker: {migration!r}")
+
+
+def ensure_project_finalization_schema(conn: sqlite3.Connection) -> None:
+    """Transactionally validate or safely repair the HOF-002 persistence schema.
+
+    Missing tables and missing nullable/defaulted columns or indexes are added.
+    Empty tables missing non-additive columns are recreated only after their
+    existing identity shape is validated. Populated partial or incompatible
+    schema is rejected without changing marker/version rows.
+    """
+    with write_txn(conn):
+        for statement in _CREATE_TABLE_STATEMENTS:
+            conn.execute(statement)
+        for table in _TABLE_COLUMNS:
+            _repair_missing_columns(conn, table)
+            _validate_table(conn, table)
+        _ensure_required_indexes(conn)
+        _validate_required_indexes(conn)
+        _validate_migration_metadata(conn)
+        conn.execute(
+            "INSERT OR IGNORE INTO project_finalization_meta (key, value) VALUES (?, ?)",
+            ("version", SCHEMA_VERSION),
+        )
+        conn.execute(
+            "INSERT OR IGNORE INTO project_finalization_meta (key, value) VALUES (?, ?)",
+            ("migration", MIGRATION_MARKER),
+        )
 
 
 def get_project_finalization_migration_marker(conn: sqlite3.Connection) -> str | None:

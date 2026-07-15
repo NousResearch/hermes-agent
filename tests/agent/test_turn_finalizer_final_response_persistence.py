@@ -196,3 +196,73 @@ def test_final_response_closes_tool_tail_before_persistence(monkeypatch):
     assert result["messages"][-1] == {"role": "assistant", "content": "Done."}
     assert agent.persisted_messages is not None
     assert agent.persisted_messages[-1] == {"role": "assistant", "content": "Done."}
+
+
+def test_finalizer_surfaces_reasoning_content_fallback(monkeypatch):
+    """Streamed chat-completions (Mistral/vLLM) accumulate into a synthetic
+    final message whose thinking body lives on ``reasoning_content`` with no
+    ``reasoning`` field. The turn result's ``last_reasoning`` — consumed by the
+    gateway/Matrix reasoning display — must still surface it (#56459).
+    """
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "solve 27*43"},
+        {
+            "role": "assistant",
+            "content": "1161",
+            "reasoning": None,
+            "reasoning_content": "27*40 is 1080, 27*3 is 81, total 1161.",
+        },
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response="1161",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="solve 27*43",
+        original_user_message="solve 27*43",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(finish_reason=stop)",
+    )
+
+    assert result["last_reasoning"] == "27*40 is 1080, 27*3 is 81, total 1161."
+
+
+def test_finalizer_prefers_reasoning_over_reasoning_content(monkeypatch):
+    """When both fields are present the canonical ``reasoning`` field wins."""
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", lambda *_a, **_kw: [])
+    agent = FakeAgent()
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "hello",
+            "reasoning": "canonical thought",
+            "reasoning_content": "raw stream buffer",
+        },
+    ]
+
+    result = finalize_turn(
+        agent,
+        final_response="hello",
+        api_call_count=1,
+        interrupted=False,
+        failed=False,
+        messages=messages,
+        conversation_history=[],
+        effective_task_id="task",
+        turn_id="turn",
+        user_message="hi",
+        original_user_message="hi",
+        _should_review_memory=False,
+        _turn_exit_reason="text_response(finish_reason=stop)",
+    )
+
+    assert result["last_reasoning"] == "canonical thought"

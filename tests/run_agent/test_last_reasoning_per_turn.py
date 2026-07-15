@@ -19,9 +19,11 @@ def _extract_last_reasoning(messages):
     for msg in reversed(messages):
         if msg.get("role") == "user":
             break
-        if msg.get("role") == "assistant" and msg.get("reasoning"):
-            last_reasoning = msg["reasoning"]
-            break
+        if msg.get("role") == "assistant":
+            reasoning_text = msg.get("reasoning") or msg.get("reasoning_content")
+            if reasoning_text:
+                last_reasoning = reasoning_text
+                break
     return last_reasoning
 
 
@@ -105,3 +107,37 @@ def test_empty_string_reasoning_treated_as_missing():
         {"role": "assistant", "content": "hello", "reasoning": ""},
     ]
     assert _extract_last_reasoning(messages) is None
+
+
+def test_reasoning_content_fallback_used_when_reasoning_absent():
+    """Streamed chat-completions (Mistral/vLLM) finalize with a synthetic
+    assistant message carrying only ``reasoning_content``; display must
+    still surface that thinking body (#56459).
+    """
+    messages = [
+        {"role": "user", "content": "solve 27*43"},
+        {
+            "role": "assistant",
+            "content": "1161",
+            "reasoning": None,
+            "reasoning_content": "27*40 is 1080, 27*3 is 81, total 1161.",
+        },
+    ]
+    assert (
+        _extract_last_reasoning(messages)
+        == "27*40 is 1080, 27*3 is 81, total 1161."
+    )
+
+
+def test_reasoning_field_wins_over_reasoning_content():
+    """When both are present the canonical ``reasoning`` field is used."""
+    messages = [
+        {"role": "user", "content": "hi"},
+        {
+            "role": "assistant",
+            "content": "hello",
+            "reasoning": "canonical",
+            "reasoning_content": "fallback",
+        },
+    ]
+    assert _extract_last_reasoning(messages) == "canonical"

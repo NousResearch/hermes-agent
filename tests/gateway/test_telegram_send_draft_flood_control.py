@@ -80,22 +80,50 @@ async def test_short_flood_control_sleeps_and_retries_successfully():
 
 
 @pytest.mark.asyncio
-async def test_short_flood_control_retry_failure_is_suppressed():
-    """If the post-sleep retry also fails, suppress the frame with success=True
-    so the consumer stays in draft mode and never cascades to editMessageText."""
+async def test_short_flood_control_retry_hits_flood_again_is_retryable():
+    """If the post-sleep retry also hits flood control, propagate a retryable
+    result with the new retry_after so the consumer sets a cooldown — not a
+    blanket success, which would hide that the frame never actually landed."""
     adapter = _make_adapter()
     adapter.format_message = lambda c: c
 
-    async def _always_fails(**kwargs):
+    async def _always_flooded(**kwargs):
         raise _make_retry_after_error(3.0)
 
-    adapter._bot.send_message_draft = AsyncMock(side_effect=_always_fails)
+    adapter._bot.send_message_draft = AsyncMock(side_effect=_always_flooded)
 
     with patch("plugins.platforms.telegram.adapter.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
         result = await adapter.send_draft("123", 5, "hello")
 
-    assert result.success is True
-    assert result.message_id is None
+    assert result.success is False
+    assert result.retryable is True
+    assert result.retry_after == 3.0
+    mock_sleep.assert_awaited_once_with(3.0)
+
+
+@pytest.mark.asyncio
+async def test_short_flood_control_retry_hard_failure_is_a_normal_miss():
+    """If the post-sleep retry fails with a non-flood error, that's a normal
+    miss (success=False, not retryable) — not masked as success just because
+    the frame already survived one flood-control retry."""
+    adapter = _make_adapter()
+    adapter.format_message = lambda c: c
+
+    calls = []
+
+    async def _draft(**kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise _make_retry_after_error(3.0)
+        raise RuntimeError("chat not found")
+
+    adapter._bot.send_message_draft = AsyncMock(side_effect=_draft)
+
+    with patch("plugins.platforms.telegram.adapter.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        result = await adapter.send_draft("123", 5, "hello")
+
+    assert result.success is False
+    assert result.retryable is not True
     mock_sleep.assert_awaited_once_with(3.0)
 
 

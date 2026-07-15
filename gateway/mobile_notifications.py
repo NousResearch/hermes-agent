@@ -179,7 +179,7 @@ def build_fcm_message(device: MobileDevice, event: dict[str, Any]) -> dict[str, 
     }
     return {
         "message": {
-            "fid": device.token,
+            "token": device.token,
             "data": data,
             "android": {
                 "priority": "high",

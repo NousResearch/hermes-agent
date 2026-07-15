@@ -28,7 +28,7 @@
     "context": {"type": "object", "required": ["model_context_length", "hermes_context_setting", "compression_enabled", "system_prompt_sha256", "tool_schema_sha256"]},
     "hermes": {"type": "object", "required": ["revision", "dirty_tree", "package_lock_sha256", "profile", "config_sha256", "source_tag", "rules", "skills", "memory", "toolsets", "disabled_toolsets", "mcp_catalog_digest"]},
     "hardware": {"type": "object", "required": ["host_class", "os", "python", "accelerator_family", "device_count", "driver_major"]},
-    "lane": {"type": "object", "required": ["lane_id", "suite_id", "suite_version", "external_network", "filesystem_scope", "approval_policy"]},
+    "lane": {"type": "object", "required": ["lane_id", "suite_id", "suite_version", "external_network", "filesystem_scope", "approval_policy"], "properties": {"external_network": {"const": "excluded-tools-only"}}},
     "rollback": {"type": "object", "required": ["current_route_id", "recipe", "owner", "artifact_sha256"]}
   }
 }

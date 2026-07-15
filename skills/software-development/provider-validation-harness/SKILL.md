@@ -31,6 +31,8 @@ for a pinned candidate-versus-incumbent `cli-full-v1` screening run. Use
   weights, runtime, template/parser, decoding, context, Hermes revision/config,
   hardware, resolved `hermes-cli` tool schemas, and rollback readiness.
 - A rollback artifact with a current route, tested recipe, and human owner.
+- The executable lane is keyless-local only. External-network/browser tools,
+  gateways, delegation, and external services are excluded or not evaluated.
 - For implementation or CI, use a deterministic local fake boundary; do not
   call a live or paid provider.
 
@@ -57,6 +59,8 @@ An operator may explicitly use `--execute` for an approved local run. The
 command always uses separate Hermes-home snapshots, the same fixture, real
 SessionDB persistence, the declared `hermes-cli` schema, and no
 `--ignore-rules`.
+The manifest tool-schema fingerprint is controller-side expected schema
+evidence, not proof of candidate model exposure.
 
 Offline score:
 
@@ -94,10 +98,13 @@ The evaluator reports only `GATE-FAILED`, `REJECT`, `HOLD`, or `SCREEN-PASS`.
    mean delta interval, and a bounded order effect.
 5. Inspect `receipts.jsonl` as the source of truth. Each of the 27 cases has
    three repetitions per arm; repetitions aggregate within case before HFS.
-6. Review hard gates, seven dimension means, HFS, paired deltas/intervals,
+6. Review hard gates, six PR-1 dimension means, HFS, paired deltas/intervals,
    win/loss/tie counts, and optional archive rank. Archive rank is informational
    and never overrides a gate or screening status.
-7. Run offline `score` and compare `offline-summary.json` with `summary.json`.
+7. Compression is explicitly deferred from PR-1: no case or hard gate claims
+   that real compression occurred. Per-attempt wall time is recorded, but no
+   performance/usage ranking is awarded. Run offline `score` and compare
+   `offline-summary.json` with `summary.json`.
    Editing a summary cannot make a tampered or incomplete receipt set eligible.
 
 ## Pitfalls
@@ -112,6 +119,9 @@ The evaluator reports only `GATE-FAILED`, `REJECT`, `HOLD`, or `SCREEN-PASS`.
 - A different hardware/runtime path is not a same-policy speed comparison.
 - External network, browser, gateway/platform, delegation, auto-routing, and
   automatic promotion are outside PR-1.
+- Unkeyed SHA-256 values provide accidental-corruption/tamper evidence only;
+  they do not defend against an adversary who can rewrite both receipts and
+  their hashes.
 
 ## Verification
 
@@ -122,5 +132,7 @@ The evaluator reports only `GATE-FAILED`, `REJECT`, `HOLD`, or `SCREEN-PASS`.
 - Confirm every summary carries `lane_id`, `suite_version`, `scorer_version`,
   `weights_version`, A/A outcome, rollback readiness, and
   `promotion_applied: false`.
+- Do not expect fabricated `events.jsonl` or usage counters; those are omitted
+  unless populated from real evidence.
 - State the exact lane and screening status. Never call it global Hermes
   qualification or authorize routing from this skill.

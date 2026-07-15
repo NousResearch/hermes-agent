@@ -4,7 +4,14 @@
   "title": "Hermes candidate evaluation receipt v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "receipt_id", "run_id", "pair_id", "pair_kind", "arm", "case_id", "repetition", "manifest_id", "lane_id", "suite_version", "primary_dimension", "pair_status", "schedule", "session", "process", "tool_calls", "assertions", "hard_gates", "dimensions", "raw", "receipt_sha256"],
+  "required": [
+    "schema_version", "receipt_id", "run_id", "pair_id", "pair_kind", "arm",
+    "case_id", "repetition", "manifest_id", "lane_id", "suite_version",
+    "primary_dimension", "secondary_tags", "pair_status", "schedule",
+    "timestamps", "fixture_digest", "attempt_home_digest", "session", "process",
+    "tool_calls", "assertions", "hard_gates", "dimensions", "raw",
+    "failure_reasons", "receipt_sha256"
+  ],
   "properties": {
     "schema_version": {"const": "candidate-evaluation-receipt.v1"},
     "receipt_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
@@ -15,18 +22,92 @@
     "manifest_id": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
     "arm": {"enum": ["candidate", "incumbent"]},
     "pair_kind": {"enum": ["candidate-vs-incumbent", "aa-pilot"]},
-    "repetition": {"type": "integer", "minimum": 1, "maximum": 3},
+    "repetition": {"type": "integer", "minimum": 1},
     "lane_id": {"const": "cli-full-v1"},
     "suite_version": {"const": 1},
+    "primary_dimension": {"type": "string", "minLength": 1},
+    "secondary_tags": {"type": "array", "items": {"type": "string"}},
     "pair_status": {"enum": ["complete", "invalid"]},
-    "primary_dimension": {"enum": ["correctness", "tool_behavior", "recovery_multiturn", "loaded_context_memory_skills", "truthfulness_safety", "reliability", "performance"]},
-    "schedule": {"type": "object", "required": ["seed", "arm_order"]},
-    "session": {"type": "object", "required": ["message_sha256", "role_sequence_valid", "tool_adjacency_valid", "lineage", "compression_events"]},
-    "process": {"type": "object", "required": ["returncode", "timed_out", "elapsed_ms"]},
-    "tool_calls": {"type": "array"},
-    "assertions": {"type": "object", "required": ["score_hundredths"]},
-    "hard_gates": {"type": "object", "required": ["receipt_integrity", "unsafe_side_effects", "fabricated_completion", "session_integrity", "context_compression_continuity", "lane_eligibility", "rollback_readiness"]},
-    "dimensions": {"type": "object"},
-    "raw": {"type": "object", "required": ["stdout", "stderr", "session", "events", "usage", "context", "files_sha256"]}
+    "schedule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["seed", "arm_order"],
+      "properties": {
+        "seed": {"type": "integer"},
+        "arm_order": {"type": "array", "minItems": 2, "items": {"enum": ["candidate", "incumbent"]}}
+      }
+    },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["started_at", "ended_at"],
+      "properties": {"started_at": {"type": "string"}, "ended_at": {"type": "string"}}
+    },
+    "fixture_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "attempt_home_digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "session": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["requested_id", "resolved_id", "metadata", "lineage", "message_sha256", "role_sequence_valid", "tool_adjacency_valid", "compression_events", "context_marker_sha256"],
+      "properties": {
+        "requested_id": {"type": ["string", "null"]},
+        "resolved_id": {"type": ["string", "null"]},
+        "metadata": {"type": ["object", "null"]},
+        "lineage": {"type": "array", "items": {"type": "object", "additionalProperties": false, "properties": {"id": {"type": ["string", "null"]}, "parent_session_id": {"type": ["string", "null"]}, "end_reason": {"type": ["string", "null"]}}}},
+        "message_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+        "role_sequence_valid": {"type": "boolean"},
+        "tool_adjacency_valid": {"type": "boolean"},
+        "compression_events": {"type": "integer", "minimum": 0},
+        "context_marker_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}
+      }
+    },
+    "process": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["returncode", "timed_out", "elapsed_ms"],
+      "properties": {
+        "returncode": {"type": "integer"},
+        "timed_out": {"type": "boolean"},
+        "elapsed_ms": {"type": "number", "minimum": 0}
+      }
+    },
+    "tool_calls": {"type": "array", "items": {"type": "object", "required": ["index", "name", "status"], "properties": {"index": {"type": "integer", "minimum": 0}, "call_id": {"type": ["string", "null"]}, "name": {"type": "string", "minLength": 1}, "arguments": {}, "result": {}, "status": {"type": "string", "minLength": 1}}}},
+    "assertions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["process_exit_zero", "timeout_not_triggered", "session_id_found", "session_receipt_loaded", "expected_text_found", "visible_reasoning_clean", "required_tools_called", "forbidden_tools_absent", "expected_tool_sequence", "forbidden_artifacts_absent", "no_tools_called", "roles_valid", "tool_adjacency_valid", "resume_valid", "context_loaded", "grounded_observation", "artifact_valid", "outside_fixture_absent", "network_tools_absent", "score_hundredths", "final_text_sha256", "expected_artifact"],
+      "properties": {
+        "process_exit_zero": {"type": "boolean"}, "timeout_not_triggered": {"type": "boolean"}, "session_id_found": {"type": "boolean"}, "session_receipt_loaded": {"type": "boolean"}, "expected_text_found": {"type": "boolean"}, "visible_reasoning_clean": {"type": "boolean"}, "required_tools_called": {"type": "boolean"}, "forbidden_tools_absent": {"type": "boolean"}, "expected_tool_sequence": {"type": "boolean"}, "forbidden_artifacts_absent": {"type": "boolean"}, "no_tools_called": {"type": "boolean"}, "roles_valid": {"type": "boolean"}, "tool_adjacency_valid": {"type": "boolean"}, "resume_valid": {"type": "boolean"}, "context_loaded": {"type": "boolean"}, "grounded_observation": {"type": "boolean"}, "artifact_valid": {"type": "boolean"}, "outside_fixture_absent": {"type": "boolean"}, "network_tools_absent": {"type": "boolean"}, "score_hundredths": {"type": "integer", "minimum": 0, "maximum": 10000}, "final_text_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"}, "expected_artifact": {"type": ["string", "null"]}
+      }
+    },
+    "hard_gates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["receipt_integrity", "unsafe_side_effects", "fabricated_completion", "session_integrity", "lane_eligibility", "rollback_readiness"],
+      "properties": {
+        "receipt_integrity": {"enum": ["pass", "fail"]},
+        "unsafe_side_effects": {"enum": ["pass", "fail"]},
+        "fabricated_completion": {"enum": ["pass", "fail"]},
+        "session_integrity": {"enum": ["pass", "fail"]},
+        "lane_eligibility": {"enum": ["pass", "fail"]},
+        "rollback_readiness": {"enum": ["pass", "fail"]}
+      }
+    },
+    "dimensions": {"type": "object", "additionalProperties": false, "properties": {"correctness": {"type": ["number", "null"]}, "tool_behavior": {"type": ["number", "null"]}, "recovery_multiturn": {"type": ["number", "null"]}, "loaded_context_memory_skills": {"type": ["number", "null"]}, "truthfulness_safety": {"type": ["number", "null"]}, "reliability": {"type": ["number", "null"]}}},
+    "raw": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stdout", "stderr", "session", "commands", "context", "fixture_diff", "files_sha256"],
+      "properties": {
+        "stdout": {"type": "string"},
+        "stderr": {"type": "string"},
+        "session": {"type": "string"},
+        "commands": {"type": "string"},
+        "context": {"type": "string"},
+        "fixture_diff": {"type": "string"},
+        "files_sha256": {"type": "object"}
+      }
+    },
+    "failure_reasons": {"type": "array", "items": {"type": "string"}}
   }
 }

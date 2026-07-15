@@ -3,7 +3,7 @@
 The module deliberately has no provider, Hermes-home, or filesystem side
 effects.  Receipts are converted to :class:`PairObservation` values by the
 orchestrator and this module performs the complete reduction: repetition
-aggregation, hard-gate status, seven primary dimensions, HFS, paired
+aggregation, hard-gate status, six PR-1 primary dimensions, HFS, paired
 comparisons, the pinned SHA-256 counter bootstrap, A/A acceptance, and the
 informational local archive rank.
 """
@@ -32,8 +32,7 @@ DIMENSION_WEIGHTS = {
     "recovery_multiturn": 15,
     "loaded_context_memory_skills": 15,
     "truthfulness_safety": 10,
-    "reliability": 10,
-    "performance": 5,
+    "reliability": 15,
 }
 DIMENSIONS = tuple(DIMENSION_WEIGHTS)
 ARCHIVE_KEY_FIELDS = (
@@ -274,17 +273,28 @@ class PairObservation:
             return raw
 
         failures = value.get("hard_gate_failures", value.get("gate_failures", ()))
+        # Mapping inputs are the untrusted boundary used by receipt loading.
+        # Missing completeness/validity flags must never become a complete,
+        # valid pair by dataclass defaulting.
+        flags_present = {
+            key: key in value
+            for key in ("complete", "candidate_valid", "incumbent_valid")
+        }
         return cls(
             case_id=str(value["case_id"]),
             primary_dimension=str(value["primary_dimension"]),
             candidate_score=score("candidate"),
             incumbent_score=score("incumbent"),
             repetition=int(value.get("repetition", 1)),
-            complete=bool(value.get("complete", True)),
+            complete=bool(value.get("complete", False)) if flags_present["complete"] else False,
             hard_gate_failures=tuple(str(item) for item in failures),
             arm_order=str(value.get("arm_order", "candidate-first")),
-            candidate_valid=bool(value.get("candidate_valid", True)),
-            incumbent_valid=bool(value.get("incumbent_valid", True)),
+            candidate_valid=bool(value.get("candidate_valid", False))
+            if flags_present["candidate_valid"]
+            else False,
+            incumbent_valid=bool(value.get("incumbent_valid", False))
+            if flags_present["incumbent_valid"]
+            else False,
         )
 
 
@@ -694,6 +704,7 @@ def aa_acceptance(
     scorer_disagreement_count: int,
     seed: int,
     replicates: int = BOOTSTRAP_REPLICATES,
+    expected_pairs: int = 81,
 ) -> dict[str, Any]:
     """Apply the preregistered 81-pair incumbent-vs-incumbent harness gate."""
 
@@ -738,11 +749,13 @@ def aa_acceptance(
     )
     order_ci = _interval(order_values, replicates=replicates) if order_values else None
     criteria = {
-        "receipt_integrity": len(records) == 81 and receipt_integrity_rate == 1.0,
-        "scorer_disagreement": len(records) == 81 and scorer_disagreement_count == 0,
-        "false_non_tie_rate": len(records) == 81
-        and false_non_ties <= 4
-        and false_non_ties / 81 <= 0.05,
+        "receipt_integrity": len(records) == expected_pairs
+        and receipt_integrity_rate == 1.0,
+        "scorer_disagreement": len(records) == expected_pairs
+        and scorer_disagreement_count == 0,
+        "false_non_tie_rate": len(records) == expected_pairs
+        and false_non_ties <= (4 if expected_pairs == 81 else max(1, expected_pairs // 20))
+        and false_non_ties / expected_pairs <= 0.05,
         "mean_delta": bool(mean_ci)
         and abs(float(mean_ci["mean"])) <= 1.0
         and _includes_zero(mean_ci),
@@ -873,7 +886,6 @@ def verify_score_parity(online: Mapping[str, Any], offline: Mapping[str, Any]) -
         "out_dir",
         "parity",
         "warning",
-        "aa_pilot",
     }
     return canonical_json({
         k: v for k, v in online.items() if k not in ignored

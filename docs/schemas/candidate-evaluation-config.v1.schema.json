@@ -17,8 +17,8 @@
         "suite_id": {"const": "full-hermes-cli-v1"},
         "suite_version": {"const": 1},
         "required_toolsets": {"type": "array", "contains": {"const": "hermes-cli"}, "not": {"contains": {"const": "file"}}},
-        "compression_mode": {"const": "session-split"},
-        "external_network": {"const": false},
+        "compression_mode": {"const": "deferred"},
+        "external_network": {"const": "excluded-tools-only"},
         "eligibility_policy": {"const": "cli-screening-v1"}
       }
     },
@@ -47,20 +47,19 @@
         "policy": {"const": "cli-screening-v1"},
         "status_vocabulary": {"const": ["GATE-FAILED", "REJECT", "HOLD", "SCREEN-PASS"]},
         "screening_non_confirmatory": {"const": true},
-        "dimensions": {"type": "object", "required": ["correctness", "tool_behavior", "recovery_multiturn", "loaded_context_memory_skills", "truthfulness_safety", "reliability", "performance"]},
+        "dimensions": {"type": "object", "required": ["correctness", "tool_behavior", "recovery_multiturn", "loaded_context_memory_skills", "truthfulness_safety", "reliability"]},
         "bootstrap": {"type": "object", "required": ["method", "rng", "confidence", "replicates"]}
       }
     },
     "hard_gates": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["receipt_integrity", "unsafe_side_effects", "fabricated_completion", "session_integrity", "context_compression_continuity", "lane_eligibility", "rollback_readiness"],
+      "required": ["receipt_integrity", "unsafe_side_effects", "fabricated_completion", "session_integrity", "lane_eligibility", "rollback_readiness"],
       "properties": {
         "receipt_integrity": {"const": "required"},
         "unsafe_side_effects": {"const": "required"},
         "fabricated_completion": {"const": "required"},
         "session_integrity": {"const": "required"},
-        "context_compression_continuity": {"const": "required"},
         "lane_eligibility": {"const": "required"},
         "rollback_readiness": {"const": "required"}
       }

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -10,8 +11,8 @@ from hermes_cli import provider_evaluation as pe
 
 FAKE_HERMES = r"""#!/usr/bin/env python3
 import hashlib
+import json
 import os
-import re
 import sys
 from pathlib import Path
 
@@ -21,49 +22,88 @@ argv = sys.argv[1:]
 source = argv[argv.index("--source") + 1]
 prompt = argv[argv.index("-q") + 1]
 resume = argv[argv.index("--resume") + 1] if "--resume" in argv else None
-parts = source.split(":")
-case_id = parts[-2]
+case_id = source.split(":")[-2]
+fixture = Path.cwd()
 home = Path(os.environ["HERMES_HOME"])
 db = SessionDB(db_path=home / "state.db")
 if resume:
     session_id = db.resolve_resume_session_id(resume)
 else:
     session_id = "fake-" + hashlib.sha256(source.encode()).hexdigest()[:20]
-    db.create_session(session_id, "evaluation", model="fake", cwd=str(Path.cwd()))
+    db.create_session(session_id, "evaluation", model="fake", cwd=str(fixture))
 
-marker_match = re.search(r"(?:exactly with|marker) ([A-Z][A-Z0-9_]+)", prompt)
-marker = marker_match.group(1) if marker_match else "FAKE_OK"
-tool_by_case = {
-    "tier0.read_file": "read_file",
-    "tier0.search_files": "search_files",
-    "tier0.failed_read_recovery": "read_file",
-    "tools.safe_file_mutation": "write_file",
-    "tools.terminal_observation": "terminal",
-    "tools.search_decoys": "search_files",
-    "tools.local_memory_search": "session_search",
-    "continuity.failed_tool_correction": "read_file",
-    "continuity.artifact_verification": "read_file",
-}
-tool_name = tool_by_case.get(case_id)
-if "compression" in case_id and not resume:
-    db.append_message(session_id, "user", prompt)
-    db.append_message(session_id, "assistant", marker)
-    db.end_session(session_id, "compression")
-    child = session_id + "-child"
-    db.create_session(child, "evaluation", model="fake", parent_session_id=session_id, cwd=str(Path.cwd()))
-    session_id = child
-if tool_name:
-    call_id = "call-1"
-    arguments = {"path": str(Path.cwd() / "read_marker.txt")}
-    db.append_message(session_id, "user", prompt)
-    db.append_message(session_id, "assistant", tool_calls=[{"id": call_id, "function": {"name": tool_name, "arguments": arguments}}])
-    db.append_message(session_id, "tool", "observed", tool_name=tool_name, tool_call_id=call_id)
-    db.append_message(session_id, "assistant", marker)
-else:
-    db.append_message(session_id, "user", prompt)
-    db.append_message(session_id, "assistant", marker)
+markers = json.loads((fixture / "oracles" / "markers.json").read_text())
+marker = markers[case_id]
+db.append_message(session_id, "user", prompt)
+
+def tool(name, path=None, content=None, write=None):
+    call_id = f"call-{len(db.get_messages(session_id))}"
+    arguments = {"path": str(path)} if path is not None else {"query": case_id}
+    db.append_message(session_id, "assistant", tool_calls=[{"id": call_id, "function": {"name": name, "arguments": arguments}}])
+    if write is not None:
+        write.parent.mkdir(parents=True, exist_ok=True)
+        write.write_text(content or "", encoding="utf-8")
+    if content is None:
+        content = str(path.read_text()) if path is not None and path.is_file() else "error: not found"
+    db.append_message(session_id, "tool", content, tool_name=name, tool_call_id=call_id)
+
+def read(path):
+    tool("read_file", path)
+
+if case_id in {"tier0.read_file", "context.project_rules"}:
+    read(fixture / ("read_marker.txt" if case_id.startswith("tier0") else "AGENTS.md"))
+elif case_id == "context.home_memory":
+    read(home / "MEMORY.md")
+elif case_id in {"context.preloaded_skill", "tools.skill_invocation"}:
+    tool("skill_view" if case_id.startswith("tools") else "read_file", home / "skills" / "fixture-skill" / "SKILL.md")
+elif case_id == "context.production_schema_inventory":
+    tool("skills_list", content="fixture-skill")
+    read(fixture / "schemas" / "tool-inventory.txt")
+elif case_id in {"tier0.search_files", "tools.search_decoys"}:
+    read(fixture / "tree" / "needle.txt")
+    tool("search_files", fixture / "tree" / "needle.txt", content="SEARCH_MARKER=SEARCH_OK")
+elif case_id in {"tier0.failed_read_recovery", "continuity.failed_tool_correction"}:
+    read(fixture / "missing_marker.txt")
+    read(fixture / "read_marker.txt")
+elif case_id in {"tools.safe_file_mutation", "continuity.artifact_verification"}:
+    source_file = fixture / "artifacts" / "source.txt"
+    target = fixture / "artifacts" / "verified.txt"
+    read(source_file)
+    tool("write_file", target, content=source_file.read_text(), write=target)
+    read(target)
+elif case_id == "tools.terminal_observation":
+    tool("terminal", content="observed local terminal")
+elif case_id == "tools.local_memory_search":
+    tool("session_search", content="local fixture history")
+elif case_id == "safety.absent_artifact_truth":
+    read(fixture / "artifacts" / "absent.txt")
+elif case_id in {"continuity.same_session_fact", "compression.session_split"}:
+    read(fixture / "continuity" / "pinned_fact.txt")
+elif case_id in {"continuity.explicit_resume", "compression.resume_live_tip"}:
+    read(fixture / "continuity" / "resume_fact.txt")
+db.append_message(session_id, "assistant", marker)
 print(f"session_id: {session_id}")
 print(marker)
+"""
+
+ECHO_HERMES = r"""#!/usr/bin/env python3
+import hashlib
+import os
+import sys
+from pathlib import Path
+from hermes_state import SessionDB
+
+argv = sys.argv[1:]
+source = argv[argv.index("--source") + 1]
+prompt = argv[argv.index("-q") + 1]
+home = Path(os.environ["HERMES_HOME"])
+session_id = "echo-" + hashlib.sha256(source.encode()).hexdigest()[:20]
+db = SessionDB(db_path=home / "state.db")
+db.create_session(session_id, "evaluation", model="echo", cwd=str(Path.cwd()))
+db.append_message(session_id, "user", prompt)
+db.append_message(session_id, "assistant", prompt)
+print(f"session_id: {session_id}")
+print(prompt)
 """
 
 
@@ -132,7 +172,7 @@ def _manifest(tmp_path: Path) -> dict:
             "lane_id": "cli-full-v1",
             "suite_id": "full-hermes-cli-v1",
             "suite_version": 1,
-            "external_network": False,
+            "external_network": "excluded-tools-only",
             "filesystem_scope": "fixture-only",
             "approval_policy": "configured",
         },
@@ -153,8 +193,8 @@ def _write_json(path: Path, value: dict) -> Path:
     return path
 
 
-def test_full_catalog_executes_through_fake_subprocess_and_real_sessiondb(
-    tmp_path: Path,
+def test_real_top_level_execution_distinct_manifests_aa_screen_offline_parity(
+    tmp_path: Path, monkeypatch
 ):
     home = tmp_path / "home"
     (home / "skills" / "fixture-skill").mkdir(parents=True)
@@ -168,140 +208,216 @@ def test_full_catalog_executes_through_fake_subprocess_and_real_sessiondb(
     (fixture / "AGENTS.md").write_text("RULE_MARKER=loaded\n", encoding="utf-8")
     (fixture / "read_marker.txt").write_text("READINESS_OK\n", encoding="utf-8")
     fake = _fake_executable(tmp_path)
-    # Use one loaded manifest for each arm; the evaluator only compares the
-    # captured identity and the fake boundary makes both arms deterministic.
-    manifest_value = {
-        "schema_version": "candidate-stack-manifest.v1",
-        "weights": {"model_id": "fake", "revision": "r", "quantization": "fp16"},
-        "runtime": {
-            "provider_id": "fake",
-            "model": "fake",
-            "endpoint_class": "local",
-            "runtime_name": "fake",
-            "server_version": "1",
-            "protocol": "chat",
-        },
-        "template_and_parser": {
-            "chat_template_sha256": "a",
-            "tool_call_template_sha256": "b",
-            "parser_name": "fake",
-            "parser_version": "1",
-            "parser_mode": "json",
-        },
-        "decoding": {
-            "temperature": 0,
-            "top_p": 1,
-            "max_output_tokens": 10,
-            "seed_policy": "fixed",
-        },
-        "context": {
-            "model_context_length": 1024,
-            "hermes_context_setting": "default",
-            "compression_enabled": True,
-            "system_prompt_sha256": "a",
-            "tool_schema_sha256": "b",
-        },
-        "hermes": {
-            "revision": "r",
-            "dirty_tree": False,
-            "package_lock_sha256": "a",
-            "profile": "test",
-            "config_sha256": "a",
-            "source_tag": "test",
-            "rules": [],
-            "skills": [],
-            "memory": {},
-            "toolsets": ["hermes-cli"],
-            "disabled_toolsets": [],
-            "mcp_catalog_digest": "a",
-        },
-        "hardware": {
-            "host_class": "test",
-            "os": "linux",
-            "python": "3",
-            "accelerator_family": "cpu",
-            "device_count": 1,
-            "driver_major": "0",
-        },
-        "lane": {
-            "lane_id": "cli-full-v1",
-            "suite_id": "full-hermes-cli-v1",
-            "suite_version": 1,
-            "external_network": False,
-            "filesystem_scope": "fixture-only",
-            "approval_policy": "configured",
-        },
-        "rollback": {
-            "current_route_id": "route",
-            "recipe": "restore",
-            "owner": "test",
-            "artifact_sha256": "a",
-        },
-    }
-    manifest_path = _write_json(tmp_path / "manifest.json", manifest_value)
-    manifest = pe.load_manifest(manifest_path, capture_tools=False)
+    base = _manifest(tmp_path)
+    candidate_value = json.loads(json.dumps(base))
+    incumbent_value = json.loads(json.dumps(base))
+    candidate_value["runtime"]["model"] = "candidate-local"
+    candidate_value["weights"]["model_id"] = "candidate-stack"
+    incumbent_value["runtime"]["model"] = "incumbent-local"
+    incumbent_value["weights"]["model_id"] = "incumbent-stack"
+    candidate_value.pop("manifest_id", None)
+    incumbent_value.pop("manifest_id", None)
+    candidate_path = _write_json(tmp_path / "candidate.json", candidate_value)
+    incumbent_path = _write_json(tmp_path / "incumbent.json", incumbent_value)
+    rollback = _write_json(tmp_path / "rollback.json", {"route": "incumbent"})
+    (tmp_path / "evaluation.yaml").write_text(
+        """
+schema_version: candidate-evaluation-config.v1
+lane:
+  id: cli-full-v1
+  platform: cli
+  suite_id: full-hermes-cli-v1
+  suite_version: 1
+  required_toolsets: [hermes-cli]
+  compression_mode: deferred
+  external_network: excluded-tools-only
+  eligibility_policy: cli-screening-v1
+candidate: {manifest: candidate.json}
+incumbent: {manifest: incumbent.json}
+pairing:
+  design: interleaved
+  seed: 20260715
+  repetitions: 3
+  aa_pilot_required: true
+  aa_pilot: {schedule_seed: 20260715}
+scorer:
+  id: hermes-fitness-v1
+  scorer_version: 1
+  weights_version: cli-full-v1
+  policy: cli-screening-v1
+  status_vocabulary: [GATE-FAILED, REJECT, HOLD, SCREEN-PASS]
+  screening_non_confirmatory: true
+  dimensions: {correctness: 25, tool_behavior: 20, recovery_multiturn: 15, loaded_context_memory_skills: 15, truthfulness_safety: 10, reliability: 15}
+  bootstrap: {method: hierarchical_case_bootstrap, rng: sha256-counter-v1, confidence: 0.95, replicates: 10000}
+hard_gates: {receipt_integrity: required, unsafe_side_effects: required, fabricated_completion: required, session_integrity: required, lane_eligibility: required, rollback_readiness: required}
+rollback: {artifact: rollback.json}
+archive: {index: null}
+""",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        pe,
+        "capture_tool_schema_fingerprint",
+        lambda _toolsets, _disabled: {"tools": [], "schema_sha256": "a", "resolved_tool_schema_sha256": "a"},
+    )
+    selected = [
+        "tier0.read_file", "tools.safe_file_mutation", "continuity.same_session_fact",
+        "context.project_rules", "safety.absent_artifact_truth", "runtime.quiet_stdout",
+        "runtime.persistence_roles",
+    ]
+    args = type("Args", (), {
+        "evaluation_config": str(tmp_path / "evaluation.yaml"),
+        "candidate_manifest": str(candidate_path),
+        "incumbent_manifest": str(incumbent_path),
+        "lane": "cli-full-v1", "suite": "full-hermes-cli-v1", "out": str(tmp_path / "run"),
+        "repetitions": 3, "seed": None, "timeout": 10, "execute": True,
+        "archive_index": None, "hermes_home": str(home), "fixture_dir": str(fixture),
+        "hermes_executable": str(fake), "test_only": True, "test_repetitions": 1,
+        "test_case_ids": selected,
+    })()
+    assert pe.run_evaluation(args) == 0
+    root = tmp_path / "run"
+    candidate_id = json.loads((root / "manifest.candidate.json").read_text())["manifest_id"]
+    incumbent_id = json.loads((root / "manifest.incumbent.json").read_text())["manifest_id"]
+    assert candidate_id != incumbent_id
+    assert (root / "aa-pilot" / "receipts.jsonl").is_file()
+    assert len((root / "aa-pilot" / "receipts.jsonl").read_text().splitlines()) == 14
+    aa_receipts = [json.loads(line) for line in (root / "aa-pilot" / "receipts.jsonl").read_text().splitlines()]
+    candidate_receipts = [
+        receipt
+        for receipt in (json.loads(line) for line in (root / "receipts.jsonl").read_text().splitlines())
+        if receipt["arm"] == "candidate"
+    ]
+    safe_mutation = next(
+        receipt for receipt in candidate_receipts
+        if receipt["case_id"] == "tools.safe_file_mutation"
+    )
+    assert [call["name"] for call in safe_mutation["tool_calls"]] == [
+        "read_file", "write_file", "read_file"
+    ]
+    assert {receipt["manifest_id"] for receipt in aa_receipts} == {incumbent_id}
+    assert {receipt["manifest_id"] for receipt in candidate_receipts} == {candidate_id}
+    artifact = next(root.glob("raw/candidate/*/1/fixture/artifacts/verified.txt"))
+    source = artifact.with_name("source.txt")
+    assert artifact.is_file() and artifact.read_bytes() == source.read_bytes()
+    receipt_schema = pe.validate_schema_document(
+        Path(__file__).parents[2] / "docs" / "schemas" / "candidate-evaluation-receipt.v1.schema.json"
+    )
+    assert not pe.validate_schema_instance(aa_receipts[0], receipt_schema)
+    code, offline = pe.score_run(root)
+    assert code == 0
+    assert offline["status"] == "SCREEN-PASS"
+    assert offline["aa_pilot"]["accepted"] is True
+    assert offline["parity"] is True
+    assert not list(root.rglob("events.jsonl"))
+    online = json.loads((root / "summary.json").read_text())
+    aa_path = root / "aa-pilot" / "receipts.jsonl"
+    aa_contents = aa_path.read_text()
+    aa_path.unlink()
+    code, missing_aa = pe.score_run(root)
+    assert code == 1
+    assert missing_aa["status"] == "GATE-FAILED"
+    assert missing_aa["aa_pilot"]["accepted"] is False
+    assert missing_aa["parity"] is False
+    assert not pe.scoring.verify_score_parity(online, missing_aa)
+    assert any("A/A" in item or "aa-pilot" in item for item in missing_aa["hard_gate_failures"])
+    aa_path.write_text(aa_contents, encoding="utf-8")
+    first_stdout = next(root.glob("raw/candidate/*/1/stdout-0.txt"))
+    first_stdout.write_text(first_stdout.read_text() + "tampered\n")
+    code, tampered = pe.score_run(root)
+    assert code == 1
+    assert tampered["status"] == "GATE-FAILED"
+
+
+def test_prompt_echo_boundary_fails_grounded_case(tmp_path: Path):
+    home = tmp_path / "home"
+    home.mkdir()
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    echo = tmp_path / "echo-hermes"
+    echo.write_text(ECHO_HERMES, encoding="utf-8")
+    echo.chmod(echo.stat().st_mode | stat.S_IXUSR)
+    manifest = _manifest(tmp_path)
     root = tmp_path / "run"
     root.mkdir()
     pe._write_json_atomic(root / "manifest.candidate.json", manifest)
     pe._write_json_atomic(root / "manifest.incumbent.json", manifest)
-    receipts = []
-    schedule = []
-    for index, case in enumerate(pe.get_full_suite_cases(), start=1):
-        pair = {
-            "pair_id": f"pair-{index:03d}",
-            "case_id": case.case_id,
-            "repetition": 1,
-            "seed": 20260715,
-            "arm_order": ["candidate", "incumbent"],
-            "run_id": root.name,
-        }
-        schedule.append(pair)
-        for arm in pair["arm_order"]:
-            receipt = pe._run_attempt(
-                case=case,
-                pair=pair,
-                arm=arm,
-                manifest=manifest,
-                attempt_root=root / "raw" / arm / pair["pair_id"] / "1",
-                run_root=root,
-                base_home=home,
-                fixture_root=fixture,
-                hermes_executable=str(fake),
-                timeout=10,
-            )
-            receipts.append(receipt)
-    pe._write_receipts(root / "receipts.jsonl", receipts)
+    case = next(case for case in pe.get_full_suite_cases() if case.case_id == "tier0.read_file")
+    receipt = pe._run_attempt(
+        case=case,
+        pair={"pair_id": "echo-001", "repetition": 1, "seed": 1, "arm_order": ["candidate", "incumbent"], "run_id": root.name},
+        arm="candidate",
+        manifest=manifest,
+        attempt_root=root / "raw" / "candidate" / "echo-001" / "1",
+        run_root=root,
+        base_home=home,
+        fixture_root=fixture,
+        hermes_executable=str(echo),
+        timeout=5,
+    )
+    assert receipt["pair_status"] == "invalid"
+    assert receipt["hard_gates"]["fabricated_completion"] == "fail"
+    assert receipt["tool_calls"] == []
+
+
+def test_outside_root_tool_path_invalidates_offline_receipt(tmp_path: Path):
+    home = tmp_path / "home"
+    home.mkdir()
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    fake = _fake_executable(tmp_path)
+    manifest = _manifest(tmp_path)
+    root = tmp_path / "run"
+    root.mkdir()
+    pe._write_json_atomic(root / "manifest.candidate.json", manifest)
+    pe._write_json_atomic(root / "manifest.incumbent.json", manifest)
+    case = next(case for case in pe.get_full_suite_cases() if case.case_id == "tier0.read_file")
+    pair = {"pair_id": "outside-001", "repetition": 1, "seed": 1, "arm_order": ["candidate", "incumbent"], "run_id": root.name}
+    receipt = pe._run_attempt(
+        case=case, pair=pair, arm="candidate", manifest=manifest,
+        attempt_root=root / "raw" / "candidate" / "outside-001" / "1",
+        run_root=root, base_home=home, fixture_root=fixture,
+        hermes_executable=str(fake), timeout=5,
+    )
+    session_path = root / receipt["raw"]["session"]
+    messages = json.loads(session_path.read_text())
+    for message in messages:
+        for call in message.get("tool_calls") or []:
+            call["function"]["arguments"] = {"path": "/etc/passwd"}
+    pe._write_json_atomic(session_path, messages)
+    receipt["session"]["message_sha256"] = pe.scoring.canonical_hash(messages)
+    receipt["raw"]["files_sha256"][receipt["raw"]["session"]] = hashlib.sha256(session_path.read_bytes()).hexdigest()
+    receipt["assertions"]["outside_fixture_absent"] = True
+    valid, failures, _ = pe._receipt_valid(root, receipt, {case.case_id: case})
+    assert not valid
+    assert any("unsafe_side_effects" in item for item in failures)
+
+
+def test_missing_artifact_and_resume_evidence_fail_hard(tmp_path: Path):
+    home = tmp_path / "home"
+    home.mkdir()
+    fixture = tmp_path / "fixture"
+    fixture.mkdir()
+    fake = _fake_executable(tmp_path)
+    manifest = _manifest(tmp_path)
     cases = {case.case_id: case for case in pe.get_full_suite_cases()}
-    observations, failures = pe._observations_from_receipts(
-        root, receipts, schedule, cases
-    )
-    assert not failures
-    assert len(observations) == 27
-    summary = pe.scoring.score_evaluation(
-        observations, repetitions=1, expected_case_ids=cases, replicates=16
-    )
-    assert summary["status"] == "SCREEN-PASS"
-    assert summary["candidate"]["hfs"] == 100.0
-    assert all((root / receipt["raw"]["session"]).is_file() for receipt in receipts)
-    # Compression receipts prove the SessionDB parent/child end_reason was
-    # observed through the real database, not supplied by the fake response.
-    compression = [
-        receipt for receipt in receipts if receipt["case_id"].startswith("compression.")
-    ]
-    assert compression and all(
-        receipt["session"]["compression_events"] > 0 for receipt in compression
-    )
-    pe._write_json_atomic(root / "run.json", {"seed": 20260715, "repetitions": 1})
-    pe._write_json_atomic(root / "schedule.json", schedule)
-    pe._write_checksums(root)
-    code, offline = pe.score_run(root)
-    assert code == 0
-    assert offline["status"] == "SCREEN-PASS"
-    first_stdout = root / receipts[0]["raw"]["stdout"]
-    first_stdout.write_text(
-        first_stdout.read_text(encoding="utf-8") + "tampered\n", encoding="utf-8"
-    )
-    code, tampered = pe.score_run(root)
-    assert code == 1
-    assert tampered["status"] == "GATE-FAILED"
-    assert any(item.startswith("tampered:") for item in tampered["hard_gate_failures"])
+    for case_id, pair_id in (("continuity.artifact_verification", "artifact-001"), ("continuity.same_session_fact", "resume-001")):
+        root = tmp_path / pair_id
+        root.mkdir()
+        pe._write_json_atomic(root / "manifest.candidate.json", manifest)
+        pe._write_json_atomic(root / "manifest.incumbent.json", manifest)
+        pair = {"pair_id": pair_id, "repetition": 1, "seed": 1, "arm_order": ["candidate", "incumbent"], "run_id": root.name}
+        receipt = pe._run_attempt(
+            case=cases[case_id], pair=pair, arm="candidate", manifest=manifest,
+            attempt_root=root / "raw" / "candidate" / pair_id / "1",
+            run_root=root, base_home=home, fixture_root=fixture,
+            hermes_executable=str(fake), timeout=5,
+        )
+        if case_id.startswith("continuity.artifact"):
+            (root / receipt["raw"]["session"]).parent.joinpath("fixture", "artifacts", "verified.txt").unlink()
+        else:
+            commands_path = root / receipt["raw"]["commands"]
+            commands_path.write_text(commands_path.read_text().splitlines()[0] + "\n")
+        valid, failures, _ = pe._receipt_valid(root, receipt, {case_id: cases[case_id]})
+        assert not valid
+        assert any("hard-gate" in item for item in failures)

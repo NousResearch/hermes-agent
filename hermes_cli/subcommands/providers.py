@@ -58,7 +58,8 @@ def build_providers_parser(subparsers, *, cmd_providers: Callable) -> None:
         description=(
             "Evaluate a candidate against an incumbent in the frozen 27-case "
             "cli-full-v1 lane. The default is an offline dry-run; live-shaped "
-            "execution requires --execute and an operator-supplied manifest."
+            "execution requires --execute and an operator-supplied keyless-local "
+            "manifest. Network tools are excluded; compression is deferred."
         ),
     )
     evaluate.add_argument(
@@ -106,7 +107,10 @@ def build_providers_parser(subparsers, *, cmd_providers: Callable) -> None:
     score = verbs.add_parser(
         "score",
         help="Offline-score saved candidate-evaluation receipts",
-        description="Recalculate deterministic checks from receipts without contacting a provider.",
+        description=(
+            "Recalculate evidence-derived checks, including A/A parity, from "
+            "receipts without contacting a provider."
+        ),
     )
     score.add_argument(
         "--run-dir", required=True, help="Completed evaluation run directory"

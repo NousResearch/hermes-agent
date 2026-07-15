@@ -4,35 +4,32 @@
   "rng": "sha256-counter-v1",
   "replicates": 10000,
   "input": [
-    {"case_id": "golden.correctness.1", "primary_dimension": "correctness", "repetition": 1, "candidate_score": 95, "incumbent_score": 90, "complete": true, "arm_order": "candidate-first"},
-    {"case_id": "golden.correctness.2", "primary_dimension": "correctness", "repetition": 1, "candidate_score": 85, "incumbent_score": 80, "complete": true, "arm_order": "incumbent-first"},
-    {"case_id": "golden.tool_behavior.1", "primary_dimension": "tool_behavior", "repetition": 1, "candidate_score": 80, "incumbent_score": 75, "complete": true, "arm_order": "candidate-first"},
-    {"case_id": "golden.tool_behavior.2", "primary_dimension": "tool_behavior", "repetition": 1, "candidate_score": 70, "incumbent_score": 65, "complete": true, "arm_order": "incumbent-first"},
-    {"case_id": "golden.recovery_multiturn.1", "primary_dimension": "recovery_multiturn", "repetition": 1, "candidate_score": 88, "incumbent_score": 90, "complete": true, "arm_order": "candidate-first"},
-    {"case_id": "golden.recovery_multiturn.2", "primary_dimension": "recovery_multiturn", "repetition": 1, "candidate_score": 78, "incumbent_score": 80, "complete": true, "arm_order": "incumbent-first"},
-    {"case_id": "golden.loaded_context_memory_skills.1", "primary_dimension": "loaded_context_memory_skills", "repetition": 1, "candidate_score": 92, "incumbent_score": 92, "complete": true, "arm_order": "candidate-first"},
-    {"case_id": "golden.loaded_context_memory_skills.2", "primary_dimension": "loaded_context_memory_skills", "repetition": 1, "candidate_score": 82, "incumbent_score": 82, "complete": true, "arm_order": "incumbent-first"},
-    {"case_id": "golden.truthfulness_safety.1", "primary_dimension": "truthfulness_safety", "repetition": 1, "candidate_score": 70, "incumbent_score": 75, "complete": true, "arm_order": "candidate-first"},
-    {"case_id": "golden.truthfulness_safety.2", "primary_dimension": "truthfulness_safety", "repetition": 1, "candidate_score": 60, "incumbent_score": 65, "complete": true, "arm_order": "incumbent-first"},
-    {"case_id": "golden.reliability.1", "primary_dimension": "reliability", "repetition": 1, "candidate_score": 99, "incumbent_score": 98, "complete": true, "arm_order": "candidate-first"},
-    {"case_id": "golden.reliability.2", "primary_dimension": "reliability", "repetition": 1, "candidate_score": 89, "incumbent_score": 88, "complete": true, "arm_order": "incumbent-first"},
-    {"case_id": "golden.performance.1", "primary_dimension": "performance", "repetition": 1, "candidate_score": 60, "incumbent_score": 55, "complete": true, "arm_order": "candidate-first"},
-    {"case_id": "golden.performance.2", "primary_dimension": "performance", "repetition": 1, "candidate_score": 50, "incumbent_score": 45, "complete": true, "arm_order": "incumbent-first"}
+    {"case_id": "golden.correctness.1", "primary_dimension": "correctness", "repetition": 1, "candidate_score": 95, "incumbent_score": 90, "complete": true, "candidate_valid": true, "incumbent_valid": true, "arm_order": "candidate-first"},
+    {"case_id": "golden.correctness.2", "primary_dimension": "correctness", "repetition": 1, "candidate_score": 85, "incumbent_score": 80, "complete": true, "candidate_valid": true, "incumbent_valid": true, "arm_order": "incumbent-first"},
+    {"case_id": "golden.tool_behavior.1", "primary_dimension": "tool_behavior", "repetition": 1, "candidate_score": 80, "incumbent_score": 75, "complete": true, "candidate_valid": true, "incumbent_valid": true, "arm_order": "candidate-first"},
+    {"case_id": "golden.tool_behavior.2", "primary_dimension": "tool_behavior", "repetition": 1, "candidate_score": 70, "incumbent_score": 65, "complete": true, "candidate_valid": true, "incumbent_valid": true, "arm_order": "incumbent-first"},
+    {"case_id": "golden.recovery_multiturn.1", "primary_dimension": "recovery_multiturn", "repetition": 1, "candidate_score": 88, "incumbent_score": 90, "complete": true, "candidate_valid": true, "incumbent_valid": true, "arm_order": "candidate-first"},
+    {"case_id": "golden.recovery_multiturn.2", "primary_dimension": "recovery_multiturn", "repetition": 1, "candidate_score": 78, "incumbent_score": 80, "complete": true, "candidate_valid": true, "incumbent_valid": true, "arm_order": "incumbent-first"},
+    {"case_id": "golden.loaded_context_memory_skills.1", "primary_dimension": "loaded_context_memory_skills", "repetition": 1, "candidate_score": 92, "incumbent_score": 92, "complete": true, "candidate_valid": true, "incumbent_valid": true, "arm_order": "candidate-first"},
+    {"case_id": "golden.loaded_context_memory_skills.2", "primary_dimension": "loaded_context_memory_skills", "repetition": 1, "candidate_score": 82, "incumbent_score": 82, "complete": true, "candidate_valid": true, "incumbent_valid": true, "arm_order": "incumbent-first"},
+    {"case_id": "golden.truthfulness_safety.1", "primary_dimension": "truthfulness_safety", "repetition": 1, "candidate_score": 70, "incumbent_score": 75, "complete": true, "candidate_valid": true, "incumbent_valid": true, "arm_order": "candidate-first"},
+    {"case_id": "golden.truthfulness_safety.2", "primary_dimension": "truthfulness_safety", "repetition": 1, "candidate_score": 60, "incumbent_score": 65, "complete": true, "candidate_valid": true, "incumbent_valid": true, "arm_order": "incumbent-first"},
+    {"case_id": "golden.reliability.1", "primary_dimension": "reliability", "repetition": 1, "candidate_score": 99, "incumbent_score": 98, "complete": true, "candidate_valid": true, "incumbent_valid": true, "arm_order": "candidate-first"},
+    {"case_id": "golden.reliability.2", "primary_dimension": "reliability", "repetition": 1, "candidate_score": 89, "incumbent_score": 88, "complete": true, "candidate_valid": true, "incumbent_valid": true, "arm_order": "incumbent-first"}
   ],
   "first_stream_draws": [1, 1, 0, 0, 1, 0, 0, 1],
   "selected_case_indices": [0, 1],
   "expected": {
-    "candidate_hfs": 81.65,
-    "incumbent_hfs": 79.85,
-    "paired_hfs_delta": {"mean": 1.8, "lower": 1.8, "upper": 1.8, "confidence": 0.95, "replicates": 10000, "rng": "sha256-counter-v1", "algorithm": "hierarchical_case_bootstrap_v1"},
+    "candidate_hfs": 83.6,
+    "incumbent_hfs": 82.0,
+    "paired_hfs_delta": {"mean": 1.6, "lower": 1.6, "upper": 1.6, "confidence": 0.95, "replicates": 10000, "rng": "sha256-counter-v1", "algorithm": "hierarchical_case_bootstrap_v1"},
     "dimension_deltas": {
       "correctness": {"mean": 5.0, "lower": 5.0, "upper": 5.0},
       "tool_behavior": {"mean": 5.0, "lower": 5.0, "upper": 5.0},
       "recovery_multiturn": {"mean": -2.0, "lower": -2.0, "upper": -2.0},
       "loaded_context_memory_skills": {"mean": 0.0, "lower": 0.0, "upper": 0.0},
       "truthfulness_safety": {"mean": -5.0, "lower": -5.0, "upper": -5.0},
-      "reliability": {"mean": 1.0, "lower": 1.0, "upper": 1.0},
-      "performance": {"mean": 5.0, "lower": 5.0, "upper": 5.0}
+      "reliability": {"mean": 1.0, "lower": 1.0, "upper": 1.0}
     }
   }
 }

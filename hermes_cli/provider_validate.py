@@ -397,7 +397,10 @@ def score_case(
     tool_calls = extract_tool_calls(messages)
     tool_names = _tool_names(tool_calls)
     session_receipt_loaded = bool(
-        session_path and Path(session_path).is_file()
+        session_path
+        and Path(session_path).is_file()
+        and messages
+        and session_id
     )
     checks = {
         "process_exit_zero": returncode == 0 and not timed_out,

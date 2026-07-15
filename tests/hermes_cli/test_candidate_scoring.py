@@ -25,12 +25,14 @@ def _one_per_dimension(candidate: int = 100, incumbent: int = 90):
             "incumbent_score": incumbent,
             "repetition": 1,
             "complete": True,
+            "candidate_valid": True,
+            "incumbent_valid": True,
         }
         for dimension in DIMENSIONS
     ]
 
 
-def test_hfs_uses_seven_primary_dimensions_and_fixed_weights():
+def test_hfs_uses_six_pr1_primary_dimensions_and_fixed_weights():
     summary = score_evaluation(
         _one_per_dimension(),
         repetitions=1,
@@ -41,13 +43,26 @@ def test_hfs_uses_seven_primary_dimensions_and_fixed_weights():
     assert summary["candidate"]["hfs"] == 100.0
     assert summary["incumbent"]["hfs"] == 90.0
     assert summary["paired_hfs_delta"]["mean"] == 10.0
-    assert summary["counts"]["wins"] == 7
+    assert summary["counts"]["wins"] == 6
     assert summary["counts"]["losses"] == 0
     assert summary["counts"]["ties"] == 0
     for dimension in DIMENSIONS:
         assert summary["dimensions"][dimension]["n_arm_candidate"] == 1
         assert summary["dimensions"][dimension]["n_arm_incumbent"] == 1
         assert summary["dimensions"][dimension]["n_pair"] == 1
+
+
+def test_pair_observation_missing_validity_flags_fails_closed():
+    observation = PairObservation.from_mapping({
+        "case_id": "case-1",
+        "primary_dimension": "correctness",
+        "candidate_score": 100,
+        "incumbent_score": 100,
+        "arm_order": "candidate-first",
+    })
+    assert observation.complete is False
+    assert observation.candidate_valid is False
+    assert observation.incumbent_valid is False
 
 
 def test_repetitions_average_inside_case_before_dimension_mean():
@@ -60,7 +75,9 @@ def test_repetitions_average_inside_case_before_dimension_mean():
                 "repetition": repetition,
                 "candidate_score": candidate,
                 "incumbent_score": 80,
-                "complete": True,
+                    "complete": True,
+                    "candidate_valid": True,
+                    "incumbent_valid": True,
             }
             for repetition, candidate in ((1, 100), (2, 0), (3, 100))
         )
@@ -81,7 +98,7 @@ def test_incomplete_pair_is_gate_failed_and_not_counted_as_win():
     )
     assert summary["status"] == "GATE-FAILED"
     assert summary["counts"]["incomplete"] == 1
-    assert summary["counts"]["wins"] == 6
+    assert summary["counts"]["wins"] == 5
     assert summary["dimensions"]["correctness"]["n_pair"] == 0
 
 
@@ -90,7 +107,7 @@ def test_tie_epsilon_and_screening_vocabulary():
     summary = score_evaluation(
         rows, repetitions=1, expected_case_ids=DIMENSIONS, replicates=8
     )
-    assert summary["counts"]["ties"] == 7
+    assert summary["counts"]["ties"] == 6
     assert summary["status"] == "SCREEN-PASS"
     assert "PROMOTE-CANDIDATE" not in summary["status"]
 
@@ -157,8 +174,8 @@ def test_archive_requires_exact_equivalence_key_and_is_informational():
         "hermes_revision": "rev",
         "config_policy_digest": "cfg",
         "tool_schema_policy_digest": "tools",
-        "compression_mode": "session-split",
-        "external_network": False,
+        "compression_mode": "deferred",
+        "external_network": "excluded-tools-only",
         "filesystem_scope": "fixture-only",
         "approval_policy": "configured",
         "hardware_class": "cpu",

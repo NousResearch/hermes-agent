@@ -124,8 +124,10 @@ candidate and incumbent through the classic non-interactive CLI. It is pinned
 to `full-hermes-cli-v1@1`: 27 executable cases, three repetitions, and a
 seeded interleaved schedule. The candidate and incumbent each receive a fresh
 Hermes-home snapshot and their own SessionDB. The full lane captures the
-resolved production `hermes-cli` tool schema and does not add
+controller-side expected `hermes-cli` tool schema and does not add
 `--ignore-rules`; the tier-0 `file` toolset is not an equivalent substitute.
+The executable policy is keyless local only: network/browser tools are
+disabled and checked in receipts, while external services are not evaluated.
 
 Supply complete, clean stack manifests and the standalone evaluation config
 shown in [`candidate-evaluation-cli-full-v1.yaml`](../examples/candidate-evaluation-cli-full-v1.yaml):
@@ -144,15 +146,21 @@ model, edits `config.yaml` or `.env`, changes fallback/routing, or promotes a
 candidate. An approved execution runs the incumbent A/A pilot first; a pilot
 failure is `GATE-FAILED` and is not repaired by an unrecorded retry.
 
+Compression is explicitly deferred from PR-1. The lane measures grounded
+context/tool behavior and multi-turn continuity, but records no claim that a
+real compression event occurred. Wall time is measured per attempt for
+diagnostics; no usage or performance ranking is awarded.
+
 `hermes providers score --run-dir RUN_DIR` is offline. It recalculates the
 deterministic oracles from `receipts.jsonl`, SessionDB exports, raw hashes, and
 the fixed scorer; editing `summary.json` cannot make missing, tampered, or
-incomplete receipts eligible. The result reports seven primary dimensions,
+incomplete receipts eligible. The result reports six PR-1 primary dimensions,
 Hermes Fitness Score, paired delta and descriptive 95% intervals, wins/losses/
 ties, hard gates, A/A outcome, and optional local archive rank/percentile.
 Archive position is informational only. PR-1 statuses are only
 `GATE-FAILED`, `REJECT`, `HOLD`, and `SCREEN-PASS`; no result is global Hermes
-qualification or `PROMOTE-CANDIDATE` evidence.
+qualification or `PROMOTE-CANDIDATE` evidence. Receipt SHA-256 values are
+accidental-corruption/tamper evidence, not adversarial authentication.
 
 ### Two Commands for Model Management
 

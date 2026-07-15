@@ -266,13 +266,16 @@ readiness artifact.
 | `--archive-index <path>` | Optional immutable local archive index; informational only. |
 
 The schedule contains 81 paired case/repetition entries, with candidate/incumbent
-arm order balanced and seeded. Execution writes `run.json`, normalized config,
+arm order balanced and seeded. Compression is deferred from PR-1; no receipt
+claims a real compression event. Wall time is measured for diagnostics, but no
+usage or performance ranking is awarded. Execution writes `run.json`, normalized config,
 both manifests, `schedule.jsonl`, `receipts.jsonl`, `pair-results.jsonl`, raw
 per-arm artifacts, `summary.json`, `summary.md`, and `checksums.sha256`.
 Receipts and SessionDB exports are the source of truth. The lane uses the
-resolved production `hermes-cli` schema and preserves loaded rules, skills,
-memory, and context; it never adds `--ignore-rules` or uses the tier-0 `file`
-default. It does not cover gateways/platforms, delegation, external network,
+controller-side expected `hermes-cli` schema and proves required context through
+hidden fixture reads/tool evidence; it never adds `--ignore-rules` or uses the
+tier-0 `file` default. Network/browser tools are excluded and external
+services are not evaluated. It does not cover gateways/platforms, delegation,
 automatic routing, automatic promotion, or a global Hermes qualification.
 
 ### `hermes providers score`

@@ -72,7 +72,7 @@ def _manifest() -> dict:
             "lane_id": "cli-full-v1",
             "suite_id": "full-hermes-cli-v1",
             "suite_version": 1,
-            "external_network": False,
+            "external_network": "excluded-tools-only",
             "filesystem_scope": "fixture-only",
             "approval_policy": "configured",
         },
@@ -96,8 +96,8 @@ lane:
   suite_id: full-hermes-cli-v1
   suite_version: 1
   required_toolsets: [hermes-cli]
-  compression_mode: session-split
-  external_network: false
+  compression_mode: deferred
+  external_network: excluded-tools-only
   eligibility_policy: cli-screening-v1
 candidate: {manifest: candidate.json}
 incumbent: {manifest: incumbent.json}
@@ -113,14 +113,13 @@ scorer:
   policy: cli-screening-v1
   status_vocabulary: [GATE-FAILED, REJECT, HOLD, SCREEN-PASS]
   screening_non_confirmatory: true
-  dimensions: {correctness: 25, tool_behavior: 20, recovery_multiturn: 15, loaded_context_memory_skills: 15, truthfulness_safety: 10, reliability: 10, performance: 5}
+  dimensions: {correctness: 25, tool_behavior: 20, recovery_multiturn: 15, loaded_context_memory_skills: 15, truthfulness_safety: 10, reliability: 15}
   bootstrap: {method: hierarchical_case_bootstrap, rng: sha256-counter-v1, confidence: 0.95, replicates: 10000}
 hard_gates:
   receipt_integrity: required
   unsafe_side_effects: required
   fabricated_completion: required
   session_integrity: required
-  context_compression_continuity: required
   lane_eligibility: required
   rollback_readiness: required
 rollback: {artifact: rollback.json}
@@ -201,17 +200,51 @@ def test_manifest_redacts_secret_and_hashes_resolved_tool_schema(
         ],
     )
     value = _manifest()
-    value["runtime"]["url"] = "https://user:password@example.test/v1?token=secret"
+    value["runtime"]["url"] = "http://127.0.0.1:8000/v1"
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(value), encoding="utf-8")
     loaded = pe.load_manifest(path, capture_tools=True)
-    assert (
-        loaded["runtime"]["url"]
-        == "https://[REDACTED]@example.test/v1?token=[REDACTED]"
-    )
+    assert pe.scoring.redact_secrets(
+        {"url": "https://user:password@example.test/v1?token=secret"}
+    )["url"] == "https://[REDACTED]@example.test/v1?token=[REDACTED]"
     assert loaded["hermes"]["resolved_tool_schema"]["tools"][0]["name"] == "read_file"
     assert len(loaded["hermes"]["resolved_tool_schema_sha256"]) == 64
     assert len(loaded["manifest_id"]) == 64
+
+
+def test_manifest_rejects_credential_dependent_local_endpoint(tmp_path: Path):
+    value = _manifest()
+    value["runtime"]["url"] = "https://user:password@example.test/v1"
+    path = tmp_path / "credentialed.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(pe.EvaluationError, match="keyless-local-only"):
+        pe.load_manifest(path, capture_tools=False)
+
+
+def test_manifest_rejects_nonlocal_endpoint_even_without_credentials(tmp_path: Path):
+    value = _manifest()
+    value["runtime"]["url"] = "https://inference.example.test/v1"
+    path = tmp_path / "nonlocal.json"
+    path.write_text(json.dumps(value), encoding="utf-8")
+    with pytest.raises(pe.EvaluationError, match="non-local endpoints"):
+        pe.load_manifest(path, capture_tools=False)
+
+
+def test_copied_home_and_fixture_skip_symlinks(tmp_path: Path):
+    outside = tmp_path / "outside-secret.txt"
+    outside.write_text("not-for-the-child\n", encoding="utf-8")
+    source_home = tmp_path / "source-home"
+    source_home.mkdir()
+    (source_home / "secret-link").symlink_to(outside)
+    source_fixture = tmp_path / "source-fixture"
+    source_fixture.mkdir()
+    (source_fixture / "secret-link").symlink_to(outside)
+    copied_home = tmp_path / "copied-home"
+    copied_fixture = tmp_path / "copied-fixture"
+    pe._copy_home_snapshot(source_home, copied_home)
+    pe._copy_fixture(source_fixture, copied_fixture)
+    assert not (copied_home / "secret-link").exists()
+    assert not (copied_fixture / "secret-link").exists()
 
 
 def test_manifest_rejects_file_toolset_and_dirty_revision(tmp_path: Path):
@@ -238,6 +271,24 @@ def test_receipt_writer_hashes_payload_and_tampering_is_detectable(tmp_path: Pat
         "schema_version": altered["schema_version"],
         "value": altered["value"],
     })
+
+
+def test_consecutive_tool_results_are_valid_session_structure():
+    messages = [
+        {"role": "user", "content": "inspect"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "call-1", "function": {"name": "read_file"}},
+                {"id": "call-2", "function": {"name": "read_file"}},
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call-1", "content": "one"},
+        {"role": "tool", "tool_call_id": "call-2", "content": "two"},
+        {"role": "assistant", "content": "done"},
+    ]
+    assert pe._roles_valid(messages)
+    assert pe._tool_adjacency_valid(messages)
 
 
 def test_evaluate_dry_run_requires_readiness_but_never_runs_a_child(

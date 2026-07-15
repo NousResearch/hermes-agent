@@ -455,17 +455,20 @@ describe('createBackendSessionForSend profile routing', () => {
     const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
     const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
     let routeToken = '/::'
+
     let releaseYolo: () => void = () => {}
 
     const requestGateway = vi.fn(async (method: string) => {
       if (method === 'session.create') {
         return { session_id: createdRuntimeSessionId, stored_session_id: createdStoredSessionId } as never
       }
+
       if (method === 'config.set') {
         await new Promise<void>(resolve => {
           releaseYolo = resolve
         })
       }
+
       return {} as never
     })
 

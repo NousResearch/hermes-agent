@@ -1,6 +1,6 @@
 ---
 name: skill-auditor
-description: "Audit Hermes skills for quality, structure, and freshness."
+description: "Audit Hermes skills for quality and structure."
 version: 1.0.0
 author: GUOHAO LIU (lennney)
 license: MIT
@@ -12,7 +12,7 @@ metadata:
 
 # Skill Auditor
 
-Analyze installed Hermes skills for quality, structure compliance, and staleness. Produces actionable reports with specific fix suggestions.
+Analyze installed Hermes skills for quality and structure compliance. Produces actionable reports with specific fix suggestions.
 
 ## When to Use
 
@@ -91,7 +91,6 @@ python3 ~/.hermes/skills/software-development/skill-auditor/scripts/audit_skills
 ## Pitfalls
 
 - The script checks structure, not content quality — a skill can score 90+ but still have bad instructions
-- `platforms:` frontmatter must match actual code imports — the script flags this but can't verify runtime behavior
 - Skills in `optional-skills/` are not audited by default — pass `--path` explicitly
 - The audit script reads files directly; it does not load skills into the agent
 

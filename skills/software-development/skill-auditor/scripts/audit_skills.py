@@ -162,7 +162,7 @@ def check_tool_references(content: str) -> list[Issue]:
         lower = line.lower()
         for banned, replacement in BANNED_TOOL_REFS.items():
             # Match word boundary, avoid matching inside backticks
-            pattern = rf'(?<!`)\\b{re.escape(banned)}\\b(?!`)'
+            pattern = rf'(?<!`)\b{re.escape(banned)}\b(?!`)'
             if re.search(pattern, lower):
                 issues.append(Issue(
                     "warning",

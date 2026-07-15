@@ -1256,6 +1256,37 @@ export interface Translations {
     copyPath: string
   }
 
+  groups: {
+    title: string
+    createRoom: string
+    roomName: string
+    profiles: string
+    profilesHint: string
+    searchProfiles: string
+    create: string
+    cancel: string
+    empty: string
+    message: string
+    send: string
+    stop: string
+    delete: string
+    back: string
+    approval: string
+    run: string
+    reject: string
+    loadFailed: string
+    you: string
+    agent: string
+    working: string
+    workspace: string
+    noWorkspace: string
+    browseWorkspace: string
+    loadEarlier: string
+    loadingEarlier: string
+    compressed: string
+    summary: string
+  }
+
   sidebar: {
     nav: Record<string, string>
     searchAria: string

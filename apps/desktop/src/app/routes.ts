@@ -5,6 +5,7 @@ export const COMMAND_CENTER_ROUTE = '/command-center'
 export const SKILLS_ROUTE = '/skills'
 export const MESSAGING_ROUTE = '/messaging'
 export const ARTIFACTS_ROUTE = '/artifacts'
+export const GROUPS_ROUTE = '/groups'
 export const CRON_ROUTE = '/cron'
 export const PROFILES_ROUTE = '/profiles'
 export const AGENTS_ROUTE = '/agents'
@@ -16,6 +17,7 @@ export type AppView =
   | 'chat'
   | 'command-center'
   | 'cron'
+  | 'groups'
   | 'messaging'
   | 'profiles'
   | 'settings'
@@ -27,6 +29,7 @@ export type AppRouteId =
   | 'artifacts'
   | 'command-center'
   | 'cron'
+  | 'groups'
   | 'messaging'
   | 'new'
   | 'profiles'
@@ -47,6 +50,7 @@ export const APP_ROUTES = [
   { id: 'skills', path: SKILLS_ROUTE, view: 'skills' },
   { id: 'messaging', path: MESSAGING_ROUTE, view: 'messaging' },
   { id: 'artifacts', path: ARTIFACTS_ROUTE, view: 'artifacts' },
+  { id: 'groups', path: GROUPS_ROUTE, view: 'groups' },
   { id: 'cron', path: CRON_ROUTE, view: 'cron' },
   { id: 'profiles', path: PROFILES_ROUTE, view: 'profiles' },
   { id: 'agents', path: AGENTS_ROUTE, view: 'agents' },
@@ -90,7 +94,25 @@ export function sessionRoute(sessionId: string): string {
   return `${SESSION_ROUTE_PREFIX}${encodeURIComponent(sessionId)}`
 }
 
+export function groupRoomId(pathname: string): string | null {
+  if (!pathname.startsWith(`${GROUPS_ROUTE}/`)) {
+    return null
+  }
+
+  const id = pathname.slice(GROUPS_ROUTE.length + 1)
+
+  return id && !id.includes('/') ? decodeURIComponent(id) : null
+}
+
+export function groupRoomRoute(roomId: string): string {
+  return `${GROUPS_ROUTE}/${encodeURIComponent(roomId)}`
+}
+
 export function appViewForPath(pathname: string): AppView {
+  if (pathname === GROUPS_ROUTE || groupRoomId(pathname)) {
+    return 'groups'
+  }
+
   if (isNewChatRoute(pathname) || routeSessionId(pathname)) {
     return 'chat'
   }

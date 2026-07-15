@@ -1700,11 +1700,22 @@ export const zh: Translations = {
     copyPath: '复制路径'
   },
 
+  groups: {
+    title: '群聊', createRoom: '创建房间', roomName: '房间名称', profiles: 'Profiles',
+    profilesHint: '用逗号分隔 Profile 名称', searchProfiles: '搜索 Profile', create: '创建', cancel: '取消', empty: '还没有群聊房间。',
+    message: '发送消息到房间', send: '发送', stop: '停止', delete: '删除房间', back: '所有房间',
+    approval: '需要审批', run: '运行', reject: '拒绝', loadFailed: '无法加载群聊。',
+    you: '你', agent: 'Agent', working: '工作中…', workspace: '工作区', noWorkspace: '不使用工作区',
+    browseWorkspace: '浏览…', loadEarlier: '加载更早消息', loadingEarlier: '正在加载更早消息…',
+    compressed: '更早的上下文已压缩。', summary: '上下文摘要'
+  },
+
   sidebar: {
     nav: {
       'new-session': '新建会话',
       skills: '技能与工具',
       messaging: '消息平台',
+      groups: '群聊',
       artifacts: '产物'
     },
     searchAria: '搜索会话',

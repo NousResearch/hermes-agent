@@ -1418,11 +1418,22 @@ export const zhHant = defineLocale({
     copyPath: '複製路徑'
   },
 
+  groups: {
+    title: '群聊', createRoom: '建立房間', roomName: '房間名稱', profiles: 'Profiles',
+    profilesHint: '以逗號分隔 Profile 名稱', searchProfiles: '搜尋 Profile', create: '建立', cancel: '取消', empty: '尚無群聊房間。',
+    message: '傳送訊息到房間', send: '傳送', stop: '停止', delete: '刪除房間', back: '所有房間',
+    approval: '需要審批', run: '執行', reject: '拒絕', loadFailed: '無法載入群聊。',
+    you: '你', agent: 'Agent', working: '工作中…', workspace: '工作區', noWorkspace: '不使用工作區',
+    browseWorkspace: '瀏覽…', loadEarlier: '載入更早訊息', loadingEarlier: '正在載入更早訊息…',
+    compressed: '較早的上下文已壓縮。', summary: '上下文摘要'
+  },
+
   sidebar: {
     nav: {
       'new-session': '新工作階段',
       skills: '技能與工具',
       messaging: '訊息平台',
+      groups: '群聊',
       artifacts: '成品'
     },
     searchAria: '搜尋工作階段',

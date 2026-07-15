@@ -1,4 +1,4 @@
-"""Parser for the provider validation and candidate-evaluation commands."""
+"""Parser for the tier-0 provider compatibility smoke command."""
 
 from __future__ import annotations
 

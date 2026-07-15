@@ -118,6 +118,7 @@ interface PalettePage {
 }
 
 interface SessionEntry {
+  git_branch?: null | string
   id: string
   preview?: string
   title: string
@@ -212,6 +213,7 @@ const SESSION_ID_RE = /^\d{8}_\d{6}_[a-f0-9]{6}$/
 type SessionRow = Awaited<ReturnType<typeof listAllProfileSessions>>['sessions'][number]
 
 const toSessionEntry = (session: SessionRow): SessionEntry => ({
+  git_branch: session.git_branch ?? null,
   id: session.id,
   preview: session.preview ?? undefined,
   title: sessionTitle(session)
@@ -684,7 +686,7 @@ export function CommandPalette() {
         items: sessions.map(session => ({
           icon: MessageCircle,
           id: `session-${session.id}`,
-          keywords: ['chat', 'session', ...(session.preview ? [session.preview] : [])],
+          keywords: ['chat', 'session', ...(session.preview ? [session.preview] : []), ...(session.git_branch ? [session.git_branch] : [])],
           label: session.title,
           run: go(sessionRoute(session.id))
         }))
@@ -722,7 +724,7 @@ export function CommandPalette() {
         items: archivedSessions.map(session => ({
           icon: Archive,
           id: `archived-${session.id}`,
-          keywords: ['archived', 'chat', 'session', ...(session.preview ? [session.preview] : [])],
+          keywords: ['archived', 'chat', 'session', ...(session.preview ? [session.preview] : []), ...(session.git_branch ? [session.git_branch] : [])],
           label: session.title,
           run: go(`${SETTINGS_ROUTE}?tab=sessions&session=${encodeURIComponent(session.id)}`)
         }))

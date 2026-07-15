@@ -5781,6 +5781,7 @@ class BasePlatformAdapter(ABC):
                         user_id_alt=user_id_alt,
                         chat_id_alt=chat_id_alt,
                         is_bot=is_bot,
+                        scope_id=str(scope_id) if scope_id else None,
                         guild_id=str(guild_id) if guild_id else None,
                         parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
                         message_id=str(message_id) if message_id else None,

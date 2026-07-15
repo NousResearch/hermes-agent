@@ -180,6 +180,155 @@ model:
         assert client is not None
         assert provider == "anthropic"
 
+    def test_exclude_providers_skips_main_in_favor_of_aggregator(self, monkeypatch):
+        """A provider in ``exclude_providers`` is skipped so auto-detect lands
+        on a vision-capable aggregator instead of the excluded main provider.
+
+        Mirrors the Z.AI Coding-plan case: zai's vision model (glm-5v-turbo)
+        is not licensed, so the retry re-resolves with zai excluded and must
+        pick an aggregator (OpenRouter) rather than returning zai again.
+
+        The provider-resolution primitives are stubbed so this exercises only
+        the ``exclude_providers`` branching — not real credential/pool
+        resolution, which carries cross-test cached state and is flaky here.
+        """
+        _fresh_modules()
+        import agent.auxiliary_client as ac
+
+        class _FakeClient:
+            def __init__(self, label):
+                self.base_url = f"https://{label}.example/v1"
+
+        zai_client = _FakeClient("zai")
+        or_client = _FakeClient("openrouter")
+
+        # Force the auto path: main provider = zai, no config/credential reads.
+        monkeypatch.setattr(
+            ac, "_resolve_task_provider_model",
+            lambda *a, **k: ("auto", "", "", "", "chat_completions"))
+        monkeypatch.setattr(ac, "_read_main_provider", lambda: "zai")
+        monkeypatch.setattr(ac, "_read_main_model", lambda: "glm-5.1")
+        # Main-provider vision attempt resolves to a zai client.
+        monkeypatch.setattr(
+            ac, "resolve_provider_client",
+            lambda provider, model=None, **k: (zai_client, model) if provider == "zai" else (None, None))
+        # Aggregator chain offers an OpenRouter vision backend.
+        monkeypatch.setattr(
+            ac, "_resolve_strict_vision_backend",
+            lambda candidate, *a, **k: (or_client, "openrouter-vision") if candidate == "openrouter" else (None, None))
+
+        # Without exclusion, auto-detect picks the main provider (zai).
+        provider_default, client_default, _ = ac.resolve_vision_provider_client(provider="auto")
+        assert client_default is zai_client
+        assert provider_default == "zai"
+
+        # Excluding zai must skip it and fall through to the aggregator chain.
+        provider_excl, client_excl, _ = ac.resolve_vision_provider_client(
+            provider="auto", exclude_providers=frozenset({"zai"})
+        )
+        assert client_excl is or_client
+        assert provider_excl == "openrouter"
+
+    def test_exclude_providers_matches_alias_main_provider(self, monkeypatch):
+        """Exclusion sets hold canonical ids; a main provider configured via a
+        Z.AI alias ("glm") must still be skipped when "zai" is excluded —
+        otherwise the reroute lands straight back on the broken provider."""
+        _fresh_modules()
+        import agent.auxiliary_client as ac
+
+        class _FakeClient:
+            def __init__(self, label):
+                self.base_url = f"https://{label}.example/v1"
+
+        or_client = _FakeClient("openrouter")
+
+        monkeypatch.setattr(
+            ac, "_resolve_task_provider_model",
+            lambda *a, **k: ("auto", "", "", "", "chat_completions"))
+        monkeypatch.setattr(ac, "_read_main_provider", lambda: "glm")
+        monkeypatch.setattr(ac, "_read_main_model", lambda: "glm-5.1")
+        monkeypatch.setattr(
+            ac, "_resolve_strict_vision_backend",
+            lambda candidate, *a, **k: (or_client, "openrouter-vision") if candidate == "openrouter" else (None, None))
+
+        provider, client, _ = ac.resolve_vision_provider_client(
+            provider="auto", exclude_providers=frozenset({"zai"})
+        )
+        assert client is or_client
+        assert provider == "openrouter"
+
+    def test_exclude_providers_does_not_leak_pinned_model_to_aggregator(self, monkeypatch):
+        """On a reroute, a config-pinned vision model belongs to the excluded
+        provider — the aggregator must get its own known-good default, not a
+        zai-only slug it would 404 on."""
+        _fresh_modules()
+        import agent.auxiliary_client as ac
+
+        class _FakeClient:
+            def __init__(self, label):
+                self.base_url = f"https://{label}.example/v1"
+
+        or_client = _FakeClient("openrouter")
+
+        # Config pins auxiliary.vision.model to the zai vision model.
+        monkeypatch.setattr(
+            ac, "_resolve_task_provider_model",
+            lambda *a, **k: ("auto", "glm-5v-turbo", "", "", "chat_completions"))
+        monkeypatch.setattr(ac, "_read_main_provider", lambda: "zai")
+        monkeypatch.setattr(ac, "_read_main_model", lambda: "glm-5.1")
+        monkeypatch.setattr(
+            ac, "_resolve_strict_vision_backend",
+            lambda candidate, *a, **k: (or_client, "openrouter-vision") if candidate == "openrouter" else (None, None))
+
+        provider, client, model = ac.resolve_vision_provider_client(
+            provider="auto", exclude_providers=frozenset({"zai"})
+        )
+        assert provider == "openrouter"
+        assert client is or_client
+        assert model == "openrouter-vision"
+
+    def test_exclude_providers_does_not_leak_pinned_model_to_main_provider(self, monkeypatch):
+        """The pin-vs-default rule must hold on the Step-1 main-provider path
+        too, not just the aggregator loop: rerouting with a pinned zai model
+        onto a vision-capable non-zai main provider must use that provider's
+        own vision default, not the zai-only slug (which it would 404 on)."""
+        _fresh_modules()
+        import agent.auxiliary_client as ac
+
+        class _FakeClient:
+            def __init__(self, label):
+                self.base_url = f"https://{label}.example/v1"
+
+        gem_client = _FakeClient("gemini")
+
+        # Config pins auxiliary.vision.model to the zai vision model; the
+        # main provider is a different, vision-capable backend.
+        monkeypatch.setattr(
+            ac, "_resolve_task_provider_model",
+            lambda *a, **k: ("auto", "glm-5v-turbo", "", "", "chat_completions"))
+        monkeypatch.setattr(ac, "_read_main_provider", lambda: "gemini")
+        monkeypatch.setattr(ac, "_read_main_model", lambda: "gemini-3-pro")
+        monkeypatch.setattr(
+            ac, "_resolve_provider_vision_default",
+            lambda provider: "gemini-vision-default")
+        monkeypatch.setattr(ac, "_main_model_supports_vision", lambda p, m: True)
+        monkeypatch.setattr(
+            ac, "resolve_provider_client",
+            lambda provider, model=None, **k: (gem_client, model))
+
+        # Under exclusion the main provider serves with its own default...
+        provider, client, model = ac.resolve_vision_provider_client(
+            provider="auto", exclude_providers=frozenset({"zai"})
+        )
+        assert provider == "gemini"
+        assert client is gem_client
+        assert model == "gemini-vision-default"
+
+        # ...while without exclusion the config pin still applies as before.
+        provider, _, model = ac.resolve_vision_provider_client(provider="auto")
+        assert provider == "gemini"
+        assert model == "glm-5v-turbo"
+
     def test_unknown_capability_does_not_block(self, isolated_home, monkeypatch):
         """When models.dev has no entry, fall back to permissive (attempt the call).
 

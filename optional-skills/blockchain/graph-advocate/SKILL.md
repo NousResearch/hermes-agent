@@ -1,6 +1,6 @@
 ---
 name: graph-advocate
-description: Route plain-English onchain data questions to the right Graph Protocol service. Returns live data from 15,500+ subgraphs across 20+ chains, the Token API (EVM/Solana/TON), Polymarket/Hyperliquid trader intelligence, and a Polymarket-Limitless cross-venue prediction-market spread JOIN. Free routing; paid endpoints settle in USDC on Base via x402.
+description: Route onchain data questions to the right Graph subgraph.
 version: 2.7.0
 author: Paul Barba (PaulieB14), Graph Advocate
 license: MIT
@@ -13,16 +13,15 @@ metadata:
 
 # Graph Advocate Skill
 
-Routing agent for **The Graph Protocol**. Send a plain-English question about
-any blockchain (Ethereum, Base, Arbitrum, Polygon, Solana, TON, BNB, etc.) and
-get back the right service plus a ready-to-run query — no manual subgraph
-hunting, no MCP install, no API key.
+Routing agent for The Graph Protocol. Send a plain-English question about any
+blockchain and get back the right service plus a ready-to-run query, with no
+manual subgraph hunting, no MCP install, and no API key. Free routing over
+HTTPS; paid analytics endpoints settle in USDC on Base via x402. This skill is
+instruction-only: it calls a hosted HTTP API and runs no code on your machine.
 
 Live service: `https://graphadvocate.com`. ERC-8004 agent #734 (Arbitrum),
-#41034 (Base). ENS: `graphadvocate.eth`. Already on ClawHub, Agentverse, CDP
-Bazaar, x402scan, Agentic Market, and 8004scan.
-
----
+#41034 (Base). ENS `graphadvocate.eth`. Source:
+`https://github.com/PaulieB14/graph-advocate`.
 
 ## When to Use
 
@@ -35,21 +34,16 @@ Bazaar, x402scan, Agentic Market, and 8004scan.
 - User wants cross-venue prediction-market spread (Polymarket vs Limitless,
   or Polymarket vs Kalshi) with arbitrage direction
 - User wants natural-language Q&A over the x402 Base settlements warehouse
-  (132M+ payments, May 2025 → Jun 2026)
 - User wants to discover ERC-8004 agents on Base by capability
-
----
 
 ## Prerequisites
 
 Stdlib only — no external packages, no API key needed for free-tier routing.
-Optional `curl` (any modern client works). Outbound HTTPS to
+Optional `curl` (any modern HTTP client works). Outbound HTTPS to
 `graphadvocate.com` required.
 
 For paid endpoints, the calling agent needs an x402-compatible HTTP client
 with a funded wallet on Base (USDC). Per-call settlement; no subscription.
-
----
 
 ## How to Run
 
@@ -70,8 +64,8 @@ Returns:
   "recommendation": "token-api",
   "reason": "Token API exposes ERC-20 holder data directly...",
   "confidence": "high",
-  "query_ready": { "tool": "...", "args": {...} },
-  "execution_result": { "source": "...", "data": {...} },
+  "query_ready": { "tool": "...", "args": {} },
+  "execution_result": { "source": "...", "data": {} },
   "cache_for_seconds": 300
 }
 ```
@@ -90,12 +84,10 @@ curl -sX POST https://graphadvocate.com/chat \
 curl -s "https://graphadvocate.com/quota?sender=0xYourAgentAddress"
 ```
 
----
-
-## Paid Endpoints (x402, USDC on Base)
+### Paid endpoints (x402, USDC on Base)
 
 Every paid endpoint returns a 402 challenge with an `output_example` field in
-the body so you can preview the payload shape before signing. Pricing:
+the body so you can preview the payload shape before signing.
 
 | Endpoint | Price | Returns |
 |---|---:|---|
@@ -111,22 +103,9 @@ the body so you can preview the payload shape before signing. Pricing:
 | `POST /kalshi/consensus-trend` | $0.05 | Kalshi consensus slope + acceleration |
 | `POST /kalshi-polymarket/spread` | $0.05 | Kalshi-Polymarket cross-source spread |
 | `POST /kalshi/sports-live-edge` | $0.05 | Live sports mispricing detector |
-| `POST /predmarket/spread` | $0.05 | **Polymarket-Limitless cross-venue spread** with arbitrage direction |
-| `POST /ask` | $0.05 | Natural-language Q&A over 132M+ x402 Base settlements |
+| `POST /predmarket/spread` | $0.05 | Polymarket-Limitless cross-venue spread with arbitrage direction |
+| `POST /ask` | $0.05 | Natural-language Q&A over the x402 Base settlements warehouse |
 | `POST /onchain-x402/address` | $0.01 | Decentralized x402 address lookup via subgraph |
-
----
-
-## Spend Controls (Required Before Autonomous Use)
-
-1. **Dedicated low-balance wallet.** Fund only what you're willing to spend.
-2. **Per-call approval.** Configure your x402 client to surface 402 challenges
-   before signing. Every paid call's 402 body now includes `output_example`
-   so you can decide based on the actual payload shape.
-3. **Hard caps.** Set `maxAmountPerCall` and `maxTotalSpend` in your runtime,
-   or wrap calls in a counter that breaks after N invocations.
-
----
 
 ## Quick Reference
 
@@ -145,30 +124,49 @@ GET /SKILL.md                      # this skill manifest (live source)
 # Paid (x402 on Base, USDC) — see table above
 ```
 
----
+## Procedure
 
-## Identity & Provenance
+1. **Classify the request** against `## When to Use`: subgraph/GraphQL
+   discovery, Token API balances, Polymarket/Hyperliquid trader intel,
+   cross-venue spread, or x402 settlements Q&A.
+2. **Route it.** POST the plain-English question to `/route` with a stable
+   `sender` address. Free for the first 3 calls per sender per day.
+3. **Read the response.** Use `recommendation` (chosen service), `reason`, and
+   `query_ready` (a ready-to-run tool call + args). If `execution_result` is
+   present, the live data is already included.
+4. **Run the query if needed.** If only `query_ready` is returned, execute it
+   against the named service (subgraph gateway, Token API, etc.).
+5. **For paid endpoints,** expect a `402 Payment Required` with an
+   `output_example` in the body. Proceed only if your runtime is configured to
+   accept x402 challenges (see `## Pitfalls`); otherwise the call stops there.
+6. **Cache** results for `cache_for_seconds` before re-querying the same thing.
 
-- ERC-8004: Agent #734 (Arbitrum), #41034 (Base)
-- ENS: `graphadvocate.eth`
-- Source: https://github.com/PaulieB14/graph-advocate
-- Docs: https://docs.graphadvocate.com
-- ClawHub: https://clawhub.ai/paulieb14/graph-advocate
+## Pitfalls
 
----
+- **Free tier is 3 routing calls per sender per day,** then `/route` charges
+  $0.01 via x402. Pass a stable `sender` address so quota tracks correctly.
+- **Paid endpoints do nothing without x402 configured.** Without a funded Base
+  wallet and an x402-capable client, paid endpoints return `402` and stop.
+- **Spend safety before autonomous use:** fund a dedicated low-balance wallet,
+  surface 402 challenges for per-call approval (each 402 body includes
+  `output_example` so you can decide on the payload shape), and set
+  `maxAmountPerCall` / `maxTotalSpend` or an invocation counter.
+- **Never send secrets.** Queries go to `graphadvocate.com` over HTTPS; do not
+  include private keys, seed phrases, or sensitive strategy details.
+- **`/hyperliquid/screen` caps N at 10;** requesting more silently truncates.
+- **Stateless:** no session persists between calls; include all needed context
+  in each request.
 
-## Security & Privacy
+## Verification
 
-- **Instruction-only skill** — no code is downloaded or executed locally.
-- **No credentials required** for free-tier routing.
-- **No local file access** — reads nothing from your filesystem.
-- **Stateless** — no session data persists between requests.
-- Plain-English queries are sent to `graphadvocate.com` over HTTPS. Do not
-  send private keys, seed phrases, or sensitive internal strategy details.
-
-Paid mode is **opt-in** — paid endpoints only settle when your runtime is
-configured to accept x402 payment challenges. Without that configuration,
-paid endpoints return `402 Payment Required` and the call stops there.
-
-The live SKILL.md is also served at `https://graphadvocate.com/SKILL.md` —
-this file mirrors that source.
+- **Quota check (no charge):**
+  `curl -s "https://graphadvocate.com/quota?sender=0xYourAgentAddress"` returns
+  JSON with your remaining free-tier calls.
+- **Routing works:** a `/route` POST returns JSON containing `recommendation`
+  and `query_ready`.
+- **Discovery resolves:**
+  `curl -s https://graphadvocate.com/.well-known/agent-card.json` returns the
+  A2A agent card, and `https://graphadvocate.com/SKILL.md` serves the live
+  manifest this file mirrors.
+- **Paid preview:** hitting any paid endpoint without payment returns `402`
+  with an `output_example` body, confirming the endpoint is live and priced.

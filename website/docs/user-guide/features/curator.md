@@ -78,12 +78,15 @@ auxiliary:
     provider: openrouter
     model: google/gemini-3-flash-preview
     timeout: 600               # generous — reviews can take several minutes
+    reasoning_effort: ""       # inherit agent.reasoning_effort, then provider default
 ```
 
 Leaving `provider: auto` (the default) routes the review pass through whatever your main chat model is, matching the behavior of every other auxiliary task.
 
+`auxiliary.curator.reasoning_effort` affects only the curator review fork. An empty value inherits valid `agent.reasoning_effort`; if neither is set, the provider default applies. The literal `none` explicitly disables reasoning for this fork. This setting does not enable LLM consolidation by itself — use `curator.consolidate: true` or `hermes curator run --consolidate`.
+
 :::note Legacy config
-Earlier releases used a one-off `curator.auxiliary.{provider,model}` block. That path still works but emits a deprecation log line — please migrate to `auxiliary.curator` above so the curator shares the same plumbing (`hermes model`, dashboard Models tab, `base_url`, `api_key`, `timeout`, `extra_body`) as every other aux task.
+Earlier releases used a one-off `curator.auxiliary.{provider,model}` block. Provider/model and `curator.auxiliary.reasoning_effort` remain deprecated fallbacks when canonical values are absent and emit deprecation logs. Please migrate to `auxiliary.curator` above so the curator shares the same plumbing (`hermes model`, dashboard Models tab, `base_url`, `api_key`, `timeout`, `extra_body`) as every other aux task.
 :::
 
 ## CLI

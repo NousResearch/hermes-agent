@@ -243,6 +243,80 @@ def test_get_platform_tools_x_search_auto_enabled_when_xai_oauth_present(monkeyp
         assert "x_search" in enabled, f"x_search missing for {plat}"
 
 
+# ─── #35527: platform-restricted default-off toolsets (discord/discord_admin)
+# are stripped by _DEFAULT_OFF_TOOLSETS even when the user explicitly opts in
+# via the platform's native composite. The composite ``hermes-discord``
+# contains both ``discord`` and ``discord_admin`` tools, so configuring it is
+# an explicit opt-in that should survive the default-off strip. ───────────────
+
+
+def test_discord_composite_only_enables_discord_toolsets():
+    """Layer 1: ``platform_toolsets.discord: [hermes-discord]`` is an explicit
+    opt-in to the full Discord bundle (which includes the ``discord`` and
+    ``discord_admin`` tools). They must not be silently stripped."""
+    config = {"platform_toolsets": {"discord": ["hermes-discord"]}}
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" in enabled, "discord toolset missing from hermes-discord composite"
+    assert "discord_admin" in enabled, "discord_admin toolset missing from composite"
+
+
+def test_discord_composite_plus_configurable_enables_discord_toolsets():
+    """Layer 2: mixing the composite with a configurable key (e.g. spotify)
+    still opts into the Discord toolsets carried by the composite."""
+    config = {"platform_toolsets": {"discord": ["hermes-discord", "spotify"]}}
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" in enabled
+    assert "discord_admin" in enabled
+
+
+def test_discord_composite_plus_partial_explicit_enables_sibling():
+    """Layer 3: ``[hermes-discord, discord]`` lists discord explicitly but
+    discord_admin arrives only via the composite. Both must survive."""
+    config = {"platform_toolsets": {"discord": ["hermes-discord", "discord"]}}
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" in enabled
+    assert "discord_admin" in enabled
+
+
+def test_discord_unconfigured_keeps_discord_toolsets_off():
+    """Layer 4 (guard): an unconfigured discord platform keeps the platform
+    toolsets OFF by default — explicit configuration is required to opt in."""
+    enabled = _get_platform_tools({}, "discord")
+    assert "discord" not in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_empty_list_keeps_discord_toolsets_off():
+    """Layer 4 (guard): an explicit empty list means 'nothing' — the Discord
+    toolsets must not be auto-added even though the fix keys off explicit
+    configuration."""
+    config = {"platform_toolsets": {"discord": []}}
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" not in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_toolsets_do_not_leak_to_other_platforms():
+    """Layer 4 (guard): discord/discord_admin are platform-restricted — they
+    must never appear on a non-discord platform even when that platform is
+    explicitly configured."""
+    config = {"platform_toolsets": {"telegram": ["hermes-telegram", "discord"]}}
+    enabled = _get_platform_tools(config, "telegram")
+    assert "discord" not in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_explicit_workaround_still_works():
+    """Regression guard: the documented workaround of listing toolsets
+    explicitly must keep working after the fix."""
+    config = {
+        "platform_toolsets": {"discord": ["hermes-discord", "discord", "discord_admin"]}
+    }
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" in enabled
+    assert "discord_admin" in enabled
+
+
 def test_get_platform_tools_x_search_auto_enabled_when_xai_api_key_present(monkeypatch):
     """x_search toolset auto-enables when XAI_API_KEY is set, even without
     OAuth tokens — the API-key path is a supported credential source."""
@@ -1676,3 +1750,83 @@ def test_vision_picker_custom_endpoint(tmp_path, monkeypatch):
     save_env.assert_called_once_with("OPENAI_API_KEY", "sk-secret")
 
 
+def test_save_platform_tools_clears_newly_enabled_from_disabled_toolsets():
+    """Enabling a toolset via the picker must remove it from
+    agent.disabled_toolsets, or _get_platform_tools() permanently masks it
+    back to OFF on the next read no matter what platform_toolsets says.
+
+    Blank Slate installs pre-populate disabled_toolsets with ~27 toolsets,
+    making the desktop Toolsets UI's enable toggle effectively a no-op for
+    any of them (issue #49995).
+    """
+    config = {
+        "platform_toolsets": {"cli": ["file", "terminal"]},
+        "agent": {"disabled_toolsets": ["todo", "memory", "browser"]},
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"file", "terminal", "todo"})
+
+    # The toolset the user just enabled is cleared from the block-list...
+    assert "todo" not in config["agent"]["disabled_toolsets"]
+    # ...but toolsets the user did NOT touch stay disabled (no over-reach).
+    assert "memory" in config["agent"]["disabled_toolsets"]
+    assert "browser" in config["agent"]["disabled_toolsets"]
+    assert "todo" in config["platform_toolsets"]["cli"]
+
+
+def test_save_platform_tools_resolves_to_enabled_after_disabled_toolsets_reconcile():
+    """End-to-end: after _save_platform_tools() reconciles disabled_toolsets,
+    _get_platform_tools() must actually resolve the toolset as enabled --
+    this is the exact symptom from issue #49995 (toggle saves but the UI/agent
+    still reads it as OFF after reopen).
+    """
+    config = {
+        "platform_toolsets": {"cli": ["file", "terminal"]},
+        "agent": {"disabled_toolsets": ["todo", "memory"]},
+    }
+
+    # Before: todo is masked off despite not being in platform_toolsets yet.
+    assert "todo" not in _get_platform_tools(config, "cli")
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"file", "terminal", "todo"})
+
+    # After: todo must resolve as enabled, and untouched 'memory' must
+    # remain masked off.
+    resolved = _get_platform_tools(config, "cli")
+    assert "todo" in resolved
+    assert "memory" not in resolved
+
+
+def test_save_platform_tools_no_disabled_toolsets_is_noop():
+    """When agent.disabled_toolsets is absent or empty, the reconcile step
+    must be a complete no-op (no KeyError, no spurious 'agent' key creation).
+    """
+    config = {"platform_toolsets": {"cli": ["file", "terminal"]}}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"file", "terminal", "todo"})
+
+    assert "todo" in config["platform_toolsets"]["cli"]
+    # No 'agent' key should be fabricated when none existed.
+    assert "agent" not in config
+
+
+def test_save_platform_tools_disabling_a_toolset_does_not_touch_disabled_toolsets():
+    """Turning a toolset OFF (not present in enabled_toolset_keys) must not
+    remove anything from agent.disabled_toolsets -- only toolsets the user
+    just explicitly enabled are reconciled.
+    """
+    config = {
+        "platform_toolsets": {"cli": ["file", "terminal", "todo"]},
+        "agent": {"disabled_toolsets": ["memory"]},
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        # User unchecks 'todo' -- it's no longer in enabled_toolset_keys.
+        _save_platform_tools(config, "cli", {"file", "terminal"})
+
+    assert "todo" not in config["platform_toolsets"]["cli"]
+    # disabled_toolsets is untouched by a disable action.
+    assert config["agent"]["disabled_toolsets"] == ["memory"]

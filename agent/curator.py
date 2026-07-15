@@ -45,12 +45,26 @@ def _strip_aux_credential(value: Any) -> Optional[str]:
 
 
 class _ReviewRuntimeBinding(NamedTuple):
-    """Provider/model for the curator review fork plus optional per-slot overrides."""
+    """Provider/model for the curator review fork plus per-slot overrides."""
 
     provider: str
     model: str
     explicit_api_key: Optional[str]
     explicit_base_url: Optional[str]
+    request_overrides: Dict[str, Any]
+
+
+def _merge_request_overrides(
+    runtime_overrides: Any,
+    slot_extra_body: Any,
+) -> Dict[str, Any]:
+    """Merge resolver metadata with task-local request body fields."""
+    merged = dict(runtime_overrides or {})
+    if isinstance(slot_extra_body, dict) and slot_extra_body:
+        extra_body = dict(merged.get("extra_body") or {})
+        extra_body.update(slot_extra_body)
+        merged["extra_body"] = extra_body
+    return merged
 
 
 DEFAULT_INTERVAL_HOURS = 24 * 7  # 7 days
@@ -273,6 +287,21 @@ def should_run_now(now: Optional[datetime] = None) -> bool:
 # Automatic state transitions (pure function, no LLM)
 # ---------------------------------------------------------------------------
 
+def _cron_referenced_skills() -> Set[str]:
+    """Skill names referenced by any cron job (incl. paused/disabled).
+
+    Best-effort: a cron-module import error or corrupt jobs store must never
+    break the curator, so any failure yields an empty set (no protection,
+    but no crash).
+    """
+    try:
+        from cron.jobs import referenced_skill_names as _refs
+        return _refs()
+    except Exception as e:
+        logger.debug("Curator could not read cron skill references: %s", e, exc_info=True)
+        return set()
+
+
 def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int]:
     """Walk every curator-managed skill and move active/stale/archived based on
     the latest real activity timestamp. Pinned skills are never touched.
@@ -292,12 +321,23 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
     stale_cutoff = now - timedelta(days=get_stale_after_days())
     archive_cutoff = now - timedelta(days=get_archive_after_days())
 
+    cron_referenced = _cron_referenced_skills()
+
     counts = {"marked_stale": 0, "archived": 0, "reactivated": 0, "checked": 0, "seeded": 0}
 
     for row in _u.agent_created_report():
         counts["checked"] += 1
         name = row["name"]
         if row.get("pinned"):
+            continue
+
+        # A skill referenced by any cron job (incl. paused/disabled) is in
+        # use by definition — resuming or the next fire must find it. The
+        # scheduler only bumps usage when a job actually fires, so jobs that
+        # fire less often than archive_after_days, paused jobs, and far-future
+        # one-shots would otherwise have their skills aged out from under
+        # them. Treat referenced skills like pinned: never auto-transition.
+        if name in cron_referenced:
             continue
 
         # First sight of a curation-eligible skill with no persisted record
@@ -315,6 +355,18 @@ def apply_automatic_transitions(now: Optional[datetime] = None) -> Dict[str, int
             anchor = anchor.replace(tzinfo=timezone.utc)
 
         current = row.get("state", _u.STATE_ACTIVE)
+
+        # Never-used skills (use_count == 0) get a grace floor: don't archive
+        # one until it is at least stale_after_days old. A use=0 skill is
+        # absence of evidence, not evidence of staleness — a skill created
+        # recently may simply not have had its trigger come up yet.
+        never_used = int(row.get("use_count", 0) or 0) == 0
+        if never_used and anchor > stale_cutoff:
+            # Younger than the stale window — leave it alone entirely.
+            if current == _u.STATE_STALE:
+                _u.set_state(name, _u.STATE_ACTIVE)
+                counts["reactivated"] += 1
+            continue
 
         if anchor <= archive_cutoff and current != _u.STATE_ARCHIVED:
             ok, _msg = _u.archive_skill(name)
@@ -390,10 +442,19 @@ CURATOR_REVIEW_PROMPT = (
     "back load-bearing UX (slash-command entry points referenced in docs and "
     "tips) and are filtered out of the candidate list below — never resurrect "
     "one as an archive or absorb target.\n"
+    "3c. DO NOT archive or prune any skill marked `cron=yes` in the candidate "
+    "list. A cron job depends on it and will fail to load it on its next "
+    "run. You MAY still consolidate it into an umbrella — but only because "
+    "the curator rewrites cron job skill references to follow consolidations; "
+    "never simply prune it.\n"
     "4. DO NOT use usage counters as a reason to skip consolidation. The "
     "counters are new and often mostly zero. Judge overlap on CONTENT, "
     "not on use_count. 'use=0' is not evidence a skill is valuable; it's "
-    "absence of evidence either way.\n"
+    "absence of evidence either way. Corollary: 'use=0' is ALSO not a "
+    "reason to PRUNE a skill. Never archive a never-used skill (use=0) "
+    "unless it is at least 30 days old (check last_activity / created date) "
+    "AND its content is genuinely obsolete or fully absorbed elsewhere — a "
+    "recently-created skill simply may not have had its trigger come up yet.\n"
     "5. DO NOT reject consolidation on the grounds that 'each skill has "
     "a distinct trigger'. Pairwise distinctness is the wrong bar. The "
     "right bar is: 'would a human maintainer write this as N separate "
@@ -1413,12 +1474,14 @@ def _render_candidate_list() -> str:
     rows = skill_usage.agent_created_report()
     if not rows:
         return "No agent-created skills to review."
+    cron_referenced = _cron_referenced_skills()
     lines = [f"Agent-created skills ({len(rows)}):\n"]
     for r in rows:
         lines.append(
             f"- {r['name']}  "
             f"state={r['state']}  "
             f"pinned={'yes' if r.get('pinned') else 'no'}  "
+            f"cron={'yes' if r['name'] in cron_referenced else 'no'}  "
             f"activity={r.get('activity_count', 0)}  "
             f"use={r.get('use_count', 0)}  "
             f"view={r.get('view_count', 0)}  "
@@ -1715,6 +1778,7 @@ def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
             _task_model,
             _strip_aux_credential(_cur_task.get("api_key")),
             _strip_aux_credential(_cur_task.get("base_url")),
+            _merge_request_overrides({}, _cur_task.get("extra_body")),
         )
 
     # 2. Legacy curator.auxiliary.{provider,model} (deprecated, pre-unification)
@@ -1732,10 +1796,11 @@ def _resolve_review_runtime(cfg: Dict[str, Any]) -> _ReviewRuntimeBinding:
             str(_legacy_model),
             _strip_aux_credential(_legacy.get("api_key")),
             _strip_aux_credential(_legacy.get("base_url")),
+            _merge_request_overrides({}, _legacy.get("extra_body")),
         )
 
     # 3. Fall through to the main chat model
-    return _ReviewRuntimeBinding(_main_provider, _main_model, None, None)
+    return _ReviewRuntimeBinding(_main_provider, _main_model, None, None, {})
 
 
 def _resolve_review_model(cfg: Dict[str, Any]) -> tuple[str, str]:
@@ -1801,6 +1866,11 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
     _base_url = None
     _api_mode = None
     _resolved_provider = None
+    _credential_pool = None
+    _request_overrides: Dict[str, Any] = {}
+    _max_tokens = None
+    _acp_command = None
+    _acp_args = None
     _model_name = ""
     try:
         from hermes_cli.config import load_config
@@ -1818,6 +1888,16 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
         _base_url = _rp.get("base_url")
         _api_mode = _rp.get("api_mode")
         _resolved_provider = _rp.get("provider") or _provider
+        _credential_pool = _rp.get("credential_pool")
+        _request_overrides = _merge_request_overrides(
+            _rp.get("request_overrides"),
+            _binding.request_overrides.get("extra_body"),
+        )
+        _max_tokens = _rp.get("max_output_tokens")
+        _acp_command = _rp.get("command")
+        _acp_args = list(_rp.get("args") or [])
+        if isinstance(_rp.get("model"), str) and _rp["model"].strip():
+            _model_name = _rp["model"].strip()
     except Exception as e:
         logger.debug("Curator provider resolution failed: %s", e, exc_info=True)
 
@@ -1826,12 +1906,21 @@ def _run_llm_review(prompt: str) -> Dict[str, Any]:
 
     review_agent = None
     try:
+        _agent_kwargs: Dict[str, Any] = {}
+        if isinstance(_max_tokens, int):
+            _agent_kwargs["max_tokens"] = _max_tokens
+        if isinstance(_acp_command, str) and _acp_command:
+            _agent_kwargs["acp_command"] = _acp_command
+            _agent_kwargs["acp_args"] = _acp_args or []
         review_agent = AIAgent(
             model=_model_name,
             provider=_resolved_provider,
             api_key=_api_key,
             base_url=_base_url,
             api_mode=_api_mode,
+            credential_pool=_credential_pool,
+            request_overrides=_request_overrides,
+            **_agent_kwargs,
             # Umbrella-building over a large skill collection is worth a
             # high iteration ceiling — the pass typically takes 50-100
             # API calls against hundreds of candidate skills. The

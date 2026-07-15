@@ -35,6 +35,7 @@ import os
 import socket
 import sys
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Optional
 
@@ -83,6 +84,20 @@ def _resolve_connector_url(override: Optional[str]) -> Optional[str]:
     if raw.endswith("/relay"):
         raw = raw[: -len("/relay")]
     return raw
+
+
+def _resolve_identity_token() -> str:
+    """Resolve the caller-identity bearer token (generic-OIDC or Nous Portal).
+
+    Delegates to the canonical resolver in ``gateway.relay`` so the enroll CLI and
+    the runtime self-provision path share ONE implementation (generic OAuth2
+    client-credentials when ``gateway.idp.token_url`` is set — the air-gapped /
+    self-hosted-IdP path; otherwise Nous Portal). Raises RuntimeError on failure.
+    """
+    from gateway.relay import _resolve_relay_identity_token
+
+    return _resolve_relay_identity_token()
+
 
 
 def _post_enroll(
@@ -179,9 +194,11 @@ def cmd_gateway_enroll(args) -> None:
 
     gateway_id = (getattr(args, "gateway_id", None) or _default_gateway_id()).strip()
 
-    # 1. Resolve a fresh Nous access token (the tenant-proving identity).
+    # 1. Resolve the caller-identity token (the tenant-proving identity). Generic
+    #    OIDC client-credentials when an IdP token endpoint is configured (air-
+    #    gapped / self-hosted-IdP, NO Nous Portal); otherwise the Nous Portal token.
     try:
-        access_token = resolve_nous_access_token()
+        access_token = _resolve_identity_token()
     except AuthError as exc:
         if getattr(exc, "relogin_required", False):
             print("✗ You're not logged into Nous Portal.")
@@ -190,7 +207,7 @@ def cmd_gateway_enroll(args) -> None:
             print(f"✗ Could not resolve a Nous Portal access token: {exc}")
         sys.exit(1)
     except Exception as exc:
-        print(f"✗ Could not resolve a Nous Portal access token: {exc}")
+        print(f"✗ Could not resolve a caller-identity token: {exc}")
         sys.exit(1)
 
     # 2-3. Redeem the enrollment token at the connector.

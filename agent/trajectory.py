@@ -58,28 +58,45 @@ def save_trajectory(trajectory: List[Dict[str, Any]], model: str,
         "completed": completed,
     }
 
+    lock_filename = filename + ".lock"
+    locked = False
+    lock_file = None
+    try:
+        if fcntl:
+            lock_file = open(lock_filename, "a+", encoding="utf-8")
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            locked = True
+        elif msvcrt:
+            lock_file = open(lock_filename, "a+", encoding="utf-8")
+            # Ensure the lock file has at least 1 byte at position 0
+            if lock_file.tell() == 0:
+                lock_file.write(" ")
+                lock_file.flush()
+            lock_file.seek(0)
+            msvcrt.locking(lock_file.fileno(), msvcrt.LK_LOCK, 1)
+            locked = True
+    except Exception as e:
+        logger.warning("Failed to acquire lock for trajectory: %s", e)
+        if lock_file:
+            lock_file.close()
+        return
+
     try:
         with open(filename, "a", encoding="utf-8") as f:
-            if fcntl:
-                fcntl.flock(f, fcntl.LOCK_EX)
-            elif msvcrt:
-                try:
-                    f.seek(0)
-                    msvcrt.locking(f.fileno(), msvcrt.LK_LOCK, 1)
-                except OSError:
-                    pass
-            try:
-                f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-                f.flush()
-            finally:
-                if fcntl:
-                    fcntl.flock(f, fcntl.LOCK_UN)
-                elif msvcrt:
-                    try:
-                        f.seek(0)
-                        msvcrt.locking(f.fileno(), msvcrt.LK_UNLCK, 1)
-                    except OSError:
-                        pass
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            f.flush()
         logger.info("Trajectory saved to %s", filename)
     except Exception as e:
         logger.warning("Failed to save trajectory: %s", e)
+    finally:
+        if locked and lock_file:
+            try:
+                if fcntl:
+                    fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+                elif msvcrt:
+                    lock_file.seek(0)
+                    msvcrt.locking(lock_file.fileno(), msvcrt.LK_UNLCK, 1)
+            except Exception:
+                pass
+            finally:
+                lock_file.close()

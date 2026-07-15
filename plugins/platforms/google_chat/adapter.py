@@ -1654,12 +1654,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
         if snapshot:
             reply_to_text = (snapshot.get("text") or "").strip() or None
             reply_to_message_id = quoted_meta.get("name") or None
-            quoted_sender = (snapshot.get("sender") or {}).get("name") or ""
-            reply_to_is_own_message = bool(
-                quoted_sender
-                and self._bot_user_id
-                and quoted_sender == self._bot_user_id
-            )
+            # Parse sender as a string — the Google Chat API may return
+            # either a dict {name: ...} or a bare string.  We do NOT infer
+            # reply_to_is_own_message from this field because there is no
+            # documented bot-identifying value in the quoted snapshot.
+            _raw_sender = snapshot.get("sender")
+            if isinstance(_raw_sender, dict):
+                _sender_str = _raw_sender.get("name") or ""
+            else:
+                _sender_str = str(_raw_sender or "")
+            reply_to_is_own_message = False
         else:
             reply_to_text = None
             reply_to_message_id = None

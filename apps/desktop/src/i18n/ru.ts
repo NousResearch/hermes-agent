@@ -1506,8 +1506,7 @@ export const ru = defineLocale({
         placeholder: 'Вставьте токен приложения Slack',
       },
       SLACK_ALLOWED_USERS: {
-        label:
-    noTokenNeeded: 'Этой платформе не нужен токен здесь. Используйте инструкцию выше, затем включите её ниже.', 'Разрешённые ID пользователей Slack',
+        label: 'Разрешённые ID пользователей Slack',
         help: 'Рекомендуется. ID пользователей Slack через запятую.',
       },
       MATTERMOST_URL: {

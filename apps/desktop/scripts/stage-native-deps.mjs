@@ -63,15 +63,20 @@ function copyGlobByExt(srcDir, destDir, extensions) {
  * lib/unixTerminal.js requires at a fixed relative path. Filtering this
  * directory by ['.node'] silently drops it — the package then looks
  * fine, ships fine, and crashes the first time a terminal is spawned.
- * Directories are copied wholesale to also cover any nested native
- * payload (e.g. a conpty/ subfolder some build layouts produce).
+ * Directories are copied wholesale except for Windows conpty payloads,
+ * which are walked file by file because Node's recursive cpSync can fail
+ * with EIO on that directory even when copying each file succeeds.
  */
 function copyBuildRelease(srcDir, destDir) {
   if (!existsSync(srcDir)) return
   mkdirSync(destDir, { recursive: true })
   for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
     if (entry.isDirectory()) {
-      cpSync(join(srcDir, entry.name), join(destDir, entry.name), { recursive: true })
+      if (entry.name === 'conpty') {
+        copyGlobByExt(join(srcDir, entry.name), join(destDir, entry.name), ['.dll', '.exe'])
+      } else {
+        cpSync(join(srcDir, entry.name), join(destDir, entry.name), { recursive: true })
+      }
       continue
     }
     if (entry.name === 'spawn-helper' || /\.(node|dll|exe)$/.test(entry.name)) {
@@ -231,7 +236,7 @@ export function stageNodePtyInto(srcRoot, destRoot, { platform = process.platfor
     mkdirSync(destPrebuild, { recursive: true })
     for (const entry of readdirSync(prebuildDir, { withFileTypes: true })) {
       if (entry.name === 'conpty' && entry.isDirectory()) {
-        cpSync(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'), { recursive: true })
+        copyGlobByExt(join(prebuildDir, 'conpty'), join(destPrebuild, 'conpty'), ['.dll', '.exe'])
         continue
       }
       if (entry.isFile() && /\.(node|dll|exe)$/.test(entry.name)) {

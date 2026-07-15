@@ -220,6 +220,28 @@ test('cross-target: matching prebuild IS staged for a foreign target', () => {
   }
 })
 
+test('win32 prebuild: complete conpty payload is staged', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'node-pty')
+    const destRoot = join(tmp, 'dest')
+
+    makeFakeNodePty(srcRoot, { prebuildPlatform: 'win32', prebuildArch: 'x64' })
+    const conptyDir = join(srcRoot, 'prebuilds', 'win32-x64', 'conpty')
+    fs.mkdirSync(conptyDir, { recursive: true })
+    fs.writeFileSync(join(conptyDir, 'conpty.dll'), 'conpty-dll')
+    fs.writeFileSync(join(conptyDir, 'OpenConsole.exe'), 'open-console')
+
+    stageNodePtyInto(srcRoot, destRoot, { platform: 'win32', arch: 'x64' })
+
+    const stagedConpty = join(destRoot, 'prebuilds', 'win32-x64', 'conpty')
+    assert.equal(fs.readFileSync(join(stagedConpty, 'conpty.dll'), 'utf8'), 'conpty-dll')
+    assert.equal(fs.readFileSync(join(stagedConpty, 'OpenConsole.exe'), 'utf8'), 'open-console')
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
 test('cross-target: foreign target with no prebuild throws (fail closed)', () => {
   const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
   try {
@@ -257,6 +279,30 @@ test('host-target: host build/Release IS staged for a matching target', () => {
       true,
       'host build/Release must be staged for a matching target'
     )
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true })
+  }
+})
+
+test('host-target: nested conpty build payload is staged', () => {
+  const tmp = fs.mkdtempSync(join(os.tmpdir(), 'hermes-stage-'))
+  try {
+    const srcRoot = join(tmp, 'node-pty')
+    const destRoot = join(tmp, 'dest')
+
+    makeFakeNodePty(srcRoot)
+    const buildReleaseDir = join(srcRoot, 'build', 'Release')
+    makeFakeNode(join(buildReleaseDir, 'pty.node'), process.platform)
+    const conptyDir = join(buildReleaseDir, 'conpty')
+    fs.mkdirSync(conptyDir, { recursive: true })
+    fs.writeFileSync(join(conptyDir, 'conpty.dll'), 'conpty-dll')
+    fs.writeFileSync(join(conptyDir, 'OpenConsole.exe'), 'open-console')
+
+    stageNodePtyInto(srcRoot, destRoot, { platform: process.platform, arch: process.arch })
+
+    const stagedConpty = join(destRoot, 'build', 'Release', 'conpty')
+    assert.equal(fs.readFileSync(join(stagedConpty, 'conpty.dll'), 'utf8'), 'conpty-dll')
+    assert.equal(fs.readFileSync(join(stagedConpty, 'OpenConsole.exe'), 'utf8'), 'open-console')
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true })
   }

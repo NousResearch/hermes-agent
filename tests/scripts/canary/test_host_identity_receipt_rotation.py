@@ -65,7 +65,12 @@ def _service_stdout(unit: str) -> str:
         "DropInPaths": "",
     }
     return "".join(
-        f"{name}={values[name]}\n" for name in writer_release._SERVICE_PROPERTIES
+        f"{name}={values[name]}\n"
+        for name in writer_release._SERVICE_PROPERTIES
+        if not (
+            unit in writer_release._PIDLESS_SERVICE_UNITS
+            and name == "MainPID"
+        )
     )
 
 

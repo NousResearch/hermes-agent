@@ -41,6 +41,20 @@ from hermes_cli.dashboard_auth.public_paths import PUBLIC_API_PATHS
 
 _log = logging.getLogger(__name__)
 
+# Exact static files that must be fetchable while the dashboard auth gate is
+# active. Keep these exact (rather than prefix matching) so similarly named
+# HTML or API routes do not become public accidentally.
+_GATE_PUBLIC_PATHS: frozenset[str] = frozenset(
+    {
+        "/manifest.webmanifest",
+        "/sw.js",
+        "/pwa-icon-180.png",
+        "/pwa-icon-192.png",
+        "/pwa-icon-512.png",
+        "/pwa-icon.svg",
+    }
+)
+
 # Prefixes that bypass the auth gate. Match via ``path == prefix`` or
 # ``path.startswith(prefix)`` — so ``/assets/`` (with trailing slash)
 # matches ``/assets/foo.css`` but not ``/assetsleak``. Auth-bootstrap
@@ -70,11 +84,14 @@ def _path_is_public(path: str) -> bool:
       the legacy ``_SESSION_TOKEN`` middleware also honours. Matched
       exactly (no prefix expansion) so adding ``/api/status`` doesn't
       accidentally expose ``/api/status/secret-extension``.
+    * :data:`_GATE_PUBLIC_PATHS` — exact PWA metadata and icon files that
+      browsers and operating systems fetch outside an authenticated SPA
+      session.
     * :data:`_GATE_PUBLIC_PREFIXES` — auth-bootstrap routes and static
       mounts. Prefix-matched so ``/assets/foo.css`` lights up via
       ``/assets/``.
     """
-    if path in PUBLIC_API_PATHS:
+    if path in PUBLIC_API_PATHS or path in _GATE_PUBLIC_PATHS:
         return True
     return any(
         path == prefix or path.startswith(prefix)

@@ -10084,12 +10084,28 @@ def _(rid, params: dict) -> dict:
         try:
             from run_agent import AIAgent
 
-            result = AIAgent(
-                **_background_agent_kwargs(session["agent"], task_id)
-            ).run_conversation(
-                user_message=text,
-                task_id=task_id,
+            # Bug #50233: ephemeral agent threads don't inherit the session's
+            # HERMES_HOME override (the ContextVar set on the session-create
+            # thread doesn't propagate here), so a background turn under a
+            # non-default profile would run against the wrong home. Re-bind the
+            # override for the duration of this turn, exactly as the normal
+            # prompt turn does, and restore it afterward.
+            _profile_home_str = session.get("profile_home")
+            home_token = (
+                set_hermes_home_override(_profile_home_str)
+                if _profile_home_str
+                else None
             )
+            try:
+                result = AIAgent(
+                    **_background_agent_kwargs(session["agent"], task_id)
+                ).run_conversation(
+                    user_message=text,
+                    task_id=task_id,
+                )
+            finally:
+                if home_token is not None:
+                    reset_hermes_home_override(home_token)
             _emit(
                 "background.complete",
                 parent,
@@ -10195,14 +10211,33 @@ def _(rid, params: dict) -> dict:
                 parent,
                 {"task_id": task_id, "text": f"Starting hidden restart agent{history_note}"},
             )
-            result = AIAgent(
-                **_ephemeral_preview_agent_kwargs(session["agent"], task_id),
-                **_preview_restart_callbacks(parent, task_id),
-            ).run_conversation(
-                user_message=prompt,
-                task_id=task_id,
-                conversation_history=parent_history or None,
+            # Bug #50233: ephemeral preview-restart agent threads don't inherit
+            # the session's HERMES_HOME override (the ContextVar set on the
+            # session-create thread doesn't propagate here). Re-bind it for the
+            # duration of the turn, mirroring the normal prompt turn, then
+            # restore it. NOTE: we deliberately do NOT close this agent through
+            # task-wide process cleanup — the whole point of preview.restart is
+            # to leave a background server running under this task_id, and
+            # AIAgent.close() would kill every process for the task_id and tear
+            # down the very server the restart just started.
+            _profile_home_str = session.get("profile_home")
+            home_token = (
+                set_hermes_home_override(_profile_home_str)
+                if _profile_home_str
+                else None
             )
+            try:
+                result = AIAgent(
+                    **_ephemeral_preview_agent_kwargs(session["agent"], task_id),
+                    **_preview_restart_callbacks(parent, task_id),
+                ).run_conversation(
+                    user_message=prompt,
+                    task_id=task_id,
+                    conversation_history=parent_history or None,
+                )
+            finally:
+                if home_token is not None:
+                    reset_hermes_home_override(home_token)
             text = (
                 result.get("final_response", str(result))
                 if isinstance(result, dict)

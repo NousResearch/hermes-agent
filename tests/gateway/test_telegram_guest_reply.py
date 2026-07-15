@@ -344,34 +344,55 @@ async def test_branch1_opc_media_result_edits_stub_with_button():
 
 @pytest.mark.asyncio
 async def test_branch2_valid_token_answers_with_cached_media():
-    """Branch 2: answerGuestQuery fires immediately with InlineQueryResultCachedVideo."""
+    """Branch 2: deliver_<token> with a valid token dispatches straight to
+    answerGuestQuery with the cached media — no stub, no LLM pass.
+
+    Invokes the real handler (not a hand-built API call) so token
+    resolution, caller authorization, and dispatch are all actually
+    exercised, not just that the mock records whatever call the test made
+    directly."""
     import tools.guest_mode_tool as gmt
     gmt._TOKEN_STORE.clear()
-
     token = gmt.mint_token("fid_video", "video")
 
     adapter = _make_adapter()
+    update, _ = _make_guest_update(caller_id="123304346", gqid="gqid_branch2")
+    msg = _fake_guest_msg(text=f"deliver_{token}")
 
-    # Simulate _handle_guest_message_update branch dispatch
-    from tools.guest_mode_tool import resolve_token
-    entry = resolve_token(token)
-    assert entry is not None
-
-    mk = entry["media_kind"]
-    fid = entry["file_id"]
-    fid_key = f"{mk}_file_id"
-    cached_result = {"type": mk, "id": "delivery", fid_key: fid, "title": mk.capitalize()}
-
-    await adapter._bot.do_api_request(
-        "answerGuestQuery",
-        api_kwargs={"guest_query_id": "gqid_branch2", "result": cached_result},
-    )
+    with patch.object(_tg_adapter_mod.Message, "de_json", return_value=msg), \
+         patch.object(adapter, "_is_callback_user_authorized", return_value=True):
+        await adapter._handle_guest_message_update(update, MagicMock())
 
     call = adapter._bot.do_api_request.await_args
     assert call.args[0] == "answerGuestQuery"
     payload = call.kwargs["api_kwargs"]
+    assert payload["guest_query_id"] == "gqid_branch2"
     assert payload["result"]["type"] == "video"
     assert payload["result"]["video_file_id"] == "fid_video"
+    # No stub / no edit cycle — Branch 2 never touches guest turn state.
+    assert adapter._pending_guest_queries == {}
+
+    gmt._TOKEN_STORE.clear()
+
+
+@pytest.mark.asyncio
+async def test_deliver_token_denied_for_unauthorized_caller():
+    """A valid, unexpired token must still be denied if the caller isn't
+    authorized — the caller gate sits in front of the deliver_<token>
+    branch too, so a leaked token can't be redeemed by a stranger."""
+    import tools.guest_mode_tool as gmt
+    gmt._TOKEN_STORE.clear()
+    token = gmt.mint_token("fid_video", "video")
+
+    adapter = _make_adapter()
+    update, _ = _make_guest_update(caller_id="999", gqid="gqid_branch2")
+    msg = _fake_guest_msg(text=f"deliver_{token}")
+
+    with patch.object(_tg_adapter_mod.Message, "de_json", return_value=msg), \
+         patch.object(adapter, "_is_callback_user_authorized", return_value=False):
+        await adapter._handle_guest_message_update(update, MagicMock())
+
+    adapter._bot.do_api_request.assert_not_called()
 
     gmt._TOKEN_STORE.clear()
 
@@ -382,31 +403,27 @@ async def test_branch2_valid_token_answers_with_cached_media():
 
 @pytest.mark.asyncio
 async def test_branch3_expired_token_answers_with_error():
-    """Branch 3: expired token → answerGuestQuery with 'something went wrong'."""
+    """Branch 3: deliver_<token> with an expired token answers with
+    "something went wrong" instead of the cached media — via the real
+    handler, not a hand-built API call."""
     import tools.guest_mode_tool as gmt
     gmt._TOKEN_STORE.clear()
-
     token = gmt.mint_token("fid", "video")
     gmt._TOKEN_STORE[token]["expires_at"] = time.monotonic() - 1  # force expiry
 
     adapter = _make_adapter()
+    update, _ = _make_guest_update(caller_id="123304346", gqid="gqid_branch3")
+    msg = _fake_guest_msg(text=f"deliver_{token}")
 
-    from tools.guest_mode_tool import resolve_token
-    entry = resolve_token(token)
-    assert entry is None  # expired
-
-    err_result = {
-        "type": "article", "id": "reply", "title": "Something went wrong",
-        "input_message_content": {"message_text": "⚠️ Sorry, something went wrong. Please try again."},
-    }
-    await adapter._bot.do_api_request(
-        "answerGuestQuery",
-        api_kwargs={"guest_query_id": "gqid_branch3", "result": err_result},
-    )
+    with patch.object(_tg_adapter_mod.Message, "de_json", return_value=msg), \
+         patch.object(adapter, "_is_callback_user_authorized", return_value=True):
+        await adapter._handle_guest_message_update(update, MagicMock())
 
     call = adapter._bot.do_api_request.await_args
     assert call.args[0] == "answerGuestQuery"
-    text = call.kwargs["api_kwargs"]["result"]["input_message_content"]["message_text"]
+    payload = call.kwargs["api_kwargs"]
+    assert payload["guest_query_id"] == "gqid_branch3"
+    text = payload["result"]["input_message_content"]["message_text"]
     assert "wrong" in text.lower()
 
     gmt._TOKEN_STORE.clear()
@@ -460,7 +477,6 @@ async def test_guest_media_send_rejects_path_outside_staging_root(tmp_path, monk
     outside_file.write_text('{"api_key": "secret"}')
 
     adapter = _make_adapter()
-    adapter._translate_docker_path = lambda p: p  # not under test here
     adapter._bot.send_document = AsyncMock()
 
     result = await adapter._guest_media_send("42", "document", str(outside_file))
@@ -484,7 +500,6 @@ async def test_guest_media_send_allows_path_inside_staging_root(tmp_path, monkey
     video_file.write_bytes(b"fake video bytes")
 
     adapter = _make_adapter()
-    adapter._translate_docker_path = lambda p: p
 
     sent_video = MagicMock()
     sent_video.video = MagicMock(file_id="fid_ok")

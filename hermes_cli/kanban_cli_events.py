@@ -59,6 +59,7 @@ class KanbanEventBridge:
     on_queue_nonempty: Optional[Callable[[], None]] = None
     board: Optional[str] = None
     poll_interval: float = DEFAULT_POLL_INTERVAL
+    task_ids: Optional[set[str]] = None
 
     # Internal mutable state
     _cursor: int = field(default=0, repr=False)
@@ -111,7 +112,7 @@ class KanbanEventBridge:
     # ------------------------------------------------------------------
 
     def _query_events(self, after_id: int, limit: int) -> list[Event]:
-        """Query task_events > after_id, limited to NOTABLE_KINDS."""
+        """Query notable task events after a cursor, optionally by task."""
         if not self._db_path or not Path(self._db_path).exists():
             return []
 
@@ -120,12 +121,20 @@ class KanbanEventBridge:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode=WAL")
             try:
+                kind_placeholders = ", ".join("?" for _ in NOTABLE_KINDS)
+                params: list[object] = [after_id, *sorted(NOTABLE_KINDS)]
+                task_clause = ""
+                if self.task_ids:
+                    task_placeholders = ", ".join("?" for _ in self.task_ids)
+                    task_clause = f" AND task_id IN ({task_placeholders})"
+                    params.extend(sorted(self.task_ids))
+                params.append(limit)
                 rows = conn.execute(
                     "SELECT id, task_id, kind, payload, created_at, run_id "
                     "FROM task_events "
-                    "WHERE id > ? AND kind IN (?, ?, ?, ?, ?) "
+                    f"WHERE id > ? AND kind IN ({kind_placeholders}){task_clause} "
                     "ORDER BY id ASC LIMIT ?",
-                    (after_id, *NOTABLE_KINDS, limit),
+                    params,
                 ).fetchall()
             finally:
                 conn.close()
@@ -149,6 +158,20 @@ class KanbanEventBridge:
                 run_id=run_id,
             ))
         return events
+
+    def subscribe(self, task_ids: str | list[str] | set[str]) -> None:
+        """Restrict delivery to the supplied task IDs."""
+        if isinstance(task_ids, str):
+            task_ids = [task_ids]
+        self.task_ids = {task_id.strip() for task_id in task_ids if task_id.strip()}
+
+    def unsubscribe(self, task_ids: str | list[str] | set[str]) -> None:
+        """Stop delivering the supplied task IDs."""
+        if isinstance(task_ids, str):
+            task_ids = [task_ids]
+        if self.task_ids is None:
+            return
+        self.task_ids.difference_update(task_ids)
 
     def poll(self) -> list[Event]:
         """Poll for new events since _cursor. Advances and persists cursor."""

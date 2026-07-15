@@ -8356,6 +8356,48 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         """Print through the active command-safe console."""
         self._output_console().print(*args, **kwargs)
 
+    def _start_kanban_event_bridge(self) -> None:
+        """Start opt-in local Kanban event delivery for this CLI session.
+
+        Normal CLI sessions remain untouched. A caller must explicitly provide
+        ``HERMES_KANBAN_TASKS`` (comma-separated task IDs) or
+        ``HERMES_KANBAN_TASK``. Events are rendered locally; this hook never
+        submits input, resumes work, or mutates Kanban task state.
+        """
+        raw_task_ids = os.environ.get("HERMES_KANBAN_TASKS", "")
+        if not raw_task_ids:
+            raw_task_ids = os.environ.get("HERMES_KANBAN_TASK", "")
+        task_ids = [task_id.strip() for task_id in raw_task_ids.split(",") if task_id.strip()]
+        if not task_ids:
+            return
+
+        try:
+            from hermes_cli.kanban_cli_events import KanbanEventBridge
+
+            bridge = KanbanEventBridge(
+                on_render=self._console_print,
+                is_agent_running=lambda: bool(getattr(self, "_agent_running", False)),
+                board=os.environ.get("HERMES_KANBAN_BOARD") or None,
+                task_ids=set(task_ids),
+            )
+            bridge.deliver_events(bridge.catch_up())
+            bridge.start()
+            self._kanban_event_bridge = bridge
+            atexit.register(self._stop_kanban_event_bridge)
+            logger.debug("opt-in Kanban CLI event bridge started for %s", task_ids)
+        except Exception:
+            logger.debug("failed to start opt-in Kanban CLI event bridge", exc_info=True)
+
+    def _stop_kanban_event_bridge(self) -> None:
+        bridge = getattr(self, "_kanban_event_bridge", None)
+        if bridge is None:
+            return
+        self._kanban_event_bridge = None
+        try:
+            bridge.stop()
+        except Exception:
+            logger.debug("failed to stop Kanban CLI event bridge", exc_info=True)
+
     @staticmethod
     def _resolve_personality_prompt(value) -> str:
         """Accept string or dict personality value; return system prompt string."""
@@ -13433,6 +13475,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._last_turn_interrupted = False
         self._should_exit = False
         self._last_ctrl_c_time = 0  # Track double Ctrl+C for force exit
+        self._start_kanban_event_bridge()
 
         # Give plugin manager a CLI reference so plugins can inject messages
         from hermes_cli.plugins import get_plugin_manager

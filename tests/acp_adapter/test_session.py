@@ -149,6 +149,36 @@ class TestCreateSession:
 
         assert state.agent.kwargs.get("disabled_toolsets") == ["todo", "browser"]
 
+    @pytest.mark.parametrize(
+        "configured, expected",
+        [
+            ("code_execution", ["code_execution"]),          # scalar string = one name
+            ("['todo', 'browser']", ["todo", "browser"]),    # `hermes config set` stores JSON strings
+            ([" todo ", "", "browser"], ["todo", "browser"]),
+        ],
+    )
+    def test_make_agent_normalizes_disabled_toolsets_string_shapes(
+        self, monkeypatch, configured, expected
+    ):
+        """A bare ``list()`` would explode a string into single characters.
+
+        ``hermes config set`` persists lists as quoted JSON strings and a scalar
+        string is a valid one-name shape, so this must go through
+        ``parse_config_string_list`` the way ``hermes_cli/tools_config.py`` does.
+        """
+        self._patch_make_agent_env(
+            monkeypatch,
+            {
+                "model": {"default": "fake-model", "provider": "fake-provider"},
+                "mcp_servers": {},
+                "agent": {"disabled_toolsets": configured},
+            },
+        )
+
+        state = SessionManager(db=None).create_session(cwd="/tmp/project")
+
+        assert state.agent.kwargs.get("disabled_toolsets") == expected
+
     def test_make_agent_omits_disabled_toolsets_when_none_configured(self, monkeypatch):
         self._patch_make_agent_env(
             monkeypatch,

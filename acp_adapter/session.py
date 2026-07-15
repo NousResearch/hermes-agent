@@ -403,9 +403,18 @@ class SessionManager:
         # config-disabled toolsets stay executable in editor sessions.
         agent_cfg = config.get("agent")
         if isinstance(agent_cfg, dict):
-            disabled_toolsets = agent_cfg.get("disabled_toolsets")
+            # parse_config_string_list, not list(): `hermes config set` stores lists as
+            # quoted JSON strings, and a scalar string is a valid one-name shape — list()
+            # would explode either into single characters. Matches tools_config.py.
+            from agent.skill_utils import parse_config_string_list
+
+            disabled_toolsets = [
+                name.strip()
+                for name in parse_config_string_list(agent_cfg.get("disabled_toolsets"))
+                if name.strip()
+            ]
             if disabled_toolsets:
-                kwargs["disabled_toolsets"] = list(disabled_toolsets)
+                kwargs["disabled_toolsets"] = disabled_toolsets
 
         try:
             runtime = resolve_runtime_provider(requested=requested_provider or config_provider)

@@ -370,6 +370,8 @@ class TestExecuteCodeHelpers(unittest.TestCase):
 
 
 class TestRpcServerLoop(unittest.TestCase):
+    RPC_TOKEN = "test-rpc-token"
+
     def _run_rpc(
         self, payloads, *, allowed_tools=frozenset({"terminal"}), max_tool_calls=5
     ):
@@ -397,6 +399,7 @@ class TestRpcServerLoop(unittest.TestCase):
                 max_tool_calls,
                 allowed_tools,
                 stop_event,
+                self.RPC_TOKEN,
             )
             chunks = []
             while True:
@@ -417,7 +420,12 @@ class TestRpcServerLoop(unittest.TestCase):
     def test_rpc_server_rejects_invalid_json_and_disallowed_tool(self):
         responses, tool_call_log, count = self._run_rpc([
             b"not-json\n",
-            json.dumps({"tool": "read_file", "args": {"path": "x"}}).encode() + b"\n",
+            json.dumps({
+                "tool": "read_file",
+                "args": {"path": "x"},
+                "token": self.RPC_TOKEN,
+            }).encode()
+            + b"\n",
         ])
 
         self.assertIn("Invalid RPC request", responses[0]["error"])
@@ -431,6 +439,7 @@ class TestRpcServerLoop(unittest.TestCase):
                 json.dumps({
                     "tool": "terminal",
                     "args": {"command": "echo hi"},
+                    "token": self.RPC_TOKEN,
                 }).encode()
                 + b"\n",
             ],
@@ -459,6 +468,7 @@ class TestRpcServerLoop(unittest.TestCase):
                         "notify_on_complete": True,
                         "watch_patterns": ["done"],
                     },
+                    "token": self.RPC_TOKEN,
                 }).encode()
                 + b"\n",
             ])

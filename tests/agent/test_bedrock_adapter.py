@@ -1712,3 +1712,54 @@ class TestRequireBoto3VersionCheck:
         with patch.dict("sys.modules", {"boto3": fake_boto3}):
             result = _require_boto3()
             assert result is fake_boto3
+
+    def test_image_jpg_normalized_to_jpeg(self):
+        """image/jpg (non-standard) should normalize to jpeg for Bedrock Converse."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Describe this"},
+                {"type": "image_url", "image_url": {
+                    "url": "data:image/jpg;base64,/9j/4AAQ",
+                }},
+            ],
+        }]
+        _, msgs = convert_messages_to_converse(messages)
+        image_blocks = [b for b in msgs[0]["content"] if "image" in b]
+        assert len(image_blocks) == 1
+        assert image_blocks[0]["image"]["format"] == "jpeg"
+
+    def test_unsupported_image_format_defaults_to_jpeg(self):
+        """Unsupported formats (svg, tiff) should default to jpeg."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        for mime in ("image/svg+xml", "image/x-icon", "image/tiff"):
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {
+                        "url": f"data:{mime};base64,QUJD",
+                    }},
+                ],
+            }]
+            _, msgs = convert_messages_to_converse(messages)
+            image_blocks = [b for b in msgs[0]["content"] if "image" in b]
+            assert len(image_blocks) == 1, f"Expected 1 image block for {mime}"
+            assert image_blocks[0]["image"]["format"] == "jpeg", f"Expected jpeg for {mime}"
+
+    def test_supported_formats_preserved(self):
+        """Supported formats (png, jpeg, gif, webp) should pass through."""
+        from agent.bedrock_adapter import convert_messages_to_converse
+        for fmt in ("png", "jpeg", "gif", "webp"):
+            messages = [{
+                "role": "user",
+                "content": [
+                    {"type": "image_url", "image_url": {
+                        "url": f"data:image/{fmt};base64,QUJD",
+                    }},
+                ],
+            }]
+            _, msgs = convert_messages_to_converse(messages)
+            image_blocks = [b for b in msgs[0]["content"] if "image" in b]
+            assert len(image_blocks) == 1
+            assert image_blocks[0]["image"]["format"] == fmt, f"Expected {fmt} preserved"

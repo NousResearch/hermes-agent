@@ -448,6 +448,212 @@ def scan_binary_handler(args, **kwargs):
     return output
 
 
+# ── Cloud Scan ─────────────────────────────────────────────────────────────────
+
+SCAN_CLOUD_SCHEMA = {
+    "name": "scan_cloud",
+    "description": (
+        "Run a cloud security assessment against a target. "
+        "Tests cloud metadata endpoints (AWS IMDS, GCP metadata, Azure IMDS, "
+        "DigitalOcean, Alibaba) and scans for public cloud storage buckets "
+        "(S3, GCS, Azure Blob). If target is a URL, also simulates SSRF-based "
+        "metadata probing.\\n\\n"
+        "Use this during infrastructure reconnaissance to check if a target "
+        "is running in a cloud environment and has accessible metadata endpoints, "
+        "and to discover exposed cloud storage buckets."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": (
+                    "Target for cloud scan. Can be a metadata IP/domain "
+                    "(e.g. 169.254.169.254, metadata.google.internal), "
+                    "a bucket keyword or organization name "
+                    "(e.g. mycompany), or a URL to test for SSRF."
+                ),
+            },
+            "profile": {
+                "type": "string",
+                "enum": ["stealth", "normal", "aggressive", "brutal"],
+                "description": "Scan intensity profile. Default: normal.",
+            },
+        },
+        "required": ["target"],
+    },
+}
+
+
+def scan_cloud_handler(args, **kwargs):
+    """Handle scan_cloud tool invocation."""
+    target = args.get("target", "")
+    if not target:
+        return tool_error("target is required")
+
+    profile = args.get("profile", "normal")
+
+    import asyncio
+
+    try:
+        from hermes_scan.platforms.cloud import scan_cloud as _scan_cloud
+        from hermes_scan.types import ScanConfig, ScanProfile
+    except ImportError as e:
+        return tool_error(
+            f"hermes_scan not installed: {e}. "
+            f"Expected at ~/.hermes/scripts/hermes_scan/"
+        )
+
+    config = ScanConfig(
+        target=target,
+        profile=ScanProfile(profile),
+    )
+
+    try:
+        result = asyncio.run(_scan_cloud(target=target, config=config))
+    except Exception as e:
+        return tool_error(f"Cloud scan failed: {e}")
+
+    output = _format_result(result)
+    return output
+
+
+# ── AD Scan ────────────────────────────────────────────────────────────────────
+
+SCAN_AD_SCHEMA = {
+    "name": "scan_ad",
+    "description": (
+        "Run an Active Directory security assessment against a domain controller. "
+        "Performs port scanning (Kerberos 88, LDAP 389, SMB 445, etc.), LDAP null "
+        "bind testing, SMB null session checking, DNS SRV record enumeration, "
+        "LDAP rootDSE info extraction, password policy querying, Kerberos AS-REP "
+        "user enumeration, LDAP signing checks, and SMB signing checks.\\n\\n"
+        "Use this during internal penetration testing to assess Active Directory "
+        "security posture from an unauthenticated perspective."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": (
+                    "Domain controller IP address or domain name "
+                    "(e.g. 192.168.1.10 or dc01.domain.com)."
+                ),
+            },
+            "profile": {
+                "type": "string",
+                "enum": ["stealth", "normal", "aggressive", "brutal"],
+                "description": "Scan intensity profile. Default: normal.",
+            },
+        },
+        "required": ["target"],
+    },
+}
+
+
+def scan_ad_handler(args, **kwargs):
+    """Handle scan_ad tool invocation."""
+    target = args.get("target", "")
+    if not target:
+        return tool_error("target is required")
+
+    profile = args.get("profile", "normal")
+
+    import asyncio
+
+    try:
+        from hermes_scan.platforms.ad import scan_ad as _scan_ad
+        from hermes_scan.types import ScanConfig, ScanProfile
+    except ImportError as e:
+        return tool_error(
+            f"hermes_scan not installed: {e}. "
+            f"Expected at ~/.hermes/scripts/hermes_scan/"
+        )
+
+    config = ScanConfig(
+        target=target,
+        profile=ScanProfile(profile),
+    )
+
+    try:
+        result = asyncio.run(_scan_ad(target=target, config=config))
+    except Exception as e:
+        return tool_error(f"AD scan failed: {e}")
+
+    output = _format_result(result)
+    return output
+
+
+# ── Web3 Scan ──────────────────────────────────────────────────────────────────
+
+SCAN_WEB3_SCHEMA = {
+    "name": "scan_web3",
+    "description": (
+        "Run a Web3 / smart contract security scan. "
+        "Accepts a Solidity source file (.sol) for static analysis, or a "
+        "contract address (0x...) for on-chain analysis.\\n\\n"
+        "Searches for: reentrancy, unchecked return values, tx.origin usage, "
+        "unprotected selfdestruct, integer overflow, access control issues, "
+        "floating pragma, uninitialized storage pointers, dangerous delegatecall, "
+        "and insecure randomness.\\n\\n"
+        "For contract addresses, will attempt to fetch source from Etherscan "
+        "if ETHERSCAN_API_KEY is set, and identifies EIP-1967 proxy patterns."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": (
+                    "Contract address (0x...) or path to a .sol Solidity source "
+                    "file to analyze."
+                ),
+            },
+            "profile": {
+                "type": "string",
+                "enum": ["stealth", "normal", "aggressive", "brutal"],
+                "description": "Scan intensity profile. Default: normal.",
+            },
+        },
+        "required": ["target"],
+    },
+}
+
+
+def scan_web3_handler(args, **kwargs):
+    """Handle scan_web3 tool invocation."""
+    target = args.get("target", "")
+    if not target:
+        return tool_error("target is required")
+
+    profile = args.get("profile", "normal")
+
+    import asyncio
+
+    try:
+        from hermes_scan.platforms.web3 import scan_web3 as _scan_web3
+        from hermes_scan.types import ScanConfig, ScanProfile
+    except ImportError as e:
+        return tool_error(
+            f"hermes_scan not installed: {e}. "
+            f"Expected at ~/.hermes/scripts/hermes_scan/"
+        )
+
+    config = ScanConfig(
+        target=target,
+        profile=ScanProfile(profile),
+    )
+
+    try:
+        result = asyncio.run(_scan_web3(target=target, config=config))
+    except Exception as e:
+        return tool_error(f"Web3 scan failed: {e}")
+
+    output = _format_result(result)
+    return output
+
+
 # --- Registry ---
 from tools.registry import registry, tool_error
 
@@ -494,4 +700,31 @@ registry.register(
     handler=lambda args, **kw: scan_binary_handler(args, **kw),
     emoji="⚙️",
     description="Run binary file security scan (protections, strings, dangerous imports, certs)",
+)
+
+registry.register(
+    name="scan_cloud",
+    toolset="security",
+    schema=SCAN_CLOUD_SCHEMA,
+    handler=lambda args, **kw: scan_cloud_handler(args, **kw),
+    emoji="☁️",
+    description="Run cloud security assessment (metadata endpoints, bucket scanning, SSRF)",
+)
+
+registry.register(
+    name="scan_ad",
+    toolset="security",
+    schema=SCAN_AD_SCHEMA,
+    handler=lambda args, **kw: scan_ad_handler(args, **kw),
+    emoji="🏢",
+    description="Run Active Directory security assessment (LDAP, SMB, Kerberos, DNS)",
+)
+
+registry.register(
+    name="scan_web3",
+    toolset="security",
+    schema=SCAN_WEB3_SCHEMA,
+    handler=lambda args, **kw: scan_web3_handler(args, **kw),
+    emoji="⛓️",
+    description="Run Web3 / smart contract security scan (Solidity static analysis, proxy detection)",
 )

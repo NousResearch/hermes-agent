@@ -24,7 +24,7 @@
 #   MORNING_CHAIN_STEP2      override step-2 command (default: bin/journal-morning-run.sh)
 #   MORNING_CHAIN_STEP3      override step-3 command (default: todo_store_sync ingest)
 #   MORNING_CHAIN_STEP4      override step-4 command (default: python3 .../export_brief.py)
-#   MORNING_CHAIN_STEP5      override step-5 command (default: hermes brief ...)
+#   MORNING_CHAIN_STEP5      override step-5 command (default: cron/scripts/morning_brief_discord.py — compose+deliver to Discord)
 #   MORNING_CHAIN_LOG_DIR    override log directory   (default: <repo>/logs)
 #   MORNING_CHAIN_LOCK_DIR   override lock directory  (default: <repo>/logs)
 
@@ -35,6 +35,21 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
+
+# ---------------------------------------------------------------------------
+# Load Hermes's own .env (bot tokens, etc.) — launchd only sets a bare few
+# vars in the plist itself; this chain runs outside Hermes's sandboxed
+# cron-script runner, so secrets have to come from .env directly, same as
+# any manually-invoked step. Guarded: missing file is not an error (some
+# deployments configure secrets purely via the plist/launchd environment).
+# ---------------------------------------------------------------------------
+HERMES_HOME_DIR="${HERMES_HOME:-${HOME}/.hermes}"
+if [[ -f "${HERMES_HOME_DIR}/.env" ]]; then
+  set -a
+  # shellcheck disable=SC1090
+  source "${HERMES_HOME_DIR}/.env"
+  set +a
+fi
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -57,7 +72,7 @@ STEP1_CMD="${MORNING_CHAIN_STEP1:-cd ${REPO_ROOT} && python3 -m services.hermes.
 STEP2_CMD="${MORNING_CHAIN_STEP2:-${REPO_ROOT}/bin/journal-morning-run.sh}"
 STEP3_CMD="${MORNING_CHAIN_STEP3:-cd ${REPO_ROOT} && python3 -m services.hermes.todo_store_sync ingest}"
 STEP4_CMD="${MORNING_CHAIN_STEP4:-python3 ${HOME}/perf-coach/scripts/export_brief.py}"
-STEP5_CMD="${MORNING_CHAIN_STEP5:-hermes brief compose --deliver --target 06:00}"
+STEP5_CMD="${MORNING_CHAIN_STEP5:-python3 ${REPO_ROOT}/cron/scripts/morning_brief_discord.py}"
 
 STEP1_LOCK="${LOCK_DIR}/morning-chain-step1.lock"
 STEP2_LOCK="${LOCK_DIR}/morning-chain-step2.lock"

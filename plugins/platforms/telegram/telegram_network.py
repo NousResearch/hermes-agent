@@ -40,7 +40,7 @@ _DOH_PROVIDERS: list[dict] = [
 
 # Last-resort IPs when DoH is also blocked.  These are stable Telegram Bot API
 # endpoints in the 149.154.160.0/20 block (same seed used by OpenClaw).
-_SEED_FALLBACK_IPS: list[str] = ["149.154.167.220"]
+_SEED_FALLBACK_IPS: list[str] = ["149.154.166.110", "149.154.167.220"]
 
 
 def _resolve_proxy_url(target_hosts=None) -> str | None:
@@ -205,14 +205,24 @@ async def discover_fallback_ips() -> list[str]:
     """
     async with httpx.AsyncClient(timeout=httpx.Timeout(_DOH_TIMEOUT)) as client:
         doh_tasks = [_query_doh_provider(client, p) for p in _DOH_PROVIDERS]
-        system_dns_task = asyncio.to_thread(_resolve_system_dns)
-        results = await asyncio.gather(system_dns_task, *doh_tasks, return_exceptions=True)
+        system_dns_task = asyncio.ensure_future(asyncio.to_thread(_resolve_system_dns))
+        results = await asyncio.gather(*doh_tasks, return_exceptions=True)
 
-    # results[0] = system DNS IPs (set), results[1:] = DoH IP lists
-    system_ips: set[str] = results[0] if isinstance(results[0], set) else set()
+    # The system-resolver leg runs socket.getaddrinfo in a worker thread with
+    # no timeout of its own — a wedged OS resolver (broken VPN/DNS) can sit for
+    # minutes. Its result only feeds the no-usable-answers log line below, so
+    # it must never gate discovery: bound it and move on (#63309). The DoH legs
+    # are already bounded by the client timeout above.
+    system_ips: set[str] = set()
+    try:
+        system_result = await asyncio.wait_for(system_dns_task, timeout=_DOH_TIMEOUT)
+        if isinstance(system_result, set):
+            system_ips = system_result
+    except Exception:
+        logger.debug("System-DNS resolution for %s did not complete in time", _TELEGRAM_API_HOST)
 
     doh_ips: list[str] = []
-    for r in results[1:]:
+    for r in results:
         if isinstance(r, list):
             doh_ips.extend(r)
 

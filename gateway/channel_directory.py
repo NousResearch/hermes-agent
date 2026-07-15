@@ -6,6 +6,7 @@ Built on gateway startup, refreshed periodically (every 5 min), and saved to
 action="list" and for resolving human-friendly channel names to numeric IDs.
 """
 
+import asyncio
 import json
 import logging
 from datetime import datetime
@@ -121,29 +122,42 @@ async def build_channel_directory(adapters: Dict[Any, Any]) -> Dict[str, Any]:
     for platform, adapter in adapters.items():
         try:
             if platform == Platform.DISCORD:
-                platforms["discord"] = _build_discord(adapter)
+                platforms["discord"] = await asyncio.to_thread(_build_discord, adapter)
             elif platform == Platform.SLACK:
                 platforms["slack"] = await _build_slack(adapter)
         except Exception as e:
             logger.warning("Channel directory: failed to build %s: %s", platform.value, e)
 
     # Platforms that don't support direct channel enumeration get session-based
-    # discovery automatically.  Skip infrastructure entries that aren't messaging
-    # platforms — everything else falls through to _build_from_sessions().
+    # discovery automatically, but only for platforms connected in THIS gateway
+    # process. Historical session origins for disabled/decommissioned platforms
+    # must not be resurrected into the active send-target directory (stale
+    # targets make send_message route to platforms that can no longer deliver).
     _SKIP_SESSION_DISCOVERY = frozenset({"local", "api_server", "webhook"})
+    adapter_platform_names = {getattr(p, "value", str(p)) for p in adapters}
     for plat in Platform:
         plat_name = plat.value
-        if plat_name in _SKIP_SESSION_DISCOVERY or plat_name in platforms:
+        if (
+            plat_name in _SKIP_SESSION_DISCOVERY
+            or plat_name in platforms
+            or plat_name not in adapter_platform_names
+        ):
             continue
-        platforms[plat_name] = _build_from_sessions(plat_name)
+        platforms[plat_name] = await asyncio.to_thread(_build_from_sessions, plat_name)
 
     # Include plugin-registered platforms (dynamic enum members aren't in
-    # Platform.__members__, so the loop above misses them).
+    # Platform.__members__, so the loop above misses them). Same
+    # connected-only rule: don't expose stale session targets for plugins
+    # that are not loaded.
     try:
         from gateway.platform_registry import platform_registry
         for entry in platform_registry.plugin_entries():
-            if entry.name not in _SKIP_SESSION_DISCOVERY and entry.name not in platforms:
-                platforms[entry.name] = _build_from_sessions(entry.name)
+            if (
+                entry.name not in _SKIP_SESSION_DISCOVERY
+                and entry.name not in platforms
+                and entry.name in adapter_platform_names
+            ):
+                platforms[entry.name] = await asyncio.to_thread(_build_from_sessions, entry.name)
     except Exception:
         pass
 
@@ -210,7 +224,7 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
     """
     team_clients = getattr(adapter, "_team_clients", None) or {}
     if not team_clients:
-        return _build_from_sessions("slack")
+        return await asyncio.to_thread(_build_from_sessions, "slack")
 
     channels: List[Dict[str, Any]] = []
     seen_ids: set = set()
@@ -254,7 +268,7 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
             continue
 
     # Merge in DM/group entries discovered from session history.
-    for entry in _build_from_sessions("slack"):
+    for entry in await asyncio.to_thread(_build_from_sessions, "slack"):
         if entry.get("id") not in seen_ids:
             channels.append(entry)
             seen_ids.add(entry.get("id"))
@@ -263,7 +277,67 @@ async def _build_slack(adapter) -> List[Dict[str, Any]]:
 
 
 def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
-    """Pull known channels/contacts from sessions.json origin data."""
+    """Pull known channels/contacts from gateway session origin data.
+
+    state.db is the primary source (#9006): gateway session rows persist
+    origin_json.  Falls back to sessions.json for pre-migration databases.
+    """
+    entries = _build_from_sessions_db(platform_name)
+    if entries:
+        return entries
+    return _build_from_sessions_json(platform_name)
+
+
+def _build_from_sessions_db(platform_name: str) -> List[Dict[str, str]]:
+    """Pull channels/contacts from state.db gateway session rows."""
+    entries: List[Dict[str, str]] = []
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        try:
+            lister = getattr(db, "list_gateway_sessions", None)
+            if not callable(lister):
+                return []
+            rows = lister(platform=platform_name, active_only=False)
+        finally:
+            db.close()
+
+        seen_ids = set()
+        for row in rows:
+            origin: Dict[str, Any] = {}
+            if row.get("origin_json"):
+                try:
+                    parsed = json.loads(row["origin_json"])
+                    if isinstance(parsed, dict):
+                        origin = parsed
+                except (TypeError, ValueError):
+                    pass
+            if not origin:
+                origin = {
+                    "chat_id": row.get("chat_id"),
+                    "thread_id": row.get("thread_id"),
+                    "chat_name": row.get("display_name"),
+                }
+            entry_id = _session_entry_id(origin)
+            if not entry_id or entry_id in seen_ids:
+                continue
+            seen_ids.add(entry_id)
+            entries.append({
+                "id": entry_id,
+                "name": _session_entry_name(origin),
+                "type": row.get("chat_type") or "dm",
+                "thread_id": origin.get("thread_id"),
+            })
+    except Exception as e:
+        logger.debug(
+            "Channel directory: state.db session read failed for %s: %s",
+            platform_name, e,
+        )
+    return entries
+
+
+def _build_from_sessions_json(platform_name: str) -> List[Dict[str, str]]:
+    """Legacy fallback: pull channels/contacts from sessions.json origin data."""
     sessions_path = get_hermes_home() / "sessions" / "sessions.json"
     if not sessions_path.exists():
         return []
@@ -275,6 +349,10 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, str]]:
 
         seen_ids = set()
         for _key, session in data.items():
+            # Skip documentation/metadata sentinels (keys starting with "_",
+            # e.g. the gateway's "_README" note) — not session entries.
+            if str(_key).startswith("_") or not isinstance(session, dict):
+                continue
             origin = session.get("origin") or {}
             if origin.get("platform") != platform_name:
                 continue

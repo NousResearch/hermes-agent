@@ -1,15 +1,14 @@
 import os
 import sys
 
-# Guard against a local utils/ (or other package) in CWD shadowing installed
-# hermes modules.  hermes_cli sets HERMES_PYTHON_SRC_ROOT before spawning this
-# subprocess; inserting it first ensures the installed packages win.
-_src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
-if _src_root and _src_root not in sys.path:
-    sys.path.insert(0, _src_root)
-# Strip '' and '.' — both resolve to CWD at import time and can let a local
-# directory shadow installed packages.
-sys.path = [p for p in sys.path if p not in {"", "."}]
+# Stop a ``utils/`` (or ``proxy/``, ``ui/``) package in the launch directory
+# from shadowing Hermes's own top-level modules.  ``hermes_bootstrap`` lives at
+# the repo root next to this package, so importing it is safe before the guard
+# runs (its name won't collide with a user package), and it owns the canonical
+# path-hardening logic shared with the other entry points.
+import hermes_bootstrap
+
+hermes_bootstrap.harden_import_path()
 
 import json
 import logging
@@ -234,30 +233,61 @@ def wait_for_mcp_discovery(timeout: "float | None" = None) -> None:
 
 
 def mcp_discovery_in_flight() -> bool:
-    """Return True if the background MCP discovery thread is still running.
+    """Return True if ANY background MCP discovery thread is still running.
 
     Used by the agent-build path to decide whether to schedule a late tool
     snapshot refresh: if discovery didn't land within the bounded
     ``wait_for_mcp_discovery`` join, the agent was built without those tools
     and the banner/tool count will be stale until they arrive.
+
+    There are two independent discovery-thread owners by surface: the stdio
+    ``hermes --tui`` path spawns ITS thread here (``_mcp_discovery_thread``),
+    while the desktop app + dashboard WebSocket sidecar (``tui_gateway/ws.py``)
+    and ``hermes dashboard`` spawn theirs via
+    ``hermes_cli.mcp_startup.start_background_mcp_discovery``. The late-refresh
+    scheduler imports this function regardless of surface, so it MUST consult
+    both — checking only the entry thread left the desktop/dashboard surfaces
+    with no late refresh, so a slow MCP server's tools never surfaced for the
+    whole session (#51587).
     """
     thread = _mcp_discovery_thread
-    return thread is not None and thread.is_alive()
+    if thread is not None and thread.is_alive():
+        return True
+    try:
+        from hermes_cli.mcp_startup import (
+            mcp_discovery_in_flight as _startup_in_flight,
+        )
+
+        return _startup_in_flight()
+    except Exception:
+        return False
 
 
 def join_mcp_discovery(timeout: float | None = None) -> bool:
     """Block until background MCP discovery finishes, up to ``timeout`` seconds.
 
-    Returns True if discovery has completed (thread absent or no longer alive),
-    False if it is still running after the timeout. Unlike
+    Returns True if discovery has completed (both thread owners absent or no
+    longer alive), False if either is still running after the timeout. Unlike
     ``wait_for_mcp_discovery`` this accepts an unbounded/long wait and reports
     the outcome, for the off-critical-path late-refresh waiter.
+
+    Joins both discovery-thread owners (see ``mcp_discovery_in_flight``): the
+    entry thread first, then the ``hermes_cli.mcp_startup`` thread used by the
+    desktop/dashboard surfaces. ``timeout`` bounds EACH join, mirroring the
+    pre-#51587 single-owner behavior for the entry thread.
     """
+    entry_done = True
     thread = _mcp_discovery_thread
-    if thread is None:
-        return True
-    thread.join(timeout=timeout)
-    return not thread.is_alive()
+    if thread is not None:
+        thread.join(timeout=timeout)
+        entry_done = not thread.is_alive()
+    try:
+        from hermes_cli.mcp_startup import join_mcp_discovery as _startup_join
+
+        startup_done = _startup_join(timeout=timeout)
+    except Exception:
+        startup_done = True
+    return entry_done and startup_done
 
 
 def main():
@@ -294,8 +324,11 @@ def main():
     if _has_mcp_servers:
         def _discover_mcp_background() -> None:
             try:
-                from tools.mcp_tool import discover_mcp_tools
-                discover_mcp_tools()
+                from hermes_cli.mcp_startup import (
+                    _discover_mcp_tools_without_interactive_oauth,
+                )
+
+                _discover_mcp_tools_without_interactive_oauth()
             except Exception:
                 logger.warning(
                     "Background MCP tool discovery failed", exc_info=True

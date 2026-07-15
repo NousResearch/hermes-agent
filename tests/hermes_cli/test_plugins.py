@@ -2236,6 +2236,59 @@ class TestPluginCommandResultResolution:
         monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
         assert resolve_plugin_command_result(future) == "threaded-future-ok"
 
+    def test_awaits_pending_future_on_its_own_running_loop(self):
+        import asyncio
+        import threading
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        try:
+            async def _make_future():
+                future = loop.create_future()
+                loop.call_later(0.01, future.set_result, "pending-future-ok")
+                return future
+
+            future = asyncio.run_coroutine_threadsafe(_make_future(), loop).result(timeout=1)
+            assert resolve_plugin_command_result(future) == "pending-future-ok"
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=1)
+            loop.close()
+
+    def test_awaits_pending_task_on_its_own_running_loop(self):
+        import asyncio
+        import threading
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        try:
+            async def _answer():
+                await asyncio.sleep(0.01)
+                return "pending-task-ok"
+
+            async def _make_task():
+                return asyncio.create_task(_answer())
+
+            task = asyncio.run_coroutine_threadsafe(_make_task(), loop).result(timeout=1)
+            assert resolve_plugin_command_result(task) == "pending-task-ok"
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=1)
+            loop.close()
+
+    def test_rejects_pending_future_on_callers_active_loop(self):
+        import asyncio
+
+        async def _resolve_from_own_loop():
+            future = asyncio.get_running_loop().create_future()
+            with pytest.raises(RuntimeError, match="caller's active event loop"):
+                resolve_plugin_command_result(future)
+            future.cancel()
+
+        asyncio.run(_resolve_from_own_loop())
+
     def test_running_loop_timeout_does_not_hang_forever(self, monkeypatch):
         """Threaded path must abort a hung async handler instead of blocking the caller."""
         import asyncio as _asyncio

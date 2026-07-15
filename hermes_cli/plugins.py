@@ -2441,6 +2441,41 @@ async def _await_plugin_command_result(result: Any) -> Any:
     return await result
 
 
+def _resolve_plugin_command_future(result: asyncio.Future) -> Any:
+    """Synchronously resolve a Future on the event loop that owns it.
+
+    A Future pending on the caller's active loop cannot be synchronously
+    awaited without deadlocking that loop, so that case fails explicitly.
+    """
+    if result.done():
+        return result.result()
+
+    owner_loop = result.get_loop()
+    try:
+        caller_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        caller_loop = None
+
+    if owner_loop is caller_loop:
+        raise RuntimeError(
+            "Cannot synchronously resolve a pending plugin command Future on "
+            "the caller's active event loop"
+        )
+    if owner_loop.is_running():
+        scheduled = asyncio.run_coroutine_threadsafe(
+            _await_plugin_command_result(result), owner_loop
+        )
+        try:
+            return scheduled.result(timeout=_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS)
+        except TimeoutError:
+            scheduled.cancel()
+            raise TimeoutError(
+                "Plugin command async handler did not complete within "
+                f"{_PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS:.0f}s"
+            ) from None
+    return owner_loop.run_until_complete(result)
+
+
 def resolve_plugin_command_result(result: Any) -> Any:
     """Resolve a plugin command return value, awaiting async handlers when needed.
 
@@ -2453,6 +2488,8 @@ def resolve_plugin_command_result(result: Any) -> Any:
     """
     if not inspect.isawaitable(result):
         return result
+    if isinstance(result, asyncio.Future):
+        return _resolve_plugin_command_future(result)
 
     try:
         asyncio.get_running_loop()

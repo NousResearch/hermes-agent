@@ -1437,6 +1437,45 @@ def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
     assert worker.calls == []
 
 
+def test_slash_exec_awaits_pending_future_plugin_handler(server):
+    sid = "test-session"
+    server._sessions[sid] = {
+        "session_key": "gateway-key",
+        "agent": types.SimpleNamespace(session_id="agent-session"),
+    }
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        async def _make_future():
+            future = loop.create_future()
+            loop.call_later(0.01, future.set_result, "pending-future:hello")
+            return future
+
+        future = asyncio.run_coroutine_threadsafe(_make_future(), loop).result(timeout=1)
+
+        def handler(arg, *, session_id, gateway_session_key):
+            assert (arg, session_id, gateway_session_key) == ("hello", "agent-session", "gateway-key")
+            return future
+
+        with patch(
+            "hermes_cli.plugins.get_plugin_command_handler",
+            lambda name: handler if name == "pending-future-cmd" else None,
+        ):
+            resp = server.handle_request({
+                "id": "r-plugin-slash-pending-future",
+                "method": "slash.exec",
+                "params": {"command": "pending-future-cmd hello", "session_id": sid},
+            })
+
+        assert "error" not in resp
+        assert resp["result"] == {"output": "pending-future:hello"}
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1)
+        loop.close()
+
+
 def test_slash_exec_plugin_lookup_failure_falls_back_to_worker(server):
     """Plugin discovery failures must not break ordinary slash-worker commands."""
     sid = "test-session"
@@ -1894,6 +1933,45 @@ def test_command_dispatch_awaits_future_plugin_handler(server):
         "type": "plugin",
         "output": "future:hello:agent-session:gateway-key",
     }
+
+
+def test_command_dispatch_awaits_pending_future_plugin_handler(server):
+    sid = "test-session"
+    server._sessions[sid] = {
+        "session_key": "gateway-key",
+        "agent": types.SimpleNamespace(session_id="agent-session"),
+    }
+    loop = asyncio.new_event_loop()
+    thread = threading.Thread(target=loop.run_forever, daemon=True)
+    thread.start()
+    try:
+        async def _make_future():
+            future = loop.create_future()
+            loop.call_later(0.01, future.set_result, "pending-future:hello")
+            return future
+
+        future = asyncio.run_coroutine_threadsafe(_make_future(), loop).result(timeout=1)
+
+        def _handler(arg, *, session_id, gateway_session_key):
+            assert (arg, session_id, gateway_session_key) == ("hello", "agent-session", "gateway-key")
+            return future
+
+        with patch(
+            "hermes_cli.plugins.get_plugin_command_handler",
+            lambda name: _handler if name == "pending-future-cmd" else None,
+        ):
+            resp = server.handle_request({
+                "id": "r-plugin-pending-future",
+                "method": "command.dispatch",
+                "params": {"name": "pending-future-cmd", "arg": "hello", "session_id": sid},
+            })
+
+        assert "error" not in resp
+        assert resp["result"] == {"type": "plugin", "output": "pending-future:hello"}
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(timeout=1)
+        loop.close()
 
 
 # ── dispatch(): pool routing for long handlers (#12546) ──────────────

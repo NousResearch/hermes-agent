@@ -99,6 +99,28 @@ except ImportError:
     _GUARD_AVAILABLE = False
 
 
+def _skills_read_only() -> bool:
+    """True when runtime Skill writes are disabled via ``skills.read_only``.
+
+    Platform operators who mount a centrally-managed skill set into the
+    Hermes container (read-only volume) use this to guarantee Hermes never
+    creates, edits, patches, or deletes skill files at runtime — from any
+    path (the ``skill_manage`` tool, the background self-improvement review,
+    or the dashboard learn flow). Listing, viewing, and *using* skills are
+    unaffected. See NousResearch/hermes-agent#64926.
+    """
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config()
+        return is_truthy_value(
+            cfg_get(cfg, "skills", "read_only"),
+            default=False,
+        )
+    except Exception:
+        return False
+
+
 def _guard_agent_created_enabled() -> bool:
     """Read skills.guard_agent_created from config (default False).
 
@@ -1334,6 +1356,23 @@ def skill_manage(
 
     Returns JSON string with results.
     """
+    _WRITE_ACTIONS = frozenset(
+        {"create", "edit", "patch", "delete", "write_file", "remove_file"}
+    )
+    if action in _WRITE_ACTIONS and _skills_read_only():
+        return json.dumps(
+            {
+                "success": False,
+                "error": (
+                    "Skill writes are disabled by platform policy "
+                    "(skills.read_only is true). Skills are read-only at runtime: "
+                    "create/edit/patch/delete/write_file/remove_file are all blocked. "
+                    "Listing, viewing, and using skills still work."
+                ),
+            },
+            ensure_ascii=False,
+        )
+
     preflight = _background_review_preflight(action, name)
     if preflight is not None:
         return json.dumps(preflight, ensure_ascii=False)

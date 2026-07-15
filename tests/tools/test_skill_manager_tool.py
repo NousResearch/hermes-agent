@@ -1316,35 +1316,123 @@ class TestCuratorConsolidationDeleteGuard:
 
         _reset_background_review_read_marks()
 
-    def test_background_review_support_file_overwrite_requires_that_file_read(self, tmp_path, monkeypatch):
-        from tools.skills_tool import skill_view
-        from tools.skill_manager_tool import _reset_background_review_read_marks
 
-        _reset_background_review_read_marks()
-        with _curator_pass(tmp_path, monkeypatch=monkeypatch):
-            _create_skill("reviewed", _skill_content("reviewed"))
-            ref = tmp_path / ".hermes" / "skills" / "reviewed" / "references"
-            ref.mkdir()
-            (ref / "workflow.md").write_text("old workflow\n", encoding="utf-8")
 
-            # Reading SKILL.md does not authorize overwriting a linked file.
-            assert json.loads(skill_view("reviewed"))["success"] is True
-            blocked = json.loads(skill_manage(
+
+class TestSkillsReadOnly:
+    """#64926: skills.read_only must block every runtime write action while
+    leaving list/view/use paths untouched."""
+
+    def test_read_only_blocks_create(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(
+            "tools.skill_manager_tool._skills_read_only", lambda: True
+        )
+        with _skill_dir(tmp_path):
+            raw = skill_manage(
+                action="create", name="blocked", content=VALID_SKILL_CONTENT
+            )
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "read_only" in result["error"]
+        assert not (tmp_path / "blocked" / "SKILL.md").exists()
+
+    def test_read_only_blocks_edit(self, tmp_path, monkeypatch):
+        # Create with read_only off, then confirm edit is blocked.
+        with _skill_dir(tmp_path):
+            monkeypatch.setattr(
+                "tools.skill_manager_tool._skills_read_only", lambda: False
+            )
+            skill_manage(action="create", name="s", content=VALID_SKILL_CONTENT)
+            monkeypatch.setattr(
+                "tools.skill_manager_tool._skills_read_only", lambda: True
+            )
+            raw = skill_manage(
+                action="edit", name="s", content=VALID_SKILL_CONTENT + "\n# x"
+            )
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "read_only" in result["error"]
+
+    def test_read_only_blocks_patch(self, tmp_path, monkeypatch):
+        with _skill_dir(tmp_path):
+            monkeypatch.setattr(
+                "tools.skill_manager_tool._skills_read_only", lambda: False
+            )
+            skill_manage(action="create", name="s", content=VALID_SKILL_CONTENT)
+            monkeypatch.setattr(
+                "tools.skill_manager_tool._skills_read_only", lambda: True
+            )
+            raw = skill_manage(action="patch", name="s", old_string="test", new_string="x")
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "read_only" in result["error"]
+
+    def test_read_only_blocks_delete(self, tmp_path, monkeypatch):
+        # Create the skill first (read_only off), then flip read_only on and
+        # confirm delete is blocked and the file survives.
+        with _skill_dir(tmp_path):
+            monkeypatch.setattr(
+                "tools.skill_manager_tool._skills_read_only", lambda: False
+            )
+            skill_manage(action="create", name="s", content=VALID_SKILL_CONTENT)
+            monkeypatch.setattr(
+                "tools.skill_manager_tool._skills_read_only", lambda: True
+            )
+            raw = skill_manage(action="delete", name="s")
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "read_only" in result["error"]
+        assert (tmp_path / "s" / "SKILL.md").exists()
+
+    def test_read_only_blocks_write_file(self, tmp_path, monkeypatch):
+        with _skill_dir(tmp_path):
+            monkeypatch.setattr(
+                "tools.skill_manager_tool._skills_read_only", lambda: False
+            )
+            skill_manage(action="create", name="s", content=VALID_SKILL_CONTENT)
+            monkeypatch.setattr(
+                "tools.skill_manager_tool._skills_read_only", lambda: True
+            )
+            raw = skill_manage(
                 action="write_file",
-                name="reviewed",
-                file_path="references/workflow.md",
-                file_content="new workflow\n",
-            ))
-            assert blocked["success"] is False
-            assert blocked.get("_read_before_write_required") is True
+                name="s",
+                file_path="references/extra.md",
+                file_content="data",
+            )
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "read_only" in result["error"]
 
-            assert json.loads(skill_view("reviewed", "references/workflow.md"))["success"] is True
-            allowed = json.loads(skill_manage(
+    def test_read_only_blocks_remove_file(self, tmp_path, monkeypatch):
+        with _skill_dir(tmp_path):
+            monkeypatch.setattr(
+                "tools.skill_manager_tool._skills_read_only", lambda: False
+            )
+            skill_manage(action="create", name="s", content=VALID_SKILL_CONTENT)
+            skill_manage(
                 action="write_file",
-                name="reviewed",
-                file_path="references/workflow.md",
-                file_content="new workflow\n",
-            ))
-            assert allowed["success"] is True, allowed
+                name="s",
+                file_path="references/extra.md",
+                file_content="data",
+            )
+            monkeypatch.setattr(
+                "tools.skill_manager_tool._skills_read_only", lambda: True
+            )
+            raw = skill_manage(action="remove_file", name="s", file_path="references/extra.md")
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "read_only" in result["error"]
 
-        _reset_background_review_read_marks()
+    def test_read_only_false_allows_write(self, tmp_path, monkeypatch):
+        """When the flag is off (default) writes still succeed."""
+        monkeypatch.setattr(
+            "tools.skill_manager_tool._skills_read_only", lambda: False
+        )
+        with _skill_dir(tmp_path):
+            raw = skill_manage(
+                action="create", name="allowed", content=VALID_SKILL_CONTENT
+            )
+        result = json.loads(raw)
+        assert result["success"] is True
+        assert (tmp_path / "allowed" / "SKILL.md").exists()
+

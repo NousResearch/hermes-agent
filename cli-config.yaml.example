@@ -674,6 +674,16 @@ skills:
   # Set to 0 to disable.
   creation_nudge_interval: 15
 
+  # Make all skills read-only at runtime. When true, Hermes will never create,
+  # edit, patch, delete, or otherwise write skill files from any code path —
+  # the skill_manage tool, the background self-improvement review loop, and the
+  # dashboard learn flow are all blocked from mutating skills. Listing, viewing,
+  # and *using* skills (running their scripts, following their procedures)
+  # continue to work. Enable this when skills are centrally managed and mounted
+  # into the Hermes container as a read-only volume so runtime changes can't
+  # pollute the shared set across pods. Default: false.
+  # read_only: true
+
   # External skill directories — share skills across tools/agents without
   # copying them into ~/.hermes/skills/.  Each path is expanded (~ and ${VAR})
   # and resolved to an absolute path.  External dirs are read-only: skill

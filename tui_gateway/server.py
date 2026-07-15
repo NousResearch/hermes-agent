@@ -8971,6 +8971,7 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         session_tokens = []
         home_token = None  # per-turn HERMES_HOME override for a resumed remote profile
         goal_followup = None  # set by the post-turn goal hook below
+        leftover_steer = None  # set from result["pending_steer"] below
         try:
             from tools.approval import (
                 reset_current_session_key,
@@ -9207,6 +9208,16 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
                 lr = result.get("last_reasoning")
                 if isinstance(lr, str) and lr.strip():
                     last_reasoning = lr.strip()
+                # A /steer that landed after the last tool batch (e.g. during a
+                # text-only final answer, which the streaming loop now breaks at
+                # the steer point) couldn't be injected into a tool result and
+                # came back here. The gateway path delivers it as the next turn;
+                # the TUI must too, or it is silently dropped. Stash it and fire
+                # it in the tail below, after the queued-prompt drain so a real
+                # user message still wins (mirrors gateway/run.py).
+                _ls = result.get("pending_steer")
+                if isinstance(_ls, str) and _ls.strip():
+                    leftover_steer = _ls
             else:
                 raw = str(result)
                 status = "complete"
@@ -9381,6 +9392,32 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         # every auto follow-up below — drain it first and skip them this cycle;
         # the goal judge / notifications re-evaluate at the end of that turn.
         if _drain_queued_prompt(rid, sid, session):
+            return
+
+        # Leftover /steer: a steer that arrived during the final text-only
+        # answer couldn't be injected into a tool result and came back in
+        # result["pending_steer"]. Deliver it as the next turn so it isn't
+        # silently dropped. A real user prompt that queued mid-turn already
+        # won above (it returned), so this only runs when nothing else is
+        # waiting; a steer is user intent, so it also outranks the auto
+        # goal-continuation below. Claim running under the lock like the
+        # goal re-fire so a racing prompt.submit wins cleanly.
+        if leftover_steer:
+            with session["history_lock"]:
+                if session.get("running"):
+                    return
+                session["running"] = True
+            try:
+                _emit("message.start", sid)
+                _run_prompt_submit(rid, sid, session, leftover_steer)
+            except Exception as _steer_exc:
+                print(
+                    f"[tui_gateway] leftover steer dispatch failed: "
+                    f"{type(_steer_exc).__name__}: {_steer_exc}",
+                    file=sys.stderr,
+                )
+                with session["history_lock"]:
+                    session["running"] = False
             return
 
         # Chain a goal-continuation turn if the judge said so. We do

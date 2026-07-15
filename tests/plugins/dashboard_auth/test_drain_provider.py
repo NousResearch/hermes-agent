@@ -78,6 +78,11 @@ class TestProvider:
         p = drain.DrainSecretProvider(secret=_strong_secret())
         assert p.supports_token is True
 
+    def test_is_non_interactive(self, drain):
+        # Excluded from interactive surfaces via list_session_providers().
+        p = drain.DrainSecretProvider(secret=_strong_secret())
+        assert p.supports_session is False
+
     def test_verify_token_accepts_matching_secret(self, drain):
         s = _strong_secret()
         p = drain.DrainSecretProvider(secret=s, scope="drain")

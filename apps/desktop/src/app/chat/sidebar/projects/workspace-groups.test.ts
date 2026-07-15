@@ -494,6 +494,29 @@ describe('liveSessionProjectId', () => {
 
     expect(id).toBe('p_app')
   })
+
+  it('matches a mixed-case/separator Windows cwd to its explicit project in the live overlay', () => {
+    // The bug: a fresh Windows session drops into the overlay before the next
+    // backend refresh; case-sensitive matching missed its project until then.
+    const id = liveSessionProjectId(makeSession('c:/work/notes/SUB'), [makeProject('p_notes', ['C:\\Work\\Notes'])])
+
+    expect(id).toBe('p_notes')
+  })
+
+  it('matches a root-relative WSL cwd (single backslash) case-insensitively', () => {
+    const id = liveSessionProjectId(makeSession('//wsl.localhost/Ubuntu/home/alice/PROJ'), [
+      makeProject('p_proj', ['\\wsl.localhost\\Ubuntu\\home\\alice\\proj'])
+    ])
+
+    expect(id).toBe('p_proj')
+  })
+
+  it('keeps POSIX cwd matching case-sensitive (no false project match)', () => {
+    // Distinct case on POSIX is a distinct path → falls back to its own auto id.
+    expect(liveSessionProjectId(makeSession('/work/notes'), [makeProject('p_notes', ['/Work/Notes'])])).toBe(
+      '/work/notes'
+    )
+  })
 })
 
 describe('overlayLiveLanes', () => {

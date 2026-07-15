@@ -20,7 +20,8 @@ TRANSLATIONS.en.boot.failure.description =
   "Couldn't connect to your gateway. Check that it's running and reachable, then retry. Nothing here is deleted."
 TRANSLATIONS.en.boot.failure.repairHint =
   'Make sure your gateway is running and reachable, then try again.'
-TRANSLATIONS.en.boot.failure.remoteSignInHint = 'Opens the gateway login window to reconnect.'
+TRANSLATIONS.en.boot.failure.remoteSignInHint = (signInLabel: string) =>
+  `Signs out of the saved gateway session, then opens ${signInLabel} to reconnect.`
 
 // Boot-failure TOASTS (rendered via translateNow, which reads the catalog live):
 // drop the "Desktop" wording — this is a phone app talking to a remote gateway.

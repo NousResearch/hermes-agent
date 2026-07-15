@@ -739,7 +739,7 @@ class SearchMixin:
         q_roots = [escaped_path]
         hidden_prune = self._hidden_prune_expr(q_roots)
         cmd = (
-            f"find -H {escaped_path} {hidden_prune} -o -type d "
+            f"find -H {escaped_path} -mindepth 1 {hidden_prune} -o -type d "
             f"! -name '.*' -name {escaped_pattern} -printf '%T@ %p\\n' "
             f"2>/dev/null | sort -rn"
         )
@@ -749,7 +749,7 @@ class SearchMixin:
         if not stdout.strip() and not limit_reason:
             # Try without -printf (BSD find compatibility -- macOS)
             cmd_simple = (
-                f"find -H {escaped_path} {hidden_prune} -o -type d "
+                f"find -H {escaped_path} -mindepth 1 {hidden_prune} -o -type d "
                 f"! -name '.*' -name {escaped_pattern} 2>/dev/null"
             )
             result = self._exec(cmd_simple, timeout=30)
@@ -831,7 +831,7 @@ class SearchMixin:
         # same argument (#116270). Following the operand inside the command is also what
         # covers a link that only exists on the execution host (SSH/container), with no
         # probe of its own.
-        base = (f"find -H {' '.join(q_roots)}{protected_prune}{hidden_prune} "
+        base = (f"find -H {' '.join(q_roots)} -mindepth 1{protected_prune}{hidden_prune} "
                 f"\\( -type f -o -type d \\) ! -name '.*' -name {self._escape_shell_arg(search_pattern)}")
         if order == "modified":
             cmd = "set -o pipefail; " + base + f" -printf '%T@ %p\\n' 2>/dev/null | sort -rn | head -n {fetch_limit}"

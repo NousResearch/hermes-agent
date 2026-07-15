@@ -16,14 +16,23 @@ Why no lock service / no cluster roster is needed: thread ownership is
 "is the LAST <@id> mention in this message me?", which every bot computes
 independently from the same message text — so they all converge on the same
 owner with zero coordination. Every bot following the thread receives every
-message (Hermes auto-follow), so they stay in sync. Only the bot's OWN Slack
-user_id is needed (auth.test); we never need to know who the other bots are.
+message (Hermes auto-follow), so they stay in sync. We only need to know THIS
+bot's own Slack user_id; we never need to know who the other bots are.
+
+Identity is workspace-scoped. The Slack adapter authenticates each configured
+bot token — comma-separated SLACK_BOT_TOKEN and OAuth-added workspaces — and
+keeps team_id → bot_user_id in ``_team_bot_user_ids``
+(plugins/platforms/slack/adapter.py). We read that live map keyed by the event's
+own workspace, so a multi-workspace deployment resolves the right identity per
+message instead of assuming a single token. An unknown/unresolved workspace
+fails open (see decision 4) — never mute a bot we can't identify. The adapter is
+reached via the ``gateway`` kwarg the hook already receives.
 
 Decision per Slack thread message (this bot = me, my_id = my Slack user_id):
   1. Non-Slack / no channel        → allow.
   2. DM (channel id starts "D")    → allow (1:1; every message is for me).
   3. Top-level msg (no thread_ts)  → allow (Slack's root @-gating handles it).
-  4. my_id unresolved              → allow (never mute a misconfigured bot).
+  4. my_id unresolved              → allow (never mute a bot we can't identify).
   5. Message has <@id> mention(s):
        owner := (last <@id> == me);  I reply ⟺ I'm in the mention list.
        I'm mentioned → allow; not mentioned → skip (yield to whoever was @-ed).
@@ -34,19 +43,14 @@ Ownership state is in-process memory ({channel:thread -> am I owner}); each bot
 keeps its own. A restart drops it (the bot goes quiet until @-mentioned again) —
 same as Hermes' own auto-follow state, which is also in-memory. Acceptable.
 
-Env: RAILWAY_SERVICE_NAME / HOSTNAME (identity, platform-provided) and
-SLACK_BOT_TOKEN (auth.test → own user_id; the Slack platform already requires
-it). No knobs.
+No env knobs: identity comes from the live Slack adapter, not the environment.
 """
 from __future__ import annotations
 
 import logging
-import os
 import re
 import threading
 from typing import Any, Optional
-
-import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -62,56 +66,44 @@ _OWNS_MAX = 5000
 # don't match; lowercase tokens don't match the uppercase id charset.)
 _MENTION_RE = re.compile(r"<@([A-Z0-9]+)(?:\|[^>]*)?>")
 
-# --- identity resolution (platform-provided env only) -----------------------
-_bot_user_id_cache: Optional[str] = None
-_bot_user_id_cache_lock = threading.Lock()
-_BOT_USER_ID_SENTINEL = "<unresolved>"
+# --- identity resolution (from the live Slack adapter) ----------------------
+def _resolve_my_id(gateway: Any, team_id: str, channel_id: str) -> Optional[str]:
+    """This bot's Slack user_id for the event's workspace, or None (fail open).
 
-
-def _resolve_agent_id() -> str:
-    for var in ("RAILWAY_SERVICE_NAME", "HOSTNAME"):
-        v = os.environ.get(var, "").strip()
-        if v:
-            return v
-    return ""
-
-
-def _resolve_bot_user_id() -> Optional[str]:
-    """Resolve this bot's own Slack user_id via auth.test, cached forever
-    (failures cached too, so we don't hammer Slack)."""
-    global _bot_user_id_cache
-    if _bot_user_id_cache is not None:
-        return None if _bot_user_id_cache == _BOT_USER_ID_SENTINEL else _bot_user_id_cache
-    token = os.environ.get("SLACK_BOT_TOKEN", "").strip()
-    if not token:
-        with _bot_user_id_cache_lock:
-            _bot_user_id_cache = _BOT_USER_ID_SENTINEL
+    Reads the Slack adapter's ``_team_bot_user_ids`` (team_id → bot_user_id),
+    the authoritative per-workspace map it builds by auth-testing every
+    configured token. Keying by the event's own workspace is what makes this
+    correct under the adapter's multi-workspace support (comma-separated
+    SLACK_BOT_TOKEN / OAuth-added workspaces); assuming one token would fail
+    open or pick the wrong identity there.
+    """
+    adapters = getattr(gateway, "adapters", None)
+    if not isinstance(adapters, dict):
         return None
-    with _bot_user_id_cache_lock:
-        if _bot_user_id_cache is not None:
-            return None if _bot_user_id_cache == _BOT_USER_ID_SENTINEL else _bot_user_id_cache
-        try:
-            resp = httpx.post(
-                "https://slack.com/api/auth.test",
-                headers={"Authorization": f"Bearer {token}"},
-                timeout=3.0,
-            )
-            data = resp.json()
-            if data.get("ok"):
-                uid = (data.get("user_id") or "").strip()
-                _bot_user_id_cache = uid or _BOT_USER_ID_SENTINEL
-                if uid:
-                    logger.info("thread_ownership: detected bot_user_id=%s", uid)
-                return uid or None
-            logger.warning("thread_ownership: auth.test not-ok: %s", data)
-        except Exception as e:
-            logger.warning("thread_ownership: auth.test failed (%s)", e)
-        _bot_user_id_cache = _BOT_USER_ID_SENTINEL
+    # Exactly one Slack platform (Platform.SLACK = "slack"); match by key.
+    adapter = next((a for k, a in adapters.items() if "slack" in str(k).lower()), None)
+    if adapter is None:
         return None
+    team_map = getattr(adapter, "_team_bot_user_ids", None)
+    if not isinstance(team_map, dict):
+        return None
+    if not team_id:
+        # Event omitted the workspace; the adapter tracks channel → team.
+        team_id = getattr(adapter, "_channel_team", {}).get(channel_id, "")
+    my_id = team_map.get(team_id)
+    if my_id:
+        return my_id
+    # Single workspace: the sole bot id is unambiguous even when the event's
+    # team key differs (e.g. enterprise-grid shapes). Multiple workspaces: an
+    # unknown team must NOT fall back to another workspace's id (the wrong
+    # identity) — stay unresolved and let the caller fail open.
+    if len(team_map) == 1:
+        return next(iter(team_map.values()))
+    return None
 
 
-def _slack_fields(event: Any) -> Optional[tuple[str, Optional[str], str]]:
-    """Return (channel_id, thread_ts, text) or None if not a Slack message."""
+def _slack_fields(event: Any) -> Optional[tuple[str, Optional[str], str, str]]:
+    """Return (channel_id, thread_ts, text, team_id) or None if not Slack."""
     source = getattr(event, "source", None)
     if source is None:
         return None
@@ -133,12 +125,17 @@ def _slack_fields(event: Any) -> Optional[tuple[str, Optional[str], str]]:
     # dict) so we see our own mention AND the full ordered mention list; fall back to
     # event.text only if the raw text is unavailable.
     text = ""
+    team_id = ""
     raw = getattr(event, "raw_message", None)
     if isinstance(raw, dict):
         text = raw.get("text") or ""
+        # Workspace of the message. The adapter resolves per-workspace identity
+        # from the same field (adapter.py: ``event.get("team") or
+        # event.get("team_id")``); mirror it so our id lookup keys match.
+        team_id = raw.get("team") or raw.get("team_id") or ""
     if not text:
         text = getattr(event, "text", "") or ""
-    return channel_id, thread_ts, text
+    return channel_id, thread_ts, text, team_id
 
 
 # --- ownership state --------------------------------------------------------
@@ -163,7 +160,7 @@ def _on_pre_gateway_dispatch(**kwargs: Any) -> Optional[dict[str, Any]]:
     fields = _slack_fields(event)
     if fields is None:
         return None
-    channel_id, thread_ts, text = fields
+    channel_id, thread_ts, text, team_id = fields
 
     # DM: 1:1 — every message is for me.
     if channel_id.startswith("D"):
@@ -171,10 +168,8 @@ def _on_pre_gateway_dispatch(**kwargs: Any) -> Optional[dict[str, Any]]:
     # Top-level message: Slack's root @-gating handles it; we only gate threads.
     if not thread_ts:
         return None
-    # No identity → safe no-op (never mute a misconfigured bot).
-    if not _resolve_agent_id():
-        return None
-    my_id = _resolve_bot_user_id()
+    # My Slack user_id for THIS message's workspace (from the live adapter).
+    my_id = _resolve_my_id(kwargs.get("gateway"), team_id, channel_id)
     if not my_id:
         return None  # can't tell if I'm addressed → fail open
 
@@ -202,8 +197,6 @@ def _on_pre_gateway_dispatch(**kwargs: Any) -> Optional[dict[str, Any]]:
 def register(ctx) -> None:
     """Hermes plugin entry point. Wires the hook into the gateway."""
     ctx.register_hook("pre_gateway_dispatch", _on_pre_gateway_dispatch)
-    agent_id = _resolve_agent_id() or "<unset>"
     logger.info(
-        "thread_ownership: registered as agent_id=%r (local last-mention ownership)",
-        agent_id,
+        "thread_ownership: registered (per-workspace last-mention ownership)",
     )

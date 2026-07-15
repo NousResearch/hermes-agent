@@ -45,16 +45,16 @@ plugins:
     - thread_ownership
 ```
 
-That's the entire setup — **no operator knobs**, no env vars to configure. The
-plugin reads only:
+That's the entire setup — **no operator knobs, no env vars to configure.** The
+plugin learns its own Slack user id from the running Slack adapter, which already
+authenticates every configured bot token and keeps a per-workspace
+`team_id → bot_user_id` map (`_team_bot_user_ids`). It reads that map keyed by
+each message's own workspace, so multi-workspace deployments (comma-separated
+`SLACK_BOT_TOKEN`, or OAuth-added workspaces) resolve the right identity per
+message rather than assuming a single token.
 
-- `SLACK_BOT_TOKEN` (already required by the Slack platform) — one cached
-  `auth.test` call to learn the bot's own user id.
-- `RAILWAY_SERVICE_NAME` / `HOSTNAME` — identity probe; `HOSTNAME` is the
-  universal fallback.
-
-If it can't resolve the bot's own user id, it **fails open** — it never silences
-a misconfigured bot.
+If it can't resolve the bot's own user id for a message's workspace, it **fails
+open** — it never silences a bot it can't identify.
 
 ## State & restarts
 
@@ -64,5 +64,5 @@ own in-memory auto-follow state.
 
 ## Compatibility
 
-Pure Python (stdlib + `httpx`), no platform-specific syscalls — runs anywhere
-Hermes runs. Only acts on Slack messages; a no-op for every other platform.
+Pure Python (stdlib only), no platform-specific syscalls — runs anywhere Hermes
+runs. Only acts on Slack messages; a no-op for every other platform.

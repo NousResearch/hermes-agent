@@ -25,6 +25,30 @@ export const withoutKey = <T>(record: Record<string, T>, key: string) => {
 
 export const redactedValue = (v: string) => (v.length <= 8 ? '••••' : `${v.slice(0, 4)}...${v.slice(-4)}`)
 
+/** Interpret canonical config values after ${VAR} expansion without treating
+ * the strings "false" and "0" as truthy in boolean settings controls. */
+export function configBoolean(value: unknown): boolean {
+  if (typeof value === 'boolean') {
+    return value
+  }
+
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase()
+
+    if (['false', 'no', 'off', '0'].includes(normalized)) {
+      return false
+    }
+
+    if (['true', 'yes', 'on', '1'].includes(normalized)) {
+      return true
+    }
+
+    return false
+  }
+
+  return Boolean(value)
+}
+
 // Longest-prefix match so a more specific group like ``MINIMAX_CN_`` is
 // chosen over its shorter parent ``MINIMAX_``. Falls back to the bucket
 // "Other" used by the Keys settings view for un-grouped env vars.
@@ -121,6 +145,49 @@ export function setNested(obj: HermesConfigRecord, path: string, value: unknown)
   safeSet(cur, parts[parts.length - 1], value)
 
   return clone
+}
+
+const PREVENT_SLEEP_ROOT = 'power.prevent_sleep'
+
+const PREVENT_SLEEP_SHORTHAND_DEFAULTS = {
+  mode: 'system',
+  surfaces: ['desktop', 'gateway']
+}
+
+export function getSettingsConfigValue(config: HermesConfigRecord, path: string): unknown {
+  const shorthand = getNested(config, PREVENT_SLEEP_ROOT)
+
+  if (typeof shorthand !== 'boolean') {
+    return getNested(config, path)
+  }
+
+  if (path === `${PREVENT_SLEEP_ROOT}.enabled`) {
+    return shorthand
+  }
+
+  if (path === `${PREVENT_SLEEP_ROOT}.mode`) {
+    return PREVENT_SLEEP_SHORTHAND_DEFAULTS.mode
+  }
+
+  if (path === `${PREVENT_SLEEP_ROOT}.surfaces`) {
+    return [...PREVENT_SLEEP_SHORTHAND_DEFAULTS.surfaces]
+  }
+
+  return getNested(config, path)
+}
+
+export function setSettingsConfigValue(config: HermesConfigRecord, path: string, value: unknown): HermesConfigRecord {
+  const shorthand = getNested(config, PREVENT_SLEEP_ROOT)
+
+  const expanded =
+    typeof shorthand === 'boolean' && path.startsWith(`${PREVENT_SLEEP_ROOT}.`)
+      ? setNested(config, PREVENT_SLEEP_ROOT, {
+          enabled: shorthand,
+          ...PREVENT_SLEEP_SHORTHAND_DEFAULTS
+        })
+      : config
+
+  return setNested(expanded, path, value)
 }
 
 function personalityOptions(config: HermesConfigRecord): string[] {

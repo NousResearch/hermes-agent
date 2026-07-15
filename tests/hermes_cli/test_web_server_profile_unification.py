@@ -71,6 +71,30 @@ class TestProfileScopedConfig:
         resp = client.get("/api/config")
         assert resp.json().get("timezone") != "Venus/Cloud"
 
+    def test_effective_power_get_reads_target_profile(self, client, isolated_profiles):
+        (isolated_profiles["worker_beta"] / "config.yaml").write_text(
+            "power:\n"
+            "  prevent_sleep:\n"
+            "    enabled: true\n"
+            "    surfaces: [desktop]\n"
+            "    mode: display\n",
+            encoding="utf-8",
+        )
+
+        worker = client.get(
+            "/api/power/prevent-sleep",
+            params={"profile": "worker_beta"},
+        )
+        default = client.get("/api/power/prevent-sleep")
+
+        assert worker.status_code == 200
+        assert worker.json() == {
+            "enabled": True,
+            "mode": "display",
+            "surfaces": ["desktop"],
+        }
+        assert default.json()["enabled"] is False
+
     def test_config_query_param_equivalent_to_body(self, client, isolated_profiles):
         """The SPA's fetchJSON injects ?profile= — must scope like body.profile."""
         resp = client.put(

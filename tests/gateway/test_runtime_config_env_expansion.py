@@ -16,6 +16,7 @@ def _write_config(home, body: str) -> None:
 @pytest.fixture
 def gateway_home(monkeypatch, tmp_path):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("HERMES_PREFILL_MESSAGES_FILE", raising=False)
     monkeypatch.delenv("HERMES_EPHEMERAL_SYSTEM_PROMPT", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_BUSY_INPUT_MODE", raising=False)
@@ -118,3 +119,24 @@ def test_gateway_runtime_loaders_expand_env_var_templates(
     loader = getattr(gateway_run.GatewayRunner, loader_name)
 
     assert loader() == expected
+
+
+def test_gateway_sleep_prevention_uses_canonical_config(monkeypatch, gateway_home):
+    _write_config(
+        gateway_home,
+        "power:\n"
+        "  prevent_sleep:\n"
+        "    enabled: ${GW_PREVENT_SLEEP_ENABLED}\n"
+        "    surfaces: ${GW_PREVENT_SLEEP_SURFACES}\n"
+        "    mode: ${GW_PREVENT_SLEEP_MODE}\n",
+    )
+    monkeypatch.setenv("GW_PREVENT_SLEEP_ENABLED", "true")
+    monkeypatch.setenv("GW_PREVENT_SLEEP_SURFACES", "gateway")
+    monkeypatch.setenv("GW_PREVENT_SLEEP_MODE", "display")
+
+    from hermes_cli.power_sleep import start_prevent_sleep
+
+    handle = start_prevent_sleep("gateway", platform="linux")
+
+    assert handle.reason == "unsupported-platform:linux"
+    assert handle.mode == "display"

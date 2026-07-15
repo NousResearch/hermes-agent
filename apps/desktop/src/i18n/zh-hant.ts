@@ -263,6 +263,7 @@ export const zhHant = defineLocale({
       safety: '安全性',
       memory: '記憶與上下文',
       voice: '語音',
+      power: '電源',
       advanced: '進階'
     },
     searchPlaceholder: {
@@ -414,6 +415,13 @@ export const zhHant = defineLocale({
         maxRecordingSeconds: '最長錄音時間',
         autoTts: '朗讀回覆'
       },
+      power: {
+        preventSleep: {
+          enabled: '防止系統進入睡眠',
+          surfaces: '保持喚醒的執行介面',
+          mode: '防止睡眠模式'
+        }
+      },
       stt: {
         enabled: '語音轉文字',
         provider: '語音轉文字提供方',
@@ -550,6 +558,14 @@ export const zhHant = defineLocale({
       },
       voice: {
         autoTts: '自動朗讀助手回覆。'
+      },
+      power: {
+        preventSleep: {
+          enabled: '所選 Hermes 執行介面運作時保持此電腦喚醒。預設關閉，以避免非預期的電池消耗。',
+          surfaces:
+            '以逗號分隔可持有防止睡眠要求的執行介面：desktop、gateway。本機 Desktop 要求由主視窗目前選取的前景設定檔控制。',
+          mode: 'System 僅防止系統因閒置而睡眠，仍允許螢幕關閉；Display 也會保持螢幕喚醒。Gateway 目前僅支援 Windows，並在下次重新啟動後生效。'
+        }
       },
       stt: {
         enabled: '啟用本機或提供方支援的語音轉寫。',

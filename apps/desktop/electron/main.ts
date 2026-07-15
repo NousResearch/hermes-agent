@@ -20,6 +20,7 @@ import {
   nativeTheme,
   Notification,
   powerMonitor,
+  powerSaveBlocker,
   protocol,
   safeStorage,
   screen,
@@ -65,7 +66,6 @@ import {
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
-import { resolvePickerDefaultPath } from './wsl-path-bridge'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -96,6 +96,7 @@ import {
 } from './hardening'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
+import { createPowerSaveBlockerController, isPowerSaveRefreshAuthorized } from './power-save'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
 import {
   buildSessionWindowUrl,
@@ -131,6 +132,7 @@ import { buildPathExtCandidates, chooseUpdaterArgs, getVenvSitePackagesEntries, 
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
+import { resolvePickerDefaultPath } from './wsl-path-bridge'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -4527,6 +4529,52 @@ function registerPowerResumeListeners() {
   }
 }
 
+const desktopPowerSaveController = createPowerSaveBlockerController(powerSaveBlocker)
+
+function desktopSleepPreventionStatus(ok: boolean, reason?: string) {
+  const current = desktopPowerSaveController.state()
+
+  return {
+    ok,
+    active: current.active,
+    mode: current.mode,
+    surfaces: current.surfaces,
+    ...(reason ? { reason } : {})
+  }
+}
+
+function refreshDesktopSleepPrevention(block: unknown) {
+  try {
+    const result = desktopPowerSaveController.refresh(block)
+
+    if (result.changed) {
+      rememberLog(
+        result.active
+          ? `[power] sleep prevention enabled for desktop (mode=${result.mode}; display sleep ${result.mode === 'display' ? 'blocked' : 'allowed'})`
+          : '[power] sleep prevention cleared for desktop'
+      )
+    }
+
+    return desktopSleepPreventionStatus(true)
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error)
+
+    rememberLog(`[power] sleep prevention refresh failed: ${reason}`)
+
+    return desktopSleepPreventionStatus(false, reason)
+  }
+}
+
+function stopDesktopSleepPrevention() {
+  try {
+    if (desktopPowerSaveController.stop()) {
+      rememberLog('[power] sleep prevention cleared for desktop')
+    }
+  } catch (error) {
+    rememberLog(`[power] sleep prevention cleanup failed: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 function getAppIconPath() {
   return APP_ICON_PATHS.find(fileExists)
 }
@@ -7600,6 +7648,17 @@ ipcMain.handle('hermes:bootstrap:cancel', async () => {
   return { ok: false, cancelled: false }
 })
 ipcMain.handle('hermes:boot-progress:get', async () => bootProgressState)
+ipcMain.handle('hermes:power:refresh', async (event, block) => {
+  const owner = mainWindow && !mainWindow.isDestroyed() ? mainWindow.webContents : null
+
+  if (!isPowerSaveRefreshAuthorized(event.sender, owner)) {
+    rememberLog('[power] ignored sleep prevention refresh from a non-primary renderer')
+
+    return desktopSleepPreventionStatus(false, 'unauthorized-renderer')
+  }
+
+  return refreshDesktopSleepPrevention(block)
+})
 ipcMain.handle('hermes:bootstrap:get', async () => getBootstrapState())
 ipcMain.handle('hermes:connection-config:get', async (_event, profile) =>
   sanitizeDesktopConnectionConfig(readDesktopConnectionConfig(), profile)
@@ -9128,6 +9187,8 @@ function configureSpellChecker() {
 }
 
 app.on('before-quit', () => {
+  stopDesktopSleepPrevention()
+
   // The always-on-top overlay isn't a "real" app window; close it so a stray
   // pet can't keep the process alive or float over a quit app.
   closePetOverlay()

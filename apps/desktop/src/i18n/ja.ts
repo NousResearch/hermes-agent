@@ -270,6 +270,7 @@ export const ja = defineLocale({
       safety: '安全性',
       memory: 'メモリとコンテキスト',
       voice: '音声',
+      power: '電源',
       advanced: '詳細'
     },
     searchPlaceholder: {
@@ -425,6 +426,13 @@ export const ja = defineLocale({
         maxRecordingSeconds: '最大録音時間',
         autoTts: '応答を読み上げる'
       },
+      power: {
+        preventSleep: {
+          enabled: 'システムスリープを防止',
+          surfaces: 'スリープ防止を保持するサーフェス',
+          mode: 'スリープ防止モード'
+        }
+      },
       stt: {
         enabled: '音声認識',
         provider: '音声認識プロバイダー',
@@ -562,6 +570,15 @@ export const ja = defineLocale({
       },
       voice: {
         autoTts: 'アシスタントの応答を自動で読み上げます。'
+      },
+      power: {
+        preventSleep: {
+          enabled:
+            '選択した Hermes サーフェスの実行中、このコンピューターを起動状態に保ちます。意図しないバッテリー消費を避けるため、既定では無効です。',
+          surfaces:
+            'スリープ防止要求を保持するサーフェスのカンマ区切りリスト：desktop、gateway。ローカル Desktop の要求は、メインウィンドウで選択中のフォアグラウンドプロファイルが制御します。',
+          mode: 'System はアイドル時のシステムスリープのみを防ぎ、ディスプレイの消灯は許可します。Display は画面も起動状態に保ちます。Gateway は現在 Windows のみ対応し、次回の再起動後に反映されます。'
+        }
       },
       stt: {
         enabled: 'ローカルまたはプロバイダーによる音声文字起こしを有効にします。',

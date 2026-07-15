@@ -736,6 +736,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         ),
         "options": ["stash", "discard"],
     },
+    "power.prevent_sleep.mode": {
+        "type": "select",
+        "description": "Host sleep-prevention mode",
+        "options": ["system", "display"],
+    },
     "updates.refresh_cua_driver": {
         "type": "bool",
         "description": (
@@ -777,7 +782,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
 _CATEGORY_ORDER = [
-    "general", "agent", "terminal", "display", "delegation",
+    "general", "agent", "terminal", "display", "power", "delegation",
     "memory", "compression", "security", "browser", "voice",
     "tts", "stt", "logging", "discord", "auxiliary",
 ]
@@ -5387,6 +5392,19 @@ async def get_config(profile: Optional[str] = None):
         config = _normalize_config_for_web(load_config())
     # Strip internal keys that the frontend shouldn't see or send back
     return {k: v for k, v in config.items() if not k.startswith("_")}
+
+
+@app.get("/api/power/prevent-sleep")
+async def get_prevent_sleep_config(profile: Optional[str] = None):
+    """Return the canonical, profile-scoped Desktop sleep decision."""
+    from hermes_cli.config import load_config_readonly
+    from hermes_cli.power_sleep import resolve_prevent_sleep_config
+
+    with _profile_scope(profile):
+        return resolve_prevent_sleep_config(
+            "desktop",
+            config=load_config_readonly(),
+        )
 
 
 @app.get("/api/config/defaults")

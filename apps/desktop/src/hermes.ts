@@ -42,6 +42,7 @@ import type {
   ProfileSetupCommand,
   ProfileSoul,
   ProfilesResponse,
+  ResolvedPreventSleepConfig,
   SessionInfo,
   SessionMessagesResponse,
   SessionSearchResponse,
@@ -481,6 +482,14 @@ export function getHermesConfig(): Promise<HermesConfig> {
   return window.hermesDesktop.api<HermesConfig>({
     ...profileScoped(),
     path: '/api/config',
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+  })
+}
+
+export function getEffectivePreventSleepConfig(): Promise<ResolvedPreventSleepConfig> {
+  return window.hermesDesktop.api<ResolvedPreventSleepConfig>({
+    ...profileScoped(),
+    path: '/api/power/prevent-sleep',
     timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
   })
 }

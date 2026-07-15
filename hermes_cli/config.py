@@ -3941,6 +3941,11 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "tool",
     },
+    "IMAGE_SERVE_BASE_URL": {
+        "description": "Base URL for serving generated images via HTTP (rewrites filesystem paths)",
+        "prompt": "Image serve base URL",
+        "category": "tool",
+    },
     "VOICE_TOOLS_OPENAI_KEY": {
         "description": "OpenAI API key for voice transcription (Whisper) and OpenAI TTS",
         "prompt": "OpenAI API Key (for Whisper STT + TTS)",

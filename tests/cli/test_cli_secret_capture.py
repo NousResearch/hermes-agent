@@ -40,7 +40,8 @@ def test_secret_capture_callback_can_be_completed_from_cli_state_machine():
     cli = _make_cli_stub(with_app=True)
     results = []
 
-    with patch("hermes_cli.callbacks.save_env_value_secure") as save_secret:
+    with patch("hermes_cli.callbacks.save_env_value_secure") as save_secret, \
+         patch("hermes_cli.callbacks.cprint"):
         save_secret.return_value = {
             "success": True,
             "stored_as": "TENOR_API_KEY",
@@ -86,9 +87,9 @@ def test_cancel_secret_capture_marks_setup_skipped():
 def test_secret_capture_uses_masked_prompt_without_tui():
     cli = _make_cli_stub()
 
-    with patch("hermes_cli.callbacks.masked_secret_prompt", return_value="secret-value"), patch(
-        "hermes_cli.callbacks.save_env_value_secure"
-    ) as save_secret:
+    with patch("hermes_cli.callbacks.masked_secret_prompt", return_value="secret-value"), \
+         patch("hermes_cli.callbacks.save_env_value_secure") as save_secret, \
+         patch("hermes_cli.callbacks.cprint"):
         save_secret.return_value = {
             "success": True,
             "stored_as": "TENOR_API_KEY",
@@ -110,10 +111,9 @@ def test_secret_capture_timeout_clears_hidden_input_buffer():
 
     cli._clear_secret_input_buffer = clear_buffer
 
-    with patch("hermes_cli.callbacks.queue.Queue.get", side_effect=queue.Empty), patch(
-        "hermes_cli.callbacks._time.monotonic",
-        side_effect=[0, 121],
-    ):
+    with patch("hermes_cli.callbacks.queue.Queue.get", side_effect=queue.Empty), \
+         patch("hermes_cli.callbacks._time.monotonic", side_effect=[0, 121]), \
+         patch("hermes_cli.callbacks.cprint"):
         result = prompt_for_secret(cli, "TENOR_API_KEY", "Tenor API key")
 
     assert result["success"] is True

@@ -331,3 +331,21 @@ async def test_idle_expiry_clears_last_resolved_model(mock_invoke_hook):
         "session-expiry finalization must only clear the expired session's "
         "own key, not unrelated sessions' cached entries"
     )
+
+
+@pytest.mark.asyncio
+@patch("hermes_cli.plugins.invoke_hook")
+async def test_reset_does_not_fire_finalize_if_no_prior_session(mock_invoke_hook):
+    """/new must not fire on_session_finalize if no prior session exists."""
+    runner = _make_runner()
+    # Simulate no prior session exists by clearing the entries
+    session_key = build_session_key(_make_source())
+    runner.session_store._entries = {}
+
+    await runner._handle_reset_command(_make_event("/new"))
+
+    # Assert on_session_finalize was not called
+    assert not any(
+        c.args == ("on_session_finalize",)
+        for c in mock_invoke_hook.call_args_list
+    )

@@ -1150,10 +1150,10 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
 
 
 def _should_emit_cleanup_session_finalize(session_id: str | None) -> bool:
+    if not session_id:
+        return False
     if not _single_query_finalize_attempted_session_ids:
         return True
-    if session_id is None:
-        return False
     return session_id not in _single_query_finalize_attempted_session_ids
 
 
@@ -7036,8 +7036,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 list(self.conversation_history),
                 session_id=old_session_id,
             )
-            self._notify_session_boundary("on_session_finalize")
-        elif self.agent:
+            if old_session_id:
+                self._notify_session_boundary("on_session_finalize")
+        elif self.agent and old_session_id:
             # First session or empty history — still finalize the old session
             self._notify_session_boundary("on_session_finalize")
 

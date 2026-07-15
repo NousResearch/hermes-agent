@@ -445,3 +445,58 @@ async def test_typing_stop_cleans_up():
 
     await adapter.stop_typing("12345")
     assert "12345" not in adapter._typing_tasks
+
+
+@pytest.mark.asyncio
+async def test_standalone_send_retries_on_429(monkeypatch):
+    """Verify that _standalone_send retries on 429 rate limit responses."""
+    import aiohttp
+    from plugins.platforms.discord.adapter import _standalone_send
+
+    post_calls = []
+    responses = [
+        # First call: rate limited with retry_after = 0.01
+        SimpleNamespace(
+            status=429,
+            json=AsyncMock(return_value={"retry_after": 0.01}),
+            text=AsyncMock(return_value="rate limit body"),
+        ),
+        # Second call: success
+        SimpleNamespace(
+            status=200,
+            json=AsyncMock(return_value={"id": "999"}),
+            text=AsyncMock(return_value='{"id": "999"}'),
+        ),
+    ]
+
+    class FakeSession:
+        def __init__(self, *args, **kwargs):
+            pass
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, exc_type, exc_val, exc_tb):
+            pass
+        def post(self, url, headers=None, data=None, json=None, **kwargs):
+            post_calls.append((url, headers, data, json))
+            class AsyncContextManager:
+                async def __aenter__(self):
+                    return responses.pop(0)
+                async def __aexit__(self, exc_type, exc_val, exc_tb):
+                    pass
+            return AsyncContextManager()
+
+
+    monkeypatch.setattr(aiohttp, "ClientSession", FakeSession)
+    # Mock asyncio.sleep to avoid waiting during test
+    sleep_calls = []
+    async def fake_sleep(secs):
+        sleep_calls.append(secs)
+    monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+    cfg = SimpleNamespace(token="test-token")
+    result = await _standalone_send(cfg, "channel-123", "Hello Standalone")
+
+    assert result["success"] is True
+    assert result["message_id"] == "999"
+    assert len(post_calls) == 2
+    assert sleep_calls == [0.01]

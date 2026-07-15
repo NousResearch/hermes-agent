@@ -68,6 +68,7 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
     validate_media_delivery_path,
+    IMAGE_CACHE_DIR,
 )
 from agent.redact import redact_sensitive_text
 from gateway.readiness import collect_runtime_readiness
@@ -4226,12 +4227,14 @@ class APIServerAdapter(BasePlatformAdapter):
 
         def _run():
             from gateway.session_context import clear_session_vars
+            from agent.image_gen_provider import set_image_serve_base_url, reset_image_serve_base_url
 
             tokens = self._bind_api_server_session(
                 chat_id=session_id or "",
                 session_key=gateway_session_key or session_id or "",
                 session_id=session_id or "",
             )
+            img_token = set_image_serve_base_url(getattr(self, "image_serve_base_url", None))
             try:
                 agent = self._create_agent(
                     ephemeral_system_prompt=ephemeral_system_prompt,
@@ -4264,7 +4267,10 @@ class APIServerAdapter(BasePlatformAdapter):
                     result["session_id"] = _eff_sid
                 return result, usage
             finally:
-                clear_session_vars(tokens)
+                try:
+                    reset_image_serve_base_url(img_token)
+                finally:
+                    clear_session_vars(tokens)
 
         self._activate_admitted_request()
         self._inflight_agent_runs += 1
@@ -4527,10 +4533,12 @@ class APIServerAdapter(BasePlatformAdapter):
                         set_current_session_key,
                         unregister_gateway_notify,
                     )
+                    from agent.image_gen_provider import set_image_serve_base_url, reset_image_serve_base_url
 
                     effective_task_id = session_id or run_id
                     approval_token = None
                     session_tokens = []
+                    img_token = set_image_serve_base_url(getattr(self, "image_serve_base_url", None))
                     try:
                         # Bind approval/session identity for this API run via
                         # contextvars so concurrent runs do not share process
@@ -4547,18 +4555,21 @@ class APIServerAdapter(BasePlatformAdapter):
                         )
                     finally:
                         try:
-                            unregister_gateway_notify(approval_session_key)
+                            reset_image_serve_base_url(img_token)
                         finally:
-                            if approval_token is not None:
-                                try:
-                                    reset_current_session_key(approval_token)
-                                except Exception:
-                                    pass
-                            if session_tokens:
-                                try:
-                                    clear_session_vars(session_tokens)
-                                except Exception:
-                                    pass
+                            try:
+                                unregister_gateway_notify(approval_session_key)
+                            finally:
+                                if approval_token is not None:
+                                    try:
+                                        reset_current_session_key(approval_token)
+                                    except Exception:
+                                        pass
+                                if session_tokens:
+                                    try:
+                                        clear_session_vars(session_tokens)
+                                    except Exception:
+                                        pass
                     u = {
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
@@ -4994,6 +5005,11 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)
             self._app.router.add_delete("/v1/responses/{response_id}", self._handle_delete_response)
+
+            # Serve cached images via HTTP
+            if IMAGE_CACHE_DIR:
+                self._app.router.add_static("/images/", str(IMAGE_CACHE_DIR), show_index=False)
+
             # Cron jobs management API
             self._app.router.add_get("/api/jobs", self._handle_list_jobs)
             self._app.router.add_post("/api/jobs", self._handle_create_job)
@@ -5061,6 +5077,16 @@ class APIServerAdapter(BasePlatformAdapter):
             await self._runner.setup()
             self._site = web.TCPSite(self._runner, self._host, self._port)
             await self._site.start()
+
+            # Auto-inject image serving base URL if not explicitly set, so the image
+            # generation tool knows how to rewrite local paths for API clients.
+            base_url = os.getenv("IMAGE_SERVE_BASE_URL")
+            if not base_url:
+                # If binding to all interfaces, default to loopback for the URL;
+                # otherwise use the configured host.
+                serving_host = "127.0.0.1" if self._host == "0.0.0.0" else self._host
+                base_url = f"http://{serving_host}:{self._port}"
+            self.image_serve_base_url = base_url
 
             self._mark_connected()
             logger.info(

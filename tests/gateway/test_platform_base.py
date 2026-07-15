@@ -1379,6 +1379,7 @@ class TestMediaDeliveryDefaultMode:
             BasePlatformAdapter.validate_media_delivery_path(str(other_file)) is None
         )
 
+    @pytest.mark.require_symlinks
     def test_root_home_workdir_symlink_to_credential_blocked(self, tmp_path, monkeypatch):
         """A symlink in the workdir pointing at a credential is rejected on its
         resolved target, even under the $HOME exception.
@@ -1814,7 +1815,7 @@ class TestMediaDeliveryDiagnosability:
 
     def test_canonical_cache_roots_present(self):
         from gateway.platforms.base import MEDIA_DELIVERY_SAFE_ROOTS
-        roots = {str(r) for r in MEDIA_DELIVERY_SAFE_ROOTS}
+        roots = {str(r).replace("\\", "/") for r in MEDIA_DELIVERY_SAFE_ROOTS}
         assert any(r.endswith("cache/images") for r in roots)
         assert any(r.endswith("cache/documents") for r in roots)
         # Legacy layout still present.

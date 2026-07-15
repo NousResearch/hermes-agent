@@ -164,8 +164,15 @@ def _verify_password(password: str, encoded: str) -> bool:
 
 # A fixed dummy hash used to spend ~equal time when the username is
 # unknown, so an attacker can't distinguish "no such user" (fast) from
-# "wrong password" (slow scrypt) by timing. Computed once at import.
-_DUMMY_HASH = hash_password("dummy-password-for-constant-time-verify")
+# "wrong password" (slow scrypt) by timing. Computed lazily on demand.
+_DUMMY_HASH_VAL: str | None = None
+
+
+def _get_dummy_hash() -> str:
+    global _DUMMY_HASH_VAL
+    if _DUMMY_HASH_VAL is None:
+        _DUMMY_HASH_VAL = hash_password("dummy-password-for-constant-time-verify")
+    return _DUMMY_HASH_VAL
 
 
 # ---------------------------------------------------------------------------
@@ -252,7 +259,7 @@ class BasicAuthProvider(DashboardAuthProvider):
         username_ok = hmac.compare_digest(
             username.encode("utf-8"), self._username.encode("utf-8")
         )
-        target_hash = self._password_hash if username_ok else _DUMMY_HASH
+        target_hash = self._password_hash if username_ok else _get_dummy_hash()
         password_ok = _verify_password(password, target_hash)
         if not (username_ok and password_ok):
             raise InvalidCredentialsError("invalid username or password")

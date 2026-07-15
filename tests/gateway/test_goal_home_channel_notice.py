@@ -131,7 +131,7 @@ async def test_goal_done_mirrors_to_discord_home_channel(hermes_home):
 
     GoalManager(session_entry.session_id).set("ship the feature")
 
-    with patch("hermes_cli.goals.judge_goal", return_value=("done", "the feature shipped", False)):
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "the feature shipped", False, None)):
         await runner._post_turn_goal_continuation(
             session_entry=session_entry,
             source=src,
@@ -157,7 +157,7 @@ async def test_goal_done_skips_home_channel_when_unset(hermes_home):
 
     GoalManager(session_entry.session_id).set("ship the feature")
 
-    with patch("hermes_cli.goals.judge_goal", return_value=("done", "shipped", False)):
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "shipped", False, None)):
         await runner._post_turn_goal_continuation(
             session_entry=session_entry,
             source=src,
@@ -186,7 +186,7 @@ async def test_goal_done_in_discord_home_channel_is_not_duplicated(hermes_home):
 
     GoalManager(session_entry.session_id).set("ship the feature")
 
-    with patch("hermes_cli.goals.judge_goal", return_value=("done", "shipped", False)):
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "shipped", False, None)):
         await runner._post_turn_goal_continuation(
             session_entry=session_entry,
             source=discord_source,
@@ -218,7 +218,7 @@ async def test_goal_done_distinct_thread_same_channel_is_not_deduplicated(hermes
 
     GoalManager(session_entry.session_id).set("ship the feature")
 
-    with patch("hermes_cli.goals.judge_goal", return_value=("done", "shipped", False)):
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "shipped", False, None)):
         await runner._post_turn_goal_continuation(
             session_entry=session_entry,
             source=other_thread_source,
@@ -246,7 +246,7 @@ async def test_goal_done_home_channel_survives_missing_discord_adapter(hermes_ho
 
     GoalManager(session_entry.session_id).set("ship the feature")
 
-    with patch("hermes_cli.goals.judge_goal", return_value=("done", "shipped", False)):
+    with patch("hermes_cli.goals.judge_goal", return_value=("done", "shipped", False, None)):
         await runner._post_turn_goal_continuation(
             session_entry=session_entry,
             source=src,
@@ -271,7 +271,7 @@ async def test_goal_continue_does_not_notify_home_channel(hermes_home):
 
     GoalManager(session_entry.session_id).set("polish the docs")
 
-    with patch("hermes_cli.goals.judge_goal", return_value=("continue", "still needs work", False)):
+    with patch("hermes_cli.goals.judge_goal", return_value=("continue", "still needs work", False, None)):
         await runner._post_turn_goal_continuation(
             session_entry=session_entry,
             source=src,

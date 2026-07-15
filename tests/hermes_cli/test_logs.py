@@ -1,6 +1,13 @@
 """Tests for hermes_cli.logs — log viewing and filtering."""
 
-from datetime import datetime, timedelta
+import argparse
+import json
+import os
+import subprocess
+import sys
+import time
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 
 
 from hermes_cli.logs import (
@@ -13,6 +20,8 @@ from hermes_cli.logs import (
     _parse_since,
     _read_last_n_lines,
     _read_tail,
+    resolve_gateway_log_boundary,
+    summarize_log_signatures,
 )
 
 
@@ -58,6 +67,105 @@ class TestParseLineTimestamp:
 
     def test_no_timestamp(self):
         assert _parse_line_timestamp("no timestamp here") is None
+
+
+class TestCurrentGatewayLogBoundary:
+    def test_resolves_utc_runtime_timestamp_to_local_naive_boundary(self):
+        boundary = resolve_gateway_log_boundary(
+            {
+                "gateway_start_id": "gw-123",
+                "gateway_started_at": "2026-07-15T10:00:00+00:00",
+            },
+            local_timezone=timezone.utc,
+        )
+
+        assert boundary.start_id == "gw-123"
+        assert boundary.started_at == datetime(2026, 7, 15, 10, 0, 0)
+
+    def test_default_local_conversion_honors_timestamp_dst_season(self, monkeypatch):
+        if not hasattr(time, "tzset"):
+            return
+        previous = os.environ.get("TZ")
+        monkeypatch.setenv("TZ", "Europe/Kyiv")
+        time.tzset()
+        try:
+            boundary = resolve_gateway_log_boundary(
+                {
+                    "gateway_start_id": "gw-winter",
+                    "gateway_started_at": "2026-01-15T10:00:00+00:00",
+                }
+            )
+            assert boundary.started_at == datetime(2026, 1, 15, 12, 0, 0)
+        finally:
+            if previous is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = previous
+            time.tzset()
+
+    def test_boundary_is_floored_to_log_second_resolution(self):
+        boundary = resolve_gateway_log_boundary(
+            {
+                "gateway_start_id": "gw-123",
+                "gateway_started_at": "2026-07-15T10:00:00.900000+00:00",
+            },
+            local_timezone=timezone.utc,
+        )
+        findings = summarize_log_signatures(
+            ["2026-07-15 10:00:00 ERROR gateway.run: HTTP 401\n"],
+            boundary,
+            {"auth_401": r"\b401\b"},
+        )
+
+        assert boundary.started_at == datetime(2026, 7, 15, 10, 0, 0)
+        assert findings["auth_401"]["classification"] == "LIVE"
+        assert findings["auth_401"]["after_start_count"] == 1
+
+    def test_missing_start_metadata_is_inconclusive(self):
+        boundary = resolve_gateway_log_boundary({})
+
+        assert boundary.status == "INCONCLUSIVE"
+        assert boundary.started_at is None
+
+    def test_signature_counts_are_split_at_current_start(self):
+        boundary = resolve_gateway_log_boundary(
+            {
+                "gateway_start_id": "gw-123",
+                "gateway_started_at": "2026-07-15T10:00:00+00:00",
+            },
+            local_timezone=timezone.utc,
+        )
+        lines = [
+            "2026-07-15 09:00:00 ERROR gateway.run: HTTP 401 token_expired\n",
+            "2026-07-15 09:30:00 ERROR gateway.run: Topic_closed thread=2654\n",
+            "2026-07-15 10:05:00 ERROR gateway.run: HTTP 401 token_expired\n",
+            "2026-07-15 10:06:00 WARNING gateway.run: HTTP 429 usage_limit_reached\n",
+            "continuation mentioning HTTP 401 without timestamp\n",
+        ]
+
+        findings = summarize_log_signatures(
+            lines,
+            boundary,
+            {
+                "auth_401": r"\b401\b",
+                "rate_429": r"\b429\b",
+                "topic_closed": r"Topic_closed",
+                "server_500": r"\b500\b",
+            },
+        )
+
+        assert findings["auth_401"] == {
+            "classification": "LIVE",
+            "total_count": 3,
+            "after_start_count": 1,
+            "unknown_timestamp_count": 1,
+            "first_seen": "2026-07-15T09:00:00",
+            "last_seen": "2026-07-15T10:05:00",
+        }
+        assert findings["topic_closed"]["classification"] == "HISTORICAL"
+        assert findings["topic_closed"]["after_start_count"] == 0
+        assert findings["rate_429"]["classification"] == "LIVE"
+        assert findings["server_500"]["classification"] == "ABSENT"
 
 
 class TestExtractLevel:
@@ -249,6 +357,103 @@ class TestReadTail:
         log_file.write_text("")
         result = _read_last_n_lines(log_file, 10)
         assert result == []
+
+
+# ---------------------------------------------------------------------------
+# Current-start triage CLI
+# ---------------------------------------------------------------------------
+
+
+class TestCurrentStartTriageCLI:
+    def test_parser_accepts_current_start_triage_json(self):
+        from hermes_cli.subcommands.logs import build_logs_parser
+
+        parser = argparse.ArgumentParser()
+        subparsers = parser.add_subparsers(dest="command")
+        handler = lambda _args: None
+        build_logs_parser(subparsers, cmd_logs=handler)
+
+        args = parser.parse_args(
+            ["logs", "gateway", "--triage-current-start", "--json"]
+        )
+
+        assert args.triage_current_start is True
+        assert args.json is True
+        assert args.func is handler
+
+    def test_cmd_logs_emits_real_current_start_triage_json(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        from hermes_cli import main
+
+        logs_dir = tmp_path / "logs"
+        logs_dir.mkdir()
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "gateway_start_id": "gw-live",
+                    "gateway_started_at": "2026-07-15T10:00:00+00:00",
+                }
+            ),
+            encoding="utf-8",
+        )
+        (logs_dir / "gateway.log").write_text(
+            "2026-07-15 09:00:00 ERROR gateway.run: HTTP 401 token_expired\n"
+            "2026-07-15 10:05:00 WARNING gateway.run: HTTP 429 usage_limit_reached\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        previous_tz = os.environ.get("TZ")
+        monkeypatch.setenv("TZ", "UTC")
+        if hasattr(time, "tzset"):
+            time.tzset()
+
+        try:
+            rc = main.cmd_logs(
+                SimpleNamespace(
+                    log_name="gateway",
+                    triage_current_start=True,
+                    json=True,
+                )
+            )
+        finally:
+            if previous_tz is None:
+                os.environ.pop("TZ", None)
+            else:
+                os.environ["TZ"] = previous_tz
+            if hasattr(time, "tzset"):
+                time.tzset()
+        payload = json.loads(capsys.readouterr().out)
+
+        assert rc == 0
+        assert payload["status"] == "PASS"
+        assert payload["gateway_start_id"] == "gw-live"
+        assert payload["findings"]["auth_401"]["classification"] == "HISTORICAL"
+        assert payload["findings"]["rate_429"]["classification"] == "LIVE"
+
+    def test_console_entrypoint_propagates_non_pass_exit_status(self, tmp_path):
+        env = os.environ.copy()
+        env["HERMES_HOME"] = str(tmp_path)
+
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "hermes_cli.main",
+                "logs",
+                "nonexistent",
+                "--triage-current-start",
+                "--json",
+            ],
+            cwd=os.fspath(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+            env=env,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert completed.returncode == 2
+        assert json.loads(completed.stdout)["status"] == "FAIL"
 
 
 # ---------------------------------------------------------------------------

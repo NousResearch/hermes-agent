@@ -19,12 +19,14 @@ Usage examples::
     hermes logs --since 30m -f     # follow, starting 30 min ago
 """
 
+import json
 import re
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Any, Iterable, Mapping, Optional, Sequence
 
 from hermes_constants import get_hermes_home, display_hermes_home
 
@@ -38,6 +40,15 @@ LOG_FILES = {
     # Every stdio MCP subprocess's stderr (tools/mcp_tool.py redirects it
     # here, with per-server session markers) — the "MCP output channel".
     "mcp": "mcp-stderr.log",
+}
+
+DEFAULT_TRIAGE_SIGNATURES = {
+    "bad_request_400": r"(?:HTTP|status(?: code)?)\s*[=:]?\s*400\b|\b400 Bad Request\b",
+    "auth_401": r"(?:HTTP|status(?: code)?)\s*[=:]?\s*401\b|\b401 Unauthorized\b|token_expired",
+    "rate_429": r"(?:HTTP|status(?: code)?)\s*[=:]?\s*429\b|usage_limit_reached",
+    "topic_closed": r"Topic_closed",
+    "traceback": r"\bTraceback \(most recent call last\):",
+    "critical": r"\sCRITICAL\s",
 }
 
 # Log line timestamp regex — matches "2026-04-05 22:35:00,123" or
@@ -89,6 +100,192 @@ def _parse_line_timestamp(line: str) -> Optional[datetime]:
         return datetime.strptime(m.group(1), "%Y-%m-%d %H:%M:%S")
     except ValueError:
         return None
+
+
+@dataclass(frozen=True)
+class GatewayLogBoundary:
+    """Current gateway process boundary converted to local naive log time."""
+
+    start_id: str
+    started_at: Optional[datetime]
+    status: str
+
+
+def resolve_gateway_log_boundary(
+    runtime: Mapping[str, Any] | None,
+    *,
+    local_timezone=None,
+) -> GatewayLogBoundary:
+    """Resolve runtime start metadata into the timestamp domain used by logs."""
+
+    payload = runtime if isinstance(runtime, Mapping) else {}
+    start_id = str(payload.get("gateway_start_id") or "").strip()
+    raw_started_at = str(payload.get("gateway_started_at") or "").strip()
+    if not start_id or not raw_started_at:
+        return GatewayLogBoundary(start_id, None, "INCONCLUSIVE")
+
+    try:
+        parsed = datetime.fromisoformat(raw_started_at.replace("Z", "+00:00"))
+    except ValueError:
+        return GatewayLogBoundary(start_id, None, "INCONCLUSIVE")
+
+    if parsed.tzinfo is not None:
+        if local_timezone is None:
+            parsed = parsed.astimezone().replace(tzinfo=None)
+        else:
+            parsed = parsed.astimezone(local_timezone).replace(tzinfo=None)
+    # Hermes text logs have one-second timestamp resolution; floor the boundary
+    # so events emitted later in the same second are not misclassified as old.
+    parsed = parsed.replace(microsecond=0)
+    return GatewayLogBoundary(start_id, parsed, "PASS")
+
+
+def summarize_log_signatures(
+    lines: Iterable[str],
+    boundary: GatewayLogBoundary,
+    signatures: Mapping[str, str],
+) -> dict[str, dict[str, Any]]:
+    """Count known signatures before and after the current gateway start.
+
+    The input is consumed exactly once so callers can stream large log files
+    without materializing them in memory. A timestamp-free matching line is
+    never assigned to the current run; it remains explicitly inconclusive.
+    """
+
+    compiled = {name: re.compile(pattern) for name, pattern in signatures.items()}
+    state = {
+        name: {
+            "total_count": 0,
+            "after_start_count": 0,
+            "unknown_timestamp_count": 0,
+            "seen": [],
+        }
+        for name in compiled
+    }
+
+    for line in lines:
+        timestamp = _parse_line_timestamp(line)
+        for name, matcher in compiled.items():
+            if not matcher.search(line):
+                continue
+            item = state[name]
+            item["total_count"] += 1
+            if timestamp is None:
+                item["unknown_timestamp_count"] += 1
+                continue
+            item["seen"].append(timestamp)
+            if boundary.started_at is not None and timestamp >= boundary.started_at:
+                item["after_start_count"] += 1
+
+    findings: dict[str, dict[str, Any]] = {}
+    for name, item in state.items():
+        total = item["total_count"]
+        after_start = item["after_start_count"]
+        unknown_timestamp = item["unknown_timestamp_count"]
+        seen = item["seen"]
+        if total == 0:
+            classification = "ABSENT"
+        elif after_start > 0:
+            classification = "LIVE"
+        elif boundary.started_at is None or unknown_timestamp > 0:
+            classification = "INCONCLUSIVE"
+        else:
+            classification = "HISTORICAL"
+
+        findings[name] = {
+            "classification": classification,
+            "total_count": total,
+            "after_start_count": after_start,
+            "unknown_timestamp_count": unknown_timestamp,
+            "first_seen": min(seen).isoformat() if seen else None,
+            "last_seen": max(seen).isoformat() if seen else None,
+        }
+    return findings
+
+
+def triage_current_gateway_log(
+    log_name: str = "gateway",
+    *,
+    signatures: Mapping[str, str] | None = None,
+) -> dict[str, Any]:
+    """Run read-only signature triage against the active profile's current start."""
+
+    from gateway.status import read_runtime_status
+
+    filename = LOG_FILES.get(log_name)
+    runtime = read_runtime_status()
+    boundary = resolve_gateway_log_boundary(runtime)
+    if filename is None:
+        return {
+            "status": "FAIL",
+            "error": "unknown_log",
+            "log_name": log_name,
+            "gateway_start_id": boundary.start_id,
+            "gateway_started_at": (
+                boundary.started_at.isoformat() if boundary.started_at else None
+            ),
+            "findings": {},
+        }
+
+    log_path = get_hermes_home() / "logs" / filename
+    if not log_path.is_file():
+        return {
+            "status": "INCONCLUSIVE",
+            "error": "log_not_found",
+            "log_name": log_name,
+            "gateway_start_id": boundary.start_id,
+            "gateway_started_at": (
+                boundary.started_at.isoformat() if boundary.started_at else None
+            ),
+            "findings": {},
+        }
+
+    with log_path.open("r", encoding="utf-8", errors="replace") as handle:
+        findings = summarize_log_signatures(
+            handle,
+            boundary,
+            signatures or DEFAULT_TRIAGE_SIGNATURES,
+        )
+    return {
+        "status": boundary.status,
+        "error": None,
+        "log_name": log_name,
+        "gateway_start_id": boundary.start_id,
+        "gateway_started_at": (
+            boundary.started_at.isoformat() if boundary.started_at else None
+        ),
+        "findings": findings,
+    }
+
+
+def format_current_gateway_triage(
+    payload: Mapping[str, Any],
+    *,
+    as_json: bool = False,
+) -> str:
+    if as_json:
+        return json.dumps(dict(payload), ensure_ascii=False, sort_keys=True)
+    lines = [
+        f"LOG_TRIAGE_RESULT: {payload.get('status', 'INCONCLUSIVE')}",
+        f"log: {payload.get('log_name', 'gateway')}",
+        f"gateway_start_id: {payload.get('gateway_start_id') or 'unknown'}",
+        f"gateway_started_at: {payload.get('gateway_started_at') or 'unknown'}",
+    ]
+    error = payload.get("error")
+    if error:
+        lines.append(f"error: {error}")
+    findings = payload.get("findings")
+    if isinstance(findings, Mapping):
+        for name, finding in findings.items():
+            if not isinstance(finding, Mapping):
+                continue
+            lines.append(
+                f"{name}: {finding.get('classification')} "
+                f"total={finding.get('total_count')} "
+                f"after_start={finding.get('after_start_count')} "
+                f"first={finding.get('first_seen')} last={finding.get('last_seen')}"
+            )
+    return "\n".join(lines)
 
 
 def _extract_level(line: str) -> Optional[str]:

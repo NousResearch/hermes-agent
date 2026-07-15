@@ -16,6 +16,9 @@ def test_readonly_argv_detection():
     assert is_readonly_diagnostic_argv(
         ["hermes", "--profile", "main-gateway-v2", "model", "--preflight", "--json"]
     )
+    assert is_readonly_diagnostic_argv(
+        ["hermes", "--profile", "main-gateway-v2", "logs", "gateway", "--triage-current-start", "--json"]
+    )
     assert not is_readonly_diagnostic_argv(["hermes", "doctor", "--fix"])
     assert not is_readonly_diagnostic_argv(["hermes", "doctor", "--ack", "ADV-1"])
 

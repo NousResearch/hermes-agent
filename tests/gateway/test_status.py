@@ -460,6 +460,34 @@ class TestGatewayRuntimeStatus:
         assert payload["pid"] == os.getpid()
         assert payload["start_time"] == 2000
 
+    def test_runtime_status_records_current_gateway_start_boundary(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setattr(
+            status,
+            "_GATEWAY_STARTED_AT",
+            "2026-07-15T10:00:00+00:00",
+        )
+        expected_start_id = status.get_gateway_start_metadata()["gateway_start_id"]
+        (tmp_path / "gateway_state.json").write_text(
+            json.dumps(
+                {
+                    "gateway_start_id": "gw-stale",
+                    "gateway_started_at": "2026-07-14T10:00:00+00:00",
+                    "platforms": {},
+                }
+            )
+        )
+
+        status.write_runtime_status(gateway_state="running")
+        first = status.read_runtime_status()
+        status.write_runtime_status(active_agents=1)
+        second = status.read_runtime_status()
+
+        assert first["gateway_start_id"] == expected_start_id
+        assert first["gateway_started_at"] == "2026-07-15T10:00:00+00:00"
+        assert second["gateway_start_id"] == expected_start_id
+        assert second["gateway_started_at"] == "2026-07-15T10:00:00+00:00"
+
     def test_runtime_status_running_pid_rejects_stale_record_for_supervisor_pid(self, monkeypatch):
         """Regression: stale profile runtime state must not mark s6 supervisors live.
 

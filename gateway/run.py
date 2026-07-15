@@ -20660,6 +20660,15 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
     from hermes_logging import setup_logging, _safe_stderr
     setup_logging(hermes_home=_hermes_home, mode="gateway")
 
+    from gateway.status import get_gateway_start_metadata
+
+    _start_metadata = get_gateway_start_metadata()
+    logger.info(
+        "Gateway start boundary: gateway_start_id=%s gateway_started_at=%s",
+        _start_metadata["gateway_start_id"],
+        _start_metadata["gateway_started_at"],
+    )
+
     # Startup security posture audit — warn-on-load, never blocks. Surfaces
     # root / weak-SSH / ephemeral-container / unauthenticated-listener posture
     # so operators get the "you're exposed" signal the June 2026 MCP-config

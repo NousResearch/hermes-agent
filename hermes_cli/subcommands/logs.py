@@ -75,4 +75,14 @@ Examples:
         metavar="NAME",
         help="Filter by component: gateway, agent, tools, cli, cron, gui",
     )
+    logs_parser.add_argument(
+        "--triage-current-start",
+        action="store_true",
+        help="Classify known log signatures against the current gateway start boundary",
+    )
+    logs_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit --triage-current-start result as stable JSON",
+    )
     logs_parser.set_defaults(func=cmd_logs)

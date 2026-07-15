@@ -12268,6 +12268,21 @@ def cmd_logs(args):
 
     log_name = getattr(args, "log_name", "agent") or "agent"
 
+    if getattr(args, "triage_current_start", False):
+        from hermes_cli.logs import (
+            format_current_gateway_triage,
+            triage_current_gateway_log,
+        )
+
+        payload = triage_current_gateway_log(log_name)
+        print(
+            format_current_gateway_triage(
+                payload,
+                as_json=getattr(args, "json", False),
+            )
+        )
+        return 0 if payload.get("status") == "PASS" else 2
+
     if log_name == "list":
         list_logs()
         return
@@ -14792,10 +14807,15 @@ def main():
 
     # Execute the command
     if hasattr(args, "func"):
-        args.func(args)
+        result = args.func(args)
+        # Preserve legacy return behavior for all commands except the new
+        # automation-oriented log triage surface, whose PASS/FAIL status must
+        # reach the shell without changing unrelated command semantics.
+        if args.command == "logs" and getattr(args, "triage_current_start", False):
+            return result
     else:
         parser.print_help()
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

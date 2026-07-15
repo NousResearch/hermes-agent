@@ -95,6 +95,12 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+# Stable for the lifetime of this gateway process. Runtime status rewrites this
+# field on every update, so stale metadata from a previous process can never
+# define the current log boundary.
+_GATEWAY_STARTED_AT = _utc_now_iso()
+
+
 def terminate_pid(pid: int, *, force: bool = False) -> None:
     """Terminate a PID with platform-appropriate force semantics.
 
@@ -174,6 +180,18 @@ def _get_process_start_time(pid: int) -> Optional[int]:
 def get_process_start_time(pid: int) -> Optional[int]:
     """Public wrapper for retrieving a process start time when available."""
     return _get_process_start_time(pid)
+
+
+def get_gateway_start_metadata() -> dict[str, str]:
+    """Return stable, non-secret identity for the current gateway process."""
+    pid = os.getpid()
+    process_start = _get_process_start_time(pid)
+    material = f"{pid}|{process_start}|{_GATEWAY_STARTED_AT}".encode("utf-8")
+    start_id = "gw_" + hashlib.sha256(material).hexdigest()[:20]
+    return {
+        "gateway_start_id": start_id,
+        "gateway_started_at": _GATEWAY_STARTED_AT,
+    }
 
 
 def _read_process_cmdline(pid: int) -> Optional[str]:
@@ -420,6 +438,7 @@ def _build_pid_record() -> dict:
         "kind": _GATEWAY_KIND,
         "argv": list(sys.argv),
         "start_time": _get_process_start_time(os.getpid()),
+        **get_gateway_start_metadata(),
     }
 
 
@@ -815,6 +834,8 @@ def write_runtime_status(
     payload["pid"] = current_record["pid"]
     payload["argv"] = current_record["argv"]
     payload["start_time"] = current_record["start_time"]
+    payload["gateway_start_id"] = current_record["gateway_start_id"]
+    payload["gateway_started_at"] = current_record["gateway_started_at"]
     payload["updated_at"] = _utc_now_iso()
 
     if gateway_state is not _UNSET:

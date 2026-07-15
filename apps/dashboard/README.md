@@ -58,18 +58,37 @@ Note: iOS treats plain-HTTP sites as insecure for some PWA features; over
 Tailscale it works, but for the full experience put HTTPS in front (Caddy
 with a local CA, or Cloudflare Tunnel).
 
-### Docker (always-on box, NAS, VPS)
+### Keep it always-on (no Docker required)
+
+Because the server is dependency-free Python, the simplest way to keep it
+running on your laptop or an always-on box is a background process or your OS's
+own service manager — no container runtime needed.
+
+**Simplest — background runner** (any Unix, no root, no install):
 
 ```bash
 cd apps/dashboard
-HERMES_HUB_TOKEN=my-secret-code docker compose up -d   # → port 8787
+HERMES_HUB_TOKEN=my-secret-code ./deploy/serve.sh start   # → http://localhost:8787
+./deploy/serve.sh status   # running?
+./deploy/serve.sh logs     # follow the log
+./deploy/serve.sh stop
 ```
 
-The image is `python:3.12-slim` plus the optional `anthropic` SDK; state
-persists in the `hub-data` volume. Set `HERMES_HUB_API_KEY` in the
-environment (or an `.env` file next to `compose.yaml`) to enable the live
-agent, and `HERMES_HUB_MODEL` to override the model. Plain `docker build`
-works too — mount something at `/data` to keep your data.
+**Start on boot / survive logout:**
+
+- **Linux (systemd):** `deploy/hermes-hub.service` — a *user* unit (no root).
+  Copy it to `~/.config/systemd/user/`, edit the path + token, then
+  `systemctl --user enable --now hermes-hub` and
+  `loginctl enable-linger "$USER"`. Logs: `journalctl --user -u hermes-hub -f`.
+- **macOS (launchd):** `deploy/com.hermeshub.hub.plist` — copy to
+  `~/Library/LaunchAgents/`, edit the paths + token, then
+  `launchctl load ~/Library/LaunchAgents/com.hermeshub.hub.plist`.
+
+Each template documents its own install/stop steps at the top.
+
+**Optional — Docker** (only if you already run it, e.g. a NAS/VPS): a
+`Dockerfile` + `compose.yaml` ship too — `HERMES_HUB_TOKEN=… docker compose up -d`.
+State persists in the `hub-data` volume. Not required for laptop use.
 
 ## The agent (optional AI mode)
 
@@ -170,7 +189,9 @@ assistant.py       AI layer: Claude (optional SDK) or local rule-based engines
 automations.py     standing rules engine (daily/market/worldstate → notify/briefing)
 ics.py             minimal RFC 5545 parser for subscribed calendars
 sample_data.json   bundled offline data (news, weather, markets, geocode)
-Dockerfile         container build (with compose.yaml for one-command deploys)
+deploy/            always-on service without Docker: serve.sh runner +
+                   systemd (Linux) and launchd (macOS) unit templates
+Dockerfile         optional container build (compose.yaml); not needed for laptops
 public/            zero-build frontend (ES modules, design-system CSS)
   js/widgets/      one module per widget (clock, worldstate, agent, …)
   js/viewer.js     in-app reader/embed overlay

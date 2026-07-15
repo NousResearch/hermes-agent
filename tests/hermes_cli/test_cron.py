@@ -235,6 +235,29 @@ class TestGatewayNotRunningWarning:
         assert "Resumed job" in out
         assert "Gateway is not running" not in out
 
+    def test_interactive_cli_resume_warns_when_gateway_absent(self, capsys, monkeypatch):
+        """The interactive /cron front end must share the resume warning."""
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        monkeypatch.setattr(
+            "tools.cronjob_tools.cronjob",
+            lambda **_kwargs: (
+                '{"success": true, "job": {"name": "Daily report", '
+                '"next_run_at": "2026-07-15T11:00:00Z"}}'
+            ),
+        )
+        monkeypatch.setattr(
+            cron_cli,
+            "_warn_if_gateway_not_running",
+            lambda: print("Gateway is not running"),
+        )
+
+        CLICommandsMixin()._handle_cron_command("/cron resume job-1")
+
+        out = capsys.readouterr().out
+        assert "Resumed job" in out
+        assert "Gateway is not running" in out
+
 class TestExternalCronProviderStatus:
     """With an external cron provider (e.g. Chronos), jobs fire via a
     NAS-mediated webhook, NOT the in-process ticker. The ticker-heartbeat /

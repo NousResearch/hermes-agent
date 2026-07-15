@@ -9,6 +9,14 @@ import pytest
 from hermes_cli.console_engine import HermesConsoleEngine, run_console_repl
 
 
+@pytest.fixture()
+def tmp_cron_store(tmp_path):
+    from cron import jobs
+
+    with jobs.use_cron_store(tmp_path):
+        yield
+
+
 EXPECTED_CONSOLE_COMMANDS = {
     ("status",),
     ("doctor",),
@@ -601,7 +609,9 @@ def test_sessions_list_and_stats_use_isolated_session_store(_isolate_hermes_home
     assert "Listable sessions: 1" in stats.output
 
 
-def test_cron_pause_resume_and_run_require_confirmation(_isolate_hermes_home, monkeypatch):
+def test_cron_pause_resume_and_run_require_confirmation(
+    _isolate_hermes_home, tmp_cron_store, monkeypatch
+):
     from cron.jobs import create_job, get_job
 
     job = create_job(prompt="say hello", schedule="every 1h", name="alpha")

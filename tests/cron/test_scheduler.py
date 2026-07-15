@@ -4804,6 +4804,19 @@ class TestMultiTargetDeliveryContinuesOnFailure:
     and silently dropping every subsequent target.
     """
 
+    @staticmethod
+    def _close_coro_and_raise_no_loop(coro):
+        coro.close()
+        raise RuntimeError("no running loop")
+
+    @staticmethod
+    def _close_mock_submitted_coroutines(mock_pool):
+        import inspect
+        for submitted in mock_pool.submit.call_args_list:
+            for arg in submitted.args:
+                if inspect.iscoroutine(arg):
+                    arg.close()
+
     def _email_cfg(self):
         from gateway.config import Platform
 
@@ -4822,7 +4835,7 @@ class TestMultiTargetDeliveryContinuesOnFailure:
 
         with patch("gateway.config.load_gateway_config", return_value=self._email_cfg()), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-             patch("asyncio.run", side_effect=RuntimeError("no running loop")), \
+             patch("asyncio.run", side_effect=self._close_coro_and_raise_no_loop), \
              patch("concurrent.futures.ThreadPoolExecutor") as mock_pool_cls:
             mock_pool = MagicMock()
             mock_pool_cls.return_value = mock_pool
@@ -4834,6 +4847,7 @@ class TestMultiTargetDeliveryContinuesOnFailure:
             mock_pool.submit.side_effect = [fail_future, ok_future]
 
             result = _deliver_result(job, "Report content")
+            self._close_mock_submitted_coroutines(mock_pool)
 
         # Both targets attempted — the loop did not crash after the first failure.
         assert mock_pool.submit.call_count == 2, (
@@ -4853,7 +4867,7 @@ class TestMultiTargetDeliveryContinuesOnFailure:
 
         with patch("gateway.config.load_gateway_config", return_value=self._email_cfg()), \
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
-             patch("asyncio.run", side_effect=RuntimeError("no running loop")), \
+             patch("asyncio.run", side_effect=self._close_coro_and_raise_no_loop), \
              patch("concurrent.futures.ThreadPoolExecutor") as mock_pool_cls:
             mock_pool = MagicMock()
             mock_pool_cls.return_value = mock_pool
@@ -4863,6 +4877,7 @@ class TestMultiTargetDeliveryContinuesOnFailure:
             mock_pool.submit.return_value = fail_future
 
             result = _deliver_result(job, "Report content")
+            self._close_mock_submitted_coroutines(mock_pool)
 
         assert result is not None
         assert "a@example.com" in result

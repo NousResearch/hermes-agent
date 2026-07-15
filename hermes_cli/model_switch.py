@@ -2112,9 +2112,13 @@ def list_authenticated_providers(
     else:
         try:
             from hermes_cli.config import load_config as _load_config_3b
-            _model_cfg = _load_config_3b().get("model") or {}
+            _model_cfg_raw = _load_config_3b().get("model")
         except Exception:
-            _model_cfg = {}
+            _model_cfg_raw = None
+        # config.model can be a bare string in older configs (see
+        # hermes_cli/inventory.py's ConfigContext loader) — only a mapping
+        # carries a provider/base_url to recover here.
+        _model_cfg = _model_cfg_raw if isinstance(_model_cfg_raw, dict) else {}
 
         _configured_provider = str(_model_cfg.get("provider", "") or "").strip().lower()
         _configured_base_url = str(_model_cfg.get("base_url", "") or "").strip()

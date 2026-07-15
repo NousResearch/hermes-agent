@@ -1201,7 +1201,21 @@ custom_providers:
     api_mode: anthropic_messages  # for Anthropic-compatible proxies
 ```
 
-**Custom request headers for `anthropic_messages` endpoints.** Some Anthropic-compatible gateways require extra request headers (project/tenant routing, WAF tokens, etc.). Set `ANTHROPIC_CUSTOM_HEADERS` and Hermes attaches them to every request to the Anthropic-wire client. Use one `Name: Value` pair per line; values take precedence over Hermes' own defaults:
+**Custom request headers for `anthropic_messages` endpoints.** Some Anthropic-compatible gateways require extra request headers (project/tenant routing, WAF tokens, etc.). Two ways to configure them:
+
+1. **Endpoint-scoped (recommended):** add `extra_headers` to the matching `providers` / `custom_providers` entry — the same mechanism OpenAI-wire endpoints use. Headers are only sent to the endpoint whose `base_url` matches, so a proxy's tenant/auth header can never leak to another provider:
+
+```yaml
+custom_providers:
+  - name: anthropic-proxy
+    base_url: https://proxy.example.com/anthropic
+    key_env: ANTHROPIC_PROXY_KEY
+    api_mode: anthropic_messages
+    extra_headers:
+      x-project: my-project
+```
+
+2. **`ANTHROPIC_CUSTOM_HEADERS` env var** (mirrors Claude Code's convention). One `Name: Value` pair per line:
 
 ```bash
 # Single header
@@ -1211,7 +1225,7 @@ export ANTHROPIC_CUSTOM_HEADERS="x-project: my-project"
 export ANTHROPIC_CUSTOM_HEADERS=$'x-project: my-project\nx-team: infra'
 ```
 
-This mirrors Claude Code's `ANTHROPIC_CUSTOM_HEADERS` convention and applies to `custom` (and other) models running on the `anthropic_messages` (and Bedrock) wire format. The OpenAI-wire equivalent is `model.default_headers` in `config.yaml`.
+The env var only applies to Anthropic-wire clients targeting an explicit custom `base_url` — native Anthropic (no `base_url`) and Bedrock never see it. Precedence: endpoint-scoped `extra_headers` > `ANTHROPIC_CUSTOM_HEADERS` > Hermes' own defaults (`anthropic-beta` etc., which are preserved unless explicitly overridden).
 
 Some OpenAI-compatible endpoints need provider-specific request body fields. Add an `extra_body` map to the matching custom provider and Hermes will merge it into each chat-completions request for that endpoint:
 

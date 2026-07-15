@@ -161,7 +161,8 @@ class TestBuildAnthropicClient:
         merges onto the SDK default_headers without dropping the betas.
         """
         monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "x-project: my-project")
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+             patch("hermes_cli.config.get_custom_provider_extra_headers", return_value={}):
             build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["default_headers"]["x-project"] == "my-project"
@@ -176,7 +177,8 @@ class TestBuildAnthropicClient:
             "ANTHROPIC_CUSTOM_HEADERS",
             "x-project: proj\nx-team: infra",
         )
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+             patch("hermes_cli.config.get_custom_provider_extra_headers", return_value={}):
             build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["default_headers"]["x-project"] == "proj"
@@ -184,12 +186,101 @@ class TestBuildAnthropicClient:
 
     def test_custom_headers_env_absent_is_noop(self, monkeypatch):
         monkeypatch.delenv("ANTHROPIC_CUSTOM_HEADERS", raising=False)
-        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+             patch("hermes_cli.config.get_custom_provider_extra_headers", return_value={}):
             build_anthropic_client("sk-ant-api03-x", base_url="https://custom.api.com")
             kwargs = mock_sdk.Anthropic.call_args[1]
             assert kwargs["default_headers"] == {
                 "anthropic-beta": "interleaved-thinking-2025-05-14,fine-grained-tool-streaming-2025-05-14"
             }
+
+    def test_custom_headers_env_not_applied_to_native_anthropic(self, monkeypatch):
+        """Endpoint-scoping guard: without an explicit base_url (native
+        Anthropic), ANTHROPIC_CUSTOM_HEADERS must NOT be attached — a proxy's
+        tenant/auth header must not leak to api.anthropic.com."""
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "x-project: my-project")
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            build_anthropic_client("sk-ant-api03-x")
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert "x-project" not in kwargs.get("default_headers", {})
+
+    def test_config_extra_headers_applied_to_anthropic_client(self, monkeypatch):
+        """providers/custom_providers extra_headers reach anthropic_messages
+        clients via the same endpoint-scoped resolver the OpenAI wire uses,
+        and win over ANTHROPIC_CUSTOM_HEADERS for the same header name."""
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "x-project: from-env\nx-team: infra")
+        seen_urls = []
+
+        def fake_resolver(base_url, *args, **kw):
+            seen_urls.append(base_url)
+            if base_url == "https://proxy.example.com/anthropic/v1":
+                return {"x-project": "from-config"}
+            return {}
+
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+             patch("hermes_cli.config.get_custom_provider_extra_headers", side_effect=fake_resolver):
+            build_anthropic_client(
+                "sk-ant-api03-x",
+                base_url="https://proxy.example.com/anthropic/v1",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            # Config (endpoint-scoped, most specific) wins over the env var.
+            assert kwargs["default_headers"]["x-project"] == "from-config"
+            # Env headers that don't collide still apply.
+            assert kwargs["default_headers"]["x-team"] == "infra"
+            # Betas survive.
+            assert "anthropic-beta" in kwargs["default_headers"]
+            # The resolver was offered the caller's original URL form
+            # (config may record the /v1 form the user typed).
+            assert "https://proxy.example.com/anthropic/v1" in seen_urls
+
+    def test_config_extra_headers_matches_normalized_url_form(self, monkeypatch):
+        """When config records the v1-stripped endpoint form, the normalized
+        candidate must still match."""
+        monkeypatch.delenv("ANTHROPIC_CUSTOM_HEADERS", raising=False)
+
+        def fake_resolver(base_url, *args, **kw):
+            if base_url == "https://proxy.example.com/anthropic":
+                return {"x-tenant": "t-42"}
+            return {}
+
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+             patch("hermes_cli.config.get_custom_provider_extra_headers", side_effect=fake_resolver):
+            build_anthropic_client(
+                "sk-ant-api03-x",
+                base_url="https://proxy.example.com/anthropic/v1",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["default_headers"]["x-tenant"] == "t-42"
+
+    def test_custom_headers_applied_to_bearer_hook_client(self, monkeypatch):
+        """The Entra-bearer-hook constructor (callable api_key) honors both
+        header sources and preserves its anthropic-beta defaults."""
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "x-project: my-project")
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk, \
+             patch("agent.azure_identity_adapter.build_bearer_http_client", return_value=MagicMock()), \
+             patch("hermes_cli.config.get_custom_provider_extra_headers", return_value={"x-tenant": "t-1"}):
+            build_anthropic_client(
+                lambda: "jwt",
+                base_url="https://my-resource.services.ai.azure.com/anthropic",
+            )
+            kwargs = mock_sdk.Anthropic.call_args[1]
+            assert kwargs["default_headers"]["x-project"] == "my-project"
+            assert kwargs["default_headers"]["x-tenant"] == "t-1"
+            # anthropic-beta defaults must survive the merge.
+            betas = kwargs["default_headers"]["anthropic-beta"]
+            assert "context-1m-2025-08-07" in betas
+
+    def test_custom_headers_env_not_applied_to_bedrock_client(self, monkeypatch):
+        """Bedrock has no custom endpoint to scope headers to — the env var
+        must not be attached, and its beta defaults stay intact."""
+        monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "x-project: my-project")
+        with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:
+            mock_sdk.AnthropicBedrock = MagicMock()
+            build_anthropic_bedrock_client("us-east-1")
+            kwargs = mock_sdk.AnthropicBedrock.call_args[1]
+            assert "x-project" not in kwargs["default_headers"]
+            assert "context-1m-2025-08-07" in kwargs["default_headers"]["anthropic-beta"]
 
     def test_minimax_anthropic_endpoint_uses_bearer_auth_for_regular_api_keys(self):
         with patch("agent.anthropic_adapter._anthropic_sdk") as mock_sdk:

@@ -466,6 +466,37 @@ async def test_send_restart_notification_from_group_prefers_private_notice(
 
 
 @pytest.mark.asyncio
+async def test_send_restart_notification_from_group_falls_back_when_private_notice_raises(
+    tmp_path, monkeypatch
+):
+    """A raising private delivery still emits only the neutral public fallback."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "-100",
+        "chat_type": "group",
+        "user_id": "owner-1",
+        "message_id": "m2",
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="public"))
+    adapter.send_private_notice = AsyncMock(side_effect=RuntimeError("private send failed"))
+
+    delivered_target = await runner._send_restart_notification()
+
+    assert delivered_target == ("telegram", "-100", None)
+    adapter.send_private_notice.assert_awaited_once()
+    adapter.send.assert_awaited_once()
+    public_text = adapter.send.await_args.args[1]
+    assert "restarted" in public_text.lower()
+    assert "session continues" not in public_text.lower()
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
 async def test_send_restart_notification_from_group_without_private_notice_uses_neutral_fallback(
     tmp_path, monkeypatch
 ):

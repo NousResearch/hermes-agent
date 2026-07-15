@@ -1356,6 +1356,20 @@ def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
         except Exception:
             pass
         adapter._ws_thread_loop = None
+        # Notify the adapter that the WebSocket client stopped.  The Lark SDK
+        # handles internal reconnect silently (exponential backoff up to
+        # _reconnect_nonce attempts).  When all attempts are exhausted,
+        # start() returns and the adapter would otherwise stay in a
+        # "connected but dead" state.  Route the notification through the
+        # adapter's event loop so it can report a retryable fatal error and
+        # trigger the gateway's reconnect watcher.
+        if getattr(adapter, "_running", False) and getattr(adapter, "_loop", None) is not None:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    adapter._on_ws_stopped(), adapter._loop
+                )
+            except Exception:
+                pass
 
 
 def check_feishu_requirements() -> bool:
@@ -1870,6 +1884,32 @@ class FeishuAdapter(BasePlatformAdapter):
             pass
         finally:
             self._ws_client = None
+
+    async def _on_ws_stopped(self) -> None:
+        """Called from the WS thread when ``start()`` finishes.
+
+        The Lark SDK internally retries WebSocket reconnection with
+        exponential backoff up to ``_reconnect_nonce`` attempts.  When all
+        attempts are exhausted the SDK gives up silently and ``start()``
+        returns — the adapter would otherwise stay in a "connected but dead"
+        state.  This handler reports a retryable fatal error so the gateway's
+        reconnect watcher creates a fresh WebSocket connection.
+        """
+        # Double-check the adapter is still supposed to be running — the
+        # disconnect() path deliberately stops the WS client and sets
+        # _running = False before the thread exits.
+        if not self._running:
+            return
+        logger.error(
+            "[Feishu] WebSocket client stopped unexpectedly "
+            "(Lark SDK reconnect exhausted?) — reconnecting"
+        )
+        self._set_fatal_error(
+            "feishu_ws_died",
+            "WebSocket client stopped unexpectedly (reconnect exhausted)",
+            retryable=True,
+        )
+        await self._notify_fatal_error()
 
     async def _stop_webhook_server(self) -> None:
         if self._webhook_runner is None:

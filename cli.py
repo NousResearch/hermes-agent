@@ -6561,17 +6561,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     
     def show_tools(self):
         """Display available tools with kawaii ASCII art."""
-        # Prefer the live agent's actual tool list once one exists: it can
-        # diverge from the static config recomputation below after in-place
-        # mutations (e.g. llama.cpp/Ollama grammar-rejection recovery strips
-        # tools from agent.tools, or a toolless max-iterations fallback) --
-        # #56461's "the agent said no memory tool was available, despite
-        # /tools listing it" contradiction is exactly this: /tools was
-        # reporting static config, not what was actually in the request.
-        if hasattr(self, "agent") and self.agent is not None and getattr(self.agent, "tools", None) is not None:
-            tools = self.agent.tools
-        else:
-            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
+        tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
 
         if not tools:
             print("(;_;) No tools available")

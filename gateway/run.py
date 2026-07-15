@@ -11818,48 +11818,70 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 logger.debug("Failed to read Telegram topic binding", exc_info=True)
                 binding = None
             if binding:
-                bound_session_id = str(binding.get("session_id") or "")
-                # Heal bindings that point at a pre-compression parent: walk
-                # the compression-continuation chain forward to its tip so the
-                # next message resumes the compressed child instead of
-                # reloading the oversized parent transcript (#20470/#29712/
-                # #33414). Returns the input unchanged when the session isn't
-                # a compression parent, so this is cheap and safe.
-                if bound_session_id and self._session_db is not None:
+                if getattr(session_entry, "was_auto_reset", False):
+                    # get_or_create_session() just minted a fresh auto-reset
+                    # child for this topic lane, but the stored binding still
+                    # points at the expired parent. Letting the stale binding
+                    # win would switch_session() the turn straight back to
+                    # that parent (re-opening the ended session and skipping
+                    # the fresh-context boundary below), so the reset never
+                    # takes on Telegram topic lanes. Rewrite the binding to
+                    # the fresh child instead — mirrors the explicit /new
+                    # rebind. The was_auto_reset flag itself is consumed by
+                    # the conversation-boundary block below, unchanged.
                     try:
-                        canonical_session_id = await self._session_db.get_compression_tip(
-                            bound_session_id,
+                        await asyncio.to_thread(
+                            self._sync_telegram_topic_binding,
+                            source, session_entry, reason="auto-reset",
                         )
                     except Exception:
                         logger.debug(
-                            "compression-tip lookup failed for %s",
-                            bound_session_id, exc_info=True,
+                            "Failed to rebind Telegram topic to auto-reset child",
+                            exc_info=True,
                         )
-                        canonical_session_id = bound_session_id
+                else:
+                    bound_session_id = str(binding.get("session_id") or "")
+                    # Heal bindings that point at a pre-compression parent: walk
+                    # the compression-continuation chain forward to its tip so the
+                    # next message resumes the compressed child instead of
+                    # reloading the oversized parent transcript (#20470/#29712/
+                    # #33414). Returns the input unchanged when the session isn't
+                    # a compression parent, so this is cheap and safe.
+                    if bound_session_id and self._session_db is not None:
+                        try:
+                            canonical_session_id = await self._session_db.get_compression_tip(
+                                bound_session_id,
+                            )
+                        except Exception:
+                            logger.debug(
+                                "compression-tip lookup failed for %s",
+                                bound_session_id, exc_info=True,
+                            )
+                            canonical_session_id = bound_session_id
+                        if (
+                            canonical_session_id
+                            and canonical_session_id != bound_session_id
+                        ):
+                            bound_session_id = canonical_session_id
+                    if bound_session_id and bound_session_id != session_entry.session_id:
+                        # Route the override through SessionStore so the session_key
+                        # → session_id mapping is persisted to disk and the previous
+                        # lane session is ended cleanly. Mutating session_entry in
+                        # place here created a split-brain state where the JSON
+                        # index pointed at one id but code downstream used another.
+                        switched = await self.async_session_store.switch_session(session_key, bound_session_id)
+                        if switched is not None:
+                            session_entry = switched
+                    # If the stored binding pointed at a parent, rewrite it to the
+                    # canonical descendant now that we've followed the chain.
                     if (
-                        canonical_session_id
-                        and canonical_session_id != bound_session_id
+                        bound_session_id
+                        and bound_session_id != str(binding.get("session_id") or "")
                     ):
-                        bound_session_id = canonical_session_id
-                if bound_session_id and bound_session_id != session_entry.session_id:
-                    # Route the override through SessionStore so the session_key
-                    # → session_id mapping is persisted to disk and the previous
-                    # lane session is ended cleanly. Mutating session_entry in
-                    # place here created a split-brain state where the JSON
-                    # index pointed at one id but code downstream used another.
-                    switched = await self.async_session_store.switch_session(session_key, bound_session_id)
-                    if switched is not None:
-                        session_entry = switched
-                # If the stored binding pointed at a parent, rewrite it to the
-                # canonical descendant now that we've followed the chain.
-                if (
-                    bound_session_id
-                    and bound_session_id != str(binding.get("session_id") or "")
-                ):
-                    await asyncio.to_thread(
-                        self._sync_telegram_topic_binding,
-                        source, session_entry, reason="compression-tip-walk",
-                    )
+                        await asyncio.to_thread(
+                            self._sync_telegram_topic_binding,
+                            source, session_entry, reason="compression-tip-walk",
+                        )
             else:
                 try:
                     await asyncio.to_thread(self._record_telegram_topic_binding, source, session_entry)

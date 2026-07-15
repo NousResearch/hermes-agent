@@ -250,6 +250,9 @@ def test_passthrough_kwargs_to_base(monkeypatch):
         current_provider="openrouter",
         current_base_url="http://x",
         current_model="openai/gpt-5.4",
+        current_api_key="secret-key",
+        current_model_list_endpoint="/catalog/models",
+        current_extra_headers={"X-Tenant": "acme"},
         user_providers={"foo": {"api": "http://x"}},
         custom_providers=[{"name": "bar", "base_url": "http://y"}],
         max_models=12,
@@ -258,9 +261,13 @@ def test_passthrough_kwargs_to_base(monkeypatch):
     assert captured["current_provider"] == "openrouter"
     assert captured["current_base_url"] == "http://x"
     assert captured["current_model"] == "openai/gpt-5.4"
+    assert captured["current_api_key"] == "secret-key"
+    assert captured["current_model_list_endpoint"] == "/catalog/models"
+    assert captured["current_extra_headers"] == {"X-Tenant": "acme"}
     assert captured["user_providers"] == {"foo": {"api": "http://x"}}
     assert captured["custom_providers"] == [{"name": "bar", "base_url": "http://y"}]
     assert captured["max_models"] == 12
+    assert captured["for_picker"] is True
 
 
 def test_current_custom_endpoint_passthrough_marks_current_row(monkeypatch):

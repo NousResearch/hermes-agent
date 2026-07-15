@@ -1494,6 +1494,8 @@ class GatewaySlashCommandsMixin:
         current_provider = "openrouter"
         current_base_url = ""
         current_api_key = ""
+        current_model_list_endpoint = ""
+        current_extra_headers = {}
         user_provs = None
         custom_provs = None
         excluded_provs = []
@@ -1506,6 +1508,13 @@ class GatewaySlashCommandsMixin:
                     current_model = model_cfg.get("default", "")
                     current_provider = model_cfg.get("provider", current_provider)
                     current_base_url = model_cfg.get("base_url", "")
+                    current_api_key = model_cfg.get("api_key", "")
+                    current_model_list_endpoint = model_cfg.get(
+                        "model_list_endpoint", ""
+                    )
+                    current_extra_headers = model_cfg.get("extra_headers", {})
+                    if not isinstance(current_extra_headers, dict):
+                        current_extra_headers = {}
                 user_provs = cfg.get("providers")
                 try:
                     from hermes_cli.config import get_compatible_custom_providers
@@ -1554,6 +1563,9 @@ class GatewaySlashCommandsMixin:
                         current_provider=current_provider,
                         current_base_url=current_base_url,
                         current_model=current_model,
+                        current_api_key=current_api_key,
+                        current_model_list_endpoint=current_model_list_endpoint,
+                        current_extra_headers=current_extra_headers,
                         user_providers=user_provs,
                         custom_providers=custom_provs,
                         max_models=50,
@@ -1835,6 +1847,9 @@ class GatewaySlashCommandsMixin:
                     current_provider=current_provider,
                     current_base_url=current_base_url,
                     current_model=current_model,
+                    current_api_key=current_api_key,
+                    current_model_list_endpoint=current_model_list_endpoint,
+                    current_extra_headers=current_extra_headers,
                     user_providers=user_provs,
                     custom_providers=custom_provs,
                     max_models=5,

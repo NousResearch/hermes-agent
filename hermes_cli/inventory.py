@@ -33,7 +33,7 @@ Substrate facts (verified May 2026):
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 
@@ -53,6 +53,9 @@ class ConfigContext:
     user_providers: dict
     custom_providers: list
     excluded_providers: list = None
+    current_api_key: str = ""
+    current_model_list_endpoint: str = ""
+    current_extra_headers: dict = field(default_factory=dict)
 
     def with_overrides(
         self,
@@ -60,6 +63,9 @@ class ConfigContext:
         current_provider: Optional[str] = None,
         current_model: Optional[str] = None,
         current_base_url: Optional[str] = None,
+        current_api_key: Optional[str] = None,
+        current_model_list_endpoint: Optional[str] = None,
+        current_extra_headers: Optional[dict] = None,
     ) -> "ConfigContext":
         """Return a copy with truthy overrides applied.
 
@@ -74,6 +80,12 @@ class ConfigContext:
             kw["current_model"] = current_model
         if current_base_url:
             kw["current_base_url"] = current_base_url
+        if current_api_key:
+            kw["current_api_key"] = current_api_key
+        if current_model_list_endpoint:
+            kw["current_model_list_endpoint"] = current_model_list_endpoint
+        if current_extra_headers:
+            kw["current_extra_headers"] = current_extra_headers
         return replace(self, **kw) if kw else self
 
 
@@ -91,11 +103,21 @@ def load_picker_context() -> ConfigContext:
         current_model = model_cfg.get("default", model_cfg.get("name", "")) or ""
         current_provider = model_cfg.get("provider", "") or ""
         current_base_url = model_cfg.get("base_url", "") or ""
+        current_api_key = model_cfg.get("api_key", "") or ""
+        current_model_list_endpoint = (
+            model_cfg.get("model_list_endpoint", "") or ""
+        )
+        current_extra_headers = model_cfg.get("extra_headers", {})
+        if not isinstance(current_extra_headers, dict):
+            current_extra_headers = {}
     else:
         # config.model can be a bare string in older configs.
         current_model = str(model_cfg) if model_cfg else ""
         current_provider = ""
         current_base_url = ""
+        current_api_key = ""
+        current_model_list_endpoint = ""
+        current_extra_headers = {}
     raw = cfg.get("providers")
     excluded = cfg.get("model_catalog", {}).get("excluded_providers") or []
     return ConfigContext(
@@ -105,6 +127,9 @@ def load_picker_context() -> ConfigContext:
         user_providers=raw if isinstance(raw, dict) else {},
         custom_providers=get_compatible_custom_providers(cfg),
         excluded_providers=excluded if isinstance(excluded, list) else [],
+        current_api_key=current_api_key,
+        current_model_list_endpoint=current_model_list_endpoint,
+        current_extra_headers=current_extra_headers,
     )
 
 
@@ -175,6 +200,9 @@ def build_models_payload(
         current_provider=ctx.current_provider,
         current_base_url=ctx.current_base_url,
         current_model=ctx.current_model,
+        current_api_key=ctx.current_api_key,
+        current_model_list_endpoint=ctx.current_model_list_endpoint,
+        current_extra_headers=ctx.current_extra_headers,
         user_providers=ctx.user_providers,
         custom_providers=ctx.custom_providers,
         force_fresh_nous_tier=force_fresh_nous_tier,

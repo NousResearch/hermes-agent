@@ -1436,6 +1436,14 @@ def _model_flow_named_custom(config, provider_info):
     key_env = provider_info.get("key_env", "")
     saved_model = provider_info.get("model", "")
     provider_key = (provider_info.get("provider_key") or "").strip()
+    model_list_endpoint = str(
+        provider_info.get("model_list_endpoint", "") or ""
+    ).strip()
+    if not model_list_endpoint.startswith("/"):
+        model_list_endpoint = ""
+    extra_headers = provider_info.get("extra_headers", {})
+    if not isinstance(extra_headers, dict):
+        extra_headers = {}
 
     # Resolve key from env var if api_key not set directly
     if not api_key and key_env:
@@ -1476,9 +1484,10 @@ def _model_flow_named_custom(config, provider_info):
         fetch_kwargs = {"timeout": 8.0}
         if api_mode:
             fetch_kwargs["api_mode"] = api_mode
-        model_list_endpoint = str(provider_info.get("model_list_endpoint", "") or "").strip()
-        if model_list_endpoint.startswith("/"):
+        if model_list_endpoint:
             fetch_kwargs["model_list_endpoint"] = model_list_endpoint
+        if extra_headers:
+            fetch_kwargs["headers"] = extra_headers
         models = fetch_api_models(api_key, base_url, **fetch_kwargs)
         # If the probe came back empty but the operator configured an explicit
         # list, fall back to it rather than forcing manual entry.
@@ -1560,6 +1569,7 @@ def _model_flow_named_custom(config, provider_info):
         model["provider"] = "custom:" + provider_key.strip().lower().replace(" ", "-")
         model.pop("base_url", None)
         model.pop("api_key", None)
+        model.pop("model_list_endpoint", None)
     else:
         model["provider"] = "custom"
         model["base_url"] = _custom_provider_base_url_config_value(
@@ -1567,6 +1577,10 @@ def _model_flow_named_custom(config, provider_info):
         )
         if config_api_key:
             model["api_key"] = config_api_key
+        if model_list_endpoint:
+            model["model_list_endpoint"] = model_list_endpoint
+        else:
+            model.pop("model_list_endpoint", None)
     # Apply api_mode from custom_providers entry, or clear stale value
     custom_api_mode = provider_info.get("api_mode", "")
     if custom_api_mode:
@@ -1609,7 +1623,14 @@ def _model_flow_named_custom(config, provider_info):
                 save_config(cfg)
     else:
         # Save model name to the custom_providers entry for next time
-        _save_custom_provider(base_url, config_api_key, model_name, api_mode=api_mode)
+        _save_custom_provider(
+            base_url,
+            config_api_key,
+            model_name,
+            name=name,
+            api_mode=api_mode,
+            model_list_endpoint=model_list_endpoint,
+        )
 
     print(f"\n✅ Model set to: {model_name}")
     print(f"   Provider: {name} ({base_url})")

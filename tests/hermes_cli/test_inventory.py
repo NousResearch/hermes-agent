@@ -46,15 +46,23 @@ def test_load_picker_context_full_dict():
             "default": "anthropic/claude-sonnet-4.6",
             "provider": "openrouter",
             "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "config-key",
+            "model_list_endpoint": "/ai/cline/recommended-models",
+            "extra_headers": {"X-Tenant-Secret": "secret"},
         },
         providers={"openrouter": {}},
         custom_providers=[{"name": "Ollama", "base_url": "http://localhost:11434/v1"}],
     )
+    cfg["model_catalog"] = {"excluded_providers": ["openrouter"]}
     with patch("hermes_cli.config.load_config", return_value=cfg):
         ctx = load_picker_context()
     assert ctx.current_model == "anthropic/claude-sonnet-4.6"
     assert ctx.current_provider == "openrouter"
     assert ctx.current_base_url == "https://openrouter.ai/api/v1"
+    assert ctx.current_api_key == "config-key"
+    assert ctx.current_model_list_endpoint == "/ai/cline/recommended-models"
+    assert ctx.current_extra_headers == {"X-Tenant-Secret": "secret"}
+    assert ctx.excluded_providers == ["openrouter"]
     assert "openrouter" in ctx.user_providers
     # custom_providers comes from get_compatible_custom_providers, which
     # merges legacy list + v12+ keyed providers — both present here means
@@ -194,6 +202,31 @@ def test_build_models_payload_returns_expected_shape():
     assert payload["providers"][0]["slug"] == "moa"
     assert payload["providers"][0]["models"] == ["default"]
     assert payload["providers"][1:] == rows
+
+
+def test_build_models_payload_forwards_current_custom_catalog_settings():
+    ctx = ConfigContext(
+        current_provider="custom",
+        current_model="cline/model-a",
+        current_base_url="https://api.cline.bot/api/v1",
+        current_api_key="cline-key",
+        current_model_list_endpoint="/ai/cline/recommended-models",
+        current_extra_headers={"X-Tenant-Secret": "secret"},
+        user_providers={},
+        custom_providers=[],
+        excluded_providers=["openrouter"],
+    )
+    with patch(
+        "hermes_cli.model_switch.list_authenticated_providers",
+        return_value=[],
+    ) as mock_list:
+        build_models_payload(ctx)
+
+    kwargs = mock_list.call_args.kwargs
+    assert kwargs["current_api_key"] == "cline-key"
+    assert kwargs["current_model_list_endpoint"] == "/ai/cline/recommended-models"
+    assert kwargs["current_extra_headers"] == {"X-Tenant-Secret": "secret"}
+    assert kwargs["excluded_providers"] == ["openrouter"]
 
 
 def test_build_models_payload_does_not_call_provider_model_ids():

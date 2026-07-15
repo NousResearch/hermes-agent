@@ -3104,6 +3104,7 @@ def select_provider_and_model(args=None):
                 "models": entry.get("models", {}),
                 "discover_models": entry.get("discover_models", True),
                 "model_list_endpoint": entry.get("model_list_endpoint", ""),
+                "extra_headers": entry.get("extra_headers", {}),
                 "api_mode": entry.get("api_mode", ""),
                 "provider_key": provider_key,
                 "api_key_ref": _lookup_ref(
@@ -3127,11 +3128,21 @@ def select_provider_and_model(args=None):
         if effective_provider != "custom" or not isinstance(model_cfg, dict):
             return ""
         current_base = _norm_base_url(model_cfg.get("base_url", ""))
+        current_endpoint = str(model_cfg.get("model_list_endpoint", "") or "").strip()
         if not current_base:
             return ""
+        base_matches = []
         for key, provider_info in _custom_provider_map.items():
-            if _norm_base_url(provider_info.get("base_url", "")) == current_base:
+            provider_endpoint = str(
+                provider_info.get("model_list_endpoint", "") or ""
+            ).strip()
+            if _norm_base_url(provider_info.get("base_url", "")) != current_base:
+                continue
+            base_matches.append(key)
+            if current_endpoint and provider_endpoint == current_endpoint:
                 return key
+        if not current_endpoint and len(base_matches) == 1:
+            return base_matches[0]
         return ""
 
     active = _active_custom_key_from_base_url()
@@ -3966,12 +3977,18 @@ def _custom_provider_base_url_config_value(provider_info, resolved_base_url=""):
 
 
 def _save_custom_provider(
-    base_url, api_key="", model="", context_length=None, name=None, api_mode=None
+    base_url,
+    api_key="",
+    model="",
+    context_length=None,
+    name=None,
+    api_mode=None,
+    model_list_endpoint=None,
 ):
     """Save a custom endpoint to custom_providers in config.yaml.
 
-    Deduplicates by base_url — if the URL already exists, updates the
-    model name, context_length, and api_mode but doesn't add a duplicate entry.
+    Deduplicates by base_url plus model_list_endpoint, so multiple catalogs on
+    one API host remain distinct while an existing entry is updated in place.
     Uses *name* when provided, otherwise auto-generates from the URL.
     """
     from hermes_cli.config import load_config, save_config
@@ -3981,33 +3998,53 @@ def _save_custom_provider(
     if not isinstance(providers, list):
         providers = []
 
-    # Check if this URL is already saved — update model/context_length if so
-    for entry in providers:
-        if isinstance(entry, dict) and entry.get("base_url", "").rstrip(
-            "/"
-        ) == base_url.rstrip("/"):
-            changed = False
-            if model and entry.get("model") != model:
-                entry["model"] = model
+    catalog_endpoint = str(model_list_endpoint or "").strip()
+    if not catalog_endpoint.startswith("/"):
+        catalog_endpoint = ""
+
+    base_matches = [
+        entry
+        for entry in providers
+        if isinstance(entry, dict)
+        and entry.get("base_url", "").rstrip("/") == base_url.rstrip("/")
+    ]
+    target_entry = next(
+        (
+            entry
+            for entry in base_matches
+            if str(entry.get("model_list_endpoint", "") or "").strip()
+            == catalog_endpoint
+        ),
+        None,
+    )
+    # Older callers do not know about catalog paths. Preserve their historic
+    # base-URL deduplication when there is only one unambiguous matching entry.
+    if target_entry is None and not catalog_endpoint and len(base_matches) == 1:
+        target_entry = base_matches[0]
+
+    if target_entry is not None:
+        changed = False
+        if model and target_entry.get("model") != model:
+            target_entry["model"] = model
+            changed = True
+        if model and context_length:
+            models_cfg = target_entry.get("models", {})
+            if not isinstance(models_cfg, dict):
+                models_cfg = {}
+            models_cfg[model] = {"context_length": context_length}
+            target_entry["models"] = models_cfg
+            changed = True
+        if api_mode:
+            if target_entry.get("api_mode") != api_mode:
+                target_entry["api_mode"] = api_mode
                 changed = True
-            if model and context_length:
-                models_cfg = entry.get("models", {})
-                if not isinstance(models_cfg, dict):
-                    models_cfg = {}
-                models_cfg[model] = {"context_length": context_length}
-                entry["models"] = models_cfg
-                changed = True
-            if api_mode:
-                if entry.get("api_mode") != api_mode:
-                    entry["api_mode"] = api_mode
-                    changed = True
-            elif "api_mode" in entry:
-                entry.pop("api_mode", None)
-                changed = True
-            if changed:
-                cfg["custom_providers"] = providers
-                save_config(cfg)
-            return  # already saved, updated if needed
+        elif "api_mode" in target_entry:
+            target_entry.pop("api_mode", None)
+            changed = True
+        if changed:
+            cfg["custom_providers"] = providers
+            save_config(cfg)
+        return
 
     # Use provided name or auto-generate from URL
     if not name:
@@ -4020,6 +4057,8 @@ def _save_custom_provider(
         entry["model"] = model
     if api_mode:
         entry["api_mode"] = api_mode
+    if catalog_endpoint:
+        entry["model_list_endpoint"] = catalog_endpoint
     if model and context_length:
         entry["models"] = {model: {"context_length": context_length}}
 

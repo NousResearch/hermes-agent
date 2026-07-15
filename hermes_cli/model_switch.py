@@ -1651,6 +1651,9 @@ def list_authenticated_providers(
     force_fresh_nous_tier: bool = False,
     max_models: int | None = None,
     current_model: str = "",
+    current_api_key: str = "",
+    current_model_list_endpoint: str = "",
+    current_extra_headers: dict | None = None,
     refresh: bool = False,
     probe_custom_providers: bool = True,
     probe_current_custom_provider: bool = False,
@@ -2474,7 +2477,22 @@ def list_authenticated_providers(
             try:
                 from hermes_cli.models import fetch_api_models
 
-                _live_models = fetch_api_models("", str(current_base_url).strip().rstrip("/"))
+                _fetch_kwargs = {}
+                _model_list_endpoint = str(
+                    current_model_list_endpoint or ""
+                ).strip()
+                if _model_list_endpoint.startswith("/"):
+                    _fetch_kwargs["model_list_endpoint"] = _model_list_endpoint
+                _extra_headers = _extra_headers_from_config(
+                    {"extra_headers": current_extra_headers or {}}
+                )
+                if _extra_headers:
+                    _fetch_kwargs["headers"] = _extra_headers
+                _live_models = fetch_api_models(
+                    current_api_key,
+                    str(current_base_url).strip().rstrip("/"),
+                    **_fetch_kwargs,
+                )
                 if _live_models:
                     _models = _live_models
             except Exception:
@@ -2819,6 +2837,9 @@ def list_picker_providers(
     custom_providers: list | None = None,
     max_models: int | None = None,
     current_model: str = "",
+    current_api_key: str = "",
+    current_model_list_endpoint: str = "",
+    current_extra_headers: dict | None = None,
     include_moa: bool = False,
     excluded_providers: list | None = None,
 ) -> List[dict]:
@@ -2850,6 +2871,9 @@ def list_picker_providers(
         custom_providers=custom_providers,
         max_models=max_models,
         current_model=current_model,
+        current_api_key=current_api_key,
+        current_model_list_endpoint=current_model_list_endpoint,
+        current_extra_headers=current_extra_headers,
         for_picker=True,
         excluded_providers=excluded_providers,
     )

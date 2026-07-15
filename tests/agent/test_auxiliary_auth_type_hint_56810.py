@@ -264,3 +264,64 @@ class TestFallbackChainStillWorks:
             )
 
         assert result.choices[0].message.content == "from fallback"
+
+
+class TestRegistryFallbackToProfileLookup:
+    """Regression for issue #56843.
+
+    PROVIDER_REGISTRY only auto-extends with ``api_key`` providers, so a
+    non-api_key provider like ``vertex`` (auth_type='vertex') has no
+    registry entry.  The error helper must fall back to the canonical
+    provider-profile lookup (``providers.get_provider_profile``) so the
+    correct auth_type is discovered and the actionable message is
+    produced — not the generic fallback.
+
+    These tests exercise the *real* registry/profile path (no fake
+    PROVIDER_REGISTRY monkeypatch), so they will break if the fallback
+    is removed or the provider registration changes.
+    """
+
+    def test_vertex_resolved_via_profile_lookup_not_generic(self):
+        """vertex is NOT in PROVIDER_REGISTRY but IS a registered
+        provider profile with auth_type='vertex'. The helper must
+        return the ADC-specific message, not the generic one."""
+        from agent.auxiliary_client import _aux_missing_credentials_error
+
+        err = _aux_missing_credentials_error("vertex")
+        msg = str(err)
+        # Must NOT claim a fake VERTEX_API_KEY env var
+        assert "VERTEX_API_KEY" not in msg
+        # Must mention the real auth mechanism (ADC)
+        assert "Application Default Credentials" in msg
+        assert "gcloud auth application-default login" in msg
+
+    def test_vertex_alias_resolved_via_profile_lookup(self):
+        """Aliases (e.g. 'google-vertex') must also resolve via the
+        profile lookup and yield the ADC message."""
+        from agent.auxiliary_client import _aux_missing_credentials_error
+
+        err = _aux_missing_credentials_error("google-vertex")
+        msg = str(err)
+        assert "VERTEX_API_KEY" not in msg
+        assert "Application Default Credentials" in msg
+
+    def test_unknown_provider_still_generic(self):
+        """A provider that is in neither registry must still get the
+        safe generic message (no fabricated env var)."""
+        from agent.auxiliary_client import _aux_missing_credentials_error
+
+        err = _aux_missing_credentials_error("totally-fake-provider-xyz")
+        msg = str(err)
+        assert "TOTALLY-FAKE-PROVIDER-XYZ_API_KEY" not in msg
+        assert "no usable" in msg
+
+    def test_api_key_provider_in_registry_uses_registry(self):
+        """An api_key provider that IS in PROVIDER_REGISTRY must keep
+        using the registry entry (not the profile fallback). This guards
+        that the fallback only triggers when needed."""
+        from agent.auxiliary_client import _aux_missing_credentials_error
+
+        err = _aux_missing_credentials_error("deepseek")
+        msg = str(err)
+        assert "DEEPSEEK_API_KEY" in msg
+        assert "API key" in msg

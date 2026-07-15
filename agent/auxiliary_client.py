@@ -5851,6 +5851,12 @@ def _aux_missing_credentials_error(provider_id: str) -> RuntimeError:
     blocks diagnosis. This helper looks up the provider's ``auth_type``
     in the registry and returns a message that names the real auth
     mechanism. Issue #56810.
+
+    PROVIDER_REGISTRY only auto-registers ``api_key`` providers; non-
+    api_key providers like ``vertex`` live solely in the canonical
+    provider-profile registry (``providers.get_provider_profile``).
+    When the registry has no entry we fall back to the profile lookup
+    before giving up. Issue #56843.
     """
     pid = (provider_id or "").strip().lower()
     auth_type: Optional[str] = None
@@ -5859,10 +5865,18 @@ def _aux_missing_credentials_error(provider_id: str) -> RuntimeError:
         pconfig = PROVIDER_REGISTRY.get(pid)
         if pconfig is not None:
             auth_type = getattr(pconfig, "auth_type", None)
+        if auth_type is None:
+            # Fall back to the canonical provider-profile lookup.
+            # PROVIDER_REGISTRY only auto-extends with api_key providers;
+            # non-api_key providers (vertex, ...) are registered solely
+            # as provider profiles. Issue #56843.
+            from providers import get_provider_profile
+            profile = get_provider_profile(pid)
+            if profile is not None:
+                auth_type = getattr(profile, "auth_type", None)
     except Exception:
-        # PROVIDER_REGISTRY is the canonical lookup but may not be
-        # importable in all environments. Fall through to generic
-        # message — never raise from this helper.
+        # Either lookup may fail to import in minimal environments.
+        # Fall through to the generic message — never raise from here.
         auth_type = None
 
     if auth_type == "api_key":

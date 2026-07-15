@@ -1,5 +1,6 @@
 """Tests for tui_gateway JSON-RPC protocol plumbing."""
 
+import asyncio
 import io
 import json
 import sys
@@ -1416,7 +1417,10 @@ def test_slash_exec_handles_plugin_commands_in_live_gateway(server):
     }
 
     def handler(arg, *, session_id, gateway_session_key):
-        return f"plugin:{arg}:{session_id}:{gateway_session_key}"
+        loop = asyncio.new_event_loop()
+        future = loop.create_future()
+        future.set_result(f"plugin:{arg}:{session_id}:{gateway_session_key}")
+        return future
 
     with patch(
         "hermes_cli.plugins.get_plugin_command_handler",
@@ -1859,6 +1863,36 @@ def test_command_dispatch_awaits_async_plugin_handler(server):
     assert resp["result"] == {
         "type": "plugin",
         "output": "async:hello:agent-session:gateway-key",
+    }
+
+
+def test_command_dispatch_awaits_future_plugin_handler(server):
+    sid = "test-session"
+    server._sessions[sid] = {
+        "session_key": "gateway-key",
+        "agent": types.SimpleNamespace(session_id="agent-session"),
+    }
+
+    def _handler(arg, *, session_id, gateway_session_key):
+        loop = asyncio.new_event_loop()
+        future = loop.create_future()
+        future.set_result(f"future:{arg}:{session_id}:{gateway_session_key}")
+        return future
+
+    with patch(
+        "hermes_cli.plugins.get_plugin_command_handler",
+        lambda name: _handler if name == "future-cmd" else None,
+    ):
+        resp = server.handle_request({
+            "id": "r-plugin-future",
+            "method": "command.dispatch",
+            "params": {"name": "future-cmd", "arg": "hello", "session_id": sid},
+        })
+
+    assert "error" not in resp
+    assert resp["result"] == {
+        "type": "plugin",
+        "output": "future:hello:agent-session:gateway-key",
     }
 
 

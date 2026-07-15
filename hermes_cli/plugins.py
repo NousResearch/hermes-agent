@@ -2436,6 +2436,11 @@ def call_plugin_command_handler(
 _PLUGIN_COMMAND_AWAIT_TIMEOUT_SECS = 30.0
 
 
+async def _await_plugin_command_result(result: Any) -> Any:
+    """Adapt a general awaitable to the coroutine contract of ``asyncio.run``."""
+    return await result
+
+
 def resolve_plugin_command_result(result: Any) -> Any:
     """Resolve a plugin command return value, awaiting async handlers when needed.
 
@@ -2452,7 +2457,7 @@ def resolve_plugin_command_result(result: Any) -> Any:
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return asyncio.run(result)
+        return asyncio.run(_await_plugin_command_result(result))
 
     outcome: Dict[str, Any] = {}
     failure: Dict[str, BaseException] = {}
@@ -2460,7 +2465,7 @@ def resolve_plugin_command_result(result: Any) -> Any:
 
     def _runner() -> None:
         try:
-            outcome["value"] = asyncio.run(result)
+            outcome["value"] = asyncio.run(_await_plugin_command_result(result))
         except BaseException as exc:  # pragma: no cover - re-raised below
             failure["exc"] = exc
         finally:

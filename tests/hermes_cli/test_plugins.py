@@ -2214,6 +2214,28 @@ class TestPluginCommandResultResolution:
         monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
         assert resolve_plugin_command_result(_handler()) == "threaded-ok"
 
+    def test_awaits_completed_future_without_running_loop(self):
+        import asyncio
+
+        loop = asyncio.new_event_loop()
+        future = loop.create_future()
+        future.set_result("future-ok")
+
+        assert resolve_plugin_command_result(future) == "future-ok"
+
+    def test_awaits_completed_future_with_running_loop(self, monkeypatch):
+        import asyncio
+
+        class _Loop:
+            pass
+
+        loop = asyncio.new_event_loop()
+        future = loop.create_future()
+        future.set_result("threaded-future-ok")
+
+        monkeypatch.setattr("hermes_cli.plugins.asyncio.get_running_loop", lambda: _Loop())
+        assert resolve_plugin_command_result(future) == "threaded-future-ok"
+
     def test_running_loop_timeout_does_not_hang_forever(self, monkeypatch):
         """Threaded path must abort a hung async handler instead of blocking the caller."""
         import asyncio as _asyncio

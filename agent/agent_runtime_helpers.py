@@ -2314,6 +2314,8 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 _clarify_tool(
                     question=next_args.get("question", ""),
                     choices=next_args.get("choices"),
+                    context=next_args.get("context", ""),
+                    recommendation=next_args.get("recommendation", ""),
                     callback=agent.clarify_callback,
                 ),
                 next_args,

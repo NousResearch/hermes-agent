@@ -7709,7 +7709,7 @@ def _define_discord_view_classes() -> None:
             # and disable the buttons so the user can't double-click.
             try:
                 from tools.clarify_gateway import mark_awaiting_text
-                mark_awaiting_text(self.clarify_id)
+                mark_awaiting_text(self.clarify_id, custom=True)
             except Exception as exc:
                 logger.warning(
                     "Discord clarify mark_awaiting_text failed (id=%s): %s",

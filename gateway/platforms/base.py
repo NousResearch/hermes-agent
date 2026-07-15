@@ -3127,7 +3127,7 @@ class BasePlatformAdapter(ABC):
             MUST resolve via
             ``tools.clarify_gateway.resolve_gateway_clarify(clarify_id, response)``
             with the chosen string.  Picking the "Other" button calls
-            ``mark_awaiting_text(clarify_id)`` so the next message in the
+            ``mark_awaiting_text(clarify_id, custom=True)`` so the next message in the
             session is captured as the response.
 
           * **Open-ended** (``choices`` is None or empty) — render the

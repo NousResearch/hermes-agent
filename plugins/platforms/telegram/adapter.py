@@ -5560,7 +5560,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     flipped = False
                     try:
                         from tools.clarify_gateway import mark_awaiting_text
-                        flipped = mark_awaiting_text(clarify_id)
+                        flipped = mark_awaiting_text(clarify_id, custom=True)
                     except Exception as exc:
                         logger.warning("[%s] mark_awaiting_text failed: %s", self.name, exc)
 

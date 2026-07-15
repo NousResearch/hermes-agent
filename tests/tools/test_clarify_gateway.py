@@ -104,6 +104,25 @@ class TestClarifyPrimitive:
         assert pending is not None
         assert pending.clarify_id == "id4"
 
+    def test_other_button_text_is_marked_custom_even_when_it_matches_a_choice(self):
+        from tools import clarify_gateway as cm
+        from tools.clarify_tool import CLARIFY_CUSTOM_RESPONSE_PREFIX
+
+        cm.register("id4-custom", "sk4-custom", "Pick", ["Safe", "Fast"])
+        assert cm.mark_awaiting_text("id4-custom", custom=True) is True
+        assert cm.resolve_text_response_for_session("sk4-custom", "Safe") is True
+        assert cm.wait_for_response("id4-custom", timeout=0.1) == (
+            f"{CLARIFY_CUSTOM_RESPONSE_PREFIX}Safe"
+        )
+
+    def test_default_text_fallback_still_maps_numeric_choices(self):
+        from tools import clarify_gateway as cm
+
+        cm.register("id4-fallback", "sk4-fallback", "Pick", ["Safe", "Fast"])
+        assert cm.mark_awaiting_text("id4-fallback") is True
+        assert cm.resolve_text_response_for_session("sk4-fallback", "2") is True
+        assert cm.wait_for_response("id4-fallback", timeout=0.1) == "Fast"
+
     def test_mark_awaiting_text_unknown_id(self):
         """mark_awaiting_text on a non-existent id returns False."""
         from tools import clarify_gateway as cm

@@ -1,14 +1,19 @@
 """Tests for tools/clarify_tool.py - Interactive clarifying questions."""
 
 import json
+from types import SimpleNamespace
 from typing import List, Optional
+from unittest.mock import patch
 
+from agent.gemini_schema import sanitize_gemini_tool_parameters
 
 from tools.clarify_tool import (
     clarify_tool,
     check_clarify_requirements,
     MAX_CHOICES,
     CLARIFY_SCHEMA,
+    CLARIFY_CUSTOM_RESPONSE_PREFIX,
+    CLARIFY_OPTION_RESPONSE_PREFIX,
     _flatten_choice,
 )
 
@@ -228,6 +233,164 @@ class TestClarifyDictChoices:
         assert "{" not in result["user_response"]
         assert all("{" not in c for c in result["choices_offered"])
 
+    def test_structured_choices_preserve_description_and_canonical_selection(self):
+        """One structured source must drive readable UI text and the selected value."""
+        seen = {}
+
+        def cb(question, choices):
+            seen["question"] = question
+            seen["choices"] = choices
+            # Desktop responds with the stable option id instead of display text.
+            return "safe"
+
+        result = json.loads(clarify_tool(
+            "Which rollout should we use?",
+            context="Production currently has no canary traffic.",
+            recommendation="Choose Safe because it preserves rollback capacity.",
+            choices=[
+                {
+                    "id": "fast",
+                    "label": "Fast",
+                    "description": "Deploy to every instance immediately.",
+                    "value": "fast-rollout",
+                },
+                {
+                    "id": "safe",
+                    "label": "Safe",
+                    "description": "Canary first, then expand after verification.",
+                    "value": "safe-rollout",
+                },
+            ],
+            callback=cb,
+        ))
+
+        assert seen["question"] == (
+            "Which rollout should we use?\n\n"
+            "Context: Production currently has no canary traffic.\n\n"
+            "Recommendation: Choose Safe because it preserves rollback capacity."
+        )
+        assert seen["choices"] == [
+            "Fast — Deploy to every instance immediately.",
+            "Safe — Canary first, then expand after verification.",
+        ]
+        assert result["question"] == "Which rollout should we use?"
+        assert result["context"] == "Production currently has no canary traffic."
+        assert result["recommendation"] == "Choose Safe because it preserves rollback capacity."
+        assert result["options"][1] == {
+            "id": "safe",
+            "index": 2,
+            "label": "Safe",
+            "description": "Canary first, then expand after verification.",
+            "value": "safe-rollout",
+        }
+        assert result["selected_option"] == result["options"][1]
+        assert result["user_response"] == "safe-rollout"
+
+    def test_structured_choice_transport_token_resolves_exact_id(self):
+        """A clicked option id wins even when its value looks like another index."""
+        result = json.loads(clarify_tool(
+            "Which option?",
+            choices=[
+                {
+                    "id": "first",
+                    "label": "Looks numeric",
+                    "description": "First option.",
+                    "value": "2",
+                },
+                {
+                    "id": "second",
+                    "label": "Second",
+                    "description": "Second option.",
+                    "value": "other",
+                },
+            ],
+            callback=lambda _question, _choices: (
+                f"{CLARIFY_OPTION_RESPONSE_PREFIX}first"
+            ),
+        ))
+
+        assert result["selected_option"]["id"] == "first"
+        assert result["selected_option"]["index"] == 1
+        assert result["user_response"] == "2"
+
+    def test_unknown_structured_choice_id_returns_error_without_leaking_token(self):
+        result = json.loads(clarify_tool(
+            "Which option?",
+            choices=[{"id": "known", "label": "Known", "description": "Valid."}],
+            callback=lambda _question, _choices: (
+                f"{CLARIFY_OPTION_RESPONSE_PREFIX}missing"
+            ),
+        ))
+
+        assert result["error"] == "Selected clarify option is no longer available."
+        assert result["selected_option"] is None
+        assert result["user_response"] == ""
+        assert CLARIFY_OPTION_RESPONSE_PREFIX not in json.dumps(result)
+
+    def test_custom_response_does_not_alias_to_an_existing_option(self):
+        result = json.loads(clarify_tool(
+            "Which option?",
+            choices=[
+                {"id": "first", "label": "Safe", "description": "First.", "value": "safe"},
+                {"id": "second", "label": "Other option", "description": "Second.", "value": "other"},
+            ],
+            callback=lambda _question, _choices: (
+                f"{CLARIFY_CUSTOM_RESPONSE_PREFIX}Safe"
+            ),
+        ))
+
+        assert result["selected_option"] is None
+        assert result["user_response"] == "Safe"
+        assert result["response_kind"] == "custom"
+        assert CLARIFY_CUSTOM_RESPONSE_PREFIX not in json.dumps(result)
+
+    def test_agent_runtime_dispatch_forwards_context_and_recommendation(self):
+        from agent.agent_runtime_helpers import invoke_tool
+
+        seen = {}
+
+        def callback(question, choices):
+            seen["question"] = question
+            seen["choices"] = choices
+            return "1"
+
+        agent = SimpleNamespace(
+            _memory_manager=None,
+            clarify_callback=callback,
+            session_id="",
+            valid_tool_names=set(),
+            enabled_toolsets=None,
+            disabled_toolsets=None,
+        )
+
+        def run_middleware(_name, payload, execute, **_kwargs):
+            return execute(payload)
+
+        with patch(
+            "hermes_cli.middleware.run_tool_execution_middleware",
+            side_effect=run_middleware,
+        ):
+            result = json.loads(invoke_tool(
+                agent,
+                "clarify",
+                {
+                    "question": "Which rollout?",
+                    "context": "No canary traffic.",
+                    "recommendation": "Choose Safe.",
+                    "choices": ["Fast", "Safe"],
+                },
+                "",
+                pre_tool_block_checked=True,
+                skip_tool_request_middleware=True,
+            ))
+
+        assert seen["question"] == (
+            "Which rollout?\n\nContext: No canary traffic.\n\n"
+            "Recommendation: Choose Safe."
+        )
+        assert seen["choices"] == ["Fast", "Safe"]
+        assert result["user_response"] == "Fast"
+
 
 class TestClarifySchema:
     """Tests for the OpenAI function-calling schema."""
@@ -253,6 +416,22 @@ class TestClarifySchema:
         """Schema should specify max items for choices."""
         choices_spec = CLARIFY_SCHEMA["parameters"]["properties"]["choices"]
         assert choices_spec.get("maxItems") == MAX_CHOICES
+
+    def test_schema_accepts_legacy_strings_and_structured_choices(self):
+        choices_spec = CLARIFY_SCHEMA["parameters"]["properties"]["choices"]
+        variants = choices_spec["items"]["anyOf"]
+
+        assert {variant.get("type") for variant in variants} == {"string", "object"}
+        object_variant = next(variant for variant in variants if variant.get("type") == "object")
+        assert object_variant["required"] == ["label", "description"]
+        assert "context" in CLARIFY_SCHEMA["parameters"]["properties"]
+        assert "recommendation" in CLARIFY_SCHEMA["parameters"]["properties"]
+
+    def test_structured_choice_union_survives_gemini_sanitizing(self):
+        sanitized = sanitize_gemini_tool_parameters(CLARIFY_SCHEMA["parameters"])
+        variants = sanitized["properties"]["choices"]["items"]["anyOf"]
+
+        assert {variant.get("type") for variant in variants} == {"string", "object"}
 
     def test_max_choices_is_four(self):
         """MAX_CHOICES constant should be 4."""

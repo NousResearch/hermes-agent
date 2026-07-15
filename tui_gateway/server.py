@@ -10237,6 +10237,21 @@ def _respond(rid, params, key, *, allow_expired=False):
 
 @method("clarify.respond")
 def _(rid, params: dict) -> dict:
+    option_id = params.get("option_id")
+    if option_id is not None and str(option_id).strip():
+        from tools.clarify_tool import CLARIFY_OPTION_RESPONSE_PREFIX
+
+        params = {
+            **params,
+            "answer": f"{CLARIFY_OPTION_RESPONSE_PREFIX}{str(option_id).strip()}",
+        }
+    elif params.get("response_kind") == "custom":
+        from tools.clarify_tool import CLARIFY_CUSTOM_RESPONSE_PREFIX
+
+        params = {
+            **params,
+            "answer": f"{CLARIFY_CUSTOM_RESPONSE_PREFIX}{str(params.get('answer', ''))}",
+        }
     return _respond(rid, params, "answer")
 
 

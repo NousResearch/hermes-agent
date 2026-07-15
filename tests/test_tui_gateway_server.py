@@ -17,6 +17,64 @@ from hermes_cli.browser_connect import ChromeDebugLaunch
 from tui_gateway import server
 
 
+def test_clarify_respond_prefers_structured_option_id():
+    from tools.clarify_tool import CLARIFY_OPTION_RESPONSE_PREFIX
+
+    request_id = "clarify-option-id-test"
+    event = threading.Event()
+
+    with server._prompt_lock:
+        server._pending[request_id] = ("sid", event)
+
+    try:
+        response = server._methods["clarify.respond"](
+            "rpc-1",
+            {
+                "request_id": request_id,
+                "answer": "2",
+                "option_id": "first",
+            },
+        )
+
+        assert response["result"]["status"] == "ok"
+        assert server._answers[request_id] == (
+            f"{CLARIFY_OPTION_RESPONSE_PREFIX}first"
+        )
+        assert event.is_set()
+    finally:
+        with server._prompt_lock:
+            server._pending.pop(request_id, None)
+            server._answers.pop(request_id, None)
+
+
+def test_clarify_respond_marks_custom_text_without_aliasing():
+    from tools.clarify_tool import CLARIFY_CUSTOM_RESPONSE_PREFIX
+
+    request_id = "clarify-custom-text-test"
+    event = threading.Event()
+
+    with server._prompt_lock:
+        server._pending[request_id] = ("sid", event)
+
+    try:
+        response = server._methods["clarify.respond"](
+            "rpc-custom",
+            {
+                "request_id": request_id,
+                "answer": "1",
+                "response_kind": "custom",
+            },
+        )
+
+        assert response["result"]["status"] == "ok"
+        assert server._answers[request_id] == f"{CLARIFY_CUSTOM_RESPONSE_PREFIX}1"
+        assert event.is_set()
+    finally:
+        with server._prompt_lock:
+            server._pending.pop(request_id, None)
+            server._answers.pop(request_id, None)
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

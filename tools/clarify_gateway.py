@@ -54,6 +54,7 @@ class _ClarifyEntry:
     event: threading.Event = field(default_factory=threading.Event)
     response: Optional[str] = None
     awaiting_text: bool = False  # set when user picked "Other" or clarify is open-ended
+    awaiting_custom_text: bool = False  # set only when a rich UI's "Other" button was picked
 
     def signature(self) -> Dict[str, object]:
         return {
@@ -190,6 +191,10 @@ def get_pending_for_session(
 def _coerce_text_response(entry: _ClarifyEntry, response: str) -> str:
     """Map typed choice replies to canonical choice text, otherwise keep custom text."""
     text = str(response).strip()
+    if entry.awaiting_custom_text:
+        from tools.clarify_tool import CLARIFY_CUSTOM_RESPONSE_PREFIX
+
+        return f"{CLARIFY_CUSTOM_RESPONSE_PREFIX}{text}"
     if entry.choices:
         try:
             idx = int(text) - 1
@@ -214,16 +219,20 @@ def resolve_text_response_for_session(session_key: str, response: str) -> bool:
     )
 
 
-def mark_awaiting_text(clarify_id: str) -> bool:
-    """Flip an entry into text-capture mode (user picked the 'Other' button).
+def mark_awaiting_text(clarify_id: str, *, custom: bool = False) -> bool:
+    """Enable text capture for a pending clarify request.
 
-    Returns True if the entry exists and was flipped, False otherwise.
+    Set ``custom=True`` only for a rich UI's explicit "Other" action so the
+    next typed value cannot be reinterpreted as a numbered or labelled choice.
+    The default text fallback leaves it false so replies like ``2`` still map
+    to the second option. Returns False when the entry no longer exists.
     """
     with _lock:
         entry = _entries.get(clarify_id)
         if entry is None:
             return False
         entry.awaiting_text = True
+        entry.awaiting_custom_text = custom
         return True
 
 

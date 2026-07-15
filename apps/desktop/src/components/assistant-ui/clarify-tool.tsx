@@ -19,7 +19,7 @@ import { Kbd } from '@/components/ui/kbd'
 import { Textarea } from '@/components/ui/textarea'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { CircleLetterA, Loader2, MessageQuestion } from '@/lib/icons'
+import { Check, CircleLetterA, Loader2, MessageQuestion } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 import { $clarifyRequest, clearClarifyRequest } from '@/store/clarify'
 import { $gateway } from '@/store/gateway'
@@ -28,16 +28,28 @@ import { notifyError } from '@/store/notifications'
 import { selectMessageRunning } from './tool/fallback-model'
 import { parseMaybeObject } from './tool/fallback-model/format'
 
-interface ClarifyArgs {
-  question?: string
-  choices?: string[] | null
+interface ClarifyOption {
+  id: string
+  index: number
+  label: string
+  description: string
+  value: string
 }
 
-interface ClarifyResult {
+interface ClarifyArgs {
   question?: string
+  context?: string
+  recommendation?: string
+  options?: ClarifyOption[] | null
+}
+
+interface ClarifyResult extends ClarifyArgs {
+  selectedOption?: ClarifyOption | null
   answer?: string
   error?: string
 }
+
+const MAX_CLARIFY_CHOICES = 4
 
 function stringField(row: Record<string, unknown>, ...keys: string[]): string | undefined {
   for (const key of keys) {
@@ -49,17 +61,167 @@ function stringField(row: Record<string, unknown>, ...keys: string[]): string | 
   }
 }
 
-function readClarifyArgs(args: unknown): ClarifyArgs {
-  const row = parseMaybeObject(args)
-  const choices = Array.isArray(row.choices) ? row.choices.filter((c): c is string => typeof c === 'string') : null
+function cleanText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function cleanStringField(row: Record<string, unknown>, ...keys: string[]): string {
+  for (const key of keys) {
+    const value = cleanText(row[key])
+
+    if (value) {
+      return value
+    }
+  }
+
+  return ''
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
+}
+
+function scalarLabel(value: unknown): string {
+  if (value === null || value === undefined) {
+    return ''
+  }
+
+  return typeof value === 'string' ? value.trim() : String(value).trim()
+}
+
+function normalizeClarifyChoices(choices: unknown): ClarifyOption[] | null {
+  if (!Array.isArray(choices)) {
+    return null
+  }
+
+  const options: ClarifyOption[] = []
+  const usedIds = new Set<string>()
+
+  for (const raw of choices) {
+    if (options.length >= MAX_CLARIFY_CHOICES) {
+      break
+    }
+
+    const row = recordValue(raw)
+    let id = ''
+    let label = ''
+    let description = ''
+    let value = ''
+
+    if (row) {
+      id = cleanText(row.id)
+      label = cleanStringField(row, 'label', 'text', 'title')
+      description = cleanText(row.description)
+      value = cleanText(row.value)
+
+      if (!label) {
+        label = description
+        description = ''
+      }
+    } else {
+      label = scalarLabel(raw)
+    }
+
+    if (!label) {
+      continue
+    }
+
+    const index = options.length + 1
+    const fallbackId = `option-${index}`
+    let optionId = id || fallbackId
+
+    if (usedIds.has(optionId)) {
+      optionId = fallbackId
+
+      let suffix = 2
+
+      while (usedIds.has(optionId)) {
+        optionId = `${fallbackId}-${suffix}`
+        suffix += 1
+      }
+    }
+
+    usedIds.add(optionId)
+    options.push({
+      id: optionId,
+      index,
+      label,
+      description,
+      value: value || label
+    })
+  }
+
+  return options.length > 0 ? options : null
+}
+
+function normalizeSelectedOption(value: unknown): ClarifyOption | null {
+  const row = recordValue(value)
+
+  if (!row) {
+    return null
+  }
+
+  const rawIndex = typeof row.index === 'number' && Number.isFinite(row.index) ? row.index : 1
+  const index = Math.max(1, Math.floor(rawIndex))
+  const description = cleanText(row.description)
+  const label = cleanStringField(row, 'label', 'text', 'title') || description || cleanText(row.value) || cleanText(row.id)
+
+  if (!label) {
+    return null
+  }
 
   return {
-    question: stringField(row, 'question'),
-    choices: choices && choices.length > 0 ? choices : null
+    id: cleanText(row.id) || `option-${index}`,
+    index,
+    label,
+    description: label === description ? '' : description,
+    value: cleanText(row.value) || label
   }
 }
 
-/** Parse clarify tool JSON (`question` + `user_response`). */
+function parsePromptParts(value: unknown): Pick<ClarifyArgs, 'question' | 'context' | 'recommendation'> {
+  const text = cleanText(value)
+
+  if (!text) {
+    return {}
+  }
+
+  const firstSection = text.search(/\n\s*\n(?:Context|Recommendation):/i)
+  const question = (firstSection >= 0 ? text.slice(0, firstSection) : text).trim()
+  const context = text.match(/(?:^|\n\s*\n)Context:\s*([\s\S]*?)(?=\n\s*\nRecommendation:|$)/i)?.[1]?.trim()
+  const recommendation = text.match(/(?:^|\n\s*\n)Recommendation:\s*([\s\S]*)$/i)?.[1]?.trim()
+
+  return {
+    question: question || undefined,
+    context: context || undefined,
+    recommendation: recommendation || undefined
+  }
+}
+
+function questionMatchValue(value: unknown): string {
+  return (parsePromptParts(value).question ?? '').replace(/\s+/g, ' ').trim()
+}
+
+function questionsMatch(left: unknown, right: unknown): boolean {
+  const leftQuestion = questionMatchValue(left)
+  const rightQuestion = questionMatchValue(right)
+
+  return Boolean(leftQuestion && rightQuestion && leftQuestion === rightQuestion)
+}
+
+function readClarifyArgs(args: unknown): ClarifyArgs {
+  const row = parseMaybeObject(args)
+  const prompt = parsePromptParts(row.question)
+
+  return {
+    question: prompt.question,
+    context: cleanText(row.context) || prompt.context,
+    recommendation: cleanText(row.recommendation) || prompt.recommendation,
+    options: normalizeClarifyChoices(row.choices)
+  }
+}
+
+/** Parse clarify tool JSON (`question` + `user_response`) plus structured option metadata. */
 export function readClarifyResult(result: unknown): ClarifyResult {
   const row = parseMaybeObject(result)
 
@@ -67,14 +229,18 @@ export function readClarifyResult(result: unknown): ClarifyResult {
     return typeof result === 'string' && result.trim() ? { answer: result.trim() } : {}
   }
 
+  const prompt = parsePromptParts(row.question)
+
   return {
-    question: stringField(row, 'question'),
+    question: prompt.question,
+    context: cleanText(row.context) || prompt.context,
+    recommendation: cleanText(row.recommendation) || prompt.recommendation,
+    options: normalizeClarifyChoices(row.options) ?? normalizeClarifyChoices(row.choices_offered),
+    selectedOption: normalizeSelectedOption(row.selected_option),
     answer: stringField(row, 'user_response', 'answer'),
     error: stringField(row, 'error')
   }
 }
-
-const letterFor = (index: number): string => String.fromCharCode(65 + index)
 
 const OPTION_ROW_CLASS =
   'flex w-full items-start gap-2 rounded-[0.25rem] px-1.5 py-1 text-left disabled:cursor-not-allowed disabled:opacity-50'
@@ -124,8 +290,80 @@ function KeyBadge({ char, preview, selected }: { char: string; preview?: boolean
   )
 }
 
+function ClarifyPromptBlock({
+  context,
+  question,
+  recommendation
+}: {
+  context?: string
+  question: string
+  recommendation?: string
+}) {
+  return (
+    <div className="grid gap-1.5">
+      {question ? (
+        <ClarifyLine icon={MessageQuestion}>
+          <span className="whitespace-pre-wrap font-medium leading-(--conversation-line-height)">{question}</span>
+        </ClarifyLine>
+      ) : null}
+      {context ? (
+        <p className="whitespace-pre-wrap text-(--ui-text-secondary)" data-clarify-context="">
+          {context}
+        </p>
+      ) : null}
+      {recommendation ? (
+        <p className="whitespace-pre-wrap font-medium text-primary" data-clarify-recommendation="">
+          {recommendation}
+        </p>
+      ) : null}
+    </div>
+  )
+}
+
+function optionDisplayText(option: ClarifyOption): string {
+  return option.description && option.description !== option.label
+    ? `${option.label} - ${option.description}`
+    : option.label
+}
+
+function optionMatchesAnswer(option: ClarifyOption, answer: string | undefined, selected?: ClarifyOption | null): boolean {
+  if (selected) {
+    return option.id === selected.id
+  }
+
+  const aliases = [answer].map(value => cleanText(value).toLowerCase()).filter(Boolean)
+
+  if (aliases.length === 0) {
+    return false
+  }
+
+  const optionAliases = [
+    option.id,
+    option.value,
+    option.label,
+    String(option.index),
+    optionDisplayText(option),
+    option.description && option.description !== option.label
+      ? `${option.label} \u2013 ${option.description}`
+      : ''
+  ].map(value => cleanText(value).toLowerCase())
+
+  return aliases.some(alias => optionAliases.includes(alias))
+}
+
+function ClarifyOptionContent({ option }: { option: ClarifyOption }) {
+  return (
+    <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+      <span className="wrap-anywhere font-medium">{option.label}</span>
+      {option.description ? (
+        <span className="wrap-anywhere text-[0.875em] text-(--ui-text-secondary)">{option.description}</span>
+      ) : null}
+    </span>
+  )
+}
+
 export const ClarifyTool = (props: ToolCallMessagePartProps) => {
-  // Answered → settled Q&A (ToolFallback collapsed the answer away).
+  // Answered -> settled Q&A (ToolFallback collapsed the answer away).
   if (props.result !== undefined) {
     return <ClarifyToolSettled {...props} />
   }
@@ -136,7 +374,7 @@ export const ClarifyTool = (props: ToolCallMessagePartProps) => {
 function ClarifyToolLive(props: ToolCallMessagePartProps) {
   const messageRunning = useAuiState(selectMessageRunning)
 
-  // Stopped mid-prompt with no result — don't leave a dead interactive panel.
+  // Stopped mid-prompt with no result: don't leave a dead interactive panel.
   if (!messageRunning) {
     return <ToolFallback {...props} />
   }
@@ -151,17 +389,49 @@ function ClarifyToolSettled({ args, result }: ToolCallMessagePartProps) {
   const fromResult = useMemo(() => readClarifyResult(result), [result])
 
   const question = fromResult.question || fromArgs.question || ''
+  const context = fromResult.context || fromArgs.context
+  const recommendation = fromResult.recommendation || fromArgs.recommendation
+  const options = fromResult.options ?? fromArgs.options ?? []
   const answer = fromResult.answer
   const error = fromResult.error
   const skipped = !error && answer !== undefined && !answer.trim()
-  const answerText = error || (skipped ? copy.skipped : (answer ?? '').trim())
+  const selectedOption = options.find(option => optionMatchesAnswer(option, answer, fromResult.selectedOption))
+
+  const answerText =
+    error ||
+    (skipped
+      ? copy.skipped
+      : selectedOption
+        ? `${selectedOption.index}. ${selectedOption.label}`
+        : (answer ?? '').trim())
 
   return (
     <ClarifyShell className="grid gap-1.5 px-2.5 py-2" data-clarify-settled="">
-      {question ? (
-        <ClarifyLine icon={MessageQuestion}>
-          <span className="whitespace-pre-wrap font-medium leading-(--conversation-line-height)">{question}</span>
-        </ClarifyLine>
+      <ClarifyPromptBlock context={context} question={question} recommendation={recommendation} />
+      {options.length > 0 ? (
+        <div className="grid gap-px" data-clarify-options="" role="list">
+          {options.map(option => {
+            const selected = selectedOption?.id === option.id
+
+            return (
+              <div
+                className={cn(
+                  OPTION_ROW_CLASS,
+                  'text-(--ui-text-secondary)',
+                  selected && 'bg-primary/10 text-(--ui-text-primary)'
+                )}
+                data-clarify-option={option.id}
+                data-selected={selected ? 'true' : undefined}
+                key={option.id}
+                role="listitem"
+              >
+                <KeyBadge char={String(option.index)} selected={selected} />
+                <ClarifyOptionContent option={option} />
+                {selected ? <Check aria-hidden className="mt-0.5 size-3.5 shrink-0 text-primary" /> : null}
+              </div>
+            )
+          })}
+        </div>
       ) : null}
       {answerText ? (
         <ClarifyLine icon={CircleLetterA}>
@@ -193,37 +463,40 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
       return null
     }
 
-    if (fromArgs.question && request.question && fromArgs.question !== request.question) {
+    if (fromArgs.question && request.question && !questionsMatch(fromArgs.question, request.question)) {
       return null
     }
 
     return request
   }, [fromArgs.question, request])
 
-  const question = fromArgs.question || matchingRequest?.question || ''
+  const requestPrompt = useMemo(() => parsePromptParts(matchingRequest?.question), [matchingRequest?.question])
+  const question = fromArgs.question || requestPrompt.question || ''
+  const context = fromArgs.context || requestPrompt.context
+  const recommendation = fromArgs.recommendation || requestPrompt.recommendation
 
-  const choices = useMemo(
-    () => fromArgs.choices ?? matchingRequest?.choices ?? [],
-    [fromArgs.choices, matchingRequest?.choices]
+  const options = useMemo(
+    () => fromArgs.options ?? normalizeClarifyChoices(matchingRequest?.choices) ?? [],
+    [fromArgs.options, matchingRequest?.choices]
   )
 
-  const hasChoices = choices.length > 0
+  const hasChoices = options.length > 0
 
   const [draft, setDraft] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const [selectedChoice, setSelectedChoice] = useState<string | null>(null)
+  const [selectedOptionId, setSelectedOptionId] = useState<string | null>(null)
   const [otherFocused, setOtherFocused] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
 
   // Race: tool.start fires a tick before clarify.request, so request_id
   // arrives slightly after the tool block mounts. Hold the whole panel on a
-  // spinner until the gateway request is wired — showing disabled choices or
+  // spinner until the gateway request is wired; showing disabled choices or
   // a "loading question" stub is worse than a brief wait.
   const ready = Boolean(matchingRequest?.requestId)
   const loading = !ready && !submitting
 
   const respond = useCallback(
-    async (answer: string) => {
+    async (answer: string, optionId?: string, responseKind?: 'custom') => {
       if (!ready || !matchingRequest) {
         notifyError(new Error(copy.notReady), copy.sendFailed)
 
@@ -241,11 +514,13 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
       try {
         await gateway.request<{ ok?: boolean }>('clarify.respond', {
           request_id: matchingRequest.requestId,
-          answer
+          answer,
+          ...(optionId ? { option_id: optionId } : {}),
+          ...(responseKind ? { response_kind: responseKind } : {})
         })
         triggerHaptic('submit')
         clearClarifyRequest(matchingRequest.requestId, matchingRequest.sessionId)
-        // tool.complete lands next → ClarifyToolSettled.
+        // tool.complete lands next -> ClarifyToolSettled.
       } catch (error) {
         notifyError(error, copy.sendFailed)
         setSubmitting(false)
@@ -255,28 +530,33 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   )
 
   const trimmedDraft = draft.trim()
-  // The answer is whichever input is active: a picked choice, or typed text.
-  // Picking a choice no longer fires immediately — it selects, then the user
-  // confirms with Continue (or Enter from the field).
-  const pendingAnswer = selectedChoice ?? (trimmedDraft || null)
 
-  const selectChoice = useCallback((choice: string) => {
+  const selectedOption = useMemo(
+    () => options.find(option => option.id === selectedOptionId) ?? null,
+    [options, selectedOptionId]
+  )
+
+  // The answer is whichever input is active: a picked choice, or typed text.
+  // Picking a choice selects, then the user confirms with Continue or Enter.
+  const pendingAnswer = selectedOption?.value ?? (trimmedDraft || null)
+
+  const selectOption = useCallback((option: ClarifyOption) => {
     // Picking a choice and typing are mutually exclusive answers.
     setDraft('')
-    setSelectedChoice(choice)
+    setSelectedOptionId(option.id)
   }, [])
 
   const submitAnswer = useCallback(() => {
-    if (selectedChoice !== null) {
-      void respond(selectedChoice)
+    if (selectedOption) {
+      void respond(selectedOption.value, selectedOption.id)
 
       return
     }
 
     if (trimmedDraft) {
-      void respond(trimmedDraft)
+      void respond(trimmedDraft, undefined, 'custom')
     }
-  }, [respond, selectedChoice, trimmedDraft])
+  }, [respond, selectedOption, trimmedDraft])
 
   const handleTextareaKey = useCallback(
     (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -300,10 +580,8 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
     [submitAnswer]
   )
 
-  // Letter shortcuts: A/B/C… pick the matching option, the trailing letter jumps
-  // into "Other", and Enter confirms the current pick. Stands down whenever a
-  // field is focused (you're typing, not navigating) so it never eats keystrokes
-  // meant for the composer or the Other box.
+  // Numeric shortcuts: 1..N pick the matching option, N+1 jumps into Other,
+  // and Enter confirms the current pick. Stands down whenever a field is focused.
   useEffect(() => {
     if (!ready || !hasChoices || submitting) {
       return
@@ -320,15 +598,14 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
         return
       }
 
-      const key = event.key.toLowerCase()
+      if (/^\d$/.test(event.key)) {
+        const shortcut = Number(event.key)
+        const index = shortcut - 1
 
-      if (key.length === 1 && key >= 'a' && key <= 'z') {
-        const index = key.charCodeAt(0) - 97
-
-        if (index < choices.length) {
+        if (index >= 0 && index < options.length) {
           event.preventDefault()
-          selectChoice(choices[index])
-        } else if (index === choices.length) {
+          selectOption(options[index]!)
+        } else if (shortcut === options.length + 1) {
           event.preventDefault()
           textareaRef.current?.focus()
         }
@@ -345,7 +622,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
     window.addEventListener('keydown', onKeyDown)
 
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [choices, hasChoices, pendingAnswer, ready, selectChoice, submitAnswer, submitting])
+  }, [hasChoices, options, pendingAnswer, ready, selectOption, submitAnswer, submitting])
 
   if (loading) {
     return (
@@ -362,49 +639,47 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
   const onDraftChange = (value: string) => {
     setDraft(value)
 
-    // Typing is its own answer — drop any picked choice so the two inputs can't
+    // Typing is its own answer; drop any picked choice so the two inputs can't
     // both look selected.
     if (value.trim()) {
-      setSelectedChoice(null)
+      setSelectedOptionId(null)
     }
   }
 
   return (
     <ClarifyShell className="grid gap-2 px-2.5 py-2">
-      <div className="flex items-start gap-2">
-        <span className="flex-1 whitespace-pre-wrap font-medium leading-(--conversation-line-height)">{question}</span>
-        <MessageQuestion aria-hidden className="mt-px size-4 shrink-0 text-(--ui-text-tertiary)" />
-      </div>
+      <ClarifyPromptBlock context={context} question={question} recommendation={recommendation} />
 
       <form className="grid gap-2" onSubmit={handleSubmit}>
         {hasChoices ? (
           <div className="grid gap-px" role="group">
-            {choices.map((choice, index) => (
+            {options.map(option => (
               <button
+                aria-pressed={selectedOptionId === option.id}
                 className={cn(
                   OPTION_ROW_CLASS,
                   'text-(--ui-text-secondary) hover:bg-(--chrome-action-hover) hover:text-(--ui-text-primary)',
-                  selectedChoice === choice && 'text-(--ui-text-primary)'
+                  selectedOptionId === option.id && 'text-(--ui-text-primary)'
                 )}
                 data-choice
                 disabled={submitting}
-                key={`${index}-${choice}`}
-                onClick={() => selectChoice(choice)}
+                key={option.id}
+                onClick={() => selectOption(option)}
                 type="button"
               >
-                <KeyBadge char={letterFor(index)} selected={selectedChoice === choice} />
-                <span className="flex-1 wrap-anywhere">{choice}</span>
+                <KeyBadge char={String(option.index)} selected={selectedOptionId === option.id} />
+                <ClarifyOptionContent option={option} />
               </button>
             ))}
             <label className={cn(OPTION_ROW_CLASS, 'items-center')}>
-              <KeyBadge char={letterFor(choices.length)} preview={otherFocused} selected={Boolean(trimmedDraft)} />
+              <KeyBadge char={String(options.length + 1)} preview={otherFocused} selected={Boolean(trimmedDraft)} />
               <Textarea
                 className={CLARIFY_TEXTAREA_CLASS}
                 disabled={submitting}
                 onBlur={() => setOtherFocused(false)}
                 onChange={event => onDraftChange(event.target.value)}
                 onFocus={() => {
-                  setSelectedChoice(null)
+                  setSelectedOptionId(null)
                   setOtherFocused(true)
                 }}
                 onKeyDown={handleTextareaKey}

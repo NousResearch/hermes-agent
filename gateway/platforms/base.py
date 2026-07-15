@@ -3142,6 +3142,15 @@ class BasePlatformAdapter(ABC):
             metadata=metadata,
         )
 
+    async def dismiss_clarify(self, clarify_id: str) -> None:
+        """Drop platform-side state for a completed or expired clarify prompt.
+
+        The core clarify registry owns the waiting lifecycle. Adapters with
+        native button state should override this hook so timeout/session
+        cleanup cannot leave stale callback entries behind.
+        """
+        return None
+
     async def send_private_notice(
         self,
         chat_id: str,

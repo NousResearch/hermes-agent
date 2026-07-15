@@ -197,6 +197,16 @@ class TestTelegramSendClarify:
 class TestTelegramClarifyCallback:
     """Verify clicking a button resolves the clarify primitive."""
 
+    @pytest.mark.asyncio
+    async def test_dismiss_clarify_clears_adapter_state_after_core_wait_finishes(self):
+        """Core timeout/session cleanup must not leave a stale Telegram button entry."""
+        adapter = _make_adapter()
+        adapter._clarify_state["cid-stale"] = "session-stale"
+
+        await adapter.dismiss_clarify("cid-stale")
+
+        assert "cid-stale" not in adapter._clarify_state
+
     def setup_method(self):
         _clear_clarify_state()
 

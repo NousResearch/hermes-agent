@@ -260,6 +260,20 @@ class TestInsightsEmpty:
 # =========================================================================
 
 class TestInsightsPopulated:
+    def test_overview_counts_individual_calls_not_assistant_turns(self, db):
+        db.create_session(session_id="multi", source="cli", model="test")
+        db.append_message(
+            "multi", role="assistant", content="two calls",
+            tool_calls=[
+                {"id": "a", "function": {"name": "search_files", "arguments": "{}"}},
+                {"id": "b", "function": {"name": "read_file", "arguments": "{}"}},
+            ],
+        )
+        db._conn.execute("UPDATE sessions SET tool_call_count = 0 WHERE id = 'multi'")
+        db._conn.commit()
+        report = InsightsEngine(db).generate(days=30)
+        assert report["overview"]["total_tool_calls"] == 2
+
     def test_generate_returns_all_sections(self, populated_db):
         engine = InsightsEngine(populated_db)
         report = engine.generate(days=30)

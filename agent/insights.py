@@ -143,7 +143,7 @@ class InsightsEngine:
 
         # Compute insights
         models = self._compute_model_breakdown(sessions, cutoff, source)
-        overview = self._compute_overview(sessions, message_stats, models)
+        overview = self._compute_overview(sessions, message_stats, models, tool_usage)
         platforms = self._compute_platform_breakdown(sessions)
         tools = self._compute_tool_breakdown(tool_usage)
         skills = self._compute_skill_breakdown(skill_usage)
@@ -405,6 +405,7 @@ class InsightsEngine:
         sessions: List[Dict],
         message_stats: Dict,
         models: Optional[List[Dict]] = None,
+        tool_usage: Optional[List[Dict]] = None,
     ) -> Dict:
         """Compute high-level overview statistics."""
         total_input = sum(s.get("input_tokens") or 0 for s in sessions)
@@ -412,7 +413,11 @@ class InsightsEngine:
         total_cache_read = sum(s.get("cache_read_tokens") or 0 for s in sessions)
         total_cache_write = sum(s.get("cache_write_tokens") or 0 for s in sessions)
         total_tokens = total_input + total_output + total_cache_read + total_cache_write
-        total_tool_calls = sum(s.get("tool_call_count") or 0 for s in sessions)
+        total_tool_calls = (
+            sum(int(item.get("count") or 0) for item in tool_usage)
+            if tool_usage is not None
+            else sum(s.get("tool_call_count") or 0 for s in sessions)
+        )
         total_messages = sum(s.get("message_count") or 0 for s in sessions)
 
         # Cost estimation (weighted by model)

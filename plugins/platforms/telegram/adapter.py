@@ -4811,6 +4811,10 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning("[%s] send_clarify failed: %s", self.name, e)
             return SendResult(success=False, error=str(e))
 
+    async def dismiss_clarify(self, clarify_id: str) -> None:
+        """Remove Telegram callback state after the core waiter finishes."""
+        self._clarify_state.pop(clarify_id, None)
+
     async def send_model_picker(
         self,
         chat_id: str,

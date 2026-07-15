@@ -18622,6 +18622,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
                 timeout = _clarify_mod.get_clarify_timeout()
                 response = _clarify_mod.wait_for_response(clarify_id, timeout=float(timeout))
+                try:
+                    cleanup_fut = safe_schedule_threadsafe(
+                        _status_adapter.dismiss_clarify(clarify_id),
+                        _loop_for_step,
+                        logger=logger,
+                        log_message="Clarify platform cleanup failed to schedule",
+                    )
+                    if cleanup_fut is not None:
+                        cleanup_fut.result(timeout=5)
+                except Exception as exc:
+                    logger.warning("Clarify platform cleanup failed: %s", exc)
                 if response is None or response == "":
                     # Timeout or session-boundary cancellation
                     return f"[user did not respond within {int(timeout / 60)}m]"

@@ -81,7 +81,13 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
-from gateway.config import Platform, PlatformConfig
+from gateway.config import Platform, PlatformConfig, load_gateway_config
+from gateway.session import (
+    SessionSource,
+    build_session_context,
+    build_session_context_prompt,
+    build_session_key,
+)
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE,
     BasePlatformAdapter,
@@ -883,17 +889,18 @@ class _IdempotencyCache:
 
     async def get_or_set(self, key: str, fingerprint: str, compute_coro):
         self._purge()
-        item = self._store.get(key)
-        if item and item["fp"] == fingerprint:
+        cache_key = (key, fingerprint)
+        item = self._store.get(cache_key)
+        if item:
             return item["resp"]
 
-        inflight_key = (key, fingerprint)
+        inflight_key = cache_key
         task = self._inflight.get(inflight_key)
         if task is None:
             async def _compute_and_store():
                 resp = await compute_coro()
                 import time as _t
-                self._store[key] = {"resp": resp, "fp": fingerprint, "ts": _t.time()}
+                self._store[cache_key] = {"resp": resp, "ts": _t.time()}
                 self._purge()
                 return resp
 
@@ -912,10 +919,48 @@ class _IdempotencyCache:
 _idem_cache = _IdempotencyCache()
 
 
-def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
+def _make_request_fingerprint(
+    body: Dict[str, Any],
+    keys: List[str],
+    *,
+    namespace: Optional[Dict[str, Any]] = None,
+) -> str:
     from hashlib import sha256
+
     subset = {k: body.get(k) for k in keys}
-    return sha256(repr(subset).encode("utf-8")).hexdigest()
+    if namespace is not None:
+        subset["__hermes_identity__"] = namespace
+    encoded = json.dumps(
+        subset,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=False,
+    ).encode("utf-8")
+    return sha256(encoded).hexdigest()
+
+
+def _api_idempotency_namespace(
+    gateway_session_key: Optional[str],
+    session_source: Optional[SessionSource],
+) -> Dict[str, Any]:
+    """Return the trusted request identity that scopes idempotency reuse."""
+    source = None
+    if session_source is not None:
+        source = {
+            "platform": session_source.platform.value,
+            "chat_id": session_source.chat_id,
+            "chat_type": session_source.chat_type,
+            "user_id": session_source.user_id,
+            "thread_id": session_source.thread_id,
+            "parent_chat_id": session_source.parent_chat_id,
+            "profile": session_source.profile,
+            "scope_id": session_source.scope_id,
+        }
+    return {
+        "profile": _api_request_profile.get(),
+        "session_key": gateway_session_key,
+        "source": source,
+    }
 
 
 def _derive_chat_session_id(
@@ -1613,17 +1658,17 @@ class APIServerAdapter(BasePlatformAdapter):
 
     def _parse_session_key_header(
         self, request: "web.Request"
-    ) -> tuple[Optional[str], Optional["web.Response"]]:
+    ) -> tuple[Optional[str], Optional[SessionSource], Optional["web.Response"]]:
         """Extract and validate the ``X-Hermes-Session-Key`` header.
 
         The session key is a stable per-channel identifier that scopes
-        long-term memory (e.g. Honcho sessions) across transcripts.  It
-        is independent of ``X-Hermes-Session-Id``: callers may send
-        either, both, or neither.
+        long-term memory (e.g. Honcho sessions) across transcripts. It is
+        independent of ``X-Hermes-Session-Id``: callers may send either,
+        both, or neither.
 
-        Returns ``(session_key, None)`` on success (with an empty/absent
-        header yielding ``None`` for the key), or ``(None, error_response)``
-        on validation failure.
+        Returns ``(session_key, native_source, None)`` on success. Native
+        source identity exists only for an exact operator-configured alias and
+        stays request-local; it is never cached on the adapter.
 
         Security: like session continuation, accepting a caller-supplied
         memory scope requires API-key authentication so that an
@@ -1632,14 +1677,14 @@ class APIServerAdapter(BasePlatformAdapter):
         """
         raw = request.headers.get("X-Hermes-Session-Key", "").strip()
         if not raw:
-            return None, None
+            return None, None, None
 
         if not self._api_key:
             logger.warning(
                 "X-Hermes-Session-Key rejected: no API key configured. "
                 "Set API_SERVER_KEY to enable long-term memory scoping."
             )
-            return None, web.json_response(
+            return None, None, web.json_response(
                 _openai_error(
                     "X-Hermes-Session-Key requires API key authentication. "
                     "Configure API_SERVER_KEY to enable this feature."
@@ -1650,18 +1695,69 @@ class APIServerAdapter(BasePlatformAdapter):
         # Reject control characters that could enable header injection on
         # the echo path.
         if re.search(r'[\r\n\x00]', raw):
-            return None, web.json_response(
+            return None, None, web.json_response(
                 {"error": {"message": "Invalid session key", "type": "invalid_request_error"}},
                 status=400,
             )
 
         if len(raw) > self._MAX_SESSION_HEADER_LEN:
-            return None, web.json_response(
+            return None, None, web.json_response(
                 {"error": {"message": "Session key too long", "type": "invalid_request_error"}},
                 status=400,
             )
 
-        return raw, None
+        return self._resolve_api_session_identity(raw)
+
+    def _resolve_api_session_identity(
+        self, presented_key: Optional[str]
+    ) -> tuple[Optional[str], Optional[SessionSource], Optional["web.Response"]]:
+        """Resolve an explicit API alias before any agent/session construction.
+
+        A caller cannot synthesize native identity: only an exact configured
+        alias is promoted. Unconfigured keys retain legacy API-server behavior.
+        """
+        config = load_gateway_config()
+        aliases = config.session_key_aliases
+        if not presented_key or presented_key not in aliases:
+            return presented_key, None, None
+        raw = aliases[presented_key]
+        try:
+            if not isinstance(raw, dict):
+                raise ValueError("mapping required")
+            platform = Platform(raw.get("platform"))
+            chat_id = raw.get("chat_id")
+            chat_type = raw.get("chat_type", "dm")
+            if (
+                platform in {Platform.API_SERVER, Platform.WEBHOOK}
+                or not isinstance(chat_id, str)
+                or not chat_id.strip()
+            ):
+                raise ValueError("native platform and chat_id required")
+            if not isinstance(chat_type, str) or not chat_type.strip():
+                raise ValueError("chat_type required")
+            if raw.get("profile") is not None or raw.get("scope_id") is not None:
+                raise ValueError("profile and scope_id aliases are not yet supported")
+            for name in ("thread_id", "user_id", "parent_chat_id"):
+                if raw.get(name) is not None and not isinstance(raw[name], str):
+                    raise ValueError(f"{name} must be a string")
+            request_profile = _api_request_profile.get()
+            source = SessionSource(
+                platform=platform, chat_id=chat_id, chat_type=chat_type,
+                thread_id=raw.get("thread_id"), user_id=raw.get("user_id"),
+                parent_chat_id=raw.get("parent_chat_id"),
+                profile=request_profile,
+            )
+            return build_session_key(
+                source,
+                group_sessions_per_user=config.group_sessions_per_user,
+                thread_sessions_per_user=config.thread_sessions_per_user,
+                profile=request_profile,
+            ), source, None
+        except (TypeError, ValueError):
+            return None, None, web.json_response(
+                _openai_error("Configured session key alias is invalid", code="invalid_session_alias"),
+                status=400,
+            )
 
     # ------------------------------------------------------------------
     # Session DB helper
@@ -1828,6 +1924,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
+        session_source: Optional[SessionSource] = None,
         route: Optional[Dict[str, Any]] = None,
     ) -> Any:
         """
@@ -1923,7 +2020,25 @@ class APIServerAdapter(BasePlatformAdapter):
             )
 
         user_config = _load_gateway_config()
-        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+        agent_platform = session_source.platform.value if session_source else "api_server"
+        enabled_toolsets = sorted(_get_platform_tools(user_config, agent_platform))
+
+        if session_source is not None:
+            session_context = build_session_context(
+                session_source,
+                load_gateway_config(),
+            )
+            redact_pii = bool(
+                ((_load_gateway_config().get("privacy") or {}).get("redact_pii", False))
+            )
+            context_prompt = build_session_context_prompt(
+                session_context,
+                redact_pii=redact_pii,
+            )
+            if ephemeral_system_prompt:
+                ephemeral_system_prompt = f"{context_prompt}\n\n{ephemeral_system_prompt}"
+            else:
+                ephemeral_system_prompt = context_prompt
 
         max_iterations = _current_max_iterations()
 
@@ -1941,7 +2056,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
             session_id=session_id,
-            platform="api_server",
+            platform=agent_platform,
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
@@ -2549,7 +2664,7 @@ class APIServerAdapter(BasePlatformAdapter):
     @_admit_api_agent_request
     async def _handle_session_chat(self, request: "web.Request") -> "web.Response":
         """POST /api/sessions/{session_id}/chat — one synchronous agent turn."""
-        gateway_session_key, key_err = self._parse_session_key_header(request)
+        gateway_session_key, session_source, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
         session_id = request.match_info["session_id"]
@@ -2572,6 +2687,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=system_prompt,
             session_id=session_id,
             gateway_session_key=gateway_session_key,
+            session_source=session_source,
         )
         effective_session_id = result.get("session_id") if isinstance(result, dict) else session_id
         final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
@@ -2591,7 +2707,7 @@ class APIServerAdapter(BasePlatformAdapter):
     @_admit_api_agent_request
     async def _handle_session_chat_stream(self, request: "web.Request") -> "web.StreamResponse":
         """POST /api/sessions/{session_id}/chat/stream — SSE wrapper over _run_agent."""
-        gateway_session_key, key_err = self._parse_session_key_header(request)
+        gateway_session_key, session_source, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
         session_id = request.match_info["session_id"]
@@ -2661,6 +2777,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     stream_delta_callback=_delta,
                     tool_progress_callback=_tool_progress,
                     gateway_session_key=gateway_session_key,
+                    session_source=session_source,
                 )
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if isinstance(result, dict) else "")
                 effective_session_id = result.get("session_id", session_id) if isinstance(result, dict) else session_id
@@ -2790,7 +2907,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # is independent of X-Hermes-Session-Id: the key persists across
         # transcripts while the id rotates when the caller starts a new
         # transcript (i.e. /new semantics).  See _parse_session_key_header.
-        gateway_session_key, key_err = self._parse_session_key_header(request)
+        gateway_session_key, session_source, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
 
@@ -2944,6 +3061,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                session_source=session_source,
                 route=route,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
@@ -2964,12 +3082,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                session_source=session_source,
                 route=route,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp = _make_request_fingerprint(
+                body,
+                keys=["model", "messages", "tools", "tool_choice", "stream"],
+                namespace=_api_idempotency_namespace(
+                    gateway_session_key,
+                    session_source,
+                ),
+            )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -3876,7 +4002,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return limited
 
         # Long-term memory scope header (see chat_completions for details).
-        gateway_session_key, key_err = self._parse_session_key_header(request)
+        gateway_session_key, session_source, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
 
@@ -4035,6 +4161,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
+                session_source=session_source,
                 route=route,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
@@ -4069,6 +4196,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
+                session_source=session_source,
                 route=route,
             )
 
@@ -4077,6 +4205,10 @@ class APIServerAdapter(BasePlatformAdapter):
             fp = _make_request_fingerprint(
                 body,
                 keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
+                namespace=_api_idempotency_namespace(
+                    gateway_session_key,
+                    session_source,
+                ),
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
@@ -4709,6 +4841,7 @@ class APIServerAdapter(BasePlatformAdapter):
         chat_id: str = "",
         session_key: str = "",
         session_id: str = "",
+        source: Optional[SessionSource] = None,
     ) -> list:
         """Bind session contextvars for an API-server agent run.
 
@@ -4728,8 +4861,11 @@ class APIServerAdapter(BasePlatformAdapter):
         from gateway.session_context import set_session_vars
 
         return set_session_vars(
-            platform="api_server",
-            chat_id=chat_id,
+            platform=source.platform.value if source else "api_server",
+            chat_id=source.chat_id if source else chat_id,
+            thread_id=(source.thread_id or "") if source else "",
+            user_id=(source.user_id or "") if source else "",
+            profile=(source.profile or "") if source else "",
             session_key=session_key,
             session_id=session_id,
             async_delivery=False,
@@ -4747,6 +4883,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
+        session_source: Optional[SessionSource] = None,
         route: Optional[Dict[str, Any]] = None,
     ) -> tuple:
         """
@@ -4778,6 +4915,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     chat_id=session_id or "",
                     session_key=gateway_session_key or session_id or "",
                     session_id=session_id or "",
+                    source=session_source,
                 )
                 try:
                     agent = self._create_agent(
@@ -4788,6 +4926,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         tool_start_callback=tool_start_callback,
                         tool_complete_callback=tool_complete_callback,
                         gateway_session_key=gateway_session_key,
+                        session_source=session_source,
                         route=route,
                     )
                     if agent_ref is not None:
@@ -4904,7 +5043,7 @@ class APIServerAdapter(BasePlatformAdapter):
     async def _handle_runs(self, request: "web.Request") -> "web.Response":
         """POST /v1/runs — start an agent run, return run_id immediately."""
         # Long-term memory scope header (see chat_completions for details).
-        gateway_session_key, key_err = self._parse_session_key_header(request)
+        gateway_session_key, session_source, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
 
@@ -5049,6 +5188,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         stream_delta_callback=_text_cb,
                         tool_progress_callback=event_cb,
                         gateway_session_key=gateway_session_key,
+                        session_source=session_source,
                         route=route,
                     )
                 self._active_run_agents[run_id] = agent
@@ -5110,8 +5250,13 @@ class APIServerAdapter(BasePlatformAdapter):
                                 # background delegations stay forced-sync
                                 # (no wake target).
                                 chat_id=session_id or "",
-                                session_key=approval_session_key,
+                                # Keep Hermes runtime identity canonical when
+                                # the presented API key resolves to a configured
+                                # native source. Approval routing remains scoped
+                                # independently by approval_session_key above.
+                                session_key=gateway_session_key or approval_session_key,
                                 session_id=session_id or "",
+                                source=session_source,
                             )
                             register_gateway_notify(approval_session_key, _approval_notify)
                             r = agent.run_conversation(

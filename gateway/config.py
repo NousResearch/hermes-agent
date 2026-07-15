@@ -896,6 +896,10 @@ class GatewayConfig:
     # gateway behaves exactly as before — single HERMES_HOME, no profile stamping.
     multiplex_profiles: bool = False
 
+    # Explicit API-client aliases for native gateway conversation identities.
+    # Values are SessionSource-shaped mappings validated at API request time.
+    session_key_aliases: Dict[str, Dict[str, Any]] = field(default_factory=dict)
+
     # Opt-in systemd event-loop watchdog. Zero preserves Type=simple and
     # disables sd_notify at runtime.
     systemd_watchdog_seconds: int = 0
@@ -1033,6 +1037,7 @@ class GatewayConfig:
             "thread_sessions_per_user": self.thread_sessions_per_user,
             "max_concurrent_sessions": self.max_concurrent_sessions,
             "multiplex_profiles": self.multiplex_profiles,
+            "session_key_aliases": self.session_key_aliases,
             "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
@@ -1096,6 +1101,14 @@ class GatewayConfig:
         thread_sessions_per_user = data.get("thread_sessions_per_user")
         multiplex_profiles = data.get("multiplex_profiles")
         nested_gateway = data.get("gateway") if isinstance(data.get("gateway"), dict) else {}
+        session_key_aliases_raw = data.get("session_key_aliases")
+        if session_key_aliases_raw is None:
+            session_key_aliases_raw = nested_gateway.get("session_key_aliases")
+        session_key_aliases = (
+            dict(session_key_aliases_raw)
+            if isinstance(session_key_aliases_raw, dict)
+            else {}
+        )
         if "systemd_watchdog_seconds" in data:
             systemd_watchdog_raw = data.get("systemd_watchdog_seconds")
             systemd_watchdog_key = "systemd_watchdog_seconds"
@@ -1164,6 +1177,7 @@ class GatewayConfig:
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
             multiplex_profiles=_coerce_bool(multiplex_profiles, False),
+            session_key_aliases=session_key_aliases,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
@@ -1321,10 +1335,15 @@ def load_gateway_config() -> GatewayConfig:
                     gw_data["multiplex_profiles"] = gateway_section["multiplex_profiles"]
                 if "max_concurrent_sessions" in gateway_section:
                     gw_data["max_concurrent_sessions"] = gateway_section["max_concurrent_sessions"]
+                if "session_key_aliases" in gateway_section:
+                    gw_data["session_key_aliases"] = gateway_section["session_key_aliases"]
                 if "systemd_watchdog_seconds" in gateway_section:
                     gw_data["systemd_watchdog_seconds"] = gateway_section[
                         "systemd_watchdog_seconds"
                     ]
+
+            if "session_key_aliases" in yaml_cfg:
+                gw_data["session_key_aliases"] = yaml_cfg["session_key_aliases"]
 
             if "max_concurrent_sessions" in yaml_cfg:
                 gw_data["max_concurrent_sessions"] = yaml_cfg["max_concurrent_sessions"]

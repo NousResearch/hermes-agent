@@ -198,6 +198,24 @@ class TestResponseStore:
 
 class TestIdempotencyCache:
     @pytest.mark.asyncio
+    async def test_completed_entries_are_partitioned_by_fingerprint(self):
+        cache = _IdempotencyCache()
+        calls = 0
+
+        async def compute():
+            nonlocal calls
+            calls += 1
+            return f"response-{calls}"
+
+        first = await cache.get_or_set("idem-key", "identity-a", compute)
+        second = await cache.get_or_set("idem-key", "identity-b", compute)
+        first_replay = await cache.get_or_set("idem-key", "identity-a", compute)
+
+        assert first == first_replay == "response-1"
+        assert second == "response-2"
+        assert calls == 2
+
+    @pytest.mark.asyncio
     async def test_concurrent_same_key_and_fingerprint_runs_once(self):
         cache = _IdempotencyCache()
         gate = asyncio.Event()
@@ -4328,8 +4346,9 @@ class TestSessionKeyHeader:
         """
         mock_request = MagicMock()
         mock_request.headers = {"X-Hermes-Session-Key": "bad\rvalue"}
-        key, err = auth_adapter._parse_session_key_header(mock_request)
+        key, source, err = auth_adapter._parse_session_key_header(mock_request)
         assert key is None
+        assert source is None
         assert err is not None
         assert err.status == 400
 

@@ -389,6 +389,26 @@ X-Hermes-Session-Key: agent:main:webui:dm:user-42
 
 Rules: max 256 chars, control characters (`\r`, `\n`, `\x00`) are rejected, and the value is echoed back on responses (JSON + SSE). `/v1/capabilities` advertises support via `"session_key_header": "X-Hermes-Session-Key"`. Without the key, Honcho's `per-session` strategy produces a different scope per `session_id` — exactly the behavior Hermes had before.
 
+### Configured native session aliases
+
+An operator can map an authenticated API session key to an existing native conversation identity:
+
+```yaml
+gateway:
+  session_key_aliases:
+    mobile-telegram:
+      platform: telegram
+      chat_id: "12345"
+      chat_type: dm
+      thread_id: "42" # optional topic/thread
+```
+
+A request with `X-Hermes-Session-Key: mobile-telegram` then uses the canonical session key, platform toolset, and chat/thread context built by the existing gateway session machinery. Alias values may also set `user_id` and `parent_chat_id`.
+
+Aliases are scoped to the currently running Hermes profile. `profile` and `scope_id` alias fields are rejected with `400 invalid_session_alias` until API turns can enter the native profile runtime scope and canonical session keys can represent workspace scope without collisions.
+
+Aliases are operator-controlled configuration, not request fields. Unknown session keys retain normal API-server behavior. The identity seam applies consistently to session chat, session chat streaming, Chat Completions, Responses, and Runs. It does not send the API response to the native platform.
+
 ## System Prompt Handling
 
 When a frontend sends a `system` message (Chat Completions) or `instructions` field (Responses API), hermes-agent **layers it on top** of its core system prompt. Your agent keeps all its tools, memory, and skills — the frontend's system prompt adds extra instructions.

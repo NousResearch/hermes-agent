@@ -3958,94 +3958,76 @@ def _scan_prose_for_phantom_ids(
     return [m for m in unique if m not in existing]
 
 
-# Substrings that, when present in a terminal task's summary / result /
-# metadata, mean the origin wake/ACK relay did NOT reach a live target even
-# though the task itself reached a terminal verdict. Worker CLI sessions
-# frequently cannot send messages, so the gateway relay path is the only way
-# the origin learns the task finished — when that path emits one of these
-# strings the completion is durable but the ACK is missing. Matched
-# case-insensitively. See :func:`classify_ack_relay`.
-ACK_RELAY_FAILURE_PATTERNS: tuple[str, ...] = (
-    "no messaging targets",
-    "origin relay could not be sent",
-    "no live gateway runner",
+# Outcomes recorded by the gateway notifier at the *actual* delivery
+# boundary (gateway/kanban_watchers.py). These are the only trustworthy
+# signal that an origin ACK/relay was or was not delivered — the worker's
+# completion prose says nothing about whether ``adapter.send`` reached a
+# live chat. See :func:`append_notify_delivery_status`.
+NOTIFY_DELIVERY_OUTCOMES: tuple[str, ...] = (
+    "delivered",
+    "retry_failure",
+    "terminal_failure",
+    "subscription_dropped",
 )
 
+# Event kind for the sanitized notify-delivery outcome rows.
+NOTIFY_DELIVERY_EVENT_KIND = "notify_delivery_status"
 
-def _parse_task_verdict(text: str) -> Optional[str]:
-    """Extract a ``Verdict: <X>`` token from terminal handoff text.
 
-    Review / fan-in tasks encode their work decision as a ``Verdict:``
-    line (e.g. ``Verdict: GO`` / ``Verdict: BLOCK``). Returns the
-    normalised upper-case token (``-`` folded to ``_``) or ``None`` when
-    no verdict line is present. Deliberately verdict-only: it says
-    nothing about whether the origin was woken — that is ``ack_status``.
+def _notify_target_hash(platform: Optional[str], chat_id: Optional[str]) -> str:
+    """Stable, non-reversible fingerprint for a delivery target.
+
+    We deliberately never persist the raw ``chat_id`` (it can be a phone
+    number, DM id, or other PII) in a diagnostic event. Hash the
+    ``platform:chat_id`` pair so repeated failures against the same target
+    coalesce while the identifier itself stays out of the durable log.
     """
-    if not text:
-        return None
-    m = re.search(r"verdict\s*[:=]\s*([A-Za-z][A-Za-z_-]*)", text, re.IGNORECASE)
-    if not m:
-        return None
-    return m.group(1).strip().upper().replace("-", "_")
+    material = f"{platform or ''}:{chat_id or ''}".encode("utf-8", "replace")
+    return hashlib.sha256(material).hexdigest()[:16]
 
 
-def classify_ack_relay(
-    summary: Optional[str] = None,
-    result: Optional[str] = None,
-    metadata: Optional[dict] = None,
+def append_notify_delivery_status(
+    conn: sqlite3.Connection,
+    task_id: str,
     *,
-    notify_subs: Optional[list] = None,
-) -> dict:
-    """Classify a terminal task's handoff into separate verdict + ack signals.
+    outcome: str,
+    platform: Optional[str] = None,
+    chat_id: Optional[str] = None,
+    thread_id: Optional[str] = None,
+    event_kind: Optional[str] = None,
+    failure_count: int = 0,
+    max_failures: int = 0,
+    run_id: Optional[int] = None,
+) -> None:
+    """Durably record a notify-delivery outcome observed at the gateway
+    ``adapter.send`` boundary.
 
-    Returns a dict with:
+    This is the *only* place origin ACK/relay delivery is classified: the
+    gateway notifier knows whether ``adapter.send`` actually raised, retried,
+    or exhausted its retry budget. ``outcome`` is one of
+    :data:`NOTIFY_DELIVERY_OUTCOMES`.
 
-    * ``task_verdict`` — the work decision (``"GO"`` / ``"BLOCK"`` / …) parsed
-      from a ``Verdict:`` line, or ``None``.
-    * ``ack_status`` — one of:
-        - ``"failed"``: a relay-failure pattern was found in the text/metadata
-          (the origin ACK demonstrably could not be delivered).
-        - ``"ambiguous"``: no failure string, but a verdict is present and
-          ``notify_subs`` was supplied and empty — the origin relay had no
-          target at terminal time (could be delivered-then-removed, or never
-          subscribed; we cannot prove the wake happened).
-        - ``"unknown"``: no positive or negative ACK signal.
-    * ``relay_failure`` — ``True`` iff a failure pattern matched.
-    * ``matched`` — the failure substrings found (lower-cased), in pattern order.
-
-    ``task_verdict`` and ``ack_status`` are intentionally independent so a
-    done BLOCK/GO task is never treated as proof the origin was woken.
+    The payload is intentionally sanitized — it carries a hashed
+    ``target_hash`` and a ``thread_present`` boolean instead of the raw
+    ``chat_id`` / ``thread_id``, and never stores summary, result, or
+    exception text. Downstream diagnostics only need the outcome, platform,
+    and failure counters.
     """
-    haystack_parts: list[str] = []
-    for part in (summary, result):
-        if part:
-            haystack_parts.append(str(part))
-    if isinstance(metadata, dict):
-        try:
-            haystack_parts.append(json.dumps(metadata, ensure_ascii=False))
-        except Exception:
-            haystack_parts.append(str(metadata))
-    haystack = "\n".join(haystack_parts)
-    hay_lower = haystack.lower()
-
-    matched = [p for p in ACK_RELAY_FAILURE_PATTERNS if p in hay_lower]
-    relay_failure = bool(matched)
-
-    verdict = _parse_task_verdict(haystack)
-
-    if relay_failure:
-        ack_status = "failed"
-    elif verdict is not None and notify_subs is not None and len(notify_subs) == 0:
-        ack_status = "ambiguous"
-    else:
-        ack_status = "unknown"
-
-    return {
-        "task_verdict": verdict,
-        "ack_status": ack_status,
-        "relay_failure": relay_failure,
-        "matched": matched,
+    if outcome not in NOTIFY_DELIVERY_OUTCOMES:
+        raise ValueError(f"unknown notify delivery outcome: {outcome!r}")
+    payload = {
+        "outcome": outcome,
+        "platform": (platform or "").lower() or None,
+        "target_hash": _notify_target_hash(platform, chat_id),
+        "thread_present": bool(thread_id),
+        "event_kind": event_kind,
+        "failure_count": int(failure_count or 0),
+        "max_failures": int(max_failures or 0),
     }
+    with write_txn(conn):
+        _append_event(
+            conn, task_id, NOTIFY_DELIVERY_EVENT_KIND, payload, run_id=run_id,
+        )
 
 
 class HallucinatedCardsError(ValueError):
@@ -4259,34 +4241,6 @@ def complete_task(
                     },
                     run_id=run_id,
                 )
-    # Durable ACK/relay classification. The work verdict can be terminal
-    # (done, BLOCK/GO) while the origin wake/ACK relay never reached a
-    # target — worker CLI sessions often cannot send messages, so a relay
-    # failure string in the handoff (or an empty notify list at terminal
-    # time) means the origin may be silently waiting. Record a durable
-    # ``ack_relay_status`` event so diagnostics can surface it; keep
-    # ``task_verdict`` and ``ack_status`` as distinct payload fields so a
-    # done verdict is never mistaken for a delivered ACK. Emitted at most
-    # once per terminal transition (this block only runs when the status
-    # update above flipped exactly one row), so it cannot storm.
-    ack = classify_ack_relay(
-        summary=summary,
-        result=result,
-        metadata=metadata,
-        notify_subs=list_notify_subs(conn, task_id),
-    )
-    if ack["ack_status"] in ("failed", "ambiguous"):
-        with write_txn(conn):
-            _append_event(
-                conn, task_id, "ack_relay_status",
-                {
-                    "ack_status": ack["ack_status"],
-                    "task_verdict": ack["task_verdict"],
-                    "matched": ack["matched"],
-                    "source": "completion",
-                },
-                run_id=run_id,
-            )
     # Successful completion — wipe the consecutive-failures counter.
     # Failure history stays on the event log for audit; the counter
     # just tracks "is there a current pathology the breaker should

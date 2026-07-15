@@ -660,90 +660,156 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
 
 
 # ---------------------------------------------------------------------------
-# ACK/relay status classification + durable event on terminal completion.
-# task_verdict (the work decision) is tracked separately from ack_status
-# (whether the origin wake/ACK relay actually reached a target).
+# ACK/relay status is recorded only at the gateway adapter.send boundary.
+# Completion prose and missing optional subscriptions are not evidence of a
+# failed ACK.
 # ---------------------------------------------------------------------------
 
 
-def test_classify_ack_relay_detects_no_messaging_targets():
-    res = kb.classify_ack_relay(
-        summary="Verdict: BLOCK\nReview failed. no messaging targets",
-    )
-    assert res["task_verdict"] == "BLOCK"
-    assert res["ack_status"] == "failed"
-    assert res["relay_failure"] is True
-    assert "no messaging targets" in res["matched"]
+async def _run_notifier_until_stopped(runner):
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
 
 
-def test_classify_ack_relay_parses_go_verdict_without_relay_failure():
-    res = kb.classify_ack_relay(summary="Verdict: GO\nAll good, merged.")
-    assert res["task_verdict"] == "GO"
-    # No relay-failure string and no notify context -> not a hard failure.
-    assert res["relay_failure"] is False
-    assert res["ack_status"] == "unknown"
+@pytest.mark.asyncio
+async def test_notifier_persists_retry_failures_then_success_without_diagnostic(kanban_home):
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_diagnostics as kd
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
 
-
-def test_classify_ack_relay_empty_notify_after_terminal_is_ambiguous():
-    # A done task carrying a verdict but with zero notify subscriptions is
-    # ambiguous: the subs may have been delivered+removed, or there may
-    # never have been an origin target. Not a confirmed failure.
-    res = kb.classify_ack_relay(summary="Verdict: GO", notify_subs=[])
-    assert res["task_verdict"] == "GO"
-    assert res["relay_failure"] is False
-    assert res["ack_status"] == "ambiguous"
-
-
-def test_classify_ack_relay_scans_result_and_metadata():
-    res = kb.classify_ack_relay(
-        result="done",
-        metadata={"relay": "trigger_error no live gateway runner"},
-    )
-    assert res["relay_failure"] is True
-    assert res["ack_status"] == "failed"
-
-
-def test_complete_task_emits_ack_relay_status_event_on_relay_failure(kanban_home):
     conn = kb.connect()
     try:
-        tid = kb.create_task(conn, title="review task", assignee="reviewer")
-        kb.complete_task(
-            conn, tid,
-            summary="Verdict: BLOCK\norigin relay could not be sent",
-        )
-        events = kb.list_events(conn, tid)
+        tid = kb.create_task(conn, title="retry task", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        kb.complete_task(conn, tid, summary="Verdict: GO\nshipped")
     finally:
         conn.close()
-    ack = [e for e in events if e.kind == "ack_relay_status"]
-    assert len(ack) == 1, "exactly one durable ack_relay_status event"
-    payload = ack[0].payload
-    assert payload["ack_status"] == "failed"
-    assert payload["task_verdict"] == "BLOCK"
-    assert "origin relay could not be sent" in payload["matched"]
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    attempts = 0
+
+    async def _send(chat_id, msg, metadata=None):
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise RuntimeError("transient network failure with secret-like text")
+        runner._running = False
+
+    fake_adapter = MagicMock()
+    fake_adapter.send = AsyncMock(side_effect=_send)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    await _run_notifier_until_stopped(runner)
+
+    conn = kb.connect()
+    try:
+        events = kb.list_events(conn, tid)
+        subs = kb.list_notify_subs(conn, tid)
+        task = kb.get_task(conn, tid)
+    finally:
+        conn.close()
+
+    outcomes = [(e.payload or {})["outcome"] for e in events if e.kind == "notify_delivery_status"]
+    assert outcomes == ["retry_failure", "retry_failure", "delivered"]
+    assert subs == []
+    assert kd.compute_task_diagnostics(task, events, [], now=300) == []
+    assert all("chat1" not in str(e.payload) for e in events if e.kind == "notify_delivery_status")
+    assert all("secret-like" not in str(e.payload) for e in events if e.kind == "notify_delivery_status")
 
 
-def test_complete_task_clean_summary_emits_no_ack_relay_event(kanban_home):
+@pytest.mark.asyncio
+async def test_notifier_persists_terminal_failure_and_drops_subscription(kanban_home):
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_diagnostics as kd
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    conn = kb.connect()
+    try:
+        tid = kb.create_task(conn, title="dead chat", assignee="worker1")
+        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="dead-chat")
+        kb.complete_task(conn, tid, summary="Verdict: GO\nshipped")
+    finally:
+        conn.close()
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    tick_count = 0
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        nonlocal tick_count
+        await _orig_sleep(0)
+        tick_count += 1
+        if tick_count >= 6:
+            runner._running = False
+
+    fake_adapter = MagicMock()
+    fake_adapter.send = AsyncMock(side_effect=RuntimeError("bot kicked from dead-chat"))
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    conn = kb.connect()
+    try:
+        events = kb.list_events(conn, tid)
+        subs = kb.list_notify_subs(conn, tid)
+        task = kb.get_task(conn, tid)
+    finally:
+        conn.close()
+
+    outcomes = [(e.payload or {})["outcome"] for e in events if e.kind == "notify_delivery_status"]
+    assert outcomes == [
+        "retry_failure",
+        "retry_failure",
+        "terminal_failure",
+        "subscription_dropped",
+    ]
+    assert subs == []
+    diags = kd.compute_task_diagnostics(task, events, [], now=300)
+    hits = [d for d in diags if d.kind == "missing_ack_relay"]
+    assert len(hits) == 1
+    assert hits[0].data["outcome"] == "terminal_failure"
+    assert hits[0].data["platform"] == "telegram"
+    assert all("dead-chat" not in str(e.payload) for e in events if e.kind == "notify_delivery_status")
+    assert all("bot kicked" not in str(e.payload) for e in events if e.kind == "notify_delivery_status")
+
+
+def test_complete_task_without_requested_target_has_no_ack_diagnostic(kanban_home):
+    from hermes_cli import kanban_diagnostics as kd
+
     conn = kb.connect()
     try:
         tid = kb.create_task(conn, title="leaf task", assignee="worker")
-        # Has a live notify sub, so the empty-notify ambiguity does not apply.
-        kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="c1")
-        kb.complete_task(conn, tid, summary="Verdict: GO\nshipped.")
+        kb.complete_task(
+            conn,
+            tid,
+            summary="Verdict: BLOCK\nno messaging targets / origin relay could not be sent",
+            metadata={"relay": "no live gateway runner"},
+        )
         events = kb.list_events(conn, tid)
+        task = kb.get_task(conn, tid)
     finally:
         conn.close()
+
     assert [e for e in events if e.kind == "ack_relay_status"] == []
-
-
-def test_complete_task_ack_relay_event_emitted_once_no_storm(kanban_home):
-    conn = kb.connect()
-    try:
-        tid = kb.create_task(conn, title="fanin task", assignee="reviewer")
-        kb.complete_task(conn, tid, summary="Verdict: BLOCK no messaging targets")
-        # A second completion call on an already-done task is a no-op and
-        # must not append another ack_relay_status event.
-        kb.complete_task(conn, tid, summary="Verdict: BLOCK no messaging targets")
-        events = kb.list_events(conn, tid)
-    finally:
-        conn.close()
-    assert len([e for e in events if e.kind == "ack_relay_status"]) == 1
+    assert [e for e in events if e.kind == "notify_delivery_status"] == []
+    assert [d for d in kd.compute_task_diagnostics(task, events, [], now=300) if d.kind == "missing_ack_relay"] == []

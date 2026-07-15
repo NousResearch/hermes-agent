@@ -1001,38 +1001,34 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
 
 
 def _rule_missing_ack_relay(task, events, runs, now, cfg) -> list[Diagnostic]:
-    """A terminal task reached a work verdict but the origin ACK/relay
-    could not be delivered (or had no target).
+    """A requested origin notification target hit terminal send failure.
 
-    Fires on active ``ack_relay_status`` events — those not superseded by a
-    later clean ``completed`` / ``edited`` (a retry that relayed fine clears
-    the stale signal). ``ack_status="failed"`` is an error (the relay
-    demonstrably failed); ``ack_status="ambiguous"`` is a warning (no target
-    at terminal time — could be delivered-then-removed or never subscribed).
-
-    Keeps ``task_verdict`` and ``ack_status`` separate so a done BLOCK/GO
-    task is not silently treated as fully delivered. The recovery hint is
-    deliberately conservative: surface the gap and let the operator relay /
-    re-trigger, rather than auto-firing a wake.
+    This rule deliberately keys only off sanitized ``notify_delivery_status``
+    rows written by the gateway notifier around ``adapter.send``. It does not
+    infer failure from completion prose, missing optional subscriptions, or a
+    worker-side summary, because none of those can observe actual delivery.
     """
-    hits = _active_hallucination_events(events, "ack_relay_status")
-    if not hits:
+    delivery_events = [ev for ev in events if _event_kind(ev) == "notify_delivery_status"]
+    terminal_failures = [
+        ev for ev in delivery_events
+        if _parse_payload(ev).get("outcome") == "terminal_failure"
+    ]
+    if not terminal_failures:
         return []
-    # The latest active event wins for status/verdict; "failed" anywhere in
-    # the active run dominates "ambiguous".
-    statuses = [(_parse_payload(ev).get("ack_status") or "") for ev in hits]
-    failed = "failed" in statuses
-    ack_status = "failed" if failed else (statuses[-1] or "ambiguous")
-    matched: list[str] = []
-    task_verdict = None
-    for ev in hits:
+    latest_by_target: dict[str, str] = {}
+    for ev in delivery_events:
         p = _parse_payload(ev)
-        if p.get("task_verdict"):
-            task_verdict = p.get("task_verdict")
-        for m in p.get("matched", []) or []:
-            if m not in matched:
-                matched.append(m)
-    severity = "error" if failed else "warning"
+        target = str(p.get("target_hash") or "")
+        if target:
+            latest_by_target[target] = str(p.get("outcome") or "")
+    active_failures = []
+    for ev in terminal_failures:
+        p = _parse_payload(ev)
+        target = str(p.get("target_hash") or "")
+        if not target or latest_by_target.get(target) in {"terminal_failure", "subscription_dropped"}:
+            active_failures.append(ev)
+    if not active_failures:
+        return []
     task_id = _task_field(task, "id")
     actions: list[DiagnosticAction] = [
         DiagnosticAction(
@@ -1047,39 +1043,33 @@ def _rule_missing_ack_relay(task, events, runs, now, cfg) -> list[Diagnostic]:
             label=f"Inspect relay context: hermes kanban show {task_id}",
             payload={"command": f"hermes kanban show {task_id}"},
         ))
-    verdict_str = task_verdict or "(none)"
-    if failed:
-        detail = (
-            f"This task reached a terminal work verdict ({verdict_str}) but the "
-            f"origin ACK/relay could not be delivered "
-            f"({', '.join(matched) or 'relay failure'}). The worker could not "
-            f"message the origin and the gateway relay had no live target, so "
-            f"the origin may be silently waiting. The task is done, but the "
-            f"ACK is not — relay the result or re-trigger the origin wake."
-        )
-    else:
-        detail = (
-            f"This task reached a terminal work verdict ({verdict_str}) but no "
-            f"notify target was registered at completion time, so whether the "
-            f"origin was woken is ambiguous. Confirm the origin received the "
-            f"verdict; relay it manually if not."
-        )
+    latest = _parse_payload(active_failures[-1])
+    platform = latest.get("platform") or "unknown"
+    detail = (
+        f"The gateway notifier retried delivery to an explicitly requested "
+        f"{platform} notification target and reached terminal send failure "
+        f"({latest.get('failure_count')}/{latest.get('max_failures')}). The "
+        f"subscription was dropped to stop a dead-chat retry loop, so the "
+        f"origin may not have received the Kanban verdict. Relay the result "
+        f"manually or re-subscribe a valid target."
+    )
     return [Diagnostic(
         kind="missing_ack_relay",
-        severity=severity,
-        title=(
-            f"Verdict {verdict_str} done but origin ACK "
-            f"{'failed' if failed else 'unconfirmed'}"
-        ),
+        severity="error",
+        title="Kanban notification delivery failed at gateway boundary",
         detail=detail,
         actions=actions,
-        first_seen_at=_event_ts(hits[0]),
-        last_seen_at=_event_ts(hits[-1]),
-        count=len(hits),
+        first_seen_at=_event_ts(active_failures[0]),
+        last_seen_at=_event_ts(active_failures[-1]),
+        count=len(active_failures),
         data={
-            "task_verdict": task_verdict,
-            "ack_status": ack_status,
-            "matched": matched,
+            "ack_status": "failed",
+            "outcome": "terminal_failure",
+            "platform": platform,
+            "target_hash": latest.get("target_hash"),
+            "event_kind": latest.get("event_kind"),
+            "failure_count": latest.get("failure_count"),
+            "max_failures": latest.get("max_failures"),
         },
     )]
 

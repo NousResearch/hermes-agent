@@ -776,66 +776,71 @@ def test_severity_at_or_above_uses_threshold_semantics():
 
 
 # ---------------------------------------------------------------------------
-# missing_ack_relay — origin ACK/relay failed even though the work verdict
-# is terminal. task_verdict and ack_status are tracked separately so a
-# done BLOCK/GO task does not silently look fully delivered.
+# missing_ack_relay — origin ACK/relay failed at the actual gateway notifier
+# adapter.send boundary. Missing optional subscriptions and completion prose are
+# not evidence of failure.
 # ---------------------------------------------------------------------------
 
 
-def test_missing_ack_relay_fires_on_failed_event():
+def test_missing_ack_relay_fires_on_terminal_delivery_failure():
     task = _task(status="done")
     events = [
         _event("completed", ts=100, summary="Verdict: BLOCK"),
-        _event("ack_relay_status", ts=101, ack_status="failed",
-               task_verdict="BLOCK", matched=["no messaging targets"]),
+        _event("notify_delivery_status", ts=101, outcome="retry_failure",
+               platform="telegram", target_hash="abc", event_kind="completed",
+               failure_count=1, max_failures=3),
+        _event("notify_delivery_status", ts=102, outcome="terminal_failure",
+               platform="telegram", target_hash="abc", event_kind="completed",
+               failure_count=3, max_failures=3),
+        _event("notify_delivery_status", ts=103, outcome="subscription_dropped",
+               platform="telegram", target_hash="abc", event_kind="completed",
+               failure_count=3, max_failures=3),
     ]
     diags = kd.compute_task_diagnostics(task, events, [], now=300)
     hits = [d for d in diags if d.kind == "missing_ack_relay"]
     assert len(hits) == 1
     d = hits[0]
     assert d.severity == "error"
-    # Verdict is reported but kept distinct from the ack status.
-    assert d.data["task_verdict"] == "BLOCK"
     assert d.data["ack_status"] == "failed"
-    assert "no messaging targets" in d.data["matched"]
+    assert d.data["outcome"] == "terminal_failure"
+    assert d.data["platform"] == "telegram"
+    assert d.data["target_hash"] == "abc"
 
 
-def test_missing_ack_relay_ambiguous_is_warning():
+def test_missing_ack_relay_ignores_missing_optional_subscription_prose():
     task = _task(status="done")
     events = [
-        _event("completed", ts=100, summary="Verdict: GO"),
-        _event("ack_relay_status", ts=101, ack_status="ambiguous",
-               task_verdict="GO", matched=[]),
-    ]
-    diags = kd.compute_task_diagnostics(task, events, [], now=300)
-    hits = [d for d in diags if d.kind == "missing_ack_relay"]
-    assert len(hits) == 1
-    assert hits[0].severity == "warning"
-    assert hits[0].data["ack_status"] == "ambiguous"
-
-
-def test_missing_ack_relay_clears_after_clean_recompletion():
-    task = _task(status="done")
-    events = [
-        _event("completed", ts=100, summary="Verdict: BLOCK"),
-        _event("ack_relay_status", ts=101, ack_status="failed",
-               task_verdict="BLOCK", matched=["origin relay could not be sent"]),
-        # A later clean completion (e.g. after a reclaim+retry that relayed
-        # fine) supersedes the stale failure.
-        _event("completed", ts=200, summary="Verdict: GO"),
+        _event("completed", ts=100, summary="Verdict: GO no messaging targets"),
     ]
     diags = kd.compute_task_diagnostics(task, events, [], now=300)
     assert [d for d in diags if d.kind == "missing_ack_relay"] == []
 
 
-def test_missing_ack_relay_does_not_storm_on_repeated_events():
+def test_missing_ack_relay_ignores_retry_failure_when_later_delivered():
     task = _task(status="done")
     events = [
         _event("completed", ts=100, summary="Verdict: BLOCK"),
-        _event("ack_relay_status", ts=101, ack_status="failed",
-               task_verdict="BLOCK", matched=["no live gateway runner"]),
-        _event("ack_relay_status", ts=102, ack_status="failed",
-               task_verdict="BLOCK", matched=["no live gateway runner"]),
+        _event("notify_delivery_status", ts=101, outcome="retry_failure",
+               platform="discord", target_hash="target1", event_kind="completed",
+               failure_count=1, max_failures=3),
+        _event("notify_delivery_status", ts=102, outcome="delivered",
+               platform="discord", target_hash="target1", event_kind="completed",
+               failure_count=0, max_failures=3),
+    ]
+    diags = kd.compute_task_diagnostics(task, events, [], now=300)
+    assert [d for d in diags if d.kind == "missing_ack_relay"] == []
+
+
+def test_missing_ack_relay_does_not_storm_on_repeated_terminal_failures():
+    task = _task(status="done")
+    events = [
+        _event("completed", ts=100, summary="Verdict: BLOCK"),
+        _event("notify_delivery_status", ts=101, outcome="terminal_failure",
+               platform="telegram", target_hash="a", event_kind="completed",
+               failure_count=3, max_failures=3),
+        _event("notify_delivery_status", ts=102, outcome="terminal_failure",
+               platform="telegram", target_hash="b", event_kind="completed",
+               failure_count=3, max_failures=3),
     ]
     diags = kd.compute_task_diagnostics(task, events, [], now=300)
     hits = [d for d in diags if d.kind == "missing_ack_relay"]

@@ -11143,11 +11143,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
     except subprocess.CalledProcessError as e:
         if sys.platform == "win32":
             print(f"⚠ Git update failed: {e}")
+            # Dump captured output so the failure is debuggable
+            if getattr(e, "stdout", None):
+                print(e.stdout.decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else str(e.stdout))
+            if getattr(e, "stderr", None):
+                print(e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else str(e.stderr))
             print("→ Falling back to ZIP download...")
             print()
             _update_via_zip(args)
         else:
             print(f"✗ Update failed: {e}")
+            # Dump captured output so the failure is debuggable
+            if getattr(e, "stdout", None):
+                stdout_text = e.stdout.decode("utf-8", errors="replace") if isinstance(e.stdout, bytes) else str(e.stdout)
+                print(f"  stdout:\n{stdout_text}")
+            if getattr(e, "stderr", None):
+                stderr_text = e.stderr.decode("utf-8", errors="replace") if isinstance(e.stderr, bytes) else str(e.stderr)
+                print(f"  stderr:\n{stderr_text}")
             sys.exit(1)
 
 

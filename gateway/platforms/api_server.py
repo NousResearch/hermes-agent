@@ -1743,6 +1743,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_approval_response": True,
                 "run_reasoning_effort": True,
                 "thinking_progress_events": self._thinking_progress_enabled(),
+                "run_task_updates": True,
+                "run_subagent_updates": True,
                 "tool_progress_events": True,
                 "approval_events": True,
                 "mobile_notifications": True,
@@ -1905,6 +1907,15 @@ class APIServerAdapter(BasePlatformAdapter):
         # callers only need to know whether those snapshots exist.
         payload["has_system_prompt"] = bool(session.get("system_prompt"))
         payload["has_model_config"] = bool(session.get("model_config"))
+        try:
+            last_active = float(session.get("last_active") or session.get("started_at") or 0)
+        except (TypeError, ValueError):
+            last_active = 0
+        payload["is_active"] = bool(
+            session.get("ended_at") is None
+            and last_active > 0
+            and time.time() - last_active < 300
+        )
         return payload
 
     @staticmethod
@@ -4527,6 +4538,15 @@ class APIServerAdapter(BasePlatformAdapter):
                     "duration": round(kwargs.get("duration", 0), 3),
                     "error": kwargs.get("is_error", False),
                 })
+                if tool_name == "todo":
+                    tasks = self._safe_todo_tasks(kwargs.get("result"))
+                    if tasks:
+                        _push({
+                            "event": "tasks.updated",
+                            "run_id": run_id,
+                            "timestamp": ts,
+                            "tasks": tasks,
+                        })
             elif event_type == "reasoning.available":
                 _push({
                     "event": "reasoning.available",
@@ -4543,6 +4563,21 @@ class APIServerAdapter(BasePlatformAdapter):
                         "timestamp": ts,
                         "text": text,
                     })
+            elif event_type.startswith("subagent."):
+                subagent = self._safe_subagent_update(
+                    event_type,
+                    tool_name=tool_name,
+                    preview=preview,
+                    thinking_progress_enabled=thinking_progress_enabled,
+                    **kwargs,
+                )
+                if subagent is not None:
+                    _push({
+                        "event": "subagent.updated",
+                        "run_id": run_id,
+                        "timestamp": ts,
+                        "subagent": subagent,
+                    })
 
         return _callback
 
@@ -4557,6 +4592,86 @@ class APIServerAdapter(BasePlatformAdapter):
             "thinking_progress",
             fallback=False,
         ))
+
+    @staticmethod
+    def _safe_todo_tasks(result: Any) -> List[Dict[str, str]]:
+        """Extract the bounded, user-visible todo list from a completed tool call."""
+        if isinstance(result, str):
+            try:
+                result = json.loads(result)
+            except (TypeError, ValueError):
+                return []
+        if not isinstance(result, dict) or not isinstance(result.get("todos"), list):
+            return []
+        tasks: List[Dict[str, str]] = []
+        allowed_statuses = {"pending", "in_progress", "completed", "cancelled"}
+        for item in result["todos"][:64]:
+            if not isinstance(item, dict):
+                continue
+            task_id = " ".join(str(item.get("id") or "").split())[:120]
+            content = " ".join(str(item.get("content") or "").split())[:240]
+            status = str(item.get("status") or "pending").strip().lower()
+            if not task_id or not content or status not in allowed_statuses:
+                continue
+            tasks.append({"id": task_id, "content": content, "status": status})
+        return tasks
+
+    @staticmethod
+    def _safe_subagent_update(
+        event_type: str,
+        *,
+        tool_name: Any,
+        preview: Any,
+        thinking_progress_enabled: bool,
+        **kwargs: Any,
+    ) -> Optional[Dict[str, Any]]:
+        """Project the delegation callback into a bounded mobile-safe status update."""
+        subagent_id = " ".join(str(kwargs.get("subagent_id") or "").split())[:120]
+        if not subagent_id:
+            return None
+
+        raw_status = kwargs.get("status")
+        if event_type == "subagent.start":
+            raw_status = "running"
+        elif event_type == "subagent.thinking":
+            raw_status = "thinking"
+        elif event_type in {"subagent.tool", "subagent.progress"}:
+            raw_status = "working"
+        allowed_statuses = {"running", "working", "thinking", "completed", "failed", "timeout", "interrupted", "error"}
+        status = str(raw_status or "working").strip().lower()
+        if status not in allowed_statuses:
+            status = "working"
+
+        def _safe_text(value: Any, limit: int = 240) -> str:
+            return " ".join(str(value or "").split())[:limit]
+
+        activity = ""
+        if event_type == "subagent.tool":
+            activity = _safe_text(tool_name, 120)
+        elif event_type == "subagent.progress":
+            activity = _safe_text(preview, 240)
+        elif event_type == "subagent.thinking" and thinking_progress_enabled:
+            activity = _safe_text(preview or tool_name, 240)
+
+        def _nonnegative_int(value: Any) -> int:
+            try:
+                return max(0, int(value))
+            except (TypeError, ValueError):
+                return 0
+
+        update: Dict[str, Any] = {
+            "id": subagent_id,
+            "status": status,
+            "task_index": _nonnegative_int(kwargs.get("task_index")),
+            "task_count": _nonnegative_int(kwargs.get("task_count")),
+            "tool_count": _nonnegative_int(kwargs.get("tool_count")),
+        }
+        goal = _safe_text(kwargs.get("goal") or (preview if event_type == "subagent.start" else ""))
+        if goal:
+            update["goal"] = goal
+        if activity:
+            update["activity"] = activity
+        return update
 
     @_admit_api_agent_request
     async def _handle_runs(self, request: "web.Request") -> "web.Response":

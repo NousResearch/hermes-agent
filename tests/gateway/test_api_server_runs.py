@@ -9,6 +9,7 @@ Covers:
 """
 
 import asyncio
+import json
 import threading
 import time
 from unittest.mock import MagicMock, patch
@@ -316,6 +317,100 @@ class TestRunEvents:
         adapter._make_run_event_callback(disabled_run_id, loop)("_thinking", "Do not forward this")
         await asyncio.sleep(0)
         assert adapter._run_streams[disabled_run_id].empty()
+
+    @pytest.mark.asyncio
+    async def test_events_forward_todo_updates(self, adapter):
+        loop = asyncio.get_running_loop()
+        run_id = "run_tasks"
+        adapter._run_streams[run_id] = asyncio.Queue()
+
+        adapter._make_run_event_callback(run_id, loop)(
+            "tool.completed",
+            "todo",
+            result=json.dumps({
+                "todos": [
+                    {"id": "plan", "content": "Plan the release", "status": "completed"},
+                    {"id": "ship", "content": "Ship the release", "status": "in_progress"},
+                    {"id": "invalid", "content": "Ignore this", "status": "unknown"},
+                ],
+            }),
+        )
+
+        tool_event = await asyncio.wait_for(adapter._run_streams[run_id].get(), timeout=1)
+        task_event = await asyncio.wait_for(adapter._run_streams[run_id].get(), timeout=1)
+
+        assert tool_event["event"] == "tool.completed"
+        assert task_event["event"] == "tasks.updated"
+        assert task_event["run_id"] == run_id
+        assert task_event["tasks"] == [
+            {"id": "plan", "content": "Plan the release", "status": "completed"},
+            {"id": "ship", "content": "Ship the release", "status": "in_progress"},
+        ]
+
+    @pytest.mark.asyncio
+    async def test_events_forward_subagent_updates(self, adapter, monkeypatch):
+        loop = asyncio.get_running_loop()
+        run_id = "run_subagent"
+        adapter._run_streams[run_id] = asyncio.Queue()
+        monkeypatch.setattr(adapter, "_thinking_progress_enabled", lambda: True)
+        callback = adapter._make_run_event_callback(run_id, loop)
+
+        callback(
+            "subagent.start",
+            preview="Inspect the API",
+            subagent_id="subagent-1",
+            task_index=0,
+            task_count=2,
+            goal="Inspect the API",
+        )
+        callback(
+            "subagent.thinking",
+            preview="Tracing the event callback",
+            subagent_id="subagent-1",
+            task_index=0,
+            task_count=2,
+        )
+
+        start_event = await asyncio.wait_for(adapter._run_streams[run_id].get(), timeout=1)
+        thinking_event = await asyncio.wait_for(adapter._run_streams[run_id].get(), timeout=1)
+
+        assert start_event["event"] == "subagent.updated"
+        assert start_event["subagent"] == {
+            "id": "subagent-1",
+            "status": "running",
+            "task_index": 0,
+            "task_count": 2,
+            "tool_count": 0,
+            "goal": "Inspect the API",
+        }
+        assert thinking_event["subagent"]["status"] == "thinking"
+        assert thinking_event["subagent"]["activity"] == "Tracing the event callback"
+
+    def test_session_response_marks_recent_unfinished_session_active(self):
+        now = time.time()
+
+        active = APIServerAdapter._session_response({
+            "id": "desktop-active",
+            "started_at": now - 60,
+            "last_active": now - 1,
+            "ended_at": None,
+        })
+        stale = APIServerAdapter._session_response({
+            "id": "desktop-stale",
+            "started_at": now - 600,
+            "last_active": now - 301,
+            "ended_at": None,
+        })
+        finished = APIServerAdapter._session_response({
+            "id": "desktop-finished",
+            "started_at": now - 60,
+            "last_active": now - 1,
+            "ended_at": now,
+        })
+
+        assert active["is_active"] is True
+        assert stale["is_active"] is False
+        assert finished["is_active"] is False
 
     @pytest.mark.asyncio
     async def test_events_stream_returns_completed(self, adapter):

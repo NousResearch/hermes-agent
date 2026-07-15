@@ -209,6 +209,245 @@ def _format_result(result) -> str:
     return "\n".join(lines)
 
 
+# ── Host Scan ─────────────────────────────────────────────────────────────────
+
+SCAN_HOST_SCHEMA = {
+    "name": "scan_host",
+    "description": (
+        "Run a host/network vulnerability scan against an IP address, hostname, "
+        "or CIDR range. Performs port scanning, service fingerprinting, default "
+        "credential checks, SSL/TLS auditing, SMB null session testing, DNS "
+        "zone transfer attempts, and HTTP service discovery.\n\n"
+        "Use this for infrastructure-level reconnaissance before web application "
+        "testing. Maps the attack surface of a network host or subnet."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": (
+                    "Target to scan: IP address (e.g. 10.0.0.1), hostname "
+                    "(e.g. target.com), or CIDR range (e.g. 192.168.1.0/24)."
+                ),
+            },
+            "profile": {
+                "type": "string",
+                "enum": ["stealth", "normal", "aggressive", "brutal"],
+                "description": (
+                    "Scan intensity profile. "
+                    "stealth: top 100 ports, 30s timeout. "
+                    "normal: top 100 ports, 10s timeout. "
+                    "aggressive: top 1000 ports, 5s timeout. "
+                    "brutal: all 65535 ports, 3s timeout."
+                ),
+            },
+        },
+        "required": ["target"],
+    },
+}
+
+
+def scan_host_handler(args, **kwargs):
+    """Handle scan_host tool invocation."""
+    target = args.get("target", "")
+    if not target:
+        return tool_error("target is required")
+
+    profile = args.get("profile", "normal")
+
+    try:
+        from hermes_scan.platforms.host import scan_host as _scan_host
+    except ImportError as e:
+        return tool_error(
+            f"hermes_scan not installed: {e}. "
+            f"Expected at ~/.hermes/scripts/hermes_scan/"
+        )
+
+    try:
+        result = _scan_host(target=target, profile=profile)
+    except Exception as e:
+        return tool_error(f"Host scan failed: {e}")
+
+    output = _format_result(result)
+    return output
+
+
+# ── Mobile Scan ───────────────────────────────────────────────────────────────
+
+SCAN_MOBILE_SCHEMA = {
+    "name": "scan_mobile",
+    "description": (
+        "Run a mobile application static security scan against an Android APK "
+        "or iOS IPA file. Checks for exported components, dangerous permissions, "
+        "hardcoded secrets, insecure network config, deep link extraction, API "
+        "endpoint discovery, certificate pinning, and debug/backup flags.\n\n"
+        "Use this during mobile application penetration testing (Phase 2: Static "
+        "Analysis) to identify security weaknesses without running the app."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": "Path to the APK (.apk) or IPA (.ipa) file to scan.",
+            },
+            "profile": {
+                "type": "string",
+                "enum": ["stealth", "normal", "aggressive", "brutal"],
+                "description": "Scan intensity profile. Default: normal.",
+            },
+        },
+        "required": ["target"],
+    },
+}
+
+
+def scan_mobile_handler(args, **kwargs):
+    """Handle scan_mobile tool invocation."""
+    target = args.get("target", "")
+    if not target:
+        return tool_error("target is required")
+
+    profile = args.get("profile", "normal")
+
+    import asyncio
+
+    try:
+        from hermes_scan.platforms.mobile import scan_mobile as _scan_mobile
+        from hermes_scan.types import ScanConfig, ScanProfile
+    except ImportError as e:
+        return tool_error(
+            f"hermes_scan not installed: {e}. "
+            f"Expected at ~/.hermes/scripts/hermes_scan/"
+        )
+
+    config = ScanConfig(
+        target=target,
+        profile=ScanProfile(profile),
+    )
+
+    try:
+        result = asyncio.run(_scan_mobile(target_path=target, config=config))
+    except Exception as e:
+        return tool_error(f"Mobile scan failed: {e}")
+
+    output = _format_result(result)
+    return output
+
+
+# ── Source Scan ───────────────────────────────────────────────────────────────
+
+SCAN_SOURCE_SCHEMA = {
+    "name": "scan_source",
+    "description": (
+        "Run a source code security scan against a local directory. Performs "
+        "pure-Python regex-based static analysis for hardcoded secrets (API keys, "
+        "passwords, private keys), SQL injection sinks, command injection sinks, "
+        "path traversal sinks, XSS sinks, deserialization sinks, insecure crypto, "
+        "dependency auditing, sensitive file detection, and debug/dev code left "
+        "in production.\n\n"
+        "Use this for white-box security reviews of application source code."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": "Path to the source code directory to scan.",
+            },
+            "profile": {
+                "type": "string",
+                "enum": ["stealth", "normal", "aggressive", "brutal"],
+                "description": "Scan intensity profile. Default: normal.",
+            },
+        },
+        "required": ["target"],
+    },
+}
+
+
+def scan_source_handler(args, **kwargs):
+    """Handle scan_source tool invocation."""
+    target = args.get("target", "")
+    if not target:
+        return tool_error("target is required")
+
+    profile = args.get("profile", "normal")
+
+    try:
+        from hermes_scan.scanner import scan_source as _scan_source
+    except ImportError as e:
+        return tool_error(
+            f"hermes_scan not installed: {e}. "
+            f"Expected at ~/.hermes/scripts/hermes_scan/"
+        )
+
+    try:
+        result = _scan_source(target_path=target, profile=profile)
+    except Exception as e:
+        return tool_error(f"Source scan failed: {e}")
+
+    output = _format_result(result)
+    return output
+
+
+# ── Binary Scan ───────────────────────────────────────────────────────────────
+
+SCAN_BINARY_SCHEMA = {
+    "name": "scan_binary",
+    "description": (
+        "Run a binary file security scan against ELF, PE, or Mach-O executables. "
+        "Checks binary protections (NX, PIE, RELRO, Stack Canary), extracts "
+        "sensitive strings (URLs, IPs, secrets), detects dangerous function "
+        "imports (gets, system, strcpy), discovers embedded certificates/keys, "
+        "analyzes debug symbols, and identifies DLL hijacking potential.\n\n"
+        "Use this when you have access to compiled binaries during a penetration "
+        "test or red team engagement."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "target": {
+                "type": "string",
+                "description": "Path to the executable binary file to scan.",
+            },
+            "profile": {
+                "type": "string",
+                "enum": ["stealth", "normal", "aggressive", "brutal"],
+                "description": "Scan intensity profile. Default: normal.",
+            },
+        },
+        "required": ["target"],
+    },
+}
+
+
+def scan_binary_handler(args, **kwargs):
+    """Handle scan_binary tool invocation."""
+    target = args.get("target", "")
+    if not target:
+        return tool_error("target is required")
+
+    profile = args.get("profile", "normal")
+
+    try:
+        from hermes_scan.platforms.binary import scan_binary as _scan_binary
+    except ImportError as e:
+        return tool_error(
+            f"hermes_scan not installed: {e}. "
+            f"Expected at ~/.hermes/scripts/hermes_scan/"
+        )
+
+    try:
+        result = _scan_binary(target_path=target, profile=profile)
+    except Exception as e:
+        return tool_error(f"Binary scan failed: {e}")
+
+    output = _format_result(result)
+    return output
+
+
 # --- Registry ---
 from tools.registry import registry, tool_error
 
@@ -219,4 +458,40 @@ registry.register(
     handler=lambda args, **kw: scan_web_handler(args, **kw),
     emoji="🔍",
     description="Run automated web vulnerability scan (13 modules: SQLi, XSS, SSRF, LFI, etc.)",
+)
+
+registry.register(
+    name="scan_host",
+    toolset="security",
+    schema=SCAN_HOST_SCHEMA,
+    handler=lambda args, **kw: scan_host_handler(args, **kw),
+    emoji="🖥️",
+    description="Run host/network vulnerability scan (ports, services, default creds, SSL/TLS)",
+)
+
+registry.register(
+    name="scan_mobile",
+    toolset="security",
+    schema=SCAN_MOBILE_SCHEMA,
+    handler=lambda args, **kw: scan_mobile_handler(args, **kw),
+    emoji="📱",
+    description="Run mobile app static security scan (APK/IPA analysis, secrets, permissions)",
+)
+
+registry.register(
+    name="scan_source",
+    toolset="security",
+    schema=SCAN_SOURCE_SCHEMA,
+    handler=lambda args, **kw: scan_source_handler(args, **kw),
+    emoji="📄",
+    description="Run source code security scan (secrets, SQLi, XSS, crypto, deps)",
+)
+
+registry.register(
+    name="scan_binary",
+    toolset="security",
+    schema=SCAN_BINARY_SCHEMA,
+    handler=lambda args, **kw: scan_binary_handler(args, **kw),
+    emoji="⚙️",
+    description="Run binary file security scan (protections, strings, dangerous imports, certs)",
 )

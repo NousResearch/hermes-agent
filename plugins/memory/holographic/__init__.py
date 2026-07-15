@@ -374,7 +374,32 @@ class HolographicMemoryProvider(MemoryProvider):
     def _auto_extract_facts(self, messages: list) -> None:
         # Local import (pattern used in initialize()): the compressor module is
         # heavier than this plugin and is only needed when auto_extract is on.
-        from agent.context_compressor import is_compaction_summary_message
+        from agent.context_compressor import (
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+            is_compaction_summary_message,
+        )
+
+        def _pre_delimiter_user_segment(msg: dict):
+            """Return the genuine user text preceding a merged-into-tail
+            compaction summary, or None when the whole message is a summary.
+
+            Merge-into-tail messages (agent/context_compressor.py ~3163-3190)
+            wrap real prior tail content BEFORE ``_MERGED_SUMMARY_DELIMITER``,
+            prefixed with ``_MERGED_PRIOR_CONTEXT_HEADER``, then append the
+            generated handoff summary AFTER the delimiter. Dropping the whole
+            row (as ``is_compaction_summary_message`` alone would suggest)
+            discards that genuine pre-delimiter content too (#57690 review).
+            Only the summary suffix must be excluded from harvesting.
+            """
+            content = msg.get("content", "")
+            if not isinstance(content, str) or _MERGED_SUMMARY_DELIMITER not in content:
+                return None
+            pre = content.split(_MERGED_SUMMARY_DELIMITER, 1)[0]
+            if pre.startswith(_MERGED_PRIOR_CONTEXT_HEADER):
+                pre = pre[len(_MERGED_PRIOR_CONTEXT_HEADER):]
+            pre = pre.strip()
+            return pre or None
 
         _PREF_PATTERNS = [
             re.compile(r'\bI\s+(?:prefer|like|love|use|want|need)\s+(.+)', re.IGNORECASE),
@@ -393,10 +418,17 @@ class HolographicMemoryProvider(MemoryProvider):
             # Compaction handoff summaries can be inserted as role="user"
             # messages; their prose reliably matches the decision patterns, so
             # without this guard the compactor's own output is stored as a
-            # durable "fact" on every rollover (#57682).
-            if is_compaction_summary_message(msg):
+            # durable "fact" on every rollover (#57682). A merge-into-tail
+            # summary also carries genuine pre-delimiter user content in the
+            # SAME row; harvest that segment instead of dropping the whole
+            # message (#57690 review).
+            pre_delimiter_segment = _pre_delimiter_user_segment(msg)
+            if pre_delimiter_segment is not None:
+                content = pre_delimiter_segment
+            elif is_compaction_summary_message(msg):
                 continue
-            content = msg.get("content", "")
+            else:
+                content = msg.get("content", "")
             if not isinstance(content, str) or len(content) < 10:
                 continue
 

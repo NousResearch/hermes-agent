@@ -102,9 +102,10 @@ def test_metadata_marked_summary_not_harvested(tmp_path):
     provider.shutdown()
 
 
-def test_merged_into_tail_summary_not_harvested(tmp_path):
+def test_merged_into_tail_summary_suffix_not_harvested_prefix_content_ignored(tmp_path):
     """Merge-into-tail summaries embed the handoff prefix after the delimiter,
-    not at the start of the message."""
+    not at the start of the message. The wrapped pre-delimiter segment here has
+    no fact-pattern match, so nothing is harvested from either side."""
     provider = _make_provider(tmp_path, auto_extract=True)
     merged = _user(
         f"{_MERGED_PRIOR_CONTEXT_HEADER}\nplease fix the login bug\n"
@@ -112,6 +113,27 @@ def test_merged_into_tail_summary_not_harvested(tmp_path):
     )
     provider.on_session_end([merged])
     assert _fact_contents(provider) == []
+    provider.shutdown()
+
+
+def test_merged_into_tail_preserves_genuine_pre_delimiter_preference(tmp_path):
+    """#57690 review: teknium1 noted the ENTIRE merged row was being skipped,
+    discarding genuine pre-delimiter user content (context_compressor.py
+    ~3163-3190 retains real prior tail text before the summary). The fix must
+    extract and harvest that segment while still excluding the summary
+    suffix."""
+    provider = _make_provider(tmp_path, auto_extract=True)
+    merged = _user(
+        f"{_MERGED_PRIOR_CONTEXT_HEADER}\n"
+        "I prefer tabs over spaces for indentation\n"
+        f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_MSG}"
+    )
+    provider.on_session_end([merged])
+    facts = _fact_contents(provider)
+    assert len(facts) == 1
+    assert "tabs over spaces" in facts[0]
+    assert "kanban board" not in facts[0]
+    assert "PostgreSQL" not in facts[0]
     provider.shutdown()
 
 

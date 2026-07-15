@@ -633,6 +633,17 @@ def _file_to_data_url(path: Path) -> Optional[str]:
     proceeds.
     """
     try:
+        from agent.file_safety import raise_if_read_blocked
+
+        raise_if_read_blocked(str(path))
+    except ValueError as exc:
+        logger.warning("image_routing: blocked local image attachment %s -- %s", path, exc)
+        return None
+    except Exception:
+        # Keep attachment routing best-effort if the guard itself is unavailable.
+        pass
+
+    try:
         raw = path.read_bytes()
     except Exception as exc:
         logger.warning("image_routing: failed to read %s — %s", path, exc)

@@ -303,6 +303,7 @@ export interface PaginatedSessions {
 
 export interface RpcEvent<T = unknown> {
   payload?: T
+  profile?: string
   session_id?: string
   type: string
 }
@@ -400,12 +401,14 @@ export interface SessionRuntimeProjectInfo {
 }
 
 export interface SessionRuntimeInfo {
+  approval_mode?: 'manual' | 'off' | 'smart'
   branch?: string
   config_warning?: string
   credential_warning?: string
   cwd?: string
   desktop_contract?: number
   fast?: boolean
+  install_warning?: string
   model?: string
   personality?: string
   project?: null | SessionRuntimeProjectInfo
@@ -563,6 +566,7 @@ export interface CronJob {
   last_run_at?: null | string
   name?: null | string
   next_run_at?: null | string
+  no_agent?: boolean
   prompt?: null | string
   schedule?: CronJobSchedule
   schedule_display?: null | string

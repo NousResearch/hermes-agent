@@ -123,6 +123,25 @@ def _codex_incomplete_message_response(text: str):
     )
 
 
+def _codex_max_output_incomplete_response(text: str = ""):
+    content = []
+    if text:
+        content.append(SimpleNamespace(type="output_text", text=text))
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                status="incomplete",
+                content=content,
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=270_000, output_tokens=1, total_tokens=270_001),
+        status="incomplete",
+        incomplete_details=SimpleNamespace(reason="max_output_tokens"),
+        model="gpt-5-codex",
+    )
+
+
 def _codex_commentary_message_response(text: str):
     return SimpleNamespace(
         output=[
@@ -610,6 +629,74 @@ def test_run_codex_stream_returns_collected_items_when_stream_ends_without_termi
     assert response.output == [output_item]
 
 
+def test_consume_codex_stream_routes_commentary_phase_deltas_to_reasoning(monkeypatch):
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    commentary_item = SimpleNamespace(
+        type="message",
+        phase="commentary",
+        status="completed",
+        content=[SimpleNamespace(type="output_text", text="I’ll call the tool now.")],
+    )
+    function_item = SimpleNamespace(
+        type="function_call",
+        id="fc_1",
+        call_id="call_1",
+        name="terminal",
+        arguments="{}",
+    )
+    streamed = []
+    reasoning_streamed = []
+
+    response = _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="message", phase="commentary"),
+            ),
+            SimpleNamespace(type="response.output_text.delta", delta="I’ll call the tool now."),
+            SimpleNamespace(type="response.output_item.done", item=commentary_item),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="function_call"),
+            ),
+            SimpleNamespace(type="response.output_item.done", item=function_item),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_text_delta=streamed.append,
+        on_reasoning_delta=reasoning_streamed.append,
+    )
+
+    assert streamed == []
+    assert reasoning_streamed == ["I’ll call the tool now."]
+    assert response.output == [commentary_item, function_item]
+    assert response.output_text == ""
+
+
+def test_consume_codex_stream_keeps_final_answer_phase_deltas(monkeypatch):
+    from agent.codex_runtime import _consume_codex_event_stream
+
+    streamed = []
+    response = _consume_codex_event_stream(
+        _FakeCreateStream([
+            SimpleNamespace(type="response.created"),
+            SimpleNamespace(
+                type="response.output_item.added",
+                item=SimpleNamespace(type="message", phase="final_answer"),
+            ),
+            SimpleNamespace(type="response.output_text.delta", delta="visible answer"),
+            SimpleNamespace(type="response.completed", response=SimpleNamespace(status="completed")),
+        ]),
+        model="gpt-5-codex",
+        on_text_delta=streamed.append,
+    )
+
+    assert streamed == ["visible answer"]
+    assert response.output_text == "visible answer"
+
+
 def test_run_codex_stream_surfaces_failed_status_in_final_response(monkeypatch):
     """A ``response.failed`` terminal event is reflected on the returned object."""
     agent = _build_agent(monkeypatch)
@@ -732,6 +819,81 @@ def test_run_conversation_codex_plain_text(monkeypatch):
     assert result["final_response"] == "OK"
     assert result["messages"][-1]["role"] == "assistant"
     assert result["messages"][-1]["content"] == "OK"
+
+
+def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
+    """The dispatch chokepoint must sanitize after every mutable layer."""
+    agent = _build_copilot_agent(monkeypatch)
+    setattr(agent, "_disable_streaming", True)
+    captured = {}
+
+    def _message_item(item_id, *, text, phase, status):
+        return {
+            "type": "message",
+            "role": "assistant",
+            "status": status,
+            "content": [{"type": "output_text", "text": text}],
+            "id": item_id,
+            "phase": phase,
+        }
+
+    def _request_middleware(request, **_context):
+        replacement = dict(request)
+        replacement["input"] = [
+            _message_item(
+                "request_middleware_id",
+                text="request-layer",
+                phase="commentary",
+                status="completed",
+            )
+        ]
+        return SimpleNamespace(
+            payload=replacement,
+            original_payload=request,
+            changed=True,
+            trace=[],
+        )
+
+    def _execution_middleware(request, next_call, **_context):
+        # Request middleware runs after the initial preflight, so its ID is
+        # still present here. The dispatch chokepoint must remove the ID that
+        # this execution middleware introduces immediately before the API call.
+        assert request["input"][0]["id"] == "request_middleware_id"
+        replacement = dict(request)
+        replacement["input"] = [
+            _message_item(
+                "execution_middleware_id",
+                text="execution-layer",
+                phase="final_answer",
+                status="in_progress",
+            )
+        ]
+        return next_call(replacement)
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(
+        "hermes_cli.middleware.apply_llm_request_middleware",
+        _request_middleware,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.middleware.run_llm_execution_middleware",
+        _execution_middleware,
+    )
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Say OK")
+
+    assert result["completed"] is True
+    message_item = captured["input"][0]
+    assert "id" not in message_item
+    assert message_item["status"] == "in_progress"
+    assert message_item["phase"] == "final_answer"
+    assert message_item["content"] == [
+        {"type": "output_text", "text": "execution-layer"}
+    ]
 
 
 def test_run_conversation_codex_empty_output_with_output_text(monkeypatch):
@@ -1137,7 +1299,7 @@ def test_run_conversation_codex_tool_round_trip(monkeypatch):
     responses = [_codex_tool_call_response(), _codex_message_response("done")]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *_args):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -1328,7 +1490,7 @@ def test_run_conversation_codex_replay_payload_keeps_call_id(monkeypatch):
 
     monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *_args):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -1363,7 +1525,7 @@ def test_run_conversation_codex_continues_after_incomplete_interim_message(monke
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *_args):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -1388,6 +1550,160 @@ def test_run_conversation_codex_continues_after_incomplete_interim_message(monke
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
 
 
+def test_run_conversation_codex_continues_after_max_output_incomplete(monkeypatch):
+    """Codex max_output_tokens terminal status is a resumable incomplete turn.
+
+    It must not be routed through the generic chat-completions length handler,
+    which returns the user-facing "Response truncated due to output length
+    limit" warning and stops the gateway turn.
+    """
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_max_output_incomplete_response("Partial final answer"),
+        _codex_message_response(" after continuation."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("write a long final answer")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "after continuation."
+    assert "Response truncated due to output length limit" not in str(result)
+    assert any(
+        msg.get("role") == "assistant"
+        and msg.get("finish_reason") == "incomplete"
+        and "Partial final answer" in (msg.get("content") or "")
+        for msg in result["messages"]
+    )
+
+
+def test_run_conversation_compresses_mid_turn_before_output_budget_exhaustion(monkeypatch):
+    """Long tool-heavy turns should compact before the next API request.
+
+    Initial preflight compression only sees the user's first message. A single
+    turn can then grow by many tool results and leave almost no output budget
+    (the live 271k/272k GPT-5.5 failure). The agent should re-check request
+    pressure before every API call and compact before asking the model to
+    produce the final answer.
+    """
+    agent = _build_agent(monkeypatch)
+    agent.context_compressor.context_length = 20_000
+    agent.context_compressor.threshold_tokens = 20_000
+
+    responses = [
+        _codex_tool_call_response(),
+        _codex_message_response("Summary after compaction."),
+    ]
+    requests = []
+    monkeypatch.setattr(
+        agent,
+        "_interruptible_api_call",
+        lambda api_kwargs: requests.append(api_kwargs) or responses.pop(0),
+    )
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
+        for call in assistant_message.tool_calls:
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": call.id,
+                    "content": "x" * 80_000,
+                }
+            )
+
+    compress_calls = []
+
+    def _fake_compress_context(messages, system_message, *, approx_tokens=None, task_id="default", focus_topic=None):
+        compress_calls.append(approx_tokens)
+        return [
+            {"role": "user", "content": "[summary of prior tool-heavy work]"},
+        ], "You are Hermes."
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+    monkeypatch.setattr(agent, "_compress_context", _fake_compress_context)
+
+    result = agent.run_conversation("do a tool-heavy task")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Summary after compaction."
+    assert len(compress_calls) == 1
+    assert compress_calls[0] >= 15_000
+    assert len(requests) == 2
+
+
+def test_mid_turn_compaction_does_not_double_persist_in_place_rows(monkeypatch, tmp_path):
+    """Mid-turn pre-API compaction must re-baseline the flush cursor.
+
+    In-place compaction (``compression.in_place: True``, the default) inserts
+    the compacted rows into the session DB itself via ``archive_and_compact``
+    WITHOUT stamping them with the intrinsic persisted-marker. The loop must
+    therefore set ``conversation_history`` to those compacted dicts so the next
+    flush skips them by identity. Setting ``conversation_history = None`` here
+    (as the original PR did) makes the flush treat the already-persisted
+    compacted dicts as new and append them a second time — doubling the active
+    context and retriggering compression. This guards that regression with a
+    REAL SessionDB and the REAL archive_and_compact path (no persist stubs).
+    """
+    from hermes_state import SessionDB
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    agent = _build_agent(monkeypatch)
+    # _build_agent stubs _persist_session; restore the real one so the flush
+    # cursor / double-write behaviour is exercised end to end.
+    agent._persist_session = run_agent.AIAgent._persist_session.__get__(agent)
+    agent._cleanup_task_resources = lambda task_id: None
+
+    agent.context_compressor.context_length = 20_000
+    agent.context_compressor.threshold_tokens = 20_000
+
+    agent._session_db = SessionDB()
+    agent._ensure_db_session()
+
+    responses = [
+        _codex_tool_call_response(),
+        _codex_message_response("Summary after compaction."),
+    ]
+    monkeypatch.setattr(
+        agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0)
+    )
+
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count=0):
+        for call in assistant_message.tool_calls:
+            messages.append(
+                {"role": "tool", "tool_call_id": call.id, "content": "x" * 80_000}
+            )
+
+    def _fake_compress_context(messages, system_message, *, approx_tokens=None, task_id="default", focus_topic=None):
+        # Emulate the real in-place compaction DB side effect: soft-archive the
+        # prior rows and insert the compacted set under the SAME session id,
+        # then reset the flush identity seed — exactly as archive_and_compact +
+        # the in_place branch in conversation_compression.py do.
+        agent._last_compaction_in_place = True
+        compacted = [{"role": "user", "content": "[summary of prior tool-heavy work]"}]
+        agent._session_db.archive_and_compact(agent.session_id, compacted)
+        agent._flushed_db_message_ids = set()
+        return compacted, "You are Hermes."
+
+    monkeypatch.setattr(agent, "_execute_tool_calls", _fake_execute_tool_calls)
+    monkeypatch.setattr(agent, "_compress_context", _fake_compress_context)
+
+    result = agent.run_conversation("do a tool-heavy task")
+    assert result["completed"] is True
+
+    # The compacted summary row must appear exactly once in the active
+    # transcript that a resume would reload.
+    active = agent._session_db.get_messages(agent.session_id)
+    summary_rows = [
+        m for m in active
+        if isinstance(m.get("content"), str)
+        and "summary of prior tool-heavy work" in m["content"]
+    ]
+    assert len(summary_rows) == 1, (
+        f"compacted summary row double-persisted: {len(summary_rows)} copies "
+        "(conversation_history flush cursor not re-baselined for in-place compaction)"
+    )
+
+
 def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(monkeypatch):
     agent = _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response
@@ -1396,8 +1712,26 @@ def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(mo
     )
 
     assert finish_reason == "incomplete"
-    assert "inspect the repository" in (assistant_message.content or "")
+    assert (assistant_message.content or "") == ""
+    assert "inspect the repository" in (assistant_message.reasoning or "")
+    assert assistant_message.codex_message_items
+    assert assistant_message.codex_message_items[0]["phase"] == "commentary"
+    assert "inspect the repository" in assistant_message.codex_message_items[0]["content"][0]["text"]
 
+
+def test_normalize_codex_response_does_not_fallback_to_output_text_for_commentary_only(monkeypatch):
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    response = _codex_commentary_message_response("I’ll call the tool now.")
+    response.output_text = "I’ll call the tool now."
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+    assert (assistant_message.content or "") == ""
+    assert "call the tool" in (assistant_message.reasoning or "")
+    assert assistant_message.codex_message_items[0]["phase"] == "commentary"
 
 def test_normalize_codex_response_final_answer_overrides_top_level_incomplete(monkeypatch):
     from agent.codex_responses_adapter import _normalize_codex_response
@@ -1801,7 +2135,7 @@ def test_run_conversation_codex_continues_after_commentary_phase_message(monkeyp
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *_args):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -1817,11 +2151,17 @@ def test_run_conversation_codex_continues_after_commentary_phase_message(monkeyp
 
     assert result["completed"] is True
     assert result["final_response"] == "Architecture summary complete."
+    commentary_messages = [
+        msg for msg in result["messages"]
+        if msg.get("role") == "assistant" and msg.get("finish_reason") == "incomplete"
+    ]
+    assert commentary_messages
+    assert all((msg.get("content") or "") == "" for msg in commentary_messages)
     assert any(
-        msg.get("role") == "assistant"
-        and msg.get("finish_reason") == "incomplete"
-        and "inspect the repo structure" in (msg.get("content") or "")
-        for msg in result["messages"]
+        "inspect the repo structure" in item["content"][0]["text"]
+        for msg in commentary_messages
+        for item in (msg.get("codex_message_items") or [])
+        if item.get("phase") == "commentary"
     )
     assert any(msg.get("role") == "tool" and msg.get("tool_call_id") == "call_1" for msg in result["messages"])
 
@@ -1837,7 +2177,7 @@ def test_run_conversation_codex_continues_after_ack_stop_message(monkeypatch):
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *_args):
         for call in assistant_message.tool_calls:
             messages.append(
                 {
@@ -1878,7 +2218,7 @@ def test_run_conversation_codex_continues_after_ack_for_directory_listing_prompt
     ]
     monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
 
-    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id):
+    def _fake_execute_tool_calls(assistant_message, messages, effective_task_id, *_args):
         for call in assistant_message.tool_calls:
             messages.append(
                 {

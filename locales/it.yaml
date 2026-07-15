@@ -7,6 +7,10 @@ approval:
   choose_short:    "      [o]una volta  |  [s]essione  |  [d]nega"
   prompt_long:     "      Scelta [o/s/a/D]: "
   prompt_short:    "      Scelta [o/s/D]: "
+  choose_smart_deny: "      [o]una volta  |  [d]nega"
+  prompt_smart_deny: "      Scelta [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
   timeout:         "      ⏱ Tempo scaduto — comando negato"
   allowed_once:    "      ✓ Consentito una volta"
   allowed_session: "      ✓ Consentito per questa sessione"
@@ -107,6 +111,8 @@ gateway:
     no_pending:            "Nessun comando in attesa da negare."
     denied_singular:       "❌ Comando negato."
     denied_plural:         "❌ Comandi negati ({count} comandi)."
+    denied_reason_singular: "❌ Comando negato. Motivo inoltrato all'agente: \"{reason}\""
+    denied_reason_plural:  "❌ Comandi negati ({count} comandi). Motivo inoltrato all'agente: \"{reason}\""
 
   fast:
     not_supported:         "⚡ /fast è disponibile solo per i modelli OpenAI che supportano Priority Processing."
@@ -358,6 +364,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_estimated_context:  "Contesto stimato: ~{count} token"
     detailed_after_first:     "_(L'uso dettagliato sarà disponibile dopo la prima risposta dell'agente)_"
     no_data:                  "Nessun dato di utilizzo disponibile per questa sessione."
+    unknown_subcommand:       "Sottocomando /usage sconosciuto: `{args}`. Prova `/usage` o `/usage reset [--force]`."
+    reset_wrong_provider:     "I reset dei limiti accumulati sono disponibili solo con il provider openai-codex. Cambia prima con `/model`."
 
   credits:
     not_logged_in:            "Non hai effettuato l'accesso a Nous Portal. Accedi per vedere il saldo dei crediti e ricaricare."

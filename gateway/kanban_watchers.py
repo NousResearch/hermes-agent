@@ -412,10 +412,46 @@ class GatewayKanbanWatchersMixin:
                             sub["task_id"], sub["platform"],
                             sub["chat_id"], sub.get("thread_id") or "",
                         )
+                        # Adapters with no push channel (the API server —
+                        # ``supports_async_delivery = False``) can NEVER
+                        # satisfy a text-send: ``send()`` always reports
+                        # SendResult(success=False) by design (see
+                        # ApiServerAdapter.send()). Treating that as a
+                        # delivery failure would rewind/drop the subscription
+                        # forever and — because the wake dispatch below lives
+                        # in this loop's ``else`` clause — would also make the
+                        # wake-on-completion path (the actual fix for the
+                        # api_server wrong-session bug) unreachable. So for
+                        # non-push adapters, skip the doomed send attempt
+                        # entirely: there is nothing to text-notify, the
+                        # creator is woken via the self-post below instead.
+                        from gateway.wake import adapter_supports_push
+
+                        if not adapter_supports_push(adapter):
+                            logger.debug(
+                                "kanban notifier: adapter %s has no push "
+                                "channel; skipping text ping for %s, relying "
+                                "on wake self-post instead",
+                                platform_str, sub["task_id"],
+                            )
+                            sub_fail_counts.pop(sub_key, None)
+                            continue
                         try:
-                            await adapter.send(
+                            _send_res = await adapter.send(
                                 sub["chat_id"], msg, metadata=metadata,
                             )
+                            # A SendResult(success=False) without an exception
+                            # (returned by push-capable adapters on a genuine
+                            # transient failure) must count as a FAILED
+                            # delivery — otherwise the cursor advances and the
+                            # event is permanently lost. Adapters returning
+                            # None (or anything non-SendResult shaped) keep
+                            # the legacy "no exception == delivered" contract.
+                            if getattr(_send_res, "success", True) is False:
+                                raise RuntimeError(
+                                    "adapter send() reported failure: "
+                                    f"{getattr(_send_res, 'error', None) or 'unknown error'}"
+                                )
                             logger.debug(
                                 "kanban notifier: delivered %s event for %s to %s/%s on board %s",
                                 kind, sub["task_id"], platform_str, sub["chat_id"], board_slug,
@@ -513,7 +549,7 @@ class GatewayKanbanWatchersMixin:
                                         board=board_slug,
                                     )
                                     from gateway.session import SessionSource
-                                    from gateway.platforms.base import MessageEvent, MessageType
+                                    from gateway.wake import deliver_wake
                                     # KNOWN LIMITATION (tracked follow-up): the
                                     # subscription row does not persist the
                                     # creator's chat_type, and it is not carried
@@ -539,13 +575,22 @@ class GatewayKanbanWatchersMixin:
                                         user_id=sub.get("user_id"),
                                         profile=sub_profile or None,
                                     )
-                                    _synth_event = MessageEvent(
+                                    # deliver_wake preserves the synthetic
+                                    # MessageEvent/handle_message path for
+                                    # push-capable adapters, and self-POSTs
+                                    # /v1/chat/completions with the task's RAW
+                                    # session id for the stateless API server —
+                                    # handle_message there would run the wake
+                                    # under a build_session_key()-derived key
+                                    # that never matches the raw
+                                    # X-Hermes-Session-Id session real turns
+                                    # run under (wrong-session wake bug).
+                                    await deliver_wake(
+                                        adapter,
                                         text=_synth,
-                                        message_type=MessageType.TEXT,
+                                        session_id=_session_key,
                                         source=_source,
-                                        internal=True,
                                     )
-                                    await adapter.handle_message(_synth_event)
                                     logger.info(
                                         "kanban notifier: woke agent for %s on %s/%s profile=%s events=%s",
                                         sub["task_id"], platform_str, sub["chat_id"], sub_profile or "default", _wake_kinds,

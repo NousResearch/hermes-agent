@@ -17447,6 +17447,43 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         source = self._build_process_event_source(evt)
         if not source:
+            # API-server-originated sessions bind a RAW session key (the
+            # X-Hermes-Session-Id value — see _bind_api_server_session), not a
+            # structured ``agent:main:...`` key, so _build_process_event_source
+            # cannot derive routing metadata from it and returns None above.
+            # Recover the raw session id and wake the real session via the API
+            # server's own /v1/chat/completions entry point instead of
+            # dropping the event.
+            raw_sid = str(evt.get("origin_session_id") or "").strip()
+            if not raw_sid:
+                _sk = str(evt.get("session_key") or "").strip()
+                if _sk and _parse_session_key(_sk) is None:
+                    raw_sid = _sk
+            if raw_sid:
+                adapter = self.adapters.get(Platform.API_SERVER)
+                from gateway.wake import adapter_supports_push, deliver_wake
+                if adapter is not None and not adapter_supports_push(adapter):
+                    try:
+                        logger.info(
+                            "Watch pattern notification — waking api_server "
+                            "session %s via self-post",
+                            raw_sid,
+                        )
+                        await deliver_wake(adapter, text=synth_text, session_id=raw_sid)
+                        return True
+                    except Exception as e:
+                        logger.warning(
+                            "Watch notification self-post wake failed for "
+                            "session %s: %s",
+                            raw_sid, e,
+                        )
+                        return False
+                logger.warning(
+                    "Dropping watch notification for raw session %s: no "
+                    "api_server adapter to self-post through",
+                    raw_sid,
+                )
+                return None
             logger.warning(
                 "Dropping watch notification with no routing metadata for process %s",
                 evt.get("session_id", "unknown"),
@@ -17460,6 +17497,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 break
         if not adapter:
             return None
+        from gateway.wake import adapter_supports_push as _wake_push_ok
+        if not _wake_push_ok(adapter):
+            # Non-push adapter (api_server) resolved WITH routing metadata:
+            # its chat_id is the raw session id (see _bind_api_server_session,
+            # which binds chat_id = session_id). handle_message would run the
+            # wake under a build_session_key()-derived key that never matches
+            # the raw X-Hermes-Session-Id session — self-post instead.
+            from gateway.wake import deliver_wake
+            raw_sid = str(evt.get("origin_session_id") or "").strip() or str(source.chat_id or "")
+            try:
+                logger.info(
+                    "Watch pattern notification — waking api_server session "
+                    "%s via self-post",
+                    raw_sid,
+                )
+                await deliver_wake(adapter, text=synth_text, session_id=raw_sid)
+                return True
+            except Exception as e:
+                logger.warning(
+                    "Watch notification self-post wake failed for session "
+                    "%s: %s",
+                    raw_sid, e,
+                )
+                return False
         try:
             metadata = {}
             parent_session_id = str(evt.get("parent_session_id") or "").strip()

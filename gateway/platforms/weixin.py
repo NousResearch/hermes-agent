@@ -1470,11 +1470,15 @@ class WeixinAdapter(BasePlatformAdapter):
         logger.info("[%s] inbound from=%s type=%s media=%d", self.name, _safe_id(sender_id), source.chat_type, len(media_paths))
 
         # Model picker response intercept: if there's active picker state for
-        # this chat and the message is plain text, handle it as a picker
+        # this session and the message is plain text, handle it as a picker
         # selection instead of forwarding to the agent.
         if text and event.message_type == MessageType.TEXT:
+            picker_session_key = self._text_batch_key(event)
             picker_result = await self._handle_picker_response(
-                chat_id=effective_chat_id, text=text,
+                chat_id=effective_chat_id,
+                session_key=picker_session_key,
+                text=text,
+                requester_user_id=sender_id,
             )
             if picker_result is not None:
                 return  # message consumed by picker flow
@@ -2294,6 +2298,7 @@ class WeixinAdapter(BasePlatformAdapter):
         current_provider: str,
         session_key: str,
         on_model_selected,
+        requester_user_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an interactive text-based model picker.
@@ -2308,19 +2313,28 @@ class WeixinAdapter(BasePlatformAdapter):
             current_provider=current_provider,
             session_key=session_key,
             on_model_selected=on_model_selected,
+            requester_user_id=requester_user_id,
             metadata=metadata,
         )
 
     async def _handle_picker_response(
-        self, chat_id: str, text: str,
+        self,
+        chat_id: str,
+        session_key: str,
+        text: str,
+        requester_user_id: Optional[str] = None,
     ) -> Optional[str]:
         """Process a user reply as a model picker selection.
 
-        Returns None if there's no active picker state for this chat (the
+        Returns None if there's no active picker state for this session (the
         message should be forwarded to the agent normally). Returns a
         non-None value when the message was consumed by the picker flow.
         """
-        return await self._model_picker.handle_response(chat_id, text)
+        return await self._model_picker.handle_response(
+            session_key=session_key,
+            text=text,
+            requester_user_id=requester_user_id,
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         chat_type = "group" if chat_id.endswith("@chatroom") else "dm"

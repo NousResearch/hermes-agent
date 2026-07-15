@@ -409,9 +409,15 @@ def convert_table_to_bullets(text: str) -> str:
 class TextModelPicker:
     """Text-based interactive model picker for platforms without inline keyboards.
 
-    Provides a multi-step drill-down flow (provider selection -> model selection)
-    that works on text-only platforms like WeChat and Yuanbao. Users reply with
-    numbers to navigate the menu.
+    Provides a multi-step drill-down flow (provider selection -> model selection
+    -> optional expensive-model confirmation) that works on text-only platforms
+    like WeChat and Yuanbao.  Users reply with numbers to navigate the menu.
+
+    State is keyed by ``session_key`` (which already encodes per-user isolation
+    in group chats), not bare ``chat_id`` — this prevents one group participant
+    from consuming another's picker.  Each state entry also carries the
+    ``requester_user_id`` of the user who initiated the picker and an
+    ``expires_at`` deadline, both validated on every subsequent response.
 
     Usage::
 
@@ -419,17 +425,27 @@ class TextModelPicker:
         self._model_picker = TextModelPicker(self)
 
         # In adapter when handling /model command:
-        await self._model_picker.send(chat_id, providers, current_model, current_provider,
-                                      session_key, on_model_selected)
+        await self._model_picker.send(chat_id, providers, current_model,
+                                      current_provider, session_key,
+                                      on_model_selected, requester_user_id)
 
         # In adapter message handler (before processing as normal message):
-        result = await self._model_picker.handle_response(chat_id, text)
+        result = await self._model_picker.handle_response(
+            session_key, text, requester_user_id,
+        )
         if result is not None:
             return  # message consumed by picker
     """
 
     # Exit keywords that cancel the picker at any stage
     EXIT_KEYWORDS: frozenset[str] = frozenset({"q", "quit", "exit", "cancel", "done", "0"})
+
+    # Confirmation affirmations for the expensive-model gate
+    CONFIRM_KEYWORDS: frozenset[str] = frozenset({"y", "yes", "confirm", "ok", "1"})
+
+    # Picker state expires after this many seconds (matches Matrix adapter's
+    # approval timeout default).
+    DEFAULT_TIMEOUT_SECONDS: int = 300
 
     def __init__(self, adapter):
         """Initialize with a reference to the platform adapter.
@@ -480,12 +496,17 @@ class TextModelPicker:
         current_provider: str,
         session_key: str,
         on_model_selected,
+        requester_user_id: str | None = None,
         metadata: dict | None = None,
-    ):
+    ) -> "SendResult":
         """Send an interactive text-based model picker.
 
         Two-step drill-down: provider selection -> model selection.
         Users reply with a number at each step, or 0 to cancel.
+
+        State is registered *only* after the picker message is successfully
+        delivered — a failed ``send()`` must not leave a stale state that would
+        intercept the next ordinary message (see hermes-sweeper review #48199).
         """
         from gateway.platforms.base import SendResult
 
@@ -494,56 +515,83 @@ class TextModelPicker:
             msg = self._adapter.format_message(text)
             result = await self._adapter.send(chat_id, msg)
 
-            self._state[chat_id] = {
+            if not result.success:
+                # Do NOT register state on send failure — the gateway will
+                # fall back to its static text list, and a stale state would
+                # hijack the next ordinary message.
+                return result
+
+            # Purge any expired entries to bound memory growth.
+            self._cleanup_expired()
+
+            self._state[session_key] = {
                 "stage": "provider",
                 "providers": providers,
                 "session_key": session_key,
+                "chat_id": chat_id,
                 "current_model": current_model,
                 "current_provider": current_provider,
                 "on_model_selected": on_model_selected,
+                "requester_user_id": requester_user_id or "",
+                "expires_at": time.monotonic() + self.DEFAULT_TIMEOUT_SECONDS,
             }
 
-            return SendResult(
-                success=result.success,
-                message_id=result.message_id,
-            )
+            return result
         except Exception as e:
             logger.warning("[%s] send_model_picker failed: %s", self._adapter.name, e)
-            from gateway.platforms.base import SendResult
             return SendResult(success=False, error=str(e))
 
     async def handle_response(
         self,
-        chat_id: str,
+        session_key: str,
         text: str,
+        requester_user_id: str | None = None,
     ) -> str | None:
         """Process a user reply as a model picker selection.
 
-        Returns None if there's no active picker state for this chat (the
+        Returns None if there's no active picker state for this session (the
         message should be forwarded to the agent normally). Returns a
         non-None value when the message was consumed by the picker flow.
+
+        Security checks (all must pass before the reply is treated as a picker
+        selection):
+        - **Session match**: state is keyed by ``session_key``, which already
+          isolates group participants via ``build_session_key()``.
+        - **Requester match**: the ``requester_user_id`` stored at ``send()``
+          time must equal the one passed here.  A reply from a different user
+          in the same group session falls through to the agent.
+        - **Expiry**: state past ``expires_at`` is discarded and falls through.
 
         Users can exit the picker by:
         - Typing 0
         - Typing one of: q, quit, exit, cancel, done
         - Sending an empty message
         """
-        state = self._state.get(chat_id)
+        state = self._state.get(session_key)
         if state is None:
+            return None
+
+        # Expiry check — discard stale state and fall through.
+        if self._is_expired(state):
+            self._state.pop(session_key, None)
+            return None
+
+        # Requester validation — only the user who opened the picker may
+        # interact with it.  Other group members' messages pass through.
+        stored_requester = state.get("requester_user_id", "")
+        if stored_requester and requester_user_id and requester_user_id != stored_requester:
             return None
 
         text = text.strip()
 
         # Check for exit conditions
         if not text or text.lower() in self.EXIT_KEYWORDS:
-            self._state.pop(chat_id, None)
+            self._state.pop(session_key, None)
             await self._adapter.send(
-                chat_id,
+                state.get("chat_id", ""),
                 self._adapter.format_message("Model selection cancelled."),
             )
             return "picker_cancelled"
-
-        from hermes_cli.providers import get_label
 
         if state["stage"] == "provider":
             # User is selecting a provider
@@ -566,7 +614,7 @@ class TextModelPicker:
 
             if selected_provider is None:
                 await self._adapter.send(
-                    chat_id,
+                    state.get("chat_id", ""),
                     self._adapter.format_message(
                         f"Invalid selection. Reply with a number (1-{len(state['providers'])}) "
                         f"or a provider slug, or 0 to cancel."
@@ -576,39 +624,33 @@ class TextModelPicker:
 
             models = selected_provider.get("models", [])
             provider_name = selected_provider.get("name", selected_provider.get("slug", "?"))
+            provider_slug = selected_provider["slug"]
 
             if not models:
                 # No curated models — switch directly to the provider
                 try:
                     confirm = await state["on_model_selected"](
-                        chat_id, "", selected_provider["slug"],
+                        state.get("chat_id", ""), "", provider_slug,
                     )
                 except Exception as exc:
                     logger.warning("[%s] picker callback failed: %s", self._adapter.name, exc)
                     confirm = f"Switch to {provider_name} failed: {exc}"
-                self._state.pop(chat_id, None)
-                await self._adapter.send(chat_id, self._adapter.format_message(confirm))
+                self._state.pop(session_key, None)
+                await self._adapter.send(state.get("chat_id", ""), self._adapter.format_message(confirm))
                 return "picker_consumed"
 
             if len(models) == 1:
-                # Only one model — switch directly
-                try:
-                    confirm = await state["on_model_selected"](
-                        chat_id, models[0], selected_provider["slug"],
-                    )
-                except Exception as exc:
-                    logger.warning("[%s] picker callback failed: %s", self._adapter.name, exc)
-                    confirm = f"Switch to {models[0]} on {provider_name} failed: {exc}"
-                self._state.pop(chat_id, None)
-                await self._adapter.send(chat_id, self._adapter.format_message(confirm))
-                return "picker_consumed"
+                # Only one model — run expensive-model gate, then switch
+                return await self._gate_and_switch(
+                    session_key, state, models[0], provider_slug, provider_name,
+                )
 
             # Multiple models — send model list
             model_text = self._build_model_text(models, provider_name)
-            await self._adapter.send(chat_id, self._adapter.format_message(model_text))
+            await self._adapter.send(state.get("chat_id", ""), self._adapter.format_message(model_text))
 
             state["stage"] = "model"
-            state["selected_provider_slug"] = selected_provider["slug"]
+            state["selected_provider_slug"] = provider_slug
             state["selected_provider_name"] = provider_name
             state["selected_provider_models"] = models
             return "picker_consumed"
@@ -634,7 +676,7 @@ class TextModelPicker:
 
             if selected_model is None:
                 await self._adapter.send(
-                    chat_id,
+                    state.get("chat_id", ""),
                     self._adapter.format_message(
                         f"Invalid selection. Reply with a number (1-{len(models)}) "
                         f"or an exact model name, or 0 to cancel."
@@ -642,25 +684,123 @@ class TextModelPicker:
                 )
                 return "picker_consumed"
 
-            try:
-                confirm = await state["on_model_selected"](
-                    chat_id, selected_model, provider_slug,
+            return await self._gate_and_switch(
+                session_key, state, selected_model, provider_slug, provider_name,
+            )
+
+        if state["stage"] == "confirm":
+            # Expensive-model confirmation stage
+            pending_model = state.get("pending_model", "")
+            pending_provider_slug = state.get("pending_provider_slug", "")
+            pending_provider_name = state.get("pending_provider_name", "?")
+
+            if text.lower() in self.CONFIRM_KEYWORDS:
+                # User confirmed — proceed with the switch
+                self._state.pop(session_key, None)
+                try:
+                    confirm = await state["on_model_selected"](
+                        state.get("chat_id", ""), pending_model, pending_provider_slug,
+                    )
+                except Exception as exc:
+                    logger.warning("[%s] picker callback failed: %s", self._adapter.name, exc)
+                    confirm = f"Switch to {pending_model} on {pending_provider_name} failed: {exc}"
+                await self._adapter.send(state.get("chat_id", ""), self._adapter.format_message(confirm))
+                return "picker_consumed"
+            else:
+                # Declined — cancel
+                self._state.pop(session_key, None)
+                await self._adapter.send(
+                    state.get("chat_id", ""),
+                    self._adapter.format_message(
+                        f"Model switch cancelled. Current model unchanged "
+                        f"({state.get('current_model', 'unknown')})."
+                    ),
                 )
-            except Exception as exc:
-                logger.warning("[%s] picker callback failed: %s", self._adapter.name, exc)
-                confirm = f"Switch to {selected_model} on {provider_name} failed: {exc}"
-            self._state.pop(chat_id, None)
-            await self._adapter.send(chat_id, self._adapter.format_message(confirm))
-            return "picker_consumed"
+                return "picker_cancelled"
 
         # Unknown stage — clear state and fall through
-        self._state.pop(chat_id, None)
+        self._state.pop(session_key, None)
         return None
 
-    def clear_state(self, chat_id: str) -> None:
-        """Clear picker state for a chat (e.g., on disconnect)."""
-        self._state.pop(chat_id, None)
+    async def _gate_and_switch(
+        self,
+        session_key: str,
+        state: dict,
+        model: str,
+        provider_slug: str,
+        provider_name: str,
+    ) -> str:
+        """Run the expensive-model guard; switch directly or enter confirm stage.
 
-    def is_active(self, chat_id: str) -> bool:
-        """Return True if there's an active picker session for this chat."""
-        return chat_id in self._state
+        Mirrors the typed ``/model <name>`` path in ``slash_commands.py`` which
+        gates expensive switches behind a confirmation prompt.  Inline-keyboard
+        pickers (Telegram/Discord) provide their own UI confirmation; this text
+        picker needs an equivalent text-based gate (see hermes-sweeper #48199).
+        """
+        chat_id = state.get("chat_id", "")
+
+        # Check if this model is above the cost guardrail.
+        cost_warning = None
+        try:
+            from hermes_cli.model_cost_guard import expensive_model_warning
+
+            cost_warning = await asyncio.to_thread(
+                expensive_model_warning,
+                model,
+                provider=provider_slug,
+            )
+        except Exception:
+            cost_warning = None
+
+        if cost_warning is not None:
+            # Enter confirmation stage
+            warning_text = (
+                f"⚠️ Expensive Model Warning\n\n"
+                f"{cost_warning.message}\n\n"
+                f"Reply with 'y' to confirm switching to {model}, "
+                f"or 'n'/0 to cancel."
+            )
+            await self._adapter.send(chat_id, self._adapter.format_message(warning_text))
+
+            state["stage"] = "confirm"
+            state["pending_model"] = model
+            state["pending_provider_slug"] = provider_slug
+            state["pending_provider_name"] = provider_name
+            # Refresh expiry so the confirmation window gets a full timeout
+            state["expires_at"] = time.monotonic() + self.DEFAULT_TIMEOUT_SECONDS
+            return "picker_consumed"
+
+        # Not expensive — switch immediately
+        try:
+            confirm = await state["on_model_selected"](
+                chat_id, model, provider_slug,
+            )
+        except Exception as exc:
+            logger.warning("[%s] picker callback failed: %s", self._adapter.name, exc)
+            confirm = f"Switch to {model} on {provider_name} failed: {exc}"
+        self._state.pop(session_key, None)
+        await self._adapter.send(chat_id, self._adapter.format_message(confirm))
+        return "picker_consumed"
+
+    @staticmethod
+    def _is_expired(state: dict) -> bool:
+        """Check if a picker state has passed its expiry deadline."""
+        expires_at = state.get("expires_at")
+        return expires_at is not None and time.monotonic() > float(expires_at)
+
+    def _cleanup_expired(self) -> None:
+        """Remove all expired states. Called on send() and periodically."""
+        expired_keys = [
+            key for key, state in self._state.items()
+            if self._is_expired(state)
+        ]
+        for key in expired_keys:
+            self._state.pop(key, None)
+
+    def clear_state(self, session_key: str) -> None:
+        """Clear picker state for a session (e.g., on disconnect)."""
+        self._state.pop(session_key, None)
+
+    def is_active(self, session_key: str) -> bool:
+        """Return True if there's an active picker session for this key."""
+        return session_key in self._state

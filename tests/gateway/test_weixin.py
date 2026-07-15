@@ -1251,6 +1251,7 @@ class TestWeixinModelPicker:
 
     @pytest.mark.asyncio
     async def test_send_model_picker_sends_message_and_stores_state(self):
+        """State is keyed by session_key and includes requester + expiry."""
         adapter = _make_adapter()
         adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="msg-123"))
 
@@ -1269,22 +1270,78 @@ class TestWeixinModelPicker:
             current_provider="alibaba",
             session_key="sess-abc",
             on_model_selected=on_model_selected,
+            requester_user_id="user-A",
         )
 
         assert result.success is True
         assert result.message_id == "msg-123"
-        assert "chat-123" in adapter._model_picker._state
-        state = adapter._model_picker._state["chat-123"]
+        # State keyed by session_key, not chat_id
+        assert "sess-abc" in adapter._model_picker._state
+        assert "chat-123" not in adapter._model_picker._state
+        state = adapter._model_picker._state["sess-abc"]
         assert state["stage"] == "provider"
+        assert state["chat_id"] == "chat-123"
         assert state["current_model"] == "qwen3.6-flash"
         assert state["on_model_selected"] is on_model_selected
+        assert state["requester_user_id"] == "user-A"
+        assert "expires_at" in state
+
+    @pytest.mark.asyncio
+    async def test_send_model_picker_failure_does_not_register_state(self):
+        """Failed send must not leave stale state."""
+        adapter = _make_adapter()
+        adapter.send = AsyncMock(return_value=SendResult(success=False, error="network"))
+
+        providers = [
+            {"name": "Alibaba", "slug": "alibaba", "models": ["qwen3.7-plus"], "is_current": True},
+        ]
+
+        async def on_model_selected(chat_id, model, provider_slug):
+            return "ok"
+
+        result = await adapter.send_model_picker(
+            chat_id="chat-123",
+            providers=providers,
+            current_model="qwen3.6-flash",
+            current_provider="alibaba",
+            session_key="sess-abc",
+            on_model_selected=on_model_selected,
+        )
+
+        assert result.success is False
+        assert "sess-abc" not in adapter._model_picker._state
 
     @pytest.mark.asyncio
     async def test_handle_picker_response_no_state_returns_none(self):
         adapter = _make_adapter()
         # No picker state exists
-        result = await adapter._handle_picker_response(chat_id="chat-no-state", text="1")
+        result = await adapter._handle_picker_response(
+            chat_id="chat-no-state", session_key="sess-none", text="1",
+        )
         assert result is None  # Message should be forwarded to agent normally
+
+    @pytest.mark.asyncio
+    async def test_handle_picker_response_requester_mismatch_returns_none(self):
+        """A reply from a different user in the same group falls through."""
+        adapter = _make_adapter()
+        adapter.send = AsyncMock(return_value=SendResult(success=True, message_id="msg-x"))
+
+        adapter._model_picker._state["sess-abc"] = {
+            "stage": "provider",
+            "providers": [{"name": "Alibaba", "slug": "alibaba", "models": ["qwen"], "is_current": True}],
+            "chat_id": "chat-123",
+            "current_model": "old",
+            "on_model_selected": AsyncMock(),
+            "requester_user_id": "user-A",
+            "expires_at": __import__("time").monotonic() + 300,
+        }
+
+        # User-B tries to interact
+        result = await adapter._handle_picker_response(
+            chat_id="chat-123", session_key="sess-abc", text="1", requester_user_id="user-B",
+        )
+        assert result is None
+        assert "sess-abc" in adapter._model_picker._state  # state preserved for user-A
 
     @pytest.mark.asyncio
     async def test_handle_picker_response_provider_select_by_number(self):
@@ -1301,18 +1358,23 @@ class TestWeixinModelPicker:
             return f"Switched to {model} via {provider_slug}"
 
         # Set up picker state at provider stage
-        adapter._model_picker._state["chat-123"] = {
+        adapter._model_picker._state["sess-abc"] = {
             "stage": "provider",
             "providers": providers,
+            "chat_id": "chat-123",
             "current_model": "qwen3.6-flash",
             "on_model_selected": on_model_selected,
+            "requester_user_id": "",
+            "expires_at": __import__("time").monotonic() + 300,
         }
 
         # User selects provider #1 (Alibaba) - has 2 models, should advance to model stage
-        result = await adapter._handle_picker_response(chat_id="chat-123", text="1")
+        result = await adapter._handle_picker_response(
+            chat_id="chat-123", session_key="sess-abc", text="1",
+        )
         assert result == "picker_consumed"
         # State should advance to model stage
-        state = adapter._model_picker._state["chat-123"]
+        state = adapter._model_picker._state["sess-abc"]
         assert state["stage"] == "model"
         assert state["selected_provider_slug"] == "alibaba"
         assert state["selected_provider_models"] == ["qwen3.7-plus", "qwen3.6-flash"]
@@ -1331,18 +1393,24 @@ class TestWeixinModelPicker:
         async def on_model_selected(chat_id, model, provider_slug):
             return f"Switched to {model} via {provider_slug}"
 
-        adapter._model_picker._state["chat-123"] = {
+        adapter._model_picker._state["sess-abc"] = {
             "stage": "provider",
             "providers": providers,
+            "chat_id": "chat-123",
             "current_model": "qwen3.7-plus",
             "on_model_selected": on_model_selected,
+            "requester_user_id": "",
+            "expires_at": __import__("time").monotonic() + 300,
         }
 
         # User types provider slug "alibaba" - has 1 model, should auto-switch
-        result = await adapter._handle_picker_response(chat_id="chat-123", text="alibaba")
+        with patch("hermes_cli.model_cost_guard.expensive_model_warning", return_value=None):
+            result = await adapter._handle_picker_response(
+                chat_id="chat-123", session_key="sess-abc", text="alibaba",
+            )
         assert result == "picker_consumed"
         # With single model, should auto-switch (state cleared)
-        assert "chat-123" not in adapter._model_picker._state
+        assert "sess-abc" not in adapter._model_picker._state
         # Should have sent confirmation
         adapter.send.assert_called_once()
 
@@ -1356,22 +1424,27 @@ class TestWeixinModelPicker:
             {"name": "DeepSeek", "slug": "deepseek", "models": ["deepseek-v4-flash"], "is_current": False},
         ]
 
-        adapter._model_picker._state["chat-123"] = {
+        adapter._model_picker._state["sess-abc"] = {
             "stage": "provider",
             "providers": providers,
+            "chat_id": "chat-123",
             "current_model": "qwen3.7-plus",
             "on_model_selected": AsyncMock(),
+            "requester_user_id": "",
+            "expires_at": __import__("time").monotonic() + 300,
         }
 
         # User types invalid selection
-        result = await adapter._handle_picker_response(chat_id="chat-123", text="99")
+        result = await adapter._handle_picker_response(
+            chat_id="chat-123", session_key="sess-abc", text="99",
+        )
         assert result == "picker_consumed"
         # Should have sent error message
         adapter.send.assert_called_once()
         call_args = adapter.send.call_args
         assert "Invalid selection" in call_args[0][1]  # second arg is message text
         # State should remain
-        assert adapter._model_picker._state["chat-123"]["stage"] == "provider"
+        assert adapter._model_picker._state["sess-abc"]["stage"] == "provider"
 
     @pytest.mark.asyncio
     async def test_handle_picker_response_single_model_auto_switches(self):
@@ -1381,20 +1454,26 @@ class TestWeixinModelPicker:
         async def on_model_selected(chat_id, model, provider_slug):
             return f"Switched to {model} via {provider_slug}"
 
-        adapter._model_picker._state["chat-123"] = {
+        adapter._model_picker._state["sess-abc"] = {
             "stage": "provider",
             "providers": [
                 {"name": "DeepSeek", "slug": "deepseek", "models": ["deepseek-v4-flash"], "is_current": False},
             ],
+            "chat_id": "chat-123",
             "current_model": "qwen3.6-flash",
             "on_model_selected": on_model_selected,
+            "requester_user_id": "",
+            "expires_at": __import__("time").monotonic() + 300,
         }
 
         # User selects provider with only 1 model - should auto-switch
-        result = await adapter._handle_picker_response(chat_id="chat-123", text="1")
+        with patch("hermes_cli.model_cost_guard.expensive_model_warning", return_value=None):
+            result = await adapter._handle_picker_response(
+                chat_id="chat-123", session_key="sess-abc", text="1",
+            )
         assert result == "picker_consumed"
         # State should be cleared after switch
-        assert "chat-123" not in adapter._model_picker._state
+        assert "sess-abc" not in adapter._model_picker._state
         # Should have called on_model_selected
         adapter.send.assert_called_once()
         call_args = adapter.send.call_args
@@ -1409,19 +1488,26 @@ class TestWeixinModelPicker:
         async def on_model_selected(chat_id, model, provider_slug):
             return f"Switched to {model} via {provider_slug}"
 
-        adapter._model_picker._state["chat-123"] = {
+        adapter._model_picker._state["sess-abc"] = {
             "stage": "model",
+            "chat_id": "chat-123",
             "selected_provider_slug": "alibaba",
             "selected_provider_name": "Alibaba DashScope",
             "selected_provider_models": ["qwen3.7-plus", "qwen3.6-flash", "deepseek-v4-flash"],
             "on_model_selected": on_model_selected,
+            "current_model": "old",
+            "requester_user_id": "",
+            "expires_at": __import__("time").monotonic() + 300,
         }
 
         # User selects model #2
-        result = await adapter._handle_picker_response(chat_id="chat-123", text="2")
+        with patch("hermes_cli.model_cost_guard.expensive_model_warning", return_value=None):
+            result = await adapter._handle_picker_response(
+                chat_id="chat-123", session_key="sess-abc", text="2",
+            )
         assert result == "picker_consumed"
         # State should be cleared
-        assert "chat-123" not in adapter._model_picker._state
+        assert "sess-abc" not in adapter._model_picker._state
         # Confirmation should be sent
         adapter.send.assert_called_once()
         call_args = adapter.send.call_args
@@ -1437,18 +1523,25 @@ class TestWeixinModelPicker:
         async def on_model_selected(chat_id, model, provider_slug):
             return f"Switched to {model} via {provider_slug}"
 
-        adapter._model_picker._state["chat-123"] = {
+        adapter._model_picker._state["sess-abc"] = {
             "stage": "model",
+            "chat_id": "chat-123",
             "selected_provider_slug": "alibaba",
             "selected_provider_name": "Alibaba",
             "selected_provider_models": ["qwen3.7-plus", "qwen3.6-flash"],
             "on_model_selected": on_model_selected,
+            "current_model": "old",
+            "requester_user_id": "",
+            "expires_at": __import__("time").monotonic() + 300,
         }
 
         # User types exact model name
-        result = await adapter._handle_picker_response(chat_id="chat-123", text="qwen3.7-plus")
+        with patch("hermes_cli.model_cost_guard.expensive_model_warning", return_value=None):
+            result = await adapter._handle_picker_response(
+                chat_id="chat-123", session_key="sess-abc", text="qwen3.7-plus",
+            )
         assert result == "picker_consumed"
-        assert "chat-123" not in adapter._model_picker._state
+        assert "sess-abc" not in adapter._model_picker._state
         adapter.send.assert_called_once()
         assert "qwen3.7-plus" in adapter.send.call_args[0][1]
 
@@ -1460,18 +1553,25 @@ class TestWeixinModelPicker:
         async def on_model_selected(chat_id, model, provider_slug):
             return f"Switched to {model} via {provider_slug}"
 
-        adapter._model_picker._state["chat-123"] = {
+        adapter._model_picker._state["sess-abc"] = {
             "stage": "model",
+            "chat_id": "chat-123",
             "selected_provider_slug": "alibaba",
             "selected_provider_name": "Alibaba",
             "selected_provider_models": ["Qwen3.7-Plus", "qwen3.6-flash"],
             "on_model_selected": on_model_selected,
+            "current_model": "old",
+            "requester_user_id": "",
+            "expires_at": __import__("time").monotonic() + 300,
         }
 
         # User types model name in different case
-        result = await adapter._handle_picker_response(chat_id="chat-123", text="Qwen3.7-PLUS")
+        with patch("hermes_cli.model_cost_guard.expensive_model_warning", return_value=None):
+            result = await adapter._handle_picker_response(
+                chat_id="chat-123", session_key="sess-abc", text="Qwen3.7-PLUS",
+            )
         assert result == "picker_consumed"
-        assert "chat-123" not in adapter._model_picker._state
+        assert "sess-abc" not in adapter._model_picker._state
 
     @pytest.mark.asyncio
     async def test_handle_picker_response_cancel_with_zero(self):
@@ -1482,18 +1582,23 @@ class TestWeixinModelPicker:
         async def on_model_selected(chat_id, model, provider_slug):
             return f"Switched to {model} via {provider_slug}"
 
-        adapter._model_picker._state["chat-123"] = {
+        adapter._model_picker._state["sess-abc"] = {
             "stage": "provider",
             "providers": [
                 {"name": "Alibaba", "slug": "alibaba", "models": ["qwen3.7-plus"], "is_current": True},
             ],
+            "chat_id": "chat-123",
             "current_model": "qwen3.6-flash",
             "on_model_selected": on_model_selected,
+            "requester_user_id": "",
+            "expires_at": __import__("time").monotonic() + 300,
         }
 
-        result = await adapter._handle_picker_response(chat_id="chat-123", text="0")
+        result = await adapter._handle_picker_response(
+            chat_id="chat-123", session_key="sess-abc", text="0",
+        )
         assert result == "picker_cancelled"
-        assert "chat-123" not in adapter._model_picker._state
+        assert "sess-abc" not in adapter._model_picker._state
         adapter.send.assert_called_once()
         assert "cancelled" in adapter.send.call_args[0][1].lower()
 
@@ -1506,18 +1611,23 @@ class TestWeixinModelPicker:
         async def on_model_selected(chat_id, model, provider_slug):
             return f"Switched to {model} via {provider_slug}"
 
-        adapter._model_picker._state["chat-123"] = {
+        adapter._model_picker._state["sess-abc"] = {
             "stage": "provider",
             "providers": [
                 {"name": "Alibaba", "slug": "alibaba", "models": ["qwen3.7-plus"], "is_current": True},
             ],
+            "chat_id": "chat-123",
             "current_model": "qwen3.6-flash",
             "on_model_selected": on_model_selected,
+            "requester_user_id": "",
+            "expires_at": __import__("time").monotonic() + 300,
         }
 
-        result = await adapter._handle_picker_response(chat_id="chat-123", text="quit")
+        result = await adapter._handle_picker_response(
+            chat_id="chat-123", session_key="sess-abc", text="quit",
+        )
         assert result == "picker_cancelled"
-        assert "chat-123" not in adapter._model_picker._state
+        assert "sess-abc" not in adapter._model_picker._state
 
     @pytest.mark.asyncio
     async def test_handle_picker_response_cancel_with_empty_message(self):
@@ -1528,15 +1638,20 @@ class TestWeixinModelPicker:
         async def on_model_selected(chat_id, model, provider_slug):
             return f"Switched to {model} via {provider_slug}"
 
-        adapter._model_picker._state["chat-123"] = {
+        adapter._model_picker._state["sess-abc"] = {
             "stage": "provider",
             "providers": [
                 {"name": "Alibaba", "slug": "alibaba", "models": ["qwen3.7-plus"], "is_current": True},
             ],
+            "chat_id": "chat-123",
             "current_model": "qwen3.6-flash",
             "on_model_selected": on_model_selected,
+            "requester_user_id": "",
+            "expires_at": __import__("time").monotonic() + 300,
         }
 
-        result = await adapter._handle_picker_response(chat_id="chat-123", text="")
+        result = await adapter._handle_picker_response(
+            chat_id="chat-123", session_key="sess-abc", text="",
+        )
         assert result == "picker_cancelled"
-        assert "chat-123" not in adapter._model_picker._state
+        assert "sess-abc" not in adapter._model_picker._state

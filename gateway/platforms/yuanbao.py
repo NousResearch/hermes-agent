@@ -3229,11 +3229,19 @@ class DispatchMiddleware(InboundMiddleware):
         adapter = ctx.adapter
 
         # Model picker response intercept: if there's active picker state for
-        # this chat and the message is plain text, handle it as a picker
+        # this session and the message is plain text, handle it as a picker
         # selection instead of forwarding to the agent.
-        if ctx.raw_text and ctx.msg_type == MessageType.TEXT:
+        if ctx.raw_text and ctx.msg_type == MessageType.TEXT and ctx.source is not None:
+            picker_session_key = build_session_key(
+                ctx.source,
+                group_sessions_per_user=adapter.config.extra.get("group_sessions_per_user", True),
+                thread_sessions_per_user=adapter.config.extra.get("thread_sessions_per_user", False),
+            )
             picker_result = await adapter._handle_picker_response(
-                chat_id=ctx.chat_id, text=ctx.raw_text,
+                chat_id=ctx.chat_id,
+                session_key=picker_session_key,
+                text=ctx.raw_text,
+                requester_user_id=ctx.source.user_id,
             )
             if picker_result is not None:
                 return  # message consumed by picker flow
@@ -5545,6 +5553,7 @@ class YuanbaoAdapter(BasePlatformAdapter):
         current_provider: str,
         session_key: str,
         on_model_selected,
+        requester_user_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send an interactive text-based model picker.
@@ -5559,19 +5568,28 @@ class YuanbaoAdapter(BasePlatformAdapter):
             current_provider=current_provider,
             session_key=session_key,
             on_model_selected=on_model_selected,
+            requester_user_id=requester_user_id,
             metadata=metadata,
         )
 
     async def _handle_picker_response(
-        self, chat_id: str, text: str,
+        self,
+        chat_id: str,
+        session_key: str,
+        text: str,
+        requester_user_id: Optional[str] = None,
     ) -> Optional[str]:
         """Process a user reply as a model picker selection.
 
-        Returns None if there's no active picker state for this chat (the
+        Returns None if there's no active picker state for this session (the
         message should be forwarded to the agent normally). Returns a
         non-None value when the message was consumed by the picker flow.
         """
-        return await self._model_picker.handle_response(chat_id, text)
+        return await self._model_picker.handle_response(
+            session_key=session_key,
+            text=text,
+            requester_user_id=requester_user_id,
+        )
 
     async def _get_cached_token(self) -> dict:
         """Get the current valid sign token (using module-level cache)."""

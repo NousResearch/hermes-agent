@@ -1588,6 +1588,9 @@ def build_skills_system_prompt(
     category_descriptions: dict[str, str] = {}
     # Collect (name, body) tuples for auto-inject candidates
     auto_inject_candidates: dict[str, str] = {}  # name -> body (dict for dedup)
+    # Registry of ALL eligible skills' body content — used by always_on override
+    # to inject skills that lack auto_inject: true in their frontmatter.
+    all_skill_body_registry: dict[str, str] = {}  # frontmatter_name -> body
 
     if snapshot is not None:
         # Fast path: use pre-parsed metadata from disk
@@ -1614,6 +1617,9 @@ def build_skills_system_prompt(
             # Collect auto-inject candidate from snapshot
             if entry.get("auto_inject") and entry.get("body_content"):
                 auto_inject_candidates[frontmatter_name] = entry["body_content"]
+            # Always register body for always_on override support
+            if entry.get("body_content"):
+                all_skill_body_registry[frontmatter_name] = entry["body_content"]
         category_descriptions = {
             str(k): str(v)
             for k, v in (snapshot.get("category_descriptions") or {}).items()
@@ -1645,6 +1651,9 @@ def build_skills_system_prompt(
             # Collect auto-inject candidate from cold scan
             if auto_inject and body:
                 auto_inject_candidates[entry["frontmatter_name"]] = body
+            # Always register body for always_on override support
+            if body:
+                all_skill_body_registry[entry["frontmatter_name"]] = body
 
         # Read category-level DESCRIPTION.md files
         for desc_file in iter_skill_index_files(skills_dir, "DESCRIPTION.md"):
@@ -1704,6 +1713,9 @@ def build_skills_system_prompt(
                 # Collect auto-inject candidate from external dirs
                 if auto_inject and body:
                     auto_inject_candidates[frontmatter_name] = body
+                # Register body for always_on override support
+                if body:
+                    all_skill_body_registry[frontmatter_name] = body
             except Exception as e:
                 logger.debug("Error reading external skill %s: %s", skill_file, e)
 
@@ -1732,7 +1744,7 @@ def build_skills_system_prompt(
             for fm_name, _desc in cat_skills:
                 all_known_names[fm_name.lower()] = fm_name
         # Also map skill_name (dir name) from entries we've seen
-        for entry_name, body in list(auto_inject_candidates.items()):
+        for entry_name in list(auto_inject_candidates) + list(all_skill_body_registry):
             all_known_names[entry_name.lower()] = entry_name
         # External dir entries don't have a separate mapping yet, but
         # frontmatter_name is already in skills_by_category above.
@@ -1740,31 +1752,43 @@ def build_skills_system_prompt(
         for wanted_name in always_on:
             wanted_lower = wanted_name.lower()
             matched = all_known_names.get(wanted_lower)
-            if matched and matched not in auto_inject_candidates:
-                # The skill exists but wasn't collected as auto-inject
-                # (no auto_inject: true).  We need its body — try to find
-                # it from the scanned entries.  For always_on skills without
-                # auto_inject, we skip body injection (they only appear in
-                # the index).  Log a debug note.
-                logger.debug(
-                    "always_on skill %r matched but has no auto_inject body — skipping injection",
-                    wanted_name,
-                )
-            elif not matched:
+            if not matched:
                 logger.warning(
                     "skills.always_on references %r but no matching skill found",
                     wanted_name,
                 )
+                continue
+            if matched not in auto_inject_candidates:
+                # The skill exists but wasn't auto-injected (no
+                # auto_inject: true).  Retrieve its body from the
+                # all-skill registry and promote it to a candidate.
+                body = all_skill_body_registry.get(matched)
+                if body:
+                    auto_inject_candidates[matched] = body
+                    logger.debug(
+                        "always_on: promoted %r to auto-inject candidate",
+                        wanted_name,
+                    )
+                else:
+                    logger.debug(
+                        "always_on skill %r matched but no body available — skipping injection",
+                        wanted_name,
+                    )
 
     # ── Render <active_skills> block ──────────────────────────────────
     active_skills_block = ""
     if auto_inject_candidates:
-        # Apply template variable substitution to bodies
+        # Apply template variable substitution to bodies.
+        # skills_dir is available and resolves ${HERMES_SKILL_DIR};
+        # session_id is intentionally None — auto-injected skills run
+        # globally across sessions and have no single session context.
         try:
             from agent.skill_preprocessing import substitute_template_vars
             resolved_candidates: dict[str, str] = {}
             for name, body in auto_inject_candidates.items():
-                resolved_candidates[name] = substitute_template_vars(body, None, None)
+                resolved_candidates[name] = substitute_template_vars(
+                    body, skills_dir, None
+                )
             auto_inject_candidates = resolved_candidates
         except Exception as e:
             logger.debug("Could not apply template vars to active skills: %s", e)

@@ -567,6 +567,9 @@ class ToolRegistry:
                     overrides = entry.dynamic_schema_overrides()
                     if isinstance(overrides, dict):
                         schema_with_name.update(overrides)
+                        # Overrides may tune descriptions and parameters, but the
+                        # advertised function name must remain dispatchable.
+                        schema_with_name["name"] = entry.name
                 except Exception as exc:
                     logger.warning(
                         "dynamic_schema_overrides for tool %s raised %s; "

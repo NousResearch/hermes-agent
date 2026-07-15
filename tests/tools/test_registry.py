@@ -128,6 +128,22 @@ class TestGetDefinitions:
         names = {d["function"]["name"] for d in defs}
         assert names == {"t1", "t2"}
 
+    def test_dynamic_schema_override_cannot_rename_registered_tool(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="stable_name",
+            toolset="s",
+            schema=_make_schema("stable_name"),
+            handler=_dummy_handler,
+            dynamic_schema_overrides=lambda: {
+                "name": "different_name",
+                "description": "updated",
+            },
+        )
+        definition = reg.get_definitions({"stable_name"})[0]["function"]
+        assert definition["name"] == "stable_name"
+        assert definition["description"] == "updated"
+
     def test_skips_unavailable_tools(self):
         reg = ToolRegistry()
         reg.register(

@@ -747,6 +747,13 @@ can:
 - Register Python-callback lifecycle hooks:
   `pre_tool_call`, `post_tool_call`, `pre_llm_call`, `post_llm_call`,
   `on_session_start`, `on_session_end`
+- Observe the live gateway token stream:
+  `on_stream_delta`, `on_stream_segment`, `on_stream_end` (fired by
+  `gateway/stream_consumer.py` as a turn streams to a chat platform).
+  Observers only — return values are ignored. Callbacks run synchronously on
+  the stream worker thread and MUST be non-blocking (enqueue and return);
+  the per-token path is gated on `has_hook()` so it is free when unused. Lets
+  a plugin mirror tokens to its own side-channel/SSE without patching core.
 - Register new tools via `ctx.register_tool(...)`
 - Register CLI subcommands via `ctx.register_cli_command(...)` — the
   plugin's argparse tree is wired into `hermes` at startup so

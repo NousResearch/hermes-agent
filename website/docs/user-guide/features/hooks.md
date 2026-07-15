@@ -395,6 +395,9 @@ def register(ctx):
 | [`transform_tool_result`](#transform_tool_result) | After any tool returns, before the result is handed back to the model | `str` to replace the result, `None` to leave unchanged |
 | [`transform_terminal_output`](#transform_terminal_output) | Inside the `terminal` tool, before truncation/ANSI-strip/redact | `str` to replace the raw output, `None` to leave unchanged |
 | [`transform_llm_output`](#transform_llm_output) | After the tool-calling loop completes, before the final response is delivered | `str` to replace the response text, `None`/empty to leave unchanged |
+| [`on_stream_delta`](#on_stream_delta) | Gateway only — a token delta is queued for delivery to the chat platform | ignored |
+| [`on_stream_segment`](#on_stream_segment) | Gateway only — the stream finalizes a segment and starts a fresh message | ignored |
+| [`on_stream_end`](#on_stream_end) | Gateway only — the turn's stream completes | ignored |
 
 ---
 
@@ -1278,6 +1281,79 @@ def register(ctx):
 ```
 
 The hook is guarded on a non-empty, non-interrupted response — it will not fire on stop-button interrupts or empty turns. Exceptions are logged as warnings and do not break agent execution.
+
+---
+
+### `on_stream_delta`
+
+Fires **once per token delta** as a turn streams to a chat platform, letting a plugin observe the live token stream — mirror it to an external side-channel (SSE/WebSocket) for an alternate client, drive streaming metrics — without patching core streaming.
+
+:::note Gateway only
+The three `on_stream_*` hooks are fired by the gateway stream consumer. They never fire in CLI sessions.
+:::
+
+**Callback signature:**
+
+```python
+def my_callback(chat_id: str, metadata: dict | None, message_id: str | None, delta: str, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `chat_id` | `str` | The platform chat/channel/room the stream is delivering to. |
+| `metadata` | `dict \| None` | Platform/session routing metadata for the chat (e.g. workspace or thread/topic routing), when the adapter provides it. |
+| `message_id` | `str \| None` | Platform message ID of the in-flight streamed message once the first flush has been sent; `None` before that. |
+| `delta` | `str` | The token text just streamed (always non-empty). |
+
+**Fires:** In `gateway/stream_consumer.py`, from the producer API (`on_delta`), **after** the text is queued for the delivery worker — observing never alters what the user receives. The per-token path is gated on `has_hook()`, so it costs nothing when no plugin is listening.
+
+**Return value:** Ignored — all three `on_stream_*` hooks are observers only.
+
+:::warning Synchronous — must be non-blocking
+Callbacks run **synchronously on the stream worker thread**; a slow callback throttles visible delivery to the user. Enqueue and return — hand the delta to your own queue, buffer, or thread; never do network I/O inline.
+:::
+
+---
+
+### `on_stream_segment`
+
+Fires when the stream **finalizes the current segment and starts a fresh platform message** — e.g. an interim commentary boundary or a long-message split.
+
+**Callback signature:**
+
+```python
+def my_callback(chat_id: str, metadata: dict | None, message_id: str | None, **kwargs):
+```
+
+Parameters are the shared streaming fields described under [`on_stream_delta`](#on_stream_delta): `chat_id`, `metadata`, and the `message_id` of the segment being finalized (`None` if nothing was sent yet).
+
+**Fires:** In `gateway/stream_consumer.py`, from the producer API (`on_segment_break`), after the segment boundary is queued.
+
+**Return value:** Ignored. Same gateway-only scope and synchronous/non-blocking requirement as [`on_stream_delta`](#on_stream_delta).
+
+---
+
+### `on_stream_end`
+
+Fires **once per turn** when the stream completes and the final message is about to be committed.
+
+**Callback signature:**
+
+```python
+def my_callback(chat_id: str, metadata: dict | None, message_id: str | None, reason: str, **kwargs):
+```
+
+Parameters are the shared streaming fields described under [`on_stream_delta`](#on_stream_delta), plus:
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `reason` | `str` | Why the stream ended. Currently always `"done"`; treat unknown values as terminal. |
+
+**Fires:** In `gateway/stream_consumer.py`, from the producer API (`finish`), after the completion marker is queued.
+
+**Return value:** Ignored. Same gateway-only scope and synchronous/non-blocking requirement as [`on_stream_delta`](#on_stream_delta).
+
+**Use cases:** Close out a mirrored side-channel stream, flush buffered deltas, record per-turn streaming latency.
 
 ---
 

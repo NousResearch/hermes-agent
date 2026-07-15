@@ -608,12 +608,17 @@ Each hook is documented in full on the **[Event Hooks reference](/user-guide/fea
 | `kanban_task_claimed` | A kanban task is claimed (dispatcher process, before the worker spawns) | `task_id: str, board: str \| None, assignee: str \| None, run_id: int \| None, profile_name: str` | ignored |
 | `kanban_task_completed` | A kanban task completes (worker process) | `task_id, board, assignee, run_id, profile_name, summary: str \| None` | ignored |
 | `kanban_task_blocked` | A kanban task is blocked (worker process) | `task_id, board, assignee, run_id, profile_name, reason: str \| None` | ignored |
+| [`on_stream_delta`](/user-guide/features/hooks#on_stream_delta) | Gateway only — a token delta is queued for delivery to the chat platform | `chat_id: str, metadata: dict \| None, message_id: str \| None, delta: str` | ignored |
+| [`on_stream_segment`](/user-guide/features/hooks#on_stream_segment) | Gateway only — the stream finalizes a segment and starts a fresh message | `chat_id: str, metadata: dict \| None, message_id: str \| None` | ignored |
+| [`on_stream_end`](/user-guide/features/hooks#on_stream_end) | Gateway only — the turn's stream completes | `chat_id: str, metadata: dict \| None, message_id: str \| None, reason: str` | ignored |
 
 Most hooks are fire-and-forget observers — their return values are ignored. The exception is `pre_llm_call`, which can inject context into the conversation.
 
 All callbacks should accept `**kwargs` for forward compatibility. If a hook callback crashes, it's logged and skipped. Other hooks and the agent continue normally.
 
 The kanban lifecycle hooks fire **after** the board DB change commits, so a callback always sees durable state and can never hold the SQLite write lock. Because kanban workers run as separate `hermes -p <profile> chat -q` subprocesses, `kanban_task_claimed` fires in the **dispatcher** process while `kanban_task_completed` / `kanban_task_blocked` fire in the **worker** process — hook in the dispatcher to observe every transition centrally, or in the worker for per-task in-session context.
+
+The `on_stream_*` streaming hooks fire in the **gateway only** (never in CLI sessions), from `gateway/stream_consumer.py` as a turn streams to a chat platform. They are observers only — return values are ignored, and they fire after the existing queue writes, so observing never alters what the user receives. Callbacks run **synchronously on the stream worker thread** and must be non-blocking (enqueue and return); the per-token path is gated on `has_hook()`, so it costs nothing when no plugin is listening.
 
 ### `pre_llm_call` context injection
 

@@ -320,9 +320,33 @@ class GatewayStreamConsumer:
             return True
         return any(sent.strip() == target for sent in self._delivered_commentary_texts)
 
+    def _emit_stream_event(self, hook_name: str, **payload: Any) -> None:
+        """Fire a gateway streaming observer hook — best-effort and cheap.
+
+        Lets plugins observe the live token stream (deltas, segment breaks,
+        completion) without patching core streaming, e.g. to mirror tokens to
+        an external side-channel/SSE. Gated on ``has_hook`` so the per-token
+        path costs nothing when no plugin is listening. Callbacks run
+        synchronously on this (worker) thread and must be non-blocking.
+        """
+        try:
+            from hermes_cli.plugins import has_hook, invoke_hook
+            if not has_hook(hook_name):
+                return
+            invoke_hook(
+                hook_name,
+                chat_id=self.chat_id,
+                metadata=self.metadata,
+                message_id=self._message_id,
+                **payload,
+            )
+        except Exception:
+            logger.debug("stream observer hook %s failed", hook_name, exc_info=True)
+
     def on_segment_break(self) -> None:
         """Finalize the current stream segment and start a fresh message."""
         self._queue.put(_NEW_SEGMENT)
+        self._emit_stream_event("on_stream_segment")
 
     def on_commentary(self, text: str) -> None:
         """Queue a completed interim assistant commentary message."""
@@ -376,12 +400,14 @@ class GatewayStreamConsumer:
         """
         if text:
             self._queue.put(text)
+            self._emit_stream_event("on_stream_delta", delta=text)
         elif text is None:
             self.on_segment_break()
 
     def finish(self) -> None:
         """Signal that the stream is complete."""
         self._queue.put(_DONE)
+        self._emit_stream_event("on_stream_end", reason="done")
 
     # ── Think-block filtering ────────────────────────────────────────
     # Models like MiniMax emit inline <think>...</think> blocks in their

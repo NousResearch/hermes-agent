@@ -10,6 +10,7 @@ import path from 'node:path'
 
 import simpleGit from 'simple-git'
 
+import { runGh } from './gh'
 import { resolveRequestedPathForIpc } from './hardening'
 
 const COMMIT_CONTEXT_DIFF_MAX_CHARS = 120_000
@@ -21,27 +22,8 @@ const UNTRACKED_LINE_COUNT_MAX_BYTES = 1024 * 1024
 // /opt/homebrew/bin or /usr/local/bin), so `gh` — and the `git` gh shells out
 // to — aren't found. Augment PATH with the resolved gh dir + the common
 // package-manager bins so gh runs the same way it does in a terminal.
-function ghEnv(ghBin) {
-  const extra = [ghBin ? path.dirname(ghBin) : '', '/opt/homebrew/bin', '/usr/local/bin', '/usr/bin'].filter(
-    dir => dir && dir !== '.'
-  )
-
-  return { ...process.env, PATH: [...extra, process.env.PATH].filter(Boolean).join(path.delimiter) }
-}
-
 // Run the `gh` CLI in a repo. Resolves { ok, stdout } so callers branch on
 // availability/auth without a throw. gh missing/unauthed → ok:false.
-function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string }> {
-  return new Promise(resolve => {
-    execFile(
-      ghBin || 'gh',
-      args,
-      { cwd, env: ghEnv(ghBin), windowsHide: true, timeout: 30_000, maxBuffer: 8 * 1024 * 1024 },
-      (err, stdout) => resolve({ ok: !err, stdout: String(stdout || '') })
-    )
-  })
-}
-
 function gitFor(cwd, gitBin) {
   return simpleGit({ baseDir: cwd, binary: gitBin || 'git', maxConcurrentProcesses: 4, trimmed: false })
 }
@@ -535,13 +517,13 @@ async function reviewShipInfo(repoPath, ghBin) {
     return { ghReady: false, pr: null }
   }
 
-  const auth = await runGh(['auth', 'status'], cwd, ghBin)
+  const auth = await runGh(['auth', 'status'], { cwd, ghBin })
 
   if (!auth.ok) {
     return { ghReady: false, pr: null }
   }
 
-  const view = await runGh(['pr', 'view', '--json', 'url,state,number'], cwd, ghBin)
+  const view = await runGh(['pr', 'view', '--json', 'url,state,number'], { cwd, ghBin })
 
   if (!view.ok) {
     // gh exits non-zero when no PR exists for the branch — that's not an error.
@@ -549,7 +531,7 @@ async function reviewShipInfo(repoPath, ghBin) {
   }
 
   try {
-    const pr = JSON.parse(view.stdout)
+    const pr = JSON.parse(view.stdout || '')
 
     return { ghReady: true, pr: pr && pr.url ? { url: pr.url, state: pr.state, number: pr.number } : null }
   } catch {
@@ -564,13 +546,13 @@ async function reviewCreatePr(repoPath, gitBin, ghBin) {
 
   await reviewPush(repoPath, gitBin).catch(() => undefined)
 
-  const created = await runGh(['pr', 'create', '--fill'], cwd, ghBin)
+  const created = await runGh(['pr', 'create', '--fill'], { cwd, ghBin })
 
   if (!created.ok) {
     throw new Error('gh pr create failed (is gh installed and authenticated?)')
   }
 
-  const url = created.stdout.trim().split('\n').filter(Boolean).pop() || ''
+  const url = (created.stdout || '').trim().split('\n').filter(Boolean).pop() || ''
 
   return { url }
 }

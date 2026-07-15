@@ -57,6 +57,12 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
     set: name => ipcRenderer.invoke('hermes:profile:set', name)
   },
   api: request => ipcRenderer.invoke('hermes:api', request),
+  github: {
+    pullRequests: {
+      list: filter => ipcRenderer.invoke('hermes:github:pullRequests:list', filter),
+      detail: ref => ipcRenderer.invoke('hermes:github:pullRequests:detail', ref)
+    }
+  },
   notify: payload => ipcRenderer.invoke('hermes:notify', payload),
   requestMicrophoneAccess: () => ipcRenderer.invoke('hermes:requestMicrophoneAccess'),
   readFileDataUrl: filePath => ipcRenderer.invoke('hermes:readFileDataUrl', filePath),

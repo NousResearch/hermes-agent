@@ -71,6 +71,7 @@ import {
   MESSAGING_ROUTE,
   NEW_CHAT_ROUTE,
   PROFILES_ROUTE,
+  PULL_REQUESTS_ROUTE,
   sessionRoute,
   SETTINGS_ROUTE,
   SKILLS_ROUTE,
@@ -444,6 +445,14 @@ export function CommandPalette() {
             id: 'nav-artifacts',
             label: cc.nav.artifacts.title,
             run: go(ARTIFACTS_ROUTE)
+          },
+          {
+            action: 'nav.pull-requests',
+            icon: GitBranch,
+            id: 'nav-pull-requests',
+            keywords: ['github', 'pull requests', 'review'],
+            label: t.pullRequests.title,
+            run: go(PULL_REQUESTS_ROUTE)
           },
           {
             action: 'nav.cron',

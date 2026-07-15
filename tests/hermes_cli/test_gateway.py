@@ -1046,6 +1046,39 @@ def test_scan_gateway_pids_detects_windows_hermes_exe_case_variants(monkeypatch)
     assert gateway._scan_gateway_pids(set(), all_profiles=True) == [2468]
 
 
+def test_get_service_pids_discovers_profile_named_systemd_units(monkeypatch):
+    """Service PID discovery must catch default and profile gateway units."""
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+
+    def fake_run(cmd, **kwargs):
+        if cmd[:3] == ["systemctl", "--user", "list-units"]:
+            glob = cmd[3]
+            if glob == "hermes-gateway*":
+                stdout = "hermes-gateway.service loaded active running Hermes Gateway\n"
+            elif glob == "hermes*gateway*":
+                stdout = (
+                    "hermes-gateway.service loaded active running Hermes Gateway\n"
+                    "hermes-secondbrain-gateway.service loaded active running Hermes Gateway\n"
+                )
+            else:
+                stdout = ""
+            return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+        if cmd[:2] == ["systemctl", "list-units"]:
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        if cmd[:3] == ["systemctl", "--user", "show"]:
+            pid = {
+                "hermes-gateway.service": "111\n",
+                "hermes-secondbrain-gateway.service": "222\n",
+            }[cmd[3]]
+            return SimpleNamespace(returncode=0, stdout=pid, stderr="")
+        raise AssertionError(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(gateway.subprocess, "run", fake_run)
+
+    assert gateway._get_service_pids() == {111, 222}
+
+
 # ---------------------------------------------------------------------------
 # _wait_for_gateway_exit
 # ---------------------------------------------------------------------------

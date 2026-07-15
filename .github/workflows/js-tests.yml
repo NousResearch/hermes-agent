@@ -44,7 +44,6 @@ jobs:
           cache: npm
       - uses: ./.github/actions/retry
         with:
-          # --ignore-scripts: TS & tests don't need native deps
-          command: npm ci --ignore-scripts
+          command: npm ci
       - run: npm run --prefix ${{ matrix.package }} check
       - run: npm run --prefix ${{ matrix.package }} fix

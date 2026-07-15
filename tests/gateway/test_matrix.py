@@ -626,6 +626,81 @@ class TestMatrixDmDetection:
             "!room_b:ex.org": False,
         }
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("initial_dm", "new_m_direct", "expected_dm"),
+        [
+            pytest.param(
+                False,
+                {"@alice:ex.org": ["!chat:ex.org"]},
+                True,
+                id="marked-as-dm",
+            ),
+            pytest.param(
+                True,
+                {},
+                False,
+                id="unmarked-as-dm",
+            ),
+        ],
+    )
+    async def test_live_m_direct_update_reclassifies_without_reconnect(
+        self, initial_dm, new_m_direct, expected_dm
+    ):
+        """An m.direct account-data event delivered in a sync response takes
+        effect immediately, without a reconnect or an account-data fetch."""
+        self.adapter._joined_rooms = {"!chat:ex.org"}
+        self.adapter._dm_rooms = {"!chat:ex.org": initial_dm}
+        self.adapter._client = MagicMock()
+        self.adapter._client.get_account_data = AsyncMock()
+        self.adapter._client.get_state_event = AsyncMock(side_effect=Exception("no state"))
+        self.adapter._client.state_store = MagicMock()
+        self.adapter._client.state_store.get_members = AsyncMock(
+            return_value=["@bot:ex.org", "@alice:ex.org"]
+        )
+
+        assert await self.adapter._is_dm_room("!chat:ex.org") is initial_dm
+
+        self.adapter._update_dm_rooms_from_sync(
+            {
+                "account_data": {
+                    "events": [{"type": "m.direct", "content": new_m_direct}]
+                },
+                "next_batch": "s2",
+            }
+        )
+
+        assert await self.adapter._is_dm_room("!chat:ex.org") is expected_dm
+        self.adapter._client.get_account_data.assert_not_awaited()
+
+    @pytest.mark.parametrize(
+        "sync_data",
+        [
+            pytest.param({}, id="no-account-data"),
+            pytest.param({"account_data": None}, id="account-data-not-dict"),
+            pytest.param({"account_data": {"events": None}}, id="events-not-list"),
+            pytest.param(
+                {
+                    "account_data": {
+                        "events": [
+                            "bogus",
+                            {"type": "m.push_rules", "content": {}},
+                            {"type": "m.direct", "content": None},
+                        ]
+                    }
+                },
+                id="irrelevant-or-malformed-events",
+            ),
+        ],
+    )
+    def test_update_dm_rooms_from_sync_ignores_irrelevant_payloads(self, sync_data):
+        self.adapter._joined_rooms = {"!dm:ex.org"}
+        self.adapter._dm_rooms = {"!dm:ex.org": True}
+
+        self.adapter._update_dm_rooms_from_sync(sync_data)
+
+        assert self.adapter._dm_rooms == {"!dm:ex.org": True}
+
 
 # ---------------------------------------------------------------------------
 # Reply fallback stripping
@@ -2024,6 +2099,53 @@ class TestMatrixSyncLoop:
         assert captured[0].source.chat_type == "dm"
 
         await adapter.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_sync_loop_applies_live_m_direct_reclassification(self):
+        """An Element-side DM reclassification arriving via sync account_data
+        takes effect without a reconnect or an account-data fetch."""
+        adapter = _make_adapter()
+        adapter._closing = False
+        adapter._joined_rooms = {"!chat:example.org"}
+        adapter._dm_rooms = {"!chat:example.org": False}
+
+        async def _sync_once(**kwargs):
+            adapter._closing = True
+            return {
+                "account_data": {
+                    "events": [
+                        {
+                            "type": "m.direct",
+                            "content": {"@alice:example.org": ["!chat:example.org"]},
+                        }
+                    ]
+                },
+                "rooms": {"join": {"!chat:example.org": {}}},
+                "next_batch": "s2",
+            }
+
+        mock_sync_store = MagicMock()
+        mock_sync_store.get_next_batch = AsyncMock(return_value=None)
+        mock_sync_store.put_next_batch = AsyncMock()
+
+        fake_client = MagicMock()
+        fake_client.sync = AsyncMock(side_effect=_sync_once)
+        fake_client.sync_store = mock_sync_store
+        fake_client.handle_sync = MagicMock(return_value=[])
+        fake_client.get_account_data = AsyncMock()
+        fake_client.get_state_event = AsyncMock(side_effect=Exception("no state"))
+        fake_client.state_store = MagicMock()
+        fake_client.state_store.get_members = AsyncMock(
+            return_value=["@bot:example.org", "@alice:example.org"]
+        )
+        adapter._client = fake_client
+
+        assert await adapter._is_dm_room("!chat:example.org") is False
+
+        await adapter._sync_loop()
+
+        assert await adapter._is_dm_room("!chat:example.org") is True
+        fake_client.get_account_data.assert_not_awaited()
 
     @pytest.mark.asyncio
     async def test_room_message_after_invite_join_is_received(self):

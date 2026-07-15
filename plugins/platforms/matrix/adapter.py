@@ -2204,6 +2204,11 @@ class MatrixAdapter(BasePlatformAdapter):
                         self._room_identities.clear()
                         self._room_identity_cached_at.clear()
 
+                    # Apply live m.direct changes (e.g. Element marking or
+                    # unmarking a DM) before dispatching events, so messages
+                    # in the same sync batch see the new classification.
+                    self._update_dm_rooms_from_sync(sync_data)
+
                     # Advance the sync token so the next request is
                     # incremental instead of a full initial sync.
                     nb = sync_data.get("next_batch")
@@ -3737,6 +3742,10 @@ class MatrixAdapter(BasePlatformAdapter):
         if dm_data is None:
             return
 
+        self._apply_m_direct_content(dm_data)
+
+    def _apply_m_direct_content(self, dm_data: Dict) -> None:
+        """Rebuild the DM room cache from m.direct content."""
         dm_room_ids: Set[str] = set()
         for user_id, rooms in dm_data.items():
             if isinstance(rooms, list):
@@ -3745,6 +3754,31 @@ class MatrixAdapter(BasePlatformAdapter):
         self._dm_rooms = {rid: (rid in dm_room_ids) for rid in self._joined_rooms}
         self._room_identities.clear()
         self._room_identity_cached_at.clear()
+
+    def _update_dm_rooms_from_sync(self, sync_data: Dict[str, Any]) -> None:
+        """Apply live m.direct updates delivered in a sync response.
+
+        Element edits m.direct account data when the user marks or unmarks a
+        room as a DM; the change arrives as a top-level account_data event on
+        the next sync, so the DM cache must not wait for a reconnect.
+        """
+        account_data = sync_data.get("account_data")
+        if not isinstance(account_data, dict):
+            return
+
+        events = account_data.get("events")
+        if not isinstance(events, list):
+            return
+
+        for raw_event in events:
+            if not isinstance(raw_event, dict):
+                continue
+            if raw_event.get("type") != "m.direct":
+                continue
+
+            content = raw_event.get("content")
+            if isinstance(content, dict):
+                self._apply_m_direct_content(content)
 
     # ------------------------------------------------------------------
     # Mention detection helpers

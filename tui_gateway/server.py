@@ -4623,6 +4623,27 @@ def _make_agent(
             "target_model": model or None,
         })
     _pr = _load_provider_routing()
+
+    # Plan mode: materialise the `plan_mode: always` default for a fresh
+    # session, then fold any active restriction into the toolset selection —
+    # the same policy the CLI and messaging gateway apply at their build sites.
+    # Adding the `plan` toolset to enabled_toolsets also busts the agent-cache
+    # signature so the restricted agent rebuilds. The hard enforcement is the
+    # dispatch guard in agent/tool_executor; this hides mutating tools from the
+    # model's view for defense in depth.
+    _plan_enabled = _load_enabled_toolsets()
+    _plan_disabled = None
+    try:
+        from hermes_cli import plan_mode as _plan_mode
+
+        _eff_sid = session_id or key
+        _plan_mode.ensure_default_for_session(_eff_sid or "")
+        _plan_enabled, _plan_disabled = _plan_mode.apply_session_toolset_policy(
+            _eff_sid or "", _plan_enabled, _plan_disabled,
+        )
+    except Exception as _plan_exc:
+        logger.debug("plan-mode toolset policy skipped: %s", _plan_exc)
+
     return AIAgent(
         model=model,
         max_iterations=_cfg_max_turns(cfg, 90),
@@ -4649,7 +4670,8 @@ def _make_agent(
             if service_tier_override is not None
             else _load_service_tier()
         ),
-        enabled_toolsets=_load_enabled_toolsets(),
+        enabled_toolsets=_plan_enabled,
+        disabled_toolsets=_plan_disabled,
         # OpenRouter provider-routing prefs (config.yaml `provider_routing`).
         # Mirrors the messaging gateway + CLI so the desktop/TUI honors the same
         # routing instead of letting OpenRouter pick providers at random.
@@ -4670,6 +4692,62 @@ def _make_agent(
         fallback_model=_load_fallback_model(),
         **_agent_cbs(sid),
     )
+
+
+def _plan_session_id(session) -> str:
+    """The session id the plan-mode dispatch guard keys on.
+
+    Mirrors ``agent/tool_executor``'s guard lookup — the agent's
+    ``session_id`` (falling back to ``session_key``) — so a PlanManager write
+    here lands under the same key the guard reads, and enforcement holds
+    regardless of which process runs the turn.
+    """
+    if not session:
+        return ""
+    agent = session.get("agent")
+    if agent is not None:
+        sid = getattr(agent, "session_id", None)
+        if sid:
+            return str(sid)
+    return str(session.get("session_key", "") or "")
+
+
+def _refresh_agent_for_plan(session) -> None:
+    """Re-apply the plan-mode toolset policy to a session's live cached agent.
+
+    Lets an ``/plan`` enter/approve/exit take effect this session without
+    ``/new`` (which discards history), mirroring the CLI's ``self.agent = None``
+    rebuild non-destructively. No-op when no agent is built yet (the next
+    ``_make_agent`` build folds the policy in) or while a turn is running (the
+    tool snapshot must not be swapped mid-turn — the dispatch guard still
+    enforces on every call regardless).
+    """
+    if not session:
+        return
+    if session.get("running"):
+        return
+    agent = session.get("agent")
+    if agent is None:
+        return
+    try:
+        from hermes_cli import plan_mode as _plan_mode
+        from tools.mcp_tool import refresh_agent_mcp_tools
+
+        eff_sid = getattr(agent, "session_id", None) or session.get("session_key", "")
+        # Base = the build-time selection (TUI passes no disabled_toolsets); the
+        # policy adds to it when restricted and returns it unchanged when not,
+        # so exit cleanly restores the mutating toolsets.
+        enabled, disabled = _plan_mode.apply_session_toolset_policy(
+            eff_sid or "", _load_enabled_toolsets(), None,
+        )
+        refresh_agent_mcp_tools(
+            agent,
+            enabled_override=enabled,
+            disabled_override=disabled,
+            quiet_mode=True,
+        )
+    except Exception as exc:
+        logger.debug("plan-mode live agent refresh skipped: %s", exc)
 
 
 def _init_session(
@@ -12042,6 +12120,89 @@ def _(rid, params: dict) -> dict:
     # ── Commands that queue messages onto _pending_input in the CLI ───
     # In the TUI the slash worker subprocess has no reader for that queue,
     # so we handle them here and return a structured payload.
+
+    if name == "plan":
+        # Wire the TUI's /plan to the SAME persisted PlanManager state +
+        # enforcement the CLI and messaging gateway use. Previously /plan fell
+        # through to the skill scan (advisory only), so TUI sessions never
+        # entered the persisted enforced state. The dispatch guard in
+        # agent/tool_executor reads this state from the shared SessionDB, so
+        # persisting it here is what makes enforcement hold for TUI turns.
+        if not session:
+            return _err(rid, 4001, "no active session")
+        try:
+            from hermes_cli.plan_mode import PlanManager
+        except Exception as exc:
+            return _err(rid, 5030, f"plan mode unavailable: {exc}")
+
+        sid_key = _plan_session_id(session)
+        if not sid_key:
+            return _err(rid, 4001, "no session key")
+        mgr = PlanManager(session_id=sid_key)
+        lower = arg.strip().lower()
+
+        if lower == "status":
+            return _ok(rid, {"type": "exec", "output": mgr.status_line()})
+        if lower == "show":
+            s = mgr.state
+            if s is None or s.plan_path is None:
+                return _ok(rid, {"type": "exec", "output": "No plan file has been written yet."})
+            return _ok(rid, {"type": "exec", "output": f"📝 Plan file: {s.plan_path}"})
+        if lower == "approve":
+            if mgr.approve() is None:
+                return _ok(rid, {"type": "exec", "output": "Plan mode is not active — nothing to approve."})
+            _refresh_agent_for_plan(session)
+            return _ok(rid, {"type": "exec", "output": "✅ Plan approved — execution unlocks on the next turn."})
+        if lower == "reject" or lower.startswith("reject "):
+            if not mgr.is_active():
+                return _ok(rid, {"type": "exec", "output": "Plan mode is not active — nothing to reject."})
+            feedback = arg[len("reject"):].strip()
+            mgr.keep_planning()
+            out = (
+                f"↩ Staying in plan mode. Feedback: {feedback}"
+                if feedback
+                else "↩ Staying in plan mode. Keep refining the plan."
+            )
+            return _ok(rid, {"type": "exec", "output": out})
+        if lower == "exit":
+            # /plan exit DISCARDS a pending plan — it never approves it.
+            had = mgr.exit()
+            _refresh_agent_for_plan(session)
+            out = (
+                "Plan mode off — the pending plan was discarded (not approved). Mutating tools are unlocked."
+                if had
+                else "Plan mode is off."
+            )
+            return _ok(rid, {"type": "exec", "output": out})
+
+        # Bare /plan → enter enforcement mode.
+        mgr.enter(entered_by="user")
+        _refresh_agent_for_plan(session)
+        notice = (
+            "📝 Plan mode on. I'll plan only — mutating tools are blocked until you approve.\n"
+            "Controls: /plan status · /plan show · /plan approve · /plan reject <feedback> · /plan exit"
+        )
+        if not arg.strip():
+            return _ok(rid, {"type": "exec", "output": notice})
+
+        # /plan <request> → also preserve the documented plan-skill dispatch,
+        # seeded with the request (resolved by name; the /plan slash command is
+        # skipped from the registry because it collides with this command).
+        seeded = None
+        try:
+            from agent.skill_commands import (
+                build_skill_invocation_message_by_identifier,
+            )
+
+            seeded = build_skill_invocation_message_by_identifier(
+                "plan", arg.strip(), task_id=sid_key
+            )
+        except Exception:
+            seeded = None
+        return _ok(
+            rid,
+            {"type": "send", "notice": notice, "message": seeded or arg.strip()},
+        )
 
     if name in {"queue", "q"}:
         if not arg:

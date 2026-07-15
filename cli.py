@@ -6834,7 +6834,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if reason == "history":
             _cli_visible_print("(._.) No messages in the current chat yet — here are recent sessions you can resume:")
         else:
-else:
+
             _cli_visible_print("  Recent sessions:")
         _cli_visible_print()
         from rich.table import Table

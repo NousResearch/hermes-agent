@@ -214,4 +214,4 @@ def resolve_topic_name(platform: str, chat_id: str, thread_id: str) -> str:
     if name:
         return name
     fallback_id = _clean_topic_label(thread_id)
-    return f"Топик {fallback_id or 'неизвестен'}"
+    return f"Topic {fallback_id or 'unknown'}"

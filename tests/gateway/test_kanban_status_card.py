@@ -36,13 +36,13 @@ def _card(task, *events, now=1, latest_comment=None, parents=None):
 @pytest.mark.parametrize(
     ("age", "relative", "elapsed"),
     [
-        (0, "только что", "меньше 15 сек"),
-        (14, "только что", "меньше 15 сек"),
-        (15, "15 сек назад", "15 сек"),
-        (30, "30 сек назад", "30 сек"),
-        (45, "45 сек назад", "45 сек"),
-        (60, "1 мин назад", "1 мин"),
-        (75, "1 мин 15 сек назад", "1 мин 15 сек"),
+        (0, "just now", "under 15s"),
+        (14, "just now", "under 15s"),
+        (15, "15s ago", "15s"),
+        (30, "30s ago", "30s"),
+        (45, "45s ago", "45s"),
+        (60, "1m ago", "1m"),
+        (75, "1m 15s ago", "1m 15s"),
     ],
 )
 def test_status_clock_uses_fifteen_second_buckets(age, relative, elapsed):
@@ -65,7 +65,7 @@ def test_running_card_with_no_progress_uses_stale_progress_status_and_three_inde
         _event("claimed"), _event("heartbeat", {"note": "Проверяю receipt и lease"}),
     )
 
-    assert "🟢 меньше 15 сек · 🛠 нет данных · ⏱️ меньше 15 сек" in text
+    assert "🟢 under 15s · 🛠 unavailable · ⏱️ under 15s" in text
     assert "📍 Этап:" not in text
     assert "receipt" not in text
 
@@ -81,7 +81,7 @@ def test_running_card_uses_current_run_substantive_progress_clock():
         timeline=[_event("progress", {"checkpoint": "old run"}, created_at=5)],
         current_run=current_run, now=125,
     )
-    assert "🛠 нет данных" in text
+    assert "🛠 unavailable" in text
     assert "old run" not in text
 
 
@@ -89,8 +89,8 @@ def test_running_card_clamps_explicit_human_detail_in_own_block():
     detail = "Проверяю доставку в исходную тему и готовлю понятный итог для пользователя. " * 5
     text = _card(_task(title="Проверить длинную live-деталь"), _event("heartbeat", {"note": detail}))
 
-    assert text.startswith("🗂 Проверить длинную live-деталь · t_card\n\n🤷‍♂️ @heavy на связи, но нет подтверждённого прогресса\n\n🧭 Сейчас:\n")
-    detail_line = text.split("🧭 Сейчас:\n", 1)[1].split("\n\n🟢 ", 1)[0]
+    assert text.startswith("🗂 Проверить длинную live-деталь · t_card\n\n🤷‍♂️ @heavy is online, but no confirmed progress\n\n🧭 Now:\n")
+    detail_line = text.split("🧭 Now:\n", 1)[1].split("\n\n🟢 ", 1)[0]
     assert len(detail_line) <= 220
     assert detail_line.endswith("…")
     assert "📍 Этап:" not in text
@@ -99,18 +99,18 @@ def test_running_card_clamps_explicit_human_detail_in_own_block():
 @pytest.mark.parametrize(
     ("block_kind", "heading", "next_action"),
     [
-        ("needs_input", "📞 Нужен твой ответ, KD", "Нужен ответ"),
-        ("transient", "⚠️ Перезапускается после временного сбоя", "ответ не нужен"),
+        ("needs_input", "📞 Your reply is needed", "A reply is needed to continue."),
+        ("transient", "⚠️ Restarting after a temporary failure", "This is temporary; no reply is needed."),
     ],
 )
 def test_waiting_cards_keep_state_in_primary_line_without_internal_reason(block_kind, heading, next_action):
     text = _card(_task("blocked", block_kind=block_kind), _event("blocked", {"reason": "Нужен доступ"}))
 
     assert heading in text
-    assert "🧭 Сейчас:" in text
+    assert "🧭 Now:" in text
     assert "Нужен доступ" not in text
     assert next_action in text
-    assert "⏱ Ожидание: меньше 15 сек" in text
+    assert "⏱ Waiting: under 15s" in text
     assert "📍 Этап:" not in text
 
 
@@ -119,11 +119,11 @@ def test_superseded_and_error_cards_do_not_expose_internal_event_detail():
     superseded = _card(_task("blocked"), _event("blocked", {"reason": "superseded by replacement t_b9435779"}))
     crashed = _card(_task(), _event("crashed", {"error": "traceback"}))
 
-    assert "🔐 Нужна ручная помощь" in capability
+    assert "🔐 Manual help required" in capability
     assert "Нужен доступ к закрытому сервису" not in capability
-    assert "🔁 Работа продолжена в новой задаче" in superseded
+    assert "🔁 Work continues in a new task" in superseded
     assert "traceback" not in crashed
-    assert "⚠️ Worker перезапускается" in crashed
+    assert "⚠️ Worker is restarting" in crashed
     assert "📍 Этап:" not in capability + superseded + crashed
 
 
@@ -136,8 +136,8 @@ def test_accepted_card_is_edited_to_auditor_acceptance_not_terminal_ping():
     )
 
     assert text == (
-        "🗂 Internal notifier architecture cleanup · t_card\n\n✅ Принято аудитором\n\n"
-        "🧭 Сейчас:\nПроверка завершена\n\n⏱ Выполнено за: 0 мин"
+        "🗂 Internal notifier architecture cleanup · t_card\n\n✅ Accepted by auditor\n\n"
+        "🧭 Now:\nReview complete.\n\n⏱ Completed in: 0m"
     )
     assert "Готово — к твоему ревью" not in text
     assert "📍 Этап:" not in text
@@ -149,7 +149,7 @@ def test_internal_comments_are_never_rendered_in_current_block():
         latest_comment=SimpleNamespace(body="OPS gate: sqlite receipt lease"),
     )
 
-    assert "🧭 Сейчас:\nИсполнитель на связи; нового подтверждённого прогресса пока нет." in text
+    assert "🧭 Now:\nThe worker is online; no new confirmed progress yet." in text
     assert "OPS gate" not in text
     assert "sqlite" not in text
 
@@ -162,16 +162,16 @@ def test_review_and_dependency_cards_show_only_applicable_clocks():
     )
     queued = _card(_task("ready"), now=70)
 
-    assert "🔎 Аудитор проверяет результат" in review
-    assert "⏱ На проверке: 1 мин" in review
+    assert "🔎 Auditor is reviewing" in review
+    assert "⏱ In review: 1m" in review
     assert "Воркер на связи" not in review
-    assert "⏳ Начнётся после «Подготовить данные»" in dependency
-    assert "🧭 Сейчас:\nСвязанная задача ещё выполняется." in dependency
-    assert "⏱️ 1 м" in dependency
+    assert "⏳ Starts after 'Подготовить данные'" in dependency
+    assert "🧭 Now:\nA related task is still in progress." in dependency
+    assert "⏱️ 1m" in dependency
     assert "Воркер на связи" not in dependency
-    assert "⏳ @heavy ожидает запуска" in queued
-    assert "🧭 Сейчас:\nОжидает свободного исполнителя" in queued
-    assert "⏱️ 1 м" in queued
+    assert "⏳ @heavy is waiting to start" in queued
+    assert "🧭 Now:\nWaiting for an available worker." in queued
+    assert "⏱️ 1m" in queued
 
 
 def test_dependency_wait_for_multiple_parents_shows_real_completion_count():
@@ -180,9 +180,9 @@ def test_dependency_wait_for_multiple_parents_shows_real_completion_count():
         parents=[_parent("Первый", "done"), _parent("Второй")],
     )
 
-    assert "⏳ Начнётся после 2 связанных задач" in text
-    assert "🧭 Сейчас:\nГотово 1 из 2 связанных задач." in text
-    assert "⏱️ 1 м" in text
+    assert "⏳ Starts after 2 related tasks" in text
+    assert "🧭 Now:\n1 of 2 related tasks complete." in text
+    assert "⏱️ 1m" in text
     assert "зависимост" not in text.casefold()
     assert "todo" not in text.casefold()
 
@@ -193,8 +193,8 @@ def test_dependency_wait_for_parent_in_review_uses_user_safe_review_copy():
         parents=[_parent("Проверить готовый отчёт", "review")],
     )
 
-    assert "⏳ Начнётся после проверки «Проверить готовый отчёт»" in text
-    assert "🧭 Сейчас:\nСвязанная задача ещё выполняется." in text
+    assert "⏳ Starts after review of 'Проверить готовый отчёт'" in text
+    assert "🧭 Now:\nA related task is still in progress." in text
     assert "зависимост" not in text.casefold()
 
 
@@ -209,8 +209,8 @@ def test_dependency_wait_then_running_never_uses_human_needed_copy():
     )
 
     assert "Нужен" not in waiting
-    assert "Начнётся после «Собрать данные»" in waiting
-    assert "🤷‍♂️ @heavy на связи, но нет подтверждённого прогресса" in running
+    assert "Starts after 'Собрать данные'" in waiting
+    assert "🤷‍♂️ @heavy is online, but no confirmed progress" in running
     assert "Нужен" not in running
 
 
@@ -228,7 +228,7 @@ def test_fake_clock_keeps_liveness_progress_and_elapsed_independent_across_retry
         now=620,
     )
 
-    assert "🟢 15 сек · 🛠 10 м · ⏱️ 10 м" in text
+    assert "🟢 15s · 🛠 10m · ⏱️ 10m" in text
 
 
 def test_header_truncates_unicode_title_without_orphaning_task_id():
@@ -246,26 +246,26 @@ def test_short_header_is_not_changed():
 @pytest.mark.parametrize(
     ("task", "events", "parents", "expected"),
     [
-        (_task("ready"), [], None, "⏳ @heavy ожидает запуска"),
-        (_task("running"), [_event("heartbeat", created_at=100), _event("progress", created_at=100)], None, "🔫 @heavy выполняет задачу"),
-        (_task("running"), [_event("heartbeat", created_at=100)], None, "🤷‍♂️ @heavy на связи, но нет подтверждённого прогресса"),
-        (_task("ready"), [_event("review_rejected")], None, "😡 Аудитор вернул задачу на доработку"),
-        (_task("running"), [_event("review_rejected")], None, "🤝 @heavy исправляет замечания аудитора"),
-        (_task("review"), [_event("review_requested")], None, "🔎 Аудитор проверяет результат"),
-        (_task("review"), [_event("review_requested"), _event("review_requested")], None, "🤔 Аудитор повторно проверяет"),
-        (_task("review"), [_event("review_retry_scheduled")], None, "⚠️ Проверка аудитора перезапускается"),
-        (_task("review"), [_event("needs_auditor")], None, "🔐 Нужна ручная проверка аудитора"),
-        (_task("done"), [_event("review_accepted")], None, "✅ Принято аудитором"),
-        (_task("todo"), [], None, "⏳ @heavy ожидает запуска"),
-        (_task("todo"), [], [_parent("Родитель")], "⏳ Начнётся после «Родитель»"),
-        (_task("todo"), [], [_parent("Первый"), _parent("Второй")], "⏳ Начнётся после 2 связанных задач"),
-        (_task("blocked", block_kind="needs_input"), [], None, "📞 Нужен твой ответ, KD"),
-        (_task("blocked", block_kind="capability"), [], None, "🔐 Нужна ручная помощь"),
-        (_task("blocked", block_kind="transient"), [], None, "⚠️ Перезапускается после временного сбоя"),
-        (_task("ready"), [_event("reclaimed")], None, "⚠️ Worker перезапускается"),
-        (_task("ready"), [_event("gave_up")], None, "❌ Не удалось выполнить автоматически"),
-        (_task("blocked"), [_event("superseded")], None, "🔁 Работа продолжена в новой задаче"),
-        (_task("archived"), [], None, "📦 Перенесено в архив"),
+        (_task("ready"), [], None, "⏳ @heavy is waiting to start"),
+        (_task("running"), [_event("heartbeat", created_at=100), _event("progress", created_at=100)], None, "🔫 @heavy is working"),
+        (_task("running"), [_event("heartbeat", created_at=100)], None, "🤷‍♂️ @heavy is online, but no confirmed progress"),
+        (_task("ready"), [_event("review_rejected")], None, "😡 Auditor returned the task for changes"),
+        (_task("running"), [_event("review_rejected")], None, "🤝 @heavy is addressing auditor feedback"),
+        (_task("review"), [_event("review_requested")], None, "🔎 Auditor is reviewing"),
+        (_task("review"), [_event("review_requested"), _event("review_requested")], None, "🤔 Auditor is reviewing again"),
+        (_task("review"), [_event("review_retry_scheduled")], None, "⚠️ Auditor review is restarting"),
+        (_task("review"), [_event("needs_auditor")], None, "🔐 Manual auditor review required"),
+        (_task("done"), [_event("review_accepted")], None, "✅ Accepted by auditor"),
+        (_task("todo"), [], None, "⏳ @heavy is waiting to start"),
+        (_task("todo"), [], [_parent("Родитель")], "⏳ Starts after 'Родитель'"),
+        (_task("todo"), [], [_parent("Первый"), _parent("Второй")], "⏳ Starts after 2 related tasks"),
+        (_task("blocked", block_kind="needs_input"), [], None, "📞 Your reply is needed"),
+        (_task("blocked", block_kind="capability"), [], None, "🔐 Manual help required"),
+        (_task("blocked", block_kind="transient"), [], None, "⚠️ Restarting after a temporary failure"),
+        (_task("ready"), [_event("reclaimed")], None, "⚠️ Worker is restarting"),
+        (_task("ready"), [_event("gave_up")], None, "❌ Could not complete automatically"),
+        (_task("blocked"), [_event("superseded")], None, "🔁 Work continues in a new task"),
+        (_task("archived"), [], None, "📦 Archived"),
     ],
 )
 def test_primary_status_vocabulary_covers_supported_lifecycle_states(task, events, parents, expected):

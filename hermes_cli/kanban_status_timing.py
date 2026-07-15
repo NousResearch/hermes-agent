@@ -17,27 +17,27 @@ def _bucket_age(age: int) -> int:
 def _minute_second_text(age: int) -> str:
     minutes, seconds = divmod(max(0, int(age)), _MINUTE_SECONDS)
     if seconds:
-        return f"{minutes} мин {seconds} сек"
-    return f"{minutes} мин"
+        return f"{minutes}m {seconds}s"
+    return f"{minutes}m"
 
 
 def format_relative_age(age: int) -> str:
     """Format an age without hiding sub-minute movement in a zero-minute bucket."""
     bucketed = _bucket_age(age)
     if bucketed < STATUS_SURFACE_REFRESH_SECONDS:
-        return "только что"
+        return "just now"
     if bucketed < _MINUTE_SECONDS:
-        return f"{bucketed} сек назад"
-    return f"{_minute_second_text(bucketed)} назад"
+        return f"{bucketed}s ago"
+    return f"{_minute_second_text(bucketed)} ago"
 
 
 def format_elapsed_age(age: int) -> str:
     """Format elapsed task time using the same visible buckets as relative age."""
     bucketed = _bucket_age(age)
     if bucketed < STATUS_SURFACE_REFRESH_SECONDS:
-        return "меньше 15 сек"
+        return "under 15s"
     if bucketed < _MINUTE_SECONDS:
-        return f"{bucketed} сек"
+        return f"{bucketed}s"
     return _minute_second_text(bucketed)
 
 

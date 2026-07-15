@@ -175,9 +175,9 @@ def _enqueue_terminal_notification_in_child(db_path, task_id, event_id, queue):
             title="intent final",
             outcome_key="subprocess-final",
             outcome_summary=(
-                "Что сделали: проверили итог.\n"
-                "Что работает: итог принят.\n"
-                "Можно проверить: открыть чат."
+                "What changed: проверили итог.\n"
+                "What works: итог принят.\n"
+                "How to verify: открыть чат."
             ),
         ))
     finally:
@@ -409,7 +409,7 @@ def test_kanban_notifier_renders_auditor_claimed_review_status(tmp_path, monkeyp
     asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
 
     assert len(adapter.sent) == 1
-    assert "Аудитор начал проверку" in adapter.sent[0]["text"]
+    assert "Auditor started review" in adapter.sent[0]["text"]
     with kb.connect() as conn:
         _, events = kb.unseen_events_for_sub(
             conn, task_id=task_id, platform="telegram", chat_id="chat-1",
@@ -517,7 +517,7 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
 
     # First crash delivered.
     assert len(adapter.sent) == 1
-    assert "⚠️ Worker перезапускается" in adapter.sent[0]["text"]
+    assert "⚠️ Worker is restarting" in adapter.sent[0]["text"]
 
     # Subscription survives — the cursor advanced past event #1, but the
     # row is still there.
@@ -545,7 +545,7 @@ def test_notifier_redelivers_same_kind_on_dispatch_cycle(tmp_path, monkeypatch):
         f"Second crashed event should also notify; got {len(adapter.sent)} "
         f"deliveries (texts: {[d['text'] for d in adapter.sent]})"
     )
-    assert "⚠️ Worker перезапускается" in adapter.sent[1]["text"]
+    assert "⚠️ Worker is restarting" in adapter.sent[1]["text"]
 
 
 def test_notifier_owning_profile_adapter_no_default_fallback(tmp_path, monkeypatch):
@@ -1014,9 +1014,9 @@ def test_completed_lifecycle_uses_one_card_and_one_final_ping(tmp_path, monkeypa
                 "user_facing_title": "Проверить готовность карточки",
                 "notification_key": "notifier-final-ready",
                 "notification_summary": (
-                    "Что сделали: настроили доставку уведомлений.\n"
-                    "Что работает: финальное сообщение приходит после аудита.\n"
-                    "Можно проверить: завершить тестовую карточку."
+                    "What changed: настроили доставку уведомлений.\n"
+                    "What works: финальное сообщение приходит после аудита.\n"
+                    "How to verify: завершить тестовую карточку."
                 ),
                     "artifacts": [str(report), str(manifest), str(text), str(archive), str(pdf), str(image)],
             },
@@ -1054,10 +1054,10 @@ def test_completed_lifecycle_uses_one_card_and_one_final_ping(tmp_path, monkeypa
     assert adapter.sent[0]["chat_id"] == "-100123"
     assert adapter.sent[0]["metadata"]["thread_id"] == "1515141"
     assert adapter.sent[1]["text"] == (
-        "Итоги готовы:\n"
-        "Что сделали: настроили доставку уведомлений.\n"
-        "Что работает: финальное сообщение приходит после аудита.\n"
-        "Можно проверить: завершить тестовую карточку."
+        "Results are ready:\n"
+        "What changed: настроили доставку уведомлений.\n"
+        "What works: финальное сообщение приходит после аудита.\n"
+        "How to verify: завершить тестовую карточку."
     )
     assert adapter.sent[1]["metadata"] == {"thread_id": "1515141"}
     assert adapter.edits == []
@@ -1429,7 +1429,7 @@ def test_terminal_helpers_are_silent_until_root_outcome_is_accepted(tmp_path, mo
                 summary="ready for review: helper completed",
                 metadata={
                     "notification_key": "auditor-gateway-restart",
-                    "notification_summary": "Auditor gateway перезапущен.",
+                    "notification_summary": "Auditor gateway restarted.",
                 },
                 expected_run_id=kb.get_task(conn, tid).current_run_id,
             )
@@ -1445,7 +1445,7 @@ def test_terminal_helpers_are_silent_until_root_outcome_is_accepted(tmp_path, mo
     asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
     asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
 
-    final_messages = [item for item in adapter.sent if item["text"].startswith("Итоги готовы:")]
+    final_messages = [item for item in adapter.sent if item["text"].startswith("Results are ready:")]
     assert final_messages == []
 
     conn = kb.connect()
@@ -1464,7 +1464,7 @@ def test_terminal_helpers_are_silent_until_root_outcome_is_accepted(tmp_path, mo
             summary="ready for review: restart helper completed",
             metadata={
                 "notification_key": "technical-helper",
-                "notification_summary": "Auditor gateway перезапущен.",
+                "notification_summary": "Auditor gateway restarted.",
             },
             expected_run_id=technical_task.current_run_id,
         )
@@ -1475,7 +1475,7 @@ def test_terminal_helpers_are_silent_until_root_outcome_is_accepted(tmp_path, mo
     asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
     asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
 
-    final_messages = [item for item in adapter.sent if item["text"].startswith("Итоги готовы:")]
+    final_messages = [item for item in adapter.sent if item["text"].startswith("Results are ready:")]
     assert final_messages == []
 
     conn = kb.connect()
@@ -1490,9 +1490,9 @@ def test_terminal_helpers_are_silent_until_root_outcome_is_accepted(tmp_path, mo
             metadata={
                 "notification_key": "user-request-complete",
                 "notification_summary": (
-                    "Что сделали: завершили пользовательский запрос.\n"
-                    "Что работает: итог проверен аудитором.\n"
-                    "Можно проверить: открыть результат в исходном чате."
+                    "What changed: завершили пользовательский запрос.\n"
+                    "What works: итог проверен аудитором.\n"
+                    "How to verify: открыть результат в исходном чате."
                 ),
             },
             expected_run_id=root_task.current_run_id,
@@ -1504,14 +1504,14 @@ def test_terminal_helpers_are_silent_until_root_outcome_is_accepted(tmp_path, mo
     asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
     asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
 
-    final_messages = [item for item in adapter.sent if item["text"].startswith("Итоги готовы:")]
+    final_messages = [item for item in adapter.sent if item["text"].startswith("Results are ready:")]
     assert final_messages == [{
         "chat_id": "114874376",
         "text": (
-            "Итоги готовы:\n"
-            "Что сделали: завершили пользовательский запрос.\n"
-            "Что работает: итог проверен аудитором.\n"
-            "Можно проверить: открыть результат в исходном чате."
+            "Results are ready:\n"
+            "What changed: завершили пользовательский запрос.\n"
+            "What works: итог проверен аудитором.\n"
+            "How to verify: открыть результат в исходном чате."
         ),
         "metadata": {
             "thread_id": "1515141",
@@ -1529,9 +1529,9 @@ def test_terminal_helpers_are_silent_until_root_outcome_is_accepted(tmp_path, mo
         assert len(rows) == 1
         assert rows[0]["outcome_key"] == "user-request-complete"
         assert rows[0]["outcome_summary"] == (
-            "Что сделали: завершили пользовательский запрос.\n"
-            "Что работает: итог проверен аудитором.\n"
-            "Можно проверить: открыть результат в исходном чате."
+            "What changed: завершили пользовательский запрос.\n"
+            "What works: итог проверен аудитором.\n"
+            "How to verify: открыть результат в исходном чате."
         )
         assert rows[0]["message_id"]
     finally:
@@ -1630,10 +1630,10 @@ def test_current_run_projection_keeps_card_and_overview_in_sync_across_retry_and
     assert "текущий checkpoint" in card_before
     for text in before_boundary:
         assert "старый checkpoint" not in text
-        assert "меньше 15 сек" in text
+        assert "under 15s" in text
     assert "текущий checkpoint" in card_at_boundary
     for text in (card_at_boundary, overview_at_boundary):
-        assert "15 сек" in text
+        assert "15s" in text
 
     with kb.connect() as conn:
         set_db_time(1_045)
@@ -1734,7 +1734,7 @@ def test_active_task_index_uses_the_same_custom_emoji_as_status_cards(tmp_path, 
     assert indexes[0]["metadata"]["telegram_custom_emoji"] == {
         "🔫": "running-emoji-id", "⏳": "queue-emoji-id",
     }
-    assert "📌 Default · 2 задачи" in indexes[0]["text"]
+    assert "📌 Default · 2 tasks" in indexes[0]["text"]
     assert "🔫 В работе" in indexes[0]["text"]
     assert "⏳ Следом" in indexes[0]["text"]
 
@@ -2049,7 +2049,7 @@ def test_active_task_overviews_are_one_per_telegram_chat_with_durable_topic_sect
     assert len(adapter.pins) == 8
     auditor_edits = [edit for edit in adapter.edits if edit["chat_id"] == "114874376"]
     assert auditor_edits[-1]["message_id"] == auditor_message_id
-    assert auditor_edits[-1]["content"] == "📌 Активные задачи\n\n✅ Активных задач нет"
+    assert auditor_edits[-1]["content"] == "📌 Active tasks\n\n✅ No active tasks"
 
     restarted_runner = _make_runner(adapter)
     restarted_runner._profile_adapters = {

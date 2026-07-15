@@ -846,12 +846,12 @@ class TelegramAdapter(BasePlatformAdapter):
         """Return a deliberately invoked, bounded diagnostic for one message."""
         captured = self._telegram_custom_emoji_metadata(message)
         if not captured:
-            return "В сообщении нет Telegram Custom Emoji."
-        rows = ["Telegram Custom Emoji в текущем сообщении:"]
+            return "This message has no Telegram Custom Emoji."
+        rows = ["Telegram Custom Emoji in this message:"]
         for item in captured[:20]:
             rows.append(f"- {item['source']} offset={item['offset']} length={item['length']} id={item['custom_emoji_id']}")
         if len(captured) > 20:
-            rows.append(f"- … ещё {len(captured) - 20}")
+            rows.append(f"- ... and {len(captured) - 20} more")
         return "\n".join(rows)
 
     async def _try_handle_custom_emoji_diagnostic(self, message: Message) -> bool:

@@ -511,9 +511,9 @@ def test_create_task_explicit_origin_intent_id_overrides_parent_inheritance(kanb
 def test_terminal_notification_waits_for_final_audited_origin_intent_member(kanban_home):
     """Intent membership, not the shared topic or parent shape, owns final ping dedupe."""
     summary = (
-        "Что сделали: проверили общий итог.\n"
-        "Что работает: все части приняты аудитором.\n"
-        "Можно проверить: открыть итог в исходном чате."
+        "What changed: проверили общий итог.\n"
+        "What works: все части приняты аудитором.\n"
+        "How to verify: открыть итог в исходном чате."
     )
 
     def accept_and_enqueue(conn, task_id, key):
@@ -586,9 +586,9 @@ def test_terminal_notification_waits_for_final_audited_origin_intent_member(kanb
 def test_terminal_notification_backlog_uses_latest_audited_intent_member(kanban_home):
     """A replayed older acceptance cannot claim a completed intent's final ping."""
     summary = (
-        "Что сделали: проверили общий итог.\n"
-        "Что работает: все части приняты аудитором.\n"
-        "Можно проверить: открыть итог в исходном чате."
+        "What changed: проверили общий итог.\n"
+        "What works: все части приняты аудитором.\n"
+        "How to verify: открыть итог в исходном чате."
     )
 
     def accept(conn, task_id):

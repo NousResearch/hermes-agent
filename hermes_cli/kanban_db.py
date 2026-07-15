@@ -4830,7 +4830,7 @@ def accept_review(conn: sqlite3.Connection, task_id: str, *, summary: Optional[s
             (now, task_id),
         )
         payload: dict[str, Any] = {
-            "summary": (summary or handoff.get("summary") or "Результат принят после проверки.").strip()[:400],
+            "summary": (summary or handoff.get("summary") or "Result accepted after review.").strip()[:400],
             "task_previous_status": "review",
             "task_next_status": "done",
             "review_job_previous_status": handoff.get("review_job_previous_status"),
@@ -7074,7 +7074,7 @@ def heartbeat_worker(
         # the same intentional milestone again. A worktree state transition is
         # scoped to the task so an unchanged dirty tree cannot look fresh again
         # merely because the dispatcher spawned another run.
-        generic = {"working", "still working", "работаю", "в работе", "продолжаю работу"}
+        generic = {"working", "still working", "continuing work"}
         if checkpoint and checkpoint.casefold() not in generic:
             previous = conn.execute(
                 "SELECT payload FROM task_events WHERE task_id=? AND run_id IS ? "
@@ -10445,7 +10445,7 @@ def enqueue_terminal_notification(
     makes replay/restart inserts idempotent. Legacy NULL-lineage tasks retain
     the old parentless fallback rather than being heuristically grouped.
     """
-    required_handoff_sections = ("Что сделали:", "Что работает:", "Можно проверить:")
+    required_handoff_sections = ("What changed:", "What works:", "How to verify:")
     if not outcome_key.strip() or not all(section in outcome_summary for section in required_handoff_sections):
         return False
     now = int(time.time())

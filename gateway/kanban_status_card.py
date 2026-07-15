@@ -1,7 +1,7 @@
 """Pure Kanban status-card projection for gateway notifications.
 
 The gateway watcher owns event claiming, receipts, and delivery. This module
-turns existing lifecycle state into one concise Russian status card.
+turns existing lifecycle state into one concise English status card.
 """
 
 from __future__ import annotations
@@ -69,7 +69,7 @@ def _is_superseded_event(event: Any) -> bool:
     return (
         kind in {"superseded", "replaced"}
         or outcome in {"superseded", "replaced"}
-        or bool(re.search(r"\b(?:superseded|replaced)\b|заменен[аоы]?\s+нов", reason))
+        or bool(re.search(r"\b(?:superseded|replaced)\b", reason))
     )
 
 
@@ -100,27 +100,27 @@ def _age(timestamp: Any, now: int) -> int | None:
 def _age_line(prefix: str, timestamp: Any, now: int, *, fresh: int = 120, stale: int = 900) -> str:
     age = _age(timestamp, now)
     if age is None:
-        return f"🟡 {prefix}: нет данных"
+        return f"🟡 {prefix}: unavailable"
     marker = "🟢" if age < fresh else "🟡" if age < stale else "🔴"
     return f"{marker} {prefix}: {format_relative_age(age)}"
 
 
 def _elapsed_line(prefix: str, timestamp: Any, now: int, *, icon: str = "⏱") -> str:
     age = _age(timestamp, now)
-    return f"{icon} {prefix}: {'нет данных' if age is None else format_elapsed_age(age)}"
+    return f"{icon} {prefix}: {'unavailable' if age is None else format_elapsed_age(age)}"
 
 
 def _compact_elapsed(age: int | None) -> str:
     """Render a 15-second-clock duration without prose labels for live cards."""
     if age is None:
-        return "нет данных"
+        return "unavailable"
     bucketed = max(0, int(age)) // 15 * 15
     if bucketed < 15:
-        return "меньше 15 сек"
+        return "under 15s"
     minutes, seconds = divmod(bucketed, 60)
     if minutes:
-        return f"{minutes} м" + (f" {seconds} сек" if seconds else "")
-    return f"{seconds} сек"
+        return f"{minutes}m" + (f" {seconds}s" if seconds else "")
+    return f"{seconds}s"
 
 
 def _first_timestamp(timeline: list[Any], kinds: set[str], fallback: Any = None) -> Any:
@@ -155,9 +155,9 @@ def _dependency_wait_copy(parents: list[Any]) -> tuple[str, str]:
         title = _clean_text(_attr(parent, "title", ""), 80)
         if title:
             if str(_attr(parent, "status", "") or "").lower() == "review":
-                return f"Начнётся после проверки «{title}»", "Связанная задача ещё выполняется."
-            return f"Начнётся после «{title}»", "Связанная задача ещё выполняется."
-        return "Начнётся после связанной задачи", "Связанная задача ещё выполняется."
+                return f"Starts after review of '{title}'", "A related task is still in progress."
+            return f"Starts after '{title}'", "A related task is still in progress."
+        return "Starts after a related task", "A related task is still in progress."
     if len(parents) > 1:
         completed = sum(
             str(_attr(parent, "status", "") or "").lower() == "done"
@@ -165,10 +165,10 @@ def _dependency_wait_copy(parents: list[Any]) -> tuple[str, str]:
         )
         count = len(parents)
         return (
-            f"Начнётся после {count} связанных задач",
-            f"Готово {completed} из {count} связанных задач.",
+            f"Starts after {count} related tasks",
+            f"{completed} of {count} related tasks complete.",
         )
-    return "В очереди", "Ожидает свободного исполнителя"
+    return "Queued", "Waiting for an available worker."
 
 
 def _state(
@@ -177,7 +177,7 @@ def _state(
     status = str(_attr(task, "status", "") or "").lower()
     block_kind = str(_attr(task, "block_kind", "") or "").lower()
     assignee = _clean_text(_attr(task, "assignee", ""), 80)
-    worker = f"@{assignee}" if assignee else "Исполнитель"
+    worker = f"@{assignee}" if assignee else "Worker"
     latest = _last_event(timeline, {
         "review_requested", "review_rejected", "review_accepted", "crashed",
         "timed_out", "gave_up", "reclaimed", "archived", "review_retry_scheduled",
@@ -193,44 +193,44 @@ def _state(
         })
     latest_kind = _attr(latest, "kind", "")
     if status == "archived" or latest_kind == "archived":
-        return "📦", "Перенесено в архив", "Задача закрыта в архиве."
+        return "📦", "Archived", "This task was closed in the archive."
     if latest_kind == "needs_auditor":
-        return "🔐", "Нужна ручная проверка аудитора", "Автоматическая проверка недоступна."
+        return "🔐", "Manual auditor review required", "Automatic review is unavailable."
     if latest_kind == "review_retry_scheduled":
-        return "⚠️", "Проверка аудитора перезапускается", "Проверка будет повторена автоматически."
+        return "⚠️", "Auditor review is restarting", "Review will be retried automatically."
     if latest_kind == "review_recovered":
-        return "🔎", "Проверка аудитора восстановлена", "Аудитор снова получит задачу на проверку."
+        return "🔎", "Auditor review restored", "The auditor will receive this task again."
     if latest_kind == "review_job_reconciled":
-        return "🔁", "Проверка аудитора восстановлена", "Очередь проверки синхронизирована."
+        return "🔁", "Auditor review restored", "The review queue is synchronized."
     if status == "review":
         requests = sum(1 for event in timeline if _attr(event, "kind") == "review_requested")
         if latest_kind in {"auditor_review_claimed", "auditor_review_spawned"}:
-            return "🔎", "Аудитор начал проверку", "Аудитор взял задачу и проверяет результат."
+            return "🔎", "Auditor started review", "The auditor is reviewing the result."
         if requests > 1:
-            return "🤔", "Аудитор повторно проверяет", "Аудитор повторно проверяет результат."
-        return "🔎", "Аудитор проверяет результат", "Аудитор проверяет результат."
+            return "🤔", "Auditor is reviewing again", "The auditor is reviewing the result again."
+        return "🔎", "Auditor is reviewing", "The auditor is reviewing the result."
     if latest_kind == "review_rejected":
         if status == "running":
-            return "🤝", f"{worker} исправляет замечания аудитора", "Исполнитель устраняет замечания аудитора."
-        return "😡", "Аудитор вернул задачу на доработку", "Задача ожидает повторного запуска исполнителя."
+            return "🤝", f"{worker} is addressing auditor feedback", "The worker is addressing auditor feedback."
+        return "😡", "Auditor returned the task for changes", "The task is waiting for the worker to restart."
     if status == "done" or latest_kind == "review_accepted":
-        return "✅", "Принято аудитором", "Проверка завершена"
+        return "✅", "Accepted by auditor", "Review complete."
     if latest_kind == "gave_up":
-        return "❌", "Не удалось выполнить автоматически", "Нужно решить, как продолжить работу."
+        return "❌", "Could not complete automatically", "A decision is needed to continue."
     if latest_kind in {"timed_out", "crashed", "reclaimed"}:
-        return "⚠️", "Worker перезапускается", "Диспетчер повторит запуск автоматически."
+        return "⚠️", "Worker is restarting", "The dispatcher will retry automatically."
     if status == "blocked":
         replacement = _last_event(timeline, {"blocked", "dependency_wait", "superseded", "replaced"})
         if replacement is not None and _is_superseded_event(replacement):
-            return "🔁", "Работа продолжена в новой задаче", "Дальнейшая работа идёт в новой задаче."
+            return "🔁", "Work continues in a new task", "Further work is tracked in a new task."
         if block_kind == "dependency":
             heading, detail = _dependency_wait_copy(parents)
             return "⏳", heading, detail
         if block_kind == "transient":
-            return "⚠️", "Перезапускается после временного сбоя", "Это временный сбой; ответ не нужен."
+            return "⚠️", "Restarting after a temporary failure", "This is temporary; no reply is needed."
         if block_kind == "capability":
-            return "🔐", "Нужна ручная помощь", "Нужен доступ или действие человека."
-        return "📞", "Нужен твой ответ, KD", "Нужен ответ, чтобы продолжить."
+            return "🔐", "Manual help required", "A user action or access is required."
+        return "📞", "Your reply is needed", "A reply is needed to continue."
     if status == "running":
         heartbeat_age = _age(_run_clock(current_run, timeline, "heartbeat"), now)
         progress_at = _run_clock(current_run, timeline, "progress")
@@ -238,16 +238,16 @@ def _state(
         if heartbeat_age is not None and heartbeat_age < 900 and (
             progress_at is None or (progress_age is not None and progress_age >= 900)
         ):
-            return "🤷‍♂️", f"{worker} на связи, но нет подтверждённого прогресса", "Исполнитель на связи; нового подтверждённого прогресса пока нет."
-        return "🔫", f"{worker} выполняет задачу", "Исполнитель продолжает работу."
+            return "🤷‍♂️", f"{worker} is online, but no confirmed progress", "The worker is online; no new confirmed progress yet."
+        return "🔫", f"{worker} is working", "The worker is continuing the task."
     if status == "todo":
         if not parents:
-            return "⏳", f"{worker} ожидает запуска", "Ожидает свободного исполнителя."
+            return "⏳", f"{worker} is waiting to start", "Waiting for an available worker."
         heading, detail = _dependency_wait_copy(parents)
         return "⏳", heading, detail
     if status in {"ready", "triage", "scheduled"}:
-        return "⏳", f"{worker} ожидает запуска", "Ожидает свободного исполнителя."
-    return "⏳", f"{worker} ожидает запуска", "Статус обновлён."
+        return "⏳", f"{worker} is waiting to start", "Waiting for an available worker."
+    return "⏳", f"{worker} is waiting to start", "Status updated."
 
 
 def _metrics(
@@ -267,7 +267,7 @@ def _metrics(
         if progress_at is not None:
             progress_text = _compact_elapsed(_age(progress_at, now))
         else:
-            progress_text = "нет данных"
+            progress_text = "unavailable"
         return [
             f"{marker} {_compact_elapsed(heartbeat_age)} · 🛠 {progress_text} · "
             f"⏱️ {_compact_elapsed(_age(started_at or created_at, now))}"
@@ -276,7 +276,7 @@ def _metrics(
         return [f"⏱️ {_compact_elapsed(_age(created_at, now))}"]
     if status == "review":
         event = _last_event(timeline, {"review_requested"})
-        return [_elapsed_line("На проверке", _attr(event, "created_at", created_at), now)]
+        return [_elapsed_line("In review", _attr(event, "created_at", created_at), now)]
     if status == "todo" or (
         status == "blocked" and str(_attr(task, "block_kind", "") or "").lower() == "dependency"
     ):
@@ -284,13 +284,13 @@ def _metrics(
         return [f"⏱️ {_compact_elapsed(_age(_attr(event, 'created_at', created_at), now))}"]
     if status == "blocked":
         event = _last_event(timeline, {"blocked", "dependency_wait"})
-        return [_elapsed_line("Ожидание", _attr(event, "created_at", created_at), now)]
+        return [_elapsed_line("Waiting", _attr(event, "created_at", created_at), now)]
     if status in {"done", "archived"}:
         ended_at = _attr(task, "completed_at", None) or _attr(
             _last_event(timeline, {"review_accepted", "completed", "archived"}), "created_at", None,
         )
         age = _age(started_at or created_at, int(ended_at)) if ended_at is not None else None
-        return [f"⏱ Выполнено за: {age // 60} мин"] if age is not None else []
+        return [f"⏱ Completed in: {age // 60}m"] if age is not None else []
     return []
 
 
@@ -327,7 +327,7 @@ def render_kanban_status_card(
     title = user_facing_title(task, timeline, task_id)
     detail = _detail(timeline, latest_comment, current_run)
     status = str(_attr(task, "status", "") or "").lower()
-    lines = [_header(title, task_id), "", f"{emoji} {heading}", "", "🧭 Сейчас:"]
+    lines = [_header(title, task_id), "", f"{emoji} {heading}", "", "🧭 Now:"]
     lines.append(detail or fallback)
     metrics = _metrics(task, timeline, status, now, current_run)
     if metrics:
@@ -338,7 +338,7 @@ def render_kanban_status_card(
 def _compact_age(timestamp: Any, now: int) -> str:
     age = _age(timestamp, now)
     if age is None:
-        return "нет данных"
+        return "unavailable"
     return format_elapsed_age(age)
 
 
@@ -373,7 +373,7 @@ def _active_index_item(
         reviewed_at = _attr(review, "created_at", None) or created_at
         return 1, _age(reviewed_at, now) or 0, "review", (
             f"{_active_index_title('🔎', title, status_card_url)}\n"
-            f"🟡 На проверке: {format_elapsed_age(_age(reviewed_at, now) or 0)}"
+            f"🟡 In review: {format_elapsed_age(_age(reviewed_at, now) or 0)}"
         )
 
     dependency_wait = status == "todo" or (
@@ -384,7 +384,7 @@ def _active_index_item(
     }:
         wait_event = _last_event(timeline, {"blocked", "dependency_wait"})
         wait_at = _attr(wait_event, "created_at", None) or created_at
-        wait_copy, _ = _dependency_wait_copy(parents) if dependency_wait else ("В очереди", "")
+        wait_copy, _ = _dependency_wait_copy(parents) if dependency_wait else ("Queued", "")
         return 3, _age(wait_at, now) or 0, "queue", (
             f"{_active_index_title('⏳', title, status_card_url)}\n"
             f"🔗 {wait_copy}\n"
@@ -402,13 +402,13 @@ def _active_index_item(
         at = _attr(event, "created_at", None) or progress_at or created_at
         block_kind = str(_attr(task, "block_kind", "") or "").lower()
         if status == "running":
-            detail = f"Нет нового прогресса {_compact_age(progress_at, now)} · в работе {_compact_age(started_at, now)}"
+            detail = f"No new progress {_compact_age(progress_at, now)} · working {_compact_age(started_at, now)}"
         elif block_kind == "transient":
-            detail = f"Временная ошибка · {_compact_age(at, now)}"
+            detail = f"Temporary failure · {_compact_age(at, now)}"
         elif block_kind == "capability":
-            detail = f"Нужна ручная помощь · {_compact_age(at, now)}"
+            detail = f"Manual help required · {_compact_age(at, now)}"
         else:
-            detail = f"Нужен ответ, чтобы продолжить · {_compact_age(at, now)}"
+            detail = f"Reply needed to continue · {_compact_age(at, now)}"
         return 0, _age(at, now) or 0, "warning", f"{_active_index_title('⚠️', title, status_card_url)}\n🔴 {detail}"
 
     freshness = "🟢" if (heartbeat_age or 0) < 120 else "🟡" if (heartbeat_age or 0) < 900 else "🔴"
@@ -430,7 +430,7 @@ def render_kanban_active_task_index(
     """
     now = int(time.time()) if now is None else int(now)
     if not items:
-        return "📌 Активные задачи\n\n✅ Активных задач нет"
+        return "📌 Active tasks\n\n✅ No active tasks"
     grouped: dict[str, list[tuple[int, int, str, str]]] = {}
     for item in items:
         board_name, task, timeline, parents = item[:4]
@@ -443,6 +443,6 @@ def render_kanban_active_task_index(
     for board_name in sorted(grouped, key=str.casefold):
         board_items = sorted(grouped[board_name], key=lambda item: (item[0], -item[1], item[3]))
         count = len(board_items)
-        task_word = "задача" if count == 1 else "задачи" if 2 <= count <= 4 else "задач"
+        task_word = "task" if count == 1 else "tasks"
         sections.append(f"📌 {board_name} · {count} {task_word}\n\n" + "\n\n".join(item[3] for item in board_items))
     return "\n\n".join(sections)

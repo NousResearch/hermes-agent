@@ -1339,7 +1339,7 @@ class GatewayKanbanWatchersMixin:
                     if requested_thread_id else topic_ids
                 )
                 for thread_id, task_ids in topic_groups.items():
-                    board_name = str(board_meta.get("name") or board_meta.get("slug") or "Задачи")
+                    board_name = str(board_meta.get("name") or board_meta.get("slug") or "Tasks")
                     for task_id in task_ids:
                         task = _kb.get_task(conn, task_id)
                         if task is None:
@@ -1445,7 +1445,7 @@ class GatewayKanbanWatchersMixin:
         try:
             result = await adapter.send(
                 claimed["chat_id"],
-                f"Итоги готовы:\n{claimed['outcome_summary']}",
+                f"Results are ready:\n{claimed['outcome_summary']}",
                 metadata=metadata,
             )
             from gateway.platforms.base import SendResult

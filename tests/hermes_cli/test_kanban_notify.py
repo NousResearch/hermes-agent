@@ -78,7 +78,7 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
     assert fake_adapter.send.call_count == 1
     call_msg = fake_adapter.send.call_args[0][1]
     assert "test task" in call_msg
-    assert "Принято аудитором" in call_msg
+    assert "Accepted by auditor" in call_msg
 
     conn = kb.connect()
     try:
@@ -141,7 +141,7 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
 
     # The user is notified about the abnormal event...
     fake_adapter.send.assert_called_once()
-    assert "Сейчас:" in fake_adapter.send.call_args[0][1]
+    assert "Now:" in fake_adapter.send.call_args[0][1]
 
     # ...but the subscription survives so a respawn-then-same-event cycle
     # reaches the user too. The cursor (last_event_id) advanced inside
@@ -233,9 +233,9 @@ async def test_notifier_second_blocked_delivers(kanban_home):
             timeout=10.0,
         )
 
-    assert "Нужен твой ответ, KD" in delivered_msgs[0]
+    assert "Your reply is needed" in delivered_msgs[0]
     fake_adapter.edit_message.assert_awaited()
-    assert "Нужна ручная помощь" in fake_adapter.edit_message.call_args.args[2]
+    assert "Manual help required" in fake_adapter.edit_message.call_args.args[2]
 
 
 # ---------------------------------------------------------------------------

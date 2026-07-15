@@ -36,20 +36,16 @@ def _adjacent_venv_python() -> Path | None:
             root / ".venv" / "bin" / "python",
         ]
 
-    current = Path(sys.executable)
-    try:
-        current_resolved = current.resolve()
-    except OSError:
-        current_resolved = current
-
     for candidate in candidates:
         if not candidate.exists():
             continue
         try:
-            candidate_resolved = candidate.resolve()
+            candidate_venv = candidate.parent.parent.resolve()
+            current_prefix = Path(sys.prefix).resolve()
         except OSError:
-            candidate_resolved = candidate
-        if candidate_resolved == current_resolved:
+            candidate_venv = candidate.parent.parent
+            current_prefix = Path(sys.prefix)
+        if candidate_venv == current_prefix:
             return None
         return candidate
     return None

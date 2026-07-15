@@ -32,7 +32,11 @@ class _QuietHandler(SimpleHTTPRequestHandler):
 
 
 @pytest.fixture
-def served_repo(tmp_path):
+def served_repo(tmp_path, monkeypatch):
+    # The fixture intentionally serves over loopback. Keep exercising the real
+    # HTTP transport while opting this test server into private-address access.
+    monkeypatch.setattr("tools.url_safety._global_allow_private_urls", lambda: True)
+
     repo = tmp_path / "upstream"
     repo.mkdir()
     (repo / "SKILL.md").write_text(SKILL_MD)

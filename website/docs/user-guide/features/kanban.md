@@ -19,6 +19,16 @@ The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
 
 Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. The rest of this page shows CLI examples because they're easy to copy-paste, but every CLI verb has a tool-call equivalent the model uses.
 
+### Opt-in local event delivery in the interactive CLI
+
+An interactive CLI session can display terminal task events without polling the board manually. Set `HERMES_KANBAN_TASKS` to a comma-separated list of task IDs before starting the session (or use `HERMES_KANBAN_TASK` for one task):
+
+```bash
+HERMES_KANBAN_TASKS=t_abc123,t_def456 hermes
+```
+
+The bridge renders `completed`, `blocked`, `failed`, `crashed`, and `timed_out` events locally, persists a cursor for resume, and queues notices while the agent is busy. It is deliberately report-only: it does not submit input, auto-resume work, route tasks, or mutate Kanban state. Normal CLI sessions do not start the bridge unless one of these environment variables is explicitly set.
+
 This is the shape that covers the workloads `delegate_task` can't:
 
 - **Research triage** — parallel researchers + analyst + writer, human-in-the-loop.

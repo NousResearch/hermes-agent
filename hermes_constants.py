@@ -940,13 +940,40 @@ def is_container() -> bool:
         pass
     # cgroup v2: /proc/1/cgroup is just "0::/" with no marker. The container
     # runtime still shows up in the mount table (overlay rootfs, runtime mount
-    # paths), so scan mountinfo as a last resort.
+    # paths), so inspect mountinfo as a last resort — but only the mounts that
+    # prove we are INSIDE a container. Substring-scanning the whole table
+    # false-positives on any HOST that merely runs containers: containerd
+    # shim mounts (/run/containerd/io.containerd.runtime.v2.task/...) and
+    # docker overlay mounts are visible in the host namespace (#65051), and
+    # Docker Desktop mounts containerd snapshot overlays into the WSL2 host
+    # (#51930). Two mount shapes are container-conclusive:
+    #   * the ROOT mount ("/") is provided by a container runtime — its
+    #     fs-root path, source, or super options reference runtime paths;
+    #   * /etc/resolv.conf|hostname|hosts are bind-mounted from kubelet/
+    #     runtime-managed dirs (how runtimes inject network identity; a host
+    #     never bind-mounts its own /etc identity files from those paths).
+    _RUNTIME_MARKERS = (
+        "docker", "containerd", "crio", "podman", "kubepods", "kubelet", "buildkit",
+    )
+    _IDENTITY_MOUNTS = {"/", "/etc/resolv.conf", "/etc/hostname", "/etc/hosts"}
     try:
         with open("/proc/self/mountinfo", "r", encoding="utf-8") as f:
-            mountinfo = f.read()
-            if any(marker in mountinfo for marker in ("kubepods", "containerd", "crio")):
-                _container_detected = True
-                return True
+            for line in f:
+                fields = line.split()
+                if len(fields) < 5 or fields[4] not in _IDENTITY_MOUNTS:
+                    continue
+                # fields[3] is the mount's root within its filesystem; after
+                # the "-" separator come fstype, source, and super options
+                # (e.g. overlay upperdir=/var/lib/docker/overlay2/...).
+                try:
+                    sep = fields.index("-")
+                    probe_fields = [fields[3]] + fields[sep + 1:]
+                except ValueError:
+                    probe_fields = [fields[3]]
+                probe = " ".join(probe_fields)
+                if any(marker in probe for marker in _RUNTIME_MARKERS):
+                    _container_detected = True
+                    return True
     except OSError:
         pass
     _container_detected = False

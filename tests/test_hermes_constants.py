@@ -415,6 +415,90 @@ class TestIsContainer:
         monkeypatch.setattr("builtins.open", _fake_open)
         assert is_container() is True
 
+    def test_host_running_containers_is_not_container(self, monkeypatch, tmp_path):
+        """#65051: a HOST that runs containers has containerd shim mounts and
+        docker overlay mounts in its own mount table — they must not flag the
+        host itself as containerised (the root mount is a real device)."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("0::/init.scope\n")  # bare host, cgroup v2
+        mountinfo_file = tmp_path / "mountinfo"
+        mountinfo_file.write_text(
+            "35 1 253:0 / / rw,relatime shared:1 - ext4 /dev/vda1 rw\n"
+            "812 35 0:60 / /var/lib/docker/overlay2/abc123/merged rw,relatime shared:401 - "
+            "overlay overlay rw,lowerdir=/var/lib/docker/overlay2/l/X,upperdir=/var/lib/docker/overlay2/abc123/diff\n"
+            "890 35 0:75 / /run/containerd/io.containerd.runtime.v2.task/moby/deadbeef/rootfs "
+            "rw,relatime shared:410 - overlay overlay rw\n"
+        )
+        _real_open = builtins.open
+
+        def _fake_open(p, *a, **kw):
+            if p == "/proc/1/cgroup":
+                return _real_open(str(cgroup_file), *a, **kw)
+            if p == "/proc/self/mountinfo":
+                return _real_open(str(mountinfo_file), *a, **kw)
+            return _real_open(p, *a, **kw)
+
+        monkeypatch.setattr("builtins.open", _fake_open)
+        assert is_container() is False
+
+    def test_wsl_docker_desktop_snapshots_not_container(self, monkeypatch, tmp_path):
+        """#51930 variant: Docker Desktop mounts containerd snapshot overlays
+        into the WSL2 host — non-root mounts must not flag the WSL host."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("0::/\n")
+        mountinfo_file = tmp_path / "mountinfo"
+        mountinfo_file.write_text(
+            "60 1 8:32 / / rw,relatime - ext4 /dev/sdc rw,discard\n"
+            "310 60 0:55 / /mnt/docker-desktop/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/12/fs "
+            "rw,relatime - overlay overlay rw\n"
+        )
+        _real_open = builtins.open
+
+        def _fake_open(p, *a, **kw):
+            if p == "/proc/1/cgroup":
+                return _real_open(str(cgroup_file), *a, **kw)
+            if p == "/proc/self/mountinfo":
+                return _real_open(str(mountinfo_file), *a, **kw)
+            return _real_open(p, *a, **kw)
+
+        monkeypatch.setattr("builtins.open", _fake_open)
+        assert is_container() is False
+
+    def test_detects_pod_via_resolvconf_bind_mount(self, monkeypatch, tmp_path):
+        """A kubelet-managed /etc/resolv.conf bind mount proves we are INSIDE
+        a pod even when the root mount carries no runtime marker."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("0::/\n")
+        mountinfo_file = tmp_path / "mountinfo"
+        mountinfo_file.write_text(
+            "1000 999 0:50 / / rw,relatime - overlay overlay rw\n"
+            "1010 1000 8:1 /var/lib/kubelet/pods/uid-123/etc-hosts /etc/hosts "
+            "rw,relatime - ext4 /dev/sda1 rw\n"
+        )
+        _real_open = builtins.open
+
+        def _fake_open(p, *a, **kw):
+            if p == "/proc/1/cgroup":
+                return _real_open(str(cgroup_file), *a, **kw)
+            if p == "/proc/self/mountinfo":
+                return _real_open(str(mountinfo_file), *a, **kw)
+            return _real_open(p, *a, **kw)
+
+        monkeypatch.setattr("builtins.open", _fake_open)
+        assert is_container() is True
+
     def test_caches_result(self, monkeypatch):
         """Second call uses cached value without re-probing."""
         monkeypatch.setattr(hermes_constants, "_container_detected", True)

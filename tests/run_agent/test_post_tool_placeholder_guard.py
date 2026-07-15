@@ -6,15 +6,22 @@ substantive final answer.  The guard detects these and appends a
 continuation nudge so the agent loop doesn't stop prematurely.
 
 Coverage:
-  - placeholder text after tool calls  → nudge and continue
-  - truly empty response after tool calls  → existing empty guard, not this one
-  - real concise final answers after tool calls  → finalize normally
-  - placeholder without prior tool calls  → finalize normally
-  - second placeholder (already nudged once)  → finalize normally (no loop)
+  Layer 1 — regex unit tests (pattern matching only)
+  Layer 2 — run_conversation integration tests covering:
+    - tool → placeholder → nudge → final answer
+    - tool → real concise answer → finalize normally
+    - tool → definitive decision ("I'll leave it as is.") → finalize normally
+    - placeholder after nudge (no infinite loop)
+    - synthetic message cleanup on successful follow-up
 """
 
 import re
+from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
+
 import pytest
+
+from run_agent import AIAgent
 
 
 # ---------------------------------------------------------------------------
@@ -26,8 +33,11 @@ _PLACEHOLDER_RE = re.compile(
     r'^('
     # English: bare acknowledgements
     r'(ok(ay)?|sure|got it|understood|alright|noted)[.,!]?\s*'
-    # English: forward-looking intent without content
-    r'|(i\'?ll|let me|i will|i\'?m going to|i\'?m)\b.{0,60}'
+    # English: forward-looking intent with progress verbs only
+    r'|(i\'?ll|let me|i will|i\'?m going to|i\'?m)\s+'
+    r'(do|handle|process|check|look|work|fix|update|write|analyze'
+    r'|review|take care|get|start|begin|go ahead|proceed'
+    r'|working on|going to|look into|looking)\b.{0,60}'
     r'|working on (it|this|that)\.{0,3}'
     r'|writing\.{0,3}'
     r'|processing\.{0,3}'
@@ -152,10 +162,17 @@ class TestPlaceholderRegex:
         assert not _is_placeholder("The function returned 3 items.")
 
     def test_ill_leave_as_is(self):
-        # Forward-looking but with a definitive decision — borderline.
-        # "I'll leave it as is." matches the i'll pattern → treated as placeholder.
-        # Acceptable false positive: nudge once, model confirms decision.
-        assert _is_placeholder("I'll leave it as is.")
+        # "I'll leave it as is." is a definitive final decision, not progress-only.
+        assert not _is_placeholder("I'll leave it as is.")
+
+    def test_ill_keep_current(self):
+        assert not _is_placeholder("I'll keep the current implementation.")
+
+    def test_ill_skip_that(self):
+        assert not _is_placeholder("I'll skip that one.")
+
+    def test_let_me_know(self):
+        assert not _is_placeholder("Let me know if you need anything else.")
 
     def test_long_response_not_placeholder(self):
         long = "I have processed the tool results. " * 10
@@ -172,199 +189,226 @@ class TestPlaceholderRegex:
 
 
 # ---------------------------------------------------------------------------
-# Layer 2: guard behaviour in the agent loop
+# Layer 2: run_conversation integration tests
 # ---------------------------------------------------------------------------
 
-def _make_agent():
-    """Minimal AIAgent-shaped object for testing the guard logic."""
-    from run_agent import AIAgent
-    agent = AIAgent.__new__(AIAgent)
-    agent._post_tool_placeholder_retried = False
-    agent._post_tool_empty_retried = False
-    agent._empty_content_retries = 0
-    agent._thinking_prefill_retries = 0
-    agent._session_messages = []
-    agent.saved_session_logs = []
-    agent._save_session_log = lambda msgs: agent.saved_session_logs.append(
-        [m.copy() for m in msgs]
-    )
-    agent.emitted_statuses = []
-    agent._emit_status = lambda s: agent.emitted_statuses.append(s)
-    agent._strip_think_blocks = lambda t: t
-    return agent
-
-
-def _tool_messages():
-    """A minimal messages list ending with a tool result."""
+def _tool_defs(*names):
     return [
-        {"role": "user", "content": "do the task"},
         {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [{"id": "c1", "type": "function",
-                            "function": {"name": "bash", "arguments": "{}"}}],
-        },
-        {"role": "tool", "content": "output", "tool_call_id": "c1"},
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": "test tool",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+        for name in names
     ]
 
 
-def _run_placeholder_guard(agent, messages, response_text):
-    """Execute just the placeholder guard block.
-
-    Returns True if the guard fired (would have called continue),
-    False if it let the response through.
-    Mutates messages in place when it fires.
-    """
-    _prior_was_tool = any(
-        m.get("role") == "tool" for m in messages[-6:]
+def _tool_call(name, call_id):
+    return SimpleNamespace(
+        id=call_id,
+        type="function",
+        function=SimpleNamespace(name=name, arguments="{}"),
     )
-    if not (
-        _prior_was_tool
-        and not getattr(agent, "_post_tool_placeholder_retried", False)
+
+
+def _response(*, content, finish_reason, tool_calls=None):
+    message = SimpleNamespace(content=content, tool_calls=tool_calls)
+    choice = SimpleNamespace(message=message, finish_reason=finish_reason)
+    return SimpleNamespace(choices=[choice], model="test/model", usage=None)
+
+
+def _make_agent_for_integration():
+    """Create a fully wired AIAgent for run_conversation tests."""
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_tool_defs("bash")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
     ):
-        return False
-
-    _clean = agent._strip_think_blocks(response_text).strip()
-    if len(_clean) < 120 and _PLACEHOLDER_RE.match(_clean):
-        agent._post_tool_placeholder_retried = True
-        agent._emit_status(
-            "⚠️ Model returned a placeholder after tool calls — nudging to continue"
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1/",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
         )
-        messages.append({
-            "role": "assistant",
-            "content": response_text,
-            "_empty_recovery_synthetic": True,
-        })
-        messages.append({
-            "role": "user",
-            "content": (
-                "You returned a status message instead of the "
-                "actual result. Please complete the task and "
-                "provide your full response now."
+
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent.tool_delay = 0
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    agent.valid_tool_names = {"bash"}
+    agent.client = MagicMock()
+    return agent
+
+
+class TestPlaceholderGuardIntegration:
+
+    def test_placeholder_triggers_nudge_and_returns_final_answer(self):
+        """tool_call → placeholder → nudge → final answer.
+
+        The guard should detect the placeholder, nudge the model, and
+        return the real answer from the third API call.
+        """
+        agent = _make_agent_for_integration()
+        agent.client.chat.completions.create.side_effect = [
+            # 1: tool call
+            _response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[_tool_call("bash", "call_1")],
             ),
-            "_empty_recovery_synthetic": True,
-        })
-        agent._save_session_log(messages)
-        return True   # would `continue`
+            # 2: placeholder after tool (triggers guard)
+            _response(content="writing...", finish_reason="stop"),
+            # 3: real answer after nudge
+            _response(
+                content="The command output was 42.",
+                finish_reason="stop",
+            ),
+        ]
 
-    return False      # falls through to normal finalization
+        with (
+            patch("run_agent.handle_function_call", return_value="42"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("run echo 42")
 
-
-class TestPlaceholderGuardFires:
-
-    def test_writing_ellipsis_triggers_nudge(self):
-        agent = _make_agent()
-        messages = _tool_messages()
-        fired = _run_placeholder_guard(agent, messages, "writing...")
-        assert fired
-        assert agent._post_tool_placeholder_retried is True
-        assert any("nudging" in s for s in agent.emitted_statuses)
-        # nudge messages appended and marked synthetic
-        assert messages[-1]["_empty_recovery_synthetic"]
-        assert messages[-2]["_empty_recovery_synthetic"]
-
-    def test_working_on_it_triggers_nudge(self):
-        agent = _make_agent()
-        messages = _tool_messages()
-        fired = _run_placeholder_guard(agent, messages, "working on it")
-        assert fired
+        assert result["final_response"] == "The command output was 42."
+        assert result["api_calls"] == 3
+        assert result["turn_exit_reason"].startswith("text_response")
 
     def test_chinese_placeholder_triggers_nudge(self):
-        agent = _make_agent()
-        messages = _tool_messages()
-        fired = _run_placeholder_guard(agent, messages, "好的，我来处理")
-        assert fired
+        """Chinese placeholder '好的，我来处理' should also trigger the guard."""
+        agent = _make_agent_for_integration()
+        agent.client.chat.completions.create.side_effect = [
+            _response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[_tool_call("bash", "call_1")],
+            ),
+            _response(content="好的，我来处理", finish_reason="stop"),
+            _response(content="文件已更新完成。", finish_reason="stop"),
+        ]
 
-    def test_let_me_process_triggers_nudge(self):
-        agent = _make_agent()
-        messages = _tool_messages()
-        fired = _run_placeholder_guard(agent, messages, "Let me process that.")
-        assert fired
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("更新文件")
 
-    def test_ok_triggers_nudge(self):
-        agent = _make_agent()
-        messages = _tool_messages()
-        fired = _run_placeholder_guard(agent, messages, "ok")
-        assert fired
+        assert result["final_response"] == "文件已更新完成。"
+        assert result["api_calls"] == 3
 
+    def test_real_concise_answer_finalizes_normally(self):
+        """A real concise answer after a tool call must NOT trigger the guard."""
+        agent = _make_agent_for_integration()
+        agent.client.chat.completions.create.side_effect = [
+            _response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[_tool_call("bash", "call_1")],
+            ),
+            _response(content="Done.", finish_reason="stop"),
+        ]
 
-class TestPlaceholderGuardDoesNotFire:
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do the task")
 
-    def test_real_answer_done(self):
-        agent = _make_agent()
-        messages = _tool_messages()
-        fired = _run_placeholder_guard(agent, messages, "Done.")
-        assert not fired
+        assert result["final_response"] == "Done."
+        assert result["api_calls"] == 2
 
-    def test_real_answer_file_updated(self):
-        agent = _make_agent()
-        messages = _tool_messages()
-        fired = _run_placeholder_guard(
-            agent, messages, "The file has been updated with the new config."
-        )
-        assert not fired
+    def test_definitive_decision_does_not_trigger_guard(self):
+        """'I'll leave it as is.' is a valid final decision, not a placeholder."""
+        agent = _make_agent_for_integration()
+        agent.client.chat.completions.create.side_effect = [
+            _response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[_tool_call("bash", "call_1")],
+            ),
+            _response(
+                content="I'll leave it as is.",
+                finish_reason="stop",
+            ),
+        ]
 
-    def test_real_answer_number(self):
-        agent = _make_agent()
-        messages = _tool_messages()
-        fired = _run_placeholder_guard(agent, messages, "42")
-        assert not fired
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("check the config")
 
-    def test_real_answer_concise_sentence(self):
-        agent = _make_agent()
-        messages = _tool_messages()
-        fired = _run_placeholder_guard(agent, messages, "Yes, it works.")
-        assert not fired
+        assert result["final_response"] == "I'll leave it as is."
+        assert result["api_calls"] == 2
 
-    def test_long_response_not_fired(self):
-        agent = _make_agent()
-        messages = _tool_messages()
-        long = "I have analyzed the tool output. " * 6
-        fired = _run_placeholder_guard(agent, messages, long)
-        assert not fired
+    def test_synthetic_messages_cleaned_up_after_recovery(self):
+        """After a successful nudge response, synthetic scaffold messages
+        must be removed from the final transcript."""
+        agent = _make_agent_for_integration()
+        agent.client.chat.completions.create.side_effect = [
+            _response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[_tool_call("bash", "call_1")],
+            ),
+            _response(content="working on it", finish_reason="stop"),
+            _response(content="All done, result is 7.", finish_reason="stop"),
+        ]
 
-    def test_no_prior_tool_not_fired(self):
-        """Guard must not fire when there are no preceding tool messages."""
-        agent = _make_agent()
-        messages = [{"role": "user", "content": "hello"}]
-        fired = _run_placeholder_guard(agent, messages, "writing...")
-        assert not fired
+        with (
+            patch("run_agent.handle_function_call", return_value="7"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("compute 3+4")
 
-    def test_second_placeholder_not_fired(self):
-        """After one nudge, the flag prevents a second trigger (no infinite loop)."""
-        agent = _make_agent()
-        agent._post_tool_placeholder_retried = True   # already nudged
-        messages = _tool_messages()
-        fired = _run_placeholder_guard(agent, messages, "writing...")
-        assert not fired
-        # No extra messages appended
-        assert len(messages) == 3
+        assert result["final_response"] == "All done, result is 7."
+        # No synthetic messages should remain in the final transcript
+        for msg in result["messages"]:
+            assert not msg.get("_empty_recovery_synthetic"), (
+                f"Synthetic message not cleaned up: {msg}"
+            )
 
-    def test_chinese_done_not_fired(self):
-        agent = _make_agent()
-        messages = _tool_messages()
-        fired = _run_placeholder_guard(agent, messages, "处理完成。")
-        assert not fired
+    def test_second_placeholder_does_not_loop(self):
+        """If the model returns a placeholder after the nudge too, the guard
+        must NOT fire again (no infinite loop). The second placeholder
+        becomes the final response."""
+        agent = _make_agent_for_integration()
+        agent.client.chat.completions.create.side_effect = [
+            _response(
+                content="",
+                finish_reason="tool_calls",
+                tool_calls=[_tool_call("bash", "call_1")],
+            ),
+            # First placeholder → triggers guard
+            _response(content="ok", finish_reason="stop"),
+            # Second placeholder after nudge → should NOT re-trigger
+            _response(content="sure", finish_reason="stop"),
+        ]
 
-    def test_chinese_result_sentence_not_fired(self):
-        agent = _make_agent()
-        messages = _tool_messages()
-        fired = _run_placeholder_guard(
-            agent, messages, "文件已更新，共修改了 3 处。"
-        )
-        assert not fired
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            result = agent.run_conversation("do task")
 
-
-class TestPlaceholderGuardSyntheticMessagesCleanup:
-
-    def test_synthetic_messages_marked_for_cleanup(self):
-        """Both appended messages carry _empty_recovery_synthetic so the
-        pop-scaffolding block in conversation_loop removes them from the
-        final transcript on a successful follow-up response."""
-        agent = _make_agent()
-        messages = _tool_messages()
-        _run_placeholder_guard(agent, messages, "writing...")
-        synthetic = [m for m in messages if m.get("_empty_recovery_synthetic")]
-        assert len(synthetic) == 2
-        roles = {m["role"] for m in synthetic}
-        assert roles == {"assistant", "user"}
+        # The second placeholder becomes the final response (guard only fires once)
+        assert result["final_response"] == "sure"
+        assert result["api_calls"] == 3

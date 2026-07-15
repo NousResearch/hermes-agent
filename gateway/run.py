@@ -20267,12 +20267,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         lambda: False,
                     )()
                 ):
-                    result = await transport.adapter.send_private_notice(
-                        str(chat_id),
-                        source.user_id,
-                        private_text,
-                        metadata=metadata,
-                    )
+                    try:
+                        result = await transport.adapter.send_private_notice(
+                            str(chat_id),
+                            source.user_id,
+                            private_text,
+                            metadata=metadata,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "Private restart notification to %s:%s user %s raised; "
+                            "using public fallback: %s",
+                            platform_str,
+                            chat_id,
+                            source.user_id,
+                            exc,
+                        )
                     if result is not None and getattr(result, "success", True) is False:
                         logger.warning(
                             "Private restart notification to %s:%s user %s was not delivered: %s",

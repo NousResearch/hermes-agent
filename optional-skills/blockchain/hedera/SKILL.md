@@ -58,7 +58,7 @@ Mirror Node (default):
 Override endpoint: `export HEDERA_MIRROR_URL=https://your-private-mirror.com`
 (takes precedence over `--network`).
 
-Helper script path: `~/.hermes/skills/blockchain/hedera/scripts/hedera_client.py`
+Helper script path: `${HERMES_SKILL_DIR}/scripts/hedera_client.py`
 
 ---
 
@@ -67,7 +67,7 @@ Helper script path: `~/.hermes/skills/blockchain/hedera/scripts/hedera_client.py
 Invoke through the `terminal` tool:
 
 ```bash
-python3 ~/.hermes/skills/blockchain/hedera/scripts/hedera_client.py <command> [args]
+python3 ${HERMES_SKILL_DIR}/scripts/hedera_client.py <command> [args]
 ```
 
 Add `--network testnet` before the command to query testnet instead of mainnet.
@@ -77,7 +77,7 @@ Add `--network testnet` before the command to query testnet instead of mainnet.
 ## Quick Reference
 
 ```
-SCRIPT=~/.hermes/skills/blockchain/hedera/scripts/hedera_client.py
+SCRIPT=${HERMES_SKILL_DIR}/scripts/hedera_client.py
 
 # Network stats
 python3 $SCRIPT stats
@@ -126,10 +126,10 @@ python3 $SCRIPT contract 0xabcdef1234567890abcdef1234567890abcdef12
 python3 --version   # 3.8+ required
 
 # Confirm mainnet connectivity
-python3 ~/.hermes/skills/blockchain/hedera/scripts/hedera_client.py stats
+python3 ${HERMES_SKILL_DIR}/scripts/hedera_client.py stats
 
 # Confirm testnet connectivity
-python3 ~/.hermes/skills/blockchain/hedera/scripts/hedera_client.py --network testnet stats
+python3 ${HERMES_SKILL_DIR}/scripts/hedera_client.py --network testnet stats
 ```
 
 ### 1. Network Stats
@@ -156,10 +156,16 @@ python3 $SCRIPT account 0xYourEvmAddress                # EVM alias also accepte
 ```
 
 Output: `hbar_balance`, `hbar_value_usd`, `tokens` (sorted by USD value desc),
-`total_portfolio_usd`, `evm_address`, `hashscan_url`.
+`priced_portfolio_usd`, `portfolio_complete`, `evm_address`, `hashscan_url`.
+
+`priced_portfolio_usd` is a **subtotal, not a full total**: it covers HBAR plus
+only the tokens that were both enriched (within the 10-token cap) and priced (in
+the known-token registry). When any token is omitted or unpriced,
+`portfolio_complete` is `false` and a `portfolio_note` explains what was excluded.
 
 If the account has more than 10 associated tokens, `tokens_omitted` shows how many
-were skipped. Use `token` + `read_file` to inspect specific tokens.
+were skipped. Run the token command (`python3 $SCRIPT token <token_id>`) via the
+`terminal` tool to inspect specific tokens individually.
 
 ### 3. Token Metadata
 
@@ -317,11 +323,11 @@ Output: `contract_id`, `evm_address`, `admin_key` (bool), `auto_renew_account_id
 
 ```bash
 # Should print latest Hedera block, node count, and HBAR price
-python3 ~/.hermes/skills/blockchain/hedera/scripts/hedera_client.py stats
+python3 ${HERMES_SKILL_DIR}/scripts/hedera_client.py stats
 
 # Should print testnet block (different from mainnet)
-python3 ~/.hermes/skills/blockchain/hedera/scripts/hedera_client.py --network testnet stats
+python3 ${HERMES_SKILL_DIR}/scripts/hedera_client.py --network testnet stats
 
 # Should print fee table with HBAR costs at live rate
-python3 ~/.hermes/skills/blockchain/hedera/scripts/hedera_client.py fees
+python3 ${HERMES_SKILL_DIR}/scripts/hedera_client.py fees
 ```

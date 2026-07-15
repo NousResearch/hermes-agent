@@ -500,6 +500,75 @@ def test_account_token_cap_limits_metadata_calls(monkeypatch, capsys):
     assert out["tokens_omitted"] == 5  # 15 total - 10 cap
 
 
+def test_account_priced_portfolio_excludes_omitted_and_unpriced(monkeypatch, capsys):
+    """priced_portfolio_usd is a subtotal: it must exclude tokens beyond the cap
+    and tokens without a known price, and flag the result as incomplete."""
+    mod = load_module()
+    monkeypatch.delenv("HEDERA_MIRROR_URL", raising=False)
+
+    # 15 tokens (5 beyond the cap); none are in KNOWN_TOKENS, so all are unpriced.
+    many_tokens = [{"token_id": f"0.0.{1000 + i}", "balance": 100} for i in range(15)]
+    account_many = {
+        **ACCOUNT_FIXTURE,
+        "balance": {**ACCOUNT_FIXTURE["balance"], "tokens": many_tokens},
+    }
+
+    def fake_http(path, params=None, **kw):
+        if "/accounts/" in path and "nfts" not in path:
+            return account_many
+        if "/tokens/" in path:
+            tid = path.rstrip("/").split("/")[-1]
+            return {"token_id": tid, "name": "T", "symbol": "T", "decimals": "0"}
+        return None
+
+    with patch.object(mod, "_http_get", side_effect=fake_http):
+        with patch.object(mod, "fetch_hbar_price", return_value=0.08):
+            exit_code = mod.main(["account", "0.0.12345"])
+
+    out = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    # Subtotal is HBAR value only; no token is priced, so none contribute.
+    assert out["priced_portfolio_usd"] == pytest.approx(0.40, rel=1e-4)  # 5 HBAR * 0.08
+    assert out["portfolio_complete"] is False
+    assert "portfolio_note" in out
+
+
+def test_account_priced_portfolio_complete_when_all_priced(monkeypatch, capsys):
+    """When every token is within the cap and priced, the subtotal is the full
+    portfolio value and is flagged complete with no note."""
+    mod = load_module()
+    monkeypatch.delenv("HEDERA_MIRROR_URL", raising=False)
+
+    known_id = next(iter(mod.KNOWN_TOKENS))  # a token in the price registry
+    account = {
+        **ACCOUNT_FIXTURE,
+        "balance": {
+            **ACCOUNT_FIXTURE["balance"],
+            "tokens": [{"token_id": known_id, "balance": 1_000_000}],
+        },
+    }
+
+    def fake_http(path, params=None, **kw):
+        if "/accounts/" in path and "nfts" not in path:
+            return account
+        if "/tokens/" in path:
+            return {"token_id": known_id, "name": "Known", "symbol": "KN", "decimals": "6"}
+        return None
+
+    with patch.object(mod, "_http_get", side_effect=fake_http):
+        with patch.object(mod, "fetch_hbar_price", return_value=0.08):
+            with patch.object(mod, "fetch_token_price", return_value=0.05):
+                exit_code = mod.main(["account", "0.0.12345"])
+
+    out = json.loads(capsys.readouterr().out)
+    assert exit_code == 0
+    # 5 HBAR * 0.08 + (1_000_000 / 10**6) * 0.05 = 0.40 + 0.05 = 0.45
+    assert out["priced_portfolio_usd"] == pytest.approx(0.45, rel=1e-4)
+    assert out["portfolio_complete"] is True
+    assert "portfolio_note" not in out
+    assert "tokens_omitted" not in out
+
+
 def test_account_hashscan_url_present(monkeypatch, capsys):
     mod = load_module()
     monkeypatch.delenv("HEDERA_MIRROR_URL", raising=False)

@@ -464,9 +464,23 @@ def cmd_account(args: argparse.Namespace) -> int:
             f"showing first {ACCOUNT_TOKEN_CAP} of {len(raw_tokens)} associated tokens"
         )
 
-    total_usd = (hbar_usd or 0.0) + sum(r.get("value_usd", 0.0) for r in token_rows)
+    # This is a subtotal, not a true portfolio total: it covers HBAR plus only
+    # the tokens that were both enriched (within ACCOUNT_TOKEN_CAP) and priced
+    # (present in KNOWN_TOKENS). Tokens beyond the cap and tokens without a known
+    # CoinGecko id are excluded, so the sum is incomplete whenever any token was
+    # omitted or left unpriced.
+    priced_usd = (hbar_usd or 0.0) + sum(r.get("value_usd", 0.0) for r in token_rows)
     if hbar_price is not None:
-        out["total_portfolio_usd"] = round(total_usd, 4)
+        out["priced_portfolio_usd"] = round(priced_usd, 4)
+        unpriced = sum(1 for r in token_rows if "value_usd" not in r)
+        complete = omitted == 0 and unpriced == 0
+        out["portfolio_complete"] = complete
+        if not complete:
+            out["portfolio_note"] = (
+                "priced_portfolio_usd covers HBAR plus priced known tokens only; "
+                f"{omitted} token(s) beyond the cap and {unpriced} unpriced token(s) "
+                "are excluded"
+            )
 
     out["hashscan_url"] = f"{_explorer_base()}/account/{account_id}"
     print_json(out)

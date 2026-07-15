@@ -2349,6 +2349,12 @@ def get_model_context_length(
         ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
         if ctx is not None:
             return ctx
+    if effective_provider == "scx" and base_url:
+        # SCX.ai exposes authoritative context_length via /models, but it is
+        # not in models.dev yet. Same higher-fidelity endpoint lookup as GMI.
+        ctx = _resolve_endpoint_context_length(model, base_url, api_key=api_key)
+        if ctx is not None:
+            return ctx
     # 5e. Ollama native /api/show probe — runs for providers whose base_url
     # is NOT a known non-Ollama provider.  Ollama-compatible servers expose
     # this endpoint regardless of hostname (local Ollama, Ollama Cloud,

@@ -207,6 +207,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.upstage.ai/v1",
         base_url_env_var="UPSTAGE_BASE_URL",
     ),
+    "scx": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("SCX_API_KEY",),
+        base_url_override="https://api.scx.ai/v1",
+        base_url_env_var="SCX_BASE_URL",
+    ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://ollama.com/v1",
@@ -361,6 +367,9 @@ ALIASES: Dict[str, str] = {
     # upstage
     "solar": "upstage",
 
+    # scx
+    "scx-ai": "scx",
+
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -386,6 +395,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
     "upstage": "Upstage Solar",
+    "scx": "SCX.ai",
     "tencent-tokenhub": "Tencent TokenHub",
     "lmstudio": "LM Studio",
     "local": "Local endpoint",

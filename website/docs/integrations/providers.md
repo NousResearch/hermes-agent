@@ -27,6 +27,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
 | **Arcee AI** | `ARCEEAI_API_KEY` in `~/.hermes/.env` (provider: `arcee`; aliases: `arcee-ai`, `arceeai`) |
 | **GMI Cloud** | `GMI_API_KEY` in `~/.hermes/.env` (provider: `gmi`; aliases: `gmi-cloud`, `gmicloud`) |
+| **SCX.ai** | `SCX_API_KEY` in `~/.hermes/.env` (provider: `scx`; alias: `scx-ai`) — sovereign Australian inference, OpenAI-compatible, featuring MAGPiE (Australian-context LLM) and SCX Coder |
 | **MiniMax** | `MINIMAX_API_KEY` in `~/.hermes/.env` (provider: `minimax`) |
 | **MiniMax China** | `MINIMAX_CN_API_KEY` in `~/.hermes/.env` (provider: `minimax-cn`) |
 | **xAI (Grok) — Responses API** | `XAI_API_KEY` in `~/.hermes/.env` (provider: `xai`) |
@@ -263,6 +264,10 @@ hermes chat --provider arcee --model trinity-large-thinking
 # Use the exact model ID returned by GMI's /v1/models endpoint.
 hermes chat --provider gmi --model zai-org/GLM-5.1-FP8
 # Requires: GMI_API_KEY in ~/.hermes/.env
+
+# SCX.ai (sovereign Australian inference)
+hermes chat --provider scx --model coder
+# Requires: SCX_API_KEY in ~/.hermes/.env
 ```
 
 Fireworks uses its native slash-form catalog IDs, such as `accounts/fireworks/models/kimi-k2p6`. Run `hermes model`, choose **Fireworks AI**, and select from the live catalog or enter another Fireworks model ID. The default endpoint is `https://api.fireworks.ai/inference/v1`; configure a different endpoint through `model.base_url` in `config.yaml`, not `.env`.

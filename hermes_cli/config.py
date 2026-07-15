@@ -3745,6 +3745,21 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "SCX_API_KEY": {
+        "description": "SCX.ai API key for sovereign Australian inference (MAGPiE, SCX Coder)",
+        "prompt": "SCX.ai API Key",
+        "url": "https://scx.ai/",
+        "password": True,
+        "category": "provider",
+    },
+    "SCX_BASE_URL": {
+        "description": "SCX.ai base URL override (default: https://api.scx.ai/v1)",
+        "prompt": "SCX.ai base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "AWS_REGION": {
         "description": "AWS region for Bedrock API calls (e.g. us-east-1, eu-central-1)",
         "prompt": "AWS Region",

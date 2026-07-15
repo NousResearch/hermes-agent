@@ -1,0 +1,5 @@
+name: scx-provider
+kind: model-provider
+version: 0.1.0
+description: SCX.ai — sovereign Australian inference (MAGPiE, SCX Coder)
+author: Southern Cross AI

@@ -1245,6 +1245,7 @@ _PROVIDER_ALIASES = {
     "arceeai": "arcee",
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
+    "scx-ai": "scx",
     "fireworks-ai": "fireworks",
     "fw": "fireworks",
     "minimax-china": "minimax-cn",
@@ -1338,6 +1339,17 @@ def get_default_model_for_provider(provider: str) -> str:
     auto-escalate to the flagship.
     """
     models = _PROVIDER_MODELS.get(provider, [])
+    if not models:
+        # Plugin providers (upstage, scx, ...) have no static _PROVIDER_MODELS
+        # entry — their curated catalog lives on the profile. fallback_models[0]
+        # is the documented setup default for those providers.
+        try:
+            from providers import get_provider_profile
+            _p = get_provider_profile(provider)
+            if _p and _p.fallback_models:
+                models = list(_p.fallback_models)
+        except Exception:
+            pass
     override = _PROVIDER_SILENT_DEFAULT_OVERRIDES.get(provider)
     if override and override in models:
         return override

@@ -1614,9 +1614,12 @@ def init_agent(
     compression_in_place = is_truthy_value(
         _compression_cfg.get("in_place"), default=False
     )
-    compression_warn_after_compressions = max(
-        0, int(_compression_cfg.get("warn_after_compressions", 2))
-    )
+    try:
+        compression_warn_after_compressions = max(
+            0, int(_compression_cfg.get("warn_after_compressions", 2))
+        )
+    except (TypeError, ValueError):
+        compression_warn_after_compressions = 2
     
     codex_app_server_auto_compaction = str(
         _compression_cfg.get("codex_app_server_auto", "native") or "native"

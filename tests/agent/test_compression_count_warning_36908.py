@@ -15,6 +15,8 @@ import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from hermes_state import SessionDB
 
 
@@ -134,3 +136,38 @@ def test_warn_after_compressions_zero_disables_warning(tmp_path: Path) -> None:
     emitted = _run_compress(agent)
 
     assert not _has_repeated_compression_warning(emitted)
+
+
+def _agent_from_compression_config(warn_after_compressions):
+    """Construct AIAgent with load_config returning the given warn threshold.
+
+    Exercises the real agent_init coercion path (not setattr).
+    """
+    cfg = {"compression": {"warn_after_compressions": warn_after_compressions}}
+    with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}), patch(
+        "hermes_cli.config.load_config", return_value=cfg
+    ):
+        from run_agent import AIAgent
+
+        return AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1",
+            model="test/model",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (5, 5),
+        (0, 0),
+        (None, 2),
+        ("abc", 2),
+    ],
+)
+def test_warn_after_compressions_config_to_agent_attribute(raw, expected) -> None:
+    agent = _agent_from_compression_config(raw)
+    assert agent.compression_warn_after_compressions == expected

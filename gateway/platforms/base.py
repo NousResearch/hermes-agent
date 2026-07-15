@@ -1684,6 +1684,9 @@ class MessageEvent:
     # media_urls: local file paths (for vision tool access)
     media_urls: List[str] = field(default_factory=list)
     media_types: List[str] = field(default_factory=list)
+    # Whether each text attachment was actually inlined into ``text``.
+    # Legacy adapters leave this empty; cached-only paths set False explicitly.
+    media_text_inlined: List[bool] = field(default_factory=list)
     
     # Reply context
     reply_to_message_id: Optional[str] = None
@@ -1985,6 +1988,7 @@ def merge_pending_message_event(
         if existing_is_photo and incoming_is_photo:
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
+            existing.media_text_inlined.extend(getattr(event, "media_text_inlined", []))
             if event.text:
                 existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
             return
@@ -1993,6 +1997,7 @@ def merge_pending_message_event(
             if incoming_has_media:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+                existing.media_text_inlined.extend(getattr(event, "media_text_inlined", []))
             if event.text:
                 if existing.text:
                     existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)

@@ -75,7 +75,7 @@ from gateway.platforms.base import (
     cache_image_from_bytes,
     cache_audio_from_bytes,
     cache_video_from_bytes,
-    cache_document_from_bytes,
+    cache_media_bytes,
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
@@ -6408,6 +6408,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event.media_urls = [cached.path]
         event.media_types = [cached.media_type]
+        event.media_text_inlined = [False]
         if cached.kind == "image":
             event.message_type = MessageType.PHOTO
         elif cached.kind == "video":
@@ -6450,6 +6451,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event.media_urls.append(cached.path)
         event.media_types.append(cached.media_type)
+        event.media_text_inlined.append(False)
         if len(event.media_urls) == 1:
             if cached.kind == "image":
                 event.message_type = MessageType.PHOTO
@@ -6841,6 +6843,7 @@ class TelegramAdapter(BasePlatformAdapter):
             if event.media_urls:
                 existing.media_urls.extend(event.media_urls)
                 existing.media_types.extend(event.media_types)
+                existing.media_text_inlined.extend(event.media_text_inlined)
 
         # Cancel any pending flush and restart the timer
         prior_task = self._pending_text_batch_tasks.get(key)
@@ -6933,6 +6936,7 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
+            existing.media_text_inlined.extend(event.media_text_inlined)
             if event.text:
                 existing.text = self._merge_caption(existing.text, event.text)
 
@@ -7181,11 +7185,18 @@ class TelegramAdapter(BasePlatformAdapter):
                 file_obj = await doc.get_file()
                 doc_bytes = await file_obj.download_as_bytearray()
                 raw_bytes = bytes(doc_bytes)
-                cached_path = cache_document_from_bytes(raw_bytes, original_filename or f"document{ext or '.bin'}")
-                mime_type = SUPPORTED_DOCUMENT_TYPES.get(ext) or doc.mime_type or "application/octet-stream"
-                event.media_urls = [cached_path]
-                event.media_types = [mime_type]
-                logger.info("[Telegram] Cached user document at %s (%s)", cached_path, mime_type)
+                cached = cache_media_bytes(
+                    raw_bytes,
+                    filename=original_filename,
+                    mime_type=doc_mime,
+                    default_kind="document",
+                )
+                if cached is None:
+                    raise ValueError("document bytes could not be cached")
+                event.media_urls = [cached.path]
+                event.media_types = [cached.media_type]
+                event.media_text_inlined = [False]
+                logger.info("[Telegram] Cached user document at %s (%s)", cached.path, cached.media_type)
 
                 # For text-readable files, inject content into event.text (capped
                 # at 100 KB). Gate on a text-like extension/MIME — NOT a blind
@@ -7193,7 +7204,11 @@ class TelegramAdapter(BasePlatformAdapter):
                 # decodable ASCII headers. Binary files are surfaced as a cached
                 # path only (run.py emits a path-pointing context note).
                 MAX_TEXT_INJECT_BYTES = 100 * 1024
-                _is_text = ext in _TEXT_INJECT_EXTENSIONS or (doc_mime or "").startswith("text/")
+                _is_text = (
+                    ext in _TEXT_INJECT_EXTENSIONS
+                    or (doc_mime or "").startswith("text/")
+                    or cached.media_type.startswith("text/")
+                )
                 if _is_text and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
                     try:
                         text_content = raw_bytes.decode("utf-8")
@@ -7204,6 +7219,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             event.text = f"{injection}\n\n{event.text}"
                         else:
                             event.text = injection
+                        event.media_text_inlined[0] = True
                     except UnicodeDecodeError:
                         # Binary file — agent has the cached path and can use
                         # terminal/read_file against it. No inline injection.
@@ -7237,6 +7253,7 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             existing.media_urls.extend(event.media_urls)
             existing.media_types.extend(event.media_types)
+            existing.media_text_inlined.extend(event.media_text_inlined)
             if event.text:
                 existing.text = self._merge_caption(existing.text, event.text)
 

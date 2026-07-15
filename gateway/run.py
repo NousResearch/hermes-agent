@@ -1888,23 +1888,30 @@ def _build_media_placeholder(event) -> str:
     return "\n".join(parts)
 
 
-def _build_document_context_note(display_name: str, agent_path: str, mtype: str) -> str:
+def _build_document_context_note(
+    display_name: str,
+    agent_path: str,
+    mtype: str,
+    *,
+    text_inlined: bool = True,
+) -> str:
     """Context note prepended to a user turn when they attach a document.
 
-    Text documents (``text/*``) have their content inlined upstream by the
-    platform adapter, so the note just confirms that and records the path.
-
-    Binary documents (PDF, DOCX, XLSX, …) cannot be inlined as text. The note
-    must tell the agent to *extract* the text itself before answering — earlier
-    wording ("Ask the user what they'd like you to do with it") steered the
-    model into punting back to the user, which is why attached PDFs/DOCX looked
-    "unreadable" to the agent even though it has the tools to read them.
+    ``text_inlined`` distinguishes text MIME from text content actually added
+    to the event. Cached-only text must point the agent at the file instead of
+    claiming that its content appears in the prompt.
     """
-    if mtype.startswith("text/"):
+    if mtype.startswith("text/") and text_inlined:
         return (
             f"[The user sent a text document: '{display_name}'. "
             f"Its content has been included below. "
             f"The file is also saved at: {agent_path}]"
+        )
+    if mtype.startswith("text/"):
+        return (
+            f"[The user sent a text document: '{display_name}'. "
+            f"It is saved at: {agent_path}, but its content was not inlined. "
+            f"Read the file before answering instead of asking the user to paste it.]"
         )
     return (
         f"[The user sent a document: '{display_name}'. It is saved at: {agent_path}. "
@@ -9535,7 +9542,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # cache directories are auto-mounted at /root/.hermes/cache/* by get_cache_directory_mounts().
                 agent_path = to_agent_visible_cache_path(path)
 
-                context_note = _build_document_context_note(display_name, agent_path, mtype)
+                inline_flags = getattr(event, "media_text_inlined", None) or []
+                # Older adapters may inline text without the signal; new
+                # cached-only paths explicitly set False.
+                text_inlined = inline_flags[i] if i < len(inline_flags) else True
+                context_note = _build_document_context_note(
+                    display_name, agent_path, mtype, text_inlined=text_inlined
+                )
                 message_text = f"{context_note}\n\n{message_text}"
 
         # Discord: surface the triggering message id per-turn on the user

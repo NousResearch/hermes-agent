@@ -27,6 +27,14 @@ class TestTextDocumentNote:
         assert "/cache/doc_notes.txt" in note
         assert "included below" in note
 
+    def test_cached_only_text_note_requires_reading_the_file(self):
+        note = _build_document_context_note(
+            "document.txt", "/cache/document.txt", "text/plain", text_inlined=False
+        )
+        assert "content has been included below" not in note
+        assert "/cache/document.txt" in note
+        assert "read" in note.lower()
+
 
 class TestBinaryDocumentNote:
     @pytest.mark.parametrize(

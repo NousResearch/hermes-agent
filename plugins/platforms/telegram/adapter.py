@@ -251,6 +251,11 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.account_usage_presence import (
+    AccountUsagePresenceCapabilities,
+    AccountUsagePresencePayload,
+    AccountUsagePresenceRestoreResult,
+)
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -3793,6 +3798,92 @@ class TelegramAdapter(BasePlatformAdapter):
             self._set_fatal_error("telegram_connect_error", message, retryable=True)
             logger.error("[%s] Failed to connect to Telegram: %s", self.name, safe_error)
             return False
+
+    @property
+    def account_usage_presence_capabilities(self) -> AccountUsagePresenceCapabilities:
+        return AccountUsagePresenceCapabilities(display_name=True)
+
+    def account_usage_presence_state_key(self) -> str:
+        bot = self._bot
+        if bot is None:
+            return super().account_usage_presence_state_key()
+        return f"telegram:{bot.id}"
+
+    async def capture_account_usage_presence_baseline(
+        self,
+    ) -> Optional[Dict[str, Any]]:
+        bot = self._bot
+        if bot is None:
+            return None
+        current = await bot.get_my_name()
+        name = str(getattr(current, "name", "") or "").strip()
+        if not name:
+            return None
+        return {"display_name": name}
+
+    @staticmethod
+    def _account_usage_presence_name(
+        payload: AccountUsagePresencePayload,
+        baseline: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        if not baseline:
+            return None
+        base_name = str(baseline.get("display_name") or "").strip()
+        if not base_name:
+            return None
+        if payload.remaining_percent is None:
+            suffix = " · usage unavailable"
+        else:
+            label = " ".join(str(payload.label or "Usage").split())
+            suffix = f" · {label} {payload.remaining_percent}%"
+            if payload.cached:
+                suffix += " (cached)"
+        available = 64 - len(suffix)
+        if available <= 0:
+            return suffix[-64:]
+        return f"{base_name[:available].rstrip()}{suffix}"
+
+    def build_account_usage_presence_owned_state(
+        self,
+        payload: AccountUsagePresencePayload,
+        baseline: Dict[str, Any],
+    ) -> Optional[Dict[str, Any]]:
+        name = self._account_usage_presence_name(payload, baseline)
+        return {"display_name": name} if name is not None else None
+
+    async def apply_account_usage_presence(
+        self,
+        payload: AccountUsagePresencePayload,
+        baseline: Optional[Dict[str, Any]],
+    ) -> bool:
+        bot = self._bot
+        name = self._account_usage_presence_name(payload, baseline)
+        if bot is None or name is None:
+            return False
+        await bot.set_my_name(name=name)
+        return True
+
+    async def restore_account_usage_presence(
+        self,
+        baseline: Dict[str, Any],
+        owned: Dict[str, Any],
+    ) -> AccountUsagePresenceRestoreResult:
+        bot = self._bot
+        if bot is None:
+            return AccountUsagePresenceRestoreResult.RETRY
+        baseline_name = str(baseline.get("display_name") or "").strip()
+        owned_name = str(owned.get("display_name") or "").strip()
+        if not baseline_name or not owned_name:
+            return AccountUsagePresenceRestoreResult.RETRY
+
+        current = await bot.get_my_name()
+        current_name = str(getattr(current, "name", "") or "").strip()
+        if current_name == baseline_name:
+            return AccountUsagePresenceRestoreResult.ALREADY_BASELINE
+        if current_name != owned_name:
+            return AccountUsagePresenceRestoreResult.EXTERNAL
+        await bot.set_my_name(name=baseline_name)
+        return AccountUsagePresenceRestoreResult.RESTORED
 
     async def _set_status_indicator(self, online: bool) -> None:
         """Set the bot's short description to the online/offline status text.

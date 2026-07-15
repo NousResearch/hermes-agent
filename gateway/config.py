@@ -733,6 +733,98 @@ class StreamingConfig:
         )
 
 
+@dataclass(frozen=True)
+class AccountUsagePresenceConfig:
+    """Opt-in provider account usage shown on supported messaging identities.
+
+    The provider is intentionally explicit instead of following whichever
+    model a conversation used most recently. That keeps one global bot
+    identity stable when chats route to different providers.
+    """
+
+    SUPPORTED_PROVIDERS = frozenset({"openai-codex", "anthropic", "openrouter"})
+    SUPPORTED_PLATFORMS = frozenset({"telegram", "discord"})
+
+    enabled: bool = False
+    provider: Optional[str] = None
+    platforms: tuple[str, ...] = ()
+    update_interval_seconds: int = 300
+    stale_after_seconds: int = 900
+    window_label: Optional[str] = None
+
+    @property
+    def is_configured(self) -> bool:
+        return bool(self.enabled and self.provider and self.platforms)
+
+    def to_dict(self) -> Dict[str, Any]:
+        result: Dict[str, Any] = {
+            "enabled": self.enabled,
+            "platforms": list(self.platforms),
+            "update_interval_seconds": self.update_interval_seconds,
+            "stale_after_seconds": self.stale_after_seconds,
+        }
+        if self.provider:
+            result["provider"] = self.provider
+        if self.window_label:
+            result["window_label"] = self.window_label
+        return result
+
+    @classmethod
+    def from_dict(cls, data: Any) -> "AccountUsagePresenceConfig":
+        data = _coerce_dict(data)
+        provider = str(data.get("provider") or "").strip().lower() or None
+        if provider in {"auto", "main"}:
+            provider = None
+        if provider is not None and provider not in cls.SUPPORTED_PROVIDERS:
+            logger.warning(
+                "Ignoring unsupported account_usage_presence.provider=%r "
+                "(supported: %s)",
+                provider,
+                ", ".join(sorted(cls.SUPPORTED_PROVIDERS)),
+            )
+            provider = None
+
+        raw_platforms = data.get("platforms")
+        if not isinstance(raw_platforms, (list, tuple, set)):
+            raw_platforms = ()
+        platforms: list[str] = []
+        for value in raw_platforms:
+            normalized = str(value or "").strip().lower()
+            if not normalized:
+                continue
+            if normalized not in cls.SUPPORTED_PLATFORMS:
+                logger.warning(
+                    "Ignoring unsupported account_usage_presence platform %r "
+                    "(supported: %s)",
+                    normalized,
+                    ", ".join(sorted(cls.SUPPORTED_PLATFORMS)),
+                )
+                continue
+            if normalized not in platforms:
+                platforms.append(normalized)
+
+        # Profile mutations are deliberately slow. Five minutes is both the
+        # default and the floor, so a typo cannot create a rate-limit loop.
+        update_interval = max(
+            300,
+            _coerce_int(data.get("update_interval_seconds"), 300),
+        )
+        stale_after = max(
+            update_interval,
+            _coerce_int(data.get("stale_after_seconds"), 900),
+        )
+        window_label = str(data.get("window_label") or "").strip() or None
+
+        return cls(
+            enabled=_coerce_bool(data.get("enabled"), False),
+            provider=provider,
+            platforms=tuple(platforms),
+            update_interval_seconds=update_interval,
+            stale_after_seconds=stale_after,
+            window_label=window_label,
+        )
+
+
 # -----------------------------------------------------------------------------
 # Built-in platform connection checkers
 # -----------------------------------------------------------------------------
@@ -838,6 +930,12 @@ class GatewayConfig:
 
     # Streaming configuration
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
+
+    # EXPERIMENTAL: provider account usage surfaced through messaging identity /
+    # presence APIs. Off by default because these are global profile writes.
+    account_usage_presence: AccountUsagePresenceConfig = field(
+        default_factory=AccountUsagePresenceConfig
+    )
 
     # Session store pruning: drop SessionEntry records older than this many
     # days from the in-memory dict and sessions.json.  Keeps the store from
@@ -969,6 +1067,7 @@ class GatewayConfig:
             "systemd_watchdog_seconds": self.systemd_watchdog_seconds,
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
+            "account_usage_presence": self.account_usage_presence.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
             "profile_routes": [
                 asdict(r) if is_dataclass(r) and not isinstance(r, type) else r
@@ -1101,6 +1200,9 @@ class GatewayConfig:
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
+            account_usage_presence=AccountUsagePresenceConfig.from_dict(
+                data.get("account_usage_presence", {})
+            ),
             session_store_max_age_days=session_store_max_age_days,
             profile_routes=profile_routes,
         )
@@ -1236,6 +1338,10 @@ def load_gateway_config() -> GatewayConfig:
                 if "systemd_watchdog_seconds" in gateway_section:
                     gw_data["systemd_watchdog_seconds"] = gateway_section[
                         "systemd_watchdog_seconds"
+                    ]
+                if "account_usage_presence" in gateway_section:
+                    gw_data["account_usage_presence"] = gateway_section[
+                        "account_usage_presence"
                     ]
 
             if "max_concurrent_sessions" in yaml_cfg:

@@ -851,6 +851,23 @@ platform_toolsets:
   google_chat: [hermes-google_chat]
 
 # =============================================================================
+# Experimental Gateway Account Usage Presence
+# =============================================================================
+# Show one explicitly selected provider account's remaining usage on supported
+# global bot surfaces. Off by default because every user of the bot sees the
+# mutated Telegram name / Discord activity. The provider must already be
+# authenticated for `/usage` to expose a percentage window.
+#
+# gateway:
+#   account_usage_presence:
+#     enabled: false
+#     provider: openai-codex       # openai-codex | anthropic | openrouter
+#     platforms: [telegram, discord]
+#     update_interval_seconds: 300 # minimum 300; change-only writes
+#     stale_after_seconds: 900
+#     # window_label: Session      # optional provider window label
+#
+# =============================================================================
 # Gateway Platform Settings
 # =============================================================================
 # Optional per-platform messaging settings.

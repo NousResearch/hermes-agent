@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from email.utils import parsedate_to_datetime
 from typing import TYPE_CHECKING, Any, Optional
 
 import httpx
@@ -44,6 +45,60 @@ class AccountUsageSnapshot:
     @property
     def available(self) -> bool:
         return bool(self.windows or self.details) and not self.unavailable_reason
+
+
+@dataclass(frozen=True)
+class AccountUsageFetchOutcome:
+    """Structured provider result that preserves rate-limit metadata."""
+
+    snapshot: Optional[AccountUsageSnapshot] = None
+    retry_after_seconds: Optional[float] = None
+    failed: bool = False
+
+
+def retry_after_seconds(
+    exc: BaseException,
+    *,
+    now: Optional[datetime] = None,
+) -> Optional[float]:
+    """Parse provider/platform Retry-After values into bounded seconds."""
+
+    value = getattr(exc, "retry_after", None)
+    if value is None:
+        response = getattr(exc, "response", None)
+        headers = getattr(response, "headers", None)
+        if headers:
+            try:
+                value = headers.get("Retry-After")
+            except Exception:
+                value = None
+    if value is None:
+        return None
+
+    seconds: Optional[float] = None
+    if isinstance(value, timedelta):
+        seconds = value.total_seconds()
+    elif isinstance(value, datetime):
+        current = now or datetime.now(timezone.utc)
+        target = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        seconds = (target - current).total_seconds()
+    else:
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError):
+            if isinstance(value, str):
+                try:
+                    target = parsedate_to_datetime(value)
+                    current = now or datetime.now(timezone.utc)
+                    if target.tzinfo is None:
+                        target = target.replace(tzinfo=timezone.utc)
+                    seconds = (target - current).total_seconds()
+                except (TypeError, ValueError, OverflowError):
+                    seconds = None
+
+    if seconds is None or not math.isfinite(seconds):
+        return None
+    return max(1.0, seconds)
 
 
 def _title_case_slug(value: Optional[str]) -> Optional[str]:
@@ -869,22 +924,45 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def fetch_account_usage_outcome(
+    provider: Optional[str],
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+) -> AccountUsageFetchOutcome:
+    """Fetch one provider snapshot without discarding rate-limit metadata."""
+
+    normalized = str(provider or "").strip().lower()
+    if normalized in {"", "auto", "custom"}:
+        return AccountUsageFetchOutcome()
+    try:
+        snapshot: Optional[AccountUsageSnapshot]
+        if normalized == "openai-codex":
+            snapshot = _fetch_codex_account_usage(base_url=base_url, api_key=api_key)
+        elif normalized == "anthropic":
+            snapshot = _fetch_anthropic_account_usage()
+        elif normalized == "openrouter":
+            snapshot = _fetch_openrouter_account_usage(base_url, api_key)
+        else:
+            snapshot = None
+        return AccountUsageFetchOutcome(snapshot=snapshot)
+    except Exception as exc:
+        return AccountUsageFetchOutcome(
+            retry_after_seconds=retry_after_seconds(exc),
+            failed=True,
+        )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
 ) -> Optional[AccountUsageSnapshot]:
-    normalized = str(provider or "").strip().lower()
-    if normalized in {"", "auto", "custom"}:
-        return None
-    try:
-        if normalized == "openai-codex":
-            return _fetch_codex_account_usage(base_url=base_url, api_key=api_key)
-        if normalized == "anthropic":
-            return _fetch_anthropic_account_usage()
-        if normalized == "openrouter":
-            return _fetch_openrouter_account_usage(base_url, api_key)
-    except Exception:
-        return None
-    return None
+    """Backward-compatible snapshot-only account-usage fetch."""
+
+    return fetch_account_usage_outcome(
+        provider,
+        base_url=base_url,
+        api_key=api_key,
+    ).snapshot

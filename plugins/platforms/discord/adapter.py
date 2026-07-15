@@ -112,6 +112,10 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parents[3]))
 
 from gateway.config import Platform, PlatformConfig
+from gateway.account_usage_presence import (
+    AccountUsagePresenceCapabilities,
+    AccountUsagePresencePayload,
+)
 
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker, convert_table_to_bullets
 from utils import atomic_json_write, env_float, env_int
@@ -1595,6 +1599,32 @@ class DiscordAdapter(BasePlatformAdapter):
         headroom = max(0.5, budget * 0.2)
         deadline = max(1.0, budget - headroom)
         return min(deadline, budget * 0.9)
+
+    @property
+    def account_usage_presence_capabilities(self) -> AccountUsagePresenceCapabilities:
+        return AccountUsagePresenceCapabilities(activity=True)
+
+    async def apply_account_usage_presence(
+        self,
+        payload: AccountUsagePresencePayload,
+        baseline: Optional[Dict[str, Any]],
+    ) -> bool:
+        client = self._client
+        if client is None:
+            return False
+        if payload.remaining_percent is None:
+            text = "Usage unavailable"
+        else:
+            label = " ".join(str(payload.label or "Usage").split())
+            text = f"{label} {payload.remaining_percent}% remaining"
+            if payload.cached:
+                text += " (cached)"
+        activity = discord.Activity(
+            type=discord.ActivityType.watching,
+            name=text[:128],
+        )
+        await client.change_presence(activity=activity)
+        return True
 
     async def disconnect(self) -> None:
         """Disconnect from Discord."""

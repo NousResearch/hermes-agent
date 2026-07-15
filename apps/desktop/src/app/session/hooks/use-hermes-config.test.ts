@@ -6,7 +6,7 @@ import { getHermesConfig } from '@/hermes'
 import { persistString } from '@/lib/storage'
 import { $currentCwd, setCurrentCwd } from '@/store/session'
 
-import { useHermesConfig } from './use-hermes-config'
+import { isFileBrowserHoverRevealEnabled, useHermesConfig } from './use-hermes-config'
 
 vi.mock('@/hermes', () => ({
   getHermesConfig: vi.fn(),
@@ -140,5 +140,20 @@ describe('useHermesConfig refreshHermesConfig', () => {
     })
 
     expect(refreshProjectBranch).toHaveBeenCalledWith('/workspace/attached-project')
+  })
+})
+
+describe('isFileBrowserHoverRevealEnabled', () => {
+  it('defaults to enabled for existing configs', () => {
+    expect(isFileBrowserHoverRevealEnabled({})).toBe(true)
+    expect(isFileBrowserHoverRevealEnabled({ display: {} })).toBe(true)
+  })
+
+  it('honors an explicit false value', () => {
+    expect(isFileBrowserHoverRevealEnabled({ display: { hover_reveal_file_browser: false } })).toBe(false)
+  })
+
+  it('keeps hover reveal enabled when explicitly true', () => {
+    expect(isFileBrowserHoverRevealEnabled({ display: { hover_reveal_file_browser: true } })).toBe(true)
   })
 })

@@ -455,7 +455,7 @@ export function DesktopController() {
     requestGateway
   })
 
-  const { refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({
+  const { fileBrowserHoverReveal, refreshHermesConfig, sttEnabled, voiceMaxRecordingSeconds } = useHermesConfig({
     activeSessionIdRef,
     refreshProjectBranch
   })
@@ -1185,6 +1185,7 @@ export function DesktopController() {
       key="file-browser"
       maxWidth={FILE_BROWSER_MAX_WIDTH}
       minWidth={FILE_BROWSER_MIN_WIDTH}
+      pointerHoverReveal={fileBrowserHoverReveal}
       resizable
       side={railSide}
       width={FILE_BROWSER_DEFAULT_WIDTH}

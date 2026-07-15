@@ -23,9 +23,11 @@ updating. The fix pins ``@assistant-ui/store`` (via root ``overrides``) to the
 last release that targets ``tap@^0.5.x``.
 
 This is a *contract* test, not a snapshot: it does not assert specific version
-numbers, only that whatever tap the lockfile hoists satisfies every
-``@assistant-ui/*`` package's declared tap requirement. It fails if any future
-bump reintroduces a split tap requirement across the cluster.
+numbers, only that the cluster resolves a single shared tap (wherever npm
+places it — hoisted to root, or nested under the ``apps/desktop`` workspace
+since the 0.14 bump dropped the ``store`` override) and that this tap satisfies
+every ``@assistant-ui/*`` package's declared requirement. It fails if any
+future bump reintroduces a split tap version or requirement across the cluster.
 """
 
 from __future__ import annotations
@@ -84,14 +86,30 @@ def _lock_packages() -> dict:
         return json.load(fh).get("packages", {})
 
 
-def _hoisted_tap_version(packages: dict) -> str:
-    entry = packages.get(f"node_modules/{TAP}")
-    assert entry is not None, (
-        "package-lock.json has no hoisted node_modules/@assistant-ui/tap "
-        "entry — the @assistant-ui cluster should resolve a single shared "
-        "tap version."
+def _shared_tap_version(packages: dict) -> str:
+    """The one tap version every install site resolves to.
+
+    npm hoists tap to root ``node_modules`` when the cluster lives at the top
+    level, but nests the whole cluster under a workspace
+    (``apps/desktop/node_modules``) when only that workspace depends on it — as
+    it does since the 0.14 bump dropped the ``@assistant-ui/store`` override.
+    Either layout is fine; the invariant is that a single tap version is shared
+    across every install site, so ``vite build`` never hits a split API.
+    """
+    versions = {
+        meta["version"]
+        for key, meta in packages.items()
+        if key.rsplit("node_modules/", 1)[-1] == TAP
+    }
+    assert versions, (
+        "package-lock.json has no @assistant-ui/tap entry — the "
+        "@assistant-ui cluster should resolve a single shared tap version."
     )
-    return entry["version"]
+    assert len(versions) == 1, (
+        f"@assistant-ui/tap resolves to multiple versions {sorted(versions)} — "
+        "the cluster must share one tap line (see this test's docstring)."
+    )
+    return versions.pop()
 
 
 def test_assistant_ui_cluster_agrees_on_one_tap() -> None:
@@ -103,7 +121,7 @@ def test_assistant_ui_cluster_agrees_on_one_tap() -> None:
     (or a similar API split) breaks ``vite build``.
     """
     packages = _lock_packages()
-    tap_version = _hoisted_tap_version(packages)
+    tap_version = _shared_tap_version(packages)
 
     offenders: list[str] = []
     for key, meta in packages.items():

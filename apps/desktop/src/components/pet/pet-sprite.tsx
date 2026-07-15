@@ -11,7 +11,7 @@ const DEFAULT_LOOP_MS = 1100
 const DEFAULT_SCALE = 0.33
 
 // Mirrors agent.pet.constants.CODEX_STATE_ROWS (Petdex current taxonomy).
-const DEFAULT_STATE_ROWS = [
+export const DEFAULT_STATE_ROWS = [
   'idle',
   'running-right',
   'running-left',
@@ -46,6 +46,47 @@ const ROW_TO_STATE: Record<string, PetState> = {
   failed: 'failed',
   review: 'review',
   waiting: 'waiting'
+}
+
+/**
+ * Pick the running row + mirror for a horizontal travel direction.
+ *
+ * Codex sheets ship dedicated `running-left` / `running-right` locomotion rows
+ * (already facing their way → no flip). Pets without them fall back to the
+ * in-place `running`/`run` row, which faces left by convention, so rightward
+ * travel is mirrored. Returns no `row` in that fallback case so the caller lets
+ * `$petState` resolve it (and applies `mirror`).
+ */
+export function roamWalkRow(dir: -1 | 0 | 1, stateRows?: string[]): { row?: string; mirror: boolean } {
+  if (dir === 0) {
+    return { mirror: false }
+  }
+
+  const rows = stateRows ?? DEFAULT_STATE_ROWS
+  const hasLeft = rows.includes('running-left')
+  const hasRight = rows.includes('running-right')
+
+  if (dir > 0) {
+    if (hasRight) {
+      return { mirror: false, row: 'running-right' }
+    }
+
+    if (hasLeft) {
+      return { mirror: true, row: 'running-left' }
+    }
+
+    return { mirror: true }
+  }
+
+  if (hasLeft) {
+    return { mirror: false, row: 'running-left' }
+  }
+
+  if (hasRight) {
+    return { mirror: true, row: 'running-right' }
+  }
+
+  return { mirror: false }
 }
 
 interface PetSpriteProps {

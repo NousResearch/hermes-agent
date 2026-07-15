@@ -264,6 +264,19 @@ def _is_trivial_message(text: str) -> bool:
 
 class _SupermemoryClient:
     def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid"):
+        # Lazy-install the supermemory SDK on demand. ensure() honors
+        # security.allow_lazy_installs (default true) and, on a sealed Docker
+        # venv, redirects the install to the durable target. On failure we
+        # fall through so the raw import below produces the canonical
+        # ImportError message.
+        try:
+            from tools.lazy_deps import ensure as _lazy_ensure
+            _lazy_ensure("memory.supermemory", prompt=False)
+        except ImportError:
+            pass
+        except Exception:
+            pass
+
         from supermemory import Supermemory
 
         self._api_key = api_key
@@ -533,14 +546,14 @@ class SupermemoryMemoryProvider(MemoryProvider):
         return "supermemory"
 
     def is_available(self) -> bool:
-        api_key = os.environ.get("SUPERMEMORY_API_KEY", "")
-        if not api_key:
-            return False
-        try:
-            __import__("supermemory")
-            return True
-        except Exception:
-            return False
+        # Key presence only — no SDK import check. The supermemory SDK is
+        # lazy-installed when the client is first constructed in initialize()
+        # (see _SupermemoryClient.__init__). Gating availability on the SDK
+        # being importable here would be a chicken-and-egg trap: on a sealed
+        # Docker venv the package isn't present until ensure() runs, but
+        # ensure() only runs once the provider is loaded — which this gates.
+        # Mirrors honcho/mem0, which check config only. No network calls.
+        return bool(os.environ.get("SUPERMEMORY_API_KEY", ""))
 
     def get_config_schema(self):
         # Only prompt for the API key during `hermes memory setup`.

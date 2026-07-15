@@ -646,6 +646,10 @@ For one-off model switches without delegation, use `/model` in the CLI:
 /model openai/gpt-5.4                   # switch back
 ```
 
+:::warning
+Each `/model` switch resets the prompt cache — the cache key includes the model, so the first message after every switch re-reads the whole conversation at full input price. On long sessions, prefer delegation (subagents get their own fresh context) or a new session over repeated back-and-forth switching.
+:::
+
 See [Subagent Delegation](../user-guide/features/delegation.md) for more on how delegation works.
 
 ### Running multiple agents on one WhatsApp number (per-chat binding)

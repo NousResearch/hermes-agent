@@ -65,3 +65,17 @@ def test_bare_options_without_preflight_header_does_not_bypass_auth(client):
     # short-circuit the token check and hand back a 200.
     resp = client.request("OPTIONS", _PROTECTED_PATH)
     assert resp.status_code == 401
+
+
+def test_options_with_preflight_header_but_no_origin_does_not_bypass_auth(client):
+    # Starlette's ``CORSMiddleware`` passes requests with no ``Origin`` straight
+    # through without emitting a preflight response, so an ``OPTIONS`` carrying
+    # ``Access-Control-Request-Method`` but no ``Origin`` is not a real
+    # preflight — it must not short-circuit the token check (issue #59052
+    # review). Requiring a nonempty ``Origin`` keeps it on the 401 path.
+    resp = client.request(
+        "OPTIONS",
+        _PROTECTED_PATH,
+        headers={"Access-Control-Request-Method": "GET"},
+    )
+    assert resp.status_code == 401

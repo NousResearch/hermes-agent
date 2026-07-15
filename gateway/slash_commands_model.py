@@ -810,14 +810,17 @@ class GatewayModelCommandsMixin:
         """Handle /fast — the CLI Priority Processing toggle; session-scoped unless ``--global``
         (persists agent.service_tier, parity with /model)."""
         from agent.fast_mode import service_tier_word
-        from gateway.run import _load_gateway_config, _resolve_gateway_model
+        from gateway.run import _load_gateway_config
         from hermes_cli.models import model_supports_fast_mode, model_supports_ultrafast
 
         # The /reasoning parser strips --global (any position) and normalizes unicode dashes.
         args, persist_global = self._parse_reasoning_command_args(event.get_command_args().strip().lower())
         session_key = self._session_key_for_source(event.source)
         self._service_tier = self._resolve_session_service_tier(session_key=session_key)
-        model = _resolve_gateway_model(_load_gateway_config())
+        # Judge eligibility against the model this session's next turn routes to (session /model
+        # override, channel override, persisted override after a restart), not the config default.
+        source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
+        model, _ = self._resolve_session_agent_runtime(source=source, user_config=_load_gateway_config())
         if not model_supports_fast_mode(model):
             return t("gateway.fast.not_supported")
         ultrafast = model_supports_ultrafast(model)

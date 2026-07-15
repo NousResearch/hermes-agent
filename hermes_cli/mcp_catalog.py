@@ -10,7 +10,11 @@ Catalog policy:
 - Entries are added only by merging a PR into hermes-agent. Presence in the
   ``optional-mcps/`` directory = Nous approval. No community tier, no trust
   signals beyond "it's in the catalog".
-- Manifests pin transport details (commands, args, refs). MCPs are never
+- Manifests pin transport details (commands, args, refs). Pins follow the
+  same supply-chain rules as pyproject dependencies: exact versions for
+  package launchers (``uvx pkg==X``, ``npx pkg@X``), full commit SHAs for
+  git installs, and the pinned release should be at least 2 weeks old at
+  pin time. MCPs are never
   auto-updated; users explicitly re-run ``hermes mcp install <name>`` to
   pull a new manifest version after a repo update.
 - Secrets prompted at install time go to ``~/.hermes/.env`` (the

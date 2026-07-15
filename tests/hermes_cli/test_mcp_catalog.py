@@ -7,6 +7,7 @@ launch an MCP is mocked.
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from unittest.mock import patch
 
@@ -838,3 +839,59 @@ class TestShippedCatalog:
             assert entry.name
             assert entry.description
             assert entry.transport.type in ("stdio", "http")
+
+    def test_all_shipped_manifests_are_version_locked(self, monkeypatch):
+        """Contract: catalog entries follow the same supply-chain rules as
+        pyproject dependencies — everything Hermes fetches/launches is pinned
+        to an exact version.
+
+        - git installs must pin a full 40-char commit SHA (branches and tags
+          can be moved by the upstream owner; SHAs cannot).
+        - package-launcher stdio transports (uvx/npx and their pkg-manager
+          equivalents) must carry an exact version specifier on the package
+          arg (``pkg==X`` for Python, ``pkg@X`` for npm).
+
+        http transports and ${INSTALL_DIR}-anchored commands have nothing to
+        pin at the transport layer (the server runs elsewhere / comes from the
+        SHA-pinned clone), so they're exempt.
+        """
+        monkeypatch.delenv("HERMES_OPTIONAL_MCPS", raising=False)
+        from hermes_cli.mcp_catalog import _catalog_root, _parse_manifest
+
+        root = _catalog_root()
+        if not root.exists():
+            pytest.skip("optional-mcps/ not present in this checkout")
+
+        launcher_commands = {"uvx", "npx", "pipx", "bunx", "pnpx"}
+        problems = []
+        for m in root.glob("*/manifest.yaml"):
+            entry = _parse_manifest(m)
+
+            if entry.install is not None:
+                if not re.fullmatch(r"[0-9a-f]{40}", entry.install.ref):
+                    problems.append(
+                        f"{entry.name}: install.ref {entry.install.ref!r} is not "
+                        "a full 40-char commit SHA"
+                    )
+
+            t = entry.transport
+            if t.type == "stdio" and (t.command or "") in launcher_commands:
+                pkg_args = [a for a in t.args if not a.startswith("-")]
+                if not pkg_args:
+                    problems.append(f"{entry.name}: launcher {t.command} has no package arg")
+                    continue
+                pkg = pkg_args[0]
+                # Exact-pin shapes: pkg==1.2.3 (uvx/pipx) or pkg@1.2.3 /
+                # @scope/pkg@1.2.3 (npx/bunx/pnpx). The version must start
+                # with a digit — a bare name, a range operator, or an npm
+                # dist-tag (@latest, @next) floats and is rejected.
+                exact = re.fullmatch(r"[^=@\s]+==\d[\w.\-+]*", pkg) or re.fullmatch(
+                    r"(@[\w.\-]+/)?[\w.\-]+@\d[\w.\-+]*", pkg
+                )
+                if not exact:
+                    problems.append(
+                        f"{entry.name}: package arg {pkg!r} is not pinned to an "
+                        "exact version (expected pkg==X or pkg@X)"
+                    )
+
+        assert not problems, "unpinned catalog entries:\n" + "\n".join(problems)

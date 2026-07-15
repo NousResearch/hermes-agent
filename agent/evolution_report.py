@@ -199,7 +199,18 @@ def render_markdown(report: Dict[str, Any], *, generated_at: Optional[str] = Non
 def generate_report() -> Dict[str, Any]:
     """Write REPORT.md and run.json under HERMES_HOME/logs/evolution/."""
     generated_at = datetime.now(timezone.utc)
-    report_id = generated_at.strftime("%Y%m%d-%H%M%S")
+    base_report_id = generated_at.strftime("%Y%m%d-%H%M%S")
+    report_root = get_hermes_home() / "logs" / "evolution"
+    report_root.mkdir(parents=True, exist_ok=True)
+    suffix = 1
+    while True:
+        report_id = base_report_id if suffix == 1 else f"{base_report_id}-{suffix}"
+        report_dir = report_root / report_id
+        try:
+            report_dir.mkdir(exist_ok=False)
+            break
+        except FileExistsError:
+            suffix += 1
     try:
         from agent import evolution_trace
         run_traces = evolution_trace.list_recent_traces(limit=_REPORT_LIMIT)
@@ -208,8 +219,6 @@ def generate_report() -> Dict[str, Any]:
     report = build_report(skill_usage.usage_report(), run_traces=run_traces)
     markdown = render_markdown(report, generated_at=generated_at.isoformat())
 
-    report_dir = get_hermes_home() / "logs" / "evolution" / report_id
-    report_dir.mkdir(parents=True, exist_ok=True)
     markdown_path = report_dir / "REPORT.md"
     json_path = report_dir / "run.json"
     payload = {

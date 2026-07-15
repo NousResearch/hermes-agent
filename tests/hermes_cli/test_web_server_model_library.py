@@ -122,6 +122,41 @@ def test_model_library_crud_persists_profile_scoped_metadata_only(client, _isola
     assert json.loads(path.read_text(encoding="utf-8")) == []
 
 
+def test_model_library_patch_rejects_duplicate_normalized_key(client):
+    first = client.post(
+        "/api/model/library",
+        json={
+            "provider": "openrouter",
+            "model": "anthropic/claude-sonnet-4",
+            "baseUrl": "https://openrouter.ai/api/v1",
+            "name": "Sonnet",
+        },
+    ).json()
+    second = client.post(
+        "/api/model/library",
+        json={
+            "provider": "custom",
+            "model": "local-model",
+            "baseUrl": "http://127.0.0.1:8000/v1",
+            "name": "Local",
+        },
+    ).json()
+
+    response = client.patch(
+        f"/api/model/library/{second['id']}",
+        json={
+            "provider": "OPENROUTER",
+            "model": "ANTHROPIC/CLAUDE-SONNET-4",
+            "baseUrl": "https://openrouter.ai/api/v1/",
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "model already exists"
+    persisted = json.loads((get_hermes_home() / "models.json").read_text(encoding="utf-8"))
+    assert persisted == [first, second]
+
+
 def test_model_library_honors_profile_query_scope(client, tmp_path, monkeypatch):
     profile_home = tmp_path / "profiles" / "coder"
     profile_home.mkdir(parents=True)

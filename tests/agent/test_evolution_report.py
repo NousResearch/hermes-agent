@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 
 def test_build_report_summarizes_skill_evaluation_rows():
     from agent.evolution_report import build_report
@@ -120,6 +122,32 @@ def test_generate_report_uses_usage_report_and_writes_files(tmp_path, monkeypatc
     assert result["markdown_path"].endswith("REPORT.md")
     assert result["json_path"].endswith("run.json")
     assert "# Hermes Evolution Report" in (tmp_path / "logs" / "evolution" / result["report_id"] / "REPORT.md").read_text(encoding="utf-8")
+
+
+def test_generate_report_preserves_same_second_reports(tmp_path, monkeypatch):
+    from agent import evolution_report
+
+    fixed_now = datetime(2026, 7, 15, 1, 2, 3, tzinfo=timezone.utc)
+
+    class FixedDatetime:
+        @classmethod
+        def now(cls, tz=None):
+            return fixed_now
+
+    monkeypatch.setattr(evolution_report, "datetime", FixedDatetime)
+    monkeypatch.setattr(evolution_report.skill_usage, "usage_report", lambda: [])
+    monkeypatch.setattr(evolution_report, "get_hermes_home", lambda: tmp_path)
+
+    first = evolution_report.generate_report()
+    second = evolution_report.generate_report()
+
+    assert first["report_id"] == "20260715-010203"
+    assert second["report_id"] == "20260715-010203-2"
+    assert first["report_dir"] != second["report_dir"]
+    for result in (first, second):
+        assert (tmp_path / "logs" / "evolution" / result["report_id"] / "REPORT.md").is_file()
+        assert (tmp_path / "logs" / "evolution" / result["report_id"] / "run.json").is_file()
+
 
 def test_build_report_includes_recent_run_trace_rows():
     from agent.evolution_report import build_report

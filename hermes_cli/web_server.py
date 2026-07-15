@@ -4507,6 +4507,12 @@ def update_model_library_row(model_id: str, body: Dict[str, Any], profile: Optio
             normalized = _normalize_model_library_row(next_row, index)
             if not normalized:
                 raise HTTPException(status_code=400, detail="provider and model required")
+            normalized_key = _model_library_key(normalized)
+            if any(
+                other_index != index and _model_library_key(other_row) == normalized_key
+                for other_index, other_row in enumerate(rows)
+            ):
+                raise HTTPException(status_code=409, detail="model already exists")
             rows[index] = normalized
             _write_model_library(rows)
             return {"ok": True, "model": normalized}

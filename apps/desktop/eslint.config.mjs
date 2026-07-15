@@ -105,6 +105,25 @@ export default [
     }
   },
   {
+    // THE PLUGIN FENCE: plugins speak @hermes/plugin-sdk (+ react), never `@/…`
+    // internals — the same isolation a runtime-fetched published plugin gets,
+    // enforced on bundled ones so the SDK surface stays honest and sufficient.
+    files: ['src/plugins/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-imports': [
+        'error',
+        {
+          patterns: [
+            {
+              group: ['@/*', '../*', '@hermes/shared'],
+              message: 'Plugins import only @hermes/plugin-sdk (and react). Missing something? Add it to the SDK.'
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
     files: ['**/*.js', '**/*.cjs', '**/*.mjs'],
     ignores: ['**/node_modules/**', '**/dist/**'],
     languageOptions: {
@@ -114,6 +133,9 @@ export default [
     }
   },
   {
-    ignores: ['*.config.*']
+    files: ['**/*.test.tsx'],
+    rules: {
+      'no-restricted-globals': ['warn', 'document']
+    }
   }
 ]

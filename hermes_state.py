@@ -1760,6 +1760,7 @@ class SessionDB:
         thread_id: str = None,
         parent_session_id: str = None,
         cwd: str = None,
+        git_repo_root: str = None,
     ) -> None:
         """Insert a session row, enriching NULL metadata on conflict.
 
@@ -1778,14 +1779,25 @@ class SessionDB:
         a persisted, now-inactive row belongs to the caller's chat/thread before
         switching to it (IDOR scoping — without them the ``sessions`` table has
         no chat/thread to compare).
+
+        When ``parent_session_id`` is set (compression fork, delegate/subagent
+        spawn, branch continuation) and this row's own ``cwd``/``git_repo_root``
+        are still NULL after the insert, they are backfilled from the parent
+        row. Callers of ``create_session`` for a child session historically
+        didn't propagate these fields themselves (e.g. the compression-fork
+        path), so a lineage could silently lose its working directory and drop
+        out of the project sidebar every time it forked (#64709). This only
+        fills NULLs — an explicit ``cwd``/``git_repo_root`` on the child is
+        never overwritten.
         """
         def _do(conn):
             conn.execute(
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
-                   model, model_config, system_prompt, parent_session_id, cwd, started_at
+                   model, model_config, system_prompt, parent_session_id, cwd,
+                   git_repo_root, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = COALESCE(sessions.model_config, excluded.model_config),
@@ -1795,7 +1807,8 @@ class SessionDB:
                        chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
                        thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
                        parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
-                       cwd = COALESCE(sessions.cwd, excluded.cwd)""",
+                       cwd = COALESCE(sessions.cwd, excluded.cwd),
+                       git_repo_root = COALESCE(sessions.git_repo_root, excluded.git_repo_root)""",
                 (
                     session_id,
                     source,
@@ -1809,9 +1822,22 @@ class SessionDB:
                     system_prompt,
                     parent_session_id,
                     cwd,
+                    git_repo_root,
                     time.time(),
                 ),
             )
+            if parent_session_id:
+                conn.execute(
+                    """UPDATE sessions
+                       SET cwd = COALESCE(sessions.cwd,
+                                 (SELECT p.cwd FROM sessions p
+                                   WHERE p.id = sessions.parent_session_id)),
+                           git_repo_root = COALESCE(sessions.git_repo_root,
+                                           (SELECT p.git_repo_root FROM sessions p
+                                             WHERE p.id = sessions.parent_session_id))
+                     WHERE id = ? AND parent_session_id IS NOT NULL""",
+                    (session_id,),
+                )
         self._execute_write(_do)
 
     def create_session(self, session_id: str, source: str, **kwargs) -> str:

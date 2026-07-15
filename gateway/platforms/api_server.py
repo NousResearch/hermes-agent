@@ -4706,7 +4706,7 @@ class APIServerAdapter(BasePlatformAdapter):
                                 result.get("messages", conversation_history) if isinstance(result, dict) else conversation_history,
                             )
                         except Exception:
-                            pass
+                            logger.debug("API _run_agent auto-title failed", exc_info=True)
                     return result, usage
                 finally:
                     clear_session_vars(tokens)
@@ -5065,15 +5065,18 @@ class APIServerAdapter(BasePlatformAdapter):
                     if final_response and isinstance(result, dict) and not result.get("failed"):
                         try:
                             from agent.title_generator import maybe_auto_title
+                            # Prefer agent.session_id in case compression rotated
+                            # the session during the run (same as _run_agent).
+                            _eff_sid = getattr(agent, "session_id", None) or session_id
                             maybe_auto_title(
                                 self._ensure_session_db(),
-                                session_id,
+                                _eff_sid,
                                 user_message,
                                 final_response,
-                                result.get("messages", conversation_history) if isinstance(result, dict) else conversation_history,
+                                result.get("messages", conversation_history),
                             )
                         except Exception:
-                            pass
+                            logger.debug("API /v1/runs auto-title failed", exc_info=True)
             except asyncio.CancelledError:
                 self._set_run_status(
                     run_id,

@@ -1205,17 +1205,17 @@ export function toolCopyPayload(part: ToolPart, view: ToolView): { label: string
     // (80) for display. The Copy button must yield the full content, not the
     // truncated slice — same principle as clampForDisplay for tool output.
     if (part.toolName === 'write_file') {
-      const content = firstStringField(args, ['content'])
+      const content = args.content
 
-      if (content) {
+      if (typeof content === 'string') {
         return { label: copy.file, text: content }
       }
     }
 
     if (part.toolName === 'patch') {
-      const fullDiff = inlineDiffFromResult(part.result)
+      const fullDiff = result.diff
 
-      if (fullDiff.trim()) {
+      if (typeof fullDiff === 'string' && fullDiff.trim()) {
         return { label: copy.file, text: fullDiff }
       }
     }

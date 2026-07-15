@@ -1906,12 +1906,21 @@ def connect(
                 from hermes_state import apply_wal_with_fallback
                 apply_wal_with_fallback(conn, db_label=f"kanban.db ({path.name})")
                 conn.execute("PRAGMA synchronous=FULL")
-                # 1000 (SQLite default; was 100) on this path too: steady-state
-                # connects are the common case for a long-lived writer, so the
-                # checkpoint cadence here matters as much as on the init path.
-                # See the matching note in the init path below for the full
-                # torn-write / contention-window rationale.
-                conn.execute("PRAGMA wal_autocheckpoint=1000")
+                # 100 on the steady-state path, NOT 1000 like the init path
+                # below. Long-lived writers (gateway dispatcher, webui) take
+                # this path on every tick, so their threshold sets the
+                # effective WAL ceiling for the whole fleet: any of their
+                # commits past ~100 pages checkpoints ~400KB. At 1000 the
+                # writeback grows to ~4MB bursts 10x rarer — and on a
+                # weak-durability FS (WSL2 vhdx, no FUA) each burst is the
+                # torn-write window. Field data 2026-07-15: raising this to
+                # 1000 preceded three real index-tear corruptions within
+                # hours on a board that had run a month clean at 100, at 6x
+                # LIGHTER load than its heaviest clean day. The FP-contention
+                # rationale for 1000 no longer applies here: the read-only
+                # first guard fails open on contention, so frequent small
+                # checkpoints cost nothing but keep the torn window small.
+                conn.execute("PRAGMA wal_autocheckpoint=100")
                 conn.execute("PRAGMA foreign_keys=ON")
                 conn.execute("PRAGMA secure_delete=ON")
                 conn.execute("PRAGMA cell_size_check=ON")

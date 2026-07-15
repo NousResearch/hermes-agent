@@ -4966,15 +4966,20 @@ def test_connect_sets_wal_autocheckpoint_1000(tmp_path):
     conn.close()
 
 
-def test_connect_sets_wal_autocheckpoint_1000_on_both_paths(tmp_path):
-    """wal_autocheckpoint must be 1000 on BOTH connect() paths.
+def test_connect_sets_wal_autocheckpoint_100_on_fast_path(tmp_path):
+    """wal_autocheckpoint is 1000 on the init path but 100 on the fast path.
 
-    Regression: the ``_INITIALIZED_PATHS`` fast path (the steady-state connect
-    a long-lived writer takes on every tick after first-open) used to leave the
-    setting at 100 while only the first-open init path was raised to 1000. That
-    silently reintroduced ~10x more checkpoint churn on the common path — the
-    exact torn-write / probe-contention window the raise to 1000 was meant to
-    shrink. Assert both the init connect and a subsequent fast-path connect.
+    The steady-state fast path is what long-lived writers (gateway dispatcher,
+    webui) take on every tick, so their threshold sets the effective WAL
+    ceiling for every process sharing the board: any of their commits past
+    ~100 pages checkpoints ~400KB. Raising the fast path to 1000 (2026-07-15)
+    made checkpoints ~4MB bursts 10x rarer, and on a weak-durability FS (WSL2
+    vhdx) each burst is the torn-write window — three real index-tear
+    corruptions followed within hours on a board that had run a month clean
+    at 100, at far lighter load. The read-only-first guard fails open on
+    contention, so the small-checkpoint churn no longer causes probe false
+    positives. Assert the init connect keeps 1000 and a subsequent fast-path
+    connect drops to 100.
     """
     db = tmp_path / "kanban.db"
     resolved = str(db.resolve())
@@ -4986,9 +4991,9 @@ def test_connect_sets_wal_autocheckpoint_1000_on_both_paths(tmp_path):
     assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 1000
     conn.close()
 
-    # Second connect: fast path (already initialized).
+    # Second connect: fast path (already initialized) — the pacemaker.
     conn = kb.connect(db_path=db)
-    assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 1000
+    assert conn.execute("PRAGMA wal_autocheckpoint").fetchone()[0] == 100
     conn.close()
 
 

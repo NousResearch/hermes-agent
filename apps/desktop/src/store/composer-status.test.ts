@@ -151,3 +151,37 @@ describe('reconcileBackgroundProcesses', () => {
     expect(itemsOf('sess-arm')).toEqual([])
   })
 })
+
+describe('cross-session process isolation', () => {
+  // Concern from review on #60506: a running process owned by another Desktop
+  // session must be shown read-only — the current session cannot stop or
+  // dismiss it. `reconcileBackgroundProcesses` tags `owned` from the gateway's
+  // `owned_by_me` field (False for foreign processes).
+  beforeEach(() => {
+    vi.useFakeTimers()
+    $backgroundStatusBySession.set({})
+  })
+
+  afterEach(() => {
+    vi.clearAllTimers()
+    vi.useRealTimers()
+  })
+
+  it('marks a foreign running process as not owned (read-only)', () => {
+    reconcileBackgroundProcesses(SID, [
+      { command: 'other session server', session_id: 'b', status: 'running', owned_by_me: false, session_key: 'gwA' }
+    ])
+
+    const [row] = items()
+    expect(row.id).toBe('b')
+    expect(row.owned).toBe(false)
+    expect(row.state).toBe('running')
+  })
+
+  it('keeps an owned running process actionable', () => {
+    reconcileBackgroundProcesses(SID, [running('a')])
+
+    const [row] = items()
+    expect(row.owned).toBe(true)
+  })
+})

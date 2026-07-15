@@ -1897,6 +1897,32 @@ class TestIssue48339StaleRunningAndSessionIndependent:
         except (ProcessLookupError, PermissionError):
             pass
 
+    def test_list_sessions_heals_recycled_pid_as_lost(self, registry, monkeypatch):
+        """Identity-aware liveness: a non-detached HOST-PID session whose stored
+        PID is now ALIVE but belongs to an UNRELATED process (kernel reused the
+        number, start time differs) must be healed to 'lost' — not kept
+        'running'. Bare liveness would mis-identify the recycled number as still
+        ours and strand the UI on a stale 'running' row (maintainer review on
+        #60506)."""
+        # A session we believe is still running, with a recorded start time.
+        s = _make_session(sid="proc_recycled")
+        s.pid_scope = "host"
+        s.pid = os.getpid()  # alive right now...
+        s.host_start_time = (ProcessRegistry._safe_host_start_time(os.getpid()) or 0) + 999  # ...but a WRONG start time => not our process
+        s.exited = False
+        registry._running[s.id] = s
+
+        # _host_pid_is_ours(pid, wrong_start) must be False -> healed to lost.
+        assert ProcessRegistry._host_pid_is_ours(s.pid, s.host_start_time) is False
+
+        entries = registry.list_sessions()
+        by_id = {e["session_id"]: e for e in entries}
+        assert by_id["proc_recycled"]["status"] == "exited"
+        assert s.exited is True
+        assert s.completion_reason == "lost"
+        assert s.id in registry._finished
+        assert s.id not in registry._running
+
     def test_list_sessions_keeps_alive_running(self, registry):
         """A genuinely running process must NOT be flipped by the list path."""
         proc = _spawn_python_sleep(5.0)

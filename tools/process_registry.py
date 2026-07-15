@@ -1639,7 +1639,11 @@ class ProcessRegistry:
             # sandbox sessions (pid_scope != "host") are reconciled by their
             # environment, so we deliberately leave them untouched.
             if not s.exited and s.pid_scope == "host" and s.pid:
-                if not self._is_host_pid_alive(s.pid):
+                # Identity-aware liveness: a recycled PID (alive but started by
+                # an unrelated process) must be healed to "lost", NOT kept
+                # running. Bare _is_host_pid_alive would treat the recycled
+                # number as still-ours and strand the UI on a stale "running".
+                if not self._host_pid_is_ours(s.pid, s.host_start_time):
                     with s._lock:
                         if s.exited:
                             continue

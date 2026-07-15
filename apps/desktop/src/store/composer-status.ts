@@ -21,6 +21,9 @@ export interface ComposerStatusItem {
   id: string
   /** background process: captured stdout/stderr tail for the inline viewer. */
   output?: string
+  /** True when the process belongs to this session. Foreign (cross-session)
+   *  running processes are shown read-only — no stop/dismiss action. */
+  owned?: boolean
   /** subagent: its own stored session id — row click opens that session window
    *  (livestreamed by the gateway's child-session mirror). */
   sessionId?: string
@@ -185,6 +188,12 @@ interface GatewayProcessEntry {
   output_tail?: string
   session_id?: string
   status?: string
+  // Cross-session visibility: the entry may belong to another Desktop session.
+  // `owned_by_me` lets the UI hide the stop/kill action for foreign running
+  // processes so one session cannot terminate another's process (server enforces
+  // the same guard on process.kill / process.forget).
+  owned_by_me?: boolean
+  session_key?: string
 }
 
 const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
@@ -195,6 +204,9 @@ const toBackgroundItem = (proc: GatewayProcessEntry): ComposerStatusItem => {
     exitCode,
     id: proc.session_id ?? '',
     output: proc.output_tail || undefined,
+    // A foreign (not-owned) running process is shown read-only: the user can
+    // see it but cannot stop or dismiss it from this session.
+    owned: proc.owned_by_me !== false,
     state: exited ? (exitCode ? 'failed' : 'done') : 'running',
     title: (proc.command ?? '').split('\n')[0]!.trim() || 'background process',
     type: 'background'
@@ -301,27 +313,46 @@ export async function refreshBackgroundProcesses(sid: string): Promise<void> {
   }
 }
 
-/** X on a finished row: drop it now and keep it dropped across refreshes. */
+/** X on a finished row: drop it now and keep it dropped across refreshes.
+ *  Also tells the server to forget it (process.forget) so a future
+ *  process.list poll can't resurrect the row. Foreign (not-owned) processes
+ *  are never dismissed here — the server enforces the same guard. */
 export function dismissBackgroundProcess(sid: string, id: string) {
+  const list = $backgroundStatusBySession.get()[sid] ?? []
+  // Resolve the row up front; we reuse it for both the local removal and the
+  // server-side forget (ownership check lives on the server too).
+  const item = list.find(i => i.id === id)
+
   cancelAutoDismiss(sid, id)
 
   const dismissed = dismissedBySession.get(sid) ?? new Set<string>()
   dismissed.add(id)
   dismissedBySession.set(sid, dismissed)
 
-  const list = $backgroundStatusBySession.get()[sid] ?? []
-
   writeBackground(
     sid,
-    list.filter(item => item.id !== id)
+    list.filter(i => i.id !== id)
   )
+
+  // Persist the dismissal server-side so it survives the next poll. Server
+  // enforces ownership (4044 for a foreign running process); we only call it
+  // for rows the UI actually owns.
+  if (item?.owned !== false) {
+    void $gateway.get()?.request('process.forget', { process_id: id, session_id: sid }).catch(() => undefined)
+  }
 }
 
 /** X on a running row: kill the process for real, THEN drop the row. Only drop
  *  on a confirmed kill — dismissing unconditionally (the old behavior) hid the
  *  row while the process lived on, stranding rogue tasks. On failure the row
- *  stays so the user can retry / see it didn't die. */
+ *  stays so the user can retry / see it didn't die. Foreign (not-owned) rows
+ *  are never offered a stop action in the UI; this guard is belt-and-braces. */
 export async function stopBackgroundProcess(sid: string, id: string): Promise<void> {
+  const list = $backgroundStatusBySession.get()[sid] ?? []
+  const item = list.find(i => i.id === id)
+  if (item?.owned === false) {
+    return
+  }
   try {
     await $gateway.get()?.request('process.kill', { process_id: id, session_id: sid })
     dismissBackgroundProcess(sid, id)

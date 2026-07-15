@@ -9,7 +9,8 @@ import {
   buildDesktopBackendPath,
   normalizeHermesHomeRoot,
   pathEnvKey,
-  POSIX_SANE_PATH_ENTRIES
+  POSIX_SANE_PATH_ENTRIES,
+  splitHermesHomeRootAndProfile
 } from './backend-env'
 
 test('desktop backend PATH adds Hermes-managed bins and missing POSIX sane entries', () => {
@@ -78,6 +79,30 @@ test('normalizeHermesHomeRoot maps profile homes back to the global Hermes root'
     'C:\\Users\\test\\AppData\\Local\\hermes'
   )
   assert.equal(normalizeHermesHomeRoot('/Users/test/.hermes', { pathModule: path.posix }), '/Users/test/.hermes')
+})
+
+test('splitHermesHomeRootAndProfile extracts profile hints from profile-scoped homes', () => {
+  assert.deepEqual(splitHermesHomeRootAndProfile('/Users/test/.hermes/profiles/oracle', { pathModule: path.posix }), {
+    profileHint: 'oracle',
+    root: '/Users/test/.hermes'
+  })
+
+  assert.deepEqual(
+    splitHermesHomeRootAndProfile('C:\\Users\\test\\AppData\\Local\\hermes\\profiles\\coder', {
+      pathModule: path.win32
+    }),
+    {
+      profileHint: 'coder',
+      root: 'C:\\Users\\test\\AppData\\Local\\hermes'
+    }
+  )
+})
+
+test('splitHermesHomeRootAndProfile returns null profile hint for global homes', () => {
+  assert.deepEqual(splitHermesHomeRootAndProfile('/Users/test/.hermes', { pathModule: path.posix }), {
+    profileHint: null,
+    root: '/Users/test/.hermes'
+  })
 })
 
 test('Windows PATH casing and delimiter are preserved without POSIX sane entries', () => {

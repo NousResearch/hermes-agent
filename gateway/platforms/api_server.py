@@ -1397,6 +1397,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        model_override: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1417,6 +1418,13 @@ class APIServerAdapter(BasePlatformAdapter):
         routing).  When set — and no session ``/model`` override exists for
         this session — its model/provider/api_key/base_url override the
         global defaults for this agent instance only.
+
+        ``model_override`` is an explicit per-request model name (e.g. the
+        ``model`` field of ``POST /v1/runs``) that does not correspond to a
+        configured ``model_routes`` alias.  When set — and no session
+        ``/model`` override exists — it replaces the resolved model for this
+        single agent instantiation only; no global state is mutated and no
+        other callers are affected (fixes #33072).
         """
         from run_agent import AIAgent
         from gateway.run import (
@@ -1488,6 +1496,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 "api_server model route skipped: session /model override wins for %s",
                 gateway_session_key or session_id,
             )
+
+        # Explicit per-request model override (POST /v1/runs `model` field)
+        # that is not a configured model_routes alias. A session /model
+        # override still wins (mirrors the route precedence above), and a
+        # matched route (which set `model` already) takes priority over a
+        # bare override string.
+        if model_override and not session_override and not route:
+            model = model_override
+            logger.debug("api_server per-run model override applied: model=%s", model)
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -4464,6 +4481,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Per-client model routing for /v1/runs (see model_routes).
         route = self._resolve_route(body.get("model"))
+        # A `model` value that is not a configured route alias is still a
+        # valid per-run model override (#33072); forward it explicitly.
+        requested_model = (body.get("model") or "").strip() or None
+        run_model_override = requested_model if route is None else None
 
         async def _run_and_close():
             try:
@@ -4487,6 +4508,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    model_override=run_model_override,
                 )
                 self._active_run_agents[run_id] = agent
 

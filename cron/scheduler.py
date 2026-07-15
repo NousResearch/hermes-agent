@@ -4045,13 +4045,10 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
         if not _consume_interrupted_flag(job["id"]):
-            mark_job_run(
-                job["id"],
-                success,
-                error,
-                delivery_error=delivery_error,
-                delivery_state=delivery_state,
-            )
+            mark_kwargs = {"delivery_error": delivery_error}
+            if delivery_state is not None:
+                mark_kwargs["delivery_state"] = delivery_state
+            mark_job_run(job["id"], success, error, **mark_kwargs)
         return True
 
     except Exception as e:

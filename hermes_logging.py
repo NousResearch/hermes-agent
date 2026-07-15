@@ -302,6 +302,15 @@ def setup_logging(
     global _logging_initialized
     home = hermes_home or get_hermes_home()
     log_dir = home / "logs"
+    if _logging_initialized and not force:
+        existing_paths = [Path(h.baseFilename) for h in _queued_file_handlers]
+        same_home = any(path.parent == log_dir for path in existing_paths)
+        required_name = "gateway.log" if mode == "gateway" else "gui.log" if mode == "gui" else None
+        required_present = required_name is None or any(path.name == required_name for path in existing_paths)
+        if not same_home or required_present:
+            return log_dir
+    if force:
+        _reset_queued_handlers()
     log_dir.mkdir(parents=True, exist_ok=True)
 
     # Read config defaults (best-effort — config may not be loaded yet).
@@ -360,9 +369,6 @@ def setup_logging(
             formatter=RedactingFormatter(_LOG_FORMAT),
             log_filter=_ComponentFilter(COMPONENT_PREFIXES["gui"]),
         )
-
-    if _logging_initialized and not force:
-        return log_dir
 
     # Ensure root logger level is low enough for the handlers to fire.
     if root.level == logging.NOTSET or root.level > level:

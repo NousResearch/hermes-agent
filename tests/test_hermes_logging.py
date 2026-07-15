@@ -109,6 +109,26 @@ class TestSetupLogging:
         ]
         assert len(agent_handlers) == 1
 
+    def test_second_setup_with_different_home_is_still_a_noop(self, hermes_home, tmp_path):
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        before = {h.baseFilename for h in hermes_logging.rotating_file_handlers()}
+
+        hermes_logging.setup_logging(hermes_home=tmp_path / "other-home")
+
+        assert {h.baseFilename for h in hermes_logging.rotating_file_handlers()} == before
+
+    def test_force_different_home_closes_and_replaces_handlers(self, hermes_home, tmp_path):
+        hermes_logging.setup_logging(hermes_home=hermes_home)
+        old_handlers = list(hermes_logging.rotating_file_handlers())
+        other = tmp_path / "forced-home"
+
+        hermes_logging.setup_logging(hermes_home=other, force=True)
+
+        new_handlers = hermes_logging.rotating_file_handlers()
+        assert len(new_handlers) == 2
+        assert all(str(other) in h.baseFilename for h in new_handlers)
+        assert all(h.stream is None for h in old_handlers)
+
     def test_force_reinitializes(self, hermes_home):
         hermes_logging.setup_logging(hermes_home=hermes_home)
         # Force still won't add duplicate handlers because _add_rotating_handler

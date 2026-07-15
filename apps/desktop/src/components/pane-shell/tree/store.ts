@@ -1148,6 +1148,14 @@ export function resetLayoutTree() {
   resetHandlers.forEach(fn => fn())
   // Everything still missing (plugin panes) adopts by placement.
   adoptContributedPanes()
+
+  // "Restore everything" includes collapsed SIDES: reopen every bound side
+  // (through its store, so $sidebarOpen / the toggles stay truthful). Without
+  // this a sidebar hidden before the reset silently survives it, flipping the
+  // next ⌘B into a SHOW — so hiding never appears to persist.
+  for (const side of Object.keys(sideOpeners) as TreeSide[]) {
+    sideOpeners[side]?.(true)
+  }
 }
 
 // Dev hook for automation.

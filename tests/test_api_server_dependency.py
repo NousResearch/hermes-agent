@@ -3,7 +3,9 @@ import tomllib
 
 
 def _project_metadata() -> dict:
-    return tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as handle:
+        return tomllib.load(handle)
 
 
 def _package_names(requirements: list[str]) -> set[str]:

@@ -10246,6 +10246,208 @@ async def get_logs(
 
 
 # ---------------------------------------------------------------------------
+# Kanban task panel endpoints
+# ---------------------------------------------------------------------------
+
+
+class KanbanTaskCreate(BaseModel):
+    title: str
+    body: str = ""
+    assignee: Optional[str] = None
+    priority: int = 0
+    status: str = "ready"
+
+
+class KanbanTaskComment(BaseModel):
+    body: str
+    author: str = "desktop"
+
+
+class KanbanTaskBlock(BaseModel):
+    reason: str = ""
+    kind: Optional[str] = None
+
+
+class KanbanTaskComplete(BaseModel):
+    summary: str = ""
+
+
+def _kanban_task_to_dict(task: Any) -> Dict[str, Any]:
+    return {
+        "id": task.id,
+        "title": task.title,
+        "body": task.body,
+        "assignee": task.assignee,
+        "status": task.status,
+        "priority": task.priority,
+        "tenant": task.tenant,
+        "workspace_kind": task.workspace_kind,
+        "workspace_path": task.workspace_path,
+        "branch_name": task.branch_name,
+        "project_id": task.project_id,
+        "created_by": task.created_by,
+        "created_at": task.created_at,
+        "started_at": task.started_at,
+        "completed_at": task.completed_at,
+        "result": task.result,
+        "skills": list(task.skills) if task.skills else [],
+        "session_id": task.session_id,
+        "block_kind": task.block_kind,
+        "last_failure_error": task.last_failure_error,
+        "consecutive_failures": task.consecutive_failures,
+    }
+
+
+def _kanban_counts(tasks: List[Dict[str, Any]]) -> Dict[str, int]:
+    counts: Dict[str, int] = {}
+    for task in tasks:
+        status = str(task.get("status") or "unknown")
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def _list_kanban_tasks_sync(board: Optional[str], status: Optional[str], include_archived: bool, limit: int):
+    from hermes_cli import kanban_db as kb
+
+    selected_board = (board or "").strip() or None
+    selected_status = (status or "").strip() or None
+    limit_n = max(1, min(int(limit or 100), 500))
+    with kb.connect_closing(board=selected_board) as conn:
+        tasks = [
+            _kanban_task_to_dict(t)
+            for t in kb.list_tasks(
+                conn,
+                status=selected_status,
+                include_archived=include_archived,
+                limit=limit_n,
+                order_by="priority-desc",
+            )
+        ]
+    return {
+        "board": selected_board or kb.get_current_board(),
+        "tasks": tasks,
+        "counts": _kanban_counts(tasks),
+    }
+
+
+@app.get("/api/kanban/tasks")
+async def list_kanban_tasks(
+    board: Optional[str] = None,
+    status: Optional[str] = None,
+    include_archived: bool = False,
+    limit: int = 100,
+):
+    return await run_in_threadpool(_list_kanban_tasks_sync, board, status, include_archived, limit)
+
+
+def _get_kanban_task_sync(task_id: str, board: Optional[str] = None):
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect_closing(board=(board or None)) as conn:
+        task = kb.get_task(conn, task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="Task not found")
+        comments = [c.__dict__ for c in kb.list_comments(conn, task_id)]
+    return {"task": _kanban_task_to_dict(task), "comments": comments}
+
+
+@app.get("/api/kanban/tasks/{task_id}")
+async def get_kanban_task(task_id: str, board: Optional[str] = None):
+    return await run_in_threadpool(_get_kanban_task_sync, task_id, board)
+
+
+def _create_kanban_task_sync(body: KanbanTaskCreate, board: Optional[str] = None):
+    from hermes_cli import kanban_db as kb
+
+    status = (body.status or "ready").strip().lower()
+    if status not in {"ready", "blocked", "triage"}:
+        raise HTTPException(status_code=400, detail="status must be ready, blocked, or triage")
+    with kb.connect_closing(board=(board or None)) as conn:
+        task_id = kb.create_task(
+            conn,
+            title=body.title,
+            body=body.body or None,
+            assignee=body.assignee,
+            created_by="desktop",
+            priority=int(body.priority or 0),
+            triage=status == "triage",
+            initial_status="blocked" if status == "blocked" else "running",
+            board=board or None,
+        )
+        task = kb.get_task(conn, task_id)
+    return {"task": _kanban_task_to_dict(task)}
+
+
+@app.post("/api/kanban/tasks")
+async def create_kanban_task(body: KanbanTaskCreate, board: Optional[str] = None):
+    return await run_in_threadpool(_create_kanban_task_sync, body, board)
+
+
+def _comment_kanban_task_sync(task_id: str, body: KanbanTaskComment, board: Optional[str] = None):
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect_closing(board=(board or None)) as conn:
+        comment_id = kb.add_comment(conn, task_id, body.author or "desktop", body.body)
+        task = kb.get_task(conn, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return {"comment_id": comment_id, "task": _kanban_task_to_dict(task)}
+
+
+@app.post("/api/kanban/tasks/{task_id}/comment")
+async def comment_kanban_task(task_id: str, body: KanbanTaskComment, board: Optional[str] = None):
+    return await run_in_threadpool(_comment_kanban_task_sync, task_id, body, board)
+
+
+def _complete_kanban_task_sync(task_id: str, body: KanbanTaskComplete, board: Optional[str] = None):
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect_closing(board=(board or None)) as conn:
+        ok = kb.complete_task(conn, task_id, result=body.summary or None, summary=body.summary or None)
+        if not ok:
+            raise HTTPException(status_code=400, detail="Task is not completable")
+        task = kb.get_task(conn, task_id)
+    return {"task": _kanban_task_to_dict(task)}
+
+
+@app.post("/api/kanban/tasks/{task_id}/complete")
+async def complete_kanban_task(task_id: str, body: KanbanTaskComplete = KanbanTaskComplete(), board: Optional[str] = None):
+    return await run_in_threadpool(_complete_kanban_task_sync, task_id, body, board)
+
+
+def _block_kanban_task_sync(task_id: str, body: KanbanTaskBlock, board: Optional[str] = None):
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect_closing(board=(board or None)) as conn:
+        ok = kb.block_task(conn, task_id, reason=body.reason or None, kind=body.kind or None)
+        if not ok:
+            raise HTTPException(status_code=400, detail="Task is not blockable")
+        task = kb.get_task(conn, task_id)
+    return {"task": _kanban_task_to_dict(task)}
+
+
+@app.post("/api/kanban/tasks/{task_id}/block")
+async def block_kanban_task(task_id: str, body: KanbanTaskBlock, board: Optional[str] = None):
+    return await run_in_threadpool(_block_kanban_task_sync, task_id, body, board)
+
+
+def _unblock_kanban_task_sync(task_id: str, board: Optional[str] = None):
+    from hermes_cli import kanban_db as kb
+
+    with kb.connect_closing(board=(board or None)) as conn:
+        ok = kb.unblock_task(conn, task_id)
+        if not ok:
+            raise HTTPException(status_code=400, detail="Task is not unblockable")
+        task = kb.get_task(conn, task_id)
+    return {"task": _kanban_task_to_dict(task)}
+
+
+@app.post("/api/kanban/tasks/{task_id}/unblock")
+async def unblock_kanban_task(task_id: str, board: Optional[str] = None):
+    return await run_in_threadpool(_unblock_kanban_task_sync, task_id, board)
+
+
+# ---------------------------------------------------------------------------
 # Cron job management endpoints
 # ---------------------------------------------------------------------------
 

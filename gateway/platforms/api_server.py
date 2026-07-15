@@ -3676,6 +3676,221 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     # ------------------------------------------------------------------
+    # Kanban task-panel API (used by Hermes Desktop)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _kanban_task_to_dict(task: Any) -> Dict[str, Any]:
+        return {
+            "id": task.id,
+            "title": task.title,
+            "body": task.body,
+            "assignee": task.assignee,
+            "status": task.status,
+            "priority": task.priority,
+            "tenant": task.tenant,
+            "workspace_kind": task.workspace_kind,
+            "workspace_path": task.workspace_path,
+            "branch_name": task.branch_name,
+            "project_id": task.project_id,
+            "created_by": task.created_by,
+            "created_at": task.created_at,
+            "started_at": task.started_at,
+            "completed_at": task.completed_at,
+            "result": task.result,
+            "skills": list(task.skills) if task.skills else [],
+            "session_id": task.session_id,
+            "block_kind": task.block_kind,
+            "last_failure_error": task.last_failure_error,
+            "consecutive_failures": task.consecutive_failures,
+        }
+
+    @staticmethod
+    def _kanban_counts(tasks: List[Dict[str, Any]]) -> Dict[str, int]:
+        counts: Dict[str, int] = {}
+        for task in tasks:
+            status = str(task.get("status") or "unknown")
+            counts[status] = counts.get(status, 0) + 1
+        return counts
+
+    async def _handle_kanban_list_tasks(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            from hermes_cli import kanban_db as kb
+            board = (request.query.get("board") or "").strip() or None
+            status = (request.query.get("status") or "").strip() or None
+            include_archived = str(request.query.get("include_archived") or "").lower() in {"1", "true", "yes"}
+            try:
+                limit = max(1, min(int(request.query.get("limit") or 100), 500))
+            except ValueError:
+                limit = 100
+            with kb.connect_closing(board=board) as conn:
+                tasks = [
+                    self._kanban_task_to_dict(t)
+                    for t in kb.list_tasks(
+                        conn,
+                        status=status,
+                        include_archived=include_archived,
+                        limit=limit,
+                        order_by="priority-desc",
+                    )
+                ]
+            return web.json_response({
+                "board": board or kb.get_current_board(),
+                "tasks": tasks,
+                "counts": self._kanban_counts(tasks),
+            })
+        except Exception as e:
+            logger.exception("GET /api/kanban/tasks failed")
+            return web.json_response({"error": _redact_api_error_text(e)}, status=500)
+
+    async def _handle_kanban_get_task(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            from hermes_cli import kanban_db as kb
+            task_id = request.match_info["task_id"]
+            board = (request.query.get("board") or "").strip() or None
+            with kb.connect_closing(board=board) as conn:
+                task = kb.get_task(conn, task_id)
+                if not task:
+                    return web.json_response({"error": "Task not found"}, status=404)
+                comments = [c.__dict__ for c in kb.list_comments(conn, task_id)]
+            return web.json_response({"task": self._kanban_task_to_dict(task), "comments": comments})
+        except Exception as e:
+            logger.exception("GET /api/kanban/tasks/{task_id} failed")
+            return web.json_response({"error": _redact_api_error_text(e)}, status=500)
+
+    async def _handle_kanban_create_task(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        try:
+            from hermes_cli import kanban_db as kb
+            title = str(body.get("title") or "").strip()
+            if not title:
+                return web.json_response({"error": "title is required"}, status=400)
+            status = str(body.get("status") or "ready").strip().lower()
+            if status not in {"ready", "blocked", "triage"}:
+                return web.json_response({"error": "status must be ready, blocked, or triage"}, status=400)
+            board = (request.query.get("board") or "").strip() or None
+            with kb.connect_closing(board=board) as conn:
+                task_id = kb.create_task(
+                    conn,
+                    title=title,
+                    body=str(body.get("body") or "").strip() or None,
+                    assignee=body.get("assignee") or None,
+                    created_by="desktop",
+                    priority=int(body.get("priority") or 0),
+                    triage=status == "triage",
+                    initial_status="blocked" if status == "blocked" else "running",
+                    board=board,
+                )
+                task = kb.get_task(conn, task_id)
+            return web.json_response({"task": self._kanban_task_to_dict(task)})
+        except Exception as e:
+            logger.exception("POST /api/kanban/tasks failed")
+            return web.json_response({"error": _redact_api_error_text(e)}, status=500)
+
+    async def _handle_kanban_comment_task(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        try:
+            from hermes_cli import kanban_db as kb
+            task_id = request.match_info["task_id"]
+            board = (request.query.get("board") or "").strip() or None
+            with kb.connect_closing(board=board) as conn:
+                comment_id = kb.add_comment(
+                    conn,
+                    task_id,
+                    str(body.get("author") or "desktop"),
+                    str(body.get("body") or ""),
+                )
+                task = kb.get_task(conn, task_id)
+            if not task:
+                return web.json_response({"error": "Task not found"}, status=404)
+            return web.json_response({"comment_id": comment_id, "task": self._kanban_task_to_dict(task)})
+        except Exception as e:
+            logger.exception("POST /api/kanban/tasks/{task_id}/comment failed")
+            return web.json_response({"error": _redact_api_error_text(e)}, status=500)
+
+    async def _handle_kanban_complete_task(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        try:
+            from hermes_cli import kanban_db as kb
+            task_id = request.match_info["task_id"]
+            board = (request.query.get("board") or "").strip() or None
+            summary = str(body.get("summary") or "").strip() or None
+            with kb.connect_closing(board=board) as conn:
+                ok = kb.complete_task(conn, task_id, result=summary, summary=summary)
+                if not ok:
+                    return web.json_response({"error": "Task is not completable"}, status=400)
+                task = kb.get_task(conn, task_id)
+            return web.json_response({"task": self._kanban_task_to_dict(task)})
+        except Exception as e:
+            logger.exception("POST /api/kanban/tasks/{task_id}/complete failed")
+            return web.json_response({"error": _redact_api_error_text(e)}, status=500)
+
+    async def _handle_kanban_block_task(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        body, err = await self._read_json_body(request)
+        if err:
+            return err
+        try:
+            from hermes_cli import kanban_db as kb
+            task_id = request.match_info["task_id"]
+            board = (request.query.get("board") or "").strip() or None
+            with kb.connect_closing(board=board) as conn:
+                ok = kb.block_task(
+                    conn,
+                    task_id,
+                    reason=str(body.get("reason") or "").strip() or None,
+                    kind=body.get("kind") or None,
+                )
+                if not ok:
+                    return web.json_response({"error": "Task is not blockable"}, status=400)
+                task = kb.get_task(conn, task_id)
+            return web.json_response({"task": self._kanban_task_to_dict(task)})
+        except Exception as e:
+            logger.exception("POST /api/kanban/tasks/{task_id}/block failed")
+            return web.json_response({"error": _redact_api_error_text(e)}, status=500)
+
+    async def _handle_kanban_unblock_task(self, request: "web.Request") -> "web.Response":
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            from hermes_cli import kanban_db as kb
+            task_id = request.match_info["task_id"]
+            board = (request.query.get("board") or "").strip() or None
+            with kb.connect_closing(board=board) as conn:
+                ok = kb.unblock_task(conn, task_id)
+                if not ok:
+                    return web.json_response({"error": "Task is not unblockable"}, status=400)
+                task = kb.get_task(conn, task_id)
+            return web.json_response({"task": self._kanban_task_to_dict(task)})
+        except Exception as e:
+            logger.exception("POST /api/kanban/tasks/{task_id}/unblock failed")
+            return web.json_response({"error": _redact_api_error_text(e)}, status=500)
+
+    # ------------------------------------------------------------------
     # Cron jobs API
     # ------------------------------------------------------------------
 
@@ -4980,6 +5195,15 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
+            # Desktop Kanban task panel
+            self._app.router.add_get("/api/kanban/tasks", self._handle_kanban_list_tasks)
+            self._app.router.add_post("/api/kanban/tasks", self._handle_kanban_create_task)
+            self._app.router.add_get("/api/kanban/tasks/{task_id}", self._handle_kanban_get_task)
+            self._app.router.add_post("/api/kanban/tasks/{task_id}/comment", self._handle_kanban_comment_task)
+            self._app.router.add_post("/api/kanban/tasks/{task_id}/complete", self._handle_kanban_complete_task)
+            self._app.router.add_post("/api/kanban/tasks/{task_id}/block", self._handle_kanban_block_task)
+            self._app.router.add_post("/api/kanban/tasks/{task_id}/unblock", self._handle_kanban_unblock_task)
+
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
             self._app.router.add_get("/api/sessions", self._handle_list_sessions)
             self._app.router.add_post("/api/sessions", self._handle_create_session)

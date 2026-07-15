@@ -813,6 +813,92 @@ export function deleteCronJob(jobId: string): Promise<{ ok: boolean }> {
   })
 }
 
+export interface KanbanTask {
+  id: string
+  title: string
+  body?: null | string
+  assignee?: null | string
+  status: string
+  priority?: number
+  tenant?: null | string
+  workspace_kind?: null | string
+  workspace_path?: null | string
+  branch_name?: null | string
+  project_id?: null | string
+  created_by?: null | string
+  created_at?: number
+  started_at?: null | number
+  completed_at?: null | number
+  result?: null | string
+  skills?: string[]
+  session_id?: null | string
+  block_kind?: null | string
+  last_failure_error?: null | string
+  consecutive_failures?: number
+}
+
+export interface KanbanTasksResponse {
+  board: string
+  counts: Record<string, number>
+  tasks: KanbanTask[]
+}
+
+export interface KanbanTaskResponse {
+  task: KanbanTask
+}
+
+export function getKanbanTasks(): Promise<KanbanTasksResponse> {
+  return window.hermesDesktop.api<KanbanTasksResponse>({
+    path: '/api/kanban/tasks',
+    timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
+  })
+}
+
+export function createKanbanTask(body: {
+  assignee?: string
+  body?: string
+  priority?: number
+  status?: 'blocked' | 'ready' | 'triage'
+  title: string
+}): Promise<KanbanTaskResponse> {
+  return window.hermesDesktop.api<KanbanTaskResponse>({
+    path: '/api/kanban/tasks',
+    method: 'POST',
+    body
+  })
+}
+
+export function completeKanbanTask(taskId: string, summary = ''): Promise<KanbanTaskResponse> {
+  return window.hermesDesktop.api<KanbanTaskResponse>({
+    path: `/api/kanban/tasks/${encodeURIComponent(taskId)}/complete`,
+    method: 'POST',
+    body: { summary }
+  })
+}
+
+export function blockKanbanTask(taskId: string, reason = ''): Promise<KanbanTaskResponse> {
+  return window.hermesDesktop.api<KanbanTaskResponse>({
+    path: `/api/kanban/tasks/${encodeURIComponent(taskId)}/block`,
+    method: 'POST',
+    body: { reason }
+  })
+}
+
+export function unblockKanbanTask(taskId: string): Promise<KanbanTaskResponse> {
+  return window.hermesDesktop.api<KanbanTaskResponse>({
+    path: `/api/kanban/tasks/${encodeURIComponent(taskId)}/unblock`,
+    method: 'POST'
+  })
+}
+
+export function commentKanbanTask(taskId: string, body: string): Promise<KanbanTaskResponse & { comment_id: string }> {
+  return window.hermesDesktop.api<KanbanTaskResponse & { comment_id: string }>({
+    path: `/api/kanban/tasks/${encodeURIComponent(taskId)}/comment`,
+    method: 'POST',
+    body: { body }
+  })
+}
+
 export function getProfiles(): Promise<ProfilesResponse> {
   return window.hermesDesktop.api<ProfilesResponse>({
     path: '/api/profiles',

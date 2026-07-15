@@ -7,7 +7,6 @@ task wrapper is cancelled.
 """
 
 import asyncio
-import queue
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
@@ -44,9 +43,6 @@ class TestSSEAgentCancelOnDisconnect:
         the agent task must be cancelled."""
         adapter = _make_adapter()
 
-        stream_q = queue.Queue()
-        stream_q.put("hello ")  # Some data already queued
-
         # Agent task that runs forever (simulates a long LLM call)
         agent_done = asyncio.Event()
 
@@ -56,6 +52,12 @@ class TestSSEAgentCancelOnDisconnect:
 
         async def run():
             from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            # Constructed inside the running loop — ThreadSafeAsyncQueue
+            # captures asyncio.get_running_loop() at construction time.
+            stream_q = ThreadSafeAsyncQueue()
+            stream_q.put_nowait("hello ")  # Some data already queued
 
             agent_task = asyncio.ensure_future(fake_agent())
 
@@ -89,12 +91,44 @@ class TestSSEAgentCancelOnDisconnect:
 
         asyncio.run(run())
 
+    def test_agent_task_not_cancelled_on_normal_completion(self):
+        """On normal stream completion, agent task should NOT be cancelled."""
+        adapter = _make_adapter()
+
+        async def fake_agent():
+            return {"final_response": "done"}, {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15}
+
+        async def run():
+            from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
+            stream_q.put_nowait("hello")
+            stream_q.put_nowait(None)  # End-of-stream sentinel
+
+            agent_task = asyncio.ensure_future(fake_agent())
+            await asyncio.sleep(0)  # Let agent complete
+
+            mock_response = AsyncMock(spec=web.StreamResponse)
+            mock_response.write = AsyncMock()
+            mock_response.prepare = AsyncMock()
+
+            with patch("gateway.platforms.api_server.web.StreamResponse",
+                       return_value=mock_response):
+                await adapter._write_sse_chat_completion(
+                    _make_request(), "cmpl-456", "gpt-4", 1234567890,
+                    stream_q, agent_task,
+                )
+
+            # Agent should have completed normally, not been cancelled
+            assert agent_task.done()
+            assert not agent_task.cancelled()
+
+        asyncio.run(run())
 
     def test_broken_pipe_also_cancels_agent(self):
         """BrokenPipeError (another disconnect variant) also cancels the task."""
         adapter = _make_adapter()
-
-        stream_q = queue.Queue()
 
         async def fake_agent():
             await asyncio.sleep(0.2)  # Never completes
@@ -102,6 +136,9 @@ class TestSSEAgentCancelOnDisconnect:
 
         async def run():
             from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
 
             agent_task = asyncio.ensure_future(fake_agent())
 
@@ -113,6 +150,132 @@ class TestSSEAgentCancelOnDisconnect:
                        return_value=mock_response):
                 await adapter._write_sse_chat_completion(
                     _make_request(), "cmpl-789", "gpt-4", 1234567890,
+                    stream_q, agent_task,
+                )
+
+            assert agent_task.cancelled() or agent_task.done()
+
+        asyncio.run(run())
+
+    def test_already_done_task_not_cancelled_on_disconnect(self):
+        """If agent already finished before disconnect, don't try to cancel."""
+        adapter = _make_adapter()
+
+        async def fake_agent():
+            return {"final_response": "done"}, {}
+
+        async def run():
+            from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
+            stream_q.put_nowait("data")
+
+            agent_task = asyncio.ensure_future(fake_agent())
+            await asyncio.sleep(0)  # Let agent complete
+
+            mock_response = AsyncMock(spec=web.StreamResponse)
+            call_count = 0
+
+            async def write_side_effect(data):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 2:
+                    raise ConnectionResetError("late disconnect")
+
+            mock_response.write = AsyncMock(side_effect=write_side_effect)
+            mock_response.prepare = AsyncMock()
+
+            with patch("gateway.platforms.api_server.web.StreamResponse",
+                       return_value=mock_response):
+                await adapter._write_sse_chat_completion(
+                    _make_request(), "cmpl-done", "gpt-4", 1234567890,
+                    stream_q, agent_task,
+                )
+
+            # Task was already done — should not be cancelled
+            assert agent_task.done()
+            assert not agent_task.cancelled()
+
+        asyncio.run(run())
+
+    def test_agent_interrupt_called_on_disconnect(self):
+        """When the client disconnects, agent.interrupt() must be called
+        so the agent thread stops making LLM API calls."""
+        adapter = _make_adapter()
+
+        agent_done = asyncio.Event()
+
+        async def fake_agent():
+            await agent_done.wait()
+            return {"final_response": "done"}, {}
+
+        # Mock agent with an interrupt method
+        mock_agent = MagicMock()
+        mock_agent.interrupt = MagicMock()
+
+        async def run():
+            from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
+            stream_q.put_nowait("hello ")
+
+            agent_task = asyncio.ensure_future(fake_agent())
+            agent_ref = [mock_agent]
+
+            mock_response = AsyncMock(spec=web.StreamResponse)
+            call_count = 0
+
+            async def write_side_effect(data):
+                nonlocal call_count
+                call_count += 1
+                if call_count >= 2:
+                    raise ConnectionResetError("client disconnected")
+
+            mock_response.write = AsyncMock(side_effect=write_side_effect)
+            mock_response.prepare = AsyncMock()
+
+            with patch("gateway.platforms.api_server.web.StreamResponse",
+                       return_value=mock_response):
+                await adapter._write_sse_chat_completion(
+                    _make_request(), "cmpl-int", "gpt-4", 1234567890,
+                    stream_q, agent_task, agent_ref,
+                )
+
+            # agent.interrupt() must have been called
+            mock_agent.interrupt.assert_called_once_with("SSE client disconnected")
+            # Clean up
+            agent_done.set()
+
+        asyncio.run(run())
+
+    def test_agent_ref_none_still_cancels_task(self):
+        """When agent_ref is not provided (None), the task is still cancelled
+        on disconnect — just without the interrupt() call."""
+        adapter = _make_adapter()
+
+        async def fake_agent():
+            await asyncio.sleep(999)
+            return {}, {}
+
+        async def run():
+            from aiohttp import web
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
+
+            agent_task = asyncio.ensure_future(fake_agent())
+
+            mock_response = AsyncMock(spec=web.StreamResponse)
+            mock_response.write = AsyncMock(side_effect=BrokenPipeError("gone"))
+            mock_response.prepare = AsyncMock()
+
+            with patch("gateway.platforms.api_server.web.StreamResponse",
+                       return_value=mock_response):
+                # No agent_ref passed — should still handle disconnect cleanly
+                await adapter._write_sse_chat_completion(
+                    _make_request(), "cmpl-noref", "gpt-4", 1234567890,
                     stream_q, agent_task,
                 )
 
@@ -161,12 +324,15 @@ class TestSSEAgentFailureFinishReason:
 
     def _run(self, fake_agent, queue_items=("partial",)):
         adapter = _make_adapter()
-        stream_q = queue.Queue()
-        for item in queue_items:
-            stream_q.put(item)
-        stream_q.put(None)  # clean end-of-stream sentinel
 
         async def run():
+            from gateway.platforms.api_server import ThreadSafeAsyncQueue
+
+            stream_q = ThreadSafeAsyncQueue()
+            for item in queue_items:
+                stream_q.put_nowait(item)
+            stream_q.put_nowait(None)  # clean end-of-stream sentinel
+
             agent_task = asyncio.ensure_future(fake_agent())
             resp, chunks = _capturing_response()
             with patch("gateway.platforms.api_server.web.StreamResponse",

@@ -1251,6 +1251,28 @@ class TestRunJobSessionPersistence:
             mock_agent_cls = entered[-1]  # the AIAgent patch
             yield fake_db, mock_agent_cls
 
+    def test_run_job_preserves_marked_response_for_persisted_output(self, tmp_path):
+        """Marker extraction must happen after run_job builds the saved document."""
+        response = (
+            "scratch notes\n\n"
+            "FINAL_CRON_OUTPUT:\n\n"
+            "User brief body\n"
+        )
+        job = {"id": "marker-job", "name": "test", "prompt": "hello"}
+
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            mock_agent_cls.return_value.run_conversation.return_value = {
+                "final_response": response,
+            }
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert response == final_response
+        assert "scratch notes" in output
+        assert "FINAL_CRON_OUTPUT:" in output
+        assert "User brief body" in output
+
     def test_run_job_passes_enabled_toolsets_to_agent(self, tmp_path):
         job = {
             "id": "toolset-job",

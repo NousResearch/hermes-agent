@@ -1624,13 +1624,15 @@ class DiscordAdapter(BasePlatformAdapter):
     async def _fire_journal_approvals(self) -> None:
         """Post one [Approve] embed per dev-category journal todo.
 
-        Skips (with a log line) when JOURNAL_APPROVE_PROJECT or the target
-        channel is not configured, when there are zero dev todos, or when
-        today's date is already recorded as posted (gateway restart guard).
+        Skips (with a log line) when no approve projects (JOURNAL_APPROVE_PROJECTS
+        or JOURNAL_APPROVE_PROJECT) or the target channel is not configured, when
+        there are zero dev todos, or when today's date is already recorded as
+        posted (gateway restart guard).
         """
         import datetime
 
         from services.hermes import journal_approve
+        from services.hermes.config import get_approve_projects
 
         today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
         if journal_approve.has_posted_approvals_today(today):
@@ -1640,10 +1642,10 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return
 
-        project = os.getenv("JOURNAL_APPROVE_PROJECT", "").strip()
-        if not project:
+        projects = get_approve_projects()
+        if not projects:
             logger.warning(
-                "[%s] Journal approvals: JOURNAL_APPROVE_PROJECT not set; skipping",
+                "[%s] Journal approvals: no JOURNAL_APPROVE_PROJECTS/JOURNAL_APPROVE_PROJECT set; skipping",
                 self.name,
             )
             return
@@ -1671,7 +1673,7 @@ class DiscordAdapter(BasePlatformAdapter):
             )
             return
 
-        result = await self.send_journal_dev_todos(channel_id, todos, project=project)
+        result = await self.send_journal_dev_todos(channel_id, todos, projects=projects)
         if result.success:
             journal_approve.mark_approvals_posted(today)
             logger.info(
@@ -6173,6 +6175,7 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_id: str,
         todos: list,
         project: str = "",
+        projects: Optional[list] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send dev-category journal todos with per-todo [Approve] buttons.
@@ -6181,13 +6184,19 @@ class DiscordAdapter(BasePlatformAdapter):
         Only users in the adapter's allowlist may click Approve (AC2).
 
         ``todos`` is a list of dicts with keys: id, title, body.
-        ``project`` is the target repo in ``owner/repo`` format.
+        ``projects`` is the list of candidate target repos (``owner/repo``
+        format) the approver may route the ticket to. When omitted, falls
+        back to wrapping the legacy ``project`` string into a single-item
+        list for back-compat.
         """
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
 
         if not todos:
             return SendResult(success=True, message_id="")
+
+        if projects is None:
+            projects = [project] if project else []
 
         try:
             target_id = chat_id
@@ -6214,7 +6223,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     todo_id=todo_id,
                     title=title,
                     body=body,
-                    project=project,
+                    projects=projects,
                     allowed_user_ids=self._allowed_user_ids,
                     allowed_role_ids=self._allowed_role_ids,
                 )
@@ -8145,15 +8154,25 @@ def _define_discord_view_classes() -> None:
                     pass
 
     class JournalApproveView(discord.ui.View):
-        """Single-button [Approve] view for promoting a dev journal todo to the backlog.
+        """[Approve] view for promoting a dev journal todo to the backlog.
 
-        One view instance is created per todo. Clicking [Approve]:
+        One view instance is created per todo. When more than one candidate
+        project is configured (JOURNAL_APPROVE_PROJECTS), a project-select
+        dropdown is shown above the button so the approver can route the
+        ticket to any of the user's Commander-tracked projects; the first
+        entry is selected by default. When exactly one project is
+        configured, the dropdown is omitted and behavior matches the
+        original fixed-project flow.
+
+        Clicking [Approve]:
           1. Auth-checks the clicker against the adapter's allowed users/roles.
-          2. Calls handle_journal_approve() to POST to Commander's /api/tickets/create.
+          2. Calls handle_journal_approve() to POST to Commander's /api/tickets/create,
+             targeting the currently-selected project.
           3. Confirms in-channel with "✅ Ticket created: #<N>" or an error message.
           4. Disables the button to prevent duplicate clicks.
 
-        Unauthorised clicks receive an ephemeral rejection reply (AC2).
+        Unauthorised clicks (button or dropdown) receive an ephemeral
+        rejection reply (AC2).
         """
 
         def __init__(
@@ -8161,7 +8180,7 @@ def _define_discord_view_classes() -> None:
             todo_id: str,
             title: str,
             body: str,
-            project: str,
+            projects: list,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
         ):
@@ -8169,17 +8188,70 @@ def _define_discord_view_classes() -> None:
             self.todo_id = todo_id
             self.title = title
             self.body = body
-            self.project = project
+            # Discord caps select options at 25 — truncate defensively.
+            self.projects = list(projects or [])[:25]
+            self.project = self.projects[0] if self.projects else ""
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
+
+            if len(self.projects) > 1:
+                self._build_project_select()
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             return _component_check_auth(
                 interaction, self.allowed_user_ids, self.allowed_role_ids
             )
 
-        @discord.ui.button(label="Approve", style=discord.ButtonStyle.green)
+        def _build_project_select(self):
+            """Add a project-picker dropdown, defaulting to the first entry."""
+            options = [
+                discord.SelectOption(
+                    label=_truncate_discord_component_text(
+                        repo, _DISCORD_SELECT_FIELD_LIMIT
+                    ),
+                    value=_truncate_discord_component_text(
+                        repo, _DISCORD_SELECT_FIELD_LIMIT
+                    ),
+                    default=(repo == self.project),
+                )
+                for repo in self.projects
+            ]
+            select = discord.ui.Select(
+                placeholder="Choose a project...",
+                options=options,
+                custom_id="journal_approve_project_select",
+                row=0,
+            )
+            select.callback = self._on_project_selected
+            self.add_item(select)
+
+        async def _on_project_selected(self, interaction: discord.Interaction):
+            """Update the current project selection. Does not resolve the view."""
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This todo has already been approved.", ephemeral=True
+                )
+                return
+
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorised to approve journal todos.", ephemeral=True
+                )
+                return
+
+            values = (interaction.data or {}).get("values") or []
+            selected = values[0] if values else self.project
+            self.project = selected
+
+            for item in self.children:
+                if isinstance(item, discord.ui.Select):
+                    for opt in item.options:
+                        opt.default = (opt.value == selected)
+
+            await interaction.response.edit_message(view=self)
+
+        @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, row=1)
         async def approve(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):

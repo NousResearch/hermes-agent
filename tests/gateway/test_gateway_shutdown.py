@@ -138,6 +138,59 @@ async def test_gateway_stop_interrupts_after_drain_timeout():
 
 
 @pytest.mark.asyncio
+async def test_unexpected_signal_starts_teardown_after_bounded_interrupt_grace():
+    runner, adapter = make_restart_runner()
+    runner._restart_drain_timeout = 0.0
+    runner._signal_initiated_shutdown = True
+    runner._signal_interrupt_grace_timeout = 0.01
+    runner._running_agents = {"session": MagicMock()}
+
+    disconnect_started = asyncio.Event()
+
+    async def disconnect():
+        disconnect_started.set()
+
+    adapter.disconnect = disconnect
+
+    with patch("gateway.status.remove_pid_file"), patch(
+        "gateway.status.write_runtime_status"
+    ):
+        stop_task = asyncio.create_task(runner.stop())
+        await asyncio.wait_for(disconnect_started.wait(), timeout=0.75)
+        await stop_task
+
+    assert runner._shutdown_event.is_set() is True
+
+
+@pytest.mark.parametrize(
+    ("signal_initiated", "restart_requested", "expected"),
+    [
+        (True, False, 0.25),
+        (False, False, 5.0),
+        (True, True, 5.0),
+    ],
+)
+def test_post_interrupt_grace_only_shortens_unexpected_signal_shutdown(
+    signal_initiated, restart_requested, expected
+):
+    runner, _adapter = make_restart_runner()
+    runner._signal_initiated_shutdown = signal_initiated
+    runner._restart_requested = restart_requested
+    runner._signal_interrupt_grace_timeout = 0.25
+
+    assert runner._post_interrupt_grace_timeout() == expected
+
+
+def test_post_interrupt_grace_tolerates_duck_typed_runner():
+    runner = MagicMock(spec=[])
+
+    assert (
+        gateway_run.GatewayRunner._post_interrupt_grace_timeout(runner)
+        == gateway_run.DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT
+    )
+
+
+@pytest.mark.asyncio
 async def test_gateway_stop_systemd_service_restart_uses_tempfail(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     runner, adapter = make_restart_runner()

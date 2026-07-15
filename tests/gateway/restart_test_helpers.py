@@ -4,7 +4,10 @@ from unittest.mock import AsyncMock, MagicMock
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
-from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+from gateway.restart import (
+    DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+    DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
+)
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -73,6 +76,9 @@ def make_restart_runner(
     runner._detached_restart_helper_started = False
     runner._restart_command_source = None
     runner._restart_drain_timeout = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    runner._signal_interrupt_grace_timeout = (
+        DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT
+    )
     runner._stop_task = None
     runner._busy_input_mode = "interrupt"
     runner._update_prompt_pending = {}

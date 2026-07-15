@@ -2898,6 +2898,12 @@ DEFAULT_CONFIG = {
     # Gateway settings — control how messaging platforms (Telegram, Discord,
     # Slack, etc.) deliver agent-produced files as native attachments.
     "gateway": {
+        # After an unexpected SIGTERM interrupts a running gateway agent,
+        # wait this many seconds for it to unwind before adapter and database
+        # teardown proceeds. Keep this short so service-manager shutdowns do
+        # not exhaust their stop budget before resource cleanup begins.
+        "signal_interrupt_grace_timeout": 1,
+
         # Seconds the gateway waits for a single messaging platform to finish
         # connecting during startup (and on reconnect). Discord in particular
         # can blow past the old fixed 30s when an account has many slash

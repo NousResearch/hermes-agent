@@ -1796,10 +1796,13 @@ from gateway.platforms.base import (
     utf16_len,
 )
 from gateway.restart import (
+    DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT,
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
+    DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
     GATEWAY_FATAL_CONFIG_EXIT_CODE,
     GATEWAY_SERVICE_RESTART_EXIT_CODE,
     parse_restart_drain_timeout,
+    parse_signal_interrupt_grace_timeout,
 )
 
 
@@ -2814,6 +2817,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     _busy_input_mode: str = "interrupt"
     _busy_text_mode: str = "interrupt"
     _restart_drain_timeout: float = DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
+    _signal_interrupt_grace_timeout: float = (
+        DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT
+    )
     _exit_code: Optional[int] = None
     _draining: bool = False
     _external_drain_active: bool = False
@@ -2861,6 +2867,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._busy_input_mode = self._load_busy_input_mode()
         self._busy_text_mode = self._load_busy_text_mode()
         self._restart_drain_timeout = self._load_restart_drain_timeout()
+        self._signal_interrupt_grace_timeout = (
+            self._load_signal_interrupt_grace_timeout()
+        )
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
 
@@ -5019,6 +5028,46 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
                 )
         return value
+
+    @staticmethod
+    def _load_signal_interrupt_grace_timeout() -> float:
+        """Load the unexpected-signal post-interrupt grace in seconds."""
+        cfg = _load_gateway_runtime_config()
+        raw = cfg_get(
+            cfg,
+            "gateway",
+            "signal_interrupt_grace_timeout",
+            default=None,
+        )
+        value = parse_signal_interrupt_grace_timeout(raw)
+        if raw is not None and raw != "":
+            try:
+                float(raw)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid signal_interrupt_grace_timeout '%s', using default %.0fs",
+                    raw,
+                    DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
+                )
+        return value
+
+    def _post_interrupt_grace_timeout(self) -> float:
+        """Return the grace before teardown after forcibly interrupting agents."""
+        if (
+            getattr(self, "_signal_initiated_shutdown", False)
+            and not getattr(self, "_restart_requested", False)
+        ):
+            return max(
+                0.0,
+                float(
+                    getattr(
+                        self,
+                        "_signal_interrupt_grace_timeout",
+                        DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT,
+                    )
+                ),
+            )
+        return DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT
 
     @staticmethod
     def _load_background_notifications_mode() -> str:
@@ -8331,7 +8380,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._interrupt_running_agents(
                     _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
                 )
-                interrupt_deadline = asyncio.get_running_loop().time() + 5.0
+                interrupt_grace_timeout = (
+                    GatewayRunner._post_interrupt_grace_timeout(self)
+                )
+                interrupt_deadline = (
+                    asyncio.get_running_loop().time() + interrupt_grace_timeout
+                )
+                logger.info(
+                    "Shutdown phase: allowing %.1fs for interrupted agents to unwind",
+                    interrupt_grace_timeout,
+                )
                 while self._running_agents and asyncio.get_running_loop().time() < interrupt_deadline:
                     self._update_runtime_status("draining")
                     await asyncio.sleep(0.1)

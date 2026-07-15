@@ -781,6 +781,15 @@ agent:
     hype: "YOOO LET'S GOOOO!!! 🔥🔥🔥 I am SO PUMPED to help you today! Every question is AMAZING and we're gonna CRUSH IT together! This is gonna be LEGENDARY! ARE YOU READY?! LET'S DO THIS! 💪😤🚀"
 
 # =============================================================================
+# Gateway Lifecycle
+# =============================================================================
+gateway:
+  # Post-interrupt grace for running agents during an unexpected SIGTERM.
+  # Adapter, bridge, and database teardown starts after this many seconds even
+  # if an agent has not unwound. Keep it below the service-manager stop budget.
+  # signal_interrupt_grace_timeout: 1
+
+# =============================================================================
 # Toolsets
 # =============================================================================
 # Control which tools the agent has access to.

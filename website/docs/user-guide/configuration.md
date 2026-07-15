@@ -1701,6 +1701,7 @@ display:
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
     enabled: false
     fields: ["model", "context_pct", "cwd"]
+  long_running_notifications: generic  # Use generic phrases for heartbeat updates
   status_phrases: {}      # Gateway: customize generic long-running status phrases
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
@@ -1835,7 +1836,12 @@ Only the **final** message of a turn gets the footer; interim updates stay clean
 
 ### Gateway status phrases
 
-Messaging gateways use short generic phrases for long-running status updates instead of echoing raw tool arguments, command previews, or model scratch text. You can customize those phrase catalogs globally or per platform.
+Messaging gateways can use short generic phrases for periodic long-running
+heartbeat updates instead of the default raw heartbeat. Set
+`long_running_notifications: generic` to activate the catalog; defining
+`status_phrases` alone only customizes the available phrases and does not
+change the notification mode. You can customize the catalogs globally or per
+platform.
 
 Hermes always starts with the built-in defaults, then loads these sources in order:
 
@@ -1846,6 +1852,7 @@ Hermes always starts with the built-in defaults, then loads these sources in ord
 
 ```yaml
 display:
+  long_running_notifications: generic
   status_phrases:
     mode: append                    # append (default) | replace
     phrases:
@@ -1887,6 +1894,7 @@ For platform-specific wording, put the same block under a platform override:
 display:
   platforms:
     slack:
+      long_running_notifications: generic
       status_phrases:
         mode: append
         phrases:

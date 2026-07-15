@@ -394,16 +394,34 @@ def test_bedrock_pricing_supports_less_common_inference_profile_prefixes():
     """AWS also exposes profile scopes beyond us./global./eu.; those should
     not silently fall through to unknown pricing.
     """
+    bare = get_pricing_entry("anthropic.claude-haiku-4-5", provider="bedrock")
     entry = get_pricing_entry(
         "apac.anthropic.claude-haiku-4-5-20251001-v1:0",
         provider="bedrock",
     )
 
+    assert bare is not None
     assert entry is not None
-    assert float(entry.input_cost_per_million) == 0.8
-    assert float(entry.output_cost_per_million) == 4.0
-    assert float(entry.cache_read_cost_per_million) == 0.08
-    assert float(entry.cache_write_cost_per_million) == 1.0
+    for field in (
+        "input_cost_per_million",
+        "output_cost_per_million",
+        "cache_read_cost_per_million",
+        "cache_write_cost_per_million",
+    ):
+        assert getattr(entry, field) == getattr(bare, field)
+
+
+def test_bedrock_unknown_model_continuation_does_not_use_base_pricing():
+    """Unrecognized Bedrock SKUs must remain unknown rather than inheriting a
+    similarly named model family's price.
+    """
+    assert (
+        get_pricing_entry(
+            "anthropic.claude-sonnet-4-6-experimental",
+            provider="bedrock",
+        )
+        is None
+    )
 
 
 def test_bedrock_claude_cached_session_estimates_cost_not_unknown():

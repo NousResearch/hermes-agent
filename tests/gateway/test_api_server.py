@@ -621,8 +621,10 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app = web.Application(middlewares=mws)
     app["api_server_adapter"] = adapter
     app.router.add_get("/health", adapter._handle_health)
+    app.router.add_get("/readyz", adapter._handle_health)
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/health", adapter._handle_health)
+    app.router.add_get("/v1/readyz", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
     app.router.add_get("/v1/skills", adapter._handle_skills)
@@ -735,6 +737,18 @@ class TestHealthEndpoint:
             assert data["status"] == "ok"
             assert data["platform"] == "hermes-agent"
             assert data.get("version")
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("path", ["/readyz", "/v1/readyz"])
+    async def test_readyz_aliases_return_ok(self, adapter, path):
+        """Readiness probes should work on the Kubernetes-style readyz paths."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(path)
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ok"
+            assert data["platform"] == "hermes-agent"
 
 
 # ---------------------------------------------------------------------------

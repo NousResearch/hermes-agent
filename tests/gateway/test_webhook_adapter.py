@@ -72,6 +72,7 @@ def _create_app(adapter: WebhookAdapter) -> web.Application:
     # Mirror connect(): client_max_size enforces the cap on chunked bodies.
     app = web.Application(client_max_size=adapter._max_body_bytes)
     app.router.add_get("/health", adapter._handle_health)
+    app.router.add_get("/readyz", adapter._handle_health)
     app.router.add_post("/webhooks/{route_name}", adapter._handle_webhook)
     return app
 
@@ -941,6 +942,18 @@ class TestHTTPHandling:
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             resp = await cli.get("/health")
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["status"] == "ok"
+            assert data["platform"] == "webhook"
+
+    @pytest.mark.asyncio
+    async def test_readyz_endpoint(self):
+        """GET /readyz returns 200 with status=ok for readiness probes."""
+        adapter = _make_adapter()
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/readyz")
             assert resp.status == 200
             data = await resp.json()
             assert data["status"] == "ok"

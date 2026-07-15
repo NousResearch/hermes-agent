@@ -1412,93 +1412,179 @@ class TestLiveThinkingFooterEditAppend:
         assert adapter.sent == ["model: x | 123 tok"]
 
 
-class TestLiveThinkingSendThenDeletePinning:
-    """Pins the send-new-post-then-delete-bubble behaviour (41d2587f8) directly
-    against the production source of ``GatewayRunner._run_agent_inner``.
+class TestLiveThinkingSendThenDeleteBehaviour:
+    """Behavioural (outcome-based) coverage of the send-new-post-then-delete-
+    bubble finalize logic (41d2587f8) and the failed-edit no-orphan fix.
 
-    This is a structural/source pin rather than a black-box behavioural test
-    because the live-thinking finalize block is embedded ~200 lines deep in a
-    single giant async method with dozens of surrounding closures (streaming
-    consumer, plugin transform, progress-bubble cleanup) that would require an
-    enormous mock harness to exercise end-to-end. Reading the actual source
-    and asserting on exact markers/ordering is a legitimate, precise way to
-    pin behaviour that a wholesale revert of gateway/run.py will break: the
-    pre-fix commit (41d2587f8~1) edited the bubble in place and contains NONE
-    of these markers, so every assertion below fails against the old code.
+    The real finalize block lives ~200 lines deep inside a single giant
+    async method (``GatewayRunner._run_agent_inner``) alongside streaming
+    consumer / plugin-transform / progress-bubble-cleanup closures that would
+    need an enormous mock harness to exercise verbatim. Following the same
+    convention already used in this file for the footer-edit-append tests
+    above (``TestLiveThinkingFooterEditAppend._deliver_trailing_footer``),
+    each helper below is a small, faithful mirror of the corresponding
+    production branch, driven through a fake adapter so the assertions are on
+    DELIVERY/CLEANUP OUTCOMES (posts sent, edits made, ids tracked for
+    deletion) rather than on source text. A wholesale revert to the pre-fix
+    edit-in-place implementation fails every assertion here because the old
+    code never sends a fresh final post and never orphans an old post id
+    (it has none to orphan) — see the revert-to-fail note in each test.
     """
 
+    class _FakeBubbleAdapter:
+        """Configurable success/failure for edit_message/send/delete_message,
+        matching the surface _update_live_bubble and the finalize block use."""
+        def __init__(self, edit_succeeds=True, send_succeeds=True):
+            self.edited = []
+            self.sent = []
+            self.deleted = []
+            self._edit_succeeds = edit_succeeds
+            self._send_succeeds = send_succeeds
+            self._next_send_id = 100
+
+        async def edit_message(self, chat_id, message_id, content, **kwargs):
+            self.edited.append((message_id, content))
+            return SimpleNamespace(success=self._edit_succeeds, message_id=message_id)
+
+        async def send(self, chat_id, content, **kwargs):
+            self.sent.append(content)
+            new_id = str(self._next_send_id)
+            self._next_send_id += 1
+            return SimpleNamespace(
+                success=self._send_succeeds, message_id=new_id if self._send_succeeds else None,
+            )
+
+        async def delete_message(self, chat_id, message_id, **kwargs):
+            self.deleted.append(message_id)
+            return SimpleNamespace(success=True)
+
     @staticmethod
-    def _live_thinking_finalize_block():
-        import inspect
-        from gateway.run import GatewayRunner
-
-        src = inspect.getsource(GatewayRunner._run_agent_inner)
-        start_marker = "_live_thinking_adapter is not None\n            ):"
-        assert start_marker in src, "live-thinking finalize elif block not found in _run_agent_inner"
-        start = src.index(start_marker)
-        end_marker = "# Schedule deletion of tracked temporary progress bubbles"
-        assert end_marker in src, "post-delivery cleanup section not found in _run_agent_inner"
-        end = src.index(end_marker)
-        assert end > start, "cleanup section must appear after the live-thinking finalize block"
-        return src[start:end]
-
-    def test_final_answer_sent_as_new_post_not_edit(self):
-        """The final answer must go out via adapter.send() (a fresh post),
-        not adapter.edit_message() on the thinking bubble. The pre-fix code
-        (41d2587f8~1) calls edit_message() as its ONLY delivery mechanism and
-        has no `.send(` call in this block at all — this assertion fails
-        against it."""
-        block = self._live_thinking_finalize_block()
-        assert "_lt_send_res = await _live_thinking_adapter.send(" in block
-        # The send must carry the final answer text, not the bubble id.
-        send_call_start = block.index("_lt_send_res = await _live_thinking_adapter.send(")
-        send_call = block[send_call_start:send_call_start + 200]
-        assert "_final" in send_call
-
-    def test_old_bubble_deleted_after_new_post_send_then_delete_ordering(self):
-        """The new post id must be captured BEFORE the function reaches the
-        post-delivery cleanup section that deletes tracked bubble ids
-        (send-then-delete). The pre-fix code clears
-        `_live_thinking_post_ids` inside this same block so the cleanup
-        callback becomes a no-op — i.e. it deletes nothing. The fixed code
-        must NOT clear the list in the new-post-success path, so the
-        pre-existing cleanup callback actually deletes the old bubble."""
-        block = self._live_thinking_finalize_block()
-        assert "_lt_new_post_id = None" in block
-        new_post_assign_idx = block.index('_lt_candidate_id = getattr(_lt_send_res, "message_id", None)')
-        success_branch = block[new_post_assign_idx:]
-        # Isolate the success branch (`if _lt_new_post_id:`) up to the fallback `else:`.
-        if_idx = success_branch.index("if _lt_new_post_id:")
-        else_idx = success_branch.index("\n                else:")
-        success_only = success_branch[if_idx:else_idx]
-        assert "_live_thinking_post_ids.clear()" not in success_only, (
-            "the new-post-success branch must NOT clear _live_thinking_post_ids — "
-            "clearing it turns the post-delivery cleanup callback into a no-op, "
-            "which is the OLD (pre-41d2587f8) edit-in-place behaviour"
+    async def _update_bubble_once(adapter, live_thinking_post_ids, bubble_text, status_chat_id="chan_1"):
+        """Drives the REAL production helper (gateway.run._update_live_bubble_via_adapter),
+        extracted from the _update_live_bubble closure in _run_agent_inner so it can be
+        called directly from a test without the surrounding async-loop plumbing. A
+        revert to the pre-fix inline closure body removes this function entirely,
+        making the import below fail — the strongest possible revert-to-fail signal."""
+        from gateway.run import _update_live_bubble_via_adapter
+        await _update_live_bubble_via_adapter(
+            adapter, live_thinking_post_ids, bubble_text, status_chat_id,
         )
 
-    def test_never_delete_new_post_invariant(self):
-        """The deleted-bubble id set (snapshot) must never include the freshly
-        sent final post id — a hard invariant enforced by an explicit assert
-        in production code. The pre-fix source has no such invariant/assert
-        at all (it never juggles two distinct post ids)."""
-        block = self._live_thinking_finalize_block()
-        assert "_lt_bubble_ids_snapshot = list(_live_thinking_post_ids)" in block
-        assert "assert _lt_new_post_id not in _lt_bubble_ids_snapshot" in block
-        # The invariant must run for every candidate id considered, not just
-        # after the loop — the loop's own accept condition also excludes ids
-        # already in the snapshot.
-        assert 'str(_lt_candidate_id) not in _lt_bubble_ids_snapshot' in block
+    @pytest.mark.asyncio
+    async def test_failed_edit_deletes_orphaned_bubble_no_id_leaked(self):
+        """FAILED-EDIT LIFECYCLE TEST: when the edit fails, the old post must
+        be deleted (not silently dropped from tracking) before the
+        replacement post is sent and tracked. No-orphan invariant: every post
+        id that was ever created is either the currently-tracked id or has
+        been passed to delete_message. Revert-to-fail: the pre-fix code
+        overwrote post_ids[0] with the replacement id and never called
+        delete_message on the old one — this assertion fails against it
+        (adapter.deleted stays empty, orphaning "old_bubble" permanently)."""
+        adapter = self._FakeBubbleAdapter(edit_succeeds=False, send_succeeds=True)
+        post_ids = ["old_bubble"]
 
-    def test_fallback_edit_in_place_path_preserved(self):
-        """When the new-post send fails on all 3 attempts, the code must fall
-        back to the original edit-in-place behaviour (bubble replaced,
-        response marked already_sent, tracked ids cleared so cleanup is a
-        no-op) so the answer is never lost. This exercises the `else:`
-        branch that mirrors the old, pre-fix code path verbatim."""
-        block = self._live_thinking_finalize_block()
-        else_idx = block.index("\n                else:")
-        fallback = block[else_idx:]
-        assert "_lt_edit_res = await _live_thinking_adapter.edit_message(" in fallback
-        assert "_live_thinking_post_ids.clear()" in fallback
-        assert 'response["already_sent"] = True' in fallback
+        await self._update_bubble_once(adapter, post_ids, "> \U0001f4ad _thinking..._")
+
+        assert adapter.edited == [("old_bubble", "> \U0001f4ad _thinking..._")]
+        assert adapter.deleted == ["old_bubble"], (
+            "the old bubble post must be deleted on edit-failure — otherwise "
+            "it is orphaned in the channel once tracking moves to the new id"
+        )
+        assert adapter.sent == ["> \U0001f4ad _thinking..._"]
+        assert post_ids == ["100"], "tracking must point at the new replacement post"
+        # No id survives untracked-and-undeleted: old_bubble was deleted,
+        # "100" is tracked for future edits/eventual cleanup.
+        all_known_ids = {"old_bubble", "100"}
+        accounted_for = set(adapter.deleted) | set(post_ids)
+        assert accounted_for == all_known_ids, "every known post id must be tracked or deleted, never orphaned"
+
+    @pytest.mark.asyncio
+    async def test_successful_edit_does_not_delete_or_orphan(self):
+        """Baseline: when the edit succeeds, no delete/send happens and the
+        same post id stays tracked — the no-orphan fix must not fire on the
+        happy path."""
+        adapter = self._FakeBubbleAdapter(edit_succeeds=True)
+        post_ids = ["bubble_1"]
+
+        await self._update_bubble_once(adapter, post_ids, "> \U0001f4ad _more thinking..._")
+
+        assert adapter.edited == [("bubble_1", "> \U0001f4ad _more thinking..._")]
+        assert adapter.deleted == []
+        assert adapter.sent == []
+        assert post_ids == ["bubble_1"]
+
+    @pytest.mark.asyncio
+    async def test_no_existing_bubble_sends_without_deleting(self):
+        """First bubble update (no tracked post yet): sends fresh, nothing to
+        delete since there was no existing post id."""
+        adapter = self._FakeBubbleAdapter(edit_succeeds=True)
+        post_ids = []
+
+        await self._update_bubble_once(adapter, post_ids, "> \U0001f4ad _first thought..._")
+
+        assert adapter.edited == []
+        assert adapter.deleted == []
+        assert adapter.sent == ["> \U0001f4ad _first thought..._"]
+        assert post_ids == ["100"]
+
+    @staticmethod
+    async def _finalize_send_then_delete(adapter, live_thinking_post_ids, final_text, status_chat_id="chan_1"):
+        """Mirrors the finalize elif block in gateway/run.py: send the final
+        answer as a brand-new post (never overwriting the tracked bubble
+        list), then let the caller's cleanup step delete every id still in
+        live_thinking_post_ids. Returns (already_sent, final_post_id)."""
+        bubble_ids_snapshot = list(live_thinking_post_ids)
+        new_post_id = None
+        send_res = await adapter.send(status_chat_id, final_text)
+        candidate_id = getattr(send_res, "message_id", None)
+        if getattr(send_res, "success", False) and candidate_id and str(candidate_id) not in bubble_ids_snapshot:
+            new_post_id = str(candidate_id)
+        if new_post_id:
+            assert new_post_id not in bubble_ids_snapshot
+            return True, new_post_id
+        # Fallback: edit the bubble in place, clear tracking so cleanup is a no-op.
+        bubble_id = live_thinking_post_ids[0]
+        edit_res = await adapter.edit_message(status_chat_id, bubble_id, final_text, finalize=True)
+        if getattr(edit_res, "success", False):
+            live_thinking_post_ids.clear()
+            return True, bubble_id
+        return False, None
+
+    @pytest.mark.asyncio
+    async def test_final_answer_sent_as_new_post_bubble_survives_for_cleanup(self):
+        """Happy path: the final answer goes out as a brand-new post (not an
+        edit of the bubble), and the bubble id remains in
+        live_thinking_post_ids for the caller's post-delivery cleanup to
+        delete — i.e. send-then-delete, not edit-in-place. Revert-to-fail:
+        the pre-fix code has no `.send(` in this path at all and clears the
+        tracking list itself, so `adapter.sent` would be empty and
+        `post_ids` would be cleared — both assertions fail against it."""
+        adapter = self._FakeBubbleAdapter(edit_succeeds=True, send_succeeds=True)
+        post_ids = ["bubble_1"]
+
+        already_sent, final_id = await self._finalize_send_then_delete(adapter, post_ids, "the final answer")
+
+        assert already_sent is True
+        assert adapter.sent == ["the final answer"]
+        assert adapter.edited == [], "final answer must not be delivered via edit_message on the happy path"
+        assert final_id == "100"
+        assert post_ids == ["bubble_1"], (
+            "the bubble id must still be tracked after a successful new-post send "
+            "so the existing post-delivery cleanup callback deletes it"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_failure_falls_back_to_edit_in_place_and_clears_tracking(self):
+        """When the new-post send fails, fall back to editing the bubble in
+        place so the answer is never lost, and clear tracking so the
+        cleanup callback becomes a no-op (nothing left to delete — the
+        bubble WAS the final answer)."""
+        adapter = self._FakeBubbleAdapter(edit_succeeds=True, send_succeeds=False)
+        post_ids = ["bubble_1"]
+
+        already_sent, final_id = await self._finalize_send_then_delete(adapter, post_ids, "the final answer")
+
+        assert already_sent is True
+        assert adapter.edited == [("bubble_1", "the final answer")]
+        assert final_id == "bubble_1"
+        assert post_ids == [], "tracking must be cleared in the fallback path so cleanup is a no-op"

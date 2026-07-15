@@ -251,7 +251,32 @@ async function addWorktree(repoPath, options, gitBin) {
   const args = ['worktree', 'add', '-b', branch, dir]
 
   if (opts.base) {
-    args.push(String(opts.base))
+    // Remote-tracking branches may be stale or missing if the user hasn't
+    // fetched recently. When the base is an `origin/…` ref, fetch just that
+    // branch so `git worktree add -b new origin/main` works against the
+    // latest remote commit. Local branches are used as-is.
+    const base = String(opts.base)
+
+    if (base.startsWith('origin/')) {
+      const remoteBranch = base.slice('origin/'.length)
+
+      try {
+        await runGit(gitBin, ['fetch', 'origin', remoteBranch], root)
+      } catch {
+        // The fetch isn't mandatory, but it would be nice to do if possible.
+        // If it's not possible, just use the local ref of the remote branch.
+        // If it doesn't exist locally, we'll get an error
+      }
+
+      // When branching off a remote-tracking ref, git auto-sets up tracking
+      // (e.g. `new-branch` → tracks `origin/main`). The user almost certainly
+      // wants a standalone local branch — like `git checkout origin/main &&
+      // git checkout -b new-branch` — not a branch silently wired to the
+      // remote's upstream. `--no-track` prevents that.
+      args.push('--no-track')
+    }
+
+    args.push(base)
   }
 
   try {
@@ -337,9 +362,56 @@ async function switchBranch(repoPath, branch, gitBin) {
   return { branch: target }
 }
 
+// Branches the new worktree can be based on: local heads + remote-tracking
+// refs. Listed most-recently-committed first; the remote's default branch
+// (origin/HEAD) is flagged so the UI can preselect it. Empty on a non-repo /
+// remote backend where the probe can't run.
+async function listBaseBranches(repoPath, gitBin) {
+  let resolved
+
+  try {
+    resolved = resolveRequestedPathForIpc(repoPath, { purpose: 'Base branch list' })
+  } catch {
+    return []
+  }
+
+  try {
+    const out = await runGit(
+      gitBin,
+      ['for-each-ref', '--format=%(refname:short)\t%(committerdate:iso)', '--sort=-committerdate', 'refs/heads', 'refs/remotes'],
+      resolved
+    )
+
+    const remoteDefault = await gitLine(gitBin, ['symbolic-ref', '--quiet', '--short', 'refs/remotes/origin/HEAD'], resolved)
+    const localDefault = await defaultBranch(gitBin, resolved)
+
+    return out
+      .split('\n')
+      .map(line => line.trim())
+      .filter(Boolean)
+      .map(line => {
+        const [name] = line.split('\t')
+
+        return {
+          name,
+          isRemote: name.startsWith('origin/'),
+          // origin/HEAD when a remote exists; otherwise the local default
+          // (main/master/init.defaultBranch) so a no-remote repo still flags
+          // its trunk.
+          isDefault: Boolean(
+            (remoteDefault && name === remoteDefault) || (!remoteDefault && localDefault && name === localDefault)
+          )
+        }
+      })
+  } catch {
+    return []
+  }
+}
+
 export {
   addWorktree,
   ensureGitRepo,
+  listBaseBranches,
   listBranches,
   listWorktrees,
   parseWorktrees,

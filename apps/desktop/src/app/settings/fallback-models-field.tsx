@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
@@ -40,6 +40,14 @@ function normalizeEntries(value: unknown): FallbackEntry[] {
   })
 }
 
+function completeEntries(rows: FallbackEntry[]): FallbackEntry[] {
+  return rows.filter(entry => entry.provider && entry.model)
+}
+
+function entriesEqual(a: FallbackEntry[], b: FallbackEntry[]): boolean {
+  return a.length === b.length && a.every((entry, index) => entry.provider === b[index]?.provider && entry.model === b[index]?.model)
+}
+
 /**
  * Structured editor for the top-level `fallback_providers` config list — a
  * chain of `{provider, model}` pairs tried in order when the default model
@@ -69,16 +77,29 @@ export function FallbackModelsField({
   const providers = (modelOptions.data?.providers ?? []).filter(provider => provider.slug)
 
   const [rows, setRows] = useState<FallbackEntry[]>(() => normalizeEntries(value))
+  // Last complete chain we emitted (or seeded). Autosave echoes the same
+  // filtered list back through `value`; ignore that echo so draft rows stay.
+  const lastEmittedRef = useRef(normalizeEntries(value))
 
-  // Settings can reload after a profile/config change while this component
-  // stays mounted. Avoid displaying or saving the previous profile's chain.
+  // Resync on real external changes (profile switch / config reload). Skip
+  // when `value` is just our own commit echoing through the parent.
   useEffect(() => {
-    setRows(normalizeEntries(value))
+    const persisted = normalizeEntries(value)
+
+    if (entriesEqual(persisted, lastEmittedRef.current)) {
+      return
+    }
+
+    lastEmittedRef.current = persisted
+    setRows(persisted)
   }, [value])
 
   const commit = (next: FallbackEntry[]) => {
+    const complete = completeEntries(next)
+
     setRows(next)
-    onChange(next.filter(entry => entry.provider && entry.model))
+    lastEmittedRef.current = complete
+    onChange(complete)
   }
 
   const updateRow = (index: number, patch: Partial<FallbackEntry>) =>

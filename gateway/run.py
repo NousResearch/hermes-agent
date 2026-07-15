@@ -15870,8 +15870,27 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 # Skip if the agent already consumed the result via wait/log.
                 # poll() is read-only and intentionally does NOT mark consumed
                 # (#10156) — a status check must not suppress this delivery turn.
-                from tools.process_registry import format_process_notification, process_registry as _pr_check
+                from tools.process_registry import (
+                    format_process_notification,
+                    process_registry as _pr_check,
+                    should_inject_process_notification,
+                )
                 if agent_notify and not _pr_check.is_completion_consumed(session_id):
+                    _completion_evt = {
+                        "type": "completion",
+                        "exit_code": session.exit_code,
+                        "completion_reason": getattr(session, "completion_reason", None),
+                    }
+                    if not should_inject_process_notification(_completion_evt):
+                        logger.info(
+                            "Skipping agent completion notification for unsuccessful "
+                            "process %s (exit=%s reason=%s)",
+                            session_id,
+                            session.exit_code,
+                            getattr(session, "completion_reason", None),
+                        )
+                        break
+
                     from agent.redact import redact_terminal_output
                     from tools.ansi_strip import strip_ansi
                     _command = getattr(session, "command", "") or ""

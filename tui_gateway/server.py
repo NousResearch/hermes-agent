@@ -8726,7 +8726,11 @@ def _notification_poller_loop(
     even if the process was started by a different session. This matches
     CLI/gateway behavior (single session per process).
     """
-    from tools.process_registry import process_registry, format_process_notification
+    from tools.process_registry import (
+        format_process_notification,
+        process_registry,
+        should_inject_process_notification,
+    )
 
     _emitted = set()  # dedup re-queued events so same completion isn't emitted 50 times while session is busy
     while not stop_event.is_set() and not session.get("_finalized"):
@@ -8773,6 +8777,9 @@ def _notification_poller_loop(
 
         _evt_sid = evt.get("session_id", "")
         if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+            continue
+
+        if not should_inject_process_notification(evt):
             continue
 
         text = format_process_notification(evt)
@@ -8846,6 +8853,8 @@ def _notification_poller_loop(
             continue
         _evt_sid = evt.get("session_id", "")
         if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
+            continue
+        if not should_inject_process_notification(evt):
             continue
         text = format_process_notification(evt)
         if not text:

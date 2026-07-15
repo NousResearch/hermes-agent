@@ -1312,6 +1312,23 @@ def test_drain_notifications_returns_pending_events():
         process_registry._completion_consumed.discard("proc_drain2")
 
 
+def test_drain_notifications_drops_failed_completion_but_keeps_it_queryable():
+    from tools.process_registry import process_registry
+
+    while not process_registry.completion_queue.empty():
+        process_registry.completion_queue.get_nowait()
+    process_registry.completion_queue.put({
+        "type": "completion",
+        "session_id": "proc_failed",
+        "command": "false",
+        "exit_code": 1,
+        "completion_reason": "exited",
+        "output": "boom",
+    })
+
+    assert process_registry.drain_notifications() == []
+
+
 def test_drain_notifications_skips_consumed():
     from tools.process_registry import process_registry
 

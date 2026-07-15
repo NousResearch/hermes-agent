@@ -1224,6 +1224,8 @@ class ProcessRegistry:
                     # e.g. the owning session's --resume.
                     requeue.append(evt)
                     continue
+            if not should_inject_process_notification(evt):
+                continue
             text = format_process_notification(evt)
             if text:
                 results.append((evt, text))
@@ -2200,6 +2202,23 @@ def format_process_notification(evt: dict) -> "str | None":
         f"Command: {_cmd}\n"
         f"Output:\n{_out}]"
     )
+
+
+def should_inject_process_notification(evt: dict) -> bool:
+    """Whether an autonomous notification may wake an agent turn.
+
+    Failed, killed, lost, and unknown-exit completions remain available via
+    process poll/log/wait, but do not inject a synthetic user turn. Watch
+    matches, watcher diagnostics, and delegation results retain their existing
+    delivery semantics.
+    """
+    if evt.get("type", "completion") != "completion":
+        return True
+    return evt.get("exit_code") == 0 and evt.get("completion_reason") not in {
+        "killed",
+        "lost",
+        "failed_start",
+    }
 
 
 # ---------------------------------------------------------------------------

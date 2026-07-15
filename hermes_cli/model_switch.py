@@ -2151,8 +2151,8 @@ def list_authenticated_providers(
         _is_current = True
     else:
         try:
-            from hermes_cli.config import load_config as _load_config_3b
-            _model_cfg_raw = _load_config_3b().get("model")
+            from hermes_cli.config import load_config
+            _model_cfg_raw = load_config().get("model")
         except Exception:
             _model_cfg_raw = None
         # config.model can be a bare string in older configs (see

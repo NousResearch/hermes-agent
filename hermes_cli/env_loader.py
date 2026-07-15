@@ -152,10 +152,31 @@ def _sanitize_loaded_credentials() -> None:
 
 
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
-    try:
-        load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+    def _load_with_encoding_fallback() -> None:
+        # UTF-8 first; on undecodable bytes (Windows-1252 exports, copy-paste
+        # artifacts) reread permissively as latin-1, which accepts any byte.
+        try:
+            load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
+        except UnicodeDecodeError:
+            load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+
+    # Retry on a transient KeyError. python-dotenv's resolve_variables does
+    # ``env.update(os.environ)``, which iterates os.environ; in the multi-threaded
+    # gateway another thread mutates os.environ concurrently (the kanban
+    # auto-decomposer pins/unpins HERMES_KANBAN_BOARD per board —
+    # gateway/kanban_watchers.py), so dict.update can KeyError on a key that
+    # vanished between keys() and __getitem__ (crashed cron jobs, #external-probe).
+    # The window is microseconds and the failing load applied nothing (the error
+    # is in .dict() before set_as_environment_variables), so retrying is safe.
+    # BOTH encoding paths run inside the retry loop — the latin-1 fallback
+    # races os.environ exactly like the utf-8 path does.
+    for _attempt in range(3):
+        try:
+            _load_with_encoding_fallback()
+            break
+        except KeyError:
+            if _attempt == 2:
+                raise
     # Strip non-ASCII characters from credential env vars that were just
     # loaded.  API keys must be pure ASCII since they're sent as HTTP
     # header values (httpx encodes headers as ASCII).  Non-ASCII chars

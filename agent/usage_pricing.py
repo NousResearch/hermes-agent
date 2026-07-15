@@ -637,6 +637,26 @@ def _to_int(value: Any) -> int:
         return 0
 
 
+_MISSING = object()
+
+
+def _first_present(usage: Any, primary: str, fallback: str) -> Any:
+    """Return usage[primary] when present (even if 0), else usage[fallback].
+
+    Presence-aware so a legitimate primary value of ``0`` is not silently
+    overridden by the fallback. Supports both attribute-style objects and
+    plain dicts.
+    """
+    if isinstance(usage, dict):
+        if primary in usage and usage[primary] is not None:
+            return usage[primary]
+        return usage.get(fallback, 0)
+    value = getattr(usage, primary, _MISSING)
+    if value is _MISSING or value is None:
+        return getattr(usage, fallback, 0)
+    return value
+
+
 def resolve_billing_route(
     model_name: str,
     provider: Optional[str] = None,
@@ -859,8 +879,17 @@ def normalize_usage(
         )
         input_tokens = max(0, input_total - cache_read_tokens - cache_write_tokens)
     else:
-        prompt_total = _to_int(getattr(response_usage, "prompt_tokens", 0))
-        output_tokens = _to_int(getattr(response_usage, "completion_tokens", 0))
+        # OpenAI Chat Completions uses prompt_tokens/completion_tokens. Some
+        # OpenAI-compatible servers and plugins (e.g. mlx_vlm, NVIDIA NIM)
+        # instead emit Anthropic-style top-level input_tokens/output_tokens.
+        # Fall back to those only when the OpenAI keys are ABSENT (presence-
+        # aware, not truthiness) so a legitimately-present 0 is preserved.
+        prompt_total = _to_int(
+            _first_present(response_usage, "prompt_tokens", "input_tokens")
+        )
+        output_tokens = _to_int(
+            _first_present(response_usage, "completion_tokens", "output_tokens")
+        )
         details = getattr(response_usage, "prompt_tokens_details", None)
         # Primary: OpenAI-style prompt_tokens_details. Fallback: Anthropic-style
         # top-level fields that some OpenAI-compatible proxies (OpenRouter, Cline)

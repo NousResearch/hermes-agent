@@ -106,6 +106,59 @@ def test_normalize_usage_openai_prefers_prompt_tokens_details_over_top_level():
     assert normalized.cache_write_tokens == 150
 
 
+def test_normalize_usage_openai_falls_back_to_anthropic_token_totals():
+    """OpenAI-compatible servers/plugins (mlx_vlm, NVIDIA NIM) sometimes emit
+    Anthropic-style top-level input_tokens/output_tokens instead of
+    prompt_tokens/completion_tokens. When the OpenAI keys are absent, fall back
+    to the Anthropic totals so downstream consumers (context compression) don't
+    see zero. Salvage of #14903 by @hharry11.
+    """
+    usage = SimpleNamespace(
+        input_tokens=4000,
+        output_tokens=800,
+    )
+
+    normalized = normalize_usage(usage, provider="openai", api_mode="chat_completions")
+
+    assert normalized.input_tokens == 4000
+    assert normalized.output_tokens == 800
+
+
+def test_normalize_usage_openai_keys_take_priority_over_anthropic():
+    """When both OpenAI and Anthropic token totals are present, the OpenAI keys
+    win — the Anthropic keys are only a fallback.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=5000,
+        completion_tokens=1000,
+        input_tokens=4000,
+        output_tokens=800,
+    )
+
+    normalized = normalize_usage(usage, provider="openai", api_mode="chat_completions")
+
+    assert normalized.input_tokens == 5000
+    assert normalized.output_tokens == 1000
+
+
+def test_normalize_usage_openai_preserves_legitimate_zero_prompt_tokens():
+    """Presence-aware fallback: a primary key legitimately set to 0 must NOT be
+    overridden by the Anthropic fallback. Guards against a truthiness-based
+    ``or`` fallback that would mask a real zero.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=0,
+        completion_tokens=0,
+        input_tokens=4000,
+        output_tokens=800,
+    )
+
+    normalized = normalize_usage(usage, provider="openai", api_mode="chat_completions")
+
+    assert normalized.input_tokens == 0
+    assert normalized.output_tokens == 0
+
+
 def test_openrouter_models_api_pricing_is_converted_from_per_token_to_per_million(monkeypatch):
     monkeypatch.setattr(
         "agent.usage_pricing.fetch_model_metadata",

@@ -410,6 +410,102 @@ def _lazy_deps_by_feature():
     raise AssertionError("LAZY_DEPS dict literal not found in tools/lazy_deps.py")
 
 
+def test_disposable_security_pin_gate_a_policy():
+    """All install paths must carry the reviewed security/compatibility pins.
+
+    These exact versions are an intentional security policy, not a catalog
+    snapshot: they close the active advisories covered by Gate A. Tea OpenAPI
+    0.4.5 is the first stable 0.4.x release compatible with cryptography 48 on
+    every Python version Hermes supports; 0.4.4 requires cryptography<47.
+    """
+    from tools.lazy_deps import LAZY_DEPS
+
+    data = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    core = data["project"]["dependencies"]
+    extras = data["project"]["optional-dependencies"]
+    lazy = LAZY_DEPS
+
+    expected_surfaces = {
+        "core": (
+            core,
+            {
+                "cryptography": "cryptography==48.0.1",
+                "python-multipart": "python-multipart>=0.0.31,<1",
+            },
+        ),
+        "extra:dev": (extras["dev"], {"starlette": "starlette==1.3.1"}),
+        "extra:mcp": (extras["mcp"], {"starlette": "starlette==1.3.1"}),
+        "extra:computer-use": (
+            extras["computer-use"],
+            {"starlette": "starlette==1.3.1"},
+        ),
+        "extra:web": (
+            extras["web"],
+            {
+                "starlette": "starlette==1.3.1",
+                "python-multipart": "python-multipart>=0.0.31,<1",
+            },
+        ),
+        "extra:dingtalk": (
+            extras["dingtalk"],
+            {"alibabacloud-tea-openapi": "alibabacloud-tea-openapi==0.4.5"},
+        ),
+        "lazy:tool.dashboard": (
+            lazy["tool.dashboard"],
+            {
+                "starlette": "starlette==1.3.1",
+                "python-multipart": "python-multipart>=0.0.31,<1",
+            },
+        ),
+        "lazy:tool.computer_use": (
+            lazy["tool.computer_use"],
+            {"starlette": "starlette==1.3.1"},
+        ),
+        "lazy:platform.dingtalk": (
+            lazy["platform.dingtalk"],
+            {"alibabacloud-tea-openapi": "alibabacloud-tea-openapi==0.4.5"},
+        ),
+    }
+
+    problems = []
+    for surface, (specs, expected) in expected_surfaces.items():
+        actual = {_distribution_name(spec): spec for spec in specs}
+        for package, expected_spec in expected.items():
+            if actual.get(package) != expected_spec:
+                problems.append(
+                    f"{surface} {package}: expected {expected_spec!r}, "
+                    f"got {actual.get(package)!r}"
+                )
+
+    locked = tomllib.loads((REPO_ROOT / "uv.lock").read_text(encoding="utf-8"))
+    locked_versions = {
+        package["name"]: package["version"] for package in locked["package"]
+    }
+    for package, expected_version in {
+        "cryptography": "48.0.1",
+        "starlette": "1.3.1",
+        "alibabacloud-tea-openapi": "0.4.5",
+    }.items():
+        if locked_versions.get(package) != expected_version:
+            problems.append(
+                f"uv.lock {package}: expected {expected_version!r}, "
+                f"got {locked_versions.get(package)!r}"
+            )
+
+    multipart_version = locked_versions.get("python-multipart")
+    if (
+        multipart_version is None
+        or _version_tuple(multipart_version) < (0, 0, 31)
+        or _version_tuple(multipart_version) >= (1,)
+    ):
+        problems.append(
+            "uv.lock python-multipart: expected a version in '>=0.0.31,<1', "
+            f"got {multipart_version!r}"
+        )
+
+    assert not problems, "Gate A dependency policy mismatch:\n  " + "\n  ".join(problems)
+
+
 # Security-critical packages whose patched floor must be enforced on EVERY
 # install path, eager and lazy. test_pyproject_and_lazy_deps_pins_agree only
 # fires when a package is pinned in BOTH sources, so it cannot catch a lazy

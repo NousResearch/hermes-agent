@@ -5372,11 +5372,22 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 )
                 return
 
+            # Album/media follow-ups must keep merging into the (user-owned)
+            # head slot even when internal events sit in the overflow: the
+            # head is already ahead of every internal event, and inserting the
+            # photo into the overflow instead would split a burst into
+            # separate turns.
+            merges_into_head = (
+                getattr(existing, "message_type", None) == MessageType.PHOTO
+                or event.message_type == MessageType.PHOTO
+                or bool(getattr(existing, "media_urls", None))
+                or bool(getattr(event, "media_urls", None))
+            )
             first_internal = next(
                 (index for index, queued in enumerate(overflow) if getattr(queued, "internal", False)),
                 None,
             )
-            if first_internal is not None:
+            if first_internal is not None and not merges_into_head:
                 if self._queue_depth(session_key, adapter=adapter) >= self._BUSY_QUEUE_MAX_PENDING:
                     # Remove the last synthetic event to make room without
                     # reordering or discarding any real user follow-up.

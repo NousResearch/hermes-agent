@@ -178,3 +178,35 @@ async def test_user_interrupt_jumps_ahead_of_queued_internal_completion() -> Non
     parent.interrupt.assert_called_once_with("Need Marketing too. they'll run socials.")
     assert adapter._pending_messages[sk] is user_event
     assert runner._queued_events[sk] == [internal]
+
+
+@pytest.mark.asyncio
+async def test_user_interrupt_outranks_multiple_queued_internal_events() -> None:
+    """With one internal completion in the head slot AND another already in
+    the overflow, a user interrupt takes the head slot and both internal
+    events cascade after it in their original arrival order."""
+    runner = _make_runner()
+    runner._busy_input_mode = "interrupt"
+    adapter = _make_adapter()
+
+    internal_head = _make_internal_event(text="[background process 1 completed]")
+    internal_tail = _make_internal_event(text="[background process 2 completed]")
+    object.__setattr__(internal_tail, "message_id", "msg2")
+    user_event = _make_internal_event(text="pivot to the other approach")
+    object.__setattr__(user_event, "internal", False)
+    object.__setattr__(user_event, "source", internal_head.source)
+    object.__setattr__(user_event, "message_id", "user-msg")
+
+    sk = build_session_key(user_event.source)
+    adapter._pending_messages[sk] = internal_head
+    runner._queued_events[sk] = [internal_tail]
+    parent = _make_running_parent()
+    runner._running_agents[sk] = parent
+    runner.adapters[user_event.source.platform] = adapter
+
+    handled = await runner._handle_active_session_busy_message(user_event, sk)
+
+    assert handled is True
+    parent.interrupt.assert_called_once_with("pivot to the other approach")
+    assert adapter._pending_messages[sk] is user_event
+    assert runner._queued_events[sk] == [internal_head, internal_tail]

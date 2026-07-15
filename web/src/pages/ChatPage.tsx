@@ -546,6 +546,18 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     term.open(host);
 
+    // Enable native spellcheck on xterm's textarea. xterm hardcodes
+    // spellcheck="false" at textarea creation (CoreBrowserTerminal.ts:450)
+    // which suppresses the browser's built-in spelling suggestions.  The
+    // textarea is already positioned under the cursor and populated with
+    // the selected word by xterm's rightClickHandler (Clipboard.ts:83-93),
+    // so flipping spellcheck=true here is sufficient — no overlay needed.
+    // Verified: Chromium 130+, Firefox 130+ show red underlines and offer
+    // suggestions on right-click.
+    if (term.textarea) {
+      term.textarea.spellcheck = true;
+    }
+
     // WebGL draws from a texture atlas sized with device pixels. On phones and
     // in DevTools device mode that often produces *visually* much larger cells
     // than `fontSize` suggests — users see "huge" text even at 7–9px settings.

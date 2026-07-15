@@ -205,6 +205,8 @@
         "CFBundleExecutable": "Hermes",
         "CFBundleName": "Hermes",
         "NSAudioCaptureUsageDescription": "Hermes uses audio capture for voice conversations.",
+        "NSCalendarsFullAccessUsageDescription": "Hermes uses Calendar access when you ask it to read or manage Apple Calendar events.",
+        "NSCalendarsUsageDescription": "Hermes uses Calendar access when you ask it to read or manage Apple Calendar events.",
         "NSMicrophoneUsageDescription": "Hermes uses the microphone for voice input and voice conversations."
       },
       "gatekeeperAssess": false,

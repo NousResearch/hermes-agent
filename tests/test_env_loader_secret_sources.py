@@ -71,7 +71,7 @@ def test_format_secret_source_suffix_onepassword_uses_proper_name():
     )
 
 
-def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkeypatch):
+def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkeypatch, capsys):
     """End-to-end: when the Bitwarden source fetches keys, applied vars
     end up in ``_SECRET_SOURCES`` so the UI can label them."""
 
@@ -104,6 +104,9 @@ def test_apply_external_secret_sources_records_bitwarden_origin(tmp_path, monkey
 
     env_loader._apply_external_secret_sources(tmp_path)
 
+    status = capsys.readouterr().err
+    assert "Bitwarden Secrets Manager: applied 1 secret" in status
+    assert "ANTHROPIC_API_KEY" not in status
     assert env_loader.get_secret_source("ANTHROPIC_API_KEY") == "bitwarden"
     assert (
         env_loader.format_secret_source_suffix("ANTHROPIC_API_KEY")

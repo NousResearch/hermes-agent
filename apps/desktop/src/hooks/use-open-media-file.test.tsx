@@ -88,6 +88,23 @@ describe('useOpenMediaFile', () => {
     expect(openExternal).toHaveBeenCalledWith('https://images.example/generated.png')
   })
 
+  it.each([
+    ['C:\\Users\\alice\\image.png', 'file:///C:/Users/alice/image.png'],
+    ['C:/Users/alice/image.png', 'file:///C:/Users/alice/image.png'],
+    ['\\\\server\\share\\image.png', 'file://server/share/image.png']
+  ])('opens Windows path %s as a local file URL', (path, expectedUrl) => {
+    const openExternal = vi.fn(async () => true)
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { openExternal }
+    })
+    const { result } = renderHook(() => useOpenMediaFile(path))
+
+    act(() => result.current.open())
+
+    expect(openExternal).toHaveBeenCalledWith(expectedUrl)
+  })
+
   it('clears a prior failure when the source changes', async () => {
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
@@ -103,5 +120,31 @@ describe('useOpenMediaFile', () => {
     rerender({ path: '/tmp/second.png' })
 
     await waitFor(() => expect(result.current.openFailed).toBe(false))
+  })
+
+  it('ignores a rejected open request after the source changes', async () => {
+    let rejectOpen: (error: Error) => void = () => undefined
+
+    const openExternal = vi.fn(
+      () =>
+        new Promise<boolean>((_resolve, reject) => {
+          rejectOpen = reject
+        })
+    )
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { openExternal }
+    })
+
+    const { rerender, result } = renderHook(({ path }) => useOpenMediaFile(path), {
+      initialProps: { path: '/tmp/first.png' }
+    })
+
+    act(() => result.current.open())
+    rerender({ path: '/tmp/second.png' })
+    await act(async () => rejectOpen(new Error('stale failure')))
+
+    expect(result.current.openFailed).toBe(false)
   })
 })

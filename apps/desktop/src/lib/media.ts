@@ -66,6 +66,14 @@ export function mediaExternalUrl(path: string): string {
     return path
   }
 
+  if (/^[a-z]:[\\/]/i.test(path)) {
+    return `file:///${path.replace(/\\/g, '/')}`
+  }
+
+  if (/^\\\\/.test(path)) {
+    return `file:${path.replace(/\\/g, '/')}`
+  }
+
   if (isRemoteGateway()) {
     const conn = $connection.get()
 

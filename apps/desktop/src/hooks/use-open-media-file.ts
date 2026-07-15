@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { downloadGatewayMediaFile, isRemoteGateway, mediaExternalUrl } from '@/lib/media'
 
 export function useOpenMediaFile(path?: string) {
   const [openFailed, setOpenFailed] = useState(false)
   const source = path?.trim()
+  const currentSource = useRef(source)
+
+  currentSource.current = source
+
   const downloadsRemoteFile = Boolean(source && !/^https?:/i.test(source) && window.hermesDesktop && isRemoteGateway())
 
   useEffect(() => setOpenFailed(false), [source])
@@ -16,17 +20,26 @@ export function useOpenMediaFile(path?: string) {
 
     setOpenFailed(false)
 
+    const failCurrentRequest = () => {
+      if (currentSource.current === source) {
+        setOpenFailed(true)
+      }
+    }
+
     const protocol = source.match(/^([a-z][a-z0-9+.-]*):/i)?.[1]?.toLowerCase()
     const absoluteLocalPath = /^(?:\/|[a-z]:[\\/]|\\\\)/i.test(source)
 
-    if ((protocol && !['file', 'http', 'https'].includes(protocol)) || (!protocol && !absoluteLocalPath)) {
-      setOpenFailed(true)
+    if (
+      (protocol && !absoluteLocalPath && !['file', 'http', 'https'].includes(protocol)) ||
+      (!protocol && !absoluteLocalPath)
+    ) {
+      failCurrentRequest()
 
       return
     }
 
     if (downloadsRemoteFile) {
-      void downloadGatewayMediaFile(source).catch(() => setOpenFailed(true))
+      void downloadGatewayMediaFile(source).catch(failCurrentRequest)
 
       return
     }
@@ -34,12 +47,12 @@ export function useOpenMediaFile(path?: string) {
     const openExternal = window.hermesDesktop?.openExternal
 
     if (!openExternal) {
-      setOpenFailed(true)
+      failCurrentRequest()
 
       return
     }
 
-    void openExternal(mediaExternalUrl(source)).catch(() => setOpenFailed(true))
+    void openExternal(mediaExternalUrl(source)).catch(failCurrentRequest)
   }, [downloadsRemoteFile, source])
 
   return { downloadsRemoteFile, open, openFailed }

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { imageSaveFilename } from './image-save-filename'
+import { imageFormatExtension, imageSaveFilename } from './image-save-filename'
 
 describe('imageSaveFilename', () => {
   it('prefers a supplied original filename when the image source is a data URL', () => {
@@ -29,7 +29,8 @@ describe('imageSaveFilename', () => {
     ['../../CON.png', '_CON.png'],
     ['photo...   ', 'photo.png'],
     ['encoded%2Fname%3F.png', 'name-.png'],
-    ['bad\u0000name.png', 'badname.png']
+    ['bad\u0000name.png', 'badname.png'],
+    ['bad\u0085name.png', 'badname.png']
   ])('sanitizes %s to a cross-platform basename', (input, expected) => {
     expect(imageSaveFilename('data:image/png;base64,ZHVtbXk=', input, '.png')).toBe(expected)
   })
@@ -63,5 +64,19 @@ describe('imageSaveFilename', () => {
   it('keeps a URL basename through query strings and malformed escapes', () => {
     expect(imageSaveFilename('https://example.com/photo.png?token=abc', undefined, '.png')).toBe('photo.png')
     expect(imageSaveFilename('https://example.com/bad%E0%A4%A.png', undefined, '.png')).toBe('bad%E0%A4%A.png')
+  })
+})
+
+describe('imageFormatExtension', () => {
+  it.each([
+    [Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), '.png'],
+    [Buffer.from([0xff, 0xd8, 0xff, 0xe0]), '.jpg'],
+    [Buffer.from('GIF89a', 'ascii'), '.gif'],
+    [Buffer.from('RIFFxxxxWEBP', 'ascii'), '.webp'],
+    [Buffer.from('BM', 'ascii'), '.bmp'],
+    [Buffer.from('<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"></svg>'), '.svg'],
+    [Buffer.from('<html>not an image</html>'), '']
+  ])('detects validated image bytes', (buffer, extension) => {
+    expect(imageFormatExtension(buffer)).toBe(extension)
   })
 })

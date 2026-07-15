@@ -487,6 +487,34 @@ def _prune_completed_locked() -> None:
         _records.pop(rid, None)
 
 
+def _current_origin_session_id() -> str:
+    """Raw session id of the ORIGINATING api_server request, or ``""``.
+
+    The obvious source — ``HERMES_SESSION_ID`` via ``get_session_env`` — is
+    NOT safe to read at dispatch time: constructing a child agent
+    (``agent/agent_init.py``) calls ``set_current_session_id(child.session_id)``,
+    clobbering that ContextVar *and* ``os.environ`` with the subagent's
+    internal ``{timestamp}_{uuid}`` id moments before the dispatch code reads
+    it, so the completion wake would self-post into the subagent's own
+    (unread) session instead of the spawner's.
+
+    The request-scoped ``HERMES_SESSION_CHAT_ID`` binding survives child
+    construction: ``_bind_api_server_session`` binds ``chat_id`` to the raw
+    ``X-Hermes-Session-Id``, and its only writer is ``set_session_vars`` —
+    ``set_current_session_id`` never touches it. Gate on the platform: on
+    push platforms ``chat_id`` is a chat, not a session, so yield ``""``
+    there.
+    """
+    try:
+        from gateway.session_context import get_session_env
+
+        if get_session_env("HERMES_SESSION_PLATFORM", "") != "api_server":
+            return ""
+        return get_session_env("HERMES_SESSION_CHAT_ID", "") or ""
+    except Exception:
+        return ""
+
+
 def dispatch_async_delegation(
     *,
     goal: str,
@@ -498,6 +526,7 @@ def dispatch_async_delegation(
     parent_session_id: Optional[str] = None,
     runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "",
+    origin_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
 ) -> Dict[str, Any]:
@@ -546,6 +575,7 @@ def dispatch_async_delegation(
         "model": model,
         "session_key": session_key,
         "origin_ui_session_id": origin_ui_session_id,
+        "origin_session_id": origin_session_id,
         "parent_session_id": parent_session_id,
         "status": "running",
         "dispatched_at": dispatched_at,
@@ -666,6 +696,7 @@ def _push_completion_event(
         # session; empty string => CLI (single-session) path.
         "session_key": record.get("session_key", ""),
         "origin_ui_session_id": record.get("origin_ui_session_id", ""),
+        "origin_session_id": record.get("origin_session_id", ""),
         "parent_session_id": record.get("parent_session_id"),
         "goal": record.get("goal", ""),
         "context": record.get("context"),
@@ -705,6 +736,7 @@ def dispatch_async_delegation_batch(
     parent_session_id: Optional[str] = None,
     runner: Callable[[], Dict[str, Any]],
     origin_ui_session_id: str = "",
+    origin_session_id: str = "",
     interrupt_fn: Optional[Callable[[], None]] = None,
     max_async_children: int = _DEFAULT_MAX_ASYNC_CHILDREN,
     delegation_id: Optional[str] = None,
@@ -746,6 +778,7 @@ def dispatch_async_delegation_batch(
         "model": model,
         "session_key": session_key,
         "origin_ui_session_id": origin_ui_session_id,
+        "origin_session_id": origin_session_id,
         "parent_session_id": parent_session_id,
         "status": "running",
         "dispatched_at": dispatched_at,
@@ -846,6 +879,7 @@ def _finalize_batch(
         "delegation_id": delegation_id,
         "session_key": event_record.get("session_key", ""),
         "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
+        "origin_session_id": event_record.get("origin_session_id", ""),
         "parent_session_id": event_record.get("parent_session_id"),
         "goal": event_record.get("goal", ""),
         "goals": event_record.get("goals"),

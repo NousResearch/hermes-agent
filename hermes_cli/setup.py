@@ -1477,6 +1477,123 @@ def _apply_default_agent_settings(config: dict):
     print_info("  Run `hermes setup agent` later to customize.")
 
 
+_EXTERNAL_CONTEXT_FILE_CANDIDATES = (
+    ("Codex AGENTS.md", ".codex/AGENTS.md"),
+    ("Claude CLAUDE.md", ".claude/CLAUDE.md"),
+)
+
+
+def _format_external_context_path(path: Path) -> str:
+    """Return a stable config path, using ``~`` under the user's home."""
+    try:
+        home = Path.home().resolve()
+        relative = path.resolve().relative_to(home)
+        return "~/" + relative.as_posix()
+    except (OSError, ValueError):
+        return str(path)
+
+
+def _expand_external_context_path(raw_path: str) -> Path:
+    expanded = os.path.expandvars(raw_path.strip())
+    if expanded == "~":
+        return Path.home()
+    if expanded.startswith(("~/", "~\\")):
+        return Path.home() / expanded[2:]
+    path = Path(os.path.expanduser(expanded))
+    if not path.is_absolute():
+        path = Path.home() / path
+    return path
+
+
+def _setup_context_file_key(path: Path) -> object:
+    try:
+        stat_result = path.stat()
+        if stat_result.st_ino != 0:
+            return ("inode", stat_result.st_dev, stat_result.st_ino)
+        return ("path", path.resolve())
+    except (OSError, RuntimeError):
+        try:
+            return ("path", path.resolve())
+        except (OSError, RuntimeError):
+            return ("path", path.absolute())
+
+
+def _configured_external_context_values(config: dict) -> list[str]:
+    context = config.get("context")
+    if not isinstance(context, dict):
+        return []
+    raw_paths = context.get("external_files")
+    if not isinstance(raw_paths, list):
+        return []
+    return [value.strip() for value in raw_paths if isinstance(value, str) and value.strip()]
+
+
+def _configured_external_context_keys(config: dict) -> set[object]:
+    return {
+        _setup_context_file_key(_expand_external_context_path(raw_path))
+        for raw_path in _configured_external_context_values(config)
+    }
+
+
+def _discover_external_context_candidates(config: dict) -> list[tuple[str, Path]]:
+    seen = _configured_external_context_keys(config)
+    candidates: list[tuple[str, Path]] = []
+    for label, home_relative in _EXTERNAL_CONTEXT_FILE_CANDIDATES:
+        path = Path.home() / home_relative
+        if not path.is_file():
+            continue
+        key = _setup_context_file_key(path)
+        if key in seen:
+            continue
+        seen.add(key)
+        candidates.append((label, path))
+    return candidates
+
+
+def setup_external_context_files(config: dict) -> None:
+    """Offer to add known shared instruction files to ``context.external_files``."""
+    print_header("External Context Files")
+    print_info("Load shared instruction files before cwd project context.")
+    print_info("Useful for reusing Codex/Claude rules without cwd symlinks.")
+    print_info(f"Guide: {_DOCS_BASE}/user-guide/configuration#external-context-files")
+    print()
+
+    context = config.get("context")
+    if not isinstance(context, dict):
+        context = {}
+        config["context"] = context
+    current_paths = _configured_external_context_values(config)
+    if current_paths:
+        print_success("Currently configured:")
+        for value in current_paths:
+            print_info(f"  {value}")
+        print()
+
+    candidates = _discover_external_context_candidates(config)
+    if not candidates:
+        if current_paths:
+            print_info("No additional known context files found.")
+        else:
+            print_info("No known shared context files found.")
+            print_info("Configure later with:")
+            print_info("  hermes config set context.external_files ~/.codex/AGENTS.md")
+        return
+
+    paths = list(current_paths)
+    for label, path in candidates:
+        display_path = _format_external_context_path(path)
+        if prompt_yes_no(
+            f"Add {label} ({display_path}) to external context?", default=True
+        ):
+            paths.append(display_path)
+            print_success(f"Added {display_path}")
+        else:
+            print_info(f"Skipped {display_path}")
+
+    context["external_files"] = paths
+    save_config(config)
+
+
 def setup_agent_settings(config: dict):
     """Configure agent behavior: iterations, progress display, compression, session reset."""
 
@@ -2604,6 +2721,7 @@ SETUP_SECTIONS = [
     ("model", "Model & Provider", setup_model_provider),
     ("tts", "Text-to-Speech", setup_tts),
     ("terminal", "Terminal Backend", setup_terminal_backend),
+    ("context", "External Context Files", setup_external_context_files),
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
     ("agent", "Agent Settings", setup_agent_settings),
@@ -2847,7 +2965,7 @@ def run_setup_wizard(args):
         print_info("Press Enter to keep it, or type a new value to change it.")
         print_info("")
         print_info("Tip: jump straight to a section with 'hermes setup model|terminal|")
-        print_info("     gateway|tools|agent', or fill only missing items with --quick.")
+        print_info("     context|gateway|tools|agent', or fill only missing items with --quick.")
         # Fall through to the "Full Setup — run all sections" block below.
         # --reconfigure is now the default on existing installs; the flag
         # is preserved for backwards compatibility but is a no-op here.
@@ -2912,11 +3030,14 @@ def run_setup_wizard(args):
     if not is_existing:
         _apply_default_agent_settings(config)
 
-    # Section 4: Messaging Platforms
+    # Section 4: External Context Files
+    setup_external_context_files(config)
+
+    # Section 5: Messaging Platforms
     if not (migration_ran and _skip_configured_section(config, "gateway", "Messaging Platforms")):
         setup_gateway(config)
 
-    # Section 5: Tools
+    # Section 6: Tools
     if not (migration_ran and _skip_configured_section(config, "tools", "Tools")):
         setup_tools(config, first_install=not is_existing)
 
@@ -2974,9 +3095,12 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     # Step 3: Apply defaults for everything else
     _apply_default_agent_settings(config)
 
+    # Step 4: Offer known shared context files
+    setup_external_context_files(config)
+
     save_config(config)
 
-    # Step 4: Offer messaging gateway setup
+    # Step 5: Offer messaging gateway setup
     print()
     gateway_choice = prompt_choice(
         "Connect a messaging platform? (Telegram, Discord, etc.)",
@@ -3118,6 +3242,9 @@ def _run_blank_slate_setup(config: dict, hermes_home, is_existing: bool):
     print_success("Minimal baseline applied:")
     print_info("  Toolsets: file, terminal (everything else off)")
     print_info("  Compression, memory, checkpoints, smart routing: off")
+
+    # ── Step 4: Offer known shared context files ──
+    setup_external_context_files(config)
 
     # ── The fork: stop here, or walk through enabling things ──
     print()

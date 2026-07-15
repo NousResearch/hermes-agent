@@ -248,6 +248,53 @@ class TestSubdirectoryHintTracker:
         )
         assert result is None
 
+    def test_hint_reads_from_one_handle_when_path_changes_before_read(
+        self, tmp_path, monkeypatch
+    ):
+        from agent import prompt_builder
+
+        nested = tmp_path / "nested"
+        nested.mkdir()
+        hint = nested / "AGENTS.md"
+        replacement = tmp_path / "replacement.md"
+        hint.write_text("Original nested rules.", encoding="utf-8")
+        replacement.write_text("Replacement nested rules.", encoding="utf-8")
+
+        original_key = prompt_builder._context_file_key
+
+        def swap_after_identity(path, *args, **kwargs):
+            if path == hint:
+                replacement.replace(hint)
+            return original_key(path, *args, **kwargs)
+
+        monkeypatch.setattr(prompt_builder, "_context_file_key", swap_after_identity)
+        tracker = SubdirectoryHintTracker(working_dir=str(tmp_path))
+
+        result = tracker.check_tool_call(
+            "read_file", {"path": str(nested / "main.py")}
+        )
+
+        assert "Original nested rules." in result
+        assert "Replacement nested rules." not in result
+
+
+class TestStartupIdentityManifest:
+    def test_round_trips_inode_and_path_identities(self, tmp_path):
+        identities = {
+            ("inode", 42, 99),
+            ("path", (tmp_path / "external.md").resolve()),
+        }
+        source = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        source.register_loaded_context_file_identities(identities)
+
+        restored = SubdirectoryHintTracker(working_dir=str(tmp_path))
+        restored.restore_startup_identity_manifest(
+            source.export_startup_identity_manifest()
+        )
+
+        assert restored._startup_context_file_identities == identities
+        assert identities <= restored._loaded_context_file_identities
+
 
 class TestPermissionErrorHandling:
     """Regression tests for PermissionError in filesystem checks (ref #6214)."""

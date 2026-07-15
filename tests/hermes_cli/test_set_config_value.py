@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 import pytest
 
-from hermes_cli.config import set_config_value, config_command
+from hermes_cli.config import config_command, load_config, set_config_value
 
 
 @pytest.fixture(autouse=True)
@@ -123,6 +123,67 @@ class TestConfigYamlRouting:
             "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=true" in env_content
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
+
+    def test_context_external_files_round_trip_preserves_context_engine(
+        self, _isolated_hermes_home
+    ):
+        set_config_value("context.engine", "custom")
+        set_config_value("context.external_files", "~/.codex/AGENTS.md, ~/.claude/CLAUDE.md")
+
+        reloaded = load_config()
+
+        assert reloaded["context"]["engine"] == "custom"
+        assert reloaded["context"]["external_files"] == [
+            "~/.codex/AGENTS.md",
+            "~/.claude/CLAUDE.md",
+        ]
+
+    def test_context_external_files_accept_yaml_list(self, _isolated_hermes_home):
+        set_config_value(
+            "context.external_files",
+            '["~/.codex/AGENTS.md", "~/.claude/CLAUDE.md"]',
+        )
+
+        reloaded = load_config()
+
+        assert reloaded["context"]["external_files"] == [
+            "~/.codex/AGENTS.md",
+            "~/.claude/CLAUDE.md",
+        ]
+
+    @pytest.mark.parametrize("raw_value", ["yes", "on", "null", "123", "a: b"])
+    def test_context_external_files_preserves_reserved_path_strings(
+        self, _isolated_hermes_home, raw_value
+    ):
+        """Only explicit list syntax is YAML-parsed for this strict list[str]."""
+        set_config_value("context.external_files", raw_value)
+
+        assert load_config()["context"]["external_files"] == [raw_value]
+
+    def test_context_external_files_explicit_list_preserves_commas_in_paths(
+        self, _isolated_hermes_home
+    ):
+        set_config_value(
+            "context.external_files",
+            '["/tmp/rules,team.md", "/tmp/other.md"]',
+        )
+
+        assert load_config()["context"]["external_files"] == [
+            "/tmp/rules,team.md",
+            "/tmp/other.md",
+        ]
+
+    def test_context_external_files_plain_value_keeps_comma_convenience_split(
+        self, _isolated_hermes_home
+    ):
+        set_config_value(
+            "context.external_files", "/tmp/first.md, /tmp/second.md"
+        )
+
+        assert load_config()["context"]["external_files"] == [
+            "/tmp/first.md",
+            "/tmp/second.md",
+        ]
 
 
 # ---------------------------------------------------------------------------

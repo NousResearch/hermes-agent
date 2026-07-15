@@ -306,6 +306,7 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     DB roundtrip).
     """
     stored_prompt = None
+    stored_context_identities = None
     stored_state = "missing"
     if conversation_history and agent._session_db:
         try:
@@ -319,6 +320,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
                 else:
                     stored_prompt = raw_prompt
                     stored_state = "present"
+                    raw_identities = session_row.get("context_file_identities")
+                    if isinstance(raw_identities, str) and raw_identities:
+                        stored_context_identities = raw_identities
         except Exception as exc:
             logger.warning(
                 "Session DB get_session failed for system-prompt restore "
@@ -330,9 +334,36 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     if stored_prompt and _stored_prompt_matches_runtime(agent, stored_prompt):
         # Continuing session — reuse the exact system prompt from the
         # previous turn so the Anthropic cache prefix matches.
-        agent._cached_system_prompt = stored_prompt
-        return
-    if stored_prompt:
+        tracker = getattr(agent, "_subdirectory_hints", None)
+        restore_identities = getattr(
+            tracker, "restore_startup_identity_manifest", None
+        )
+        if not callable(restore_identities):
+            agent._cached_system_prompt = stored_prompt
+            return
+        if stored_context_identities is None:
+            stored_state = "missing_identity_manifest"
+            logger.warning(
+                "Stored system prompt for session %s has no context identity "
+                "manifest; rebuilding once so progressive context de-duplication "
+                "remains correct.",
+                agent.session_id,
+            )
+        else:
+            try:
+                restore_identities(stored_context_identities)
+            except (TypeError, ValueError) as exc:
+                stored_state = "invalid_identity_manifest"
+                logger.warning(
+                    "Stored context identity manifest for session %s is invalid "
+                    "(%s); rebuilding the system prompt.",
+                    agent.session_id,
+                    exc,
+                )
+            else:
+                agent._cached_system_prompt = stored_prompt
+                return
+    if stored_prompt and stored_state == "present":
         stored_state = "stale_runtime"
         logger.info(
             "Stored system prompt for session %s has stale runtime identity; "
@@ -392,7 +423,18 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
     # subsequent turn).
     if agent._session_db:
         try:
-            agent._session_db.update_system_prompt(agent.session_id, agent._cached_system_prompt)
+            tracker = getattr(agent, "_subdirectory_hints", None)
+            export_identities = getattr(
+                tracker, "export_startup_identity_manifest", None
+            )
+            identity_manifest = (
+                export_identities() if callable(export_identities) else None
+            )
+            agent._session_db.update_system_prompt(
+                agent.session_id,
+                agent._cached_system_prompt,
+                identity_manifest,
+            )
         except Exception as exc:
             logger.warning(
                 "Session DB update_system_prompt failed for session %s: "

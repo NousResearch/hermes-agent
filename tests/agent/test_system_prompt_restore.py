@@ -16,11 +16,17 @@ instead of rebuilding).  Covers:
 from __future__ import annotations
 
 import logging
+import os
 from unittest.mock import MagicMock
 
 import pytest
 
 from agent.conversation_loop import _restore_or_build_system_prompt
+from agent.prompt_builder import _read_context_file
+from agent.subdirectory_hints import SubdirectoryHintTracker
+
+
+_EMPTY_IDENTITY_MANIFEST = '{"identities":[],"version":1}'
 
 
 def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
@@ -32,6 +38,7 @@ def _make_agent(session_db=None, prebuilt_prompt: str = "BUILT_PROMPT"):
     agent.provider = "openrouter"
     agent.platform = "cli"
     agent._session_db = session_db
+    agent._subdirectory_hints = SubdirectoryHintTracker()
     agent._build_system_prompt = MagicMock(return_value=prebuilt_prompt)
     return agent
 
@@ -46,7 +53,10 @@ class TestStoredPromptReuse:
         """Continuing session with a stored prompt → reuse byte-for-byte."""
         stored = "Stored prompt from turn 1 — byte-identical reuse"
         db = MagicMock()
-        db.get_session.return_value = {"system_prompt": stored}
+        db.get_session.return_value = {
+            "system_prompt": stored,
+            "context_file_identities": _EMPTY_IDENTITY_MANIFEST,
+        }
         agent = _make_agent(session_db=db)
 
         with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
@@ -62,11 +72,64 @@ class TestStoredPromptReuse:
         """Non-ASCII bytes in the stored prompt are not mangled."""
         stored = "Stored prompt with unicode: ☤ ⚗ ◆ — and emoji 🦊"
         db = MagicMock()
-        db.get_session.return_value = {"system_prompt": stored}
+        db.get_session.return_value = {
+            "system_prompt": stored,
+            "context_file_identities": _EMPTY_IDENTITY_MANIFEST,
+        }
         agent = _make_agent(session_db=db)
 
         _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])
         assert agent._cached_system_prompt == stored
+
+    def test_present_row_restores_startup_identity_manifest(self, tmp_path):
+        external = tmp_path / "external.md"
+        external.write_text("Shared rules", encoding="utf-8")
+        nested = tmp_path / "nested"
+        nested.mkdir()
+        alias = nested / "AGENTS.md"
+        try:
+            os.link(external, alias)
+        except OSError as exc:
+            pytest.skip(f"hard links unavailable: {exc}")
+
+        identity = _read_context_file(external).identity
+        startup_tracker = SubdirectoryHintTracker(str(tmp_path))
+        startup_tracker.register_loaded_context_file_identities({identity})
+        manifest = startup_tracker.export_startup_identity_manifest()
+
+        stored = "Stored prompt containing external context"
+        db = MagicMock()
+        db.get_session.return_value = {
+            "system_prompt": stored,
+            "context_file_identities": manifest,
+        }
+        agent = _make_agent(session_db=db)
+        agent._subdirectory_hints = SubdirectoryHintTracker(str(tmp_path))
+
+        _restore_or_build_system_prompt(
+            agent, None, [{"role": "user", "content": "hi"}]
+        )
+
+        assert agent._cached_system_prompt == stored
+        assert agent._subdirectory_hints._load_hints_for_directory(nested) is None
+        agent._build_system_prompt.assert_not_called()
+
+    def test_present_row_without_identity_manifest_rebuilds_once(self, caplog):
+        db = MagicMock()
+        db.get_session.return_value = {"system_prompt": "legacy prompt"}
+        agent = _make_agent(session_db=db)
+
+        with caplog.at_level(logging.WARNING, logger="agent.conversation_loop"):
+            _restore_or_build_system_prompt(
+                agent, None, [{"role": "user", "content": "hi"}]
+            )
+
+        assert agent._cached_system_prompt == "BUILT_PROMPT"
+        agent._build_system_prompt.assert_called_once_with(None)
+        assert any(
+            "identity manifest" in record.getMessage()
+            for record in caplog.records
+        )
 
     def test_present_row_with_stale_runtime_identity_rebuilds(self, caplog):
         """Stored prompts are cache gold unless their runtime identity is stale.
@@ -84,7 +147,10 @@ class TestStoredPromptReuse:
             "Provider: openrouter"
         )
         db = MagicMock()
-        db.get_session.return_value = {"system_prompt": stored}
+        db.get_session.return_value = {
+            "system_prompt": stored,
+            "context_file_identities": _EMPTY_IDENTITY_MANIFEST,
+        }
         agent = _make_agent(
             session_db=db,
             prebuilt_prompt=(
@@ -105,7 +171,9 @@ class TestStoredPromptReuse:
         )
         agent._build_system_prompt.assert_called_once_with(None)
         db.update_system_prompt.assert_called_once_with(
-            agent.session_id, agent._cached_system_prompt
+            agent.session_id,
+            agent._cached_system_prompt,
+            _EMPTY_IDENTITY_MANIFEST,
         )
         assert any("stale runtime identity" in r.getMessage() for r in caplog.records)
 
@@ -129,7 +197,11 @@ class TestLegitimateFreshBuild:
         agent._build_system_prompt.assert_called_once_with(None)
         assert agent._cached_system_prompt == "BUILT_PROMPT"
         # Persisted to DB
-        db.update_system_prompt.assert_called_once_with(agent.session_id, "BUILT_PROMPT")
+        db.update_system_prompt.assert_called_once_with(
+            agent.session_id,
+            "BUILT_PROMPT",
+            _EMPTY_IDENTITY_MANIFEST,
+        )
         assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
     def test_no_db_skips_persistence(self):
@@ -249,7 +321,10 @@ class TestPromptStabilityInvariant:
             "Session ID: 20260517_153500_abc123\n"
         )
         db = MagicMock()
-        db.get_session.return_value = {"system_prompt": stored}
+        db.get_session.return_value = {
+            "system_prompt": stored,
+            "context_file_identities": _EMPTY_IDENTITY_MANIFEST,
+        }
         agent = _make_agent(session_db=db)
 
         _restore_or_build_system_prompt(agent, None, [{"role": "user", "content": "hi"}])

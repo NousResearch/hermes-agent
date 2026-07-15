@@ -148,24 +148,30 @@ Be targeted and efficient in your exploration and investigations.
 
 ## 上下文文件的注入方式
 
-`build_context_files_prompt()` 使用**优先级系统**——只加载一种项目上下文类型（先匹配先赢）：
+`build_context_files_prompt()` 先加载配置的外部上下文文件，再对工作目录项目规则使用**优先级系统**——只加载一种项目上下文类型（先匹配先赢）：
 
 ```python
 # From agent/prompt_builder.py (simplified)
 def build_context_files_prompt(cwd=None, skip_soul=False):
     cwd_path = Path(cwd).resolve()
-
-    # Priority: first match wins — only ONE project context loaded
-    project_context = (
-        _load_hermes_md(cwd_path)       # 1. .hermes.md / HERMES.md (walks to git root)
-        or _load_agents_md(cwd_path)    # 2. AGENTS.md (cwd only)
-        or _load_claude_md(cwd_path)    # 3. CLAUDE.md (cwd only)
-        or _load_cursorrules(cwd_path)  # 4. .cursorrules / .cursor/rules/*.mdc
-    )
-
+    loaded_paths = set()
     sections = []
-    if project_context:
-        sections.append(project_context)
+
+    sections.extend(_load_external_context_files(loaded_paths=loaded_paths))
+
+    for loader in (
+        _load_hermes_md,
+        _load_agents_md,
+        _load_claude_md,
+        _load_cursorrules,
+    ):
+        outcome = loader(cwd_path, loaded_paths=loaded_paths)
+        if outcome.status == _CONTEXT_LOADED:
+            sections.append(outcome.section)
+            break
+        if outcome.status == _CONTEXT_DUPLICATE:
+            # 最高优先级文件已作为外部上下文加载；不要回退到低优先级文件。
+            break
 
     # SOUL.md from HERMES_HOME (independent of project context)
     if not skip_soul:
@@ -188,6 +194,7 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 
 | 优先级 | 文件 | 搜索范围 | 说明 |
 |--------|------|----------|------|
+| 0 | `context.external_files` | 配置的路径 | 按声明顺序叠加；支持绝对路径、`~` 或相对 home 的路径 |
 | 1 | `.hermes.md`、`HERMES.md` | 从 CWD 向上至 git 根目录 | Hermes 原生项目配置 |
 | 2 | `AGENTS.md` | 仅 CWD | 常见 agent 指令文件 |
 | 3 | `CLAUDE.md` | 仅 CWD | Claude Code 兼容性 |

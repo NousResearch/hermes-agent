@@ -1,17 +1,18 @@
 ---
 sidebar_position: 8
 title: "Context Files"
-description: "Project context files — .hermes.md, AGENTS.md, CLAUDE.md, global SOUL.md, and .cursorrules — automatically injected into every conversation"
+description: "Configured shared rules, project context files, and global SOUL.md automatically injected into conversations"
 ---
 
 # Context Files
 
-Hermes Agent automatically discovers and loads context files that shape how it behaves. Some are project-local and discovered from your working directory. `SOUL.md` is now global to the Hermes instance and is loaded from `HERMES_HOME` only.
+Hermes Agent loads configured shared context files and discovers project files that shape how it behaves. Project files come from your working directory. `SOUL.md` is global to the Hermes instance and is loaded from `HERMES_HOME` only.
 
 ## Supported Context Files
 
 | File | Purpose | Discovery |
 |------|---------|-----------| 
+| **Configured external files** | Shared instructions that apply across projects | `context.external_files`, in declared order |
 | **.hermes.md** / **HERMES.md** | Project instructions (highest priority) | Walks to git root |
 | **AGENTS.md** | Project instructions, conventions, architecture | CWD at startup + subdirectories progressively |
 | **CLAUDE.md** | Claude Code context files (also detected) | CWD at startup + subdirectories progressively |
@@ -20,8 +21,34 @@ Hermes Agent automatically discovers and loads context files that shape how it b
 | **.cursor/rules/*.mdc** | Cursor IDE rule modules | CWD only |
 
 :::info Priority system
-Only **one** project context type is loaded per session (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
+Configured external files are additive and load first. Only **one** project context type is then loaded per session (first match wins): `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules`. **SOUL.md** is always loaded independently as the agent identity (slot #1).
 :::
+
+## Configured External Context Files
+
+Use `context.external_files` for shared rules that should apply to every new Hermes session without copying or symlinking them into each project:
+
+```yaml
+context:
+  engine: compressor
+  external_files:
+    - ~/.codex/AGENTS.md
+    - ~/.claude/CLAUDE.md
+```
+
+Paths may be absolute, start with `~`, use environment variables such as `${HOME}`, or be relative to your home directory. Files load in the declared order before cwd-discovered project context. Missing, empty, unreadable, and non-file entries are skipped. Aliases to the same filesystem object are loaded only once, including overlap with project context files.
+
+Set the list directly or run the guided detector:
+
+```bash
+hermes config set context.external_files '~/.codex/AGENTS.md, ~/.claude/CLAUDE.md'
+hermes setup context
+```
+
+External files use the same UTF-8 decoding, prompt-injection scan, and per-file `context_file_max_chars` truncation as project context files. Changes apply to new sessions. `hermes --ignore-rules` skips both external and project context files.
+
+The Dashboard editor shows this field as one path per line, preserving commas
+inside a path. Other list settings retain the generic comma-separated editor.
 
 ## AGENTS.md
 
@@ -106,12 +133,13 @@ This means your existing Cursor conventions automatically apply when using Herme
 
 Context files are loaded by `build_context_files_prompt()` in `agent/prompt_builder.py`:
 
-1. **Scan working directory** — checks for `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules` (first match wins)
-2. **Content is read** — each file is read as UTF-8 text
-3. **Security scan** — content is checked for prompt injection patterns
-4. **Truncation** — files exceeding `context_file_max_chars` characters (default 20,000) are head/tail truncated (70% head, 20% tail, with a marker in the middle)
-5. **Assembly** — all sections are combined under a `# Project Context` header
-6. **Injection** — the assembled content is added to the system prompt
+1. **Load configured external files** — `context.external_files` entries are additive and preserve declared order
+2. **Scan working directory** — checks for `.hermes.md` → `AGENTS.md` → `CLAUDE.md` → `.cursorrules` (first match wins)
+3. **Content is read** — each file is read as UTF-8 text
+4. **Security scan** — content is checked for prompt injection patterns
+5. **Truncation** — files exceeding `context_file_max_chars` characters (default 20,000) are head/tail truncated (70% head, 20% tail, with a marker in the middle)
+6. **Assembly** — all sections are combined under a `# Project Context` header
+7. **Injection** — the assembled content is added to the system prompt
 
 ### During the session (progressive discovery)
 
@@ -130,6 +158,10 @@ The final prompt section looks roughly like:
 # Project Context
 
 The following project context files have been loaded and should be followed:
+
+## ~/.codex/AGENTS.md
+
+[Your configured shared rules here]
 
 ## AGENTS.md
 

@@ -230,10 +230,19 @@ class TestSessionLifecycle:
 
     def test_update_system_prompt(self, db):
         db.create_session(session_id="s1", source="cli")
-        db.update_system_prompt("s1", "You are a helpful assistant.")
+        manifest = '{"identities":[],"version":1}'
+        db.update_system_prompt(
+            "s1", "You are a helpful assistant.", manifest
+        )
 
         session = db.get_session("s1")
         assert session["system_prompt"] == "You are a helpful assistant."
+        assert session["context_file_identities"] == manifest
+
+        db.update_system_prompt("s1", "Updated prompt")
+        session = db.get_session("s1")
+        assert session["system_prompt"] == "Updated prompt"
+        assert session["context_file_identities"] == manifest
 
     def test_update_token_counts(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -5926,12 +5935,13 @@ def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(d
 # =========================================================================
 
 class TestCompactRows:
-    """list_sessions_rich and _get_session_rich_row with compact_rows=True
-    must omit system_prompt but return all other metadata fields."""
+    """Compact rich rows omit internal prompt state but preserve metadata."""
 
     def _create(self, db, sid, *, system_prompt="big blob " * 500):
         db.create_session(session_id=sid, source="cli", model="m")
-        db.update_system_prompt(sid, system_prompt)
+        db.update_system_prompt(
+            sid, system_prompt, '{"identities":[],"version":1}'
+        )
         return sid
 
     def test_compact_rows_omits_system_prompt(self, db):
@@ -5939,11 +5949,13 @@ class TestCompactRows:
         rows = db.list_sessions_rich(compact_rows=True)
         assert len(rows) == 1
         assert "system_prompt" not in rows[0]
+        assert "context_file_identities" not in rows[0]
 
     def test_full_rows_include_system_prompt(self, db):
         self._create(db, "s1", system_prompt="keep me")
         rows = db.list_sessions_rich(compact_rows=False)
         assert rows[0]["system_prompt"] == "keep me"
+        assert rows[0]["context_file_identities"] is not None
 
     def test_compact_rows_preserves_metadata_fields(self, db):
         self._create(db, "s1")
@@ -5961,24 +5973,28 @@ class TestCompactRows:
         rows = db.list_sessions_rich(compact_rows=True, order_by_last_active=True)
         assert len(rows) == 2
         assert all("system_prompt" not in r for r in rows)
+        assert all("context_file_identities" not in r for r in rows)
 
     def test_get_session_rich_row_compact_omits_system_prompt(self, db):
         self._create(db, "s1", system_prompt="should be gone")
         row = db._get_session_rich_row("s1", compact_rows=True)
         assert row is not None
         assert "system_prompt" not in row
+        assert "context_file_identities" not in row
         assert row["id"] == "s1"
 
     def test_get_session_rich_row_full_includes_system_prompt(self, db):
         self._create(db, "s1", system_prompt="stay")
         row = db._get_session_rich_row("s1", compact_rows=False)
         assert row["system_prompt"] == "stay"
+        assert row["context_file_identities"] is not None
 
     def test_compact_rows_default_is_false(self, db):
         """Default behaviour (compact_rows not passed) is unchanged — full rows."""
         self._create(db, "s1", system_prompt="present")
         rows = db.list_sessions_rich()
         assert "system_prompt" in rows[0]
+        assert "context_file_identities" in rows[0]
 
     def test_compact_projection_tracks_schema(self, db):
         """Behavior contract: compact rows carry EVERY sessions column except
@@ -5990,12 +6006,15 @@ class TestCompactRows:
             row[1] for row in db._conn.execute("PRAGMA table_info(sessions)")
         }
         row = db.list_sessions_rich(compact_rows=True)[0]
-        # Hardcode the one sanctioned exclusion: if the excluded set ever
-        # widens (or the projection silently drops a column), this fails and
-        # forces a conscious review of what list consumers lose.
-        missing = live_cols - set(row) - {"system_prompt"}
+        # Hardcode sanctioned internal exclusions: widening this set requires
+        # a conscious review of what list consumers lose.
+        missing = live_cols - set(row) - {
+            "system_prompt",
+            "context_file_identities",
+        }
         assert not missing, f"compact projection lost schema columns: {missing}"
         assert "system_prompt" not in row
+        assert "context_file_identities" not in row
 
     def test_compact_rows_tip_projection_omits_system_prompt(self, db):
         """Compression-tip projection must not reintroduce the blob: the
@@ -6019,6 +6038,7 @@ class TestCompactRows:
         projected = [r for r in rows if r.get("_lineage_root_id") == "root"]
         assert projected, "compression root should be projected to its tip"
         assert all("system_prompt" not in r for r in rows)
+        assert all("context_file_identities" not in r for r in rows)
 
 
 # =========================================================================

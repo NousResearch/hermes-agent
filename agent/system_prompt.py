@@ -463,9 +463,19 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
         # CLI), None lets build_context_files_prompt fall back to the launch
         # dir — the user's real cwd there, but the install dir for the gateway
         # daemon, which is why the gateway sets TERMINAL_CWD.
+        startup_loaded_context_ids: set[object] = set()
         context_files_prompt = _r.build_context_files_prompt(
-            cwd=resolve_context_cwd(), skip_soul=_soul_loaded,
-            context_length=_ctx_len)
+            cwd=resolve_context_cwd(),
+            skip_soul=_soul_loaded,
+            context_length=_ctx_len,
+            loaded_paths=startup_loaded_context_ids,
+        )
+        tracker = getattr(agent, "_subdirectory_hints", None)
+        register_context_ids = getattr(
+            tracker, "register_loaded_context_file_identities", None
+        )
+        if startup_loaded_context_ids and callable(register_context_ids):
+            register_context_ids(startup_loaded_context_ids)
         if context_files_prompt:
             context_parts.append(context_files_prompt)
 

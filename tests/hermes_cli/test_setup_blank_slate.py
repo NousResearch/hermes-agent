@@ -141,6 +141,7 @@ class TestBlankSlateFork:
         # Neutralize side-effecting setup steps and I/O.
         monkeypatch.setattr(s, "setup_model_provider", lambda cfg, **k: None)
         monkeypatch.setattr(s, "setup_terminal_backend", lambda cfg, **k: None)
+        monkeypatch.setattr(s, "setup_external_context_files", lambda cfg: None)
         monkeypatch.setattr(s, "save_config", lambda cfg: None)
         monkeypatch.setattr(s, "_print_setup_summary", lambda cfg, home: None)
         monkeypatch.setattr(s, "print_header", lambda *a, **k: None)
@@ -151,6 +152,14 @@ class TestBlankSlateFork:
     def test_finish_now_skips_walkthrough(self, monkeypatch, tmp_path):
         import hermes_cli.setup as s
         self._patch_common(monkeypatch)
+        external_context_setup = {"calls": 0}
+        monkeypatch.setattr(
+            s,
+            "setup_external_context_files",
+            lambda cfg: external_context_setup.__setitem__(
+                "calls", external_context_setup["calls"] + 1
+            ),
+        )
         # Fork prompt returns 0 = finish now.
         monkeypatch.setattr(s, "prompt_choice", lambda *a, **k: 0)
         walked = {"called": False}
@@ -166,6 +175,7 @@ class TestBlankSlateFork:
         # Minimal baseline was applied, walkthrough was NOT run.
         assert cfg["platform_toolsets"]["cli"] == ["file", "terminal"]
         assert walked["called"] is False
+        assert external_context_setup["calls"] == 1
         # Finish-now path records the skill opt-out (no bundled skills).
         assert opted_out["value"] is True
 

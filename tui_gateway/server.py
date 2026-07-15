@@ -2437,7 +2437,18 @@ def _persist_live_session_system_prompt(session: dict | None) -> None:
     try:
         prompt = agent._build_system_prompt(None)
         agent._cached_system_prompt = prompt
-        db.update_system_prompt(getattr(agent, "session_id", None) or session_key, prompt)
+        tracker = getattr(agent, "_subdirectory_hints", None)
+        export_identities = getattr(
+            tracker, "export_startup_identity_manifest", None
+        )
+        identity_manifest = (
+            export_identities() if callable(export_identities) else None
+        )
+        db.update_system_prompt(
+            getattr(agent, "session_id", None) or session_key,
+            prompt,
+            identity_manifest,
+        )
     except Exception:
         logger.debug("failed to persist live session system prompt", exc_info=True)
 

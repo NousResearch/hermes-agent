@@ -13,13 +13,18 @@ the conversation without modifying the system prompt (preserving prompt caching)
 Inspired by Block/goose's SubdirectoryHintTracker.
 """
 
+import json
 import logging
 import os
 import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional, Set
 
-from agent.prompt_builder import _scan_context_content
+from agent.prompt_builder import (
+    _CONTEXT_LOADED,
+    _scan_context_content,
+    _read_context_file,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +75,84 @@ class SubdirectoryHintTracker:
     def __init__(self, working_dir: Optional[str] = None):
         self.working_dir = Path(working_dir or os.getcwd()).resolve()
         self._loaded_dirs: Set[Path] = set()
+        self._loaded_context_file_identities: Set[object] = set()
+        self._startup_context_file_identities: Set[object] = set()
         # Pre-mark the working dir as loaded (startup context handles it)
         self._loaded_dirs.add(self.working_dir)
+
+    def register_loaded_context_file_identities(self, identities) -> None:
+        """Remember context files already loaded during this agent's startup."""
+        self._loaded_context_file_identities.difference_update(
+            self._startup_context_file_identities
+        )
+        self._startup_context_file_identities = set(identities)
+        self._loaded_context_file_identities.update(
+            self._startup_context_file_identities
+        )
+
+    def export_startup_identity_manifest(self) -> str:
+        """Serialize startup identities for cached-system-prompt restoration."""
+        entries = []
+        for identity in sorted(
+            self._startup_context_file_identities, key=repr
+        ):
+            if not isinstance(identity, tuple) or not identity:
+                raise ValueError("unsupported context file identity")
+            if identity[0] == "inode" and len(identity) == 3:
+                entries.append(
+                    {
+                        "kind": "inode",
+                        "device": int(identity[1]),
+                        "inode": int(identity[2]),
+                    }
+                )
+            elif identity[0] == "path" and len(identity) == 2:
+                entries.append(
+                    {"kind": "path", "path": str(identity[1])}
+                )
+            else:
+                raise ValueError("unsupported context file identity")
+        return json.dumps(
+            {"version": 1, "identities": entries},
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+    def restore_startup_identity_manifest(self, manifest: str) -> None:
+        """Restore and register identities persisted with a cached prompt."""
+        payload = json.loads(manifest)
+        if not isinstance(payload, dict) or payload.get("version") != 1:
+            raise ValueError("unsupported context identity manifest")
+        raw_entries = payload.get("identities")
+        if not isinstance(raw_entries, list):
+            raise ValueError("invalid context identity manifest")
+
+        identities = set()
+        for entry in raw_entries:
+            if not isinstance(entry, dict):
+                raise ValueError("invalid context identity entry")
+            kind = entry.get("kind")
+            if kind == "inode":
+                device = entry.get("device")
+                inode = entry.get("inode")
+                if (
+                    not isinstance(device, int)
+                    or not isinstance(inode, int)
+                    or device < 0
+                    or inode <= 0
+                ):
+                    raise ValueError("invalid inode identity entry")
+                identities.add(("inode", device, inode))
+            elif kind == "path":
+                path = entry.get("path")
+                candidate = Path(path) if isinstance(path, str) else None
+                if candidate is None or not candidate.is_absolute():
+                    raise ValueError("invalid path identity entry")
+                identities.add(("path", candidate))
+            else:
+                raise ValueError("unknown context identity kind")
+
+        self.register_loaded_context_file_identities(identities)
 
     def check_tool_call(
         self,
@@ -221,15 +302,15 @@ class SubdirectoryHintTracker:
         found_hints = []
         for filename in _HINT_FILENAMES:
             hint_path = directory / filename
-            try:
-                if not hint_path.is_file():
-                    continue
-            except OSError:
+            loaded = _read_context_file(hint_path)
+            if loaded.status != _CONTEXT_LOADED:
                 continue
+            if loaded.identity in self._loaded_context_file_identities:
+                # A startup-loaded alias still occupies this directory's
+                # first-match slot, but must not be injected again.
+                break
             try:
-                content = hint_path.read_text(encoding="utf-8").strip()
-                if not content:
-                    continue
+                content = loaded.content.strip()
                 # Same security scan as startup context loading
                 content = _scan_context_content(content, filename)
                 if len(content) > _MAX_HINT_CHARS:
@@ -248,10 +329,11 @@ class SubdirectoryHintTracker:
                     except (ValueError, RuntimeError):
                         pass  # keep absolute
                 found_hints.append((rel_path, content))
+                self._loaded_context_file_identities.add(loaded.identity)
                 # First match wins per directory (like startup loading)
                 break
             except Exception as exc:
-                logger.debug("Could not read %s: %s", hint_path, exc)
+                logger.debug("Could not process %s: %s", hint_path, exc)
 
         if not found_hints:
             return None

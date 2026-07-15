@@ -960,7 +960,18 @@ def compress_context(
                 # in-place keeps and rotation has already reassigned to the new id):
                 # refresh the stored system prompt and reset the flush cursor so the
                 # next turn re-bases its append diff.
-                agent._session_db.update_system_prompt(agent.session_id, new_system_prompt)
+                tracker = getattr(agent, "_subdirectory_hints", None)
+                export_identities = getattr(
+                    tracker, "export_startup_identity_manifest", None
+                )
+                identity_manifest = (
+                    export_identities() if callable(export_identities) else None
+                )
+                agent._session_db.update_system_prompt(
+                    agent.session_id,
+                    new_system_prompt,
+                    identity_manifest,
+                )
                 agent._last_flushed_db_idx = 0
             except Exception as e:
                 # If the rotation rolled back to the parent (orphan-avoidance

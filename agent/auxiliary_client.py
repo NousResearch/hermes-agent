@@ -3667,10 +3667,11 @@ def _call_fallback_candidate_sync(
     caller can continue to the next fallback layer. Non-auth errors raise.
     """
     fb_base = str(getattr(fb_client, "base_url", "") or "")
+    fb_timeout = _get_configured_fallback_timeout(task or "", fb_label, effective_timeout)
     fb_kwargs = _build_call_kwargs(
         fb_label, fb_model, messages,
         temperature=temperature, max_tokens=max_tokens,
-        tools=tools, timeout=effective_timeout,
+        tools=tools, timeout=fb_timeout,
         extra_body=effective_extra_body, base_url=fb_base)
     try:
         return _validate_llm_response(
@@ -3685,7 +3686,7 @@ def _call_fallback_candidate_sync(
                 retry_kwargs = _build_call_kwargs(
                     fb_provider, retry_model or fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
-                    tools=tools, timeout=effective_timeout,
+                    tools=tools, timeout=fb_timeout,
                     extra_body=effective_extra_body,
                     base_url=str(getattr(retry_client, "base_url", "") or fb_base))
                 try:
@@ -3722,10 +3723,11 @@ async def _call_fallback_candidate_async(
 ) -> Optional[Any]:
     """Async mirror of :func:`_call_fallback_candidate_sync`."""
     fb_base = str(getattr(fb_client, "base_url", "") or "")
+    fb_timeout = _get_configured_fallback_timeout(task or "", fb_label, effective_timeout)
     fb_kwargs = _build_call_kwargs(
         fb_label, fb_model, messages,
         temperature=temperature, max_tokens=max_tokens,
-        tools=tools, timeout=effective_timeout,
+        tools=tools, timeout=fb_timeout,
         extra_body=effective_extra_body, base_url=fb_base)
     try:
         return _validate_llm_response(
@@ -3741,7 +3743,7 @@ async def _call_fallback_candidate_async(
                 retry_kwargs = _build_call_kwargs(
                     fb_provider, retry_model or fb_model, messages,
                     temperature=temperature, max_tokens=max_tokens,
-                    tools=tools, timeout=effective_timeout,
+                    tools=tools, timeout=fb_timeout,
                     extra_body=effective_extra_body,
                     base_url=str(getattr(retry_client, "base_url", "") or fb_base))
                 try:
@@ -6150,6 +6152,37 @@ def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
     if timeout is None and task == "compression":
         effective = max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS)
     return effective
+
+
+def _get_configured_fallback_timeout(
+    task: str,
+    provider_label: str,
+    default: float,
+) -> float:
+    """Read an optional timeout override from auxiliary.<task>.fallback_chain."""
+    if not task or not provider_label.startswith("fallback_chain["):
+        return default
+    try:
+        entry_index = int(provider_label.split("[", 1)[1].split("]", 1)[0])
+    except (IndexError, TypeError, ValueError):
+        return default
+
+    task_config = _get_auxiliary_task_config(task)
+    chain = task_config.get("fallback_chain")
+    if not isinstance(chain, list) or not (0 <= entry_index < len(chain)):
+        return default
+    entry = chain[entry_index]
+    if not isinstance(entry, dict):
+        return default
+
+    raw = entry.get("timeout")
+    if raw is None:
+        return default
+    try:
+        timeout = float(raw)
+    except (TypeError, ValueError):
+        return default
+    return timeout if timeout > 0 else default
 
 
 def _get_task_extra_body(task: str) -> Dict[str, Any]:

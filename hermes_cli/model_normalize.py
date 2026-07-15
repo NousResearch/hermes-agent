@@ -423,14 +423,11 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
         return _dots_to_hyphens(bare)
 
     # --- Vertex AI OpenAI-compatible endpoint: Gemini/Gemma models require a
-    #     publisher-qualified ID. Preserve explicit publisher/model IDs so
-    #     non-Google Vertex publishers remain addressable.
+    #     publisher-qualified ID on Google's official endpoint. At this stage
+    #     the endpoint URL is not available, so only repair matching provider
+    #     aliases and defer publisher qualification to vertex_adapter.
     if provider == "vertex":
-        if "/" in name:
-            return name
-        if name.lower().startswith(("gemini-", "gemma-")):
-            return f"google/{name}"
-        return name
+        return _strip_matching_provider_prefix(name, provider)
 
     # --- Copilot / Copilot ACP: delegate to the Copilot-specific
     #     normalizer.  It knows about the alias table (vendor-prefix

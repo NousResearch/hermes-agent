@@ -234,9 +234,13 @@ def normalize_vertex_model_for_request(model_name: object, base_url: object) -> 
     model = str(model_name or "").strip()
     if not model:
         return model
+
+    from hermes_cli.model_normalize import normalize_model_for_provider
+
+    model = normalize_model_for_provider(model, "vertex")
     if "/" in model:
         return model
-    if not model.lower().startswith("gemini-"):
+    if not model.lower().startswith(("gemini-", "gemma-")):
         return model
     if not is_vertex_openapi_base_url(base_url):
         return model

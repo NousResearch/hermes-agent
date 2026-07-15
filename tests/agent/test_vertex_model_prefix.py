@@ -103,14 +103,33 @@ def test_build_api_kwargs_prefixes_native_vertex_request_model(monkeypatch):
     assert agent.model == "gemini-3.1-flash-lite"
 
 
-def test_build_api_kwargs_does_not_prefix_custom_third_party_url(monkeypatch):
+def test_build_api_kwargs_does_not_prefix_vertex_relay_url(monkeypatch):
+    from hermes_cli.model_normalize import normalize_model_for_provider
+
     monkeypatch.setattr("providers.get_provider_profile", lambda provider: None)
+    configured_model = normalize_model_for_provider("gemini-3.1-flash-lite", "vertex")
     agent = _make_chat_agent(
-        provider="custom",
-        model="gemini-3.1-flash-lite",
+        provider="vertex",
+        model=configured_model,
         base_url="https://litellm.example.com/v1",
     )
 
     kwargs = build_api_kwargs(agent, [{"role": "user", "content": "hi"}])
 
+    assert configured_model == "gemini-3.1-flash-lite"
     assert kwargs["model"] == "gemini-3.1-flash-lite"
+
+
+def test_provider_alias_is_repaired_before_official_vertex_request(monkeypatch):
+    from hermes_cli.model_normalize import normalize_model_for_provider
+
+    monkeypatch.setattr("providers.get_provider_profile", lambda provider: None)
+    configured_model = normalize_model_for_provider(
+        "google-vertex/gemini-3.1-flash-lite", "vertex"
+    )
+    agent = _make_chat_agent(provider="vertex", model=configured_model)
+
+    kwargs = build_api_kwargs(agent, [{"role": "user", "content": "hi"}])
+
+    assert configured_model == "gemini-3.1-flash-lite"
+    assert kwargs["model"] == "google/gemini-3.1-flash-lite"

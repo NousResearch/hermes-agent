@@ -83,12 +83,14 @@ class TestVertexModelNormalization:
     """Vertex OpenAI-compatible endpoint requires publisher/model for Gemini."""
 
     @pytest.mark.parametrize("model,expected", [
-        ("gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite"),
-        ("Gemini-3.5-Flash", "google/Gemini-3.5-Flash"),
+        ("gemini-3.1-flash-lite", "gemini-3.1-flash-lite"),
+        ("Gemini-3.5-Flash", "Gemini-3.5-Flash"),
         ("google/gemini-3.1-flash-lite", "google/gemini-3.1-flash-lite"),
+        ("vertex/gemini-3.1-flash-lite", "gemini-3.1-flash-lite"),
+        ("google-vertex/gemini-3.1-flash-lite", "gemini-3.1-flash-lite"),
         ("anthropic/claude-sonnet-4", "anthropic/claude-sonnet-4"),
     ])
-    def test_vertex_prefixes_only_bare_gemini_family_models(self, model, expected):
+    def test_vertex_strips_only_matching_provider_aliases(self, model, expected):
         assert normalize_model_for_provider(model, "vertex") == expected
 
 

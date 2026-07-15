@@ -50,6 +50,11 @@ MUTATING_TOOL_NAMES = frozenset(
         "browser_click",
         "browser_type",
         "browser_press",
+        # browser_wait mutates no DOM itself, but it advances page state by
+        # letting timers/network settle — the whole point of calling it is
+        # that the next read may differ, so it counts as progress, not as
+        # another idempotent read.
+        "browser_wait",
         "browser_scroll",
         "browser_navigate",
         "send_message",

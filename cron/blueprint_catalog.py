@@ -129,7 +129,10 @@ CATALOG: List[AutomationBlueprint] = [
             "Produce a concise morning briefing for the user: today's calendar "
             "events, the local weather, and any urgent items. Keep it short and "
             "scannable. If no data sources are connected, give a brief "
-            "good-morning with the date and offer to connect calendar/email."
+            "good-morning with the date and offer to connect calendar/email. "
+            "If the file ~/.hermes/observability/webhub/latest_briefing.md "
+            "exists, read it and include a compact note about OpenRouter "
+            "performance, throughput, and cost."
         ),
         slots=[_TIME("08:00"), _DELIVER],
         tags=("daily", "briefing"),

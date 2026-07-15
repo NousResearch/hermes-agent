@@ -258,6 +258,76 @@ Plugin authors should preserve this property:
 
 Minimal observer plugin:
 
+## OpenRouter Control Plane
+
+The independent OpenRouter control-plane receiver now exposes a Prometheus
+scrape endpoint and a compact summary endpoint without going through Hermes.
+
+Default local endpoints:
+
+- webhook ingest: `http://127.0.0.1:8788/openrouter/webhooks/traces`
+- health: `http://127.0.0.1:8788/health`
+- summary: `http://127.0.0.1:8788/summary`
+- metrics: `http://127.0.0.1:8788/metrics`
+
+Use the provided assets:
+
+- Prometheus scrape config: [openrouter-webhook-prometheus.yml](/Users/neilrobinson/code/hermes-agent-upstream/docs/observability/openrouter-webhook-prometheus.yml)
+- Grafana dashboard: [openrouter-webhook-grafana-dashboard.json](/Users/neilrobinson/code/hermes-agent-upstream/docs/observability/openrouter-webhook-grafana-dashboard.json)
+- payload contract: [2026-07-11-openrouter-webhook-payload-contract.md](/Users/neilrobinson/code/hermes-agent-upstream/docs/plans/2026-07-11-openrouter-webhook-payload-contract.md)
+
+### Prometheus
+
+For a host-native Prometheus on the same machine, add this scrape job:
+
+```yaml
+scrape_configs:
+  - job_name: openrouter_webhook_control_plane
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['127.0.0.1:8788']
+```
+
+For a containerized Prometheus on macOS, use:
+
+```yaml
+scrape_configs:
+  - job_name: openrouter_webhook_control_plane
+    metrics_path: /metrics
+    static_configs:
+      - targets: ['host.docker.internal:8788']
+```
+
+### Grafana
+
+1. Import `docs/observability/openrouter-webhook-grafana-dashboard.json`
+2. Select the Prometheus datasource
+3. Verify these metrics resolve:
+   - `openrouter_webhook_spans_total`
+   - `openrouter_webhook_total_cost_usd`
+   - `openrouter_webhook_tokens_total`
+   - `openrouter_webhook_avg_duration_ms`
+   - `openrouter_webhook_model_spans_total`
+   - `openrouter_webhook_model_cost_usd`
+
+### Current Metrics Contract
+
+The receiver exports:
+
+- `openrouter_webhook_spans_total`
+- `openrouter_webhook_test_spans_total`
+- `openrouter_webhook_total_cost_usd`
+- `openrouter_webhook_tokens_total`
+- `openrouter_webhook_input_tokens_total`
+- `openrouter_webhook_output_tokens_total`
+- `openrouter_webhook_avg_duration_ms`
+- `openrouter_webhook_model_spans_total{request_model="..."}`
+- `openrouter_webhook_model_cost_usd{request_model="..."}`
+
+These metrics are cumulative since receiver start and are intended for the
+first Grafana control-plane dashboard while the broader independent alerting
+and rollup pipeline is being built out.
+
 ```python
 def register(ctx):
     ctx.register_hook("pre_api_request", on_pre_api_request)

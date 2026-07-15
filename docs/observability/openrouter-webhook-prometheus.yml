@@ -1,0 +1,26 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: openrouter_webhook_control_plane
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          # Host-native Prometheus on the same machine as the receiver.
+          - 127.0.0.1:8788
+        labels:
+          service: openrouter-webhook
+          source: openrouter
+          environment: control-plane
+
+  - job_name: openrouter_webhook_control_plane_container
+    metrics_path: /metrics
+    static_configs:
+      - targets:
+          # Containerized Prometheus scraping the host process on macOS.
+          - host.docker.internal:8788
+        labels:
+          service: openrouter-webhook
+          source: openrouter
+          environment: control-plane

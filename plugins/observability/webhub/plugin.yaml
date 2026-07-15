@@ -1,0 +1,7 @@
+name: webhub
+version: "0.1.0"
+description: "Optional OpenRouter observability for Hermes. Captures request cost, latency, throughput, and exposes dashboard/Prometheus-friendly summaries for the webhub workflow."
+author: NousResearch
+hooks:
+  - post_api_request
+  - api_request_error

@@ -647,3 +647,109 @@ class TestV4ALspDiagnosticsPropagation:
         assert result.lsp_diagnostics is not None
         assert per_file["a.ts"] in result.lsp_diagnostics
         assert per_file["b.ts"] in result.lsp_diagnostics
+
+
+class TestV4ABomRoundTrip:
+    """V4A patches must not silently strip a UTF-8 BOM on UPDATE.
+
+    ``read_file_raw`` deliberately strips the BOM (the agent should
+    never see U+FEFF), but the underlying ``write_file`` must restore
+    it on rewrite — otherwise a V4A patch turns an existing BOM-bearing
+    file into a plain UTF-8 file.  Regression for teknium1 review on
+    PR #55661.
+    """
+
+    BOM = "\ufeff"
+
+    def _file_ops_for_update(self, file_path: str, original_bytes: bytes):
+        """Build a FakeFileOps whose ``write_file`` writes real bytes to
+        ``file_path``, simulating BOM-preserving behaviour like the real
+        ``FileOperations.write_file`` (which probes disk for the marker)."""
+        from pathlib import Path
+        from tools.file_operations import _has_bom, _UTF8_BOM
+
+        target = Path(file_path)
+        _bom = self.BOM  # capture for inner class
+
+        class FakeFileOps:
+            def read_file_raw(self, path):
+                # Simulate BOM-stripped read — same as the real
+                # read_file_raw which strips the marker before returning.
+                decoded = original_bytes.decode("utf-8")
+                if decoded.startswith(_bom):
+                    decoded = decoded[1:]
+                return SimpleNamespace(content=decoded, error=None)
+
+            def write_file(self, path, content, pre_content=None):
+                # Simulate real write_file: probe the target for a BOM
+                # (the real impl calls _file_has_bom → head -c 3) and
+                # prepend if the original had one.
+                had_bom = target.exists() and target.read_bytes().startswith(
+                    _bom.encode("utf-8")
+                )
+                if had_bom and not _has_bom(content):
+                    content = _UTF8_BOM + content
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+                return SimpleNamespace(error=None)
+
+        return FakeFileOps()
+
+    def test_update_preserves_bom(self, tmp_path):
+        """A V4A UPDATE on a BOM-bearing file keeps the BOM."""
+        from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
+
+        target = tmp_path / "bom_config.py"
+        original = self.BOM + "setting = 'old'\n"
+        target.write_text(original, encoding="utf-8")
+
+        patch = """\
+*** Begin Patch
+*** Update File: bom_config.py
+@@ setting @@
+-setting = 'old'
++setting = 'new'
+*** End Patch"""
+
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        file_ops = self._file_ops_for_update(str(target), original.encode("utf-8"))
+        result = apply_v4a_operations(ops, file_ops)
+
+        assert result.success is True
+        raw = target.read_bytes()
+        assert raw.startswith(
+            self.BOM.encode("utf-8")
+        ), "BOM was stripped by V4A round-trip"
+        assert b"setting = 'new'" in raw
+        assert b"setting = 'old'" not in raw
+
+    def test_update_no_bom_when_original_had_none(self, tmp_path):
+        """A V4A UPDATE on a plain file must NOT inject a BOM."""
+        from tools.patch_parser import parse_v4a_patch, apply_v4a_operations
+
+        target = tmp_path / "plain.py"
+        original = "print('hello')\n"
+        target.write_text(original, encoding="utf-8")
+
+        patch = """\
+*** Begin Patch
+*** Update File: plain.py
+@@ print @@
+-print('hello')
++print('world')
+*** End Patch"""
+
+        ops, err = parse_v4a_patch(patch)
+        assert err is None
+
+        file_ops = self._file_ops_for_update(str(target), original.encode("utf-8"))
+        result = apply_v4a_operations(ops, file_ops)
+
+        assert result.success is True
+        raw = target.read_bytes()
+        assert not raw.startswith(
+            self.BOM.encode("utf-8")
+        ), "BOM was injected on a plain file"
+        assert b"print('world')" in raw

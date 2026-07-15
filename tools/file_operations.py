@@ -1020,13 +1020,16 @@ class ShellFileOperations(FileOperations):
     def _file_has_bom(self, path: str, pre_content: Optional[str] = None) -> bool:
         """Whether the file on disk starts with a UTF-8 BOM.
 
-        Uses ``pre_content`` if we already read the file (zero extra exec
-        calls); otherwise issues a tiny ``head -c 3`` to sample just the
-        marker. A missing/empty file returns False (new writes get no BOM
+        Always probes the first 3 bytes on disk — do NOT trust
+        ``pre_content`` for BOM detection because the most common
+        provider (``read_file_raw``) deliberately strips BOMs so the
+        agent never sees U+FEFF glyphs.  Passing BOM-stripped content
+        through ``pre_content`` would cause a false-negative and
+        silently remove the marker on rewrite.
+
+        A missing/empty file returns False (new writes get no BOM
         unless the caller explicitly includes one).
         """
-        if pre_content is not None:
-            return _has_bom(pre_content)
         head_cmd = f"head -c 3 {self._escape_shell_arg(path)} 2>/dev/null"
         head_result = self._exec(head_cmd)
         if head_result.exit_code != 0 or not head_result.stdout:
@@ -1338,8 +1341,12 @@ class ShellFileOperations(FileOperations):
             pre_content: Pre-edit file content if the caller already has it
                 (e.g. patch_replace read the file for fuzzy matching).
                 When provided, skips a redundant ``cat`` subprocess to
-                re-read the file for lint baseline / line-ending / BOM
-                detection. When None, reads from disk as before.
+                re-read the file for lint baseline / line-ending
+                detection. BOM detection always probes disk (the most
+                common provider — ``read_file_raw`` — strips BOMs, so
+                trusting ``pre_content`` for BOM would cause false
+                negatives and silent marker loss on rewrite). When
+                None, reads from disk as before.
 
         Returns:
             WriteResult with bytes written, lint summary, or error.

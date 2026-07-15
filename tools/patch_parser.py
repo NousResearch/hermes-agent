@@ -612,9 +612,15 @@ def _apply_update(op: PatchOperation, file_ops: Any) -> Tuple[bool, str, Optiona
                 new_content = new_content.rstrip('\n') + '\n' + insert_text + '\n'
     
     # Write new content — pass current_content (already read above) to avoid
-    # a redundant cat subprocess inside write_file.
-    write_result = file_ops.write_file(op.file_path, new_content,
-                                       pre_content=current_content)
+    # a redundant cat subprocess inside write_file.  Fall back to the
+    # two-argument form when the file_ops implementation doesn't accept
+    # ``pre_content`` (duck-typed callers that only implement the basic
+    # ``write_file(path, content)`` contract).
+    try:
+        write_result = file_ops.write_file(op.file_path, new_content,
+                                           pre_content=current_content)
+    except TypeError:
+        write_result = file_ops.write_file(op.file_path, new_content)
     if write_result.error:
         return False, write_result.error, None, None
     

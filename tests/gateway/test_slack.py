@@ -2969,17 +2969,84 @@ class TestMessageRouting:
         adapter.handle_message.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_message_edits_ignored(self, adapter):
-        """Message edits should be ignored."""
+    async def test_message_deletions_ignored(self, adapter):
+        """Message deletions should be ignored."""
         event = {
-            "text": "edited message",
             "user": "U_USER",
             "channel": "C123",
             "channel_type": "im",
             "ts": "1234567890.000001",
-            "subtype": "message_changed",
+            "subtype": "message_deleted",
         }
         await adapter._handle_slack_message(event)
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_message_edit_with_new_mention_processed(self, adapter):
+        """Editing @bot into a previously ignored MPIM message should route once."""
+        original_event = {
+            "text": "whats the rapchat summary for last 12 hours",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "mpim",
+            "team": "T123",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(original_event)
+        adapter.handle_message.assert_not_called()
+
+        edited_event = {
+            "subtype": "message_changed",
+            "channel": "C123",
+            "channel_type": "mpim",
+            "team": "T123",
+            "ts": "1234567890.000001",
+            "message": {
+                "text": "<@U_BOT> whats the rapchat summary for last 12 hours",
+                "user": "U_USER",
+                "channel": "C123",
+                "ts": "1234567890.000001",
+                "edited": {"user": "U_USER", "ts": "1234567899.000001"},
+            },
+        }
+        await adapter._handle_slack_message(edited_event)
+
+        adapter.handle_message.assert_called_once()
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "whats the rapchat summary for last 12 hours"
+        assert msg_event.message_id == "1234567890.000001"
+
+    @pytest.mark.asyncio
+    async def test_message_edit_after_processed_mention_ignored(self, adapter):
+        """Editing an already-routed @mention should not produce a duplicate reply."""
+        original_event = {
+            "text": "<@U_BOT> first version",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "mpim",
+            "team": "T123",
+            "ts": "1234567890.000001",
+        }
+        await adapter._handle_slack_message(original_event)
+        adapter.handle_message.assert_called_once()
+        adapter.handle_message.reset_mock()
+
+        edited_event = {
+            "subtype": "message_changed",
+            "channel": "C123",
+            "channel_type": "mpim",
+            "team": "T123",
+            "ts": "1234567890.000001",
+            "message": {
+                "text": "<@U_BOT> edited version",
+                "user": "U_USER",
+                "channel": "C123",
+                "ts": "1234567890.000001",
+                "edited": {"user": "U_USER", "ts": "1234567899.000001"},
+            },
+        }
+        await adapter._handle_slack_message(edited_event)
+
         adapter.handle_message.assert_not_called()
 
 

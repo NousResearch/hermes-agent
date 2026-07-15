@@ -107,15 +107,29 @@ class TestChromiumInstalled:
 
     def test_browser_subprocess_env_excludes_unrelated_credentials(self, monkeypatch):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-reach-agent-browser")
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "browser-must-not-inherit")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "browser-must-not-inherit")
+        monkeypatch.setenv("AWS_SESSION_TOKEN", "browser-must-not-inherit")
+        monkeypatch.setenv("AWS_PROFILE", "browser-must-not-inherit")
+        monkeypatch.setenv("AWS_SHARED_CREDENTIALS_FILE", "/tmp/browser-credentials")
+        monkeypatch.setenv("AWS_WEB_IDENTITY_TOKEN_FILE", "/tmp/browser-token")
         monkeypatch.setenv("BROWSERBASE_API_KEY", "allowed-browser-key")
 
         env = bt._browser_subprocess_env("/tmp/hermes-browser-socket")
 
         assert "ANTHROPIC_API_KEY" not in env
+        assert not {
+            "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE",
+            "AWS_SHARED_CREDENTIALS_FILE", "AWS_WEB_IDENTITY_TOKEN_FILE",
+        } & env.keys()
         assert env["BROWSERBASE_API_KEY"] == "allowed-browser-key"
 
     def test_browser_popen_paths_exclude_unrelated_credentials(self, monkeypatch, tmp_path):
         monkeypatch.setenv("ANTHROPIC_API_KEY", "must-not-reach-agent-browser")
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "browser-must-not-inherit")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "browser-must-not-inherit")
+        monkeypatch.setenv("AWS_SESSION_TOKEN", "browser-must-not-inherit")
+        monkeypatch.setenv("AWS_PROFILE", "browser-must-not-inherit")
         monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
         monkeypatch.setattr(bt, "_find_agent_browser", lambda: "/usr/local/bin/agent-browser")
         monkeypatch.setattr(bt, "_requires_real_termux_browser_install", lambda _command: False)
@@ -153,6 +167,10 @@ class TestChromiumInstalled:
 
         assert launched_envs
         assert all("ANTHROPIC_API_KEY" not in env for env in launched_envs)
+        assert all(
+            not {"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN", "AWS_PROFILE"} & env.keys()
+            for env in launched_envs
+        )
 
     def test_browser_subprocess_env_skips_browser_executable_for_cloud(self, monkeypatch):
         monkeypatch.delenv("AGENT_BROWSER_EXECUTABLE_PATH", raising=False)

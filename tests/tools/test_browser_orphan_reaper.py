@@ -410,6 +410,34 @@ class TestEmergencyCleanupRunsReaper:
 class TestReapOrphanedChromeProcesses:
     """Tests for _reap_orphaned_chrome_processes() — Windows orphan Chrome killer."""
 
+    def test_csv_command_line_with_comma_is_parsed(self):
+        """Quoted commas in CommandLine must not shift the PID columns."""
+        import tools.browser_tool as bt
+
+        csv_lines = (
+            "Node,CommandLine,ParentProcessId,ProcessId\n"
+            'SKYNET,"C:\\\\chrome.exe --headless=new --flag=a,b '
+            '--user-data-dir=C:\\\\Temp\\\\agent-browser-chrome-abc123",100,200\n'
+        )
+
+        assert bt._select_orphaned_chrome_pids(
+            csv_lines, lambda _pid: False
+        ) == [200]
+
+    def test_live_parent_from_concurrent_session_is_not_selected(self):
+        """A live agent-browser parent may belong to another Hermes process."""
+        import tools.browser_tool as bt
+
+        csv_lines = (
+            "Node,CommandLine,ParentProcessId,ProcessId\n"
+            'SKYNET,"C:\\\\chrome.exe --headless=new '
+            '--user-data-dir=C:\\\\Temp\\\\agent-browser-chrome-live",100,200\n'
+        )
+
+        assert bt._select_orphaned_chrome_pids(
+            csv_lines, lambda pid: pid == 100
+        ) == []
+
     @pytest.mark.skipif(os.name != "nt", reason="Windows-only test")
     def test_no_chrome_processes_is_noop(self, monkeypatch):
         """When wmic finds no chrome.exe, return 0."""
@@ -444,6 +472,7 @@ class TestReapOrphanedChromeProcesses:
         )
         fake_result = type("R", (), {"stdout": csv_lines.encode()})()
         monkeypatch.setattr("subprocess.run", lambda *a, **kw: fake_result)
+        monkeypatch.setattr("gateway.status._pid_exists", lambda _pid: False)
 
         killed_pids = []
         monkeypatch.setattr(

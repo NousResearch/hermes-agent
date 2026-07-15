@@ -50,6 +50,7 @@ Usage:
 """
 
 import atexit
+import csv
 import functools
 import json
 import logging
@@ -62,7 +63,7 @@ import tempfile
 import threading
 import time
 import requests
-from typing import Dict, Any, Optional, List, Tuple, Union
+from typing import Dict, Any, Optional, List, Tuple, Union, Callable
 from pathlib import Path
 from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
@@ -1290,6 +1291,58 @@ def _write_owner_pid(socket_dir: str, session_name: str) -> None:
                      session_name, exc)
 
 
+def _select_orphaned_chrome_pids(
+    wmic_output: str,
+    pid_exists: Callable[[int], bool],
+) -> List[int]:
+    """Return agent-browser Chrome PIDs whose recorded parent is dead.
+
+    WMIC emits quoted CSV and Chrome command lines can contain commas, so this
+    parser deliberately uses :mod:`csv`.  Parent liveness is checked
+    fail-closed: an unreadable, invalid, or live parent prevents selection.
+    """
+    rows = csv.reader(wmic_output.splitlines())
+    try:
+        header = next(row for row in rows if row)
+    except StopIteration:
+        return []
+
+    columns = {
+        name.lstrip("\ufeff").strip().lower(): index
+        for index, name in enumerate(header)
+    }
+    required = ("commandline", "parentprocessid", "processid")
+    if any(name not in columns for name in required):
+        return []
+
+    udd_re = re.compile(
+        r'--user-data-dir="?([^"]*agent-browser-chrome-[^" ]+)')
+    orphaned_pids: List[int] = []
+    for row in rows:
+        try:
+            cmdline = row[columns["commandline"]]
+            parent_pid = int(row[columns["parentprocessid"]])
+            pid = int(row[columns["processid"]])
+        except (IndexError, TypeError, ValueError):
+            continue
+
+        if parent_pid <= 0 or pid <= 0:
+            continue
+        if not udd_re.search(cmdline):
+            continue
+        if "--headless" not in cmdline or "--type=" in cmdline:
+            continue
+
+        try:
+            if pid_exists(parent_pid):
+                continue
+        except (OSError, ValueError):
+            continue
+        orphaned_pids.append(pid)
+
+    return orphaned_pids
+
+
 def _reap_orphaned_chrome_processes() -> int:
     """Kill orphaned headless Chrome processes from dead agent-browser daemons.
 
@@ -1309,7 +1362,6 @@ def _reap_orphaned_chrome_processes() -> int:
         return 0
 
     try:
-        import subprocess, tempfile, re
         from gateway.status import _pid_exists
 
         # Only reap when there are NO active browser sessions in this
@@ -1319,7 +1371,6 @@ def _reap_orphaned_chrome_processes() -> int:
             if _active_sessions:
                 return 0
 
-        tmpdir = tempfile.gettempdir()
         result = subprocess.run(
             [
                 "wmic", "process",
@@ -1332,29 +1383,10 @@ def _reap_orphaned_chrome_processes() -> int:
         )
         stdout = result.stdout.decode("utf-8", errors="replace")
 
-        # Collect PIDs of main (non-child-type) Chrome processes that use
-        # an agent-browser-chrome user-data-dir.
-        udd_re = re.compile(
-            r'--user-data-dir="?([^"]*agent-browser-chrome-[^" ]+)')
-        main_pids: list[int] = []
-        for line in stdout.splitlines():
-            line = line.strip()
-            if not line or line.startswith("Node"):
-                continue
-            parts = line.split(",", 3)
-            if len(parts) < 4:
-                continue
-            try:
-                pid = int(parts[3])
-                cmdline = parts[1]
-            except (ValueError, IndexError):
-                continue
-            m = udd_re.search(cmdline)
-            if not m:
-                continue
-            # Only match main browser processes (have --headless, no --type)
-            if "--headless" in cmdline and "--type=" not in cmdline:
-                main_pids.append(pid)
+        # A live parent can be another Hermes process's agent-browser daemon.
+        # Only a matching main Chrome process whose recorded parent is gone is
+        # safe to treat as orphaned.
+        main_pids = _select_orphaned_chrome_pids(stdout, _pid_exists)
 
         if not main_pids:
             return 0

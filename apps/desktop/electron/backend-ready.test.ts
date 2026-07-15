@@ -139,6 +139,28 @@ test('a late announcement after timeout does not throw (listeners torn down)', a
 })
 
 // ---------------------------------------------------------------------------
+// contract: waitForDashboardPort attaches listeners synchronously
+// ---------------------------------------------------------------------------
+
+test('waitForDashboardPort attaches its stdout listener synchronously (no deferred setup gap)', async () => {
+  // The fix in main.ts (d7ada599f) relies on the fact that
+  // waitForDashboardPortAnnouncement attaches its stdout listener during the
+  // constructor call, BEFORE any subsequent code runs. If the function were
+  // refactored to defer listener attachment (e.g. via setTimeout(fn, 0) or
+  // a microtask) the wiring fix would be ineffective — the READY line could
+  // arrive in the async gap. This test confirms the listener is live and
+  // ready to capture data the instant waitForDashboardPort returns.
+  const child = makeFakeChild()
+  // 1. Attach the port listener (synchronous — returns immediately).
+  const p = waitForDashboardPort(child, 1000)
+  // 2. Emit the READY line in the same synchronous turn.
+  child.stdout.emit('data', 'HERMES_BACKEND_READY port=3000\n')
+  // 3. The port promise must resolve immediately — no deferred setup or
+  //    microtask gap — because the listener was attached in step 1.
+  assert.equal(await p, 3000)
+})
+
+// ---------------------------------------------------------------------------
 // ready-file port announcement
 // ---------------------------------------------------------------------------
 

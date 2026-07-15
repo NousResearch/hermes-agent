@@ -99,7 +99,7 @@ try:
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
     from fastapi.staticfiles import StaticFiles
-    from pydantic import BaseModel
+    from pydantic import BaseModel, SecretStr
     from starlette.concurrency import run_in_threadpool
 except ImportError:
     # First try lazy-installing the dashboard extras. Only the user actually
@@ -115,7 +115,7 @@ except ImportError:
         from fastapi.middleware.cors import CORSMiddleware
         from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
         from fastapi.staticfiles import StaticFiles
-        from pydantic import BaseModel
+        from pydantic import BaseModel, SecretStr
         from starlette.concurrency import run_in_threadpool
     except Exception:
         raise SystemExit(
@@ -10943,8 +10943,10 @@ class MCPServerCreate(BaseModel):
     args: List[str] = []
     # env: KEY=VALUE map for stdio servers (API keys, etc.)
     env: Dict[str, str] = {}
-    # auth: "oauth" | "header" | None
+    # auth: "none" | "oauth" | "header" | None
     auth: Optional[str] = None
+    # One-time provisioning input; persisted only to the profile's .env.
+    bearer_token: Optional[SecretStr] = None
     profile: Optional[str] = None
 
 
@@ -10967,6 +10969,12 @@ def _redact_mcp_env(env: Dict[str, Any]) -> Dict[str, str]:
 
 def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
     transport = "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")
+    auth = cfg.get("auth")
+    headers = cfg.get("headers") or {}
+    if not auth and isinstance(headers, dict) and any(
+        str(key).lower() == "authorization" for key in headers
+    ):
+        auth = "header"
     return {
         "name": name,
         "transport": transport,
@@ -10974,7 +10982,7 @@ def _mcp_server_summary(name: str, cfg: Dict[str, Any]) -> Dict[str, Any]:
         "command": cfg.get("command"),
         "args": list(cfg.get("args") or []),
         "env": _redact_mcp_env(cfg.get("env") or {}),
-        "auth": cfg.get("auth"),
+        "auth": auth,
         "enabled": cfg.get("enabled", True) is not False,
         # Tool selection: list of enabled tool names, or None = all.
         "tools": cfg.get("tools"),
@@ -10996,35 +11004,78 @@ async def list_mcp_servers(profile: Optional[str] = None):
 
 @app.post("/api/mcp/servers")
 async def add_mcp_server(body: MCPServerCreate, profile: Optional[str] = None):
-    from hermes_cli.mcp_config import _get_mcp_servers, _save_mcp_server
+    from hermes_cli.mcp_config import (
+        _get_mcp_servers,
+        _save_bearer_auth_token,
+        _save_mcp_server,
+    )
 
     name = (body.name or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="Server name is required")
+
+    url = (body.url or "").strip()
+    command = (body.command or "").strip()
+    auth = (body.auth or "none").strip().lower()
+    bearer_token = (
+        body.bearer_token.get_secret_value()
+        if body.bearer_token is not None
+        else None
+    )
+
+    if bool(url) == bool(command):
+        raise HTTPException(
+            status_code=400,
+            detail="Provide exactly one of URL (HTTP/SSE) or command (stdio)",
+        )
+    if auth not in {"none", "header", "oauth"}:
+        raise HTTPException(status_code=400, detail=f"Unsupported auth mode: {auth}")
+
+    if url:
+        if body.args:
+            raise HTTPException(
+                status_code=400,
+                detail="Arguments are only supported for stdio MCP servers",
+            )
+        if body.env:
+            raise HTTPException(
+                status_code=400,
+                detail="Environment variables are only supported for stdio MCP servers",
+            )
+        if auth == "header" and bearer_token is None:
+            raise HTTPException(status_code=400, detail="Bearer token is required")
+        if auth != "header" and body.bearer_token is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="Bearer token requires header authentication",
+            )
+    else:
+        if auth != "none" or body.bearer_token is not None:
+            raise HTTPException(
+                status_code=400,
+                detail="HTTP authentication is not supported for stdio MCP servers",
+            )
+
     with _profile_scope(body.profile or profile):
         existing = _get_mcp_servers()
     if name in existing:
         raise HTTPException(status_code=409, detail=f"Server '{name}' already exists")
-    if not body.url and not body.command:
-        raise HTTPException(
-            status_code=400,
-            detail="Provide either a URL (HTTP/SSE server) or a command (stdio server)",
-        )
-
     server_config: Dict[str, Any] = {}
-    if body.url:
-        server_config["url"] = body.url.strip()
-    if body.command:
-        server_config["command"] = body.command.strip()
+    if url:
+        server_config["url"] = url
+        if auth == "oauth":
+            server_config["auth"] = "oauth"
+    else:
+        server_config["command"] = command
         if body.args:
             server_config["args"] = list(body.args)
-    if body.env:
-        server_config["env"] = dict(body.env)
-    if body.auth:
-        server_config["auth"] = body.auth
+        if body.env:
+            server_config["env"] = dict(body.env)
 
     try:
         with _profile_scope(body.profile or profile):
+            if auth == "header" and bearer_token is not None:
+                server_config["headers"] = _save_bearer_auth_token(name, bearer_token)
             if not _save_mcp_server(name, server_config):
                 raise HTTPException(
                     status_code=400,

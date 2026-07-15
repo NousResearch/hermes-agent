@@ -938,7 +938,9 @@ def _read_systemd_unit_environment(system: bool = False) -> dict[str, str]:
     return parsed
 
 
-def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
+def _hermes_home_from_systemd_unit_file(
+    system: bool = False, service_name: str | None = None
+) -> str | None:
     """Read ``HERMES_HOME`` from the on-disk unit file (not ``systemctl show``).
 
     Prefer the file when refreshing/comparing: under ``sudo``, ``systemctl``
@@ -946,7 +948,11 @@ def _hermes_home_from_systemd_unit_file(system: bool = False) -> str | None:
     ``systemd_unit_is_current`` / ``refresh_systemd_unit_if_needed`` already
     compare against.
     """
-    unit_path = get_systemd_unit_path(system=system)
+    unit_path = (
+        get_systemd_unit_path(system=system)
+        if service_name is None
+        else get_systemd_unit_path(system=system, service_name=service_name)
+    )
     if not unit_path.exists():
         return None
     try:
@@ -1788,8 +1794,20 @@ def get_service_name() -> str:
     return f"{_SERVICE_BASE}-{suffix}"
 
 
-def get_systemd_unit_path(system: bool = False) -> Path:
-    name = get_service_name()
+def get_systemd_unit_path(
+    system: bool = False, service_name: str | None = None
+) -> Path:
+    """Return a gateway unit path, optionally for an explicitly discovered unit.
+
+    Explicit names are restricted to Hermes' generated service-name grammar so
+    a value parsed from ``systemctl list-units`` can never escape the systemd
+    unit directory.
+    """
+    import re
+
+    name = service_name or get_service_name()
+    if not re.fullmatch(r"hermes-gateway(?:-[a-z0-9][a-z0-9_-]{0,63})?", name):
+        raise ValueError(f"Invalid Hermes gateway service name: {name!r}")
     if system:
         return Path("/etc/systemd/system") / f"{name}.service"
     return Path.home() / ".config" / "systemd" / "user" / f"{name}.service"
@@ -2722,6 +2740,11 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
     _drain_timeout = int(_get_restart_drain_timeout() or 0)
     restart_timeout = max(60, _drain_timeout) + 30
 
+    # Exit 75 is Hermes' intentional "drained; please respawn me" code for
+    # service-managed gateway restarts.  RestartForceExitStatus makes
+    # older/non-`Restart=always` units relaunch on 75, while SuccessExitStatus
+    # keeps planned update/restart handoffs from being recorded as failed units
+    # (#31048).  Keep both directives in user and system units.
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
         hermes_home = _hermes_home_for_target_user(home_dir)
@@ -2761,6 +2784,7 @@ Environment="HERMES_HOME={hermes_home}"
 Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
+SuccessExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
@@ -2795,6 +2819,7 @@ Environment="HERMES_HOME={hermes_home}"
 Restart=always
 RestartSec=5
 RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
+SuccessExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}
 KillMode=mixed
 KillSignal=SIGTERM
 ExecReload=/bin/kill -USR1 $MAINPID
@@ -2951,55 +2976,83 @@ def _refuse_temp_home_service_write(definition: str, kind: str) -> bool:
     return True
 
 
-def refresh_systemd_unit_if_needed(system: bool = False) -> bool:
-    """Rewrite the installed systemd unit when the generated definition has changed."""
-    unit_path = get_systemd_unit_path(system=system)
+def refresh_systemd_unit_if_needed(
+    system: bool = False, service_name: str | None = None
+) -> bool:
+    """Rewrite an installed systemd unit when its definition has changed.
+
+    An explicit ``service_name`` is used by ``hermes update`` for units found
+    by the same discovery loop that restarts them. Its pinned ``HERMES_HOME``
+    is adopted only while regenerating that unit, so named profiles are updated
+    independently and the caller's active profile is restored afterwards.
+    """
+    unit_path = (
+        get_systemd_unit_path(system=system)
+        if service_name is None
+        else get_systemd_unit_path(system=system, service_name=service_name)
+    )
     if not unit_path.exists():
         return False
 
-    # The gate below funnels through ``systemd_unit_is_current``, which is the
-    # single HERMES_HOME-sync chokepoint (adopts the unit's pinned home before
-    # any compare/regenerate). No separate pre-sync needed here — and the env
-    # mutation it performs persists for the regenerate path below.
-    if systemd_unit_is_current(system=system):
-        return False
+    previous_home = os.environ.get("HERMES_HOME")
+    try:
+        if service_name is None:
+            # Preserve the normal gateway-command path's HERMES_HOME sync
+            # semantics, notably for sudo/system-scope operations.
+            if systemd_unit_is_current(system=system):
+                return False
+        else:
+            unit_home = _hermes_home_from_systemd_unit_file(
+                system=system, service_name=service_name
+            )
+            if not unit_home:
+                logger.debug(
+                    "Skipping refresh of %s: installed unit has no HERMES_HOME",
+                    service_name,
+                )
+                return False
+            os.environ["HERMES_HOME"] = unit_home
 
-    expected_user = _read_systemd_user_from_unit(unit_path) if system else None
-    new_unit = generate_systemd_unit(system=system, run_as_user=expected_user)
+            installed = unit_path.read_text(encoding="utf-8")
+            expected_user = _read_systemd_user_from_unit(unit_path) if system else None
+            expected = generate_systemd_unit(
+                system=system, run_as_user=expected_user
+            )
+            norm_installed = _normalize_service_definition(
+                _strip_optional_systemd_directives(installed)
+            )
+            norm_expected = _normalize_service_definition(
+                _strip_optional_systemd_directives(expected)
+            )
+            if norm_installed == norm_expected:
+                return False
 
-    # ── Test-environment safety belt ─────────────────────────────────────
-    # The user-scope unit path resolves under ``Path.home()``, which is NOT
-    # sandboxed by the test conftest (only HERMES_HOME is). If a test
-    # exercises ``run_gateway()`` with a pytest-tmp HERMES_HOME, the freshly
-    # generated unit bakes that ``/tmp/pytest-of-.../hermes_test`` path into
-    # ``Environment="HERMES_HOME=..."``. Writing that to the developer's
-    # real user systemd unit file silently breaks their gateway on the next
-    # reboot (systemd loads the polluted env, the gateway looks at an empty
-    # tmp dir, and Telegram/Discord/etc. all show as "not configured").
-    # Refuse to write when the generated unit references a pytest tmpdir.
-    # Detection sniffs the unit body — tests that legitimately exercise the
-    # refresh flow patch ``generate_systemd_unit`` to return synthetic
-    # content (``"new unit\n"``) which doesn't contain these markers and
-    # still works.
-    if not system and (
-        "/pytest-of-" in new_unit
-        or '/hermes_test"' in new_unit
-        or "/hermes_test/" in new_unit
-    ):
-        return False
+        expected_user = _read_systemd_user_from_unit(unit_path) if system else None
+        new_unit = generate_systemd_unit(system=system, run_as_user=expected_user)
 
-    # Structural variant of the same belt: refuse to bake ANY temp-dir
-    # HERMES_HOME into the unit (manual E2E homes like /tmp/hermes-e2e-NNN
-    # don't carry the pytest markers above but poison the unit identically).
-    if _refuse_temp_home_service_write(new_unit, "systemd unit"):
-        return False
+        # Never let a test/E2E HERMES_HOME poison a real user unit. The
+        # structural check also catches manual /tmp and /var/tmp homes.
+        if not system and (
+            "/pytest-of-" in new_unit
+            or '/hermes_test"' in new_unit
+            or "/hermes_test/" in new_unit
+        ):
+            return False
+        if _refuse_temp_home_service_write(new_unit, "systemd unit"):
+            return False
 
-    unit_path.write_text(new_unit, encoding="utf-8")
-    _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
-    print(
-        f"↻ Updated gateway {_service_scope_label(system)} service definition to match the current Hermes install"
-    )
-    return True
+        unit_path.write_text(new_unit, encoding="utf-8")
+        _run_systemctl(["daemon-reload"], system=system, check=True, timeout=30)
+        print(
+            f"↻ Updated gateway {_service_scope_label(system)} service definition to match the current Hermes install"
+        )
+        return True
+    finally:
+        if service_name is not None:
+            if previous_home is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = previous_home
 
 
 def _print_linger_enable_warning(username: str, detail: str | None = None) -> None:

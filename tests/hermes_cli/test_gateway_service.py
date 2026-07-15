@@ -243,6 +243,64 @@ class TestSystemdServiceRefresh:
         assert unit_path.read_text(encoding="utf-8") == "new unit\n"
         assert ["systemctl", "--user", "daemon-reload"] in calls
 
+    def test_refreshes_each_named_profile_unit_from_its_pinned_home(
+        self, tmp_path, monkeypatch
+    ):
+        """An update can refresh default and named-profile units independently."""
+        default_unit = tmp_path / "hermes-gateway.service"
+        coder_unit = tmp_path / "hermes-gateway-coder.service"
+        default_unit.write_text(
+            '[Service]\nEnvironment="HERMES_HOME=/home/alice/.hermes"\nOld=yes\n',
+            encoding="utf-8",
+        )
+        coder_unit.write_text(
+            '[Service]\nEnvironment="HERMES_HOME=/home/alice/.hermes/profiles/coder"\nOld=yes\n',
+            encoding="utf-8",
+        )
+        paths = {
+            "hermes-gateway": default_unit,
+            "hermes-gateway-coder": coder_unit,
+        }
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_systemd_unit_path",
+            lambda system=False, service_name=None: paths[service_name],
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "generate_systemd_unit",
+            lambda system=False, run_as_user=None: (
+                f'[Service]\nEnvironment="HERMES_HOME={os.environ["HERMES_HOME"]}"\n'
+            ),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_run_systemctl",
+            lambda *args, **kwargs: SimpleNamespace(returncode=0, stdout="", stderr=""),
+        )
+        monkeypatch.setenv("HERMES_HOME", "/home/alice/.hermes")
+
+        assert gateway_cli.refresh_systemd_unit_if_needed(
+            system=False, service_name="hermes-gateway"
+        )
+        assert gateway_cli.refresh_systemd_unit_if_needed(
+            system=False, service_name="hermes-gateway-coder"
+        )
+
+        default_text = default_unit.read_text(encoding="utf-8")
+        coder_text = coder_unit.read_text(encoding="utf-8")
+        assert "Old=yes" not in default_text
+        assert "Old=yes" not in coder_text
+        assert 'HERMES_HOME=/home/alice/.hermes"' in default_text
+        assert 'HERMES_HOME=/home/alice/.hermes/profiles/coder"' in coder_text
+        assert os.environ["HERMES_HOME"] == "/home/alice/.hermes"
+
+    def test_explicit_service_name_cannot_escape_systemd_unit_directory(self):
+        with pytest.raises(ValueError, match="Invalid Hermes gateway service name"):
+            gateway_cli.get_systemd_unit_path(
+                system=False, service_name="hermes-gateway-../../pwned"
+            )
+
     def test_refresh_refuses_to_bake_pytest_tmpdir_into_real_user_unit(
         self, tmp_path, monkeypatch
     ):
@@ -435,6 +493,7 @@ class TestGeneratedSystemdUnits:
         assert "ExecStop=" not in unit
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
+        assert f"SuccessExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         # TimeoutStopSec must exceed the default drain_timeout (60s) so
         # systemd doesn't SIGKILL the cgroup before post-interrupt cleanup
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.
@@ -540,12 +599,18 @@ class TestGeneratedSystemdUnits:
             "_get_restart_drain_timeout",
             lambda: DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
         )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_system_service_identity",
+            lambda run_as_user=None: ("alice", "alice", "/home/alice"),
+        )
         unit = gateway_cli.generate_systemd_unit(system=True)
 
         assert "ExecStart=" in unit
         assert "ExecStop=" not in unit
         assert "ExecReload=/bin/kill -USR1 $MAINPID" in unit
         assert f"RestartForceExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
+        assert f"SuccessExitStatus={GATEWAY_SERVICE_RESTART_EXIT_CODE}" in unit
         # TimeoutStopSec must exceed the default drain_timeout (60s) so
         # systemd doesn't SIGKILL the cgroup before post-interrupt cleanup
         # (tool subprocess kill, adapter disconnect) runs — issue #8202.

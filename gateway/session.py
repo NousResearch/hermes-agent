@@ -632,6 +632,7 @@ def build_session_context_prompt(
 # written to sessions.json.  On rehydration after a gateway restart the
 # runner re-resolves credentials via the normal runtime provider resolution.
 PERSISTABLE_MODEL_OVERRIDE_KEYS = ("model", "provider", "base_url")
+MODEL_OVERRIDE_SCOPES = frozenset({"session", "global"})
 
 
 def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict[str, str]]:
@@ -649,6 +650,12 @@ def sanitize_model_override(override: Optional[Dict[str, Any]]) -> Optional[Dict
         if k in PERSISTABLE_MODEL_OVERRIDE_KEYS and v not in (None, "")
     }
     return cleaned or None
+
+
+def sanitize_model_override_scope(scope: Any) -> Optional[str]:
+    """Return a trusted model-override provenance scope, or ``None``."""
+    normalized = str(scope).strip().lower() if scope is not None else ""
+    return normalized if normalized in MODEL_OVERRIDE_SCOPES else None
 
 
 @dataclass
@@ -729,6 +736,10 @@ class SessionEntry:
     # override is rehydrated after a restart and are never written to disk
     # (see sanitize_model_override / SessionStore.set_model_override).
     model_override: Optional[Dict[str, str]] = None
+    # Provenance for the command that created ``model_override``. ``global``
+    # means the same switch also updated the profile default; it remains a
+    # session-bound override and is cleared at every conversation boundary.
+    model_override_scope: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         result = {
@@ -765,6 +776,9 @@ class SessionEntry:
             # Defence-in-depth: strip credentials even if a caller stored an
             # unsanitized dict directly on the entry.
             result["model_override"] = sanitize_model_override(self.model_override)
+            scope = sanitize_model_override_scope(self.model_override_scope)
+            if scope:
+                result["model_override_scope"] = scope
         if self.origin:
             result["origin"] = self.origin.to_dict()
         return result
@@ -809,6 +823,15 @@ class SessionEntry:
                 "Invalid session_key: potential directory traversal detected"
             )
 
+        model_override = sanitize_model_override(data.get("model_override"))
+        if "model_override_scope" in data:
+            model_override_scope = sanitize_model_override_scope(
+                data.get("model_override_scope")
+            )
+        else:
+            # Pre-provenance persisted overrides were all session-bound.
+            model_override_scope = "session" if model_override else None
+
         return cls(
             session_key=session_key,
             session_id=session_id,
@@ -835,7 +858,8 @@ class SessionEntry:
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
-            model_override=sanitize_model_override(data.get("model_override")),
+            model_override=model_override,
+            model_override_scope=model_override_scope,
         )
 
 
@@ -1561,6 +1585,7 @@ class SessionStore:
                 # persisted /model override too so a later message doesn't
                 # rehydrate it after the in-memory override was popped.
                 entry.model_override = None
+                entry.model_override_scope = None
             self._save()
         if self._db:
             setter = getattr(self._db, "set_expiry_finalized", None)
@@ -2054,15 +2079,19 @@ class SessionStore:
                 )
 
     def set_model_override(
-        self, session_key: str, override: Optional[Dict[str, Any]]
+        self,
+        session_key: str,
+        override: Optional[Dict[str, Any]],
+        *,
+        scope: str = "session",
     ) -> None:
-        """Persist (or clear) the session-scoped /model override.
+        """Persist (or clear) a session-bound /model override and provenance.
 
         Only non-secret keys (model/provider/base_url — see
         ``sanitize_model_override``) are written; ``api_key``/``api_mode``
         are re-resolved at rehydration time via the normal runtime provider
-        resolution.  Pass ``None`` (or a dict with no persistable values)
-        to clear the persisted override, e.g. on /new.
+        resolution. ``scope`` records whether the command was session-only or
+        also updated the profile default. Pass ``None`` to clear both fields.
         """
         with self._lock:
             self._ensure_loaded_locked()
@@ -2070,9 +2099,16 @@ class SessionStore:
             if entry is None:
                 return
             cleaned = sanitize_model_override(override)
-            if entry.model_override == cleaned:
+            cleaned_scope = sanitize_model_override_scope(scope) if cleaned else None
+            if cleaned and cleaned_scope is None:
+                raise ValueError(f"Invalid model override scope: {scope!r}")
+            if (
+                entry.model_override == cleaned
+                and entry.model_override_scope == cleaned_scope
+            ):
                 return
             entry.model_override = cleaned
+            entry.model_override_scope = cleaned_scope
             self._save()
 
     def get_model_override(self, session_key: str) -> Optional[Dict[str, str]]:
@@ -2083,6 +2119,29 @@ class SessionStore:
             if entry is None:
                 return None
             return dict(entry.model_override) if entry.model_override else None
+
+    def get_model_override_scope(self, session_key: str) -> Optional[str]:
+        """Return trusted provenance for a persisted session override."""
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or not entry.model_override:
+                return None
+            return sanitize_model_override_scope(entry.model_override_scope)
+
+    def get_effective_model_scope(self, session_key: str) -> str:
+        """Return override provenance, or ``profile`` when none is active.
+
+        Malformed/legacy provenance on an otherwise valid override degrades to
+        ``session``. Reporting ``profile`` while an override is active would be
+        misleading and could hide a pinned model from diagnostics.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or not entry.model_override:
+                return "profile"
+            return sanitize_model_override_scope(entry.model_override_scope) or "session"
 
     def suspend_session(self, session_key: str) -> bool:
         """Mark a session as suspended so it auto-resets on next access.

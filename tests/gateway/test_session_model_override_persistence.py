@@ -140,6 +140,80 @@ def test_new_clears_persisted_override(store_factory, tmp_path):
     assert "gpt-5o" not in _sessions_json(tmp_path)
 
 
+@pytest.mark.parametrize("scope", ["session", "global"])
+def test_override_scope_provenance_survives_restart(store_factory, scope):
+    """Persist only the bounded provenance needed to explain an override."""
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+
+    store.set_model_override(entry.session_key, OVERRIDE, scope=scope)
+
+    restarted = store_factory()
+    assert restarted.get_model_override_scope(entry.session_key) == scope
+
+
+def test_profile_is_effective_scope_without_session_override(store_factory):
+    """No session override means resolution falls back to the profile config."""
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+
+    assert store.get_model_override(entry.session_key) is None
+    assert store.get_effective_model_scope(entry.session_key) == "profile"
+
+
+def test_invalid_override_scope_is_not_trusted_from_disk(store_factory, tmp_path):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    store.set_model_override(entry.session_key, OVERRIDE, scope="session")
+    data = json.loads(_sessions_json(tmp_path))
+    data[entry.session_key]["model_override_scope"] = "launchctl-helper"
+    (tmp_path / "sessions.json").write_text(json.dumps(data), encoding="utf-8")
+
+    restarted = store_factory()
+    assert restarted.get_model_override_scope(entry.session_key) is None
+    # The model override still exists, so an untrusted provenance value must
+    # degrade to the safest compatible classification rather than "profile".
+    assert restarted.get_effective_model_scope(entry.session_key) == "session"
+
+
+def test_new_clears_override_scope_provenance(store_factory):
+    store = store_factory()
+    entry = store.get_or_create_session(_make_source())
+    store.set_model_override(entry.session_key, OVERRIDE, scope="session")
+
+    store.reset_session(entry.session_key)
+
+    assert store.get_model_override_scope(entry.session_key) is None
+    assert store.get_effective_model_scope(entry.session_key) == "profile"
+
+
+def test_override_scope_does_not_cross_telegram_topics(store_factory):
+    store = store_factory()
+    topic_a = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="u1",
+        chat_id="group-1",
+        thread_id="topic-a",
+        chat_type="group",
+    )
+    topic_b = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="u1",
+        chat_id="group-1",
+        thread_id="topic-b",
+        chat_type="group",
+    )
+    entry_a = store.get_or_create_session(topic_a)
+    entry_b = store.get_or_create_session(topic_b)
+
+    store.set_model_override(entry_a.session_key, OVERRIDE, scope="session")
+
+    restarted = store_factory()
+    assert restarted.get_effective_model_scope(entry_a.session_key) == "session"
+    assert restarted.get_model_override(entry_b.session_key) is None
+    assert restarted.get_effective_model_scope(entry_b.session_key) == "profile"
+
+
 def _make_runner(store):
     from gateway.run import GatewayRunner
 

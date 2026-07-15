@@ -1635,6 +1635,7 @@ class GatewaySlashCommandsMixin:
                             await _self.async_session_store.set_model_override(
                                 _session_key,
                                 _self._session_model_overrides[_session_key],
+                                scope="global" if persist_global else "session",
                             )
                         except Exception:
                             logger.debug(
@@ -1884,6 +1885,7 @@ class GatewaySlashCommandsMixin:
                 await self.async_session_store.set_model_override(
                     session_key,
                     self._session_model_overrides[session_key],
+                    scope="global" if persist_global else "session",
                 )
             except Exception:
                 logger.debug(

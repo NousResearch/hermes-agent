@@ -13,6 +13,8 @@ the proper ``model: {default: ..., provider: ...}`` form.
 
 import yaml
 import pytest
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 from gateway.config import Platform
 from gateway.platforms.base import MessageEvent, MessageType
@@ -26,6 +28,11 @@ def _make_runner():
     runner._voice_mode = {}
     runner._session_model_overrides = {}
     runner._running_agents = {}
+    runner.session_store = object()
+    runner._async_session_store = SimpleNamespace(
+        _store=runner.session_store,
+        set_model_override=AsyncMock(),
+    )
     return runner
 
 
@@ -190,7 +197,8 @@ async def test_model_session_flag_does_not_persist(tmp_path, monkeypatch):
         {"default": "old-model", "provider": "openai-codex"},
     )
 
-    result = await _make_runner()._handle_model_command(
+    runner = _make_runner()
+    result = await runner._handle_model_command(
         _make_event("/model gpt-5.5 --session")
     )
 
@@ -199,3 +207,25 @@ async def test_model_session_flag_does_not_persist(tmp_path, monkeypatch):
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     # Config untouched — the session override is in-memory only.
     assert written["model"]["default"] == "old-model"
+    assert runner.async_session_store.set_model_override.await_args.kwargs == {
+        "scope": "session"
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_global_records_global_override_provenance(tmp_path, monkeypatch):
+    _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "old-model", "provider": "openai-codex"},
+    )
+    runner = _make_runner()
+
+    result = await runner._handle_model_command(
+        _make_event("/model gpt-5.5 --global")
+    )
+
+    assert result is not None
+    assert runner.async_session_store.set_model_override.await_args.kwargs == {
+        "scope": "global"
+    }

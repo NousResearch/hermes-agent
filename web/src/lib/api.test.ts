@@ -104,3 +104,44 @@ describe("api OAuth helpers", () => {
     }
   });
 });
+
+describe("gateway lifecycle profile scoping", () => {
+  it("sends the target profile explicitly for lifecycle mutations", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.startGateway("h");
+    await api.stopGateway("default");
+    await api.restartGateway("h");
+
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      1,
+      "/api/gateway/start?profile=h",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      "/api/gateway/stop?profile=default",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      "/api/gateway/restart?profile=h",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
+  it("reads status for the explicit target profile", async () => {
+    vi.stubGlobal("window", {});
+    const fetchMock = jsonFetchMock({ gateway_running: true });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await api.getStatus("h");
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/status?profile=h",
+      expect.objectContaining({ credentials: "include" }),
+    );
+  });
+});

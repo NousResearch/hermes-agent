@@ -712,6 +712,20 @@ class LineAdapter(BasePlatformAdapter):
             os.getenv("LINE_MENTION_TTL") or extra.get("mention_ttl", "30")
         )
 
+        # Recent inbound media buffer: {chat_id: [(path, msg_type, expiry), ...]}
+        # Unlike Telegram, LINE delivers images/files as standalone events with
+        # no caption and no reply-to content, so a follow-up text turn
+        # ("what is this?") arrives separately with no handle to the image. We
+        # buffer recently-received media per chat and re-attach it to the next
+        # text turn so the model can actually see it — this also covers the
+        # "image first, @mention after" ordering that the mention gate would
+        # otherwise drop.
+        self._recent_media: Dict[str, List[Tuple[str, str, float]]] = {}
+        self._media_context_ttl = float(
+            os.getenv("LINE_MEDIA_CONTEXT_TTL") or extra.get("media_context_ttl", "300")
+        )
+        self._recent_media_max = 8  # cap buffered items per chat to bound memory
+
         # User-overridable copy
         self.pending_text = (
             os.getenv("LINE_PENDING_TEXT")
@@ -972,6 +986,10 @@ class LineAdapter(BasePlatformAdapter):
             if local_path:
                 media_urls.append(local_path)
                 media_types.append(msg_type)
+                # Buffer for follow-up text turns. Done here (before the mention
+                # gate below) so a media message dropped by the gate is still
+                # recoverable by the next @mention that references it.
+                self._remember_recent_media(chat_id, local_path, msg_type)
             text = f"[{msg_type}]"
         elif msg_type == "sticker":
             keywords = msg.get("keywords") or []
@@ -1046,6 +1064,22 @@ class LineAdapter(BasePlatformAdapter):
                 )
             except Exception:
                 pass
+
+        # Re-attach media from immediately preceding standalone messages so a
+        # follow-up text turn ("what is this?") can see the image. LINE gives no
+        # caption or reply linkage, so this buffer is the only bridge.
+        if msg_type == "text":
+            buffered = self._consume_recent_media(chat_id)
+            for path, mtype in buffered:
+                if path not in media_urls:
+                    media_urls.append(path)
+                    media_types.append(mtype)
+            if buffered:
+                note = (
+                    f"[Attached {len(buffered)} media item(s) from the "
+                    f"immediately preceding message(s) in this chat.]"
+                )
+                text = f"{text}\n{note}" if text else note
 
         source_obj = self.build_source(
             chat_id=chat_id,
@@ -1125,6 +1159,32 @@ class LineAdapter(BasePlatformAdapter):
                 await self._client.reply(reply_token, [_text_message(self.pending_text)])
             except Exception:
                 pass
+
+    def _remember_recent_media(self, chat_id: str, path: str, msg_type: str) -> None:
+        """Buffer a just-downloaded inbound media path for follow-up text turns.
+
+        LINE sends media as standalone events with no caption or reply linkage,
+        so the next text message ("what is this?") arrives as a separate turn
+        with no handle to the image. Buffering lets that turn re-attach it.
+        Expired entries are pruned and the buffer is capped per chat.
+        """
+        if not chat_id or not path:
+            return
+        now = time.time()
+        bucket = self._recent_media.get(chat_id, [])
+        bucket = [(p, t, e) for (p, t, e) in bucket if e > now]
+        bucket.append((path, msg_type, now + self._media_context_ttl))
+        if len(bucket) > self._recent_media_max:
+            bucket = bucket[-self._recent_media_max:]
+        self._recent_media[chat_id] = bucket
+
+    def _consume_recent_media(self, chat_id: str) -> List[Tuple[str, str]]:
+        """Return and clear un-expired buffered media (path, msg_type) for a chat."""
+        if not chat_id:
+            return []
+        now = time.time()
+        bucket = self._recent_media.pop(chat_id, [])
+        return [(p, t) for (p, t, e) in bucket if e > now]
 
     async def _download_media(self, message_id: str, msg_type: str) -> Optional[str]:
         if not self._client or not message_id:

@@ -567,6 +567,22 @@ def build_turn_context(
     except Exception as exc:
         logger.warning("pre_llm_call hook failed: %s", exc)
 
+    # Inject current time + timezone into user message (not system prompt).
+    # This preserves the prompt cache prefix — the system prompt stays
+    # identical across turns so cached tokens are reused. The volatile
+    # "Current time:" line lives in the user message where it changes
+    # harmlessly. Fixes the stale "Conversation started" perception bug
+    # where agents misread frozen session timestamps as current time.
+    try:
+        from hermes_time import format_current_time_context
+        _time_block = format_current_time_context()
+        if plugin_user_context:
+            plugin_user_context = _time_block + "\n\n" + plugin_user_context
+        else:
+            plugin_user_context = _time_block
+    except Exception:
+        pass
+
     # Per-turn file-mutation verifier state.
     agent._turn_failed_file_mutations = {}
     agent._turn_file_mutation_paths = set()

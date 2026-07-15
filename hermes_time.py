@@ -133,3 +133,47 @@ def now() -> datetime:
     return datetime.now().astimezone()
 
 
+def get_timezone_name() -> str:
+    """Return the IANA timezone name (e.g. 'Asia/Hong_Kong'), or empty string."""
+    get_timezone()  # ensure cache is resolved
+    return _cached_tz_name or ""
+
+
+def get_timezone_display() -> str:
+    """Return 'IANA (UTC±HH:MM)' for display, aligned with PR #10061 format.
+
+    Examples: 'Asia/Hong_Kong (UTC+08:00)', 'America/New_York (UTC-04:00)'.
+    Returns empty string if no timezone is configured.
+    """
+    tz = get_timezone()
+    if tz is None:
+        return ""
+    name = get_timezone_name()
+    now_dt = datetime.now(tz)
+    offset = now_dt.utcoffset()
+    if offset is None:
+        return name
+    total_seconds = int(offset.total_seconds())
+    sign = "+" if total_seconds >= 0 else "-"
+    hours, remainder = divmod(abs(total_seconds), 3600)
+    minutes = remainder // 60
+    return f"{name} (UTC{sign}{hours:02d}:{minutes:02d})"
+
+
+def format_current_time_context() -> str:
+    """Format a compact 'Current time + Timezone' block for per-turn injection.
+
+    Designed for user-message injection (not system prompt) to preserve
+    prompt cache stability. Returns a multi-line string like:
+
+        Current time: Tuesday, July 15, 2026 05:30 PM
+        Timezone: Asia/Hong_Kong (UTC+08:00)
+    """
+    current = now()
+    lines = [f"Current time: {current.strftime('%A, %B %d, %Y %I:%M %p').lstrip('0')}"]
+    tz_display = get_timezone_display()
+    if tz_display:
+        lines.append(f"Timezone: {tz_display}")
+    return "\n".join(lines)
+
+

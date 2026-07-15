@@ -2011,6 +2011,7 @@ class TestRunJobConfigEnvVarExpansion:
             "  default: gpt-5.6-sol\n"
             "  provider: openai-codex\n"
             "fallback_providers:\n"
+            "  - provider: anthropic\n"
             "  - provider: openrouter\n"
             "    model: z-ai/glm-5.2\n",
             encoding="utf-8",
@@ -2023,12 +2024,14 @@ class TestRunJobConfigEnvVarExpansion:
             "model_snapshot": "gpt-5.6-sol",
         }
         fake_db = MagicMock()
+        requested = []
 
         def resolve_runtime(**kwargs):
+            requested.append(kwargs.get("requested"))
             if kwargs.get("requested") in (None, "openai-codex"):
-                raise AuthError(
-                    "No Codex credentials stored", provider="openai-codex"
-                )
+                # Cron must retain the configured primary provider for drift
+                # comparison even when older/custom AuthError sites omit it.
+                raise AuthError("No Codex credentials stored")
             assert kwargs["requested"] == "openrouter"
             assert kwargs["target_model"] == "z-ai/glm-5.2"
             return {**self._RUNTIME, "provider": "openrouter"}
@@ -2049,6 +2052,7 @@ class TestRunJobConfigEnvVarExpansion:
 
         assert success is True
         assert error is None
+        assert requested == [None, "openrouter"]
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["provider"] == "openrouter"
         assert kwargs["model"] == "z-ai/glm-5.2"

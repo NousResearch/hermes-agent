@@ -102,3 +102,13 @@ def test_render_weather_png_uses_a_light_background(tmp_path: Path) -> None:
     with Image.open(path) as image:
         red, green, blue = image.getpixel((10, 10))
     assert red + green + blue > 650
+
+
+def test_render_weather_png_clouds_contrast_with_light_rows(tmp_path: Path) -> None:
+    path = weather_tools._render_weather_png(_sample_payload(), tmp_path, 1)
+
+    # First-row icon center: the cloud fill must remain visibly darker than
+    # the white/light-blue table rows at Telegram preview scale.
+    with Image.open(path) as image:
+        red, green, blue = image.getpixel((245, 198))
+    assert red + green + blue < 620

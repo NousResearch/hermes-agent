@@ -239,7 +239,14 @@ def _rounded_panel(draw: Any, box: tuple[int, int, int, int], *, fill: tuple[int
     draw.rounded_rectangle(box, radius=radius, fill=fill)
 
 
-def _draw_weather_icon(draw: Any, center: tuple[int, int], code: int, scale: float = 1.0) -> None:
+def _draw_weather_icon(
+    draw: Any,
+    center: tuple[int, int],
+    code: int,
+    scale: float = 1.0,
+    *,
+    light_background: bool = False,
+) -> None:
     """Draw a compact weather glyph without relying on emoji fonts."""
     x, y = center
     sun = code in (0, 1, 2)
@@ -263,7 +270,10 @@ def _draw_weather_icon(draw: Any, center: tuple[int, int], code: int, scale: flo
 
     if cloud:
         cy = y + int(4 * scale)
-        color = (225, 235, 246, 255) if code != 3 else (182, 198, 218, 255)
+        if light_background:
+            color = (142, 174, 199, 255) if code != 3 else (98, 132, 160, 255)
+        else:
+            color = (225, 235, 246, 255) if code != 3 else (182, 198, 218, 255)
         draw.ellipse((x - int(45 * scale), cy - int(13 * scale), x + int(42 * scale), cy + int(27 * scale)), fill=color)
         draw.ellipse((x - int(32 * scale), cy - int(37 * scale), x + int(10 * scale), cy + int(18 * scale)), fill=color)
         draw.ellipse((x - int(5 * scale), cy - int(28 * scale), x + int(35 * scale), cy + int(20 * scale)), fill=color)
@@ -275,10 +285,12 @@ def _draw_weather_icon(draw: Any, center: tuple[int, int], code: int, scale: flo
         for dx in (-25, 4, 31):
             px, py = x + int(dx * scale), y + int(47 * scale)
             r = max(2, int(4 * scale))
-            draw.ellipse((px - r, py - r, px + r, py + r), fill=(235, 247, 255, 255))
+            snow_color = (92, 151, 194, 255) if light_background else (235, 247, 255, 255)
+            draw.ellipse((px - r, py - r, px + r, py + r), fill=snow_color)
     if fog:
+        fog_color = (105, 139, 166, 255) if light_background else (206, 219, 232, 255)
         for dy in (-14, 4, 22):
-            draw.line((x - int(45 * scale), y + int(dy * scale), x + int(45 * scale), y + int(dy * scale)), fill=(206, 219, 232, 255), width=max(2, int(4 * scale)))
+            draw.line((x - int(45 * scale), y + int(dy * scale), x + int(45 * scale), y + int(dy * scale)), fill=fog_color, width=max(2, int(4 * scale)))
 
 
 def _place_label(place: dict[str, Any]) -> str:
@@ -480,24 +492,24 @@ def _render_weather_png(payload: dict[str, Any], output_dir: Path, forecast_days
         title = f"Погода в Волгограде на {date_text}"
     else:
         title = f"Погода: {location_name} · {date_text}"
-    title_font = _font(40, bold=True)
+    title_font = _font(44, bold=True)
     while draw.textbbox((0, 0), title, font=title_font)[2] > width - 190:
-        title_font = _font(max(29, getattr(title_font, "size", 40) - 2), bold=True)
-        if getattr(title_font, "size", 29) <= 29:
+        title_font = _font(max(31, getattr(title_font, "size", 44) - 2), bold=True)
+        if getattr(title_font, "size", 31) <= 31:
             break
-    draw.text((95, 27), title, font=title_font, fill=(30, 54, 78, 255))
+    draw.text((95, 21), title, font=title_font, fill=(30, 54, 78, 255))
     draw.text(
-        (97, 78),
+        (97, 75),
         "07:00–23:00 · каждый час · значения округлены",
-        font=_font(20),
+        font=_font(22),
         fill=(88, 113, 136, 255),
     )
 
-    table_left, table_top = 95, 116
+    table_left, table_top = 95, 112
     widths = [110, 80, 130, 120, 135, 130, 145, 160]
     headers = ["Время", "П", "Темп", "Ощ", "Дождь", "Влаж", "Ветер", "Давл"]
     units = ["", "", "°C", "°C", "%", "%", "м/с", "мм"]
-    header_height, row_height = 64, 38
+    header_height, row_height = 66, 40
     table_right = table_left + sum(widths)
     table_bottom = table_top + header_height + row_height * len(rows)
 
@@ -536,9 +548,9 @@ def _render_weather_png(payload: dict[str, Any], output_dir: Path, forecast_days
 
     for col, header in enumerate(headers):
         align = "left" if col == 0 else ("center" if col == 1 else "right")
-        draw_cell_text(header, col, table_top + 3, font=_font(22, bold=True), fill=(31, 58, 82, 255), align=align)
+        draw_cell_text(header, col, table_top, font=_font(25, bold=True), fill=(31, 58, 82, 255), align=align)
         if units[col]:
-            draw_cell_text(units[col], col, table_top + 35, font=_font(17), fill=(75, 108, 136, 255), align=align)
+            draw_cell_text(units[col], col, table_top + 37, font=_font(19), fill=(75, 108, 136, 255), align=align)
 
     for col_x in x_positions[1:-1]:
         draw.line((col_x, table_top + 7, col_x, table_bottom - 7), fill=(112, 145, 172, 80), width=1)
@@ -552,14 +564,20 @@ def _render_weather_png(payload: dict[str, Any], output_dir: Path, forecast_days
             draw.line((table_left + 10, y1, table_right - 10, y1), fill=(128, 158, 183, 55), width=1)
 
         center_y = y1 + row_height // 2
-        draw_cell_text(str(row["time"]), 0, y1 + 3, font=_font(25, bold=True), fill=(38, 63, 86, 255), align="left")
-        _draw_weather_icon(draw, ((x_positions[1] + x_positions[2]) // 2, center_y), int(row["code"]), 0.35)
+        draw_cell_text(str(row["time"]), 0, y1 + 1, font=_font(30, bold=True), fill=(38, 63, 86, 255), align="left")
+        _draw_weather_icon(
+            draw,
+            ((x_positions[1] + x_positions[2]) // 2, center_y),
+            int(row["code"]),
+            0.35,
+            light_background=True,
+        )
         values = [
             row["temperature"], row["apparent"], row["rain"], row["humidity"],
             row["wind"], row["pressure"],
         ]
         for offset, value in enumerate(values, start=2):
-            draw_cell_text(str(value), offset, y1 + 3, font=_font(25, bold=True), fill=(34, 58, 80, 255), align="right")
+            draw_cell_text(str(value), offset, y1 + 1, font=_font(30, bold=True), fill=(34, 58, 80, 255), align="right")
 
     draw.text((97, 871), "Источник: Open‑Meteo", font=_font(14), fill=(101, 126, 148, 255))
 

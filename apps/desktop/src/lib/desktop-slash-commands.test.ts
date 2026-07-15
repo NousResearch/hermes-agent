@@ -73,6 +73,10 @@ describe('desktop slash command curation', () => {
     expect(resolveDesktopCommand('/browser')?.args).toBe(true)
   })
 
+  it('routes /compress through the session-compression action', () => {
+    expect(resolveDesktopCommand('/compress')?.surface).toEqual({ kind: 'action', action: 'compress' })
+  })
+
   it('routes /journey (and aliases) to the memory graph overlay action', () => {
     expect(resolveDesktopCommand('/journey')?.surface).toEqual({ kind: 'action', action: 'journey' })
     expect(resolveDesktopCommand('/memory-graph')?.surface).toEqual({ kind: 'action', action: 'journey' })

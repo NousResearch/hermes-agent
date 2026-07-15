@@ -5,7 +5,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { textPart } from '@/lib/chat-messages'
 import { $composerAttachments, $composerDraft, type ComposerAttachment, setComposerDraft } from '@/store/composer'
-import { $busy, $connection, $messages, $sessions, $turnStartedAt, setSessions } from '@/store/session'
+import {
+  $busy,
+  $connection,
+  $currentUsage,
+  $messages,
+  $sessions,
+  $turnStartedAt,
+  setCurrentUsage,
+  setMessages,
+  setSessions
+} from '@/store/session'
 import type { SessionInfo } from '@/types/hermes'
 
 import { uploadComposerAttachment, usePromptActions } from '.'
@@ -85,7 +95,7 @@ function Harness({
   onSeedState?: (state: Record<string, unknown>) => void
   openMemoryGraph?: () => void
   refreshSessions: () => Promise<void>
-  requestGateway: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number) => Promise<T>
   resumeStoredSession?: (storedSessionId: string) => Promise<void> | void
   seedMessages?: unknown[]
   selectedStoredSessionIdRef?: MutableRefObject<string | null>
@@ -377,6 +387,195 @@ describe('usePromptActions slash.exec dispatch payloads', () => {
 
     expect($composerDraft.get()).toBe('/ pasted context that must not vanish')
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+  })
+
+  it('keeps the slash-worker failure when command.dispatch only adds unknown-command noise', async () => {
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'slash.exec') {
+        throw new Error('slash worker timed out')
+      }
+
+      if (method === 'command.dispatch') {
+        throw new Error('not a quick/plugin/skill command: status')
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => states.push(state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/status')
+
+    const renderedText = states
+      .flatMap(state => state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+      .flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      .join('\n')
+
+    expect(renderedText).toContain('error: /status failed: slash worker timed out')
+    expect(renderedText).not.toContain('not a quick/plugin/skill command: status')
+  })
+})
+
+describe('usePromptActions /compress session isolation', () => {
+  const RUNTIME_SESSION_B = 'rt-session-b'
+
+  afterEach(() => {
+    cleanup()
+    setCurrentUsage({ calls: 0, input: 0, output: 0, total: 0 })
+    setMessages([])
+    vi.restoreAllMocks()
+  })
+
+  it('does not replace the foreground transcript or usage when compression resolves after a session switch', async () => {
+    let resolveCompress: (value: unknown) => void = () => undefined
+
+    const compressResult = new Promise(resolve => {
+      resolveCompress = resolve
+    })
+
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_ID }
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.compress') {
+        return (await compressResult) as never
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    })
+
+    setMessages([{ id: 'foreground-b', parts: [textPart('session B transcript')], role: 'user' }])
+    setCurrentUsage({ calls: 7, input: 70, output: 30, total: 100 })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    const submitted = handle!.submitText('/compress')
+    await waitFor(() =>
+      expect(requestGateway).toHaveBeenCalledWith('session.compress', { session_id: RUNTIME_SESSION_ID }, 0)
+    )
+
+    activeSessionIdRef.current = RUNTIME_SESSION_B
+    resolveCompress({
+      info: { usage: { context_used: 4_000, total: 12_000 } },
+      messages: [{ content: 'compressed session A transcript', role: 'system' }],
+      removed: 5
+    })
+    await submitted
+
+    expect($messages.get()).toEqual([{ id: 'foreground-b', parts: [textPart('session B transcript')], role: 'user' }])
+    expect($currentUsage.get()).toEqual({ calls: 7, input: 70, output: 30, total: 100 })
+  })
+
+  it('replaces the target transcript with the authoritative compression result and renders its summary', async () => {
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.compress') {
+        return {
+          usage: { context_used: 4_000, total: 12_000 },
+          messages: [{ content: 'compressed transcript', role: 'system' }],
+          removed: 5,
+          summary: {
+            headline: 'Compressed: 8 → 3 messages',
+            token_line: 'Approx request size: ~12,000 → ~4,000 tokens'
+          }
+        } as never
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => states.push(state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/compress')
+
+    expect(requestGateway).toHaveBeenCalledWith('session.compress', { session_id: RUNTIME_SESSION_ID }, 0)
+    expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+
+    const renderedText = states
+      .flatMap(state => state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+      .flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      .join('\n')
+
+    expect(renderedText).toContain('compressed transcript')
+    expect(renderedText).toContain('Compressed: 8 → 3 messages')
+    expect(renderedText).toContain('Approx request size: ~12,000 → ~4,000 tokens')
+    expect($currentUsage.get()).toEqual(expect.objectContaining({ context_used: 4_000, total: 12_000 }))
+  })
+
+  it('passes a focus topic to session.compress', async () => {
+    const requestGateway = vi.fn(async (method: string) => {
+      if (method === 'session.compress') {
+        return { removed: 0 } as never
+      }
+
+      throw new Error(`unexpected method: ${method}`)
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness onReady={h => (handle = h)} refreshSessions={async () => undefined} requestGateway={requestGateway} />
+    )
+
+    await handle!.submitText('/compress the auth refactor')
+
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.compress',
+      { focus_topic: 'the auth refactor', session_id: RUNTIME_SESSION_ID },
+      0
+    )
+  })
+
+  it('renders a session.compress busy error inline', async () => {
+    const states: Record<string, unknown>[] = []
+
+    const requestGateway = vi.fn(async () => {
+      throw new Error('session busy — /interrupt the current turn before /compress')
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        onReady={h => (handle = h)}
+        onSeedState={state => states.push(state)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await handle!.submitText('/compress')
+
+    const renderedText = states
+      .flatMap(state => state.messages as Array<{ parts?: Array<{ text?: string }> }>)
+      .flatMap(message => (message.parts ?? []).map(part => part.text ?? ''))
+      .join('\n')
+
+    expect(renderedText).toContain('error: session busy — /interrupt the current turn before /compress')
   })
 })
 

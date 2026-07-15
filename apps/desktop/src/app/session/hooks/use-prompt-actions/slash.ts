@@ -2,7 +2,7 @@ import { type MutableRefObject, useCallback } from 'react'
 
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
-import { type ChatMessage } from '@/lib/chat-messages'
+import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
 import { parseCommandDispatch, parseSlashCommand, sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
@@ -23,13 +23,20 @@ import {
   $connection,
   $sessions,
   $yoloActive,
+  setCurrentUsage,
   setModelPickerOpen,
   setSessionPickerOpen,
   setSessions,
   setYoloActive
 } from '@/store/session'
 
-import type { BrowserManageResponse, SessionTitleResponse, SlashExecResponse } from '../../../types'
+import type {
+  BrowserManageResponse,
+  ClientSessionState,
+  SessionCompressResponse,
+  SessionTitleResponse,
+  SlashExecResponse
+} from '../../../types'
 
 import { type GatewayRequest, isSessionIdCandidate, renderCommandsCatalog, slashStatusText } from './utils'
 
@@ -44,7 +51,12 @@ interface SlashActionCtx {
 
 interface SlashCommandDeps {
   activeSessionIdRef: MutableRefObject<string | null>
-  appendSessionTextMessage: (sessionId: string, role: ChatMessage['role'], text: string) => void
+  appendSessionTextMessage: (
+    sessionId: string,
+    role: ChatMessage['role'],
+    text: string,
+    storedSessionId?: string | null
+  ) => void
   branchCurrentSession: () => Promise<boolean>
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
@@ -58,11 +70,17 @@ interface SlashCommandDeps {
   refreshSessions: () => Promise<void>
   requestGateway: GatewayRequest
   resumeStoredSession: (storedSessionId: string) => Promise<void> | void
+  selectedStoredSessionIdRef: MutableRefObject<string | null>
   startFreshSessionDraft: () => void
   submitPromptText: (
     rawText: string,
     options?: { attachments?: ComposerAttachment[]; fromQueue?: boolean }
   ) => Promise<boolean>
+  updateSessionState: (
+    sessionId: string,
+    updater: (state: ClientSessionState) => ClientSessionState,
+    storedSessionId?: string | null
+  ) => ClientSessionState
 }
 
 /** The /slash command dispatcher, extracted from usePromptActions. */
@@ -80,8 +98,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
     refreshSessions,
     requestGateway,
     resumeStoredSession,
+    selectedStoredSessionIdRef,
     startFreshSessionDraft,
-    submitPromptText
+    submitPromptText,
+    updateSessionState
   } = deps
 
   return useCallback(
@@ -103,8 +123,17 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           return null
         }
 
+        // A long-running command can finish after a session switch. Keep its
+        // output bound to the stored session selected at invocation time.
+        const storedSessionId = selectedStoredSessionIdRef.current
+
         const render = (text: string) =>
-          appendSessionTextMessage(sessionId, 'system', ctx.recordInput ? slashStatusText(ctx.command, text) : text)
+          appendSessionTextMessage(
+            sessionId,
+            'system',
+            ctx.recordInput ? slashStatusText(ctx.command, text) : text,
+            storedSessionId
+          )
 
         return { render, sessionId }
       }
@@ -184,6 +213,8 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           await submitPromptText(message)
         }
 
+        let slashExecError: unknown = null
+
         try {
           const result = await requestGateway<unknown>('slash.exec', {
             session_id: sessionId,
@@ -203,8 +234,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           renderSlashOutput(output?.warning ? `warning: ${output.warning}\n${body}` : body)
 
           return
-        } catch {
-          // Fall back to command.dispatch for skill/send/alias directives.
+        } catch (err) {
+          // Fall back to command.dispatch for skill/send/alias directives, but
+          // keep the worker error so a generic dispatch miss cannot mask it.
+          slashExecError = err
         }
 
         try {
@@ -220,7 +253,16 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           await handleDispatch(dispatch)
         } catch (err) {
-          renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          const dispatchMessage = err instanceof Error ? err.message : String(err)
+
+          if (slashExecError && /not a quick\/plugin\/skill command/i.test(dispatchMessage)) {
+            const original = slashExecError instanceof Error ? slashExecError.message : String(slashExecError)
+            renderSlashOutput(`error: /${name} failed: ${original}`)
+
+            return
+          }
+
+          renderSlashOutput(`error: ${dispatchMessage}`)
         }
       }
 
@@ -233,6 +275,65 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         },
         branch: async () => {
           await branchCurrentSession()
+        },
+        compress: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+          const focusTopic = ctx.arg.trim()
+
+          try {
+            renderSlashOutput(focusTopic ? `compressing context for: ${focusTopic}` : 'compressing context...')
+
+            const result = await requestGateway<SessionCompressResponse>(
+              'session.compress',
+              {
+                session_id: sessionId,
+                ...(focusTopic ? { focus_topic: focusTopic } : {})
+              },
+              0
+            )
+
+            if (Array.isArray(result?.messages)) {
+              const compressedMessages = toChatMessages(result.messages)
+
+              // updateSessionState only publishes for the active runtime. A late
+              // result therefore refreshes its own cache without clobbering the
+              // foreground session's transcript.
+              updateSessionState(sessionId, state => ({ ...state, messages: compressedMessages }))
+            }
+
+            const usage = { ...result?.usage, ...result?.info?.usage }
+
+            if (Object.keys(usage).length && activeSessionIdRef.current === sessionId) {
+              setCurrentUsage(current => ({ ...current, ...usage }))
+            }
+
+            if (result?.info?.title !== undefined) {
+              setSessions(prev =>
+                prev.map(session => (session.id === sessionId ? { ...session, title: result.info!.title || null } : session))
+              )
+            }
+
+            if (result?.summary?.headline) {
+              renderSlashOutput(
+                [result.summary.headline, result.summary.token_line, result.summary.note]
+                  .filter((line): line is string => Boolean(line))
+                  .join('\n')
+              )
+
+              return
+            }
+
+            const removed = result?.removed ?? 0
+            renderSlashOutput(removed > 0 ? `compressed ${removed} messages` : 'nothing to compress')
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
         },
         // /yolo maps to the status-bar YOLO control — a per-session approval
         // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm
@@ -625,8 +726,10 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       refreshSessions,
       requestGateway,
       resumeStoredSession,
+      selectedStoredSessionIdRef,
       startFreshSessionDraft,
-      submitPromptText
+      submitPromptText,
+      updateSessionState
     ]
   )
 }

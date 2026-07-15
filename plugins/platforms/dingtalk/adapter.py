@@ -116,6 +116,27 @@ DINGTALK_TYPE_MAPPING = {
     "voice": "audio",
 }
 
+# File extension → MIME type mapping for DingTalk file/image messages.
+# Image MIME types (image/*) are used below in _extract_media to classify
+# incoming msgtype='image' payloads as MessageType.PHOTO (not DOCUMENT).
+EXT_MAP = {
+    "pdf": "application/pdf",
+    "png": "image/png",
+    "jpg": "image/jpeg",
+    "jpeg": "image/jpeg",
+    "gif": "image/gif",
+    "webp": "image/webp",
+    "doc": "application/msword",
+    "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "xls": "application/vnd.ms-excel",
+    "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "md": "text/markdown",
+    "txt": "text/plain",
+    "csv": "text/csv",
+    "zip": "application/zip",
+    "mp4": "video/mp4",
+}
+
 
 def check_dingtalk_requirements() -> bool:
     """Check if DingTalk dependencies are available and configured.
@@ -770,6 +791,68 @@ class DingTalkAdapter(BasePlatformAdapter):
                     if fname:
                         content = f"[文件] {fname}"
 
+        # Fallback: card message (钉钉文档分享卡片 / link card)
+        # When a user shares a DingTalk Doc to the bot, the msgtype is "card"
+        # and the card data lives in extensions['card'] (SDK's from_dict maps
+        # unhandled fields to extensions).  Extract title + doc URL so the
+        # message isn't silently dropped as "empty".
+        if not content:
+            msg_type = getattr(message, "message_type", "")
+            # Handle card-type messages (文档分享卡片 / link card)
+            if msg_type == "card":
+                extensions = getattr(message, "extensions", {}) or {}
+                card = extensions.get("card", {})
+                if isinstance(card, dict):
+                    title = card.get("title", "")
+                    raw_content = card.get("content", "")
+                    doc_url = ""
+                    if raw_content is None:
+                        doc_url = ""
+                    elif isinstance(raw_content, dict):
+                        doc_url = raw_content.get("url", "") or raw_content.get("docUrl", "")
+                    elif isinstance(raw_content, str):
+                        stripped = raw_content.strip()
+                        if not stripped:
+                            doc_url = ""
+                        else:
+                            try:
+                                parsed = json.loads(stripped)
+                                if isinstance(parsed, dict):
+                                    doc_url = parsed.get("url", "") or parsed.get("docUrl", "")
+                            except (ValueError, TypeError):
+                                doc_url = raw_content
+                    parts = []
+                    if title:
+                        parts.append(f"[文档] {title}")
+                    if doc_url:
+                        parts.append(doc_url)
+                    if parts:
+                        content = " ".join(parts)
+                # Last-resort: raw text field from extensions (if present)
+                if not content:
+                    ext_text = extensions.get("text", {})
+                    if isinstance(ext_text, dict):
+                        content = (ext_text.get("content", "") or "").strip()
+
+            # Handle interactiveCard messages (钉钉文档分享卡片 / doc link card)
+            # structure: extensions["content"]["biz_custom_action_url"] and
+            # extensions["content"]["title"] for the card title
+            if msg_type == "interactiveCard" and not content:
+                extensions = getattr(message, "extensions", {}) or {}
+                ext_content = extensions.get("content", {})
+                if isinstance(ext_content, dict):
+                    doc_url = ext_content.get("biz_custom_action_url", "")
+                    title = ext_content.get("title", "")
+                    if doc_url or title:
+                        parts = []
+                        if title:
+                            parts.append(f"[文档卡片] {title}")
+                        else:
+                            parts.append("[文档卡片]")
+                        if doc_url:
+                            parts.append(doc_url)
+                        content = " ".join(parts)
+
         # Do NOT strip "@bot" from the text.  The mention is a routing
         # signal (delivered structurally via callback `isInAtList`), and
         # regex-stripping @handles would collateral-damage e-mails
@@ -863,20 +946,19 @@ class DingTalkAdapter(BasePlatformAdapter):
                     # Map common extensions
                     if fname:
                         ext = fname.rsplit(".", 1)[-1].lower() if "." in fname else ""
-                        EXT_MAP = {
-                            "pdf": "application/pdf", "png": "image/png", "jpg": "image/jpeg",
-                            "jpeg": "image/jpeg", "gif": "image/gif", "webp": "image/webp",
-                            "doc": "application/msword",
-                            "docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            "xls": "application/vnd.ms-excel",
-                            "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                            "md": "text/markdown", "txt": "text/plain", "csv": "text/csv",
-                            "zip": "application/zip", "mp4": "video/mp4",
-                        }
                         mime = EXT_MAP.get(ext, mime)
                     media_types.append(mime)
                     if msg_type == MessageType.TEXT:
-                        msg_type = MessageType.DOCUMENT
+                        # Image messages → PHOTO (distinct busy-session handling
+                        # in gateway/platforms/base.py).
+                        # File messages with image MIME types (e.g. a .png sent
+                        # as a file attachment) are also classified as PHOTO —
+                        # the user's intent is to share an image regardless of
+                        # how DingTalk delivers it.
+                        if msg_type_str == "image" or mime.startswith("image/"):
+                            msg_type = MessageType.PHOTO
+                        else:
+                            msg_type = MessageType.DOCUMENT
 
         return msg_type, media_urls, media_types
 

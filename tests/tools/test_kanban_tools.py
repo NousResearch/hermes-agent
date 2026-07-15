@@ -649,8 +649,8 @@ def test_complete_goal_mode_rejected_by_judge(monkeypatch, tmp_path):
     # judge is reachable, so force the availability probe True as well.
     def mock_judge_goal(goal, last_response, *, timeout=30.0, subgoals=None):
         # Match the real judge_goal contract:
-        # (verdict, reason, parse_failed, wait_directive)
-        return "continue", "missing verification evidence", False, None
+        # (verdict, reason, parse_failed, wait_directive, transport_failed)
+        return "continue", "missing verification evidence", False, None, False
 
     monkeypatch.setattr("tools.kanban_tools.judge_goal", mock_judge_goal)
     monkeypatch.setattr("tools.kanban_tools._goal_judge_available", lambda: True)

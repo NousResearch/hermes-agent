@@ -4506,7 +4506,18 @@ def run_conversation(
                             and _last_msg.get("role") == "user"
                             and _last_msg.get("content") == _CODEX_INCOMPLETE_NUDGE
                         )
-                        if not _already_nudged:
+                        # Alternation guard: the nudge is a user-role message,
+                        # so it may only follow an assistant message. When the
+                        # interim was too empty to append (no content AND no
+                        # reasoning), the last message is still the prior
+                        # user/tool turn — appending the nudge there would
+                        # create a user→user / tool→user sequence that strict
+                        # providers reject.
+                        _last_is_assistant = (
+                            isinstance(_last_msg, dict)
+                            and _last_msg.get("role") == "assistant"
+                        )
+                        if not _already_nudged and _last_is_assistant:
                             messages.append({
                                 "role": "user",
                                 "content": _CODEX_INCOMPLETE_NUDGE,

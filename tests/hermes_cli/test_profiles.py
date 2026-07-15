@@ -812,6 +812,28 @@ class TestAliasCollision:
             result = check_alias_collision("mybot")
         assert result is None
 
+    def test_undecodable_lookup_stderr_is_replaced(self, profile_env, monkeypatch):
+        """A localized where/which error must not crash text-mode decoding."""
+        real_run = profiles.subprocess.run
+        completed = []
+
+        def run_with_undecodable_stderr(_cmd, **kwargs):
+            result = real_run(
+                [
+                    sys.executable,
+                    "-c",
+                    "import os; os.write(2, b'\\x81'); raise SystemExit(1)",
+                ],
+                **kwargs,
+            )
+            completed.append(result)
+            return result
+
+        monkeypatch.setattr(profiles.subprocess, "run", run_with_undecodable_stderr)
+
+        assert check_alias_collision("mybot") is None
+        assert completed[0].stderr == "\N{REPLACEMENT CHARACTER}"
+
     def test_reserved_name_returns_message(self, profile_env):
         result = check_alias_collision("hermes")
         assert result is not None

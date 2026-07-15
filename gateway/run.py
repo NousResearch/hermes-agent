@@ -3929,10 +3929,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
 
-        Always uses the session's primary model/provider.  If `/fast` is
-        enabled and the model supports Priority Processing / Anthropic fast
-        mode, attach `request_overrides` so the API call is marked
-        accordingly.
+        Always uses the session's primary model/provider. Persistent fast mode
+        resolves its provider override here. Auto mode deliberately leaves the
+        route override empty so the turn-local policy can resolve each request
+        at the API boundary.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 

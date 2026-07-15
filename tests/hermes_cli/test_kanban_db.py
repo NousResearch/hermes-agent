@@ -5822,3 +5822,720 @@ def test_verify_created_cards_accepts_worker_provenance_prefix(kanban_home):
         assert phantom == []
     finally:
         conn.close()
+
+
+
+# --- governed cherry-pick-aware completion gate (core-tap bundle 2026-07-15) ---
+
+
+def test_complete_task_rejects_unmerged_branch_without_governed_carry(
+    kanban_home, tmp_path
+):
+    worktree = _make_git_worktree(tmp_path)
+
+    feature_file = worktree / "feature.txt"
+    feature_file.write_text("feature\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(worktree), "add", "feature.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(worktree),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "feature commit",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship worktree",
+            workspace_kind="worktree",
+            workspace_path=str(worktree),
+            branch_name="wt/live",
+        )
+        with pytest.raises(kb.CompletionGateError, match="not merged") as exc_info:
+            kb.complete_task(
+                conn,
+                tid,
+                summary="ok",
+                metadata={"ci": {"typecheck": True, "lint": True, "tests": True}},
+            )
+        blocked = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'completion_blocked_unmerged_branch'",
+            (tid,),
+        ).fetchone()
+        carry_success = conn.execute(
+            "SELECT 1 FROM task_events WHERE task_id = ? AND kind = 'completion_gate_satisfied_governed_carry'",
+            (tid,),
+        ).fetchone()
+
+    assert exc_info.value.details["branch_name"] == "wt/live"
+    assert exc_info.value.details["base_ref"] == "main"
+    assert exc_info.value.details["workspace_path"] == str(worktree)
+    assert blocked is not None
+    assert carry_success is None
+    blocked_payload = json.loads(blocked["payload"])
+    assert blocked_payload["message"] == "completion blocked: branch 'wt/live' is not merged into 'main' yet"
+    assert blocked_payload["branch_name"] == "wt/live"
+    assert blocked_payload["base_ref"] == "main"
+    assert blocked_payload["workspace_path"] == str(worktree)
+
+
+def test_complete_task_accepts_governed_patch_equivalence_carry(
+    kanban_home, tmp_path
+):
+    worktree = _make_git_worktree(tmp_path)
+    repo = worktree.parent.parent
+
+    feature_file = worktree / "feature.txt"
+    feature_file.write_text("feature\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(worktree), "add", "feature.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(worktree),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "feature commit",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    source_commit = subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    prereq = repo / "main-only.txt"
+    prereq.write_text("advance main\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "main-only.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "advance main",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "cherry-pick",
+            source_commit,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    carry_commit = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship worktree",
+            workspace_kind="worktree",
+            workspace_path=str(worktree),
+            branch_name="wt/live",
+        )
+        assert kb.complete_task(
+            conn,
+            tid,
+            summary="ok",
+            metadata={
+                "ci": {"typecheck": True, "lint": True, "tests": True},
+                "governed_carry": {
+                    "source_branch": "wt/live",
+                    "source_commit": source_commit,
+                    "carry_commits": [carry_commit],
+                    "proof_mode": "patch_equivalence",
+                },
+            },
+        )
+        event = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'completion_gate_satisfied_governed_carry'",
+            (tid,),
+        ).fetchone()
+        task = kb.get_task(conn, tid)
+
+    assert task is not None
+    assert task.status == "done"
+    assert event is not None
+    payload = json.loads(event["payload"])
+    assert payload["proof_mode"] == "patch_equivalence"
+    assert payload["source_commit"] == source_commit
+    assert payload["carry_commits"] == [carry_commit]
+    assert payload["branch_name"] == "wt/live"
+    assert payload["base_ref"] == "main"
+    assert payload["workspace_path"] == str(worktree)
+
+
+def test_complete_task_accepts_governed_registry_manifest_carry(
+    kanban_home, tmp_path
+):
+    worktree = _make_git_worktree(tmp_path)
+    repo = worktree.parent.parent
+
+    feature_file = worktree / "feature.txt"
+    feature_file.write_text("feature\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(worktree), "add", "feature.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(worktree),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "feature commit",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    source_commit = subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    repo_file = repo / "feature.txt"
+    repo_file.write_text("feature\nresolved\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "feature.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "carry commit",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    carry_commit = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    manifest = tmp_path / "governed-carry.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "entries": [
+                    {
+                        "source_branch": "wt/live",
+                        "source_commit": source_commit,
+                        "base_ref": "main",
+                        "carry_commits": [carry_commit],
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship worktree",
+            workspace_kind="worktree",
+            workspace_path=str(worktree),
+            branch_name="wt/live",
+        )
+        assert kb.complete_task(
+            conn,
+            tid,
+            summary="ok",
+            metadata={
+                "ci": {"typecheck": True, "lint": True, "tests": True},
+                "governed_carry": {
+                    "source_branch": "wt/live",
+                    "source_commit": source_commit,
+                    "carry_commits": [carry_commit],
+                    "proof_mode": "registry_manifest",
+                    "registry_ref": str(manifest),
+                },
+            },
+        )
+        event = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'completion_gate_satisfied_governed_carry'",
+            (tid,),
+        ).fetchone()
+
+    assert event is not None
+    payload = json.loads(event["payload"])
+    assert payload["proof_mode"] == "registry_manifest"
+    assert payload["registry_ref"] == str(manifest)
+
+
+def test_complete_task_rejects_unrelated_governed_carry(kanban_home, tmp_path):
+    worktree = _make_git_worktree(tmp_path)
+    repo = worktree.parent.parent
+
+    feature_file = worktree / "feature.txt"
+    feature_file.write_text("feature\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(worktree), "add", "feature.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(worktree),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "feature commit",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    source_commit = subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    unrelated = repo / "unrelated.txt"
+    unrelated.write_text("other\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "unrelated.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "unrelated carry",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    carry_commit = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship worktree",
+            workspace_kind="worktree",
+            workspace_path=str(worktree),
+            branch_name="wt/live",
+        )
+        with pytest.raises(kb.CompletionGateError, match="not merged") as exc_info:
+            kb.complete_task(
+                conn,
+                tid,
+                summary="ok",
+                metadata={
+                    "ci": {"typecheck": True, "lint": True, "tests": True},
+                    "governed_carry": {
+                        "source_branch": "wt/live",
+                        "source_commit": source_commit,
+                        "carry_commits": [carry_commit],
+                        "proof_mode": "patch_equivalence",
+                    },
+                },
+            )
+        blocked = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'completion_blocked_unmerged_branch'",
+            (tid,),
+        ).fetchone()
+
+    assert exc_info.value.details["governed_carry_checked"] is True
+    assert exc_info.value.details["rejection_reason"] == "patch_equivalence_not_found"
+    assert blocked is not None
+    blocked_payload = json.loads(blocked["payload"])
+    assert blocked_payload["message"] == "completion blocked: branch 'wt/live' is not merged into 'main' yet"
+    assert blocked_payload["branch_name"] == "wt/live"
+    assert blocked_payload["base_ref"] == "main"
+    assert blocked_payload["workspace_path"] == str(worktree)
+    assert blocked_payload["governed_carry_checked"] is True
+    assert blocked_payload["rejection_reason"] == "patch_equivalence_not_found"
+
+
+def test_complete_task_rejects_governed_carry_for_branch_with_additional_unmerged_commit(
+    kanban_home, tmp_path
+):
+    worktree = _make_git_worktree(tmp_path)
+    repo = worktree.parent.parent
+
+    feature_file = worktree / "feature.txt"
+    feature_file.write_text("feature\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(worktree), "add", "feature.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(worktree),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "feature commit A",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    source_commit = subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    feature_file.write_text("feature\nsecond change\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(worktree), "add", "feature.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(worktree),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "feature commit B",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    prereq = repo / "main-only.txt"
+    prereq.write_text("advance main\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "main-only.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "advance main",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "cherry-pick",
+            source_commit,
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    carry_commit = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship worktree",
+            workspace_kind="worktree",
+            workspace_path=str(worktree),
+            branch_name="wt/live",
+        )
+        with pytest.raises(kb.CompletionGateError, match="not merged") as exc_info:
+            kb.complete_task(
+                conn,
+                tid,
+                summary="ok",
+                metadata={
+                    "ci": {"typecheck": True, "lint": True, "tests": True},
+                    "governed_carry": {
+                        "source_branch": "wt/live",
+                        "source_commit": source_commit,
+                        "carry_commits": [carry_commit],
+                        "proof_mode": "patch_equivalence",
+                    },
+                },
+            )
+        blocked = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'completion_blocked_unmerged_branch'",
+            (tid,),
+        ).fetchone()
+        task = kb.get_task(conn, tid)
+
+    assert exc_info.value.details["governed_carry_checked"] is True
+    assert exc_info.value.details["rejection_reason"] == "source_commit_not_branch_tip"
+    assert task is not None
+    assert task.status != "done"
+    assert blocked is not None
+    blocked_payload = json.loads(blocked["payload"])
+    assert blocked_payload["message"] == "completion blocked: branch 'wt/live' is not merged into 'main' yet"
+    assert blocked_payload["branch_name"] == "wt/live"
+    assert blocked_payload["base_ref"] == "main"
+    assert blocked_payload["workspace_path"] == str(worktree)
+
+
+def test_complete_task_rejects_reviewed_override_without_override_ref(
+    kanban_home, tmp_path
+):
+    worktree = _make_git_worktree(tmp_path)
+    repo = worktree.parent.parent
+
+    feature_file = worktree / "feature.txt"
+    feature_file.write_text("feature\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(worktree), "add", "feature.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(worktree),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "feature commit",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    source_commit = subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    repo_file = repo / "feature.txt"
+    repo_file.write_text("feature\nresolved\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "feature.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "carry commit",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    carry_commit = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship worktree",
+            workspace_kind="worktree",
+            workspace_path=str(worktree),
+            branch_name="wt/live",
+        )
+        with pytest.raises(kb.CompletionGateError, match="not merged") as exc_info:
+            kb.complete_task(
+                conn,
+                tid,
+                summary="ok",
+                metadata={
+                    "ci": {"typecheck": True, "lint": True, "tests": True},
+                    "governed_carry": {
+                        "source_branch": "wt/live",
+                        "source_commit": source_commit,
+                        "carry_commits": [carry_commit],
+                        "proof_mode": "reviewed_override",
+                    },
+                },
+            )
+
+    assert exc_info.value.details["governed_carry_checked"] is True
+    assert exc_info.value.details["rejection_reason"] == "missing_override_ref"
+
+
+def test_complete_task_accepts_reviewed_override_with_durable_override_ref(
+    kanban_home, tmp_path
+):
+    worktree = _make_git_worktree(tmp_path)
+    repo = worktree.parent.parent
+
+    feature_file = worktree / "feature.txt"
+    feature_file.write_text("feature\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(worktree), "add", "feature.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(worktree),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "feature commit",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    source_commit = subprocess.run(
+        ["git", "-C", str(worktree), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+
+    repo_file = repo / "feature.txt"
+    repo_file.write_text("feature\nresolved\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "feature.txt"], check=True, capture_output=True, text=True)
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(repo),
+            "-c",
+            "user.name=Test User",
+            "-c",
+            "user.email=test@example.com",
+            "commit",
+            "-m",
+            "carry commit",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    carry_commit = subprocess.run(
+        ["git", "-C", str(repo), "rev-parse", "HEAD"],
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    override_note = tmp_path / "reviewed-override.txt"
+    override_note.write_text(
+        "Founder/operator override for conflict-resolved governed carry.\n",
+        encoding="utf-8",
+    )
+
+    with kb.connect() as conn:
+        tid = kb.create_task(
+            conn,
+            title="ship worktree",
+            workspace_kind="worktree",
+            workspace_path=str(worktree),
+            branch_name="wt/live",
+        )
+        assert kb.complete_task(
+            conn,
+            tid,
+            summary="ok",
+            metadata={
+                "ci": {"typecheck": True, "lint": True, "tests": True},
+                "governed_carry": {
+                    "source_branch": "wt/live",
+                    "source_commit": source_commit,
+                    "carry_commits": [carry_commit],
+                    "proof_mode": "reviewed_override",
+                    "registry_ref": str(override_note),
+                },
+            },
+        )
+        event = conn.execute(
+            "SELECT payload FROM task_events WHERE task_id = ? AND kind = 'completion_gate_satisfied_governed_carry'",
+            (tid,),
+        ).fetchone()
+
+    assert event is not None
+    payload = json.loads(event["payload"])
+    assert payload["proof_mode"] == "reviewed_override"
+    assert payload["registry_ref"] == str(override_note)
+
+
+# ---------------------------------------------------------------------------
+# Links + dependency resolution
+# ---------------------------------------------------------------------------

@@ -5644,6 +5644,218 @@ def _completion_nocode_waiver(
     }
 
 
+_GOVERNED_CARRY_PROOF_MODES = {"patch_equivalence", "registry_manifest", "reviewed_override"}
+
+
+def _git_patch_id(repo_root: Path, commit: str) -> Optional[str]:
+    show = subprocess.run(
+        [
+            "git", "-C", str(repo_root),
+            "show", "--pretty=format:", "--no-ext-diff", commit,
+        ],
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    if show.returncode != 0 or not show.stdout.strip():
+        return None
+    patch_id = subprocess.run(
+        ["git", "patch-id", "--stable"],
+        input=show.stdout,
+        capture_output=True,
+        timeout=60,
+        check=False,
+    )
+    if patch_id.returncode != 0:
+        return None
+    lines = (patch_id.stdout or b"").decode("utf-8", errors="replace").strip().splitlines()
+    if not lines:
+        return None
+    parts = lines[0].split()
+    return parts[0] if parts else None
+
+
+def _resolve_governed_manifest_path(repo_root: Path, registry_ref: str) -> Path:
+    ref = Path(str(registry_ref)).expanduser()
+    if not ref.is_absolute():
+        ref = (repo_root / ref).resolve(strict=False)
+    return ref
+
+
+def _governed_manifest_matches(
+    repo_root: Path,
+    registry_ref: str,
+    *,
+    source_branch: str,
+    source_commit: str,
+    base_ref: str,
+    carry_commits: list[str],
+) -> tuple[bool, str, Optional[str]]:
+    manifest_path = _resolve_governed_manifest_path(repo_root, registry_ref)
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return False, "registry_manifest_missing", None
+    except (OSError, json.JSONDecodeError):
+        return False, "registry_manifest_unreadable", None
+
+    if isinstance(payload, dict):
+        raw_entries = payload.get("entries")
+        entries = raw_entries if isinstance(raw_entries, list) else [payload]
+    elif isinstance(payload, list):
+        entries = payload
+    else:
+        return False, "registry_manifest_invalid_shape", str(manifest_path)
+
+    requested_carries = sorted(str(item).strip() for item in carry_commits if str(item).strip())
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        entry_source_commit = str(entry.get("source_commit") or "").strip()
+        if entry_source_commit != source_commit:
+            continue
+        entry_source_branch = str(entry.get("source_branch") or "").strip()
+        if entry_source_branch and entry_source_branch != source_branch:
+            continue
+        entry_base_ref = str(entry.get("base_ref") or "").strip()
+        if entry_base_ref and entry_base_ref != base_ref:
+            continue
+        entry_carries_raw = entry.get("carry_commits")
+        if not isinstance(entry_carries_raw, list):
+            continue
+        entry_carries = sorted(str(item).strip() for item in entry_carries_raw if str(item).strip())
+        if entry_carries != requested_carries:
+            continue
+        return True, "", str(manifest_path)
+    return False, "registry_manifest_no_matching_entry", str(manifest_path)
+
+
+def _completion_governed_carry(
+    repo_root: Path,
+    branch_name: str,
+    base_ref: str,
+    metadata: Optional[dict],
+) -> tuple[Optional[dict], Optional[dict]]:
+    if not isinstance(metadata, dict):
+        return None, None
+    raw = metadata.get("governed_carry")
+    if raw is None:
+        return None, None
+    if not isinstance(raw, dict):
+        return None, {
+            "governed_carry_checked": True,
+            "rejection_reason": "governed_carry_not_object",
+        }
+
+    source_branch = str(raw.get("source_branch") or "").strip()
+    source_commit = str(raw.get("source_commit") or "").strip()
+    proof_mode = str(raw.get("proof_mode") or "").strip()
+    registry_ref = str(raw.get("registry_ref") or "").strip() or None
+    carry_commits_raw = raw.get("carry_commits")
+    rejection: dict[str, Any] = {
+        "governed_carry_checked": True,
+        "proof_mode": proof_mode or None,
+        "source_commit": source_commit or None,
+    }
+
+    if not source_branch:
+        rejection["rejection_reason"] = "missing_source_branch"
+        return None, rejection
+    if not source_commit:
+        rejection["rejection_reason"] = "missing_source_commit"
+        return None, rejection
+    if proof_mode not in _GOVERNED_CARRY_PROOF_MODES:
+        rejection["rejection_reason"] = "unsupported_proof_mode"
+        return None, rejection
+    if not isinstance(carry_commits_raw, list) or not carry_commits_raw:
+        rejection["rejection_reason"] = "missing_carry_commits"
+        return None, rejection
+
+    carry_commits = [str(item).strip() for item in carry_commits_raw if str(item).strip()]
+    if not carry_commits:
+        rejection["rejection_reason"] = "missing_carry_commits"
+        return None, rejection
+    if proof_mode == "registry_manifest" and not registry_ref:
+        rejection["rejection_reason"] = "missing_registry_ref"
+        return None, rejection
+    if proof_mode == "reviewed_override" and not registry_ref:
+        rejection["rejection_reason"] = "missing_override_ref"
+        return None, rejection
+
+    if _git_ref_commit(repo_root, source_branch) is None:
+        rejection["rejection_reason"] = "source_branch_missing"
+        return None, rejection
+    if _git_ref_commit(repo_root, source_commit) is None:
+        rejection["rejection_reason"] = "source_commit_missing"
+        return None, rejection
+    if not _git_is_ancestor(repo_root, source_commit, source_branch):
+        rejection["rejection_reason"] = "source_commit_not_on_source_branch"
+        return None, rejection
+    branch_tip = _git_ref_commit(repo_root, source_branch)
+    if branch_tip != source_commit:
+        rejection["rejection_reason"] = "source_commit_not_branch_tip"
+        rejection["branch_tip"] = branch_tip
+        return None, rejection
+
+    for carry_commit in carry_commits:
+        if _git_ref_commit(repo_root, carry_commit) is None:
+            rejection["rejection_reason"] = f"carry_commit_missing:{carry_commit}"
+            return None, rejection
+        if not _git_is_ancestor(repo_root, carry_commit, base_ref):
+            rejection["rejection_reason"] = f"carry_commit_not_on_base:{carry_commit}"
+            return None, rejection
+
+    registry_path: Optional[str] = None
+    if proof_mode == "patch_equivalence":
+        source_patch_id = _git_patch_id(repo_root, source_commit)
+        if source_patch_id is None:
+            rejection["rejection_reason"] = "source_patch_id_unavailable"
+            return None, rejection
+        if not any(_git_patch_id(repo_root, carry_commit) == source_patch_id for carry_commit in carry_commits):
+            rejection["rejection_reason"] = "patch_equivalence_not_found"
+            return None, rejection
+    elif proof_mode == "registry_manifest":
+        ok, reason, resolved_registry_path = _governed_manifest_matches(
+            repo_root,
+            registry_ref or "",
+            source_branch=source_branch,
+            source_commit=source_commit,
+            base_ref=base_ref,
+            carry_commits=carry_commits,
+        )
+        registry_path = resolved_registry_path
+        if not ok:
+            rejection["rejection_reason"] = reason
+            if registry_path:
+                rejection["registry_ref"] = registry_path
+            return None, rejection
+    elif proof_mode == "reviewed_override":
+        override_path = _resolve_governed_manifest_path(repo_root, registry_ref or "")
+        registry_path = str(override_path)
+        try:
+            if not override_path.is_file():
+                rejection["rejection_reason"] = "override_ref_missing"
+                rejection["registry_ref"] = registry_path
+                return None, rejection
+            if not override_path.read_text(encoding="utf-8").strip():
+                rejection["rejection_reason"] = "override_ref_empty"
+                rejection["registry_ref"] = registry_path
+                return None, rejection
+        except OSError:
+            rejection["rejection_reason"] = "override_ref_unreadable"
+            rejection["registry_ref"] = registry_path
+            return None, rejection
+
+    return {
+        "source_branch": source_branch,
+        "source_commit": source_commit,
+        "base_ref": base_ref,
+        "carry_commits": carry_commits,
+        "proof_mode": proof_mode,
+        "registry_ref": registry_path or registry_ref,
+    }, None
+
+
 def complete_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -5727,6 +5939,7 @@ def complete_task(
 
     workspace_snapshot = live_worker_workspace_snapshot(task)
     workspace_kind = workspace_snapshot.get("workspace_kind") or getattr(task, "workspace_kind", None)
+    governed_carry_event: Optional[dict[str, Any]] = None
     if workspace_kind == "worktree":
         workspace_path = workspace_snapshot.get("workspace_path") or getattr(task, "workspace_path", None)
         branch_name = workspace_snapshot.get("branch_name") or getattr(task, "branch_name", None) or f"wt/{task.id}"
@@ -5797,17 +6010,34 @@ def complete_task(
                 )
         else:
             if not _git_is_ancestor(repo_root, branch_name, base_ref):
-                _block_completion(
-                    conn,
-                    task_id,
-                    "unmerged_branch",
-                    f"completion blocked: branch {branch_name!r} is not merged into {base_ref!r} yet",
-                    {
+                governed_carry_event, governed_failure = _completion_governed_carry(
+                    repo_root,
+                    branch_name,
+                    base_ref,
+                    metadata,
+                )
+                if governed_carry_event is None:
+                    details = {
                         "workspace_path": str(worktree_path),
                         "branch_name": branch_name,
                         "base_ref": base_ref,
-                    },
-                )
+                    }
+                    if governed_failure:
+                        details.update(governed_failure)
+                    _block_completion(
+                        conn,
+                        task_id,
+                        "unmerged_branch",
+                        f"completion blocked: branch {branch_name!r} is not merged into {base_ref!r} yet",
+                        details,
+                    )
+                governed_payload = governed_carry_event
+                assert governed_payload is not None
+                governed_carry_event = {
+                    **governed_payload,
+                    "workspace_path": str(worktree_path),
+                    "branch_name": branch_name,
+                }
             ci_ok, ci_message = _completion_ci_green(metadata)
             if not ci_ok:
                 _block_completion(
@@ -5822,6 +6052,13 @@ def complete_task(
                     },
                 )
     with write_txn(conn):
+        if workspace_kind == "worktree" and governed_carry_event is not None:
+            _append_event(
+                conn,
+                task_id,
+                "completion_gate_satisfied_governed_carry",
+                governed_carry_event,
+            )
         if expected_run_id is None:
             cur = conn.execute(
                 """

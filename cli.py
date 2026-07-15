@@ -4984,6 +4984,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 continue
             with self._pet_lock:
                 self._pet_frame_idx += 1
+            # Avoid terminal jitter during pure idle (#64776): only invalidate
+            # when the agent or a command is actively running.  The spinner
+            # loop already follows this same pattern and the prompt_toolkit
+            # refresh_interval handles cosmetic repaints during idle at a much
+            # slower cadence (default 1 s), so the pet won't freeze entirely
+            # but won't fight terminal auto-scroll either.
+            if not self._agent_running and not self._command_running:
+                continue
             app = getattr(self, "_app", None)
             if app is not None:
                 try:

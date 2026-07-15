@@ -99,7 +99,13 @@ class ComputerUseBackend(ABC):
 
     # ── Capture ─────────────────────────────────────────────────────
     @abstractmethod
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult: ...
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> CaptureResult: ...
 
     # ── Pointer actions ─────────────────────────────────────────────
     @abstractmethod
@@ -150,6 +156,26 @@ class ComputerUseBackend(ABC):
     @abstractmethod
     def list_apps(self) -> List[Dict[str, Any]]:
         """Return running apps with bundle IDs, PIDs, window counts."""
+
+    def list_windows(
+        self,
+        pid: Optional[int] = None,
+        on_screen_only: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """Return targetable windows with stable pid/window identifiers."""
+        raise NotImplementedError
+
+    def launch_app(
+        self,
+        *,
+        name: Optional[str] = None,
+        path: Optional[str] = None,
+        additional_arguments: Optional[List[str]] = None,
+        start_minimized: bool = False,
+        creates_new_application_instance: bool = False,
+    ) -> Dict[str, Any]:
+        """Launch an app without activating it and return its windows."""
+        raise NotImplementedError
 
     @abstractmethod
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:

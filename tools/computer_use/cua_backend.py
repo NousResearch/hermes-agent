@@ -1244,7 +1244,13 @@ class CuaDriverBackend(ComputerUseBackend):
         return cua_driver_binary_available()
 
     # ── Capture ────────────────────────────────────────────────────
-    def capture(self, mode: str = "som", app: Optional[str] = None) -> CaptureResult:
+    def capture(
+        self,
+        mode: str = "som",
+        app: Optional[str] = None,
+        pid: Optional[int] = None,
+        window_id: Optional[int] = None,
+    ) -> CaptureResult:
         """Capture the frontmost on-screen window (optionally filtered by app name).
 
         Maps hermes `capture(mode, app)` → cua-driver `list_windows` +
@@ -1258,9 +1264,17 @@ class CuaDriverBackend(ComputerUseBackend):
         # PR's effective minimum (trycua/cua#1961 + #1908) is well past
         # that, so the fallback is gone — the wrapper now treats the
         # structured shape as the only contract.
+        exact_target = pid is not None or window_id is not None
+        if exact_target and (pid is None or window_id is None):
+            return CaptureResult(
+                mode=mode, width=0, height=0, png_b64=None, elements=[], app="",
+                window_title="<pid and window_id must be supplied together>",
+                png_bytes_len=0,
+            )
+
         lw_out = self._session.call_tool(
             "list_windows",
-            {"on_screen_only": True, "session": self._session_id},
+            {"on_screen_only": not exact_target, "session": self._session_id},
         )
 
         def _windows_from(out: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -1283,7 +1297,7 @@ class CuaDriverBackend(ComputerUseBackend):
             try:
                 cli_lw = self._session._call_tool_via_cli(
                     "list_windows",
-                    {"on_screen_only": True, "session": self._session_id},
+                    {"on_screen_only": not exact_target, "session": self._session_id},
                     20.0,
                 )
                 windows = _windows_from(cli_lw)
@@ -1300,7 +1314,21 @@ class CuaDriverBackend(ComputerUseBackend):
         # returned by list_windows is the localized name (e.g. "計算機"), so
         # `app="Calculator"` legitimately matches no windows on a non-English
         # system and the caller needs to retry with the localized name.
-        if app and app.strip().lower() in _SCREEN_CAPTURE_SENTINELS:
+        if exact_target:
+            windows = [
+                w for w in windows
+                if w["pid"] == int(pid) and w["window_id"] == int(window_id)
+            ]
+            if not windows:
+                return CaptureResult(
+                    mode=mode, width=0, height=0, png_b64=None, elements=[], app="",
+                    window_title=(
+                        f"<no targetable window matched pid={pid}, window_id={window_id}; "
+                        "call list_windows again because the window may have closed or changed>"
+                    ),
+                    png_bytes_len=0,
+                )
+        elif app and app.strip().lower() in _SCREEN_CAPTURE_SENTINELS:
             # Whole-screen / desktop request. cua-driver has no virtual-desktop
             # capture tool, so resolve to the OS shell/desktop window (the
             # desktop backdrop or the taskbar/menu-bar), which list_windows
@@ -1735,6 +1763,33 @@ class CuaDriverBackend(ComputerUseBackend):
             return apps
         return []
 
+    def list_windows(
+        self,
+        pid: Optional[int] = None,
+        on_screen_only: bool = False,
+    ) -> List[Dict[str, Any]]:
+        args: Dict[str, Any] = {
+            "on_screen_only": bool(on_screen_only),
+            "session": self._session_id,
+        }
+        if pid is not None:
+            args["pid"] = int(pid)
+        out = self._session.call_tool("list_windows", args)
+        raw = (out.get("structuredContent") or {}).get("windows") or []
+        windows = _ingest_windows(raw)
+        windows.sort(key=lambda window: window["z_index"])
+        return [
+            {
+                "app_name": window["app_name"],
+                "pid": window["pid"],
+                "window_id": window["window_id"],
+                "title": window["title"],
+                "is_on_screen": not window["off_screen"],
+                "z_index": window["z_index"],
+            }
+            for window in windows
+        ]
+
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         """Target an app for subsequent actions without stealing system focus.
 
@@ -1786,8 +1841,10 @@ class CuaDriverBackend(ComputerUseBackend):
         *,
         bundle_id: Optional[str] = None,
         name: Optional[str] = None,
+        path: Optional[str] = None,
         urls: Optional[List[str]] = None,
         additional_arguments: Optional[List[str]] = None,
+        start_minimized: bool = False,
         creates_new_application_instance: bool = False,
     ) -> Dict[str, Any]:
         """Idempotent launch. Returns ``{pid, bundle_id, name, windows[]}``
@@ -1795,24 +1852,58 @@ class CuaDriverBackend(ComputerUseBackend):
         ``get_window_state``.
 
         ``creates_new_application_instance=True`` forces a new instance
-        even if the app is already running — use it when concurrent
-        runs may touch the same app so each session gets its own
-        isolated window."""
-        if not bundle_id and not name:
-            raise ValueError("launch_app requires either bundle_id or name")
+        on platforms/apps that support it. Windows currently treats this as
+        a parity hint, so the returned metadata explicitly says whether a new
+        process was actually observed."""
+        if not bundle_id and not name and not path:
+            raise ValueError("launch_app requires bundle_id, name, or path")
+        if sys.platform == "darwin" and path:
+            raise ValueError("launch_app path is unsupported on macOS; use name or bundle_id")
+        if sys.platform == "linux" and additional_arguments:
+            raise ValueError("launch_app additional_arguments is unsupported on Linux")
+        if sys.platform != "win32" and start_minimized:
+            raise ValueError("launch_app start_minimized is supported only on Windows")
+        if sys.platform == "linux" and creates_new_application_instance:
+            raise ValueError(
+                "launch_app creates_new_application_instance is unsupported on Linux"
+            )
+        existing_pids = {
+            int(app["pid"])
+            for app in self.list_apps()
+            if app.get("pid") is not None
+        }
         args: Dict[str, Any] = {"session": self._session_id}
         if bundle_id:
             args["bundle_id"] = bundle_id
         if name:
             args["name"] = name
+        if path:
+            args["launch_path" if sys.platform == "linux" else "path"] = path
         if urls:
             args["urls"] = list(urls)
         if additional_arguments:
             args["additional_arguments"] = list(additional_arguments)
+        if start_minimized:
+            args["start_minimized"] = True
         if creates_new_application_instance:
             args["creates_new_application_instance"] = True
         out = self._session.call_tool("launch_app", args)
-        return out["structuredContent"] or {"data": out["data"]}
+        result = out["structuredContent"] or {"data": out["data"]}
+        if isinstance(result, dict):
+            launched_pid = result.get("pid")
+            new_process_confirmed = False
+            try:
+                new_process_confirmed = int(launched_pid) not in existing_pids
+            except (TypeError, ValueError):
+                pass
+            result["requested_new_instance"] = bool(creates_new_application_instance)
+            result["new_process_confirmed"] = new_process_confirmed
+            if creates_new_application_instance and not new_process_confirmed:
+                result["isolation_warning"] = (
+                    "The platform/app reused an existing process. Treat the returned "
+                    "pid/window_id as an exact target, not as a process-isolation boundary."
+                )
+        return result
 
     def kill_app(self, *, pid: int) -> ActionResult:
         """Terminate by pid. Equivalent to ``kill -9`` on POSIX,

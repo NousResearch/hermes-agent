@@ -26,6 +26,7 @@ returns the worktree's own root, which is why the client double-counted them).
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Any, Callable, Optional
 
 # A cwd -> git identity resolver. Returns ``{"repo_root", "worktree_root"}`` where
@@ -73,8 +74,14 @@ def _comparison_segments(path: str) -> list[str]:
 
     Windows paths remain case-insensitive even when tests or remote backends run
     on POSIX. Display paths and emitted IDs keep their original spelling.
+
+    Segments are NFC-normalized before comparing: the same on-disk folder can
+    reach us as NFC (typed paths, os.getcwd()) or NFD (macOS file pickers,
+    HFS+/APFS round-trips), and ``casefold()`` does not unify the two forms —
+    an accented project folder would otherwise render empty (#65014). Mirrors
+    ``comparisonSegments`` in the desktop's ``workspace-groups.ts``.
     """
-    segs = _segments(path)
+    segs = [unicodedata.normalize("NFC", segment) for segment in _segments(path)]
     return [segment.casefold() for segment in segs] if _is_windows_path(path) else segs
 
 

@@ -396,6 +396,68 @@ class TestCronModelDriftConfigWarning:
         assert "Set model.default = new-model" in captured.out
         assert "fail closed" not in captured.out
 
+    def test_model_name_does_not_warn_for_unread_cron_axis(
+        self,
+        _isolated_hermes_home,
+        capsys,
+    ):
+        _write_cron_jobs(
+            _isolated_hermes_home,
+            [
+                {
+                    "id": "model-drift-job",
+                    "enabled": True,
+                    "model_snapshot": "old-model",
+                }
+            ],
+        )
+
+        set_config_value("model.name", "display-only-name")
+
+        captured = capsys.readouterr()
+        assert "Set model.name = display-only-name" in captured.out
+        assert "fail closed" not in captured.out
+
+
+# ---------------------------------------------------------------------------
+# String-typed config values — regression tests for #47515
+# ---------------------------------------------------------------------------
+
+class TestStringTypedConfigValues:
+    @pytest.mark.parametrize("value", ["off", "on", "yes", "no", "true", "false", "01"])
+    def test_string_typed_values_are_not_coerced(self, _isolated_hermes_home, value):
+        """Values stay strings when DEFAULT_CONFIG declares the leaf as a string."""
+        set_config_value("approvals.mode", value)
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["approvals"]["mode"] == value
+        assert isinstance(saved["approvals"]["mode"], str)
+
+    @pytest.mark.parametrize("key, value, expected", [
+        ("terminal.persistent_shell", "off", False),
+        ("approvals.timeout", "30", 30),
+    ])
+    def test_non_string_defaults_keep_existing_coercion(
+        self, _isolated_hermes_home, key, value, expected
+    ):
+        set_config_value(key, value)
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        node = saved
+        for part in key.split("."):
+            node = node[part]
+        assert node == expected
+        assert type(node) is type(expected)
+
+    def test_unknown_keys_keep_existing_coercion(self, _isolated_hermes_home):
+        set_config_value("custom.enabled", "off")
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["custom"]["enabled"] is False
+
 
 # ---------------------------------------------------------------------------
 # Secret redaction in display output (issue #50245)

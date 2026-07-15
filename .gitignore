@@ -96,6 +96,9 @@ website/static/api/skills-meta.json
 website/static/api/automation-blueprints-index.json
 models-dev-upstream/
 
+# JetBrains IDE
+.idea/
+
 # Local editor / agent tooling (machine-specific; keep in global config, not the repo)
 .codex/
 .cursor/

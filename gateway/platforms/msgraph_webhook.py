@@ -25,6 +25,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     SendResult,
+    is_network_accessible,
 )
 
 logger = logging.getLogger(__name__)
@@ -33,6 +34,7 @@ DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8646
 DEFAULT_WEBHOOK_PATH = "/msgraph/webhook"
 DEFAULT_MAX_SEEN_RECEIPTS = 5000
+DEFAULT_MAX_BODY_BYTES = 1_048_576
 NotificationScheduler = Callable[[Dict[str, Any], MessageEvent], Awaitable[None] | None]
 
 
@@ -61,6 +63,9 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         self._client_state: Optional[str] = self._string_or_none(extra.get("client_state"))
         self._max_seen_receipts = max(
             1, int(extra.get("max_seen_receipts", DEFAULT_MAX_SEEN_RECEIPTS))
+        )
+        self._max_body_bytes = max(
+            1, int(extra.get("max_body_bytes", DEFAULT_MAX_BODY_BYTES))
         )
         self._allowed_source_networks: list[ipaddress._BaseNetwork] = (
             self._parse_allowed_source_cidrs(extra.get("allowed_source_cidrs"))
@@ -132,8 +137,26 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
     def set_notification_scheduler(self, scheduler: Optional[NotificationScheduler]) -> None:
         self._notification_scheduler = scheduler
 
-    async def connect(self) -> bool:
-        app = web.Application()
+    def _source_allowlist_required_but_missing(self) -> bool:
+        return is_network_accessible(self._host) and not self._allowed_source_networks
+
+    async def connect(self, *, is_reconnect: bool = False) -> bool:
+        if self._client_state is None:
+            logger.error(
+                "[msgraph_webhook] Refusing to start without extra.client_state configured"
+            )
+            return False
+        if self._source_allowlist_required_but_missing():
+            logger.error(
+                "[msgraph_webhook] Refusing to start: binding to %s requires "
+                "extra.allowed_source_cidrs. Configure the Microsoft Graph "
+                "source CIDRs or bind to loopback (127.0.0.1/::1) behind a "
+                "tunnel or reverse proxy.",
+                self._host,
+            )
+            return False
+
+        app = web.Application(client_max_size=self._max_body_bytes)
         app.router.add_get(self._health_path, self._handle_health)
         app.router.add_get(self._webhook_path, self._handle_validation)
         app.router.add_post(self._webhook_path, self._handle_notification)
@@ -171,6 +194,8 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         return {"name": chat_id, "type": "webhook"}
 
     async def _handle_health(self, request: "web.Request") -> "web.Response":
+        if not self._source_ip_allowed(request):
+            return web.Response(status=403)
         return web.json_response(
             {
                 "status": "ok",
@@ -208,8 +233,24 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
             return web.Response(text=validation_token, content_type="text/plain")
 
         try:
-            body = await request.json()
+            content_length = request.content_length
         except Exception:
+            content_length = None
+        if content_length is not None and content_length > self._max_body_bytes:
+            return web.Response(status=413)
+
+        try:
+            raw_body = await request.read()
+        except Exception:
+            return web.Response(status=400)
+        if len(raw_body) > self._max_body_bytes:
+            return web.Response(status=413)
+
+        try:
+            body = json.loads(raw_body.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError):
+            return web.Response(status=400)
+        if not isinstance(body, dict):
             return web.Response(status=400)
 
         notifications = body.get("value")
@@ -265,9 +306,12 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
     def _source_ip_allowed(self, request: "web.Request") -> bool:
         """Return True if the request's source IP is in the configured allowlist.
 
-        When ``allowed_source_cidrs`` is empty (the default), everything is
-        allowed — preserves behavior for dev tunnels / localhost setups.
+        Loopback-only binds may omit ``allowed_source_cidrs`` for local reverse
+        proxies and dev tunnels. Network-accessible binds fail closed until an
+        explicit CIDR allowlist is configured.
         """
+        if self._source_allowlist_required_but_missing():
+            return False
         if not self._allowed_source_networks:
             return True
         peer = request.remote or ""
@@ -310,7 +354,7 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         """
         expected = self._client_state
         if expected is None:
-            return True
+            return False
         provided = self._string_or_none(notification.get("clientState"))
         if provided is None:
             return False

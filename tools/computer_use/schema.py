@@ -16,14 +16,15 @@ from typing import Any, Dict
 COMPUTER_USE_SCHEMA: Dict[str, Any] = {
     "name": "computer_use",
     "description": (
-        "Drive the macOS desktop in the background — screenshots, mouse, "
-        "keyboard, scroll, drag — without stealing the user's cursor, "
-        "keyboard focus, or Space. Preferred workflow: call with "
+        "Drive the desktop in the background via cua-driver — screenshots, "
+        "mouse, keyboard, scroll, drag — without stealing the user's cursor "
+        "or keyboard focus. Supported on macOS, Windows, and Linux. "
+        "Preferred workflow: call with "
         "action='capture' (mode='som' gives numbered element overlays), "
         "then click by `element` index for reliability. Pixel coordinates "
         "are supported for models trained on them. Works on any window — "
-        "hidden, minimized, on another Space, or behind another app. "
-        "macOS only; requires cua-driver to be installed."
+        "hidden, minimized, or behind another app. Requires cua-driver to "
+        "be installed."
     ),
     "parameters": {
         "type": "object",
@@ -72,8 +73,35 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "Optional. Limit capture/action to a specific app "
                     "(by name, e.g. 'Safari', or bundle ID, "
                     "'com.apple.Safari'). If omitted, operates on the "
-                    "frontmost app's window or the whole screen."
+                    "frontmost app's window. Pass app='screen' (or "
+                    "'desktop') to capture the OS desktop/shell surface — "
+                    "e.g. to see the wallpaper or click the taskbar. Note: "
+                    "capture is per-window; a single image cannot span "
+                    "multiple monitors, so on a multi-screen setup capture "
+                    "one window or display at a time."
                 ),
+            },
+            "max_elements": {
+                "type": "integer",
+                "description": (
+                    "Optional cap on the AX `elements` array returned by "
+                    "`action='capture'`. Default 100, hard maximum 1000. "
+                    "Dense UIs (Electron apps such as Obsidian or VS Code, "
+                    "JetBrains IDEs) can publish 500+ AX nodes — capping "
+                    "prevents a single capture from blowing session "
+                    "context. When the cap trims the response, "
+                    "`total_elements` and `truncated_elements` are "
+                    "surfaced in the result so you can re-call with "
+                    "`app=` to narrow scope or raise `max_elements` when "
+                    "the full tree is required. Has no effect on "
+                    "`mode='som'` / `mode='vision'` when a screenshot is "
+                    "included in the response; only the rare image-"
+                    "missing fallback returns an `elements` array and is "
+                    "subject to the cap."
+                ),
+                "default": 100,
+                "minimum": 1,
+                "maximum": 1000,
             },
             # ── click / drag / scroll targeting ────────────────────
             "element": {
@@ -104,7 +132,10 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "type": "array",
                 "items": {
                     "type": "string",
-                    "enum": ["cmd", "shift", "option", "alt", "ctrl", "fn"],
+                    "enum": [
+                        "cmd", "shift", "option", "alt", "ctrl", "fn",
+                        "win", "windows", "super", "meta",
+                    ],
                 },
                 "description": "Modifier keys held during the action.",
             },

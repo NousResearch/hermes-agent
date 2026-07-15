@@ -3,7 +3,7 @@
 Fetch a YouTube video transcript and output it as structured JSON.
 
 Usage:
-    python fetch_transcript.py <url_or_video_id> [--language en,tr] [--timestamps]
+    uv run python3 fetch_transcript.py <url_or_video_id> [--language en,tr] [--timestamps]
 
 Output (JSON):
     {
@@ -14,7 +14,7 @@ Output (JSON):
         "timestamped_text": "00:00 first line\n00:05 second line\n..."
     }
 
-Install dependency:  pip install youtube-transcript-api
+Install dependency:  uv pip install youtube-transcript-api
 """
 
 import argparse
@@ -56,7 +56,7 @@ def fetch_transcript(video_id: str, languages: list = None):
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
     except ImportError:
-        print("Error: youtube-transcript-api not installed. Run: pip install youtube-transcript-api",
+        print("Error: youtube-transcript-api not installed. Run: uv pip install youtube-transcript-api",
               file=sys.stderr)
         sys.exit(1)
 
@@ -94,7 +94,7 @@ def main():
         if "disabled" in error_msg.lower():
             print(json.dumps({"error": "Transcripts are disabled for this video."}))
         elif "no transcript" in error_msg.lower():
-            print(json.dumps({"error": f"No transcript found. Try specifying a language with --language."}))
+            print(json.dumps({"error": "No transcript found. Try specifying a language with --language."}))
         else:
             print(json.dumps({"error": error_msg}))
         sys.exit(1)

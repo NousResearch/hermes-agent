@@ -8,18 +8,22 @@ description: "Real-time voice conversations with Hermes Agent — CLI, Telegram,
 
 Hermes Agent supports full voice interaction across CLI and messaging platforms. Talk to the agent using your microphone, hear spoken replies, and have live voice conversations in Discord voice channels.
 
-If you want a practical setup walkthrough with recommended configurations and real usage patterns, see [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes).
+If you want a practical setup walkthrough with recommended configurations and real usage patterns, see [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes).
 
 ## Prerequisites
 
 Before using voice features, make sure you have:
 
-1. **Hermes Agent installed** — `pip install hermes-agent` (see [Installation](/docs/getting-started/installation))
+1. **Hermes Agent installed** — via the install script (see [Installation](/getting-started/installation))
 2. **An LLM provider configured** — run `hermes model` or set your preferred provider credentials in `~/.hermes/.env`
 3. **A working base setup** — run `hermes` to verify the agent responds to text before enabling voice
 
 :::tip
 The `~/.hermes/` directory and default `config.yaml` are created automatically the first time you run `hermes`. You only need to create `~/.hermes/.env` manually for API keys.
+:::
+
+:::tip Nous Portal covers both
+A paid [Nous Portal](/user-guide/features/tool-gateway) subscription supplies the LLM (step 2) **and** OpenAI TTS via the Tool Gateway — no separate OpenAI key needed. On a fresh install, `hermes setup --portal` wires both up at once.
 :::
 
 ## Overview
@@ -36,19 +40,19 @@ The `~/.hermes/` directory and default `config.yaml` are created automatically t
 
 ```bash
 # CLI voice mode (microphone + audio playback)
-pip install "hermes-agent[voice]"
+cd ~/.hermes/hermes-agent && uv pip install -e ".[voice]"
 
 # Discord + Telegram messaging (includes discord.py[voice] for VC support)
-pip install "hermes-agent[messaging]"
+cd ~/.hermes/hermes-agent && uv pip install -e ".[messaging]"
 
 # Premium TTS (ElevenLabs)
-pip install "hermes-agent[tts-premium]"
+cd ~/.hermes/hermes-agent && uv pip install -e ".[tts-premium]"
 
 # Local TTS (NeuTTS, optional)
 python -m pip install -U neutts[all]
 
 # Everything at once
-pip install "hermes-agent[all]"
+cd ~/.hermes/hermes-agent && uv pip install -e ".[all]"
 ```
 
 | Extra | Packages | Required For |
@@ -259,13 +263,13 @@ Go to the [Discord Developer Portal](https://discord.com/developers/applications
 
 | Level | Integer | What's Included |
 |-------|---------|----------------|
-| Text only | `274878286912` | View Channels, Send Messages, Read History, Embeds, Attachments, Threads, Reactions |
-| Text + Voice | `274881432640` | All above + Connect, Speak |
+| Text only | `309237763136` | View Channels, Send Messages, Read History, Embeds, Attachments, Threads, Reactions, Create Public Threads |
+| Text + Voice | `309240908864` | All above + Connect, Speak |
 
 **Re-invite the bot** with the updated permissions URL:
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=274881432640
+https://discord.com/oauth2/authorize?client_id=YOUR_APP_ID&scope=bot+applications.commands&permissions=309240908864
 ```
 
 Replace `YOUR_APP_ID` with your Application ID from the Developer Portal.
@@ -391,14 +395,19 @@ voice:
 
 # Speech-to-Text
 stt:
-  provider: "local"                  # "local" (free) | "groq" | "openai"
+  enabled: true                     # set to false to skip auto-transcription —
+                                    # the gateway still caches the audio file and
+                                    # passes its path to the agent as part of the
+                                    # inbound message, useful for custom pipelines
+                                    # (diarization, alignment, archival, etc.)
+  provider: "local"                  # "local" (free) | "groq" | "openai" | "mistral" | "xai"
   local:
     model: "base"                    # tiny, base, small, medium, large-v3
   # model: "whisper-1"              # Legacy: used when provider is not set
 
 # Text-to-Speech
 tts:
-  provider: "edge"                 # "edge" (free) | "elevenlabs" | "openai" | "neutts" | "minimax"
+  provider: "edge"                 # "edge" (free) | "elevenlabs" | "openai" | "neutts" | "minimax" | "mistral" | "gemini" | "xai" | "kittentts" | "piper"
   edge:
     voice: "en-US-AriaNeural"      # 322 voices, 74 languages
   elevenlabs:
@@ -449,6 +458,8 @@ DISCORD_ALLOWED_USERS=...
 | **Groq** | `whisper-large-v3` | Fast (~1s) | Better | Free tier | Yes |
 | **OpenAI** | `whisper-1` | Fast (~1s) | Good | Paid | Yes |
 | **OpenAI** | `gpt-4o-transcribe` | Medium (~2s) | Best | Paid | Yes |
+| **Mistral** | `voxtral-mini-latest` | Fast | Good | Paid | Yes |
+| **xAI** | `grok-stt` | Fast | Good | Paid | Yes |
 
 Provider priority (automatic fallback): **local** > **groq** > **openai**
 
@@ -475,6 +486,8 @@ PortAudio is not installed:
 brew install portaudio    # macOS
 sudo apt install portaudio19-dev  # Ubuntu
 ```
+
+If you are running Hermes inside Docker on a Linux desktop, the container also needs access to your host audio socket. See the [Docker audio bridge](/user-guide/docker#optional-linux-desktop-audio-bridge) notes for a PulseAudio/PipeWire-compatible setup.
 
 ### Bot doesn't respond in Discord server channels
 

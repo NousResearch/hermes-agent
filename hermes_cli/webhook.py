@@ -11,8 +11,10 @@ hot-reloaded by the webhook adapter without a gateway restart.
 """
 
 import json
+import os
 import re
 import secrets
+import tempfile
 import time
 from pathlib import Path
 from typing import Dict
@@ -23,6 +25,7 @@ from hermes_cli.config import cfg_get
 
 
 _SUBSCRIPTIONS_FILENAME = "webhook_subscriptions.json"
+_SUBSCRIPTIONS_FILE_MODE = 0o600
 
 
 def _hermes_home() -> Path:
@@ -48,12 +51,33 @@ def _load_subscriptions() -> Dict[str, dict]:
 def _save_subscriptions(subs: Dict[str, dict]) -> None:
     path = _subscriptions_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = path.with_suffix(".tmp")
-    tmp_path.write_text(
-        json.dumps(subs, indent=2, ensure_ascii=False),
-        encoding="utf-8",
+    # webhook_subscriptions.json contains per-route HMAC secrets — write
+    # via tempfile + chmod 0o600 before the atomic rename so a permissive
+    # umask cannot leave the secrets readable to other local users in the
+    # window between create and rename.
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{path.name}.",
+        suffix=".tmp",
+        dir=path.parent,
+        text=True,
     )
-    atomic_replace(tmp_path, path)
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(subs, fh, indent=2, ensure_ascii=False)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(tmp_path, _SUBSCRIPTIONS_FILE_MODE)
+        atomic_replace(tmp_path, path)
+        # Re-assert after rename in case the destination existed with a
+        # broader mode and atomic_replace preserved it.
+        os.chmod(path, _SUBSCRIPTIONS_FILE_MODE)
+    except Exception:
+        try:
+            tmp_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
 
 
 def _get_webhook_config() -> dict:
@@ -124,11 +148,11 @@ def webhook_command(args):
     if not _require_webhook_enabled():
         return
 
-    if sub in ("subscribe", "add"):
+    if sub in {"subscribe", "add"}:
         _cmd_subscribe(args)
-    elif sub in ("list", "ls"):
+    elif sub in {"list", "ls"}:
         _cmd_list(args)
-    elif sub in ("remove", "rm"):
+    elif sub in {"remove", "rm"}:
         _cmd_remove(args)
     elif sub == "test":
         _cmd_test(args)
@@ -165,6 +189,10 @@ def _cmd_subscribe(args):
             return
         route["deliver_only"] = True
 
+    script = getattr(args, "script", "") or ""
+    if script.strip():
+        route["script"] = script.strip()
+
     if args.deliver_chat_id:
         route["deliver_extra"] = {"chat_id": args.deliver_chat_id}
 
@@ -188,9 +216,11 @@ def _cmd_subscribe(args):
         prompt_preview = route["prompt"][:80] + ("..." if len(route["prompt"]) > 80 else "")
         label = "Message" if route.get("deliver_only") else "Prompt"
         print(f"  {label}: {prompt_preview}")
-    print(f"\n  Configure your service to POST to the URL above.")
-    print(f"  Use the secret for HMAC-SHA256 signature validation.")
-    print(f"  The gateway must be running to receive events (hermes gateway run).\n")
+    if route.get("script"):
+        print(f"  Script: {route['script']}")
+    print("\n  Configure your service to POST to the URL above.")
+    print("  Use the secret for HMAC-SHA256 signature validation.")
+    print("  The gateway must be running to receive events (hermes gateway run).\n")
 
 
 def _cmd_list(args):
@@ -214,6 +244,8 @@ def _cmd_list(args):
         print(f"    URL:     {base_url}/webhooks/{name}")
         print(f"    Events:  {events}")
         print(f"    Deliver: {deliver}")
+        if route.get("script"):
+            print(f"    Script:  {route['script']}")
         print()
 
 

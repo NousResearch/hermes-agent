@@ -145,7 +145,7 @@ class MeetingArtifact:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if self.artifact_type not in ("transcript", "recording", "call_record"):
+        if self.artifact_type not in {"transcript", "recording", "call_record"}:
             raise ValueError(
                 "MeetingArtifact.artifact_type must be transcript, recording, or call_record."
             )

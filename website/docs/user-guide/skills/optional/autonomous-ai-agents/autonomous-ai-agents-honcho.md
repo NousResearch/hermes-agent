@@ -19,6 +19,7 @@ Configure and use Honcho memory with Hermes -- cross-session user modeling, mult
 | Version | `2.0.0` |
 | Author | Hermes Agent |
 | License | MIT |
+| Platforms | linux, macos, windows |
 | Tags | `Honcho`, `Memory`, `Profiles`, `Observation`, `Dialectic`, `User-Modeling`, `Session-Summary` |
 | Related skills | [`hermes-agent`](/docs/user-guide/skills/bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent) |
 
@@ -46,14 +47,14 @@ Honcho provides AI-native cross-session user modeling. It learns who the user is
 ### Cloud (app.honcho.dev)
 
 ```bash
-hermes honcho setup
+hermes memory setup honcho
 # select "cloud", paste API key from https://app.honcho.dev
 ```
 
 ### Self-hosted
 
 ```bash
-hermes honcho setup
+hermes memory setup honcho
 # select "local", enter base URL (e.g. http://localhost:8000)
 ```
 

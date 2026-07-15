@@ -2058,7 +2058,7 @@ def _get_due_jobs_locked() -> List[Dict[str, Any]]:
                                     "Job '%s': dispatch limit reached (%d/%d) "
                                     "but its run is still in flight in this "
                                     "process — keeping entry",
-                                    job.get("name", job.get("id", "?")),
+                                    (job.get("name") or job.get("id", "unknown")),
                                     completed,
                                     times,
                                 )

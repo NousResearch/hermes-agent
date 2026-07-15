@@ -1180,6 +1180,51 @@ class TestGetDueJobs:
         assert get_due_jobs() == []
         assert get_job("inflight-error") is not None
 
+    def test_stale_oneshot_logs_use_id_when_name_is_null(
+        self, tmp_cron_dir, monkeypatch, caplog
+    ):
+        """Regression: both one-shot dispatch-limit log lines (kept-while-running
+        and stale-entry removal) must fall back to the job id for a persisted
+        ``name: None`` record — the legacy shape from
+        test_list_jobs_normalizes_partial_legacy_records — instead of "None".
+        """
+        import cron.scheduler as scheduler_mod
+        from cron.jobs import _hermes_now, _oneshot_run_claim_ttl_seconds
+        monkeypatch.delenv("HERMES_CRON_TIMEOUT", raising=False)
+        ttl = _oneshot_run_claim_ttl_seconds()
+        run_at = (_hermes_now() - timedelta(seconds=ttl + 300)).isoformat()
+        save_jobs([{
+            "id": "nullname12345", "name": None, "prompt": "x",
+            "schedule": {"kind": "once", "run_at": run_at},
+            "next_run_at": run_at, "enabled": True, "state": "scheduled",
+            "repeat": {"times": 1, "completed": 1},
+            "run_claim": {"at": run_at, "by": "this-machine"},
+        }])
+
+        with caplog.at_level("INFO", logger="cron.jobs"):
+            # Kept-while-running leg.
+            monkeypatch.setattr(
+                scheduler_mod,
+                "get_running_job_ids",
+                lambda: frozenset({"nullname12345"}),
+            )
+            assert get_due_jobs() == []
+            # Stale-removal leg.
+            monkeypatch.setattr(
+                scheduler_mod, "get_running_job_ids", lambda: frozenset()
+            )
+            assert get_due_jobs() == []
+
+        limit_logs = [
+            r.getMessage()
+            for r in caplog.records
+            if "dispatch limit reached" in r.getMessage()
+        ]
+        assert len(limit_logs) == 2
+        for msg in limit_logs:
+            assert "nullname12345" in msg
+            assert "None" not in msg
+
     def test_run_claim_heartbeat_keeps_long_run_claimed_past_ttl(
         self, tmp_cron_dir, monkeypatch
     ):

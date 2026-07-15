@@ -54,7 +54,9 @@ def _fmt_task_line(t: kb.Task) -> str:
     icon = _STATUS_ICONS.get(t.status, "?")
     assignee = t.assignee or "(unassigned)"
     tenant = f" [{t.tenant}]" if t.tenant else ""
-    return f"{icon} {t.id}  {t.status:8s}  {assignee:20s}{tenant}  {t.title}"
+    approval = kb.approval_state(t)
+    gate = f" [approval:{approval}]" if t.approval_required else ""
+    return f"{icon} {t.id}  {t.status:8s}  {assignee:20s}{tenant}{gate}  {t.title}"
 
 
 def _task_to_dict(t: kb.Task) -> dict[str, Any]:
@@ -80,6 +82,7 @@ def _task_to_dict(t: kb.Task) -> dict[str, Any]:
         "session_id": t.session_id,
         "workflow_template_id": t.workflow_template_id,
         "current_step_key": t.current_step_key,
+        "approval": kb.approval_status(t),
     }
 
 
@@ -366,6 +369,14 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                           help="Initial card status. Use 'blocked' for cards "
                                "that require immediate human ops (R3 gate) "
                                "to skip the brief running-to-blocked transition.")
+    p_create.add_argument(
+        "--approval-required",
+        action="store_true",
+        help=(
+            "Require durable approval bound to this task revision and scope "
+            "before dispatch or claim"
+        ),
+    )
     p_create.add_argument("--json", action="store_true", help="Emit JSON output")
 
     # --- swarm ---
@@ -583,6 +594,22 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
         help="Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons.",
     )
     p_unblock.add_argument("task_ids", nargs="+")
+
+    p_approve = sub.add_parser(
+        "approve",
+        help="Approve a human-gated task's exact current revision and scope",
+    )
+    p_approve.add_argument("task_id")
+    p_approve.add_argument("--actor", default=None, help="Approver audit identity")
+    p_approve.add_argument("--json", action="store_true")
+
+    p_revoke_approval = sub.add_parser(
+        "revoke-approval",
+        help="Revoke durable approval and remove queued work from ready",
+    )
+    p_revoke_approval.add_argument("task_id")
+    p_revoke_approval.add_argument("--actor", default=None, help="Revoker audit identity")
+    p_revoke_approval.add_argument("--json", action="store_true")
 
     p_promote = sub.add_parser(
         "promote",
@@ -956,6 +983,8 @@ def kanban_command(args: argparse.Namespace) -> int:
             "block":    _cmd_block,
             "schedule": _cmd_schedule,
             "unblock":  _cmd_unblock,
+            "approve":  _cmd_approve,
+            "revoke-approval": _cmd_revoke_approval,
             "promote":  _cmd_promote,
             "archive":  _cmd_archive,
             "tail":     _cmd_tail,
@@ -1347,6 +1376,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            approval_required=bool(getattr(args, "approval_required", False)),
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1509,6 +1539,12 @@ def _cmd_show(args: argparse.Namespace) -> int:
     print(f"Task {task.id}: {task.title}")
     print(f"  status:    {task.status}")
     print(f"  assignee:  {task.assignee or '-'}")
+    if task.approval_required:
+        approval = kb.approval_status(task)
+        print(
+            f"  approval:  {approval['state']} "
+            f"(revision {approval['task_revision']})"
+        )
     if task.tenant:
         print(f"  tenant:    {task.tenant}")
     print(f"  workspace: {task.workspace_kind}" +
@@ -1828,8 +1864,38 @@ def _cmd_claim(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
             return 1
+        claimed_parents = kb.parent_ids(conn, task.id)
         workspace = kb.resolve_workspace(task)
-        kb.set_workspace_path(conn, task.id, str(workspace))
+        kb.set_workspace_path(
+            conn, task.id, str(workspace), scope_change=False,
+        )
+        task = kb._bind_resolved_workspace_to_approval(
+            conn,
+            task,
+            expected_parents=claimed_parents,
+        )
+        valid, reason = kb.validate_worker_claim(
+            conn,
+            task.id,
+            expected_run_id=task.current_run_id,
+            expected_claim_lock=task.claim_lock,
+            expected_revision=task.task_revision,
+            expected_scope_hash=task.approval_scope_hash,
+            source="cli_claim",
+        )
+        if not valid:
+            kb.block_task(
+                conn,
+                task.id,
+                reason=f"approval guard denied claim ({reason})",
+                expected_run_id=task.current_run_id,
+            )
+            print(
+                f"cannot claim {task.id}: durable approval validation "
+                f"failed ({reason})",
+                file=sys.stderr,
+            )
+            return 1
     print(f"Claimed {task.id}")
     print(f"Workspace: {workspace}")
     return 0
@@ -2017,6 +2083,48 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     return 0 if not failed else 1
 
 
+def _cmd_approve(args: argparse.Namespace) -> int:
+    actor = (getattr(args, "actor", None) or _profile_author()).strip()
+    with kb.connect_closing() as conn:
+        ok = kb.approve_task(conn, args.task_id, actor=actor)
+        task = kb.get_task(conn, args.task_id)
+    if not ok or task is None:
+        print(
+            f"cannot approve {args.task_id} (unknown or approval not required)",
+            file=sys.stderr,
+        )
+        return 1
+    status = kb.approval_status(task)
+    if getattr(args, "json", False):
+        print(json.dumps({"task_id": task.id, "approval": status}, indent=2))
+    else:
+        print(
+            f"Approved {task.id} revision {status['task_revision']} "
+            f"-> {task.status}"
+        )
+    return 0
+
+
+def _cmd_revoke_approval(args: argparse.Namespace) -> int:
+    actor = (getattr(args, "actor", None) or _profile_author()).strip()
+    with kb.connect_closing() as conn:
+        ok = kb.revoke_approval(conn, args.task_id, actor=actor)
+        task = kb.get_task(conn, args.task_id)
+    if not ok or task is None:
+        print(
+            f"cannot revoke approval for {args.task_id} "
+            "(unknown or approval not required)",
+            file=sys.stderr,
+        )
+        return 1
+    status = kb.approval_status(task)
+    if getattr(args, "json", False):
+        print(json.dumps({"task_id": task.id, "approval": status}, indent=2))
+    else:
+        print(f"Revoked approval for {task.id} -> {task.status}")
+    return 0
+
+
 def _cmd_promote(args: argparse.Namespace) -> int:
     reason = " ".join(args.reason).strip() if args.reason else None
     author = _profile_author()
@@ -2175,6 +2283,7 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
                 for (tid, who, ws) in res.spawned
             ],
             "skipped_unassigned": res.skipped_unassigned,
+            "approval_denied": res.approval_denied,
             "skipped_nonspawnable": res.skipped_nonspawnable,
             "skipped_per_profile_capped": [
                 {"task_id": tid, "assignee": who, "current": current}
@@ -2208,6 +2317,11 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
         )
     if res.skipped_unassigned:
         print(f"Skipped (unassigned): {', '.join(res.skipped_unassigned)}")
+    if res.approval_denied:
+        print(
+            "Denied (approval missing/stale): "
+            f"{', '.join(res.approval_denied)}"
+        )
     if res.skipped_per_profile_capped:
         for tid, who, current in res.skipped_per_profile_capped:
             print(

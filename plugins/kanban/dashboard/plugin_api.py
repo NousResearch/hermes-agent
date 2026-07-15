@@ -161,6 +161,21 @@ def _task_dict(
     latest_summary: Optional[str] = None,
 ) -> dict[str, Any]:
     d = asdict(task)
+    # Approval status is intentionally a safe projection. Do not leak the
+    # durable evidence actor or redundant internal binding columns through
+    # dashboard list/detail responses.
+    for internal in (
+        "approval_required",
+        "approval_scope_hash",
+        "approved_task_id",
+        "approved_revision",
+        "approved_scope_hash",
+        "approved_at",
+        "approved_by",
+        "task_revision",
+    ):
+        d.pop(internal, None)
+    d["approval"] = kanban_db.approval_status(task)
     # Add derived age metrics so the UI can colour stale cards without
     # computing deltas client-side.
     try:
@@ -608,6 +623,7 @@ class CreateTaskBody(BaseModel):
     skills: Optional[list[str]] = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
+    approval_required: bool = False
 
 
 @router.post("/tasks")
@@ -632,6 +648,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             skills=payload.skills,
             goal_mode=payload.goal_mode,
             goal_max_turns=payload.goal_max_turns,
+            approval_required=payload.approval_required,
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}
@@ -927,28 +944,71 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
 
         # --- title / body -------------------------------------------------
         if payload.title is not None or payload.body is not None:
-            with kanban_db.write_txn(conn):
-                sets, vals = [], []
-                if payload.title is not None:
-                    if not payload.title.strip():
-                        raise HTTPException(status_code=400, detail="title cannot be empty")
-                    sets.append("title = ?")
-                    vals.append(payload.title.strip())
-                if payload.body is not None:
-                    sets.append("body = ?")
-                    vals.append(payload.body)
-                vals.append(task_id)
-                conn.execute(
-                    f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?", vals,
+            try:
+                kanban_db.update_task_scope(
+                    conn,
+                    task_id,
+                    title=payload.title,
+                    body=payload.body,
+                    actor="dashboard",
                 )
-                conn.execute(
-                    "INSERT INTO task_events (task_id, kind, payload, created_at) "
-                    "VALUES (?, 'edited', NULL, ?)",
-                    (task_id, int(time.time())),
-                )
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
 
         updated = kanban_db.get_task(conn, task_id)
         return {"task": _task_dict(updated) if updated else None}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Explicit durable approval operations
+# ---------------------------------------------------------------------------
+
+class ApprovalBody(BaseModel):
+    actor: str = "dashboard"
+
+
+@router.post("/tasks/{task_id}/approval")
+def approve_task(
+    task_id: str,
+    payload: ApprovalBody,
+    board: Optional[str] = Query(None),
+):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        if not kanban_db.approve_task(conn, task_id, actor=payload.actor):
+            task = kanban_db.get_task(conn, task_id)
+            if task is None:
+                raise HTTPException(status_code=404, detail="task not found")
+            raise HTTPException(status_code=409, detail="approval not required")
+        task = kanban_db.get_task(conn, task_id)
+        return {"task": _task_dict(task) if task else None}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        conn.close()
+
+
+@router.delete("/tasks/{task_id}/approval")
+def revoke_task_approval(
+    task_id: str,
+    actor: str = Query("dashboard"),
+    board: Optional[str] = Query(None),
+):
+    board = _resolve_board(board)
+    conn = _conn(board=board)
+    try:
+        if not kanban_db.revoke_approval(conn, task_id, actor=actor):
+            task = kanban_db.get_task(conn, task_id)
+            if task is None:
+                raise HTTPException(status_code=404, detail="task not found")
+            raise HTTPException(status_code=409, detail="approval not required")
+        task = kanban_db.get_task(conn, task_id)
+        return {"task": _task_dict(task) if task else None}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     finally:
         conn.close()
 
@@ -1009,7 +1069,7 @@ def _set_status_direct(
     with kanban_db.write_txn(conn):
         # Snapshot current state so we know whether to close a run.
         prev = conn.execute(
-            "SELECT status, current_run_id FROM tasks WHERE id = ?",
+            "SELECT * FROM tasks WHERE id = ?",
             (task_id,),
         ).fetchone()
         if prev is None:
@@ -1019,6 +1079,9 @@ def _set_status_direct(
         # Prevents the dispatcher from spawning a child whose upstream work
         # hasn't completed (e.g. T4 dispatched while T3 is still blocked).
         if new_status == "ready":
+            task = kanban_db.Task.from_row(prev)
+            if not kanban_db.approval_is_current(task, conn=conn):
+                return False
             parent_statuses = conn.execute(
                 "SELECT t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "

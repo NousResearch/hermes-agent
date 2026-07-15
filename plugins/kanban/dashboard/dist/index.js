@@ -2732,6 +2732,14 @@
                   title: tx(i18n, "needsAssigneeHint", "Dependencies are satisfied, but the dispatcher skips this task until you assign a profile."),
                 }, tx(i18n, "needsAssignee", "Needs assignee"))
               : null,
+            t.approval && t.approval.required
+              ? h(Badge, {
+                  variant: t.approval.state === "approved" ? "default" : "outline",
+                  title: `Human approval: ${t.approval.state}; task revision ${t.approval.task_revision}`,
+                }, t.approval.state === "approved"
+                  ? tx(i18n, "approved", "Approved")
+                  : tx(i18n, "approvalRequired", "Approval required"))
+              : null,
           ),
           h("div", { className: "hermes-kanban-card-title" },
             t.title || tx(i18n, "untitled", "(untitled)")),
@@ -3077,6 +3085,24 @@
         .catch(function (e) { setPatchErr(parseApiErrorMessage(e)); });
     };
 
+    const doApproval = function (grant) {
+      setPatchErr(null);
+      const url = withBoard(
+        `${API}/tasks/${encodeURIComponent(props.taskId)}/approval`,
+        boardSlug,
+      );
+      const options = grant
+        ? {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ actor: "dashboard" }),
+          }
+        : { method: "DELETE" };
+      return SDK.fetchJSON(url, options)
+        .then(function () { load(); props.onRefresh(); })
+        .catch(function (e) { setPatchErr(parseApiErrorMessage(e)); });
+    };
+
     // Triage specifier — calls the auxiliary LLM to flesh out a rough
     // idea in the Triage column into a concrete spec (title + body with
     // goal, approach, acceptance criteria) and promotes it to todo.
@@ -3209,6 +3235,8 @@
           assignees: props.assignees || [],
           boardSlug: boardSlug,
           onPatch: doPatch,
+          onApprove: function () { return doApproval(true); },
+          onRevokeApproval: function () { return doApproval(false); },
           onSpecify: doSpecify,
           onDecompose: doDecompose,
           onAddParent: addLink,
@@ -3384,6 +3412,10 @@
       ),
       h("div", { className: "hermes-kanban-drawer-meta" },
         h(MetaRow, { label: tx(i18n, "status", "Status"), value: t.status }),
+        t.approval && t.approval.required ? h(MetaRow, {
+          label: tx(i18n, "approval", "Approval"),
+          value: `${t.approval.state} (revision ${t.approval.task_revision})`,
+        }) : null,
         h(AssigneeEditor, { task: t, onPatch: props.onPatch }),
         h(PriorityEditor, { task: t, onPatch: props.onPatch }),
         t.tenant ? h(MetaRow, { label: tx(i18n, "tenant", "Tenant"), value: t.tenant }) : null,
@@ -3409,6 +3441,22 @@
         onSpecify: props.onSpecify,
         onDecompose: props.onDecompose,
       }),
+      t.approval && t.approval.required
+        ? h("div", { className: "hermes-kanban-drawer-actions" },
+            t.approval.state === "approved"
+              ? h(Button, {
+                  variant: "outline",
+                  size: "sm",
+                  onClick: props.onRevokeApproval,
+                }, tx(i18n, "revokeApproval", "Revoke approval"))
+              : h(Button, {
+                  size: "sm",
+                  onClick: props.onApprove,
+                  title: tx(i18n, "approveCurrentScopeHint",
+                    "Approve only this task revision and execution scope"),
+                }, tx(i18n, "approveCurrentScope", "Approve current revision")),
+          )
+        : null,
       h(DiagnosticsSection, {
         task: t,
         boardSlug: props.boardSlug,

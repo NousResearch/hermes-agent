@@ -915,6 +915,20 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    # Monotonic version of the task's execution scope. Material edits bump it;
+    # approval evidence is valid only for the exact version it names.
+    task_revision: int = 1
+    # Durable human gate + current scope fingerprint. The fingerprint is a
+    # SHA-256 digest of execution-defining task fields, never raw task content.
+    approval_required: bool = False
+    approval_scope_hash: Optional[str] = None
+    # Durable approval evidence. All three bindings must match the current
+    # task row before a dispatcher, direct claimer, or worker may proceed.
+    approved_task_id: Optional[str] = None
+    approved_revision: Optional[int] = None
+    approved_scope_hash: Optional[str] = None
+    approved_at: Optional[int] = None
+    approved_by: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -999,6 +1013,37 @@ class Task:
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
             ),
+            task_revision=(
+                int(row["task_revision"])
+                if "task_revision" in keys and row["task_revision"] is not None
+                else 1
+            ),
+            approval_required=(
+                bool(row["approval_required"])
+                if "approval_required" in keys else False
+            ),
+            approval_scope_hash=(
+                row["approval_scope_hash"]
+                if "approval_scope_hash" in keys else None
+            ),
+            approved_task_id=(
+                row["approved_task_id"] if "approved_task_id" in keys else None
+            ),
+            approved_revision=(
+                int(row["approved_revision"])
+                if "approved_revision" in keys and row["approved_revision"] is not None
+                else None
+            ),
+            approved_scope_hash=(
+                row["approved_scope_hash"]
+                if "approved_scope_hash" in keys else None
+            ),
+            approved_at=(
+                int(row["approved_at"])
+                if "approved_at" in keys and row["approved_at"] is not None
+                else None
+            ),
+            approved_by=(row["approved_by"] if "approved_by" in keys else None),
         )
 
 
@@ -1176,7 +1221,19 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Monotonic execution-scope version. Approval evidence is valid only for
+    -- the exact task id + revision + scope hash it records.
+    task_revision        INTEGER NOT NULL DEFAULT 1,
+    approval_required    INTEGER NOT NULL DEFAULT 0,
+    -- SHA-256 only: raw body/instructions are never copied into approval
+    -- status or audit payloads.
+    approval_scope_hash  TEXT,
+    approved_task_id     TEXT,
+    approved_revision    INTEGER,
+    approved_scope_hash  TEXT,
+    approved_at          INTEGER,
+    approved_by          TEXT
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1987,6 +2044,39 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "task_revision" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "task_revision",
+            "task_revision INTEGER NOT NULL DEFAULT 1",
+        )
+    if "approval_required" not in cols:
+        # Legacy tasks were never explicitly approval-gated. Preserve their
+        # ordinary promotion/claim behavior by defaulting the new guard off.
+        _add_column_if_missing(
+            conn, "tasks", "approval_required",
+            "approval_required INTEGER NOT NULL DEFAULT 0",
+        )
+    if "approval_scope_hash" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "approval_scope_hash", "approval_scope_hash TEXT"
+        )
+    if "approved_task_id" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "approved_task_id", "approved_task_id TEXT"
+        )
+    if "approved_revision" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "approved_revision", "approved_revision INTEGER"
+        )
+    if "approved_scope_hash" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "approved_scope_hash", "approved_scope_hash TEXT"
+        )
+    if "approved_at" not in cols:
+        _add_column_if_missing(conn, "tasks", "approved_at", "approved_at INTEGER")
+    if "approved_by" not in cols:
+        _add_column_if_missing(conn, "tasks", "approved_by", "approved_by TEXT")
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2384,6 +2474,305 @@ def _canonical_assignee(assignee: Optional[str]) -> Optional[str]:
     return normalize_profile_name(assignee)
 
 
+def approval_state(task: Task) -> str:
+    """Return the non-sensitive approval state for ``task``.
+
+    Evidence is current only when it is explicitly bound to this task id,
+    revision, and scope fingerprint. A partial/mismatched evidence tuple is
+    stale, never an implicit approval.
+    """
+    if not task.approval_required:
+        return "not_required"
+    evidence = (
+        task.approved_task_id,
+        task.approved_revision,
+        task.approved_scope_hash,
+        task.approved_at,
+    )
+    if not any(value is not None for value in evidence):
+        return "pending"
+    if (
+        task.approved_task_id == task.id
+        and task.approved_revision == task.task_revision
+        and bool(task.approval_scope_hash)
+        and task.approved_scope_hash == task.approval_scope_hash
+        and task.approved_at is not None
+    ):
+        return "approved"
+    return "stale"
+
+
+def approval_is_current(
+    task: Task,
+    *,
+    conn: Optional[sqlite3.Connection] = None,
+) -> bool:
+    """True for ordinary tasks or approval matching the actual current scope.
+
+    Supplying ``conn`` adds a fail-closed recomputation of the canonical scope
+    hash. That catches legacy/custom writers which changed a scoped task field
+    without using the versioned mutation helpers.
+    """
+    state = approval_state(task)
+    if state == "not_required":
+        return True
+    if state != "approved":
+        return False
+    if conn is None:
+        return True
+    try:
+        return _compute_approval_scope_hash(conn, task.id) == task.approval_scope_hash
+    except Exception:
+        return False
+
+
+def approval_status(task: Task) -> dict[str, Any]:
+    """Safe status projection; never includes body, reason, or approver id."""
+    return {
+        "required": bool(task.approval_required),
+        "state": approval_state(task),
+        "task_revision": int(task.task_revision),
+        "approved_revision": task.approved_revision,
+        "approved_at": task.approved_at,
+        "scope_hash": task.approval_scope_hash,
+    }
+
+
+def _compute_approval_scope_hash(conn: sqlite3.Connection, task_id: str) -> str:
+    """Hash the execution-defining scope for a task.
+
+    The digest is safe to expose as status/audit metadata. Raw task body,
+    tenant data, paths, and instructions remain only in the task row.
+    """
+    row = conn.execute(
+        "SELECT id, task_revision, title, body, assignee, workspace_kind, "
+        "workspace_path, branch_name, project_id, tenant, skills, "
+        "model_override, max_runtime_seconds, goal_mode, goal_max_turns "
+        "FROM tasks WHERE id = ?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"unknown task {task_id}")
+    parents = [
+        r["parent_id"] for r in conn.execute(
+            "SELECT parent_id FROM task_links WHERE child_id = ? ORDER BY parent_id",
+            (task_id,),
+        ).fetchall()
+    ]
+    payload = {key: row[key] for key in row.keys()}
+    payload["parents"] = parents
+    encoded = json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False,
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _refresh_approval_scope(conn: sqlite3.Connection, task_id: str) -> str:
+    """Recompute and persist the current approval scope inside a write txn."""
+    scope_hash = _compute_approval_scope_hash(conn, task_id)
+    conn.execute(
+        "UPDATE tasks SET approval_scope_hash = ? WHERE id = ?",
+        (scope_hash, task_id),
+    )
+    return scope_hash
+
+
+def _mark_scope_changed(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    changed_fields: list[str],
+    actor: str,
+) -> Task:
+    """Version a material scope change inside an existing write transaction.
+
+    Callers mutate the scoped fields first, then call this helper before the
+    transaction commits. Existing approval evidence is retained as historical
+    evidence, but no longer matches the bumped revision/hash.
+    """
+    row = conn.execute(
+        "SELECT * FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"unknown task {task_id}")
+    before = Task.from_row(row)
+    conn.execute(
+        "UPDATE tasks SET task_revision = task_revision + 1, "
+        "status = CASE WHEN approval_required = 1 "
+        "AND status IN ('ready', 'todo', 'triage') "
+        "THEN 'blocked' ELSE status END WHERE id = ?",
+        (task_id,),
+    )
+    scope_hash = (
+        _refresh_approval_scope(conn, task_id)
+        if before.approval_required else None
+    )
+    changed = get_task(conn, task_id)
+    if changed is None:  # pragma: no cover - row cannot vanish in this txn
+        raise ValueError(f"unknown task {task_id}")
+    if before.approval_required and before.approved_task_id is not None:
+        _append_event(
+            conn,
+            task_id,
+            "approval_stale",
+            {
+                "actor": actor,
+                "previous_revision": before.task_revision,
+                "task_revision": changed.task_revision,
+                "scope_hash": scope_hash,
+                "changed_fields": changed_fields,
+            },
+        )
+    return changed
+
+
+def update_task_scope(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    title: Optional[str] = None,
+    body: Optional[str] = None,
+    actor: str,
+) -> bool:
+    """Apply material task edits and invalidate approval by version.
+
+    This is the canonical title/body mutation path for the dashboard/API.
+    The old approval evidence is intentionally retained so status can report
+    ``stale`` and an auditor can see what revision had been approved.
+    """
+    actor = (actor or "").strip()
+    if not actor:
+        raise ValueError("scope-change actor is required")
+    if title is not None and not title.strip():
+        raise ValueError("title cannot be blank")
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        before = Task.from_row(row)
+        sets: list[str] = []
+        params: list[Any] = []
+        changed_fields: list[str] = []
+        if title is not None and title.strip() != before.title:
+            sets.append("title = ?")
+            params.append(title.strip())
+            changed_fields.append("title")
+        if body is not None and body != before.body:
+            sets.append("body = ?")
+            params.append(body)
+            changed_fields.append("body")
+        if not changed_fields:
+            return True
+        params.append(task_id)
+        conn.execute(
+            f"UPDATE tasks SET {', '.join(sets)} WHERE id = ?",
+            tuple(params),
+        )
+        _mark_scope_changed(
+            conn,
+            task_id,
+            changed_fields=changed_fields,
+            actor=actor,
+        )
+        _append_event(
+            conn,
+            task_id,
+            "edited",
+            {"actor": actor, "changed_fields": changed_fields},
+        )
+    return True
+
+
+def revoke_approval(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: str,
+) -> bool:
+    """Explicitly clear approval evidence and remove queued work from ready."""
+    actor = (actor or "").strip()
+    if not actor:
+        raise ValueError("revocation actor is required")
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        task = Task.from_row(row)
+        if not task.approval_required:
+            return False
+        conn.execute(
+            "UPDATE tasks SET approved_task_id = NULL, approved_revision = NULL, "
+            "approved_scope_hash = NULL, approved_at = NULL, approved_by = NULL, "
+            "status = CASE WHEN status IN ('ready', 'todo', 'triage') "
+            "THEN 'blocked' ELSE status END WHERE id = ?",
+            (task_id,),
+        )
+        _append_event(
+            conn,
+            task_id,
+            "approval_revoked",
+            {
+                "actor": actor,
+                "task_revision": task.task_revision,
+                "scope_hash": task.approval_scope_hash,
+            },
+        )
+    return True
+
+
+def _require_fresh_approval(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    source: str,
+) -> None:
+    """Install/refresh a human gate inside an existing write transaction."""
+    row = conn.execute(
+        "SELECT * FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    if row is None:
+        raise ValueError(f"unknown task {task_id}")
+    before = Task.from_row(row)
+    conn.execute(
+        "UPDATE tasks SET approval_required = 1, "
+        "task_revision = task_revision + 1, "
+        "approved_task_id = NULL, approved_revision = NULL, "
+        "approved_scope_hash = NULL, approved_at = NULL, approved_by = NULL "
+        "WHERE id = ?",
+        (task_id,),
+    )
+    scope_hash = _refresh_approval_scope(conn, task_id)
+    current = get_task(conn, task_id)
+    if current is None:  # pragma: no cover - row cannot vanish in this txn
+        raise ValueError(f"unknown task {task_id}")
+    if before.approved_task_id is not None:
+        _append_event(
+            conn,
+            task_id,
+            "approval_revoked",
+            {
+                "source": source,
+                "reason": "new_approval_required",
+                "task_revision": current.task_revision,
+                "scope_hash": scope_hash,
+            },
+        )
+    _append_event(
+        conn,
+        task_id,
+        "approval_required",
+        {
+            "source": source,
+            "task_revision": current.task_revision,
+            "scope_hash": scope_hash,
+        },
+    )
+
+
 def create_task(
     conn: sqlite3.Connection,
     *,
@@ -2408,6 +2797,7 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    approval_required: bool = False,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2582,7 +2972,7 @@ def create_task(
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
-                if initial_status == "blocked":
+                if initial_status == "blocked" or approval_required:
                     task_status = "blocked"
                     if parents:
                         missing = _find_missing_parents(conn, parents)
@@ -2636,8 +3026,9 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
-                        skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        skills, max_retries, goal_mode, goal_max_turns, session_id,
+                        approval_required
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2660,6 +3051,7 @@ def create_task(
                         1 if goal_mode else 0,
                         int(goal_max_turns) if goal_max_turns is not None else None,
                         session_id,
+                        1 if (approval_required or initial_status == "blocked") else 0,
                     ),
                 )
                 for pid in parents:
@@ -2679,8 +3071,25 @@ def create_task(
                         "branch_name": branch_name,
                         "skills": list(skills_list) if skills_list else None,
                         "goal_mode": bool(goal_mode) or None,
+                        "approval_required": bool(
+                            approval_required or initial_status == "blocked"
+                        ) or None,
                     },
                 )
+                if approval_required or initial_status == "blocked":
+                    scope_hash = _refresh_approval_scope(conn, task_id)
+                    _append_event(
+                        conn,
+                        task_id,
+                        "approval_required",
+                        {
+                            "task_revision": 1,
+                            "scope_hash": scope_hash,
+                            "source": (
+                                "explicit" if approval_required else "initial_status"
+                            ),
+                        },
+                    )
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:
@@ -2774,7 +3183,13 @@ def list_tasks(
     return [Task.from_row(r) for r in rows]
 
 
-def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:
+def assign_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    profile: Optional[str],
+    *,
+    source: Optional[str] = None,
+) -> bool:
     """Assign or reassign a task.  Returns True on success.
 
     Refuses to reassign a task that's currently running (claim_lock set).
@@ -2801,9 +3216,18 @@ def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) 
                 "last_failure_error = NULL WHERE id = ?",
                 (profile, task_id),
             )
+            _mark_scope_changed(
+                conn,
+                task_id,
+                changed_fields=["assignee"],
+                actor=source or "assign",
+            )
         else:
             conn.execute("UPDATE tasks SET assignee = ? WHERE id = ?", (profile, task_id))
-        _append_event(conn, task_id, "assigned", {"assignee": profile})
+        payload = {"assignee": profile}
+        if source:
+            payload["source"] = source
+        _append_event(conn, task_id, "assigned", payload)
         return True
 
 
@@ -2822,7 +3246,7 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
             raise ValueError(
                 f"linking {parent_id} -> {child_id} would create a cycle"
             )
-        conn.execute(
+        inserted = conn.execute(
             "INSERT OR IGNORE INTO task_links (parent_id, child_id) VALUES (?, ?)",
             (parent_id, child_id),
         )
@@ -2835,10 +3259,17 @@ def link_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> None:
                 "UPDATE tasks SET status = 'todo' WHERE id = ? AND status = 'ready'",
                 (child_id,),
             )
-        _append_event(
-            conn, child_id, "linked",
-            {"parent": parent_id, "child": child_id},
-        )
+        if inserted.rowcount:
+            _mark_scope_changed(
+                conn,
+                child_id,
+                changed_fields=["dependency"],
+                actor="link",
+            )
+            _append_event(
+                conn, child_id, "linked",
+                {"parent": parent_id, "child": child_id},
+            )
 
 
 def _would_cycle(conn: sqlite3.Connection, parent_id: str, child_id: str) -> bool:
@@ -2871,6 +3302,12 @@ def unlink_tasks(conn: sqlite3.Connection, parent_id: str, child_id: str) -> boo
             (parent_id, child_id),
         )
         if cur.rowcount:
+            _mark_scope_changed(
+                conn,
+                child_id,
+                changed_fields=["dependency"],
+                actor="unlink",
+            )
             _append_event(
                 conn, child_id, "unlinked",
                 {"parent": parent_id, "child": child_id},
@@ -3315,12 +3752,17 @@ def recompute_ready(
     promoted = 0
     with write_txn(conn):
         todo_rows = conn.execute(
-            "SELECT id, status, consecutive_failures, max_retries "
+            "SELECT * "
             "FROM tasks WHERE status IN ('todo', 'blocked')"
         ).fetchall()
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
+            task = Task.from_row(row)
+            if task.approval_required and not approval_is_current(task, conn=conn):
+                # Parent completion can make the work technically ready, but
+                # it is never durable evidence of human approval.
+                continue
             if cur_status == "blocked" and _has_sticky_block(conn, task_id):
                 # Worker / operator asked for human review — do not
                 # silently auto-recover.  ``unblock_task`` is the only
@@ -3370,6 +3812,106 @@ def recompute_ready(
 # Claim / complete / block
 # ---------------------------------------------------------------------------
 
+def _approval_denial_reason(
+    task: Task,
+    conn: Optional[sqlite3.Connection] = None,
+) -> str:
+    state = approval_state(task)
+    if state == "stale":
+        return "approval_stale"
+    if state == "approved" and conn is not None:
+        try:
+            if _compute_approval_scope_hash(conn, task.id) != task.approval_scope_hash:
+                return "approval_stale"
+        except Exception:
+            return "approval_stale"
+    return "approval_pending"
+
+
+def _append_approval_claim_denied(
+    conn: sqlite3.Connection,
+    task: Task,
+    *,
+    source: str,
+) -> None:
+    """Append a content-free denial event inside the caller's transaction."""
+    _append_event(
+        conn,
+        task.id,
+        "approval_claim_denied",
+        {
+            "source": source,
+            "reason": _approval_denial_reason(task, conn),
+            "task_revision": task.task_revision,
+            "approved_revision": task.approved_revision,
+        },
+    )
+
+
+def approve_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    actor: str,
+) -> bool:
+    """Grant durable approval for the task's exact current execution scope.
+
+    Approval is an explicit operation, separate from ``unblock_task`` and
+    dependency completion. When the task is parked in a human-facing column,
+    a valid grant returns it to ``ready`` only if its dependencies are already
+    terminal; otherwise it waits in ``todo`` for ordinary dependency promotion.
+    """
+    actor = (actor or "").strip()
+    if not actor:
+        raise ValueError("approval actor is required")
+    now = int(time.time())
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        task = Task.from_row(row)
+        if not task.approval_required:
+            return False
+        scope_hash = _refresh_approval_scope(conn, task_id)
+        undone = conn.execute(
+            "SELECT 1 FROM task_links l "
+            "JOIN tasks p ON p.id = l.parent_id "
+            "WHERE l.child_id = ? "
+            "AND p.status NOT IN ('done', 'archived') LIMIT 1",
+            (task_id,),
+        ).fetchone()
+        release_status = "todo" if undone else "ready"
+        conn.execute(
+            "UPDATE tasks SET approved_task_id = id, approved_revision = ?, "
+            "approved_scope_hash = ?, approved_at = ?, approved_by = ?, "
+            "status = CASE WHEN status IN ('blocked', 'triage', 'todo') "
+            "THEN ? ELSE status END "
+            "WHERE id = ?",
+            (
+                task.task_revision,
+                scope_hash,
+                now,
+                actor,
+                release_status,
+                task_id,
+            ),
+        )
+        approved = get_task(conn, task_id)
+        _append_event(
+            conn,
+            task_id,
+            "approval_granted",
+            {
+                "actor": actor,
+                "task_revision": task.task_revision,
+                "scope_hash": scope_hash,
+                "status": approved.status if approved is not None else release_status,
+            },
+        )
+    return True
+
 def claim_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3386,6 +3928,17 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        approval_row = conn.execute(
+            "SELECT * FROM tasks WHERE id = ? AND status = 'ready'",
+            (task_id,),
+        ).fetchone()
+        if approval_row is not None:
+            approval_task = Task.from_row(approval_row)
+            if not approval_is_current(approval_task, conn=conn):
+                _append_approval_claim_denied(
+                    conn, approval_task, source="claim",
+                )
+                return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -3441,6 +3994,15 @@ def claim_task(
              WHERE id = ?
                AND status = 'ready'
                AND claim_lock IS NULL
+               AND (
+                    approval_required = 0
+                    OR (
+                        approved_task_id = id
+                        AND approved_revision = task_revision
+                        AND approved_scope_hash = approval_scope_hash
+                        AND approved_at IS NOT NULL
+                    )
+               )
             """,
             (lock, expires, now, task_id),
         )
@@ -3515,6 +4077,17 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        approval_row = conn.execute(
+            "SELECT * FROM tasks WHERE id = ? AND status = 'review'",
+            (task_id,),
+        ).fetchone()
+        if approval_row is not None:
+            approval_task = Task.from_row(approval_row)
+            if not approval_is_current(approval_task, conn=conn):
+                _append_approval_claim_denied(
+                    conn, approval_task, source="review_claim",
+                )
+                return None
         cur = conn.execute(
             """
             UPDATE tasks
@@ -3525,6 +4098,15 @@ def claim_review_task(
              WHERE id = ?
                AND status = 'review'
                AND claim_lock IS NULL
+               AND (
+                    approval_required = 0
+                    OR (
+                        approved_task_id = id
+                        AND approved_revision = task_revision
+                        AND approved_scope_hash = approval_scope_hash
+                        AND approved_at IS NOT NULL
+                    )
+               )
             """,
             (lock, expires, now, task_id),
         )
@@ -3565,6 +4147,93 @@ def claim_review_task(
             run_id=run_id,
         )
         return get_task(conn, task_id)
+
+
+def validate_worker_claim(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: Optional[int],
+    expected_claim_lock: Optional[str],
+    expected_revision: Optional[int],
+    expected_scope_hash: Optional[str],
+    source: str = "worker_start",
+) -> tuple[bool, Optional[str]]:
+    """Revalidate a dispatcher claim immediately before worker execution.
+
+    This is independent of dispatcher selection and ``claim_task``. It closes
+    the revoke/edit race between claim commit and child startup by binding the
+    child environment to the exact run, lock, task revision, and approved
+    scope that the dispatcher observed.
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None:
+            return False, "task_not_found"
+        task = Task.from_row(row)
+        identity_reason: Optional[str] = None
+        if task.status != "running":
+            identity_reason = "task_not_running"
+        elif expected_run_id is None or task.current_run_id != expected_run_id:
+            identity_reason = "run_identity_mismatch"
+        elif not expected_claim_lock or task.claim_lock != expected_claim_lock:
+            identity_reason = "claim_lock_mismatch"
+        elif expected_revision is None or task.task_revision != expected_revision:
+            identity_reason = "task_revision_changed"
+        elif task.approval_required and (
+            not expected_scope_hash
+            or task.approval_scope_hash != expected_scope_hash
+        ):
+            identity_reason = "approval_scope_changed"
+        if identity_reason is not None:
+            _append_event(
+                conn,
+                task_id,
+                "claim_rejected",
+                {"source": source, "reason": identity_reason},
+            )
+            return False, identity_reason
+        if not approval_is_current(task, conn=conn):
+            _append_approval_claim_denied(
+                conn, task, source=source,
+            )
+            return False, _approval_denial_reason(task, conn)
+    return True, None
+
+
+def validate_worker_claim_from_env() -> tuple[bool, Optional[str]]:
+    """Fail-closed worker preflight using dispatcher-bound environment data."""
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    run_raw = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    revision_raw = (
+        os.environ.get("HERMES_KANBAN_TASK_REVISION") or ""
+    ).strip()
+    claim_lock = (os.environ.get("HERMES_KANBAN_CLAIM_LOCK") or "").strip()
+    scope_hash = (
+        os.environ.get("HERMES_KANBAN_APPROVAL_SCOPE_HASH") or ""
+    ).strip()
+    if not task_id or not run_raw or not revision_raw or not claim_lock:
+        return False, "claim_identity_missing"
+    try:
+        expected_run_id = int(run_raw)
+        expected_revision = int(revision_raw)
+    except ValueError:
+        return False, "claim_identity_invalid"
+    try:
+        with connect_closing() as conn:
+            return validate_worker_claim(
+                conn,
+                task_id,
+                expected_run_id=expected_run_id,
+                expected_claim_lock=claim_lock,
+                expected_revision=expected_revision,
+                expected_scope_hash=scope_hash or None,
+            )
+    except Exception:
+        _log.exception("kanban worker approval preflight failed")
+        return False, "claim_preflight_error"
 
 
 def heartbeat_claim(
@@ -4893,6 +5562,10 @@ def block_task(
             )
             if cur.rowcount != 1:
                 return False
+            if kind == "needs_input":
+                _require_fresh_approval(
+                    conn, task_id, source="block_needs_input",
+                )
             run_id = _end_run(
                 conn, task_id,
                 outcome="blocked", status="blocked",
@@ -4947,6 +5620,10 @@ def block_task(
                 )
             if cur.rowcount != 1:
                 return False
+            if kind == "needs_input":
+                _require_fresh_approval(
+                    conn, task_id, source="block_needs_input",
+                )
             run_id = _end_run(
                 conn, task_id,
                 outcome="blocked", status="blocked",
@@ -4998,7 +5675,7 @@ def promote_task(
     promotion would succeed without mutating state.
     """
     row = conn.execute(
-        "SELECT status FROM tasks WHERE id = ?", (task_id,)
+        "SELECT * FROM tasks WHERE id = ?", (task_id,)
     ).fetchone()
     if row is None:
         return False, f"task {task_id} not found"
@@ -5008,6 +5685,13 @@ def promote_task(
         return False, (
             f"task {task_id} is {cur_status!r}; promote only applies to "
             f"'todo' or 'blocked'"
+        )
+
+    task = Task.from_row(row)
+    if task.approval_required and not approval_is_current(task, conn=conn):
+        return False, (
+            "current human approval required "
+            f"(state={approval_state(task)})"
         )
 
     if not force:
@@ -5033,7 +5717,11 @@ def promote_task(
     with write_txn(conn):
         upd = conn.execute(
             "UPDATE tasks SET status = 'ready' "
-            "WHERE id = ? AND status IN ('todo', 'blocked')",
+            "WHERE id = ? AND status IN ('todo', 'blocked') "
+            "AND (approval_required = 0 OR ("
+            "approved_task_id = id AND approved_revision = task_revision "
+            "AND approved_scope_hash = approval_scope_hash "
+            "AND approved_at IS NOT NULL))",
             (task_id,),
         )
         if upd.rowcount != 1:
@@ -5061,7 +5749,7 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
     now = int(time.time())
     with write_txn(conn):
         stale = conn.execute(
-            "SELECT current_run_id FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
+            "SELECT * FROM tasks WHERE id = ? AND status IN ('blocked', 'scheduled')",
             (task_id,),
         ).fetchone()
         if stale and stale["current_run_id"]:
@@ -5088,7 +5776,12 @@ def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
             "WHERE l.child_id = ? AND p.status != 'done' LIMIT 1",
             (task_id,),
         ).fetchone()
-        new_status = "todo" if undone_parents else "ready"
+        gated_without_approval = bool(
+            stale
+            and stale["approval_required"]
+            and not approval_is_current(Task.from_row(stale), conn=conn)
+        )
+        new_status = "todo" if (undone_parents or gated_without_approval) else "ready"
         # NOTE: deliberately does NOT touch ``block_recurrences`` or
         # ``block_kind``. Resetting the recurrence counter on unblock is exactly
         # the amnesia that let a cron unblock → worker re-block loop run
@@ -5172,6 +5865,13 @@ def specify_triage_task(
         )
         if cur.rowcount != 1:
             return False
+        if changed_fields:
+            _mark_scope_changed(
+                conn,
+                task_id,
+                changed_fields=changed_fields,
+                actor=author or "specify",
+            )
         if changed_fields and author and author.strip():
             # Inline INSERT (rather than ``add_comment``) because we're
             # already inside this function's write_txn — nested BEGIN
@@ -5789,23 +6489,143 @@ def resolve_workspace(task: Task, *, board: Optional[str] = None) -> Path:
 
 
 def set_workspace_path(
-    conn: sqlite3.Connection, task_id: str, path: Path | str
+    conn: sqlite3.Connection,
+    task_id: str,
+    path: Path | str,
+    *,
+    scope_change: bool = True,
 ) -> None:
     with write_txn(conn):
+        row = conn.execute(
+            "SELECT workspace_path FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None or row["workspace_path"] == str(path):
+            return
         conn.execute(
             "UPDATE tasks SET workspace_path = ? WHERE id = ?",
             (str(path), task_id),
         )
+        if scope_change:
+            _mark_scope_changed(
+                conn,
+                task_id,
+                changed_fields=["workspace_path"],
+                actor="workspace",
+            )
 
 
 def set_branch_name(
-    conn: sqlite3.Connection, task_id: str, branch_name: str
+    conn: sqlite3.Connection,
+    task_id: str,
+    branch_name: str,
+    *,
+    scope_change: bool = True,
 ) -> None:
     with write_txn(conn):
+        row = conn.execute(
+            "SELECT branch_name FROM tasks WHERE id = ?", (task_id,),
+        ).fetchone()
+        if row is None or row["branch_name"] == str(branch_name):
+            return
         conn.execute(
             "UPDATE tasks SET branch_name = ? WHERE id = ?",
             (str(branch_name), task_id),
         )
+        if scope_change:
+            _mark_scope_changed(
+                conn,
+                task_id,
+                changed_fields=["branch_name"],
+                actor="workspace",
+            )
+
+
+def _bind_resolved_workspace_to_approval(
+    conn: sqlite3.Connection,
+    before: Task,
+    *,
+    expected_parents: list[str],
+) -> Task:
+    """Bind deterministic dispatcher workspace resolution to current evidence.
+
+    Workspace materialization changes ``workspace_path`` and sometimes the
+    resolved branch after claim. It is not a human scope edit. Refresh both
+    hashes only when every other scoped field, parent edge, task revision, and
+    approval binding still exactly matches the claimed snapshot; any concurrent
+    edit leaves the old evidence untouched so worker preflight fails closed.
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT * FROM tasks WHERE id = ?", (before.id,),
+        ).fetchone()
+        if row is None:
+            raise ValueError(f"unknown task {before.id}")
+        current = Task.from_row(row)
+        if not current.approval_required:
+            return current
+        stable_fields = (
+            "id",
+            "task_revision",
+            "title",
+            "body",
+            "assignee",
+            "workspace_kind",
+            "project_id",
+            "tenant",
+            "skills",
+            "model_override",
+            "max_runtime_seconds",
+            "goal_mode",
+            "goal_max_turns",
+        )
+        stable = all(
+            getattr(current, field) == getattr(before, field)
+            for field in stable_fields
+        )
+        stable = stable and parent_ids(conn, before.id) == expected_parents
+        stable = stable and (
+            current.approved_task_id == before.id
+            and current.approved_revision == before.task_revision
+            and current.approved_scope_hash == before.approval_scope_hash
+            and current.approval_scope_hash == before.approval_scope_hash
+            and current.approved_at is not None
+        )
+        if not stable:
+            return current
+        scope_hash = _compute_approval_scope_hash(conn, before.id)
+        if scope_hash == before.approval_scope_hash:
+            return current
+        updated = conn.execute(
+            "UPDATE tasks SET approval_scope_hash = ?, approved_scope_hash = ? "
+            "WHERE id = ? AND status = 'running' AND task_revision = ? "
+            "AND approved_task_id = ? AND approved_revision = ? "
+            "AND approval_scope_hash = ? AND approved_scope_hash = ?",
+            (
+                scope_hash,
+                scope_hash,
+                before.id,
+                before.task_revision,
+                before.id,
+                before.task_revision,
+                before.approval_scope_hash,
+                before.approval_scope_hash,
+            ),
+        )
+        if updated.rowcount == 1:
+            _append_event(
+                conn,
+                before.id,
+                "approval_scope_resolved",
+                {
+                    "source": "dispatcher_workspace",
+                    "task_revision": before.task_revision,
+                    "scope_hash": scope_hash,
+                },
+            )
+        refreshed = get_task(conn, before.id)
+        if refreshed is None:  # pragma: no cover - row cannot vanish in txn
+            raise ValueError(f"unknown task {before.id}")
+        return refreshed
 
 
 # ---------------------------------------------------------------------------
@@ -5921,6 +6741,9 @@ class DispatchResult:
     skipped_unassigned: list[str] = field(default_factory=list)
     """Ready task ids skipped because they have no assignee at all.
     Operator-actionable — usually a misfiled task waiting for routing."""
+    approval_denied: list[str] = field(default_factory=list)
+    """Ready/review task ids skipped because durable approval evidence was
+    missing or stale. These are never passed to ``claim_task`` or ``spawn_fn``."""
     auto_assigned_default: list[str] = field(default_factory=list)
     """Task ids that were unassigned in the DB and had
     ``kanban.default_assignee`` applied this tick before spawning (#27145).
@@ -7283,7 +8106,7 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
     the warning still fires in degraded environments.
     """
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT * FROM tasks "
         "WHERE status = 'ready' AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
     ).fetchall()
@@ -7293,9 +8116,14 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
         from hermes_cli.profiles import profile_exists  # local import: avoids cycle
     except Exception:
         # Can't introspect — assume spawnable, preserve legacy behavior.
-        return True
+        return any(
+            approval_is_current(Task.from_row(row), conn=conn) for row in rows
+        )
     for row in rows:
-        if profile_exists(row["assignee"]):
+        if (
+            approval_is_current(Task.from_row(row), conn=conn)
+            and profile_exists(row["assignee"])
+        ):
             return True
     return False
 
@@ -7309,7 +8137,7 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     should have spawned a review agent.
     """
     rows = conn.execute(
-        "SELECT DISTINCT assignee FROM tasks "
+        "SELECT * FROM tasks "
         "WHERE status = 'review' AND assignee IS NOT NULL "
         "    AND claim_lock IS NULL"
     ).fetchall()
@@ -7318,9 +8146,14 @@ def has_spawnable_review(conn: sqlite3.Connection) -> bool:
     try:
         from hermes_cli.profiles import profile_exists  # local import: avoids cycle
     except Exception:
-        return True
+        return any(
+            approval_is_current(Task.from_row(row), conn=conn) for row in rows
+        )
     for row in rows:
-        if profile_exists(row["assignee"]):
+        if (
+            approval_is_current(Task.from_row(row), conn=conn)
+            and profile_exists(row["assignee"])
+        ):
             return True
     return False
 
@@ -7478,7 +8311,7 @@ def _dispatch_once_locked(
         )
 
     ready_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT * FROM tasks "
         "WHERE status = 'ready' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
@@ -7536,6 +8369,19 @@ def _dispatch_once_locked(
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
+        ready_task = Task.from_row(row)
+        if not approval_is_current(ready_task, conn=conn):
+            result.approval_denied.append(row["id"])
+            if not dry_run:
+                with write_txn(conn):
+                    current = get_task(conn, row["id"])
+                    if current is not None and not approval_is_current(
+                        current, conn=conn,
+                    ):
+                        _append_approval_claim_denied(
+                            conn, current, source="dispatcher",
+                        )
+            continue
         row_assignee = row["assignee"]
         if not row_assignee:
             # Honour kanban.default_assignee: when the dispatcher hits an
@@ -7554,19 +8400,28 @@ def _dispatch_once_locked(
                 # 'assigned' event so the board state matches what just happened.
                 if not dry_run:
                     try:
-                        with write_txn(conn):
-                            conn.execute(
-                                "UPDATE tasks SET assignee = ? WHERE id = ? "
-                                "AND (assignee IS NULL OR assignee = '')",
-                                (_default_assignee, row["id"]),
-                            )
-                            _append_event(
-                                conn, row["id"], "assigned",
-                                {
-                                    "assignee": _default_assignee,
-                                    "source": "kanban.default_assignee",
-                                },
-                            )
+                        if not assign_task(
+                            conn,
+                            row["id"],
+                            _default_assignee,
+                            source="kanban.default_assignee",
+                        ):
+                            result.skipped_unassigned.append(row["id"])
+                            continue
+                        assigned_task = get_task(conn, row["id"])
+                        result.auto_assigned_default.append(row["id"])
+                        if (
+                            assigned_task is not None
+                            and not approval_is_current(assigned_task, conn=conn)
+                        ):
+                            result.approval_denied.append(row["id"])
+                            with write_txn(conn):
+                                _append_approval_claim_denied(
+                                    conn,
+                                    assigned_task,
+                                    source="dispatcher_default_assignee",
+                                )
+                            continue
                     except Exception:
                         _log.debug(
                             "kanban dispatch: failed to apply default_assignee=%r "
@@ -7576,7 +8431,6 @@ def _dispatch_once_locked(
                         result.skipped_unassigned.append(row["id"])
                         continue
                 row_assignee = _default_assignee
-                result.auto_assigned_default.append(row["id"])
             else:
                 result.skipped_unassigned.append(row["id"])
                 continue
@@ -7651,6 +8505,7 @@ def _dispatch_once_locked(
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        claimed_parents = parent_ids(conn, claimed.id)
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -7666,9 +8521,42 @@ def _dispatch_once_locked(
                 result.auto_blocked.append(claimed.id)
             continue
         # Persist the resolved workspace path so the worker can cd there.
-        set_workspace_path(conn, claimed.id, str(workspace))
+        set_workspace_path(
+            conn, claimed.id, str(workspace), scope_change=False,
+        )
         if claimed.workspace_kind == "worktree":
-            set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+            set_branch_name(
+                conn,
+                claimed.id,
+                resolved_branch_name
+                or (claimed.branch_name or "").strip()
+                or f"wt/{claimed.id}",
+                scope_change=False,
+            )
+        claimed = _bind_resolved_workspace_to_approval(
+            conn,
+            claimed,
+            expected_parents=claimed_parents,
+        )
+        claim_ok, claim_reason = validate_worker_claim(
+            conn,
+            claimed.id,
+            expected_run_id=claimed.current_run_id,
+            expected_claim_lock=claimed.claim_lock,
+            expected_revision=claimed.task_revision,
+            expected_scope_hash=claimed.approval_scope_hash,
+            source="dispatcher_pre_spawn",
+        )
+        if not claim_ok:
+            if claimed.id not in result.approval_denied:
+                result.approval_denied.append(claimed.id)
+            block_task(
+                conn,
+                claimed.id,
+                reason=f"approval guard denied dispatch ({claim_reason})",
+                expected_run_id=claimed.current_run_id,
+            )
+            continue
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
         try:
@@ -7720,13 +8608,26 @@ def _dispatch_once_locked(
     # against max_spawn alongside ready tasks, so the total number of
     # running workers stays bounded.
     review_rows = conn.execute(
-        "SELECT id, assignee FROM tasks "
+        "SELECT * FROM tasks "
         "WHERE status = 'review' AND claim_lock IS NULL "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
     for row in review_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
+        review_task = Task.from_row(row)
+        if not approval_is_current(review_task, conn=conn):
+            result.approval_denied.append(row["id"])
+            if not dry_run:
+                with write_txn(conn):
+                    current = get_task(conn, row["id"])
+                    if current is not None and not approval_is_current(
+                        current, conn=conn,
+                    ):
+                        _append_approval_claim_denied(
+                            conn, current, source="review_dispatcher",
+                        )
+            continue
         if not row["assignee"]:
             result.skipped_unassigned.append(row["id"])
             continue
@@ -7743,6 +8644,7 @@ def _dispatch_once_locked(
         claimed = claim_review_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
+        claimed_parents = parent_ids(conn, claimed.id)
         try:
             resolved_branch_name = None
             if claimed.workspace_kind == "worktree":
@@ -7758,9 +8660,42 @@ def _dispatch_once_locked(
                 result.auto_blocked.append(claimed.id)
             continue
         # Persist the resolved workspace path so the worker can cd there.
-        set_workspace_path(conn, claimed.id, str(workspace))
+        set_workspace_path(
+            conn, claimed.id, str(workspace), scope_change=False,
+        )
         if claimed.workspace_kind == "worktree":
-            set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
+            set_branch_name(
+                conn,
+                claimed.id,
+                resolved_branch_name
+                or (claimed.branch_name or "").strip()
+                or f"wt/{claimed.id}",
+                scope_change=False,
+            )
+        claimed = _bind_resolved_workspace_to_approval(
+            conn,
+            claimed,
+            expected_parents=claimed_parents,
+        )
+        claim_ok, claim_reason = validate_worker_claim(
+            conn,
+            claimed.id,
+            expected_run_id=claimed.current_run_id,
+            expected_claim_lock=claimed.claim_lock,
+            expected_revision=claimed.task_revision,
+            expected_scope_hash=claimed.approval_scope_hash,
+            source="review_dispatcher_pre_spawn",
+        )
+        if not claim_ok:
+            if claimed.id not in result.approval_denied:
+                result.approval_denied.append(claimed.id)
+            block_task(
+                conn,
+                claimed.id,
+                reason=f"approval guard denied review dispatch ({claim_reason})",
+                expected_run_id=claimed.current_run_id,
+            )
+            continue
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         # Force-load the sdlc-review skill for review agents — it carries
         # the review logic (AC verification, merge, etc.). The mandatory
@@ -8126,6 +9061,9 @@ def _default_spawn(
         env["HERMES_KANBAN_RUN_ID"] = str(task.current_run_id)
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
+    env["HERMES_KANBAN_TASK_REVISION"] = str(task.task_revision)
+    if task.approval_scope_hash:
+        env["HERMES_KANBAN_APPROVAL_SCOPE_HASH"] = task.approval_scope_hash
     # Goal-loop mode: the worker reads these and wraps its run in the
     # Ralph-style /goal judge loop (see cli.py quiet-mode path). Only set
     # when enabled so non-goal tasks keep a clean env.

@@ -16239,6 +16239,28 @@ def main(
     
     # Handle single query mode
     if query or image:
+        # Dispatcher workers carry a durable claim identity in their
+        # environment. Revalidate it immediately before accepting any task
+        # work so a revoke/edit between dispatcher claim and child startup
+        # fails closed. This check is independent of dispatcher selection and
+        # the DB claim CAS; all three layers must agree.
+        if os.environ.get("HERMES_KANBAN_TASK"):
+            try:
+                from hermes_cli import kanban_db as _kanban_db
+
+                _claim_ok, _claim_reason = (
+                    _kanban_db.validate_worker_claim_from_env()
+                )
+            except Exception:
+                logger.exception("kanban worker claim preflight crashed")
+                _claim_ok, _claim_reason = False, "claim_preflight_error"
+            if not _claim_ok:
+                print(
+                    "Kanban worker start denied: durable claim/approval "
+                    f"validation failed ({_claim_reason or 'unknown'}).",
+                    file=sys.stderr,
+                )
+                sys.exit(1)
         if not cli._claim_active_session("cli", stderr=bool(quiet)):
             sys.exit(1)
         try:

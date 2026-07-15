@@ -116,6 +116,32 @@ def test_single_query_main_skips_clear_on_exit_summary(monkeypatch):
     )
 
 
+def test_kanban_worker_preflight_denial_happens_before_session_claim(monkeypatch):
+    """A stale/revoked dispatcher claim must never reach task execution."""
+    from hermes_cli import kanban_db
+
+    class FakeCLI:
+        def __init__(self, **_kwargs):
+            self.agent = SimpleNamespace()
+
+        def _claim_active_session(self, *_args, **_kwargs):
+            raise AssertionError("session claim must not run after approval denial")
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_guarded")
+    monkeypatch.setattr(cli_mod, "HermesCLI", FakeCLI)
+    monkeypatch.setattr(cli_mod.atexit, "register", lambda *_a, **_kw: None)
+    monkeypatch.setattr(
+        kanban_db,
+        "validate_worker_claim_from_env",
+        lambda: (False, "approval_stale"),
+    )
+
+    with pytest.raises(SystemExit) as exc:
+        cli_mod.main(query="work guarded task", quiet=True, toolsets="terminal")
+
+    assert exc.value.code == 1
+
+
 # ── Verify interactive mode still clears ────────────────────────────────────
 
 def test_print_exit_summary_still_clears_in_interactive_path(monkeypatch):

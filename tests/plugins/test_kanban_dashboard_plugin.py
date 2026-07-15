@@ -559,6 +559,52 @@ def test_patch_priority_and_edit(client):
     assert data["title"] == "renamed"
 
 
+def test_approval_guard_api_status_grant_stale_and_revoke(client):
+    created = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "deploy", "body": "version one", "approval_required": True},
+    )
+    assert created.status_code == 200
+    task = created.json()["task"]
+    task_id = task["id"]
+    assert task["status"] == "blocked"
+    assert task["approval"]["state"] == "pending"
+    for internal in (
+        "approved_by", "approved_task_id", "approved_scope_hash",
+    ):
+        assert internal not in task
+
+    granted = client.post(
+        f"/api/plugins/kanban/tasks/{task_id}/approval",
+        json={"actor": "dashboard-operator"},
+    )
+    assert granted.status_code == 200
+    assert granted.json()["task"]["approval"]["state"] == "approved"
+    assert granted.json()["task"]["status"] == "ready"
+
+    edited = client.patch(
+        f"/api/plugins/kanban/tasks/{task_id}",
+        json={"body": "version two"},
+    )
+    assert edited.status_code == 200
+    assert edited.json()["task"]["approval"]["state"] == "stale"
+    assert edited.json()["task"]["status"] == "blocked"
+
+    revoked = client.delete(
+        f"/api/plugins/kanban/tasks/{task_id}/approval",
+        params={"actor": "dashboard-operator"},
+    )
+    assert revoked.status_code == 200
+    assert revoked.json()["task"]["approval"]["state"] == "pending"
+
+    detail = client.get(f"/api/plugins/kanban/tasks/{task_id}").json()
+    kinds = [event["kind"] for event in detail["events"]]
+    assert "approval_required" in kinds
+    assert "approval_granted" in kinds
+    assert "approval_stale" in kinds
+    assert "approval_revoked" in kinds
+
+
 def test_patch_invalid_status(client):
     t = client.post("/api/plugins/kanban/tasks", json={"title": "x"}).json()["task"]
     r = client.patch(

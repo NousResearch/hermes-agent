@@ -207,8 +207,16 @@ async def test_notifier_second_blocked_delivers(kanban_home):
 
     conn = kb.connect()
     try:
-        kb.unblock_task(conn, tid)
-        kb.block_task(conn, tid, reason="second block", kind="capability")
+        assert kb.unblock_task(conn, tid)
+        # needs_input now installs a durable human gate. Explicitly approve
+        # the current scope before simulating a second worker attempt; merely
+        # unblocking must never grant permission.
+        assert kb.approve_task(conn, tid, actor="test-operator")
+        kb.recompute_ready(conn)
+        assert kb.claim_task(conn, tid, claimer="worker1") is not None
+        assert kb.block_task(
+            conn, tid, reason="second block", kind="capability",
+        )
     finally:
         conn.close()
 

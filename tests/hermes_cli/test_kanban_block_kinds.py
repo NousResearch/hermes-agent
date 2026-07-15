@@ -45,8 +45,13 @@ def _running_task(conn, title="t"):
 
 
 def _make_running_again(conn, tid):
-    with kb.write_txn(conn):
-        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
+    task = kb.get_task(conn, tid)
+    if task.approval_required:
+        assert kb.approve_task(conn, tid, actor="test-operator")
+        kb.recompute_ready(conn)
+    else:
+        with kb.write_txn(conn):
+            conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (tid,))
     assert kb.claim_task(conn, tid, claimer="worker") is not None
 
 
@@ -73,7 +78,9 @@ def test_unblock_does_not_reset_recurrence_counter(kanban_home: Path) -> None:
         assert kb.get_task(conn, tid).block_recurrences == 1
         assert kb.unblock_task(conn, tid)
         t = kb.get_task(conn, tid)
-        assert t.status == "ready"
+        # needs_input is now a durable human gate: unblock clears the sticky
+        # block marker but cannot itself grant approval.
+        assert t.status == "todo"
         assert t.block_recurrences == 1  # NOT reset to 0
         assert t.block_kind == "needs_input"  # kind preserved for comparison
 

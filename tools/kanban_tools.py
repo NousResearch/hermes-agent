@@ -357,6 +357,7 @@ def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
         "children": children,
         "parent_count": len(parents),
         "child_count": len(children),
+        "approval": kb.approval_status(task),
     }
 
 
@@ -398,6 +399,7 @@ def _handle_show(args: dict, **kw) -> str:
                     "result": t.result,
                     "current_run_id": t.current_run_id,
                     "model_override": t.model_override,
+                    "approval": kb.approval_status(t),
                 }
 
             def _run_dict(r):

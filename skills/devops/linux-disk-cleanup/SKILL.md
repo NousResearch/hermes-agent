@@ -1,7 +1,9 @@
 ---
 name: linux-disk-cleanup
-description: "Audit and clean disk usage on Linux/WSL2 systems. Systematic methodology to find space hogs and safely reclaim disk space."
+author: rafael.zendron22@gmail.com
+description: "Audit and clean disk usage on Linux/WSL2 systems."
 version: 1.0.0
+platforms: [linux, wsl2]
 tags: [linux, disk, cleanup, sysadmin, wsl2]
 ---
 

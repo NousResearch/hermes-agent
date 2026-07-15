@@ -1,6 +1,8 @@
 ---
 name: linux-security-hardening
-description: "Linux Mint system administration: security hardening (fail2ban, auditd, Lynis, firewall, network audit), desktop configuration (keybindings, clipboard, emoji picker for Cinnamon + XFCE), and validation."
+author: rafael.zendron22@gmail.com
+description: "Linux Mint security hardening and system administration."
+platforms: [linux]
 triggers:
   - security hardening
   - linux security
@@ -31,12 +33,7 @@ Comprehensive Linux security hardening workflow: baseline audit, immediate fixes
 
 Run BEFORE making changes to establish current state.
 
-**Quick way**: Use the bundled audit script:
-```bash
-bash ~/.hermes/skills/devops/linux-security-hardening/scripts/baseline-audit.sh
-```
-
-**Or run manually**:
+**Quick audit** (run manually before making changes):
 
 ```bash
 # OS and firewall
@@ -327,7 +324,6 @@ sudo cp ~/.hermes/skills/devops/linux-security-hardening/templates/modprobe-blac
 ```
 
 This disables DCCP, SCTP, RDS, TIPC, and unused filesystems. USB storage and Bluetooth are commented out — uncomment if not needed.
-```
 
 ## Phase 3: Security Tool Installation
 
@@ -345,8 +341,16 @@ sudo bash -c 'cat > /etc/fail2ban/jail.local << "EOF"
 bantime = 3600
 findtime = 600
 maxretry = 5
-destemail = user@example.com
+destemail = root@localhost
 action = %(action_mwl)s
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 7200
 EOF
 '
 
@@ -354,11 +358,18 @@ EOF
 sudo systemctl enable fail2ban
 sudo systemctl restart fail2ban
 sudo fail2ban-client status
+sudo fail2ban-client status sshd
 ```
 
 **Pitfall**: Using echo/tee chain for Fail2ban config fails due to shell interpretation of `%(action_mwl)s`. MUST use heredoc with quoted delimiter (`<< "EOF"`).
 
 **Common failure**: `'%' must be followed by '%' or '('` - indicates escaping issue. Fix: use heredoc.
+
+**Validation**: After restart, verify the sshd jail is active:
+```bash
+sudo fail2ban-client status sshd
+# Should show: "Currently banned: N", "Total banned: N", "File list: /var/log/auth.log"
+```
 
 ### Unattended-Upgrades (Auto Security Patches)
 

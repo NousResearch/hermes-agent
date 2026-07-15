@@ -1,6 +1,8 @@
 ---
 name: linux-performance-tune
-description: Diagnóstico e limpeza de performance em Linux Mint/Ubuntu para máquina de dev. RAM, swap, disco, processos zombies, caches.
+author: rafael.zendron22@gmail.com
+description: "Diagnose and fix performance issues on Linux Mint/Ubuntu."
+platforms: [linux]
 trigger: PC lento, RAM cheia, swap saturado, disco cheio, load average alto, usuário reclama de desempenho.
 ---
 
@@ -130,19 +132,34 @@ sensors 2>/dev/null | grep Tctl
 - colord e fwupd sao units estáticas — `systemctl disable` retorna "Failed to disable unit: Unit file ... is not enabled" — usar `systemctl stop` apenas
 - Reciclar swap ZERA o swap mas requer RAM livre suficiente — se swap tem 2GB e so sobraram 500MB RAM, NAO fazer swapoff
 
-## Hardware do usuário
-- AMD Ryzen 4600G (6c/12t) + Vega 6 integrada
-- NVIDIA GT 710 dedicada (fraca, considera remover fisicamente)
-- 16 GB RAM + 4 GB ZRAM (LZ4) + 2 GB swapfile = ~20 GB efetivo
-- 120 GB NVMe (partição / com 120GB)
-- Linux Mint 22.3 (Zena), kernel 6.17, XFCE 4.18
+## Hardware Inventory (Example)
 
-## Services que ficam rodando por padrão
-- dockerd (~380 MB) — parar se não for usar: `sudo systemctl stop docker docker.socket containerd`
-- SonarQube Docker — 3 processos Java (Elasticsearch ~860MB, WebServer ~490MB, CeServer ~310MB) = **~1.85 GB RAM**. Parar com `docker stop estacio-sonarqube` quando não estiver usando. Reativar com `docker start estacio-sonarqube`
-- ollama — DESABILITADO por padrão (não usa)
-- 4x Hermes (~1.3 GB total) — normal quando trabalhando
-- Hindsight API (~1.8 GB) — essencial para memória entre sessões, não matar
+Run `lshw -short -C processor,memory,disk,display` and `inxi -F` to collect the user's actual hardware profile before tuning. Use this information to:
+
+1. Estimate safe swap-recycling thresholds (swapoff requires RAM >= swap usage).
+2. Identify GPU candidates for removal (weak dedicated GPUs waste power on headless dev machines).
+3. Calculate effective memory = physical RAM + ZRAM (if configured) + swapfile.
+
+## Common High-Memory Services
+
+Before killing processes, identify what's consuming RAM:
+
+```bash
+# Top memory consumers
+ps aux --sort=-%mem | head -20
+
+# Docker containers
+docker stats --no-stream --format "table {{.Name}}\t{{.MemUsage}}"
+
+# Systemd services memory (approximate)
+systemctl status --no-pager | grep -E "Active:|●"
+```
+
+Typical services to watch on dev machines:
+- **Docker engine** (~300-400 MB) — stop if unused: `sudo systemctl stop docker docker.socket containerd`
+- **Java services** (SonarQube, etc.) — can consume 1-2 GB each
+- **Hindsight API** — essential for Hermes memory, do not kill
+- **Duplicate processes** — check for zombie MCP servers or repeated Hermes instances
 
 ## ZRAM Swap Comprimido (Opcional mas Recomendado)
 

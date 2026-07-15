@@ -2370,7 +2370,7 @@ class GatewaySlashCommandsMixin:
         idx = len(mgr.state.subgoals) if mgr.state else 0
         return f"✓ Added subgoal {idx}: {text}"
 
-    async def _handle_undo_command(self, event: MessageEvent) -> str:
+    async def _handle_undo_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
         """Handle /undo [N] — back up N user turns (default 1), soft-deleting
         the truncated rows on disk and echoing the backed-up message text so
         the user can copy/edit and resend.
@@ -2390,7 +2390,12 @@ class GatewaySlashCommandsMixin:
             try:
                 n = int(raw_args.split()[0])
             except (ValueError, IndexError):
-                return t("gateway.undo.invalid_count", arg=raw_args.split()[0])
+                # EphemeralReply for the same reason as the success path below:
+                # this echoes the user's own just-typed argument, which can
+                # itself be a bare existing local path.
+                return EphemeralReply(
+                    t("gateway.undo.invalid_count", arg=raw_args.split()[0]), ttl_seconds=0
+                )
             if n < 1:
                 n = 1
 
@@ -2412,11 +2417,19 @@ class GatewaySlashCommandsMixin:
 
         target_text = result["target_text"]
         preview = target_text[:200] + "..." if len(target_text) > 200 else target_text
-        return t(
-            "gateway.undo.removed",
-            turns=result["turns_undone"],
-            count=result["rewound_count"],
-            preview=preview,
+        # EphemeralReply (ttl_seconds=0, no auto-delete) so extract_local_files()
+        # never scans this reply: target_text is the removed turn's raw text,
+        # not agent-authored, so it can contain a bare existing local path —
+        # same leak class as #64661 (uploads the path from the ack itself,
+        # duplicating anything the agent later sends for real).
+        return EphemeralReply(
+            t(
+                "gateway.undo.removed",
+                turns=result["turns_undone"],
+                count=result["rewound_count"],
+                preview=preview,
+            ),
+            ttl_seconds=0,
         )
 
     async def _handle_set_home_command(self, event: MessageEvent) -> str:

@@ -1285,6 +1285,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         media_id: str,
         *,
         ext_hint: Optional[str] = None,
+        media_kind: Optional[str] = None,
     ) -> tuple[Optional[str], Optional[str]]:
         """Two-step Graph media download: ``GET /<id>`` → temp URL → bytes.
 
@@ -1294,6 +1295,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
 
         The temporary URL from step 1 is signed and expires in ~5
         minutes; we download immediately and never persist the URL.
+
+        ``media_kind`` (``image``/``video``/``audio``/``document``/``sticker``)
+        selects the size cap from ``_MEDIA_SIZE_LIMITS``; oversized media is
+        refused from the step-1 ``file_size`` before the bytes are fetched, so
+        a webhook-triggered download can't buffer up to Meta's 100 MB document
+        limit into memory. Falls back to the document cap when unknown.
         """
         if self._http_client is None:
             return None, None
@@ -1336,6 +1343,26 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         if not temp_url:
             return None, None
 
+        # Refuse oversized media up front. The metadata reports ``file_size``,
+        # so reject before streaming the bytes rather than buffering up to
+        # Meta's 100 MB document cap into memory on a webhook-triggered
+        # download. Mirrors the outbound ``_upload_media`` size guard, reusing
+        # the same ``_MEDIA_SIZE_LIMITS`` table (unknown kind → document cap).
+        size_cap = _MEDIA_SIZE_LIMITS.get(
+            media_kind or "", _MEDIA_SIZE_LIMITS["document"]
+        )
+        try:
+            declared_size = int(meta.get("file_size") or 0)
+        except (TypeError, ValueError):
+            declared_size = 0
+        if declared_size > size_cap:
+            logger.warning(
+                "[whatsapp_cloud] refusing oversized inbound media "
+                "(id=%s, kind=%s, file_size=%d > cap=%d)",
+                media_id, media_kind or "document", declared_size, size_cap,
+            )
+            return None, None
+
         # Step 2 — bytes (auth required even though URL is signed; Meta
         # documents this explicitly — the URL alone is not enough).
         try:
@@ -1352,6 +1379,17 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             )
             return None, None
 
+        # Backstop: some responses omit or understate ``file_size``, so cap the
+        # actual payload too before writing it to the cache.
+        blob = blob_resp.content
+        if len(blob) > size_cap:
+            logger.warning(
+                "[whatsapp_cloud] refusing oversized inbound media after fetch "
+                "(id=%s, kind=%s, bytes=%d > cap=%d)",
+                media_id, media_kind or "document", len(blob), size_cap,
+            )
+            return None, None
+
         # Decide the extension. Prefer the override map so audio/ogg
         # produces .ogg (not the technically-correct-but-broken .oga
         # mimetypes returns by default). Fall back to ext_hint then
@@ -1365,7 +1403,7 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
         _INBOUND_MEDIA_CACHE.mkdir(parents=True, exist_ok=True)
         out_path = _INBOUND_MEDIA_CACHE / f"{media_id}{ext}"
         try:
-            out_path.write_bytes(blob_resp.content)
+            out_path.write_bytes(blob)
         except OSError:
             logger.exception(
                 "[whatsapp_cloud] failed to write cached media (id=%s)", media_id
@@ -1953,8 +1991,10 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 ext_hint = None
                 if inbound_mime:
                     ext_hint = _ext_for_mime(inbound_mime)
+                # "voice" shares WhatsApp's audio size cap.
+                media_kind = "audio" if msg_type_str == "voice" else msg_type_str
                 local_path, dl_mime = await self._download_media_to_cache(
-                    media_id, ext_hint=ext_hint
+                    media_id, ext_hint=ext_hint, media_kind=media_kind
                 )
                 if local_path:
                     media_urls.append(local_path)

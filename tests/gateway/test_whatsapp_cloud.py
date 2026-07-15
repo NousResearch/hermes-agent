@@ -2523,3 +2523,82 @@ class TestReplyContextResolution:
             rich_sent_store.lookup("15551234567", "wamid.OUT")
             == "here is your answer"
         )
+
+
+# ---------------------------------------------------------------------------
+# Inbound media size cap (_download_media_to_cache)
+# ---------------------------------------------------------------------------
+
+def test_inbound_media_size_cap_rejects_oversized():
+    """Media whose reported file_size exceeds the per-kind cap is refused from
+    the step-1 metadata alone — the bytes are never fetched."""
+    adapter = _make_adapter()
+
+    meta_resp = MagicMock(status_code=200)
+    meta_resp.json = MagicMock(return_value={
+        "url": "https://lookaside.example/media",
+        "mime_type": "image/jpeg",
+        "file_size": 60 * 1024 * 1024,  # 60 MB; image cap is 5 MB
+    })
+    client = MagicMock()
+    client.get = AsyncMock(return_value=meta_resp)
+    adapter._http_client = client
+
+    path, mime = asyncio.run(
+        adapter._download_media_to_cache("MEDIA123", media_kind="image")
+    )
+
+    assert path is None and mime is None
+    # Only the metadata GET happened; the byte download was skipped.
+    assert client.get.await_count == 1
+
+
+def test_inbound_media_size_cap_allows_within_limit(tmp_path, monkeypatch):
+    """Media within the cap is downloaded (metadata + bytes) as normal."""
+    from gateway.platforms import whatsapp_cloud as wac
+    monkeypatch.setattr(wac, "_INBOUND_MEDIA_CACHE", tmp_path)
+    adapter = _make_adapter()
+
+    meta_resp = MagicMock(status_code=200)
+    meta_resp.json = MagicMock(return_value={
+        "url": "https://lookaside.example/media",
+        "mime_type": "image/jpeg",
+        "file_size": 1234,
+    })
+    blob_resp = MagicMock(status_code=200, content=b"x" * 1234)
+    client = MagicMock()
+    client.get = AsyncMock(side_effect=[meta_resp, blob_resp])
+    adapter._http_client = client
+
+    path, mime = asyncio.run(
+        adapter._download_media_to_cache("MEDIA123", media_kind="image")
+    )
+
+    assert path is not None and mime == "image/jpeg"
+    assert client.get.await_count == 2  # metadata + bytes
+
+
+def test_inbound_media_size_cap_backstop_when_file_size_absent(tmp_path, monkeypatch):
+    """With no file_size in the metadata, the post-download backstop still
+    caps the actual payload before it is written to the cache."""
+    from gateway.platforms import whatsapp_cloud as wac
+    monkeypatch.setattr(wac, "_INBOUND_MEDIA_CACHE", tmp_path)
+    adapter = _make_adapter()
+
+    meta_resp = MagicMock(status_code=200)
+    meta_resp.json = MagicMock(return_value={
+        "url": "https://lookaside.example/media",
+        "mime_type": "image/jpeg",
+        # file_size deliberately omitted
+    })
+    blob_resp = MagicMock(status_code=200, content=b"x" * (6 * 1024 * 1024))  # 6 MB > 5 MB
+    client = MagicMock()
+    client.get = AsyncMock(side_effect=[meta_resp, blob_resp])
+    adapter._http_client = client
+
+    path, mime = asyncio.run(
+        adapter._download_media_to_cache("MEDIA123", media_kind="image")
+    )
+
+    assert path is None and mime is None
+    assert client.get.await_count == 2  # fetched, then rejected before write

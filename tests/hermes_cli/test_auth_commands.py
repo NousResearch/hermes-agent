@@ -715,6 +715,7 @@ def test_auth_remove_prefers_exact_numeric_label_over_index(tmp_path, monkeypatc
 
 def test_auth_reset_clears_provider_statuses(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
     _write_auth_store(
         tmp_path,
         {
@@ -730,14 +731,21 @@ def test_auth_reset_clears_provider_statuses(tmp_path, monkeypatch, capsys):
                         "access_token": "sk-ant-api-primary",
                         "last_status": "exhausted",
                         "last_status_at": 1711230000.0,
-                        "last_error_code": 402,
+                        "last_error_code": 429,
+                        "last_error_reason": "weekly_quota_exhausted",
+                        "last_error_message": "Weekly quota exhausted",
+                        "last_error_reset_at": 1911834800.0,
                     }
                 ]
             },
         },
     )
 
+    from agent.credential_pool import load_pool
     from hermes_cli.auth_commands import auth_reset_command
+
+    pool_before = load_pool("anthropic")
+    assert pool_before.has_available() is False
 
     class _Args:
         provider = "anthropic"
@@ -752,6 +760,13 @@ def test_auth_reset_clears_provider_statuses(tmp_path, monkeypatch, capsys):
     assert entry["last_status"] is None
     assert entry["last_status_at"] is None
     assert entry["last_error_code"] is None
+    assert entry["last_error_reason"] is None
+    assert entry["last_error_message"] is None
+    assert entry["last_error_reset_at"] is None
+
+    selected = load_pool("anthropic").select()
+    assert selected is not None
+    assert selected.id == "cred-1"
 
 
 def test_clear_provider_auth_removes_provider_pool_entries(tmp_path, monkeypatch):

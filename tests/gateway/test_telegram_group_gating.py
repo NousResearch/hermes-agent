@@ -178,7 +178,10 @@ def test_bot_join_posts_one_time_group_access_notice():
         adapter.send.assert_awaited_once()
         chat_id, content = adapter.send.await_args.args[:2]
         assert chat_id == "-100"
-        assert "allowlisted" in content
+        assert "TELEGRAM_ALLOWED_USERS" in content
+        assert "TELEGRAM_GROUP_ALLOWED_USERS" in content
+        assert "TELEGRAM_GROUP_ALLOWED_CHATS" in content
+        assert "mention" in content
         assert "admin" in content
         assert "privacy mode" in content
 

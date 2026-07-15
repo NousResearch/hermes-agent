@@ -6121,12 +6121,13 @@ class TelegramAdapter(BasePlatformAdapter):
         title = chat_title or "this group"
         return (
             f"Hi, I'm Hermes.\n\n"
-            f"To reply in {title}, this chat must be allowlisted in the gateway "
-            f"configuration. For Telegram groups, the bot also needs enough "
-            f"group delivery permissions to see messages reliably, which usually "
-            f"means disabling privacy mode or promoting the bot to admin.\n\n"
-            f"If you've just changed those settings, remove and re-add the bot "
-            f"to refresh Telegram's cached group state."
+            f"To reply in {title}, authorize either the sender with "
+            f"TELEGRAM_ALLOWED_USERS or TELEGRAM_GROUP_ALLOWED_USERS, or this "
+            f"group with TELEGRAM_GROUP_ALLOWED_CHATS.\n\n"
+            f"Telegram must also deliver group messages to me. You can mention "
+            f"me directly, disable privacy mode, or grant suitable admin "
+            f"permissions. If you change BotFather privacy settings, remove and "
+            f"re-add me to refresh Telegram's cached group state."
         )
 
     def _telegram_allowed_topics(self) -> set[str]:

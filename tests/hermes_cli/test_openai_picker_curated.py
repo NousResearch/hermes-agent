@@ -19,7 +19,7 @@ Bug 2 — OpenRouter appeared authenticated whenever OPENAI_API_KEY was set
 """
 
 import os
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import pytest
 
@@ -32,6 +32,49 @@ from hermes_cli.providers import HERMES_OVERLAYS
 def test_openrouter_overlay_does_not_list_openai_api_key():
     overlay = HERMES_OVERLAYS["openrouter"]
     assert "OPENAI_API_KEY" not in overlay.extra_env_vars
+
+
+def test_suppressed_openai_env_is_not_authenticated(monkeypatch):
+    from hermes_cli.model_switch import list_authenticated_providers
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_source_suppressed",
+        lambda provider, source: (
+            provider == "openai-api" and source == "env:OPENAI_API_KEY"
+        ),
+    )
+    empty_pool = Mock()
+    empty_pool.has_credentials.return_value = False
+    empty_pool.has_available.return_value = False
+
+    with patch("agent.models_dev.fetch_models_dev", return_value={}), \
+         patch(
+             "agent.credential_pool.load_pool",
+             return_value=empty_pool,
+         ), \
+         patch.object(M, "get_curated_nous_model_ids", return_value=[]), \
+         patch.object(M, "fetch_ollama_cloud_models", return_value=[]), \
+         patch.object(M, "cached_provider_model_ids", return_value=["gpt-test"]):
+        providers = list_authenticated_providers(current_provider="openrouter")
+
+    assert "openai-api" not in {provider["slug"] for provider in providers}
+
+
+def test_suppressed_openai_env_skips_live_discovery(monkeypatch):
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-fake")
+    monkeypatch.setattr(
+        "hermes_cli.auth.is_source_suppressed",
+        lambda provider, source: (
+            provider == "openai-api" and source == "env:OPENAI_API_KEY"
+        ),
+    )
+
+    with patch.object(M, "fetch_api_models") as fetch_models:
+        result = M.provider_model_ids("openai-api", force_refresh=True)
+
+    fetch_models.assert_not_called()
+    assert result == list(M._PROVIDER_MODELS["openai-api"])
 
 
 # --- Bug 1: default OpenAI endpoint filters to curated agentic models -------

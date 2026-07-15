@@ -4773,41 +4773,28 @@ async def get_env_vars(profile: Optional[str] = None):
     return result
 
 
-# Generic masked/redacted sentinels the Keys page can render. If a write
-# arrives carrying one of these verbatim, the SPA almost certainly echoed a
-# display string back instead of a real credential. Covers mask_secret()'s
-# placeholder ("***") and head...tail form, plus agent.redact's «redacted…»
-# sentinels. Anchored + length-bounded so a legitimate secret that merely
-# *contains* "..." isn't rejected.
-_MASKED_VALUE_RE = re.compile(
-    r"^(?:\*{2,}"
-    r"|«redacted[^»]*»"
-    r"|[^\s]{1,12}\.{3}[^\s]{1,12})$"
-)
-
-
 def _is_masked_writeback(key: str, value: str) -> bool:
-    """True if ``value`` is a masked display string rather than a real secret.
+    """True if ``value`` is the masked display string for the key's stored secret.
 
-    Two checks, cheapest first:
+    Compares the incoming value against ``redact_key()`` of the *profile-scoped
+    on-disk* value — the exact string ``GET /api/env`` masked and handed the SPA
+    (``redacted_value``), and the exact store that ``PUT /api/env`` writes via
+    ``save_env_value()``. Reading through ``load_env()`` (not ``get_env_value()``,
+    which prefers ``os.environ``) keeps the read side aligned with both the mask
+    source and the write target, so a stale inherited environment value can't let
+    a masked write-back slip through.
 
-    1. Exact match against the masked form of the value currently on disk —
-       the precise, false-positive-free signal that the SPA sent back the
-       ``redacted_value`` it was shown by ``GET /api/env``.
-    2. Fallback generic sentinel match (``***``/``head...tail``/``«redacted»``)
-       for the case where no prior value is stored to compare against.
+    This is deliberately exact-match only: it prevents overwriting an existing
+    credential with its own mask. When no value is stored on disk there is no
+    credential to corrupt, so nothing is rejected.
     """
     if not value:
         return False
     try:
-        from hermes_cli.config import get_env_value
-
-        current = get_env_value(key)
+        current = load_env().get(key)
     except Exception:
         current = None
-    if current and value == redact_key(current):
-        return True
-    return bool(_MASKED_VALUE_RE.match(value))
+    return bool(current) and value == redact_key(current)
 
 
 @app.put("/api/env")

@@ -187,4 +187,6 @@ class TestNoStandaloneTools:
                     if "search_files" in line or "read_file" in line:
                         continue  # showing the right tool alongside
                     # Bare shell commands in prose = violation
-                    # (This is a soft check — code blocks are stripped)
+                    assert tool_cmd not in line, (
+                        f"{name}: bare shell command '{tool_cmd.strip()}' in prose: {line.strip()}"
+                    )

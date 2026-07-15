@@ -157,7 +157,5 @@ After any AI agent session:
 
 1. `git diff --stat` shows only expected files
 2. All tests pass (no skipped, no ignored)
-3. No new secrets in the diff: `git diff | grep -iE '(password|api_key|secret|token)\s*[:=]'`
+3. No new secrets in the diff: use `search_files` with pattern matching against secret patterns (password, api_key, secret, token)
 4. Code review completed with findings addressed
-
-Run: `git diff --stat && git diff | grep -iE '(password|api_key|secret|token)\s*[:=]' || echo "Clean"`

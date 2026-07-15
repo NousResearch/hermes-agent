@@ -295,10 +295,14 @@ def test_shutdown_cancels_lease_owner_and_waits_for_final_release(monkeypatch):
         assert service._loop.stop() is True
 
 
-def test_failed_retirement_tombstone_blocks_overlapping_replacement():
+def test_failed_retirement_tombstone_blocks_overlapping_replacement(monkeypatch):
     service = make_service(clock=lambda: 0.0)
     key = ("fake", "/repo")
     entry, _ = install_entry(service, key, last_used=0.0)
+    srv = SimpleNamespace(server_id="fake")
+    monkeypatch.setattr(
+        service, "_resolve_target", lambda *args, **kwargs: (srv, key, "/repo")
+    )
 
     class FailingClient(FakeClient):
         async def shutdown(self) -> None:
@@ -315,8 +319,13 @@ def test_failed_retirement_tombstone_blocks_overlapping_replacement():
             assert service._entries[key] is entry
             assert entry.state == "retiring"
             assert entry.retire_task is None
-        srv = SimpleNamespace(server_id="fake")
         assert await service._reserve_spawn(srv, key, "/repo") is None
+        assert (
+            await asyncio.wait_for(
+                service._acquire_lease("/repo/x.py", spawn=True), timeout=0.1
+            )
+            is None
+        )
 
     try:
         service._loop.run(scenario(), timeout=2.0)

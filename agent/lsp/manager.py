@@ -949,6 +949,11 @@ class LSPService:
                     wait_task = entry.spawn_task
                 elif entry is not None and entry.state == "retiring":
                     wait_task = entry.retire_task
+                    if wait_task is None:
+                        # A failed retirement is a tombstone. Fall back
+                        # immediately instead of repeatedly asking admission
+                        # to create an unsafe overlapping generation.
+                        return None
 
             if wait_task is not None:
                 await asyncio.gather(

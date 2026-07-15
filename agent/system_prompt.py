@@ -394,7 +394,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # Skill-graph mode: inject protocol into the identity tier so it
     # carries the same weight as SOUL.md (the model treats identity as
     # its core operating instructions, not optional guidance).
-    if getattr(agent, "_skill_graph_mode", False):
+    if getattr(agent, "_skill_graph_mode", False) and "skill_graph_search" in getattr(agent, "valid_tool_names", []):
         stable_parts.append(SKILL_GRAPH_IDENTITY)
         # Build a minimal skill index containing only the skill-graph
         # companion, so the agent can discover and load it without graph
@@ -526,7 +526,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # skills dynamically via the graph instead.
     has_skills_tools = any(name in agent.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
 
-    if getattr(agent, "_skill_graph_mode", False):
+    if getattr(agent, "_skill_graph_mode", False) and "skill_graph_search" in getattr(agent, "valid_tool_names", []):
         skills_prompt = ""  # graph handles discovery; no flat index needed
     elif has_skills_tools:
         avail_toolsets = {

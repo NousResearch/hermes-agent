@@ -65,7 +65,6 @@ import {
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
-import { resolvePickerDefaultPath } from './wsl-path-bridge'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -94,6 +93,7 @@ import {
   resolveTimeoutMs,
   TEXT_PREVIEW_SOURCE_MAX_BYTES
 } from './hardening'
+import { imageSaveFilename } from './image-save-filename'
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
@@ -131,6 +131,7 @@ import { buildPathExtCandidates, chooseUpdaterArgs, getVenvSitePackagesEntries, 
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
+import { resolvePickerDefaultPath } from './wsl-path-bridge'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -3808,17 +3809,6 @@ function extensionForMimeType(mimeType) {
   return ''
 }
 
-function filenameFromUrl(rawUrl, fallback = 'image') {
-  try {
-    const parsed = new URL(rawUrl)
-    const base = path.basename(decodeURIComponent(parsed.pathname || ''))
-
-    return base && base.includes('.') ? base : fallback
-  } catch {
-    return fallback
-  }
-}
-
 // Link title resolution — curl (tier 1) → hidden BrowserWindow (tier 2).
 const titleCache = new Map()
 const titleInflight = new Map()
@@ -4110,12 +4100,18 @@ function fetchLinkTitle(rawUrl) {
   return pending
 }
 
+const MAX_IMAGE_SAVE_BYTES = 128 * 1024 * 1024
+
 async function resourceBufferFromUrl(rawUrl) {
   if (!rawUrl) {
     throw new Error('Missing URL')
   }
 
   if (rawUrl.startsWith('data:')) {
+    if (rawUrl.length > Math.ceil((MAX_IMAGE_SAVE_BYTES * 4) / 3) + 1024) {
+      throw new Error('Image is too large')
+    }
+
     const match = rawUrl.match(/^data:([^;,]+)?(;base64)?,(.*)$/s)
 
     if (!match) {
@@ -4123,6 +4119,11 @@ async function resourceBufferFromUrl(rawUrl) {
     }
 
     const mimeType = match[1] || 'application/octet-stream'
+
+    if (!extensionForMimeType(mimeType)) {
+      throw new Error('Unsupported image type')
+    }
+
     const encoded = match[3] || ''
     const buffer = match[2] ? Buffer.from(encoded, 'base64') : Buffer.from(decodeURIComponent(encoded), 'utf8')
 
@@ -4131,12 +4132,23 @@ async function resourceBufferFromUrl(rawUrl) {
 
   if (/^file:/i.test(rawUrl)) {
     const { resolvedPath } = await resolveReadableFileForIpc(rawUrl, { purpose: 'Image file' })
+    const stat = await fs.promises.stat(resolvedPath)
+
+    if (stat.size > MAX_IMAGE_SAVE_BYTES) {
+      throw new Error('Image is too large')
+    }
+
     const buffer = await fs.promises.readFile(resolvedPath)
 
     return { buffer, mimeType: mimeTypeForPath(resolvedPath) }
   }
 
   const parsed = new URL(rawUrl)
+
+  if (!['http:', 'https:'].includes(parsed.protocol)) {
+    throw new Error(`Unsupported image URL protocol: ${parsed.protocol}`)
+  }
+
   const client = parsed.protocol === 'https:' ? https : http
 
   return new Promise((resolve, reject) => {
@@ -4149,12 +4161,32 @@ async function resourceBufferFromUrl(rawUrl) {
       }
 
       const chunks = []
+      let byteLength = 0
+
       res.on('error', reject)
-      res.on('data', chunk => chunks.push(chunk))
+      res.on('data', chunk => {
+        byteLength += chunk.length
+
+        if (byteLength > MAX_IMAGE_SAVE_BYTES) {
+          req.destroy(new Error('Image is too large'))
+
+          return
+        }
+
+        chunks.push(chunk)
+      })
       res.on('end', () => {
+        const mimeType = res.headers['content-type'] || 'application/octet-stream'
+
+        if (!extensionForMimeType(mimeType)) {
+          reject(new Error('Unsupported image type'))
+
+          return
+        }
+
         resolve({
           buffer: Buffer.concat(chunks),
-          mimeType: res.headers['content-type'] || 'application/octet-stream'
+          mimeType
         })
       })
     })
@@ -4174,9 +4206,16 @@ async function copyImageFromUrl(rawUrl) {
   clipboard.writeImage(image)
 }
 
-async function saveImageFromUrl(rawUrl) {
+async function saveImageFromUrl(rawUrl, suggestedFilename = '') {
   const { buffer, mimeType } = (await resourceBufferFromUrl(rawUrl)) as any
-  const fallbackName = filenameFromUrl(rawUrl, `image${extensionForMimeType(mimeType) || '.png'}`)
+  const extension = extensionForMimeType(mimeType)
+  const image = nativeImage.createFromBuffer(buffer)
+
+  if (!extension || image.isEmpty()) {
+    throw new Error('Could not read image')
+  }
+
+  const fallbackName = imageSaveFilename(rawUrl, suggestedFilename, extension)
 
   const result = await dialog.showSaveDialog(mainWindow, {
     title: 'Save Image',
@@ -8006,7 +8045,15 @@ ipcMain.handle('hermes:writeClipboard', (_event, text) => {
   return true
 })
 
-ipcMain.handle('hermes:saveImageFromUrl', (_event, url) => saveImageFromUrl(String(url || '')))
+ipcMain.handle('hermes:saveImageFromUrl', (event, url, suggestedFilename) => {
+  const owner = BrowserWindow.fromWebContents(event.sender)
+
+  if (!owner || owner.isDestroyed() || event.senderFrame !== event.sender.mainFrame) {
+    throw new Error('Unauthorized image save request')
+  }
+
+  return saveImageFromUrl(String(url || ''), String(suggestedFilename || '').slice(0, 4096))
+})
 
 ipcMain.handle('hermes:saveImageBuffer', async (_event, payload) => {
   const data = payload?.data

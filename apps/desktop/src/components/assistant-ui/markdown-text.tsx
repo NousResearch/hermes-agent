@@ -15,11 +15,11 @@ import { ExpandableBlock } from '@/components/chat/expandable-block'
 import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { chunkByLines, SyntaxHighlighter } from '@/components/chat/shiki-highlighter'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
-import { normalizeExternalUrl, openExternalLink, PrettyLink } from '@/lib/external-link'
+import { useOpenMediaFile } from '@/hooks/use-open-media-file'
+import { normalizeExternalUrl, PrettyLink } from '@/lib/external-link'
 import { createMemoizedMathPlugin } from '@/lib/katex-memo'
 import { preprocessMarkdown } from '@/lib/markdown-preprocess'
 import {
-  downloadGatewayMediaFile,
   filePathFromMediaPath,
   gatewayMediaDataUrl,
   isRemoteGateway,
@@ -120,31 +120,12 @@ async function mediaSrc(path: string): Promise<string> {
   return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
 }
 
-function useOpenMediaFile(path: string) {
-  const [openFailed, setOpenFailed] = useState(false)
-
-  const open = () => {
-    if (window.hermesDesktop && isRemoteGateway()) {
-      setOpenFailed(false)
-      void downloadGatewayMediaFile(path).catch(() => setOpenFailed(true))
-    } else {
-      openExternalLink(mediaExternalUrl(path))
-    }
-  }
-
-  return { open, openFailed }
-}
-
 function OpenMediaFailedNote({ name }: { name: string }) {
-  return (
-    <span className="mt-1 block text-xs text-muted-foreground">
-      Couldn&apos;t fetch {name} from the gateway (missing, unreadable, or too large).
-    </span>
-  )
+  return <span className="mt-1 block text-xs text-muted-foreground">Couldn&apos;t open or download {name}.</span>
 }
 
 function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string }) {
-  const { open, openFailed } = useOpenMediaFile(path)
+  const { downloadsRemoteFile, open, openFailed } = useOpenMediaFile(path)
 
   return (
     <span className="block">
@@ -153,7 +134,7 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
         onClick={open}
         type="button"
       >
-        Open {kind} file
+        {downloadsRemoteFile ? 'Download' : 'Open'} {kind} file
       </button>
       {openFailed && <OpenMediaFailedNote name={mediaName(path)} />}
     </span>
@@ -163,7 +144,7 @@ function OpenMediaButton({ kind, path }: { kind: 'audio' | 'video'; path: string
 function MediaAttachment({ path }: { path: string }) {
   const [src, setSrc] = useState('')
   const [failed, setFailed] = useState(false)
-  const { open, openFailed } = useOpenMediaFile(path)
+  const { downloadsRemoteFile, open, openFailed } = useOpenMediaFile(path)
   const kind = mediaKind(path)
   const name = mediaName(path)
 
@@ -212,7 +193,15 @@ function MediaAttachment({ path }: { path: string }) {
   if (kind === 'image' && src) {
     return (
       <span className="block">
-        <MarkdownImage alt={name} src={src} />
+        <MarkdownImage alt={name} downloadName={name} src={src} />
+        <button
+          className="mt-1 block bg-transparent text-xs font-medium text-muted-foreground underline underline-offset-4 decoration-current/20 hover:text-foreground"
+          onClick={open}
+          type="button"
+        >
+          {downloadsRemoteFile ? 'Download' : 'Open'} full file
+        </button>
+        {openFailed && <OpenMediaFailedNote name={name} />}
       </span>
     )
   }
@@ -322,7 +311,13 @@ function MarkdownLink({ children, className, href, ...props }: ComponentProps<'a
   )
 }
 
-function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>) {
+function MarkdownImage({
+  className,
+  downloadName,
+  src,
+  alt,
+  ...props
+}: ComponentProps<'img'> & { downloadName?: string }) {
   return (
     <ZoomableImage
       alt={alt}
@@ -331,6 +326,7 @@ function MarkdownImage({ className, src, alt, ...props }: ComponentProps<'img'>)
         className
       )}
       containerClassName="my-2 block w-fit max-w-full"
+      downloadName={downloadName}
       slot="aui_markdown-image"
       src={src}
       {...props}

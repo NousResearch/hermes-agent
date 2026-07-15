@@ -3,13 +3,23 @@ import { useCallback, useState } from 'react'
 import { useI18n } from '@/i18n'
 import { notify, notifyError } from '@/store/notifications'
 
-export function imageFilename(src?: string): string {
-  if (!src) {
+export function imageFilename(src?: string, suggestedFilename?: string): string {
+  if (suggestedFilename) {
+    return suggestedFilename.split(/[\\/]/).filter(Boolean).pop() || 'image'
+  }
+
+  if (!src || /^data:/i.test(src.trim())) {
     return 'image'
   }
 
   try {
-    return new URL(src, window.location.href).pathname.split('/').filter(Boolean).pop() || 'image'
+    const basename = new URL(src.trim(), window.location.href).pathname.split('/').filter(Boolean).pop() || 'image'
+
+    try {
+      return decodeURIComponent(basename)
+    } catch {
+      return basename
+    }
   } catch {
     return src.split(/[\\/]/).filter(Boolean).pop() || 'image'
   }
@@ -21,7 +31,7 @@ function isMissingIpcHandler(error: unknown): boolean {
   return message.includes("No handler registered for 'hermes:saveImageFromUrl'")
 }
 
-async function startBrowserDownload(src: string) {
+async function startBrowserDownload(src: string, suggestedFilename?: string) {
   const response = await fetch(src)
 
   if (!response.ok) {
@@ -31,7 +41,7 @@ async function startBrowserDownload(src: string) {
   const blobUrl = URL.createObjectURL(await response.blob())
   const link = document.createElement('a')
   link.href = blobUrl
-  link.download = imageFilename(src)
+  link.download = imageFilename(src, suggestedFilename)
   link.rel = 'noopener noreferrer'
   document.body.appendChild(link)
   link.click()
@@ -41,7 +51,7 @@ async function startBrowserDownload(src: string) {
 
 /** Save an image to disk via the desktop IPC bridge, falling back to a browser
  *  download when the handler is unavailable (older shell / web preview). */
-export function useImageDownload(src?: string) {
+export function useImageDownload(src?: string, suggestedFilename?: string) {
   const { t } = useI18n()
   const copy = t.desktop
   const [saving, setSaving] = useState(false)
@@ -55,18 +65,18 @@ export function useImageDownload(src?: string) {
 
     try {
       if (window.hermesDesktop?.saveImageFromUrl) {
-        if (await window.hermesDesktop.saveImageFromUrl(src)) {
-          notify({ kind: 'success', title: copy.imageSaved, message: imageFilename(src) })
+        if (await window.hermesDesktop.saveImageFromUrl(src, suggestedFilename)) {
+          notify({ kind: 'success', title: copy.imageSaved, message: imageFilename(src, suggestedFilename) })
         }
 
         return
       }
 
-      await startBrowserDownload(src)
+      await startBrowserDownload(src, suggestedFilename)
     } catch (error) {
       if (isMissingIpcHandler(error)) {
         try {
-          await startBrowserDownload(src)
+          await startBrowserDownload(src, suggestedFilename)
           notify({ kind: 'info', title: copy.downloadStarted, message: copy.restartToUseSaveImage })
         } catch (fallbackError) {
           notifyError(fallbackError, copy.restartToSaveImages)
@@ -79,7 +89,7 @@ export function useImageDownload(src?: string) {
     } finally {
       setSaving(false)
     }
-  }, [copy, saving, src])
+  }, [copy, saving, src, suggestedFilename])
 
   return { download, saving }
 }

@@ -210,6 +210,15 @@ export interface HermesConfig {
     personality?: string
     skin?: string
   }
+  power?: {
+    prevent_sleep?:
+      | boolean
+      | {
+          enabled?: unknown
+          mode?: unknown
+          surfaces?: unknown
+        }
+  }
   terminal?: {
     cwd?: string
   }
@@ -220,6 +229,12 @@ export interface HermesConfig {
     max_recording_seconds?: number
     auto_tts?: boolean
   }
+}
+
+export interface ResolvedPreventSleepConfig {
+  enabled: boolean
+  mode: 'display' | 'system'
+  surfaces: string[]
 }
 
 export type HermesConfigRecord = Record<string, unknown>

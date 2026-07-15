@@ -373,6 +373,7 @@ export const zh: Translations = {
       safety: '安全',
       memory: '记忆与上下文',
       voice: '语音',
+      power: '电源',
       advanced: '高级'
     },
     searchPlaceholder: {
@@ -614,6 +615,13 @@ export const zh: Translations = {
       },
       updates: {
         nonInteractiveLocalChanges: '应用内更新本地更改'
+      },
+      power: {
+        preventSleep: {
+          enabled: '防止系统休眠',
+          surfaces: '防止休眠的运行界面',
+          mode: '防休眠模式'
+        }
       }
     }),
     fieldDescriptions: defineFieldCopy({
@@ -670,6 +678,14 @@ export const zh: Translations = {
       updates: {
         nonInteractiveLocalChanges:
           'Hermes 从应用内更新时（无终端提示），保留本地源码修改（暂存）或丢弃（放弃）。通过终端更新时始终会询问。'
+      },
+      power: {
+        preventSleep: {
+          enabled: '所选 Hermes 运行界面工作时保持本机唤醒。默认关闭，以避免意外耗电。',
+          surfaces:
+            '持有防休眠请求的运行界面，以逗号分隔：desktop、gateway。当前主窗口所选的前台配置文件控制本机 Desktop 请求。',
+          mode: 'System 仅防止系统空闲休眠，允许显示器关闭；Display 还会保持屏幕唤醒。Gateway 目前仅在 Windows 上支持，并在下次重启后生效。'
+        }
       }
     }),
     about: {

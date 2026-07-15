@@ -91,6 +91,25 @@ You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming st
 
 Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=90`s, native Anthropic 900s). The non-streaming stale detector is auto-disabled for local endpoints when left implicit and can scale upward for very large contexts. Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
+## Host Sleep Prevention
+
+Long-running Desktop and Gateway sessions can opt in to keeping the host awake. The setting is disabled by default to avoid unexpected battery drain:
+
+```yaml
+power:
+  prevent_sleep:
+    enabled: true
+    surfaces: [desktop, gateway]
+    mode: system  # system | display
+```
+
+- `system` prevents idle system sleep while still allowing the display to turn off.
+- `display` also keeps the display awake.
+- `surfaces` can contain `desktop`, `gateway`, or both. An empty list disables the assertion everywhere.
+- Desktop applies changes after its canonical config refresh. A running Gateway picks up changes on its next restart.
+
+Desktop uses Electron's cross-platform power blocker. The foreground profile in the primary Desktop window owns the local Desktop assertion; secondary session windows cannot change this machine-wide state. The standalone Gateway currently applies its host assertion on Windows through `SetThreadExecutionState`; on other platforms the Gateway setting is a safe no-op. Environment substitutions such as `enabled: ${PREVENT_SLEEP_ENABLED}` follow the same [canonical `${VAR}` rules](#environment-variable-substitution) as the rest of `config.yaml`.
+
 ## Update Behavior
 
 `hermes update` settings live under `updates` in `config.yaml`:

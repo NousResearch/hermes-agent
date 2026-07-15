@@ -2095,6 +2095,18 @@ DEFAULT_CONFIG = {
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
     },
+
+    # Host power management. Off by default because a long-running gateway or
+    # desktop app can otherwise keep a laptop awake indefinitely. ``system``
+    # prevents idle system sleep while allowing the display to turn off;
+    # ``display`` also keeps the screen awake.
+    "power": {
+        "prevent_sleep": {
+            "enabled": False,
+            "surfaces": ["desktop", "gateway"],
+            "mode": "system",
+        },
+    },
     
     # Text-to-speech configuration
     # Each provider supports an optional `max_text_length:` override for the

@@ -3760,6 +3760,14 @@ class TestBuildSchemaFromConfig:
             assert "options" in entry
             assert "local" in entry["options"]
 
+    def test_power_prevent_sleep_schema(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        assert CONFIG_SCHEMA["power.prevent_sleep.enabled"]["type"] == "boolean"
+        assert CONFIG_SCHEMA["power.prevent_sleep.surfaces"]["type"] == "list"
+        assert CONFIG_SCHEMA["power.prevent_sleep.mode"]["type"] == "select"
+        assert CONFIG_SCHEMA["power.prevent_sleep.mode"]["options"] == ["system", "display"]
+
     def test_memory_provider_field_present_as_select(self):
         """memory.provider must stay in the config schema.
 
@@ -3872,6 +3880,47 @@ class TestConfigRoundTrip:
         config = self.client.get("/api/config").json()
         assert isinstance(config.get("model"), str), \
             f"model should be string, got {type(config.get('model'))}"
+
+    def test_get_config_expands_prevent_sleep_environment(self, monkeypatch):
+        """Config and effective-power APIs share canonical env expansion."""
+        from hermes_cli.config import save_config
+
+        monkeypatch.setenv("PREVENT_SLEEP_ENABLED", "false")
+        save_config(
+            {
+                "power": {
+                    "prevent_sleep": {
+                        "enabled": "${PREVENT_SLEEP_ENABLED}",
+                        "mode": "display",
+                        "surfaces": ["desktop"],
+                    }
+                }
+            }
+        )
+
+        config = self.client.get("/api/config").json()
+
+        assert config["power"]["prevent_sleep"] == {
+            "enabled": "false",
+            "mode": "display",
+            "surfaces": ["desktop"],
+        }
+        assert self.client.get("/api/power/prevent-sleep").json() == {
+            "enabled": False,
+            "mode": "display",
+            "surfaces": ["desktop"],
+        }
+
+    def test_effective_power_api_normalizes_boolean_shorthand(self):
+        from hermes_cli.config import save_config
+
+        save_config({"power": {"prevent_sleep": True}})
+
+        assert self.client.get("/api/power/prevent-sleep").json() == {
+            "enabled": True,
+            "mode": "system",
+            "surfaces": ["desktop", "gateway"],
+        }
 
     def test_round_trip_preserves_model_subkeys(self):
         """Save and reload should not lose model.provider, model.base_url, etc."""

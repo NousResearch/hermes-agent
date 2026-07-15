@@ -383,6 +383,7 @@ export const en: Translations = {
       safety: 'Safety',
       memory: 'Memory & Context',
       voice: 'Voice',
+      power: 'Power',
       advanced: 'Advanced'
     },
     searchPlaceholder: {

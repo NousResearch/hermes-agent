@@ -4,6 +4,7 @@ import type {
   PetOverlayOpenRequest,
   PetOverlayStatePayload
 } from './store/pet-overlay'
+import type { ResolvedPreventSleepConfig } from './types/hermes'
 
 export {}
 
@@ -48,6 +49,13 @@ declare global {
         onControl: (callback: (payload: PetOverlayControl) => void) => () => void
       }
       getBootProgress: () => Promise<DesktopBootProgress>
+      refreshPowerSaveBlocker?: (block: ResolvedPreventSleepConfig) => Promise<{
+        ok: boolean
+        active: boolean
+        mode: string
+        reason?: string
+        surfaces: string[]
+      }>
       getConnectionConfig: (profile?: null | string) => Promise<DesktopConnectionConfig>
       saveConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>
       applyConnectionConfig: (payload: DesktopConnectionConfigInput) => Promise<DesktopConnectionConfig>

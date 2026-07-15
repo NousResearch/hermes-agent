@@ -2890,6 +2890,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        self._sleep_prevention_handle = None
 
         # Wire process registry into session store for reset protection.
         # A background process older than the configured threshold (default 24h,
@@ -6847,6 +6848,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """
         logger.info("Starting Hermes Gateway...")
         try:
+            from hermes_cli.power_sleep import start_prevent_sleep
+
+            self._sleep_prevention_handle = start_prevent_sleep(
+                "gateway",
+                log=logger,
+            )
+        except Exception:
+            logger.debug("sleep-prevention setup failed at gateway startup", exc_info=True)
+        try:
             self._gateway_loop = asyncio.get_running_loop()
         except RuntimeError:
             self._gateway_loop = None
@@ -8597,6 +8607,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 self._update_runtime_status("running", self._exit_reason)
             else:
                 self._update_runtime_status("stopped", self._exit_reason)
+            try:
+                sleep_handle = getattr(self, "_sleep_prevention_handle", None)
+                if sleep_handle is not None and sleep_handle.stop():
+                    logger.info("Sleep prevention cleared for gateway")
+            except Exception:
+                logger.debug("sleep-prevention cleanup failed during gateway shutdown", exc_info=True)
             logger.info("Gateway stopped (total teardown %.2fs)", _phase_elapsed())
 
         self._stop_task = asyncio.create_task(_stop_impl())

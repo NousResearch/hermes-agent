@@ -21,7 +21,14 @@ import { PanelEmpty } from '../overlays/panel'
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS, SECTIONS } from './constants'
 import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
-import { enumOptionsFor, getNested, prettyName, setNested } from './helpers'
+import {
+  configBoolean,
+  enumOptionsFor,
+  getNested,
+  getSettingsConfigValue,
+  prettyName,
+  setSettingsConfigValue
+} from './helpers'
 import { MemoryConnect } from './memory/connect'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
@@ -111,7 +118,7 @@ function ConfigField({
   if (schema.type === 'boolean') {
     return row(
       <div className="flex items-center justify-end">
-        <Switch checked={Boolean(value)} onCheckedChange={onChange} />
+        <Switch checked={configBoolean(value)} onCheckedChange={onChange} />
       </div>
     )
   }
@@ -465,14 +472,19 @@ export function ConfigSettings({
                 }
                 enumOptions={
                   key === 'tts.elevenlabs.voice_id'
-                    ? enumOptionsFor(key, getNested(config, key), config, elevenLabsVoiceOptions ?? undefined)
-                    : enumOptionsFor(key, getNested(config, key), config)
+                    ? enumOptionsFor(
+                        key,
+                        getSettingsConfigValue(config, key),
+                        config,
+                        elevenLabsVoiceOptions ?? undefined
+                      )
+                    : enumOptionsFor(key, getSettingsConfigValue(config, key), config)
                 }
-                onChange={value => updateConfig(setNested(config, key, value))}
+                onChange={value => updateConfig(setSettingsConfigValue(config, key, value))}
                 optionLabels={key === 'tts.elevenlabs.voice_id' ? elevenLabsVoiceLabels : undefined}
                 schema={field}
                 schemaKey={key}
-                value={getNested(config, key)}
+                value={getSettingsConfigValue(config, key)}
               />
               {key === 'memory.provider' && typeof getNested(config, key) === 'string' && getNested(config, key) ? (
                 <ProviderConfigPanel provider={String(getNested(config, key))} />

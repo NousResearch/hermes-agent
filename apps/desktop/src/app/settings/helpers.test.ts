@@ -3,9 +3,44 @@ import { describe, expect, it } from 'vitest'
 import type { HermesConfigRecord } from '@/types/hermes'
 
 import { defineFieldCopy, fieldCopyForSchemaKey, schemaKeyToFieldCopyKey } from './field-copy'
-import { enumOptionsFor, getNested, providerGroup, setNested, stripToolsetLabel, toolsetDisplayLabel } from './helpers'
+import {
+  configBoolean,
+  enumOptionsFor,
+  getNested,
+  getSettingsConfigValue,
+  providerGroup,
+  setNested,
+  setSettingsConfigValue,
+  stripToolsetLabel,
+  toolsetDisplayLabel
+} from './helpers'
 
 describe('settings helpers', () => {
+  it('renders env-expanded boolean strings with their canonical meaning', () => {
+    expect(configBoolean('true')).toBe(true)
+    expect(configBoolean('on')).toBe(true)
+    expect(configBoolean('false')).toBe(false)
+    expect(configBoolean('0')).toBe(false)
+    expect(configBoolean('${UNRESOLVED_BOOL}')).toBe(false)
+    expect(configBoolean(false)).toBe(false)
+  })
+
+  it('renders and edits prevent-sleep boolean shorthand without changing its meaning', () => {
+    const shorthand: HermesConfigRecord = { power: { prevent_sleep: true } }
+
+    expect(getSettingsConfigValue(shorthand, 'power.prevent_sleep.enabled')).toBe(true)
+    expect(getSettingsConfigValue(shorthand, 'power.prevent_sleep.mode')).toBe('system')
+    expect(getSettingsConfigValue(shorthand, 'power.prevent_sleep.surfaces')).toEqual(['desktop', 'gateway'])
+
+    const next = setSettingsConfigValue(shorthand, 'power.prevent_sleep.mode', 'display')
+
+    expect(getNested(next, 'power.prevent_sleep')).toEqual({
+      enabled: true,
+      mode: 'display',
+      surfaces: ['desktop', 'gateway']
+    })
+  })
+
   it('lists Hindsight as a built-in desktop memory provider option', () => {
     const options = enumOptionsFor('memory.provider', '', {})
 

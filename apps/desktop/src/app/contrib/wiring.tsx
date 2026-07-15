@@ -401,8 +401,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   }, [freshSessionRequest, startFreshSessionDraft])
 
   // Swapping the live gateway to another profile must re-pull that profile's
-  // global model + active-profile pill (both are nanostores — the blanket
-  // invalidateQueries on swap doesn't touch them).
+  // global model, active-profile pill, and profile-scoped config. Nanostores
+  // are not touched by the blanket invalidateQueries on swap, while the power
+  // config also owns a machine-wide Electron effect.
   const activeGatewayProfile = useStore($activeGatewayProfile)
   const lastGatewayProfileRef = useRef(activeGatewayProfile)
 
@@ -416,7 +417,8 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     // composer already shows the previous profile's model.
     void refreshCurrentModel(true)
     void refreshActiveProfile()
-  }, [activeGatewayProfile, refreshCurrentModel])
+    void refreshHermesConfig()
+  }, [activeGatewayProfile, refreshCurrentModel, refreshHermesConfig])
 
   // New session anchored to a workspace (sidebar "+" on a project/worktree).
   // Seeds cwd + branch from the clicked workspace; an explicit worktree path

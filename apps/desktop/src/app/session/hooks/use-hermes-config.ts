@@ -1,6 +1,6 @@
-import { type MutableRefObject, useCallback, useState } from 'react'
+import { type MutableRefObject, useCallback, useRef, useState } from 'react'
 
-import { getHermesConfig, getHermesConfigDefaults } from '@/hermes'
+import { getEffectivePreventSleepConfig, getHermesConfig, getHermesConfigDefaults } from '@/hermes'
 import { BUILTIN_PERSONALITIES, normalizePersonalityValue, personalityNamesFromConfig } from '@/lib/chat-runtime'
 import { normalize } from '@/lib/text'
 import {
@@ -47,10 +47,23 @@ interface HermesConfigOptions {
 export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: HermesConfigOptions) {
   const [voiceMaxRecordingSeconds, setVoiceMaxRecordingSeconds] = useState(DEFAULT_VOICE_SECONDS)
   const [sttEnabled, setSttEnabled] = useState(true)
+  const refreshGenerationRef = useRef(0)
 
   const refreshHermesConfig = useCallback(async () => {
+    const generation = ++refreshGenerationRef.current
+
     try {
-      const [config, defaults] = await Promise.all([getHermesConfig(), getHermesConfigDefaults().catch(() => ({}))])
+      const [config, defaults, preventSleep] = await Promise.all([
+        getHermesConfig(),
+        getHermesConfigDefaults().catch(() => ({})),
+        getEffectivePreventSleepConfig().catch(() => null)
+      ])
+
+      // Startup, saves, reconnects, and profile switches can overlap. Only the
+      // latest foreground-profile response may update local or machine state.
+      if (generation !== refreshGenerationRef.current) {
+        return
+      }
 
       const personality = normalizePersonalityValue(
         typeof config.display?.personality === 'string' ? config.display.personality : ''
@@ -88,6 +101,13 @@ export function useHermesConfig({ activeSessionIdRef, refreshProjectBranch }: He
       setVoiceMaxRecordingSeconds(recordingLimit(config.voice?.max_recording_seconds))
       setSttEnabled(config.stt?.enabled !== false)
       applyAutoSpeakFromConfig(config)
+
+      // This narrow endpoint uses the same Python resolver as Gateway. Older
+      // backends may not expose it; in that case preserve the last-good native
+      // blocker instead of falling back to duplicate renderer semantics.
+      if (preventSleep) {
+        await window.hermesDesktop?.refreshPowerSaveBlocker?.(preventSleep).catch(() => undefined)
+      }
     } catch {
       // Config is nice-to-have; chat still works without it.
     }

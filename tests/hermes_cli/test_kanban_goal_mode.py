@@ -12,6 +12,7 @@ Covers three layers:
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -126,9 +127,16 @@ def test_spawn_sets_goal_env_only_when_enabled(kanban_home, monkeypatch):
 
     class _FakeProc:
         pid = 4242
+        returncode = None
+
+        def poll(self):
+            return self.returncode
 
     def _fake_popen(cmd, **kwargs):
+        spec = json.loads(Path(cmd[-1]).read_text(encoding="utf-8"))
+        captured["cmd"] = spec["command"]
         captured["env"] = kwargs.get("env", {})
+        Path(spec["handshake_path"]).write_text("4242", encoding="utf-8")
         return _FakeProc()
 
     monkeypatch.setattr("subprocess.Popen", _fake_popen)
@@ -141,7 +149,8 @@ def test_spawn_sets_goal_env_only_when_enabled(kanban_home, monkeypatch):
             goal_mode=True,
             goal_max_turns=5,
         )
-        task = kb.get_task(conn, tid)
+        task = kb.claim_task(conn, tid)
+        assert task is not None
 
     kb._default_spawn(task, str(kanban_home))
     env = captured["env"]
@@ -154,16 +163,24 @@ def test_spawn_no_goal_env_for_plain_task(kanban_home, monkeypatch):
 
     class _FakeProc:
         pid = 4243
+        returncode = None
+
+        def poll(self):
+            return self.returncode
 
     def _fake_popen(cmd, **kwargs):
+        spec = json.loads(Path(cmd[-1]).read_text(encoding="utf-8"))
+        captured["cmd"] = spec["command"]
         captured["env"] = kwargs.get("env", {})
+        Path(spec["handshake_path"]).write_text("4243", encoding="utf-8")
         return _FakeProc()
 
     monkeypatch.setattr("subprocess.Popen", _fake_popen)
 
     with kb.connect() as conn:
         tid = kb.create_task(conn, title="plain", assignee="default")
-        task = kb.get_task(conn, tid)
+        task = kb.claim_task(conn, tid)
+        assert task is not None
 
     kb._default_spawn(task, str(kanban_home))
     env = captured["env"]

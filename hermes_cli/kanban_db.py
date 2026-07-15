@@ -191,6 +191,14 @@ DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 # signal lands, and the following tick reclaims cleanly.
 RECLAIM_DEFER_GRACE_SECONDS = 120
 
+# Reclaim and max-runtime termination are deliberately bounded.  The tracked
+# PID is a detached supervisor/session leader, not the actual worker, so a
+# direct SIGKILL to it can orphan a TERM-ignoring child.  These are module
+# constants (rather than settings) because they protect a dispatcher-internal
+# race and are patched to very small values by real subprocess regressions.
+_WORKER_TREE_TERMINATE_GRACE_SECONDS = 5.0
+_WORKER_TREE_TERMINATE_POLL_SECONDS = 0.05
+
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Return the effective claim TTL, honoring the kanban env override.
@@ -3632,7 +3640,8 @@ def release_stale_claims(
     reclaimed = 0
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
     stale = conn.execute(
-        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at "
+        "SELECT id, claim_lock, worker_pid, claim_expires, last_heartbeat_at, "
+        "       current_run_id "
         "FROM tasks "
         "WHERE status = 'running' AND claim_expires IS NOT NULL "
         "  AND claim_expires < ?",
@@ -3701,6 +3710,7 @@ def release_stale_claims(
             _defer_reclaim_for_live_worker(
                 conn, row["id"], row["claim_lock"], now, termination,
                 reason="ttl_expired_worker_alive",
+                worker_pid=row["worker_pid"], run_id=row["current_run_id"],
             )
             continue
         with write_txn(conn):
@@ -3708,8 +3718,12 @@ def release_stale_claims(
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
                 "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+                "AND worker_pid IS ? AND current_run_id IS ? "
                 "AND claim_expires IS NOT NULL AND claim_expires < ?",
-                (row["id"], row["claim_lock"], now),
+                (
+                    row["id"], row["claim_lock"], row["worker_pid"],
+                    row["current_run_id"], now,
+                ),
             )
             if cur.rowcount != 1:
                 continue
@@ -3763,7 +3777,7 @@ def reclaim_task(
     reclaimable state (not running, or doesn't exist).
     """
     row = conn.execute(
-        "SELECT status, claim_lock, worker_pid FROM tasks WHERE id = ?",
+        "SELECT status, claim_lock, worker_pid, current_run_id FROM tasks WHERE id = ?",
         (task_id,),
     ).fetchone()
     if not row:
@@ -3775,13 +3789,27 @@ def reclaim_task(
     termination = _terminate_reclaimed_worker(
         row["worker_pid"], prev_lock, signal_fn=signal_fn,
     )
+    if _worker_survived_termination(termination):
+        # A manual reclaim has the same no-duplicate invariant as stale
+        # reclaim.  In particular, do not reset its failure budget or let a
+        # reassign dispatch another worker when the old tree cannot be proven
+        # gone (identity mismatch/PID reuse is intentionally a defer).
+        _defer_reclaim_for_live_worker(
+            conn, task_id, prev_lock, int(time.time()), termination,
+            reason="manual_reclaim_worker_alive",
+            worker_pid=row["worker_pid"], run_id=row["current_run_id"],
+        )
+        return False
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
             "claim_expires = NULL, worker_pid = NULL "
-            "WHERE id = ? AND status IN ('running', 'ready', 'blocked') "
-            "AND claim_lock IS ?",
-            (task_id, prev_lock),
+            "WHERE id = ? AND status = ? AND claim_lock IS ? "
+            "AND worker_pid IS ? AND current_run_id IS ?",
+            (
+                task_id, row["status"], prev_lock, row["worker_pid"],
+                row["current_run_id"],
+            ),
         )
         if cur.rowcount != 1:
             return False
@@ -3835,6 +3863,11 @@ def reassign_task(
     if reclaim_first:
         # Safe to call even if nothing to reclaim.
         reclaim_task(conn, task_id, reason=reason or "reassign")
+        row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is not None and row["status"] == "running":
+            # reclaim_task deliberately held an unverifiable/surviving tree;
+            # assigning now would make a duplicate dispatch possible.
+            return False
     # assign_task handles its own txn + the still-running guard.
     try:
         return assign_task(conn, task_id, profile)
@@ -5980,7 +6013,28 @@ class DispatchResult:
 # belt-and-braces against unbounded growth on exotic platforms).
 _RECENT_WORKER_EXIT_TTL_SECONDS = 600
 _RECENT_WORKER_EXITS_MAX = 4096
+_WORKER_PID_HANDSHAKE_TIMEOUT_SECONDS = 10.0
+_WORKER_EXIT_FINALIZE_POLL_SECONDS = 0.02
 _recent_worker_exits: "dict[int, tuple[int, float]]" = {}
+
+
+@dataclass(frozen=True, slots=True)
+class WorkerExitObservation:
+    task_id: str
+    run_id: int
+    claim_lock: str
+    pid: int
+    returncode: int
+
+
+def _classify_worker_returncode(returncode: int) -> tuple[str, int]:
+    if returncode == 0:
+        return "clean_exit", 0
+    if returncode == KANBAN_RATE_LIMIT_EXIT_CODE:
+        return "rate_limited", returncode
+    if returncode < 0:
+        return "signaled", abs(returncode)
+    return "nonzero_exit", returncode
 
 
 def _record_worker_exit(pid: int, raw_status: int) -> None:
@@ -6136,13 +6190,106 @@ def _pid_alive(pid: Optional[int]) -> bool:
     return True
 
 
+def _linux_process_group_has_live_member(pgid: int) -> Optional[bool]:
+    """Return group liveness from ``/proc`` while treating zombies as dead.
+
+    ``killpg(pgid, 0)`` reports a group containing only zombies as present.
+    That is correct for signalling, but wrong for the claim-release decision:
+    zombies execute no work.  ``None`` means the scan was unavailable and must
+    be treated conservatively by the caller.
+    """
+    try:
+        entries = list(os.scandir("/proc"))
+    except OSError:
+        return None
+    for entry in entries:
+        if not entry.name.isdecimal():
+            continue
+        try:
+            stat = (entry.path + "/stat")
+            with open(stat, "r", encoding="utf-8") as handle:
+                raw = handle.read()
+            # comm can contain spaces and parentheses; fields after its final
+            # ')' begin with state, ppid, then pgrp.
+            fields = raw[raw.rfind(")") + 2:].split()
+            if len(fields) >= 3 and int(fields[2]) == pgid and fields[0] != "Z":
+                return True
+        except (FileNotFoundError, PermissionError, OSError, ValueError):
+            continue
+    return False
+
+
+def _process_group_alive(pgid: int) -> bool:
+    """Return whether a POSIX group still has an executable member.
+
+    On Linux this supplements ``killpg(..., 0)`` with a zombie-aware /proc
+    scan.  On platforms where that proof is unavailable, an existing group is
+    conservatively considered live, so a reclaim cannot release a possibly
+    surviving worker tree.
+    """
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except (AttributeError, OSError):
+        return True
+    if sys.platform == "linux":
+        members = _linux_process_group_has_live_member(pgid)
+        return True if members is None else members
+    return True
+
+
+def _verified_supervisor_process_group(pid: int) -> tuple[Optional[int], str]:
+    """Prove that ``pid`` is the session/group leader we spawned.
+
+    The persisted value is intentionally the supervisor PID.  Never turn that
+    numeric identifier into ``killpg(pid, ...)`` unless it still names the
+    expected detached session leader.  This makes a stale/reused PID fail
+    closed instead of killing an unrelated process group.
+    """
+    if not _pid_alive(pid):
+        return None, "leader_gone"
+    try:
+        pgid = os.getpgid(pid)
+        sid = os.getsid(pid)
+    except (AttributeError, ProcessLookupError, OSError):
+        return None, "identity_unavailable"
+    if pgid != pid:
+        return None, "process_group_mismatch"
+    if sid != pid:
+        return None, "session_mismatch"
+    return pgid, "verified"
+
+
+def _wait_for_process_group_exit(pgid: int, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while True:
+        if not _process_group_alive(pgid):
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(_WORKER_TREE_TERMINATE_POLL_SECONDS, remaining))
+
+
 def _terminate_reclaimed_worker(
     pid: Optional[int],
     claim_lock: Optional[str],
     *,
     signal_fn=None,
 ) -> dict[str, Any]:
-    """Best-effort host-local worker termination for reclaim paths."""
+    """Terminate a verified host-local supervisor tree for reclaim paths.
+
+    POSIX workers are launched in a fresh session.  Signal that whole group,
+    then wait for *every* executable member before releasing a claim.  A PID
+    that is alive but no longer proves itself as our session/group leader is a
+    PID-reuse/identity ambiguity: defer rather than signal or re-dispatch.
+
+    ``signal_fn`` remains the legacy deterministic test hook.  It models a
+    direct PID and its liveness because old unit fixtures do not create real
+    sessions; production never supplies it and therefore cannot take that
+    direct-PID path.
+    """
     import signal
 
     info: dict[str, Any] = {
@@ -6151,6 +6298,7 @@ def _terminate_reclaimed_worker(
         "termination_attempted": False,
         "terminated": False,
         "sigkill": False,
+        "tree_target": "none",
     }
     if not pid or pid <= 0 or not claim_lock:
         return info
@@ -6160,41 +6308,98 @@ def _terminate_reclaimed_worker(
         return info
     info["host_local"] = True
 
-    kill = signal_fn if signal_fn is not None else (
-        os.kill if hasattr(os, "kill") else None
-    )
-    if kill is None:
-        return info
-
-    info["termination_attempted"] = True
-    try:
-        kill(int(pid), signal.SIGTERM)
-    except ProcessLookupError:
-        # Process is already gone — that's a successful termination, not a
-        # survival. Leaving terminated=False here would make the reclaim guard
-        # misread a dead worker as still-alive and defer forever.
-        info["terminated"] = True
-        return info
-    except OSError:
-        return info
-
-    for _ in range(10):
-        if not _pid_alive(pid):
+    if signal_fn is not None:
+        # Compatibility seam for deterministic fixtures.  It deliberately
+        # stays separate from production so test fakes with synthetic PIDs do
+        # not need a fake /proc process group.  No dispatch/reclaim production
+        # caller passes this hook: they use the verified tree code below.
+        info["tree_target"] = "test_hook_pid"
+        info["termination_attempted"] = True
+        try:
+            signal_fn(int(pid), signal.SIGTERM)
+        except ProcessLookupError:
             info["terminated"] = True
             return info
-        time.sleep(0.5)
-
-    if _pid_alive(pid):
-        try:
-            # signal.SIGKILL doesn't exist on Windows; fall back to SIGTERM
-            # (which maps to TerminateProcess via the stdlib shim).
-            _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-            kill(int(pid), _sigkill)
-            info["sigkill"] = True
-        except (ProcessLookupError, OSError):
+        except OSError:
             return info
+        deadline = time.monotonic() + _WORKER_TREE_TERMINATE_GRACE_SECONDS
+        while _pid_alive(pid) and time.monotonic() < deadline:
+            time.sleep(_WORKER_TREE_TERMINATE_POLL_SECONDS)
+        if _pid_alive(pid):
+            try:
+                signal_fn(int(pid), getattr(signal, "SIGKILL", signal.SIGTERM))
+                info["sigkill"] = True
+            except (ProcessLookupError, OSError):
+                pass
+        info["terminated"] = not _pid_alive(pid)
+        return info
 
-    info["terminated"] = not _pid_alive(pid)
+    if _IS_WINDOWS:
+        info["tree_target"] = "windows_taskkill"
+        info["termination_attempted"] = True
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(int(pid)), "/T", "/F"],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError):
+            info["termination_error"] = "taskkill_failed"
+        deadline = time.monotonic() + _WORKER_TREE_TERMINATE_GRACE_SECONDS
+        while _pid_alive(pid) and time.monotonic() < deadline:
+            time.sleep(_WORKER_TREE_TERMINATE_POLL_SECONDS)
+        info["terminated"] = not _pid_alive(pid)
+        return info
+
+    pgid, identity = _verified_supervisor_process_group(int(pid))
+    info["identity"] = identity
+    if pgid is None:
+        if identity == "leader_gone":
+            # A dead supervisor does not prove a dead tree: its group can still
+            # contain a worker orphaned by an external kill.  Probing group
+            # liveness has no side effect; only an absent group is releasable.
+            # If the numeric group exists we cannot attribute it safely after
+            # losing the leader identity, so preserve the claim and surface a
+            # defer rather than risk either a duplicate or an unrelated kill.
+            info["tree_target"] = "unverified_process_group"
+            if _process_group_alive(int(pid)):
+                info["termination_deferred"] = True
+            else:
+                info["terminated"] = True
+        else:
+            info["termination_deferred"] = True
+        return info
+
+    info["tree_target"] = "posix_process_group"
+    info["process_group"] = pgid
+    info["termination_attempted"] = True
+
+    def send_group(sig: int) -> bool:
+        try:
+            if signal_fn is not None:
+                signal_fn(pgid, sig)
+            else:
+                os.killpg(pgid, sig)
+            return True
+        except ProcessLookupError:
+            return False
+        except OSError:
+            return False
+
+    if not send_group(signal.SIGTERM):
+        info["terminated"] = not _process_group_alive(pgid)
+        return info
+    if _wait_for_process_group_exit(pgid, _WORKER_TREE_TERMINATE_GRACE_SECONDS):
+        info["terminated"] = True
+        return info
+
+    if send_group(getattr(signal, "SIGKILL", signal.SIGTERM)):
+        info["sigkill"] = True
+    info["terminated"] = _wait_for_process_group_exit(
+        pgid, _WORKER_TREE_TERMINATE_GRACE_SECONDS,
+    )
     return info
 
 
@@ -6208,8 +6413,11 @@ def _worker_survived_termination(termination: dict) -> bool:
     to the normal release path, since we cannot manage that worker anyway.
     """
     return bool(
-        termination.get("termination_attempted")
-        and termination.get("host_local")
+        termination.get("host_local")
+        and (
+            termination.get("termination_attempted")
+            or termination.get("termination_deferred")
+        )
         and not termination.get("terminated")
     )
 
@@ -6222,6 +6430,8 @@ def _defer_reclaim_for_live_worker(
     termination: dict,
     *,
     reason: str,
+    worker_pid: Optional[int] = None,
+    run_id: Optional[int] = None,
 ) -> None:
     """Hold a claim whose worker survived termination instead of releasing it.
 
@@ -6235,8 +6445,9 @@ def _defer_reclaim_for_live_worker(
     with write_txn(conn):
         cur = conn.execute(
             "UPDATE tasks SET claim_expires = ? "
-            "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
-            (grace, task_id, claim_lock),
+            "WHERE id = ? AND status = 'running' AND claim_lock IS ? "
+            "AND worker_pid IS ? AND current_run_id IS ?",
+            (grace, task_id, claim_lock, worker_pid, run_id),
         )
         if cur.rowcount != 1:
             return
@@ -6321,9 +6532,9 @@ def enforce_max_runtime(
 
     Runs host-local: only tasks claimed by this host are candidates
     (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a
-    test hook; defaults to ``os.kill`` on POSIX.
+    legacy deterministic PID test hook; production targets the verified POSIX
+    session/group or Windows ``taskkill /T /F`` tree.
     """
-    import signal
     timed_out: list[str] = []
     now = int(time.time())
     host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
@@ -6331,7 +6542,7 @@ def enforce_max_runtime(
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
-        "       t.max_runtime_seconds, t.claim_lock "
+        "       t.max_runtime_seconds, t.claim_lock, t.current_run_id "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
         "WHERE t.status = 'running' AND t.max_runtime_seconds IS NOT NULL "
@@ -6351,31 +6562,14 @@ def enforce_max_runtime(
 
         pid = int(row["worker_pid"])
         tid = row["id"]
-        # SIGTERM then SIGKILL. Keep it simple: 5 s grace. Workers that
-        # want a cleaner shutdown can install their own SIGTERM handler
-        # before the grace expires.
-        killed = False
-        kill = signal_fn if signal_fn is not None else (
-            os.kill if hasattr(os, "kill") else None
-        )
-        if kill is not None:
-            try:
-                kill(pid, signal.SIGTERM)
-            except (ProcessLookupError, OSError):
-                pass
-            # Short polling wait — no time.sleep on the write txn.
-            for _ in range(10):
-                if not _pid_alive(pid):
-                    break
-                time.sleep(0.5)
-            if _pid_alive(pid):
-                try:
-                    # signal.SIGKILL doesn't exist on Windows.
-                    _sigkill = getattr(signal, "SIGKILL", signal.SIGTERM)
-                    kill(pid, _sigkill)
-                    killed = True
-                except (ProcessLookupError, OSError):
-                    pass
+        termination = _terminate_reclaimed_worker(pid, lock, signal_fn=signal_fn)
+        if _worker_survived_termination(termination):
+            _defer_reclaim_for_live_worker(
+                conn, tid, row["claim_lock"], now, termination,
+                reason="max_runtime_worker_alive",
+                worker_pid=pid, run_id=row["current_run_id"],
+            )
+            continue
 
         with write_txn(conn):
             cur = conn.execute(
@@ -6383,15 +6577,16 @@ def enforce_max_runtime(
                 "claim_expires = NULL, worker_pid = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
-                "  AND worker_pid = ? AND claim_lock IS ?",
-                (tid, pid, row["claim_lock"]),
+                "  AND worker_pid = ? AND claim_lock IS ? "
+                "  AND current_run_id IS ?",
+                (tid, pid, row["claim_lock"], row["current_run_id"]),
             )
             if cur.rowcount == 1:
                 payload = {
                     "pid": pid,
                     "elapsed_seconds": int(elapsed),
                     "limit_seconds": int(row["max_runtime_seconds"]),
-                    "sigkill": killed,
+                    "sigkill": bool(termination.get("sigkill")),
                 }
                 run_id = _end_run(
                     conn, tid,
@@ -6415,7 +6610,10 @@ def enforce_max_runtime(
                 outcome="timed_out",
                 release_claim=False,
                 end_run=False,
-                event_payload_extra={"pid": pid, "sigkill": killed},
+                event_payload_extra={
+                    "pid": pid,
+                    "sigkill": bool(termination.get("sigkill")),
+                },
             )
     return timed_out
 
@@ -6465,6 +6663,7 @@ def detect_stale_running(
 
     rows = conn.execute(
         "SELECT t.id, t.worker_pid, t.last_heartbeat_at, t.claim_lock, "
+        "       t.current_run_id, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at "
         "FROM tasks t "
         "LEFT JOIN task_runs r ON r.id = t.current_run_id "
@@ -6500,6 +6699,7 @@ def detect_stale_running(
             _defer_reclaim_for_live_worker(
                 conn, tid, lock, now, termination,
                 reason="heartbeat_stale_worker_alive",
+                worker_pid=pid, run_id=row["current_run_id"],
             )
             continue
 
@@ -6509,8 +6709,9 @@ def detect_stale_running(
                 "claim_expires = NULL, worker_pid = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
-                "  AND claim_lock IS ?",
-                (tid, row["claim_lock"]),
+                "  AND claim_lock IS ? AND worker_pid IS ? "
+                "  AND current_run_id IS ?",
+                (tid, row["claim_lock"], pid, row["current_run_id"]),
             )
             if cur.rowcount != 1:
                 continue
@@ -6638,7 +6839,11 @@ def _protocol_violation_streak(conn: sqlite3.Connection, task_id: str) -> int:
     return streak
 
 
-def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
+def detect_crashed_workers(
+    conn: sqlite3.Connection,
+    *,
+    expected_exit: Optional[WorkerExitObservation] = None,
+) -> list[str]:
     """Reclaim ``running`` tasks whose worker PID is no longer alive.
 
     Appends a ``crashed`` event and drops the task back to ``ready``.
@@ -6677,29 +6882,49 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     crash_details: list[tuple[str, int, str, bool, str]] = []
     # (task_id, pid, claimer, protocol_violation, error_text)
     with write_txn(conn):
-        rows = conn.execute(
-            "SELECT id, worker_pid, claim_lock, started_at FROM tasks "
-            "WHERE status = 'running' AND worker_pid IS NOT NULL"
-        ).fetchall()
+        if expected_exit is None:
+            rows = conn.execute(
+                "SELECT id, worker_pid, claim_lock, started_at, current_run_id "
+                "FROM tasks WHERE status = 'running' AND worker_pid IS NOT NULL"
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, worker_pid, claim_lock, started_at, current_run_id "
+                "FROM tasks WHERE id = ? AND status = 'running' "
+                "AND worker_pid IS NOT NULL",
+                (expected_exit.task_id,),
+            ).fetchall()
         host_prefix = f"{_claimer_id().split(':', 1)[0]}:"
         for row in rows:
             # Only check liveness for claims owned by this host.
             lock = row["claim_lock"] or ""
             if not lock.startswith(host_prefix):
                 continue
-            # Skip liveness check inside the launch-window grace period
-            # so a freshly-spawned worker isn't reclaimed before its PID
-            # is visible on /proc.
-            started_at = row["started_at"] if "started_at" in row.keys() else None
-            if started_at is not None:
-                grace = _resolve_crash_grace_seconds()
-                if time.time() - started_at < grace:
-                    continue
-            if _pid_alive(row["worker_pid"]):
-                continue
-
             pid = int(row["worker_pid"])
-            kind, code = _classify_worker_exit(pid)
+            if expected_exit is not None:
+                if (
+                    pid != expected_exit.pid
+                    or lock != expected_exit.claim_lock
+                    or row["current_run_id"] != expected_exit.run_id
+                ):
+                    continue
+                kind, code = _classify_worker_returncode(expected_exit.returncode)
+            else:
+                kind, code = _classify_worker_exit(pid)
+                if kind == "unknown":
+                    # Skip liveness check inside the launch-window grace period
+                    # so a freshly-spawned worker isn't reclaimed before its PID
+                    # is visible on /proc.
+                    started_at = (
+                        row["started_at"] if "started_at" in row.keys() else None
+                    )
+                    if started_at is not None:
+                        grace = _resolve_crash_grace_seconds()
+                        if time.time() - started_at < grace:
+                            continue
+                    if _pid_alive(pid):
+                        continue
+
             rate_limited_exit = False
             if kind == "clean_exit":
                 # Worker subprocess returned 0 but its task is still
@@ -6766,8 +6991,11 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
                 "UPDATE tasks SET status = 'ready', claim_lock = NULL, "
                 "claim_expires = NULL, worker_pid = NULL "
                 "WHERE id = ? AND status = 'running' "
-                "  AND worker_pid = ? AND claim_lock IS ?",
-                (row["id"], pid, row["claim_lock"]),
+                "  AND worker_pid = ? AND claim_lock IS ? "
+                "  AND current_run_id IS ?",
+                (
+                    row["id"], pid, row["claim_lock"], row["current_run_id"],
+                ),
             )
             if cur.rowcount == 1:
                 # Rate-limited requeues are a clean release, not a crash —
@@ -6906,6 +7134,83 @@ def detect_crashed_workers(conn: sqlite3.Connection) -> list[str]:
     # failure and are NOT crashes, so they stay out of the ``crashed`` return.
     detect_crashed_workers._last_rate_limited = rate_limited  # type: ignore[attr-defined]
     return crashed
+
+
+def finalize_worker_exit(
+    observation: WorkerExitObservation,
+    *,
+    board: Optional[str] = None,
+) -> bool:
+    db_path = kanban_db_path(board=board)
+
+    while True:
+        with _dispatch_tick_lock(db_path) as held:
+            if held:
+                with connect_closing(board=board) as conn:
+                    row = conn.execute(
+                        "SELECT status, worker_pid, claim_lock, current_run_id "
+                        "FROM tasks WHERE id = ?",
+                        (observation.task_id,),
+                    ).fetchone()
+                    if row is None or row["status"] != "running":
+                        return False
+                    if (
+                        row["claim_lock"] != observation.claim_lock
+                        or row["current_run_id"] != observation.run_id
+                    ):
+                        return False
+                    if row["worker_pid"] is None:
+                        # dispatch_once holds this same lock across spawn +
+                        # _set_worker_pid. Once the supervisor owns it, a NULL
+                        # PID means the dispatcher died before registration;
+                        # bind the observed worker without emitting a second
+                        # spawned event, then use the normal crash path.
+                        with write_txn(conn):
+                            bound = conn.execute(
+                                "UPDATE tasks SET worker_pid = ? "
+                                "WHERE id = ? AND status = 'running' "
+                                "AND worker_pid IS NULL AND claim_lock = ? "
+                                "AND current_run_id = ?",
+                                (
+                                    observation.pid,
+                                    observation.task_id,
+                                    observation.claim_lock,
+                                    observation.run_id,
+                                ),
+                            )
+                            if bound.rowcount != 1:
+                                return False
+                            conn.execute(
+                                "UPDATE task_runs SET worker_pid = ? "
+                                "WHERE id = ? AND task_id = ? AND status = 'running' "
+                                "AND ended_at IS NULL AND worker_pid IS NULL "
+                                "AND claim_lock = ?",
+                                (
+                                    observation.pid,
+                                    observation.run_id,
+                                    observation.task_id,
+                                    observation.claim_lock,
+                                ),
+                            )
+                    elif int(row["worker_pid"]) != observation.pid:
+                        return False
+
+                    crashed = detect_crashed_workers(
+                        conn,
+                        expected_exit=observation,
+                    )
+                    rate_limited = getattr(
+                        detect_crashed_workers,
+                        "_last_rate_limited",
+                        [],
+                    )
+                    return (
+                        observation.task_id in crashed
+                        or observation.task_id in rate_limited
+                    )
+
+        if not held:
+            time.sleep(_WORKER_EXIT_FINALIZE_POLL_SECONDS)
 
 
 def _record_task_failure(
@@ -7090,25 +7395,52 @@ def _record_spawn_failure(
     )
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
-    """Record the spawned child's pid + emit a ``spawned`` event.
+def _set_worker_pid(
+    conn: sqlite3.Connection,
+    task_id: str,
+    pid: int,
+    *,
+    claim_lock: Optional[str] = None,
+    run_id: Optional[int] = None,
+) -> bool:
+    """CAS-record a supervisor PID and emit exactly one ``spawned`` event.
 
-    The event's payload carries the pid so a human reading ``hermes kanban
-    tail`` can correlate log lines with OS-level traces without opening
-    the drawer.
+    Production dispatch passes the claim/run values returned by ``claim_task``.
+    The optional lookup retains compatibility for direct local callers while
+    applying the same guarded state predicates inside this transaction.
     """
     with write_txn(conn):
-        conn.execute(
-            "UPDATE tasks SET worker_pid = ? WHERE id = ?",
-            (int(pid), task_id),
+        if claim_lock is None or run_id is None:
+            row = conn.execute(
+                "SELECT claim_lock, current_run_id FROM tasks "
+                "WHERE id = ? AND status = 'running' AND worker_pid IS NULL",
+                (task_id,),
+            ).fetchone()
+            if row is None or row["claim_lock"] is None or row["current_run_id"] is None:
+                return False
+            claim_lock = str(row["claim_lock"])
+            run_id = int(row["current_run_id"])
+
+        task_cur = conn.execute(
+            "UPDATE tasks SET worker_pid = ? "
+            "WHERE id = ? AND status = 'running' AND worker_pid IS NULL "
+            "AND claim_lock = ? AND current_run_id = ?",
+            (int(pid), task_id, claim_lock, int(run_id)),
         )
-        run_id = _current_run_id(conn, task_id)
-        if run_id is not None:
-            conn.execute(
-                "UPDATE task_runs SET worker_pid = ? WHERE id = ?",
-                (int(pid), run_id),
+        if task_cur.rowcount != 1:
+            return False
+        run_cur = conn.execute(
+            "UPDATE task_runs SET worker_pid = ? "
+            "WHERE id = ? AND task_id = ? AND status = 'running' "
+            "AND ended_at IS NULL AND worker_pid IS NULL AND claim_lock = ?",
+            (int(pid), int(run_id), task_id, claim_lock),
+        )
+        if run_cur.rowcount != 1:
+            raise RuntimeError(
+                f"task {task_id} active run {run_id} disappeared during PID publication"
             )
-        _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=run_id)
+        _append_event(conn, task_id, "spawned", {"pid": int(pid)}, run_id=int(run_id))
+        return True
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -7671,6 +8003,7 @@ def _dispatch_once_locked(
             set_branch_name(conn, claimed.id, resolved_branch_name or (claimed.branch_name or "").strip() or f"wt/{claimed.id}")
         _maybe_emit_scratch_tip(conn, claimed.id, claimed.workspace_kind)
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        pid: Optional[int] = None
         try:
             # Back-compat: older spawn_fn signatures accept only
             # (task, workspace). Test stubs in the suite rely on that.
@@ -7684,8 +8017,15 @@ def _dispatch_once_locked(
                     pid = _spawn(claimed, str(workspace))
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
-            if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+            if pid and not _set_worker_pid(
+                conn,
+                claimed.id,
+                int(pid),
+                claim_lock=claimed.claim_lock,
+                run_id=claimed.current_run_id,
+            ):
+                _terminate_supervisor_tree(int(pid))
+                continue
             # NOTE: we intentionally do NOT reset consecutive_failures
             # here. A successful spawn proves the worker can start but
             # doesn't prove the run will succeed. Under unified
@@ -7703,6 +8043,8 @@ def _dispatch_once_locked(
                     _per_profile_running.get(claimed.assignee, 0) + 1
                 )
         except Exception as exc:
+            if pid:
+                _terminate_supervisor_tree(int(pid))
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
@@ -7769,6 +8111,7 @@ def _dispatch_once_locked(
         # review agent needs.
         claimed.skills = ["sdlc-review"]
         _spawn = spawn_fn if spawn_fn is not None else _default_spawn
+        pid: Optional[int] = None
         try:
             import inspect
             try:
@@ -7779,11 +8122,20 @@ def _dispatch_once_locked(
                     pid = _spawn(claimed, str(workspace))
             except (TypeError, ValueError):
                 pid = _spawn(claimed, str(workspace))
-            if pid:
-                _set_worker_pid(conn, claimed.id, int(pid))
+            if pid and not _set_worker_pid(
+                conn,
+                claimed.id,
+                int(pid),
+                claim_lock=claimed.claim_lock,
+                run_id=claimed.current_run_id,
+            ):
+                _terminate_supervisor_tree(int(pid))
+                continue
             result.spawned.append((claimed.id, claimed.assignee or "", str(workspace)))
             spawned += 1
         except Exception as exc:
+            if pid:
+                _terminate_supervisor_tree(int(pid))
             auto = _record_spawn_failure(
                 conn, claimed.id, str(exc),
                 failure_limit=failure_limit,
@@ -8055,18 +8407,84 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _terminate_supervisor_tree(
+    pid: int,
+    *,
+    supervisor: Optional[subprocess.Popen[bytes]] = None,
+) -> None:
+    """Best-effort stop of a supervisor and every worker it owns.
+
+    The supervisor starts a POSIX session, so its process group is safe to
+    terminate as a tree. A direct supervisor signal is insufficient: ordinary
+    children survive when only their parent exits. Windows uses taskkill's
+    tree mode and retains a Popen terminate/kill fallback for constrained hosts.
+    Errors deliberately stay local; callers must preserve their original
+    handshake or CAS failure.
+    """
+    import signal
+
+    if _IS_WINDOWS:
+        try:
+            subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                check=False,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except (OSError, subprocess.SubprocessError):
+            pass
+        if supervisor is not None:
+            try:
+                supervisor.wait(timeout=5)
+                return
+            except subprocess.TimeoutExpired:
+                try:
+                    supervisor.kill()
+                except OSError:
+                    pass
+            except OSError:
+                return
+            try:
+                supervisor.wait()
+            except OSError:
+                pass
+        return
+
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except (AttributeError, ProcessLookupError, OSError):
+        pass
+    if supervisor is not None:
+        try:
+            supervisor.wait(timeout=5)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+    # The supervisor may have exited before it could reap a TERM-ignoring
+    # child. Kill the group even after its wait succeeds to cover that tree.
+    try:
+        os.killpg(pid, signal.SIGKILL)
+    except (AttributeError, ProcessLookupError, OSError):
+        pass
+    if supervisor is not None:
+        try:
+            supervisor.wait()
+        except OSError:
+            pass
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
     *,
     board: Optional[str] = None,
 ) -> Optional[int]:
-    """Fire-and-forget ``hermes -p <profile> chat -q ...`` subprocess.
+    """Launch a supervised ``hermes -p <profile> chat -q ...`` subprocess.
 
-    Returns the spawned child's PID so the dispatcher can detect crashes
-    before the claim TTL expires. The child's completion is still observed
-    via the ``complete`` / ``block`` transitions the worker writes itself;
-    the PID check is a safety net for crashes, OOM kills, and Ctrl+C.
+    Returns the detached supervisor's PID so the dispatcher can detect crashes
+    before the claim TTL expires. A detached supervisor owns the worker handle
+    and routes its exit through the same crash finalizer used by later dispatch
+    ticks, so one-shot dispatch remains non-blocking without orphaning the run.
 
     ``board`` pins the child's kanban context to that board: the child's
     ``HERMES_KANBAN_DB`` / ``HERMES_KANBAN_BOARD`` / workspaces_root env
@@ -8076,6 +8494,8 @@ def _default_spawn(
     import subprocess
     if not task.assignee:
         raise ValueError(f"task {task.id} has no assignee")
+    if task.current_run_id is None or not task.claim_lock:
+        raise RuntimeError(f"task {task.id} has no active claimed run")
 
     from hermes_cli.profiles import normalize_profile_name
 
@@ -8217,31 +8637,82 @@ def _default_spawn(
     rotate_bytes, backup_count = worker_log_rotation_config()
     _rotate_worker_log(log_path, rotate_bytes, backup_count)
 
-    # Use 'a' so a re-run on unblock appends rather than overwrites.
+    token = secrets.token_hex(8)
+    spec_path = log_dir / f".{task.id}.{token}.spawn.json"
+    handshake_path = log_dir / f".{task.id}.{token}.worker.pid"
+    spec_fd = os.open(
+        spec_path,
+        os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+        0o600,
+    )
+    with os.fdopen(spec_fd, "w", encoding="utf-8") as spec_file:
+        json.dump(
+            {
+                "command": cmd,
+                "cwd": workspace if os.path.isdir(workspace) else None,
+                "log_path": str(log_path),
+                "handshake_path": str(handshake_path),
+                "task_id": task.id,
+                "run_id": task.current_run_id,
+                "claim_lock": task.claim_lock,
+                "board": resolved_board,
+            },
+            spec_file,
+        )
+
     log_f = open(log_path, "ab")
     try:
-        proc = subprocess.Popen(  # noqa: S603 -- argv is a fixed list built above
-            cmd,
-            cwd=workspace if os.path.isdir(workspace) else None,
+        supervisor = subprocess.Popen(  # noqa: S603
+            [
+                sys.executable,
+                "-m",
+                "hermes_cli.kanban_worker_supervisor",
+                str(spec_path),
+            ],
             stdin=subprocess.DEVNULL,
             stdout=log_f,
             stderr=subprocess.STDOUT,
             env=env,
-            start_new_session=True,
-            creationflags=subprocess.CREATE_NO_WINDOW if _IS_WINDOWS else 0,
+            start_new_session=not _IS_WINDOWS,
+            creationflags=(
+                (subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP)
+                if _IS_WINDOWS else 0
+            ),
         )
-    except FileNotFoundError:
+    except OSError as exc:
+        spec_path.unlink(missing_ok=True)
+        raise RuntimeError("worker supervisor could not start") from exc
+    finally:
         log_f.close()
-        raise RuntimeError(
-            "`hermes` executable not found on PATH. "
-            "Install Hermes Agent or activate its venv before running the kanban dispatcher."
-        )
-    # NOTE: we intentionally do NOT close log_f here — we want Popen's
-    # child process to keep writing after this function returns.  The
-    # handle is kept alive by the child's inheritance.  The parent's
-    # reference goes out of scope and is GC'd, but the OS-level FD stays
-    # open in the child until the child exits.
-    return proc.pid
+
+    deadline = time.monotonic() + _WORKER_PID_HANDSHAKE_TIMEOUT_SECONDS
+    try:
+        while time.monotonic() < deadline:
+            try:
+                supervisor_pid = int(handshake_path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, ValueError):
+                if supervisor.poll() is not None:
+                    raise RuntimeError(
+                        f"worker supervisor exited with code {supervisor.returncode} "
+                        "before reporting the supervisor pid"
+                    )
+                time.sleep(_WORKER_EXIT_FINALIZE_POLL_SECONDS)
+                continue
+            if supervisor_pid == supervisor.pid and supervisor_pid > 0:
+                return supervisor_pid
+            raise RuntimeError("worker supervisor reported an unexpected pid")
+        raise RuntimeError("worker supervisor timed out before reporting the supervisor pid")
+    except BaseException:
+        # Cleanup is deliberately best-effort; never overwrite the causative
+        # timeout, early-exit, or malformed-publication error.
+        try:
+            _terminate_supervisor_tree(supervisor.pid, supervisor=supervisor)
+        except Exception:
+            pass
+        raise
+    finally:
+        spec_path.unlink(missing_ok=True)
+        handshake_path.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------------------

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import subprocess
+from pathlib import Path
 
 
 def _make_task(kb, *, assignee: str):
@@ -67,11 +69,17 @@ agent:
 
     class FakeProc:
         pid = 4242
+        returncode = None
+
+        def poll(self):
+            return self.returncode
 
     def fake_popen(cmd, *args, **kwargs):
-        captured["cmd"] = list(cmd)
+        spec = json.loads(Path(cmd[-1]).read_text(encoding="utf-8"))
+        captured["cmd"] = spec["command"]
         captured["env"] = dict(kwargs.get("env") or {})
-        captured["cwd"] = kwargs.get("cwd")
+        captured["cwd"] = spec["cwd"]
+        Path(spec["handshake_path"]).write_text("4242", encoding="utf-8")
         return FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -109,10 +117,16 @@ def test_default_spawn_never_boots_the_tui(monkeypatch, tmp_path):
 
     class FakeProc:
         pid = 4243
+        returncode = None
+
+        def poll(self):
+            return self.returncode
 
     def fake_popen(cmd, *args, **kwargs):
-        captured["cmd"] = list(cmd)
+        spec = json.loads(Path(cmd[-1]).read_text(encoding="utf-8"))
+        captured["cmd"] = spec["command"]
         captured["env"] = dict(kwargs.get("env") or {})
+        Path(spec["handshake_path"]).write_text("4243", encoding="utf-8")
         return FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)
@@ -145,9 +159,15 @@ def test_default_spawn_model_override_survives_real_cli_parse(monkeypatch, tmp_p
 
     class FakeProc:
         pid = 4244
+        returncode = None
+
+        def poll(self):
+            return self.returncode
 
     def fake_popen(cmd, *args, **kwargs):
-        captured["cmd"] = list(cmd)
+        spec = json.loads(Path(cmd[-1]).read_text(encoding="utf-8"))
+        captured["cmd"] = spec["command"]
+        Path(spec["handshake_path"]).write_text("4244", encoding="utf-8")
         return FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)

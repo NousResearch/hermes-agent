@@ -13,7 +13,9 @@ Pinning ``TERMINAL_CWD`` to the workspace fixes both.
 
 from __future__ import annotations
 
+import json
 import subprocess
+from pathlib import Path
 
 
 def _make_task(kb, *, assignee: str = "w"):
@@ -44,11 +46,17 @@ def _capture_spawn_env(kb, monkeypatch, workspace: str) -> dict:
 
     class FakeProc:
         pid = 4242
+        returncode = None
+
+        def poll(self):
+            return self.returncode
 
     def fake_popen(cmd, *args, **kwargs):
-        captured["cmd"] = list(cmd)
+        spec = json.loads(Path(cmd[-1]).read_text(encoding="utf-8"))
+        captured["cmd"] = spec["command"]
         captured["env"] = dict(kwargs.get("env") or {})
-        captured["cwd"] = kwargs.get("cwd")
+        captured["cwd"] = spec["cwd"]
+        Path(spec["handshake_path"]).write_text("4242", encoding="utf-8")
         return FakeProc()
 
     monkeypatch.setattr(subprocess, "Popen", fake_popen)

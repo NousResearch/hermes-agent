@@ -1221,14 +1221,40 @@ clone_repo() {
             # into a multi-minute download that can stall the installer.
             git remote set-branches origin "$BRANCH" 2>/dev/null || true
             git fetch origin "$BRANCH"
-            git checkout "$BRANCH"
-            # Managed installs should follow origin/$BRANCH exactly. If the
-            # checkout has diverged (or has local-only commits), ff-only pull
-            # cannot succeed — mirror ``hermes update`` and reset to the
-            # fetched remote so bootstrap/install can recover.
-            if ! git pull --ff-only origin "$BRANCH"; then
-                log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
-                git reset --hard "origin/$BRANCH"
+
+            # Decide whether a hard reset to origin/$BRANCH is safe. It is only
+            # safe for a managed checkout that is on $BRANCH with no local
+            # commits ahead of the remote. A user maintaining a custom branch
+            # (e.g. `custom-patches`) or any local commits ahead of origin/$BRANCH
+            # must NOT be hard-reset: that would orphan their work and the
+            # bootstrap/install would silently destroy it (see #64977).
+            local current_branch
+            current_branch=$(git branch --show-current 2>/dev/null || echo "")
+            local has_local_commits=0
+            if git rev-parse --quiet --verify "origin/$BRANCH" >/dev/null 2>&1; then
+                if [ -n "$(git log "origin/$BRANCH..HEAD" --oneline 2>/dev/null)" ]; then
+                    has_local_commits=1
+                fi
+            fi
+
+            if [ "$current_branch" != "$BRANCH" ] || [ "$has_local_commits" -eq 1 ]; then
+                # Diverged user checkout: skip checkout + hard reset so we don't
+                # destroy local work. Stay on the current checkout; the bootstrap
+                # can still proceed with the existing code.
+                log_warn "Checkout diverged from origin/$BRANCH (branch='${current_branch:-<detached>}', local commits present)."
+                log_warn "Skipping 'git reset --hard origin/$BRANCH' to avoid destroying local work."
+                log_warn "To discard local changes and follow origin/$BRANCH exactly, run:"
+                log_warn "    git checkout $BRANCH && git reset --hard origin/$BRANCH"
+            else
+                git checkout "$BRANCH"
+                # Managed installs should follow origin/$BRANCH exactly. If the
+                # checkout has diverged (or has local-only commits), ff-only pull
+                # cannot succeed — mirror ``hermes update`` and reset to the
+                # fetched remote so bootstrap/install can recover.
+                if ! git pull --ff-only origin "$BRANCH"; then
+                    log_warn "Fast-forward not possible; resetting managed install to origin/$BRANCH..."
+                    git reset --hard "origin/$BRANCH"
+                fi
             fi
 
             if [ -n "$autostash_ref" ]; then

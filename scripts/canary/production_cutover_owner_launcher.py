@@ -747,7 +747,7 @@ def _read_public_json(path: Path) -> Mapping[str, Any]:
             or stat.S_ISLNK(state.st_mode)
             or not stat.S_ISREG(state.st_mode)
             or state.st_nlink != 1
-            or state.st_uid != os.getuid()
+            or state.st_uid != os.getuid()  # windows-footgun: ok — macOS/Linux owner boundary
             or stat.S_IMODE(state.st_mode) & 0o022
             or not 0 < state.st_size <= MAX_JSON
         ):
@@ -778,7 +778,7 @@ def load_owner_private_key(path: Path) -> Ed25519PrivateKey:
             or stat.S_ISLNK(state.st_mode)
             or not stat.S_ISREG(state.st_mode)
             or state.st_nlink != 1
-            or state.st_uid != os.getuid()
+            or state.st_uid != os.getuid()  # windows-footgun: ok — macOS/Linux owner boundary
             or stat.S_IMODE(state.st_mode) not in {0o400, 0o600}
             or not 0 < state.st_size <= 16 * 1024
         ):
@@ -1831,7 +1831,7 @@ def _validate_public_output_path(path: Path) -> None:
     if (
         stat.S_ISLNK(parent.st_mode)
         or not stat.S_ISDIR(parent.st_mode)
-        or parent.st_uid != os.getuid()
+        or parent.st_uid != os.getuid()  # windows-footgun: ok — macOS/Linux owner boundary
         or stat.S_IMODE(parent.st_mode) & 0o022
     ):
         raise OwnerCutoverError("owner_cutover_output_parent_invalid")

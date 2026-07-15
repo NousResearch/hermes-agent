@@ -94,7 +94,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if os.geteuid() != 0:
+    if os.geteuid() != 0:  # windows-footgun: ok — Linux production/canary boundary
         raise RuntimeError("production_cron_stage_root_required")
     if args.action == "derive":
         if args.mechanical_job_package is None:

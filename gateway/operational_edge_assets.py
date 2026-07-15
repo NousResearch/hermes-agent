@@ -642,8 +642,8 @@ def package_operational_assets(
         release_root=release_root,
         revision=revision,
         expected_manifest_sha256=manifest["manifest_sha256"],
-        expected_uid=os.geteuid(),
-        expected_gid=os.getegid(),
+        expected_uid=os.geteuid(),  # windows-footgun: ok — Linux release-packager boundary
+        expected_gid=os.getegid(),  # windows-footgun: ok — Linux release-packager boundary
     )
     return manifest
 

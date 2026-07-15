@@ -868,7 +868,7 @@ def _atomic_replace_preserving_metadata(
     )
     try:
         os.fchmod(descriptor, stat.S_IMODE(metadata.st_mode))
-        if os.geteuid() == 0:
+        if os.geteuid() == 0:  # windows-footgun: ok — Linux production/canary boundary
             os.fchown(descriptor, metadata.st_uid, metadata.st_gid)
         with os.fdopen(descriptor, "wb") as stream:
             stream.write(value)

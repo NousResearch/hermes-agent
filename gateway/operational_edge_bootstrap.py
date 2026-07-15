@@ -485,8 +485,8 @@ def stage_operational_edge_key_foundation(
 ) -> dict[str, Any]:
     """Create missing complete pairs or cleanly re-observe existing pairs."""
 
-    effective_uid = os.geteuid()
-    effective_gid = os.getegid()
+    effective_uid = os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
+    effective_gid = os.getegid()  # windows-footgun: ok — Linux production/canary boundary
     if (
         type(writer_public_key_gid) is not int
         or writer_public_key_gid < 0
@@ -600,8 +600,8 @@ def stage_operational_edge_key_foundation_from_staged_writer_private(
     private bytes nor any private-key digest is returned or persisted here.
     """
 
-    effective_uid = os.geteuid()
-    effective_gid = os.getegid()
+    effective_uid = os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
+    effective_gid = os.getegid()  # windows-footgun: ok — Linux production/canary boundary
     if any(
         not path.is_absolute() or ".." in path.parts
         for path in (staged_writer_private_path, staging_root)
@@ -898,8 +898,8 @@ def prepare_operational_edge_foundation(
         asset_verification=verification,
         key_root=key_root,
         trust_root=trust_root,
-        key_uid=0 if require_root else os.geteuid(),
-        key_gid=0 if require_root else os.getegid(),
+        key_uid=0 if require_root else os.geteuid(),  # windows-footgun: ok — Linux production/canary boundary
+        key_gid=0 if require_root else os.getegid(),  # windows-footgun: ok — Linux production/canary boundary
     )
 
 

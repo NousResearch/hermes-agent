@@ -513,7 +513,7 @@ def attest_producer_role_identities(
 def ensure_producer_role_identities() -> Mapping[str, Mapping[str, Any]]:
     """Create/attest the fixed four principals and two mechanical groups."""
 
-    if sys.platform != "linux" or os.geteuid() != 0:
+    if sys.platform != "linux" or os.geteuid() != 0:  # windows-footgun: ok — Linux production/canary boundary
         _fail("producer_root_linux_required")
     receipt_group = _ensure_group(PRODUCER_RECEIPT_WRITER_GROUP)
     try:
@@ -2042,8 +2042,8 @@ def publish_role_native_publication(
     if (
         role not in ENDPOINT_ROLES
         or SLOT_ROLE.get(slot) != role
-        or os.geteuid() != uid
-        or os.getegid() != gid
+        or os.geteuid() != uid  # windows-footgun: ok — Linux production/canary boundary
+        or os.getegid() != gid  # windows-footgun: ok — Linux production/canary boundary
         or not isinstance(payload, Mapping)
     ):
         _fail("native_publication_invalid")
@@ -5618,7 +5618,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        if sys.platform != "linux" or os.geteuid() != 0:
+        if sys.platform != "linux" or os.geteuid() != 0:  # windows-footgun: ok — Linux production/canary boundary
             _fail("producer_root_linux_required")
         from gateway.canonical_capability_canary_runtime import (
             load_capability_plan,

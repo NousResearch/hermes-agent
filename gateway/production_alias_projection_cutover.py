@@ -1384,7 +1384,7 @@ def _load_prepared(
 
 
 def _require_root(require_root: bool) -> None:
-    if require_root and (os.name != "posix" or os.geteuid() != 0):
+    if require_root and (os.name != "posix" or os.geteuid() != 0):  # windows-footgun: ok — Linux production/canary boundary
         raise ProductionAliasProjectionCutoverError(
             "alias_projection_cutover_requires_root"
         )

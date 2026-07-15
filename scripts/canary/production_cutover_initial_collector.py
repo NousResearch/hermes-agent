@@ -252,7 +252,7 @@ def collect_initial_observations(
     if require_root:
         if (
             not sys.platform.startswith("linux")
-            or os.geteuid() != 0
+            or os.geteuid() != 0  # windows-footgun: ok — Linux production/canary boundary
             or release != fixed_release
         ):
             raise InitialCollectorError("initial_collector_requires_linux_root")
@@ -408,7 +408,7 @@ def collect_stopped_services(
     if _REVISION.fullmatch(revision or "") is None:
         raise InitialCollectorError("stopped_collector_revision_invalid")
     if require_root:
-        if not sys.platform.startswith("linux") or os.geteuid() != 0:
+        if not sys.platform.startswith("linux") or os.geteuid() != 0:  # windows-footgun: ok — Linux production/canary boundary
             raise InitialCollectorError("stopped_collector_requires_linux_root")
         plan_value = cutover._load_staged_json(
             cutover.STAGED_FREEZE_PLAN_PATH

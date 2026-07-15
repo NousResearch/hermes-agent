@@ -50,8 +50,8 @@ def _identity(path: Path, *, allow_missing: bool = False) -> Mapping[str, Any]:
                 "path": str(path),
                 "exists": False,
                 "size": 0,
-                "owner_uid": os.geteuid(),
-                "group_gid": os.getegid(),
+                "owner_uid": os.geteuid(),  # windows-footgun: ok — Linux production/canary boundary
+                "group_gid": os.getegid(),  # windows-footgun: ok — Linux production/canary boundary
                 "mode": None,
                 "readable": True,
             }
@@ -232,8 +232,8 @@ def _state_directory_proof() -> Mapping[str, Any]:
     if (
         not stat.S_ISDIR(item.st_mode)
         or stat.S_ISLNK(item.st_mode)
-        or item.st_uid != os.geteuid()
-        or item.st_gid != os.getegid()
+        or item.st_uid != os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
+        or item.st_gid != os.getegid()  # windows-footgun: ok — Linux production/canary boundary
         or stat.S_IMODE(item.st_mode) != 0o700
     ):
         raise GatewayStateProbeError("gateway_state_directory_identity_invalid")
@@ -259,8 +259,8 @@ def collect_gateway_state_proof(release: Path) -> Mapping[str, Any]:
         raise GatewayStateProbeError("gateway_working_directory_not_exact")
     unsigned = {
         "schema": PROBE_SCHEMA,
-        "gateway_uid": os.geteuid(),
-        "gateway_gid": os.getegid(),
+        "gateway_uid": os.geteuid(),  # windows-footgun: ok — Linux production/canary boundary
+        "gateway_gid": os.getegid(),  # windows-footgun: ok — Linux production/canary boundary
         "hermes_home": str(PRODUCTION_HOME),
         "config": _config_proof(),
         "memory": _memory_proof(),

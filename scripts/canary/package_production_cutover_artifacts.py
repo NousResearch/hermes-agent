@@ -978,16 +978,23 @@ def bootstrap_fixed_unit_inputs(
 ) -> Mapping[str, Any]:
     """Create fixed inputs from a separately signed, pre-package authority."""
 
+    geteuid = getattr(os, "geteuid", None)
+    getegid = getattr(os, "getegid", None)
+    uname = getattr(os, "uname", None)
+    if geteuid is None or getegid is None or uname is None:
+        raise PackagingError("cutover_unit_inputs_bootstrap_boundary_invalid")
+    effective_uid = geteuid()
+    effective_gid = getegid()
     if require_root and (
-        os.geteuid() != 0
-        or not os.uname().sysname.lower().startswith("linux")
+        effective_uid != 0
+        or not uname().sysname.lower().startswith("linux")
         or authority_plan_path != STAGED_UNIT_INPUT_PLAN_PATH
         or authority_approval_path != STAGED_UNIT_INPUT_APPROVAL_PATH
         or unit_inputs_path != FIXED_UNIT_INPUTS_PATH
     ):
         raise PackagingError("cutover_unit_inputs_bootstrap_boundary_invalid")
-    uid = 0 if require_root else os.geteuid()
-    gid = 0 if require_root else os.getegid()
+    uid = 0 if require_root else effective_uid
+    gid = 0 if require_root else effective_gid
     try:
         parent = os.lstat(unit_inputs_path.parent)
     except OSError as exc:

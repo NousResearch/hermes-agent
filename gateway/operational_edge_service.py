@@ -180,7 +180,7 @@ def load_config(
     owners = (
         (expected_owner_uid,)
         if expected_owner_uid is not None
-        else tuple(dict.fromkeys((os.geteuid(), 0)))
+        else tuple(dict.fromkeys((os.geteuid(), 0)))  # windows-footgun: ok — Linux production/canary boundary
     )
     raw: bytes | None = None
     last_error: OperationalEdgeServiceError | None = None
@@ -530,7 +530,7 @@ class OperationalEdgeJournal:
 
 class OperationalEdgeService:
     def __init__(self, config: OperationalEdgeServiceConfig) -> None:
-        if os.getuid() != config.service_uid or os.getgid() != config.service_gid:
+        if os.getuid() != config.service_uid or os.getgid() != config.service_gid:  # windows-footgun: ok — Linux production/canary boundary
             raise OperationalEdgeServiceError("service_process_identity_invalid")
         try:
             resolved = config.release_root.resolve(strict=True)
@@ -859,9 +859,9 @@ def _send(sock: socket.socket, value: bytes) -> None:
 
 def serve(config: OperationalEdgeServiceConfig) -> None:
     if (
-        os.geteuid() == 0
-        or os.geteuid() != config.service_uid
-        or os.getegid() != config.service_gid
+        os.geteuid() == 0  # windows-footgun: ok — Linux production/canary boundary
+        or os.geteuid() != config.service_uid  # windows-footgun: ok — Linux production/canary boundary
+        or os.getegid() != config.service_gid  # windows-footgun: ok — Linux production/canary boundary
     ):
         raise OperationalEdgeServiceError("service_process_identity_invalid")
     service = OperationalEdgeService(config)

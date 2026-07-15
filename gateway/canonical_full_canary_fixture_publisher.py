@@ -677,7 +677,8 @@ def apply_fixture_publication(
     expected_prompt_sha256: str,
     clock: Clock = time.time,
 ) -> dict[str, Any]:
-    if os.geteuid() != ROOT_UID or sys.platform != "linux":
+    geteuid = getattr(os, "geteuid", None)
+    if sys.platform != "linux" or geteuid is None or geteuid() != ROOT_UID:
         raise PermissionError("fixture publication requires root Linux")
     approved_plan_sha256 = _digest(
         approved_plan_sha256,

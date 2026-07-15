@@ -2311,13 +2311,13 @@ class ProducerConfig:
 
 
 def load_producer_config(path: Path) -> ProducerConfig:
-    if os.geteuid() < 0:  # pragma: no cover - defensive platform guard
+    if os.geteuid() < 0:  # pragma: no cover - defensive platform guard  # windows-footgun: ok — Linux production/canary boundary
         _fail("producer_identity_invalid")
     raw, _item = _stable_read(
         path,
         maximum=MAX_CONFIG_BYTES,
         uid=0,
-        gid=os.getegid(),
+        gid=os.getegid(),  # windows-footgun: ok — Linux production/canary boundary
         mode=0o440,
     )
     return ProducerConfig.from_mapping(_strict_json(raw, "producer_config_invalid"))
@@ -2428,7 +2428,7 @@ class RoleReceiptProducer:
         now_ms: Callable[[], int] = lambda: int(time.time() * 1000),
         publisher: Callable[..., None] = _publish_no_replace,
     ) -> None:
-        if os.geteuid() != config.service_uid or os.getegid() != config.service_gid:
+        if os.geteuid() != config.service_uid or os.getegid() != config.service_gid:  # windows-footgun: ok — Linux production/canary boundary
             _fail("producer_process_identity_invalid")
         loaded_private, _private_file_sha256 = (
             _load_projected_private_key(config)
@@ -2481,8 +2481,8 @@ class RoleReceiptProducer:
             "service_unit": self.config.service_unit,
             "service_identity_sha256": self.config.service_identity_sha256,
             "main_pid": pid,
-            "uid": os.geteuid(),
-            "gid": os.getegid(),
+            "uid": os.geteuid(),  # windows-footgun: ok — Linux production/canary boundary
+            "gid": os.getegid(),  # windows-footgun: ok — Linux production/canary boundary
             "socket_path": str(self.config.socket_path),
             "allowed_slots": list(self.config.allowed_slots),
             "key_id": self.key_id,
@@ -2513,8 +2513,8 @@ class RoleReceiptProducer:
             != self.config.full_canary_plan_sha256
             or not isinstance(endpoint, Mapping)
             or endpoint.get("main_pid") != os.getpid()
-            or endpoint.get("uid") != os.geteuid()
-            or endpoint.get("gid") != os.getegid()
+            or endpoint.get("uid") != os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
+            or endpoint.get("gid") != os.getegid()  # windows-footgun: ok — Linux production/canary boundary
             or endpoint.get("service_identity_sha256")
             != self.config.service_identity_sha256
             or endpoint.get("key_id") != self.key_id

@@ -346,7 +346,7 @@ class UrllibGitLabApi:
         *,
         service_uid: int | None = None,
     ) -> "UrllibGitLabApi":
-        uid = os.geteuid() if service_uid is None else service_uid
+        uid = os.geteuid() if service_uid is None else service_uid  # windows-footgun: ok — macOS/Linux AF_UNIX service boundary
         try:
             systemd_bound = is_expected_systemd_credential(
                 config.gitlab_env_file,
@@ -898,13 +898,13 @@ class MacOpsEdgeServer:
         except FileNotFoundError:
             prior = None
         if prior is not None:
-            if not stat.S_ISSOCK(prior.st_mode) or prior.st_uid != os.geteuid():
+            if not stat.S_ISSOCK(prior.st_mode) or prior.st_uid != os.geteuid():  # windows-footgun: ok — macOS/Linux AF_UNIX service boundary
                 raise FileExistsError("socket_path_not_replaceable")
             os.unlink(path)
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             listener.bind(str(path))
-            os.chown(path, os.geteuid(), self.config.socket_gid)
+            os.chown(path, os.geteuid(), self.config.socket_gid)  # windows-footgun: ok — macOS/Linux AF_UNIX service boundary
             os.chmod(path, 0o660)
             listener.listen(self.config.max_connections)
             listener.settimeout(0.5)
@@ -943,7 +943,7 @@ class MacOpsEdgeServer:
             self._listener = None
         try:
             state = os.lstat(self.config.socket_path)
-            if stat.S_ISSOCK(state.st_mode) and state.st_uid == os.geteuid():
+            if stat.S_ISSOCK(state.st_mode) and state.st_uid == os.geteuid():  # windows-footgun: ok — macOS/Linux AF_UNIX service boundary
                 os.unlink(self.config.socket_path)
         except FileNotFoundError:
             pass

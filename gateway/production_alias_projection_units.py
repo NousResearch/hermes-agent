@@ -714,7 +714,7 @@ def _ensure_package_directory(release: Path) -> Path:
         if (
             stat.S_ISLNK(item.st_mode)
             or not stat.S_ISDIR(item.st_mode)
-            or item.st_uid != os.geteuid()
+            or item.st_uid != os.geteuid()  # windows-footgun: ok — Linux systemd-packager boundary
             or stat.S_IMODE(item.st_mode) & 0o022
         ):
             raise ProductionAliasProjectionUnitError(
@@ -728,7 +728,7 @@ def _atomic_install(path: Path, payload: bytes, *, mode: int) -> None:
     if (
         stat.S_ISLNK(parent_before.st_mode)
         or not stat.S_ISDIR(parent_before.st_mode)
-        or parent_before.st_uid != os.geteuid()
+        or parent_before.st_uid != os.geteuid()  # windows-footgun: ok — Linux systemd-packager boundary
         or stat.S_IMODE(parent_before.st_mode) & 0o022
     ):
         raise ProductionAliasProjectionUnitError(
@@ -757,7 +757,7 @@ def _atomic_install(path: Path, payload: bytes, *, mode: int) -> None:
         if existing is not None and (
             not stat.S_ISREG(existing.st_mode)
             or existing.st_nlink != 1
-            or existing.st_uid != os.geteuid()
+            or existing.st_uid != os.geteuid()  # windows-footgun: ok — Linux systemd-packager boundary
         ):
             raise ProductionAliasProjectionUnitError(
                 "alias_projection_package_target_untrusted"

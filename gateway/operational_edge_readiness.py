@@ -499,8 +499,8 @@ def collect_operational_edge_readiness_live(
     configs = load_operational_edge_client_configs()
     _require_current_collector_identity(
         configs,
-        effective_uid=os.geteuid(),
-        effective_gid=os.getegid(),
+        effective_uid=os.geteuid(),  # windows-footgun: ok — Linux live-collector boundary
+        effective_gid=os.getegid(),  # windows-footgun: ok — Linux live-collector boundary
         effective_supplementary_gids=os.getgroups(),
     )
     provider = SystemctlMainPidProvider()
@@ -702,7 +702,7 @@ def collect_and_publish_operational_edge_readiness(
 ) -> dict[str, Any]:
     """Root-only production preflight: live probe, then exact publication."""
 
-    if os.geteuid() != 0:
+    if os.geteuid() != 0:  # windows-footgun: ok — Linux live-collector boundary
         raise OperationalEdgeReadinessError(
             "operational_edge_readiness_publisher_unauthorized"
         )
@@ -736,7 +736,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--revision", required=True)
     args = parser.parse_args(argv)
     if args.collect_child:
-        if os.geteuid() == 0:
+        if os.geteuid() == 0:  # windows-footgun: ok — Linux live-collector boundary
             raise OperationalEdgeReadinessError(
                 "operational_edge_collector_peer_unauthorized"
             )
@@ -755,7 +755,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _publish_mainpid_attestations(value: Mapping[str, Any]) -> None:
-    if os.geteuid() != 0:
+    if os.geteuid() != 0:  # windows-footgun: ok — Linux live-collector boundary
         raise OperationalEdgeReadinessError(
             "operational_edge_main_pid_publisher_unauthorized"
         )
@@ -1003,7 +1003,7 @@ def publish_operational_edge_readiness(
 ) -> dict[str, Any]:
     """Atomically publish the exact root:root 0400 canonical receipt."""
 
-    if os.geteuid() != 0 or path != OPERATIONAL_EDGE_READINESS_PATH:
+    if os.geteuid() != 0 or path != OPERATIONAL_EDGE_READINESS_PATH:  # windows-footgun: ok — Linux live-collector boundary
         raise OperationalEdgeReadinessError(
             "operational_edge_readiness_publisher_unauthorized"
         )

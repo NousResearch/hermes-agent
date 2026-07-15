@@ -407,7 +407,7 @@ def collect_host_authority(
     if require_root:
         if (
             not sys.platform.startswith("linux")
-            or os.geteuid() != 0
+            or os.geteuid() != 0  # windows-footgun: ok — Linux production/canary boundary
             or filesystem_root != Path("/")
             or release != fixed_release
         ):

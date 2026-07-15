@@ -723,6 +723,90 @@ def test_fixture_publication_receipt_rejects_path_or_digest_drift():
         )
 
 
+def test_production_observer_runs_pinned_source_from_bounded_stdin(monkeypatch):
+    revision = "a" * 40
+    source = "print('committed observer source')\n"
+    source_sha256 = "b" * 64
+    captured: dict[str, object] = {}
+
+    class Identity:
+        def account_for_read_only_preflight(self):
+            return "owner@example.com"
+
+        def require_stable(self):
+            captured["identity_stable_checks"] = (
+                int(captured.get("identity_stable_checks", 0)) + 1
+            )
+
+    class KnownHosts:
+        def absolute_path(self):
+            return "/trusted/google_compute_known_hosts"
+
+    class Transport:
+        _owner_identity = Identity()
+        _known_hosts = KnownHosts()
+
+        @staticmethod
+        def _fixed_remote_environment(*, chdir):
+            assert chdir == "/"
+            return ("/usr/bin/env", "-i")
+
+        @staticmethod
+        def _authorization_snapshot(account):
+            assert account == "owner@example.com"
+            return ("1" * 64, "2" * 64, "3" * 64)
+
+        @staticmethod
+        def _run_remote_input(command, **kwargs):
+            captured["command"] = command
+            captured.update(kwargs)
+            return subprocess.CompletedProcess(command, 0, b'{"ok":true}\n', b"")
+
+    monkeypatch.setattr(
+        launcher,
+        "_production_observer_source",
+        lambda supplied_revision: (
+            source,
+            source_sha256,
+        )
+        if supplied_revision == revision
+        else pytest.fail("unexpected revision"),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "_stable_owner_file",
+        lambda path, *, maximum: b"trusted-known-hosts\n",
+    )
+
+    observation, authority = launcher.CapabilityProductionObservationTransport(
+        Transport()
+    ).observe(
+        phase="before",
+        revision=revision,
+        plan_sha256="c" * 64,
+        full_canary_plan_sha256="d" * 64,
+        fixture_sha256="e" * 64,
+        run_id="capability-run-observed",
+    )
+
+    command = captured["command"]
+    assert isinstance(command, tuple)
+    assert command[2:6] == (
+        "/opt/adventico-ai-platform/hermes-agent/.venv/bin/python",
+        "-B",
+        "-I",
+        "-",
+    )
+    assert "-c" not in command
+    assert captured["input_bytes"] == source.encode("utf-8")
+    assert captured["maximum_input_bytes"] == 512 * 1024
+    assert captured["maximum_output_bytes"] == 2 * 1024 * 1024
+    assert captured["timeout_seconds"] == 120
+    assert observation == {"ok": True}
+    assert authority["observer_source_sha256"] == source_sha256
+    assert captured["identity_stable_checks"] == 2
+
+
 def test_owner_observed_live_run_drives_exact_two_phase_handshake(monkeypatch):
     revision = "a" * 40
     plan_sha = "b" * 64

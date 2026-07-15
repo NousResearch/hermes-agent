@@ -377,7 +377,7 @@ class BrowserControllerClient:
             or stat.S_ISLNK(state.st_mode)
             or not stat.S_ISDIR(state.st_mode)
             or stat.S_IMODE(state.st_mode) & 0o022
-            or state.st_uid != os.geteuid()
+            or state.st_uid != os.geteuid()  # windows-footgun: ok — POSIX AF_UNIX controller boundary
         ):
             raise BrowserControllerClientError(
                 "browser_controller_artifact_root_invalid"

@@ -185,13 +185,19 @@ def _exchange(server: DiscordConnectorUnixServer, message: dict) -> dict | None:
     )
     worker.start()
     try:
-        header = client.recv(4)
+        try:
+            header = client.recv(4)
+        except ConnectionResetError:
+            return None
         if not header:
             return None
         size = struct.unpack("!I", header)[0]
         chunks = bytearray()
         while len(chunks) < size:
-            chunk = client.recv(size - len(chunks))
+            try:
+                chunk = client.recv(size - len(chunks))
+            except ConnectionResetError:
+                return None
             if not chunk:
                 break
             chunks.extend(chunk)

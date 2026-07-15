@@ -307,11 +307,11 @@ def stage_publication(
     require_root: bool = True,
 ) -> Mapping[str, Any]:
     if require_root and (
-        not sys.platform.startswith("linux") or os.geteuid() != 0
+        not sys.platform.startswith("linux") or os.geteuid() != 0  # windows-footgun: ok — Linux production/canary boundary
     ):
         raise PublicStagingError("public_staging_requires_linux_root")
-    uid = 0 if require_root else os.geteuid()
-    gid = 0 if require_root else os.getegid()
+    uid = 0 if require_root else os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
+    gid = 0 if require_root else os.getegid()  # windows-footgun: ok — Linux production/canary boundary
     action, outputs = _publication(value)
     records = []
     created_outputs: list[tuple[Path, bytes]] = []

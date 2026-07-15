@@ -503,7 +503,7 @@ def _install_agent_browser_config(release: Path) -> None:
             # even when that is not the process effective group (notably on
             # macOS temporary test roots).  Bind the final identity through
             # the already-open, nofollow descriptor before the atomic rename.
-            os.fchown(descriptor, os.geteuid(), os.getegid())
+            os.fchown(descriptor, os.geteuid(), os.getegid())  # windows-footgun: ok — Linux release-packager boundary
             os.fchmod(descriptor, 0o444)
             os.fsync(descriptor)
         finally:
@@ -1013,8 +1013,8 @@ def prepare_release_dependencies(
     _install_agent_browser_config(release)
     config = _agent_browser_config_identity(
         release,
-        expected_uid=os.geteuid(),
-        expected_gid=os.getegid(),
+        expected_uid=os.geteuid(),  # windows-footgun: ok — Linux release-packager boundary
+        expected_gid=os.getegid(),  # windows-footgun: ok — Linux release-packager boundary
     )
     unsigned = {
         "schema": PREPARATION_SCHEMA,

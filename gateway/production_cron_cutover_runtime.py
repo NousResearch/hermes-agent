@@ -2128,7 +2128,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
-    if os.geteuid() != 0:
+    if os.geteuid() != 0:  # windows-footgun: ok — Linux production/canary boundary
         raise ProductionCronCutoverRuntimeError(
             "production_cron_cutover_root_required"
         )

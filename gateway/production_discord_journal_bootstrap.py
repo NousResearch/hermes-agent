@@ -83,8 +83,8 @@ def _secure_parent(path: Path) -> tuple[int, int]:
         raise ProductionDiscordJournalBootstrapError(
             "journal_parent_invalid"
         ) from exc
-    effective_uid = int(os.geteuid())
-    effective_gid = int(os.getegid())
+    effective_uid = int(os.geteuid())  # windows-footgun: ok — Linux production/canary boundary
+    effective_gid = int(os.getegid())  # windows-footgun: ok — Linux production/canary boundary
     if (
         stat.S_ISLNK(observed.st_mode)
         or not stat.S_ISDIR(observed.st_mode)

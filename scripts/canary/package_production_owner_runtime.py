@@ -35,10 +35,10 @@ from gateway import production_owner_runtime as runtime
 PYTHON_VERSION = "3.11.15"
 RECEIPT_SCHEMA = "muncho-production-owner-runtime-publication.v1"
 DEFAULT_RELEASE_BASE = (
-    Path(pwd.getpwuid(os.getuid()).pw_dir)
+    Path(pwd.getpwuid(os.getuid()).pw_dir)  # windows-footgun: ok — macOS/Linux release-builder boundary
     / ".hermes/trusted/production-owner-runtime"
 )
-DEFAULT_UV = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local/bin/uv"
+DEFAULT_UV = Path(pwd.getpwuid(os.getuid()).pw_dir) / ".local/bin/uv"  # windows-footgun: ok — macOS/Linux release-builder boundary
 DEFAULT_GIT = Path("/usr/bin/git")
 _REVISION = re.compile(r"^[0-9a-f]{40}$")
 _SAFE_WHEEL = re.compile(r"^[A-Za-z0-9_.+-]+\.whl$")
@@ -163,7 +163,7 @@ class OwnerRuntimeBuildSpec:
 
 
 def _clean_environment(spec: OwnerRuntimeBuildSpec) -> dict[str, str]:
-    home = pwd.getpwuid(os.getuid()).pw_dir
+    home = pwd.getpwuid(os.getuid()).pw_dir  # windows-footgun: ok — macOS/Linux release-builder boundary
     return {
         "HOME": home,
         "LANG": "C.UTF-8",
@@ -232,7 +232,7 @@ def _validate_tool(path: Path) -> None:
         ) from exc
     if (
         not stat.S_ISREG(item.st_mode)
-        or item.st_uid not in {0, os.getuid()}
+        or item.st_uid not in {0, os.getuid()}  # windows-footgun: ok — macOS/Linux release-builder boundary
         or stat.S_IMODE(item.st_mode) & 0o022
         or not stat.S_IMODE(item.st_mode) & 0o111
     ):

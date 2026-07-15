@@ -4231,7 +4231,7 @@ def attest_capability_execution_readiness(
 ) -> Mapping[str, Any]:
     """Run both real gateway-side execution probes before systemd READY."""
 
-    if os.geteuid() != plan.identities.gateway_uid or os.getegid() != plan.identities.gateway_gid:
+    if os.geteuid() != plan.identities.gateway_uid or os.getegid() != plan.identities.gateway_gid:  # windows-footgun: ok — Linux production/canary boundary
         raise RuntimeError("capability execution readiness must run as the gateway")
     worker = attest_isolated_worker_execution(
         socket_path=DEFAULT_WORKER_SOCKET,
@@ -5627,8 +5627,8 @@ def _lease_target(
 ) -> _SecretLeaseTarget:
     if kind not in _SECRET_LEASE_MAGIC_BY_KIND:
         raise ValueError("secret lease kind is invalid")
-    administrative_uid = os.geteuid()
-    administrative_gid = os.getegid()
+    administrative_uid = os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
+    administrative_gid = os.getegid()  # windows-footgun: ok — Linux production/canary boundary
     if kind == "codex_access_token":
         values = (
             auth_path,
@@ -5757,8 +5757,8 @@ def _prepare_secret_parent(
 def _prepare_journal_directory(path: Path) -> None:
     _prepare_secret_parent(
         path,
-        uid=os.geteuid(),
-        gid=os.getegid(),
+        uid=os.geteuid(),  # windows-footgun: ok — Linux production/canary boundary
+        gid=os.getegid(),  # windows-footgun: ok — Linux production/canary boundary
         mode=0o700,
     )
 
@@ -5768,8 +5768,8 @@ def _validate_journal_directory(path: Path) -> None:
     if (
         stat.S_ISLNK(item.st_mode)
         or not stat.S_ISDIR(item.st_mode)
-        or item.st_uid != os.geteuid()
-        or item.st_gid != os.getegid()
+        or item.st_uid != os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
+        or item.st_gid != os.getegid()  # windows-footgun: ok — Linux production/canary boundary
         or stat.S_IMODE(item.st_mode) != 0o700
     ):
         raise RuntimeError("credential lease journal directory is unsafe")
@@ -5789,13 +5789,13 @@ def _lease_journal_lock(journal: Path):
     )
     try:
         os.fchmod(descriptor, 0o600)
-        os.fchown(descriptor, os.geteuid(), os.getegid())
+        os.fchown(descriptor, os.geteuid(), os.getegid())  # windows-footgun: ok — Linux production/canary boundary
         item = os.fstat(descriptor)
         if (
             not stat.S_ISREG(item.st_mode)
             or item.st_nlink != 1
-            or item.st_uid != os.geteuid()
-            or item.st_gid != os.getegid()
+            or item.st_uid != os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
+            or item.st_gid != os.getegid()  # windows-footgun: ok — Linux production/canary boundary
             or stat.S_IMODE(item.st_mode) != 0o600
         ):
             raise RuntimeError("credential lease journal lock is unsafe")
@@ -5955,8 +5955,8 @@ def _load_lease_artifact(path: Path, *, schema: str) -> Mapping[str, Any]:
     raw, _ = _read_exact_file(
         path,
         maximum=64 * 1024,
-        uid=os.geteuid(),
-        gid=os.getegid(),
+        uid=os.geteuid(),  # windows-footgun: ok — Linux production/canary boundary
+        gid=os.getegid(),  # windows-footgun: ok — Linux production/canary boundary
         mode=0o400,
     )
     value = _decode_json(raw, label="credential lease artifact")
@@ -5992,8 +5992,8 @@ def _append_lease_artifact(
     _atomic_no_replace_file(
         path,
         payload,
-        uid=os.geteuid(),
-        gid=os.getegid(),
+        uid=os.geteuid(),  # windows-footgun: ok — Linux production/canary boundary
+        gid=os.getegid(),  # windows-footgun: ok — Linux production/canary boundary
         mode=0o400,
         temporary_name=f".{path.name}.tmp",
         maximum=64 * 1024,
@@ -6016,8 +6016,8 @@ def _journal_states(journal: Path) -> list[Mapping[str, Any]]:
         if (
             stat.S_ISLNK(directory.st_mode)
             or not stat.S_ISDIR(directory.st_mode)
-            or directory.st_uid != os.geteuid()
-            or directory.st_gid != os.getegid()
+            or directory.st_uid != os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
+            or directory.st_gid != os.getegid()  # windows-footgun: ok — Linux production/canary boundary
             or stat.S_IMODE(directory.st_mode) != 0o700
         ):
             raise RuntimeError("credential lease artifact directory is unsafe")
@@ -10282,8 +10282,8 @@ def arm_capability_expiry_watchdog(
         interpreter=interpreter,
         cleanup_at_unix=cleanup_at,
     )
-    owner = 0 if require_root else os.geteuid()
-    group = 0 if require_root else os.getegid()
+    owner = 0 if require_root else os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
+    group = 0 if require_root else os.getegid()  # windows-footgun: ok — Linux production/canary boundary
     for path, payload in (
         (Path(paths["service_path"]), service),
         (Path(paths["timer_path"]), timer),
@@ -10332,7 +10332,7 @@ def _prepare_bitrix_foundation_directory(path: Path, *, require_root: bool) -> N
         _ensure_root_directory(path)
         return
     path.mkdir(parents=True, exist_ok=True, mode=0o700)
-    os.chown(path, os.geteuid(), os.getegid())
+    os.chown(path, os.geteuid(), os.getegid())  # windows-footgun: ok — Linux production/canary boundary
     os.chmod(path, 0o700)
 
 
@@ -10497,8 +10497,8 @@ def _stage_bitrix_receipt_key_pair(
     public_path: Path,
     require_root: bool,
 ) -> Mapping[str, Any]:
-    owner = 0 if require_root else os.geteuid()
-    group = 0 if require_root else os.getegid()
+    owner = 0 if require_root else os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
+    group = 0 if require_root else os.getegid()  # windows-footgun: ok — Linux production/canary boundary
     for parent in (private_path.parent, public_path.parent):
         _prepare_bitrix_foundation_directory(parent, require_root=require_root)
     private_exists = os.path.lexists(private_path)
@@ -10729,8 +10729,8 @@ def bootstrap_bitrix_foundation(
         public_path=public_key_path,
         require_root=require_root,
     )
-    owner = 0 if require_root else os.geteuid()
-    group = 0 if require_root else os.getegid()
+    owner = 0 if require_root else os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
+    group = 0 if require_root else os.getegid()  # windows-footgun: ok — Linux production/canary boundary
     writer_raw, _writer_item = _read_exact_file(
         writer_public_key_path,
         maximum=16 * 1024,
@@ -10986,8 +10986,8 @@ def retire_bitrix_foundation_key_pair(
             value=intent_value,
         )
 
-    owner = 0 if require_root else os.geteuid()
-    group = 0 if require_root else os.getegid()
+    owner = 0 if require_root else os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
+    group = 0 if require_root else os.getegid()  # windows-footgun: ok — Linux production/canary boundary
     if os.path.lexists(private_path):
         private_raw, private_item = _read_exact_file(
             private_path,
@@ -11294,8 +11294,8 @@ def _retire_unjournaled_bitrix_pair_after_expiry(
             "private_content_or_digest_recorded": False,
         }
 
-    owner = 0 if require_root else os.geteuid()
-    group = 0 if require_root else os.getegid()
+    owner = 0 if require_root else os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
+    group = 0 if require_root else os.getegid()  # windows-footgun: ok — Linux production/canary boundary
     retirement_dir = retirement_root / authority_sha256
     _prepare_bitrix_foundation_directory(
         retirement_dir,
@@ -11477,8 +11477,8 @@ def disarm_all_capability_expiry_watchdogs(
                 raw, _ = _read_exact_file(
                     path,
                     maximum=64 * 1024,
-                    uid=0 if require_root else os.geteuid(),
-                    gid=0 if require_root else os.getegid(),
+                    uid=0 if require_root else os.geteuid(),  # windows-footgun: ok — Linux production/canary boundary
+                    gid=0 if require_root else os.getegid(),  # windows-footgun: ok — Linux production/canary boundary
                     mode=0o644,
                 )
                 if raw != expected:

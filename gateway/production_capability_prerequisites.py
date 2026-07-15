@@ -2106,7 +2106,7 @@ def attest_live_production_gateway_service_identity(
         required_supplementary_groups=expected_supplementary,
     )
     try:
-        process_groups = sorted(set(os.getgroups()) | {os.getegid()})
+        process_groups = sorted(set(os.getgroups()) | {os.getegid()})  # windows-footgun: ok — Linux production/canary boundary
     except OSError as exc:
         raise ProductionCapabilityPrerequisiteError(
             "production_live_gateway_identity_unavailable"
@@ -2120,8 +2120,8 @@ def attest_live_production_gateway_service_identity(
         or observation["main_pid"] != os.getpid()
         or observation["effective_user"] != expected_user
         or observation["effective_group"] != expected_group
-        or observation["effective_uid"] != os.geteuid()
-        or observation["effective_gid"] != os.getegid()
+        or observation["effective_uid"] != os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
+        or observation["effective_gid"] != os.getegid()  # windows-footgun: ok — Linux production/canary boundary
         or observation["effective_supplementary_groups"] != process_groups
         or observation["unit_executable"] != os.path.realpath(expected_argv[0])
         or observation["main_pid_executable"] != observation["unit_executable"]
@@ -2224,11 +2224,11 @@ def _gateway_identity_kwargs(
     uid = topology["gateway_identity"]["uid"]
     gid = topology["gateway_identity"]["gid"]
     groups = tuple(sorted(set(extra_groups)))
-    if os.geteuid() == 0:
+    if os.geteuid() == 0:  # windows-footgun: ok — Linux production/canary boundary
         return {"user": uid, "group": gid, "extra_groups": groups}
     if (
-        os.geteuid() != uid
-        or os.getegid() != gid
+        os.geteuid() != uid  # windows-footgun: ok — Linux production/canary boundary
+        or os.getegid() != gid  # windows-footgun: ok — Linux production/canary boundary
         or any(group not in os.getgroups() for group in groups)
     ):
         raise ProductionCapabilityPrerequisiteError(
@@ -2747,7 +2747,7 @@ def collect_current_production_capability_prerequisite_receipt(
     credential_directory = os.environ.get("CREDENTIALS_DIRECTORY", "")
     api_actual = API_SERVER_CREDENTIAL_PATH
     approval_actual = API_APPROVAL_CREDENTIAL_PATH
-    if os.geteuid() != 0:
+    if os.geteuid() != 0:  # windows-footgun: ok — Linux production/canary boundary
         if not credential_directory:
             raise ProductionCapabilityPrerequisiteError(
                 "production_live_api_credential_unavailable"
@@ -2980,9 +2980,9 @@ def validate_live_production_capability_prerequisites(
             raise ProductionCapabilityPrerequisiteError(
                 "production_live_codex_credential_owner_drifted"
             )
-    if os.geteuid() != 0 and (
-        os.geteuid() != topology["gateway_identity"]["uid"]
-        or os.getegid() != topology["gateway_identity"]["gid"]
+    if os.geteuid() != 0 and (  # windows-footgun: ok — Linux production/canary boundary
+        os.geteuid() != topology["gateway_identity"]["uid"]  # windows-footgun: ok — Linux production/canary boundary
+        or os.getegid() != topology["gateway_identity"]["gid"]  # windows-footgun: ok — Linux production/canary boundary
     ):
         raise ProductionCapabilityPrerequisiteError(
             "production_live_gateway_identity_drifted"
@@ -3145,7 +3145,7 @@ def sys_platform_is_linux_root() -> bool:
     return (
         sys.platform.startswith("linux")
         and hasattr(os, "geteuid")
-        and os.geteuid() == 0
+        and os.geteuid() == 0  # windows-footgun: ok — Linux production/canary boundary
     )
 
 

@@ -539,7 +539,7 @@ class _Execution:
                 return
             self.state = state
         try:
-            os.killpg(self.process.pid, signal.SIGKILL)
+            os.killpg(self.process.pid, signal.SIGKILL)  # windows-footgun: ok — Linux AF_UNIX/bwrap worker boundary
         except (ProcessLookupError, PermissionError, OSError):
             try:
                 self.process.kill()

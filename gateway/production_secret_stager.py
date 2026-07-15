@@ -285,8 +285,8 @@ def stage_production_secret_foundation(
 ) -> dict[str, Any]:
     """Create or cleanly re-observe the complete fixed staging foundation."""
 
-    effective_uid = os.geteuid()
-    effective_gid = os.getegid()
+    effective_uid = os.geteuid()  # windows-footgun: ok — Linux production/canary boundary
+    effective_gid = os.getegid()  # windows-footgun: ok — Linux production/canary boundary
     if require_root and effective_uid != 0:
         raise ProductionSecretStagingError("staging_requires_root")
     expected_uid = 0 if require_root else effective_uid

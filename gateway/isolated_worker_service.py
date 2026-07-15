@@ -290,7 +290,7 @@ def load_service_config(
     expected_owner_uid: int = 0,
     expected_owner_gid: int | None = None,
 ) -> ServiceConfig:
-    owner_gid = os.getegid() if expected_owner_gid is None else expected_owner_gid
+    owner_gid = os.getegid() if expected_owner_gid is None else expected_owner_gid  # windows-footgun: ok — Linux AF_UNIX/bwrap worker boundary
     if (
         type(expected_owner_uid) is not int
         or expected_owner_uid < 0

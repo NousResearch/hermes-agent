@@ -647,7 +647,7 @@ class AgentBrowserExecutor:
             resolved != path
             or stat.S_ISLNK(state.st_mode)
             or not stat.S_ISDIR(state.st_mode)
-            or state.st_uid != os.geteuid()
+            or state.st_uid != os.geteuid()  # windows-footgun: ok — POSIX AF_UNIX controller boundary
             or stat.S_IMODE(state.st_mode) != 0o700
         ):
             raise BrowserControllerError(
@@ -695,7 +695,7 @@ class AgentBrowserExecutor:
                 or os.getpgid(proc.pid) != pgid
             ):
                 raise ProcessLookupError
-            os.killpg(pgid, signal.SIGKILL)
+            os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX AF_UNIX controller boundary
         except (ProcessLookupError, PermissionError, OSError):
             try:
                 if proc.poll() is None:
@@ -731,8 +731,8 @@ class AgentBrowserExecutor:
                 or not stat.S_ISREG(before.st_mode)
                 or path_before.st_nlink != 1
                 or before.st_nlink != 1
-                or path_before.st_uid != os.geteuid()
-                or before.st_uid != os.geteuid()
+                or path_before.st_uid != os.geteuid()  # windows-footgun: ok — POSIX AF_UNIX controller boundary
+                or before.st_uid != os.geteuid()  # windows-footgun: ok — POSIX AF_UNIX controller boundary
                 or _identity(path_before) != _identity(before)
                 or not minimum <= before.st_size <= maximum
             ):
@@ -787,8 +787,8 @@ class AgentBrowserExecutor:
             or stat.S_ISLNK(root_state.st_mode)
             or not stat.S_ISDIR(root_state.st_mode)
             or not stat.S_ISDIR(root_opened.st_mode)
-            or root_state.st_uid != os.geteuid()
-            or root_opened.st_uid != os.geteuid()
+            or root_state.st_uid != os.geteuid()  # windows-footgun: ok — POSIX AF_UNIX controller boundary
+            or root_opened.st_uid != os.geteuid()  # windows-footgun: ok — POSIX AF_UNIX controller boundary
             or (root_state.st_dev, root_state.st_ino)
             != (root_opened.st_dev, root_opened.st_ino)
             or stat.S_IMODE(root_state.st_mode) != 0o700
@@ -818,7 +818,7 @@ class AgentBrowserExecutor:
                                 raise BrowserControllerError(
                                     "browser_controller_session_entry_quota_exceeded"
                                 )
-                            if state.st_uid != os.geteuid() or stat.S_ISLNK(
+                            if state.st_uid != os.geteuid() or stat.S_ISLNK(  # windows-footgun: ok — POSIX AF_UNIX controller boundary
                                 state.st_mode
                             ):
                                 raise BrowserControllerError(
@@ -845,7 +845,7 @@ class AgentBrowserExecutor:
                                     ) from exc
                                 if (
                                     not stat.S_ISDIR(opened.st_mode)
-                                    or opened.st_uid != os.geteuid()
+                                    or opened.st_uid != os.geteuid()  # windows-footgun: ok — POSIX AF_UNIX controller boundary
                                     or (state.st_dev, state.st_ino)
                                     != (opened.st_dev, opened.st_ino)
                                 ):
@@ -907,7 +907,7 @@ class AgentBrowserExecutor:
             stat.S_ISLNK(state.st_mode)
             or not stat.S_ISREG(state.st_mode)
             or state.st_nlink != 1
-            or state.st_uid != os.geteuid()
+            or state.st_uid != os.geteuid()  # windows-footgun: ok — POSIX AF_UNIX controller boundary
             or state.st_size > maximum
         ):
             raise BrowserControllerError(
@@ -1143,13 +1143,13 @@ class AgentBrowserExecutor:
             # group signal away from the session-bound daemon we authenticated.
             if not self._pid_bound_to_session(pid, session) or os.getpgid(pid) != pgid:
                 return
-            os.killpg(pgid, signal.SIGTERM)
+            os.killpg(pgid, signal.SIGTERM)  # windows-footgun: ok — POSIX AF_UNIX controller boundary
         except (ProcessLookupError, PermissionError, OSError):
             return
         deadline = time.monotonic() + 2
         while time.monotonic() < deadline:
             try:
-                os.killpg(pgid, 0)
+                os.killpg(pgid, 0)  # windows-footgun: ok — POSIX AF_UNIX controller boundary
             except ProcessLookupError:
                 return
             time.sleep(0.05)
@@ -1158,7 +1158,7 @@ class AgentBrowserExecutor:
             # been reused. Leak rather than signal an unrelated process group.
             return
         try:
-            os.killpg(pgid, signal.SIGKILL)
+            os.killpg(pgid, signal.SIGKILL)  # windows-footgun: ok — POSIX AF_UNIX controller boundary
         except (ProcessLookupError, PermissionError, OSError):
             pass
 
@@ -1191,7 +1191,7 @@ class AgentBrowserExecutor:
         if (
             resolved == root
             and stat.S_ISDIR(state.st_mode)
-            and state.st_uid == os.geteuid()
+            and state.st_uid == os.geteuid()  # windows-footgun: ok — POSIX AF_UNIX controller boundary
         ):
             shutil.rmtree(root, ignore_errors=True)
 
@@ -1213,7 +1213,7 @@ class AgentBrowserExecutor:
                 or re.fullmatch(r"[0-9a-f]{32}", token) is None
                 or stat.S_ISLNK(state.st_mode)
                 or not stat.S_ISDIR(state.st_mode)
-                or state.st_uid != os.geteuid()
+                or state.st_uid != os.geteuid()  # windows-footgun: ok — POSIX AF_UNIX controller boundary
             ):
                 raise BrowserControllerError(
                     "browser_controller_stale_session_entry_invalid"
@@ -1262,7 +1262,7 @@ class BrowserControllerServer:
             socket_resolved != self.config.socket_runtime_root
             or stat.S_ISLNK(socket_state.st_mode)
             or not stat.S_ISDIR(socket_state.st_mode)
-            or socket_state.st_uid != os.geteuid()
+            or socket_state.st_uid != os.geteuid()  # windows-footgun: ok — POSIX AF_UNIX controller boundary
             or socket_state.st_gid != self.config.socket_gid
             or stat.S_IMODE(socket_state.st_mode) != 0o750
         ):
@@ -1273,7 +1273,7 @@ class BrowserControllerServer:
             session_resolved != self.config.session_root
             or stat.S_ISLNK(session_state.st_mode)
             or not stat.S_ISDIR(session_state.st_mode)
-            or session_state.st_uid != os.geteuid()
+            or session_state.st_uid != os.geteuid()  # windows-footgun: ok — POSIX AF_UNIX controller boundary
             or stat.S_IMODE(session_state.st_mode) != 0o700
         ):
             raise BrowserControllerError("browser_controller_session_root_invalid")
@@ -1618,7 +1618,7 @@ def _load_config(path: Path) -> BrowserControllerConfig:
         or state.st_nlink != 1
         or not 0 < state.st_size <= 64 * 1024
         or stat.S_IMODE(state.st_mode) & 0o022
-        or state.st_uid not in {0, os.geteuid()}
+        or state.st_uid not in {0, os.geteuid()}  # windows-footgun: ok — POSIX AF_UNIX controller boundary
     ):
         raise BrowserControllerError("browser_controller_config_invalid")
     raw = path.read_bytes()

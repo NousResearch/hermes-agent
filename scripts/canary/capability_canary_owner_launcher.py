@@ -879,7 +879,7 @@ def _stable_owner_file(path: Path, *, maximum: int) -> bytes:
         not stat.S_ISREG(before.st_mode)
         or stat.S_ISLNK(before.st_mode)
         or before.st_nlink != 1
-        or before.st_uid != os.getuid()
+        or before.st_uid != os.getuid()  # windows-footgun: ok — macOS/Linux owner boundary
         or stat.S_IMODE(before.st_mode) != 0o600
         or not 0 < before.st_size <= maximum
     ):
@@ -1216,7 +1216,7 @@ class CapabilityProductionObservationTransport:
         required = (
             "_owner_identity",
             "_authorization_snapshot",
-            "_run_remote",
+            "_run_remote_input",
             "_fixed_remote_environment",
             "_known_hosts",
         )
@@ -1253,11 +1253,7 @@ class CapabilityProductionObservationTransport:
         observer_source, observer_source_sha256 = _production_observer_source(
             revision
         )
-        observer_bootstrap = (
-            "import base64;exec(compile(base64.b64decode('"
-            + base64.b64encode(observer_source.encode("utf-8")).decode("ascii")
-            + "'),'<committed-production-observer>','exec'))"
-        )
+        observer_source_bytes = observer_source.encode("utf-8", errors="strict")
         account = inner._owner_identity.account_for_read_only_preflight()
         inner._owner_identity.require_stable()
         authorization = inner._authorization_snapshot(account)
@@ -1272,8 +1268,7 @@ class CapabilityProductionObservationTransport:
             "/opt/adventico-ai-platform/hermes-agent/.venv/bin/python",
             "-B",
             "-I",
-            "-c",
-            observer_bootstrap,
+            "-",
             phase,
             "--canary-revision",
             revision,
@@ -1286,10 +1281,12 @@ class CapabilityProductionObservationTransport:
             "--run-id",
             run_id,
         )
-        completed = inner._run_remote(
+        completed = inner._run_remote_input(
             command,
             account=account,
+            input_bytes=observer_source_bytes,
             timeout_seconds=120,
+            maximum_input_bytes=512 * 1024,
             maximum_output_bytes=2 * 1024 * 1024,
         )
         inner._owner_identity.require_stable()

@@ -54,14 +54,14 @@ class StorageBootJournal:
 
     @classmethod
     def _for_test(cls, root: Path) -> StorageBootJournal:
-        return cls(_root=root, _owner_uid=os.geteuid(), _owner_gid=os.getegid())
+        return cls(_root=root, _owner_uid=os.geteuid(), _owner_gid=os.getegid())  # windows-footgun: ok — macOS/Linux owner boundary
 
     @property
     def root(self) -> Path:
         return self._root
 
     def _require_owner_process(self) -> None:
-        if os.geteuid() != self._owner_uid or os.getegid() != self._owner_gid:
+        if os.geteuid() != self._owner_uid or os.getegid() != self._owner_gid:  # windows-footgun: ok — macOS/Linux owner boundary
             raise PermissionError("storage boot journal owner process is not exact")
 
     def _validate_directory(self, path: Path) -> None:

@@ -1041,7 +1041,7 @@ def collect_production_observation(
         )
         or _RUN_ID.fullmatch(run_id or "") is None
         or not sys.platform.startswith("linux")
-        or os.geteuid() != 0
+        or os.geteuid() != 0  # windows-footgun: ok — Linux production/canary boundary
     ):
         raise ProductionObservationError("production_observation_input_invalid")
     release, active = _active_release()

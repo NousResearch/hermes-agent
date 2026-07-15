@@ -1074,7 +1074,7 @@ def _phase_b_key_file_identity(
         resolved_parent = path.parent.resolve(strict=True)
     except (OSError, RuntimeError):
         raise OwnerLauncherError(code) from None
-    current_uid = os.geteuid()
+    current_uid = os.geteuid()  # windows-footgun: ok — macOS/Linux owner boundary
     if (
         resolved_parent != path.parent
         or not stat.S_ISDIR(parent.st_mode)
@@ -6419,7 +6419,7 @@ def _phase_b_owner_source_directory(plan_sha256: str) -> int:
             hermes_root.resolve(strict=True) != hermes_root
             or not stat.S_ISDIR(root_item.st_mode)
             or stat.S_ISLNK(root_item.st_mode)
-            or root_item.st_uid != os.geteuid()
+            or root_item.st_uid != os.geteuid()  # windows-footgun: ok — macOS/Linux owner boundary
             or stat.S_IMODE(root_item.st_mode) & 0o077
         ):
             raise OwnerLauncherError("phase_b_owner_source_root_untrusted")
@@ -6446,7 +6446,7 @@ def _phase_b_owner_source_directory(plan_sha256: str) -> int:
             item = os.fstat(child)
             if (
                 not stat.S_ISDIR(item.st_mode)
-                or item.st_uid != os.geteuid()
+                or item.st_uid != os.geteuid()  # windows-footgun: ok — macOS/Linux owner boundary
                 or stat.S_IMODE(item.st_mode) != 0o700
             ):
                 os.close(child)
@@ -6479,7 +6479,7 @@ def _phase_b_owner_source_receipt(
             if (
                 not stat.S_ISREG(before.st_mode)
                 or stat.S_ISLNK(before.st_mode)
-                or before.st_uid != os.geteuid()
+                or before.st_uid != os.geteuid()  # windows-footgun: ok — macOS/Linux owner boundary
                 or before.st_nlink != 1
                 or stat.S_IMODE(before.st_mode) != 0o400
                 or not 1 <= before.st_size <= 64 * 1024
@@ -6696,7 +6696,7 @@ def _read_phase_b_owner_source_at(
         if (
             not stat.S_ISREG(before.st_mode)
             or stat.S_ISLNK(before.st_mode)
-            or before.st_uid != os.geteuid()
+            or before.st_uid != os.geteuid()  # windows-footgun: ok — macOS/Linux owner boundary
             or before.st_nlink != 1
             or stat.S_IMODE(before.st_mode) != 0o400
             or not 1 <= before.st_size <= 64 * 1024

@@ -462,7 +462,7 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> DiscordConnectorConfig:
 
 
 def _require_service_identity(config: DiscordConnectorConfig) -> None:
-    if os.geteuid() != config.connector_uid or os.getegid() != config.connector_gid:
+    if os.geteuid() != config.connector_uid or os.getegid() != config.connector_gid:  # windows-footgun: ok — Linux production/canary boundary
         raise PermissionError("Discord connector process identity is invalid")
     credential_stat = os.lstat(config.credentials_directory)
     if (
@@ -686,7 +686,7 @@ def build_readiness_receipt(
     process_id = os.getpid() if pid is None else pid
     if type(process_id) is not int or process_id < 2:
         raise ValueError("Discord connector MainPID is invalid")
-    if os.geteuid() != config.connector_uid or os.getegid() != config.connector_gid:
+    if os.geteuid() != config.connector_uid or os.getegid() != config.connector_gid:  # windows-footgun: ok — Linux production/canary boundary
         raise PermissionError("Discord connector readiness process identity drifted")
     client = running.client.readiness_identity()
     listener = running.server.readiness_identity()
@@ -712,8 +712,8 @@ def build_readiness_receipt(
         "operation_class": "ordinary_public_ingress_and_session_replies",
         "main_pid": process_id,
         "process_start_time_ticks": start_time_reader(process_id),
-        "process_uid": os.geteuid(),
-        "process_gid": os.getegid(),
+        "process_uid": os.geteuid(),  # windows-footgun: ok — Linux production/canary boundary
+        "process_gid": os.getegid(),  # windows-footgun: ok — Linux production/canary boundary
         "config_path": str(config.config_path),
         "config_sha256": hashlib.sha256(config_raw).hexdigest(),
         "module_path": module_path,

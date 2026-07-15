@@ -327,7 +327,11 @@ def test_history_fetch_is_bounded_chronological_and_reports_truncation(
         def __init__(self, *, id):
             self.id = id
 
-    monkeypatch.setattr(public_connector_module.discord, "Object", _Object)
+    monkeypatch.setattr(
+        public_connector_module,
+        "discord",
+        SimpleNamespace(Object=_Object),
+    )
     requester = SimpleNamespace(id=400)
     guild = _guild(members=[requester])
     channel = _Channel(200, guild=guild)

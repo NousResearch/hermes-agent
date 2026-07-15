@@ -913,7 +913,7 @@ def write_alias_projection(
     if (
         stat.S_ISLNK(parent_before.st_mode)
         or not stat.S_ISDIR(parent_before.st_mode)
-        or parent_before.st_uid != os.geteuid()
+        or parent_before.st_uid != os.geteuid()  # windows-footgun: ok — POSIX projector service boundary
         or stat.S_IMODE(parent_before.st_mode) & 0o002
     ):
         raise AliasProjectorError("alias_projection_output_directory_untrusted")
@@ -934,7 +934,7 @@ def write_alias_projection(
             if (
                 not stat.S_ISREG(current.st_mode)
                 or current.st_nlink != 1
-                or current.st_uid != os.geteuid()
+                or current.st_uid != os.geteuid()  # windows-footgun: ok — POSIX projector service boundary
                 or stat.S_IMODE(current.st_mode) != 0o640
             ):
                 raise AliasProjectorError("alias_projection_output_file_untrusted")
@@ -1010,9 +1010,9 @@ def main() -> int:
             writer.pw_uid == projector.pw_uid
             or writer.pw_gid == projector.pw_gid
             or projector.pw_gid != projector_group.gr_gid
-            or os.geteuid() != projector.pw_uid
-            or os.getegid() != projector.pw_gid
-            or tuple(sorted(set(os.getgroups()) | {os.getegid()}))
+            or os.geteuid() != projector.pw_uid  # windows-footgun: ok — POSIX projector service boundary
+            or os.getegid() != projector.pw_gid  # windows-footgun: ok — POSIX projector service boundary
+            or tuple(sorted(set(os.getgroups()) | {os.getegid()}))  # windows-footgun: ok — POSIX projector service boundary
             != (projector.pw_gid,)
         ):
             raise AliasProjectorError("alias_projection_identity_invalid")

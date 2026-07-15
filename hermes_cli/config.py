@@ -2904,6 +2904,13 @@ DEFAULT_CONFIG = {
         # producing ~/.hermes/sessions/sessions.json entirely.
         "write_sessions_json": True,
 
+        # Optional external export hook for planned gateway restarts. Hermes
+        # transcript persistence/resume does not depend on this. When set to a
+        # Python .py path, the gateway runs it after transcript drain and before
+        # teardown with ``--reason <text>``. Relative paths resolve from
+        # HERMES_HOME; execution is best-effort and bounded to 15 seconds.
+        "restart_checkpoint_script": "",
+
         # Scale-to-zero idle detection (Phase 0). The gateway watches for idle
         # and, when an instance is opted in via the NAS "Labs" toggle (carried as
         # the HERMES_SCALE_TO_ZERO env stamp) AND messaging is relay-only/absent

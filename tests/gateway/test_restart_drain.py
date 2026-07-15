@@ -1,8 +1,9 @@
 import asyncio
+import json
 import shutil
 import subprocess
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -196,6 +197,131 @@ async def test_request_restart_is_idempotent():
     runner.stop.assert_awaited_once_with(
         restart=True, detached_restart=True, service_restart=False
     )
+
+
+def _configure_restart_checkpoint(tmp_path, script: str) -> None:
+    (tmp_path / "config.yaml").write_text(
+        json.dumps({"gateway": {"restart_checkpoint_script": script}}),
+        encoding="utf-8",
+    )
+
+
+@pytest.mark.asyncio
+async def test_restart_context_checkpoint_invokes_configured_python_script(
+    tmp_path, monkeypatch
+):
+    runner, _adapter = make_restart_runner()
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    script = tmp_path / "checkpoint.py"
+    result_path = tmp_path / "invocation.json"
+    script.write_text(
+        "import json, pathlib, sys\n"
+        f"pathlib.Path({str(result_path)!r}).write_text("
+        "json.dumps({'executable': sys.executable, 'args': sys.argv[1:]}), "
+        "encoding='utf-8')\n"
+        "print('checkpoint saved')\n",
+        encoding="utf-8",
+    )
+    script.chmod(0o600)  # Deliberately non-executable: Python must invoke it.
+    _configure_restart_checkpoint(tmp_path, script.name)
+
+    await runner._run_restart_context_checkpoint(reason="test restart")
+
+    invocation = json.loads(result_path.read_text(encoding="utf-8"))
+    assert invocation == {
+        "executable": gateway_run.sys.executable,
+        "args": ["--reason", "test restart"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_restart_context_checkpoint_warns_when_configured_script_missing(
+    tmp_path, monkeypatch, caplog
+):
+    runner, _adapter = make_restart_runner()
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    _configure_restart_checkpoint(tmp_path, "missing.py")
+
+    await runner._run_restart_context_checkpoint()
+
+    assert "Restart checkpoint script does not exist" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_restart_context_checkpoint_reports_real_script_failure(
+    tmp_path, monkeypatch, caplog
+):
+    runner, _adapter = make_restart_runner()
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    script = tmp_path / "checkpoint.py"
+    script.write_text("raise SystemExit(7)\n", encoding="utf-8")
+    _configure_restart_checkpoint(tmp_path, script.name)
+
+    await runner._run_restart_context_checkpoint()
+
+    assert "Restart checkpoint failed with exit code 7" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_restart_context_checkpoint_times_out_real_script(
+    tmp_path, monkeypatch, caplog
+):
+    runner, _adapter = make_restart_runner()
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_RESTART_CHECKPOINT_TIMEOUT_SECS", 0.05)
+    marker = tmp_path / "finished"
+    script = tmp_path / "checkpoint.py"
+    script.write_text(
+        "import pathlib, time\n"
+        "time.sleep(2)\n"
+        f"pathlib.Path({str(marker)!r}).touch()\n",
+        encoding="utf-8",
+    )
+    _configure_restart_checkpoint(tmp_path, script.name)
+
+    await runner._run_restart_context_checkpoint()
+
+    assert "Restart checkpoint timed out after 0.05s" in caplog.text
+    assert not marker.exists()
+
+
+@pytest.mark.asyncio
+async def test_restart_checkpoint_keeps_event_loop_responsive_and_completes_before_teardown(
+    tmp_path, monkeypatch
+):
+    runner, adapter = make_restart_runner()
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    marker = tmp_path / "finished"
+    script = tmp_path / "checkpoint.py"
+    script.write_text(
+        "import pathlib, time\n"
+        "time.sleep(0.25)\n"
+        f"pathlib.Path({str(marker)!r}).touch()\n",
+        encoding="utf-8",
+    )
+    _configure_restart_checkpoint(tmp_path, script.name)
+    marker_seen_at_disconnect = []
+
+    async def disconnect():
+        marker_seen_at_disconnect.append(marker.exists())
+
+    adapter.disconnect = disconnect
+
+    with (
+        patch("gateway.status.remove_pid_file"),
+        patch("gateway.status.release_gateway_runtime_lock"),
+        patch("gateway.status.write_runtime_status"),
+    ):
+        stop_task = asyncio.create_task(runner.stop(restart=True))
+        await asyncio.sleep(0.05)
+
+        assert runner._draining is True
+        assert not stop_task.done()  # The loop ticked while the script slept.
+
+        await stop_task
+
+    assert marker.exists()
+    assert marker_seen_at_disconnect == [True]
 
 
 @pytest.mark.asyncio

@@ -4528,6 +4528,30 @@ def _capture_head_sha(git_cmd, cwd) -> str | None:
         return None
 
 
+def _run_git_auto_gc(git_cmd, cwd) -> None:
+    """Run ``git gc --auto`` after a successful pull to bound ``.git`` growth.
+
+    Every ``hermes update`` fast-forwards the checkout, adding loose objects
+    and pack files that git never repacks on its own. On a long-running
+    gateway install that updates for months, ``.git`` balloons into the
+    hundreds of MB (issue #58172: 884MB on a 29GB disk). ``git gc --auto`` is
+    the idiomatic fix — it repacks only when git's own heuristics decide the
+    loose-object / pack-file count warrants it, so it's a cheap no-op on an
+    already-packed repo and never blocks a normal update. Fail-soft: a gc
+    hiccup must never fail the update.
+    """
+    try:
+        subprocess.run(
+            git_cmd + ["gc", "--auto"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError as exc:
+        logger.debug("git gc --auto after update failed: %s", exc)
+
+
 def _validate_critical_files_syntax(root) -> tuple[bool, str | None, str | None]:
     """Compile each file in ``_UPDATE_CRITICAL_FILES`` to catch SyntaxErrors.
 
@@ -9998,6 +10022,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
             print(
                 f"  ✓ Cleared {removed} stale __pycache__ director{'y' if removed == 1 else 'ies'}"
             )
+
+        # Repack loose git objects so ``.git`` doesn't grow without bound on
+        # long-running installs that pull month after month (issue #58172).
+        # ``--auto`` makes this a no-op unless git's own thresholds are hit.
+        _run_git_auto_gc(git_cmd, PROJECT_ROOT)
 
         # Fork upstream sync logic (only for main branch on forks)
         if is_fork and branch == "main":

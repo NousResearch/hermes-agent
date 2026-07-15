@@ -2,6 +2,20 @@
 
 StudyOS supports a learner pursuing observable capabilities across exams, engineering, research, and other domains. It separates source knowledge, performed activities, immutable evidence, and derived judgments so progress remains explainable.
 
+## Application Boundary
+
+`StudyOSApplication` is the transport-independent boundary for HTTP and
+non-model clients. Callers submit a `StudyQuery` or `StudyCommand`; the
+application owns workspace resolution, validation, persistence ordering, and
+stable error semantics. The FastAPI adapter lives in
+`dashboard/plugin_api.py`, mounted canonically at
+`/api/plugins/study_os`. The bundled `/api/study` prefix is a compatibility
+alias only.
+
+The model-facing surface remains the two established tools,
+`study_activity` and `study_coach`. Their schemas are deliberately not folded
+into the HTTP query/command catalog, preserving the narrow model-tool waist.
+
 ## Language
 
 **Learner**:

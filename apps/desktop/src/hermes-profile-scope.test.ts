@@ -93,5 +93,6 @@ describe('StudyOS settings are profile-scoped', () => {
 
     expect(studyA.vault_path).toBe('/vaults/study-a')
     expect(studyB.vault_path).toBe('/vaults/study-b')
+    expect(api.mock.calls.every(([request]) => request.path.startsWith('/api/plugins/study_os/'))).toBe(true)
   })
 })

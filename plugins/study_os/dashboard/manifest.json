@@ -1,0 +1,12 @@
+{
+  "name": "study_os",
+  "label": "StudyOS",
+  "description": "StudyOS project, review, and learning projections",
+  "icon": "BookOpen",
+  "version": "0.1.0",
+  "api_only": true,
+  "api": "plugin_api.py",
+  "api_aliases": [
+    "/api/study"
+  ]
+}

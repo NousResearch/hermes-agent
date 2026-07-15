@@ -220,7 +220,11 @@ def _run_runner(probe_dir: Path, *extra: str) -> subprocess.CompletedProcess:
         cwd=repo_root,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
-        text=True,
+        # The runner emits UTF-8 (it reconfigures its own piped stdout on
+        # Windows, which would otherwise default to the ANSI code page and
+        # turn the ✓/✗ glyphs into mojibake on decode here).
+        encoding="utf-8",
+        errors="replace",
         timeout=60,
     )
 
@@ -271,9 +275,54 @@ def test_positional_path_not_treated_as_flag(tmp_path: Path) -> None:
         [sys.executable, str(runner), str(probe_dir), "-j", "1",
          "--file-timeout", "30", "-q"],
         cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-        text=True, timeout=60,
+        encoding="utf-8", errors="replace", timeout=60,
     )
     assert proc.returncode == 0, proc.stdout
     # Discovery found the probe file (2 tests), proving the positional path
     # was consumed as a root, not forwarded to pytest as a bad flag.
     assert "test_flagprobe.py" in proc.stdout, proc.stdout
+
+
+def test_multiple_absolute_paths_split_on_pathsep(tmp_path: Path) -> None:
+    """``--paths`` accepts ``os.pathsep``-joined absolute paths.
+
+    On Windows the absolute paths contain drive-letter colons, so a naive
+    ``split(":")`` shreds them into phantom roots and only one (or neither)
+    of the two probe dirs would be discovered.
+    """
+    dir_a = _make_probe_dir(tmp_path)
+    dir_b = tmp_path / "probe_b"
+    dir_b.mkdir()
+    (dir_b / "test_flagprobe_b.py").write_text(
+        "def test_gamma():\n    assert True\n"
+    )
+    repo_root = Path(__file__).resolve().parent.parent
+    runner = repo_root / "scripts" / "run_tests_parallel.py"
+    proc = subprocess.run(
+        [sys.executable, str(runner),
+         "--paths", os.pathsep.join([str(dir_a), str(dir_b)]),
+         "-j", "1", "--file-timeout", "30", "-q"],
+        cwd=repo_root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        encoding="utf-8", errors="replace", timeout=60,
+    )
+    assert proc.returncode == 0, proc.stdout
+    assert "Discovered 2 test files" in proc.stdout, proc.stdout
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="drive-letter paths")
+def test_drive_letter_colon_is_not_a_path_separator(tmp_path: Path) -> None:
+    """An absolute ``--paths`` value stays one root on Windows.
+
+    The naive split used to produce a phantom relative root ``'C'`` (the
+    drive letter) alongside the real path; discovery only worked by the
+    accident of ``repo_root / '\\rooted\\rest'`` re-anchoring onto the
+    repo's drive.
+    """
+    probe_dir = _make_probe_dir(tmp_path)
+    proc = _run_runner(probe_dir, "-q")
+    assert proc.returncode == 0, proc.stdout
+    drive = str(probe_dir)[0]
+    assert f"['{drive}', " not in proc.stdout, (
+        f"drive letter split off as a phantom root:\n{proc.stdout}"
+    )
+    assert "Discovered 1 test files" in proc.stdout, proc.stdout

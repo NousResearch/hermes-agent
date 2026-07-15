@@ -1137,6 +1137,37 @@ class TestPromptBuilderConstants:
 
 
 # =========================================================================
+# Plugin platform hints
+# =========================================================================
+
+class TestPluginPlatformHints:
+    def test_dynamically_registered_platform_hint(self, monkeypatch):
+        """A plugin-registered platform_hint is merged into PLATFORM_HINTS."""
+        from gateway.platform_registry import PlatformEntry, platform_registry
+
+        platform_registry.register(
+            PlatformEntry(
+                name="testpbplat",
+                label="TestPBPlat",
+                adapter_factory=lambda cfg: None,
+                check_fn=lambda: True,
+                source="plugin",
+                platform_hint="You are on TestPBPlat.",
+            )
+        )
+        try:
+            import importlib
+            import sys
+            # Re-import the module so the import-time merge sees the new entry.
+            monkeypatch.delitem(sys.modules, "agent.prompt_builder", raising=False)
+            _pb = importlib.import_module("agent.prompt_builder")
+            assert "testpbplat" in _pb.PLATFORM_HINTS
+            assert "You are on TestPBPlat." in _pb.PLATFORM_HINTS["testpbplat"]
+        finally:
+            platform_registry.unregister("testpbplat")
+
+
+# =========================================================================
 # Environment hints
 # =========================================================================
 

@@ -785,6 +785,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     """
     from gateway.config import Platform
 
+    platform_name = platform.value if hasattr(platform, "value") else str(platform)
+
     media_files = media_files or []
 
     # Weixin handles text/media delivery inside its native helper and does not
@@ -1081,17 +1083,32 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.YUANBAO:
             result = await _send_yuanbao(chat_id, chunk)
         else:
-            # Plugin platform: route through the gateway's live adapter if
-            # available, otherwise the plugin's standalone_sender_fn.
-            result = await _send_via_adapter(
-                platform,
-                pconfig,
-                chat_id,
-                chunk,
-                thread_id=thread_id,
-                media_files=media_files,
-                force_document=force_document,
-            )
+            # Plugin platform: check registry for a standalone_sender_fn before
+            # falling back to the generic _send_via_adapter path.
+            from gateway.platform_registry import platform_registry
+            entry = platform_registry.get(platform_name)
+            if entry and entry.standalone_sender_fn:
+                try:
+                    result = await entry.standalone_sender_fn(
+                        pconfig, chat_id, chunk,
+                        thread_id=thread_id,
+                        media_files=media_files,
+                        force_document=force_document,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as e:
+                    result = {"error": f"Plugin standalone send failed: {e}"}
+            else:
+                result = await _send_via_adapter(
+                    platform,
+                    pconfig,
+                    chat_id,
+                    chunk,
+                    thread_id=thread_id,
+                    media_files=media_files,
+                    force_document=force_document,
+                )
 
         if isinstance(result, dict) and result.get("error"):
             return result

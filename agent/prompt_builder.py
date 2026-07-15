@@ -853,6 +853,17 @@ PLATFORM_HINTS = {
     ),
 }
 
+# Merge plugin-registered platform hints (resolved entries only; built-in
+# deferred loaders are skipped because their hints are hardcoded above).
+try:
+    from gateway.platform_registry import platform_registry
+
+    for _entry in platform_registry.values():
+        if _entry.platform_hint and _entry.name not in PLATFORM_HINTS:
+            PLATFORM_HINTS[_entry.name] = _entry.platform_hint
+except Exception:
+    pass
+
 # Telegram rich-messages extension — only injected when the user has opted in
 # to ``platforms.telegram.extra.rich_messages: true``.  The base
 # PLATFORM_HINTS["telegram"] covers MarkdownV2-compatible constructs; this

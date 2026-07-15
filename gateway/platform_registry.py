@@ -268,6 +268,10 @@ class PlatformRegistry:
         self._resolve_all()
         return [e for e in self._entries.values() if e.source == "plugin"]
 
+    def values(self) -> list[PlatformEntry]:
+        """Return all concretely registered entries (does NOT trigger deferred loaders)."""
+        return list(self._entries.values())
+
     def is_registered(self, name: str) -> bool:
         # A deferred (not-yet-imported) platform still counts as registered --
         # the loader will materialize it on first real use.  This keeps cheap

@@ -132,7 +132,7 @@ Contract:
 - **No-op by default, fail-open.** Both default to `return None`. A missing hook, an exception, or an invalid return value leaves the request untouched — so a failing engine is never worse than not installing one.
 - **`select_context()` is request-only.** The returned list replaces the messages for a single provider call; persisted history is never written. Returning `None`, `[]`, a non-list, or a list containing non-dicts all fall open to the unmodified request.
 - **Ordering / cache stability.** The hook runs **before** prompt cache-control and every request sanitizer, so (a) a replacement still passes the same validation as any request, and (b) the no-op default leaves the request byte-identical — prompt-cache behaviour is unchanged for non-implementing engines. An engine that replaces the list changes only its own cache prefix. Evaluated per provider request (re-runs on retries).
-- **`on_turn_complete()`** is post-turn observation only; treat `messages` as read-only.
+- **`on_turn_complete()`** is post-turn observation only; treat `messages` as read-only. **Coverage is best-effort:** it fires from the standard turn-finalization seam. Some abnormal early-return paths in the loop (e.g. a content-policy block or a provider terminal failure) persist and return without routing through finalization, so they do not currently emit this hook — treat it as a best-effort observation for completed turns, not a guaranteed callback for every early exit. Unifying all terminal paths behind one finalization seam is a separate follow-up.
 
 ## Engine tools
 

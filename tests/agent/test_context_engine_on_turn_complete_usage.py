@@ -106,3 +106,50 @@ def test_finalize_turn_forwards_none_when_no_response_usage():
     captured = agent.context_compressor.captured
     assert captured.get("seen") is True
     assert captured["usage"] is None
+
+
+def test_finalization_seam_observes_interrupted_turn_with_none_usage():
+    """Pins the documented coverage contract for on_turn_complete().
+
+    on_turn_complete() fires from the turn-finalization seam and reports
+    ``usage=None`` on a finalized turn that never reached a provider response
+    (e.g. interrupt), forwarding the ``interrupted`` flag. This is the testable
+    (positive) half of the contract.
+
+    The negative half — abnormal early-return paths in ``run_conversation``
+    (content-policy block, provider terminal failure, etc.) bypass finalization
+    and therefore do NOT emit the hook — is documented as best-effort coverage.
+    It is intentionally not pinned here: exercising those inline early returns
+    requires a full ``run_conversation`` harness, and unifying all terminal
+    paths behind one seam is a separate follow-up.
+    """
+    from agent.turn_finalizer import finalize_turn
+
+    agent = _agent_with_engine()
+    if hasattr(agent, "_last_turn_usage"):
+        delattr(agent, "_last_turn_usage")  # never reached a provider response
+
+    finalize_turn(
+        agent,
+        final_response="interrupted mid-turn",
+        api_call_count=1,
+        interrupted=True,
+        failed=False,
+        messages=[
+            {"role": "user", "content": "do a thing"},
+            {"role": "assistant", "content": "partial"},
+        ],
+        conversation_history=None,
+        effective_task_id="task-1",
+        turn_id="turn-int",
+        user_message="do a thing",
+        original_user_message="do a thing",
+        _should_review_memory=False,
+        _turn_exit_reason="interrupt",
+    )
+
+    captured = agent.context_compressor.captured
+    assert captured.get("seen") is True
+    assert captured["usage"] is None
+    assert captured["kwargs"]["interrupted"] is True
+    assert captured["kwargs"]["turn_id"] == "turn-int"

@@ -2612,6 +2612,41 @@ import weakref as _weakref
 _gateway_runner_ref: _weakref.ref = lambda: None
 
 
+def _credential_rebind_failure(code: str, error: str) -> dict[str, Any]:
+    """Build a secret-free failure response for the public rebind API."""
+    return {"ok": False, "code": code, "error": error}
+
+
+async def rebind_gateway_session_credentials(
+    *,
+    session_id: str,
+    provider: str,
+    credential_id: str,
+) -> dict[str, Any]:
+    """Rebind one live Gateway session to a selected pooled credential.
+
+    This module-level facade is intentionally narrow so plugins do not need a
+    private ``GatewayRunner`` reference. The runner performs all ownership and
+    idle-session checks; no credential material is returned to the caller.
+    """
+    runner = _gateway_runner_ref()
+    shutdown_event = getattr(runner, "_shutdown_event", None) if runner else None
+    if (
+        runner is None
+        or not getattr(runner, "_running", False)
+        or (shutdown_event is not None and shutdown_event.is_set())
+    ):
+        return _credential_rebind_failure(
+            "gateway_unavailable",
+            "No live Gateway runner is available in this process.",
+        )
+    return await runner.rebind_session_credentials(
+        session_id=session_id,
+        provider=provider,
+        credential_id=credential_id,
+    )
+
+
 def _normalize_empty_agent_response(
     agent_result: dict,
     response: str,
@@ -16296,6 +16331,243 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             "Rehydrated persisted /model override for session=%s: model=%s provider=%s",
             session_key, override.get("model"), provider or "",
         )
+
+    async def rebind_session_credentials(
+        self,
+        *,
+        session_id: str,
+        provider: str,
+        credential_id: str,
+    ) -> dict[str, Any]:
+        """Refresh credential-backed runtime state for one idle session.
+
+        The selected credential is resolved through the normal provider path,
+        then checked against its stable pool id before any live state changes.
+        Only ephemeral credential fields are replaced; the session record,
+        transcript, model, and provider selection are left untouched.
+        """
+        requested_session_id = str(session_id or "").strip()
+        requested_provider = str(provider or "").strip().lower()
+        requested_credential_id = str(credential_id or "").strip()
+        if (
+            not requested_session_id
+            or not requested_provider
+            or not requested_credential_id
+        ):
+            return _credential_rebind_failure(
+                "invalid_request",
+                "session_id, provider, and credential_id are required.",
+            )
+
+        entry = await self.async_session_store.lookup_by_session_id(
+            requested_session_id
+        )
+        if entry is None:
+            return _credential_rebind_failure(
+                "session_not_found",
+                "The requested Gateway session is not active.",
+            )
+        session_key = str(getattr(entry, "session_key", "") or "")
+        if not session_key:
+            return _credential_rebind_failure(
+                "session_not_found",
+                "The requested Gateway session has no active routing key.",
+            )
+        if session_key in self._running_agents:
+            return _credential_rebind_failure(
+                "session_busy",
+                "The requested Gateway session is currently running a turn.",
+            )
+
+        live_override = self._session_model_overrides.get(session_key)
+        persisted_override = getattr(entry, "model_override", None)
+        override = live_override
+        if override is None and isinstance(persisted_override, dict):
+            override = persisted_override
+        cache = getattr(self, "_agent_cache", None)
+        cache_lock = getattr(self, "_agent_cache_lock", None)
+        if cache_lock is not None and cache is not None:
+            with cache_lock:
+                cached_entry = cache.get(session_key)
+        else:
+            cached_entry = cache.get(session_key) if cache is not None else None
+        cached_agent = (
+            cached_entry[0]
+            if isinstance(cached_entry, tuple) and cached_entry
+            else cached_entry
+        )
+        if cached_agent is _AGENT_PENDING_SENTINEL:
+            return _credential_rebind_failure(
+                "session_busy",
+                "The requested Gateway session is currently creating an agent.",
+            )
+
+        owner_provider = ""
+        owner_base_url = ""
+        target_model = None
+        if override is not None:
+            owner_provider = str(override.get("provider") or "").strip()
+            owner_base_url = str(override.get("base_url") or "").strip()
+            target_model = override.get("model")
+            if not owner_provider:
+                return _credential_rebind_failure(
+                    "session_provider_unknown",
+                    "The session override has no provider identity to verify.",
+                )
+        elif cached_agent is not None:
+            owner_provider = str(getattr(cached_agent, "provider", "") or "").strip()
+            owner_base_url = str(getattr(cached_agent, "base_url", "") or "").strip()
+            target_model = getattr(cached_agent, "model", None)
+            if not owner_provider:
+                return _credential_rebind_failure(
+                    "session_provider_unknown",
+                    "The cached session agent has no provider identity to verify.",
+                )
+        else:
+            return _credential_rebind_failure(
+                "session_runtime_missing",
+                "The session has no provider-bound runtime state to refresh.",
+            )
+
+        try:
+            from agent.credential_pool import credential_pool_matches_provider
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+
+            runtime = await asyncio.to_thread(
+                resolve_runtime_provider,
+                requested=requested_provider,
+                target_model=target_model,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Gateway credential rebind resolution failed for provider=%s (%s)",
+                requested_provider,
+                type(exc).__name__,
+            )
+            return _credential_rebind_failure(
+                "credential_resolution_failed",
+                "The selected provider credential could not be resolved.",
+            )
+
+        runtime_api_key = runtime.get("api_key")
+        pool = runtime.get("credential_pool")
+        current_fn = getattr(pool, "current", None)
+        selected = current_fn() if callable(current_fn) else None
+        selected_id = str(getattr(selected, "id", "") or "")
+        selected_api_key = getattr(selected, "runtime_api_key", "") if selected else ""
+        if not isinstance(runtime_api_key, str) or not runtime_api_key.strip():
+            return _credential_rebind_failure(
+                "runtime_token_missing",
+                "The selected credential did not resolve to a runtime token.",
+            )
+        if pool is None or selected is None:
+            return _credential_rebind_failure(
+                "credential_pool_missing",
+                "The provider resolver did not return a selected credential pool entry.",
+            )
+        if selected_id != requested_credential_id:
+            return _credential_rebind_failure(
+                "credential_mismatch",
+                "The provider resolver selected a different credential.",
+            )
+        if (
+            not isinstance(selected_api_key, str)
+            or not selected_api_key.strip()
+            or selected_api_key != runtime_api_key
+        ):
+            return _credential_rebind_failure(
+                "credential_mismatch",
+                "The resolved runtime token does not match the selected pool entry.",
+            )
+
+        runtime_provider = str(runtime.get("provider") or "").strip()
+        runtime_base_url = str(runtime.get("base_url") or "").strip()
+        resolved_request = str(
+            runtime.get("requested_provider") or requested_provider
+        ).strip()
+        if not credential_pool_matches_provider(
+            pool,
+            resolved_request,
+            base_url=runtime_base_url,
+        ) or not credential_pool_matches_provider(
+            pool,
+            runtime_provider,
+            base_url=runtime_base_url,
+        ):
+            return _credential_rebind_failure(
+                "provider_mismatch",
+                "The resolved credential pool does not belong to the requested provider.",
+            )
+        if owner_provider and not credential_pool_matches_provider(
+            pool,
+            owner_provider,
+            base_url=owner_base_url or runtime_base_url,
+        ):
+            return _credential_rebind_failure(
+                "session_provider_mismatch",
+                "The selected credential does not belong to the session provider.",
+            )
+
+        # Resolution can refresh OAuth material and therefore runs off-loop.
+        # Recheck every live identity observed before that await so an auth
+        # switch cannot overwrite a concurrent /model, /new, or agent rebuild.
+        current_entry = await self.async_session_store.lookup_by_session_id(
+            requested_session_id
+        )
+        if (
+            current_entry is None
+            or str(getattr(current_entry, "session_key", "") or "") != session_key
+            or session_key in self._running_agents
+            or self._session_model_overrides.get(session_key) is not live_override
+            or (
+                live_override is None
+                and override is not None
+                and getattr(current_entry, "model_override", None)
+                is not persisted_override
+            )
+        ):
+            return _credential_rebind_failure(
+                "session_changed",
+                "The Gateway session changed while credentials were resolving.",
+            )
+        if cache_lock is not None and cache is not None:
+            with cache_lock:
+                current_cached_entry = cache.get(session_key)
+        else:
+            current_cached_entry = cache.get(session_key) if cache is not None else None
+        if current_cached_entry is not cached_entry:
+            return _credential_rebind_failure(
+                "session_changed",
+                "The Gateway session agent changed while credentials were resolving.",
+            )
+
+        if override is not None:
+            refreshed_override = dict(override)
+            refreshed_override.update(
+                {
+                    "api_key": runtime_api_key,
+                    "base_url": runtime.get("base_url"),
+                    "api_mode": runtime.get("api_mode"),
+                    "credential_pool": pool,
+                }
+            )
+            self._session_model_overrides[session_key] = refreshed_override
+        self._evict_cached_agent(session_key)
+
+        logger.info(
+            "Rebound Gateway session credentials: session=%s provider=%s credential_id=%s",
+            requested_session_id,
+            requested_provider,
+            requested_credential_id,
+        )
+        return {
+            "ok": True,
+            "code": "rebound",
+            "session_id": requested_session_id,
+            "provider": requested_provider,
+            "credential_id": requested_credential_id,
+            "session_override_refreshed": override is not None,
+        }
 
     def _apply_session_model_override(
         self, session_key: str, model: str, runtime_kwargs: dict

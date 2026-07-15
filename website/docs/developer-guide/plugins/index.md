@@ -815,6 +815,30 @@ def register(ctx):
     ctx.register_command("check", handler=_handle_check, description="Run async check")
 ```
 
+### Rebind a Gateway session after credential selection
+
+A plugin that changes the selected entry in a credential pool can refresh an
+existing Gateway session without clearing its transcript:
+
+```python
+async def rebind_session(ctx, session_id: str, provider: str, credential_id: str):
+    result = await ctx.rebind_gateway_session_credentials(
+        session_id=session_id,
+        provider=provider,
+        credential_id=credential_id,
+    )
+    if not result["ok"]:
+        return f"Credential switch was not applied: {result['error']}"
+    return "Credential switch applied to the current session."
+```
+
+The `credential_id` must be the stable id of the pool entry selected by the
+plugin. The call fails closed if the normal provider resolver selects a
+different entry, the session is busy or changed during resolution, or no live
+Gateway is available. It updates only in-memory credential fields and evicts
+only the target session's cached agent; it does not rewrite the session record,
+transcript, or config, and it never returns raw credential material.
+
 ### Dispatch tools from slash commands
 
 Slash command handlers that need to orchestrate tools (spawn a subagent via `delegate_task`, call `file_edit`, etc.) should use `ctx.dispatch_tool()` instead of reaching into framework internals. The parent-agent context (workspace hints, spinner, model inheritance) is wired up automatically.

@@ -259,21 +259,34 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
     Handles WAL mode — produces a consistent snapshot even while
     the DB is being written to.  Falls back to raw copy on failure.
     """
-    try:
-        conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
-        backup_conn = sqlite3.connect(str(dst))
-        conn.backup(backup_conn)
-        backup_conn.close()
-        conn.close()
-        return True
-    except Exception as exc:
-        logger.warning("SQLite safe copy failed for %s: %s", src, exc)
+    # Prefer a read-only source connection, but retry read-write when it
+    # fails: a read-only client cannot open a WAL database whose -shm file
+    # is absent or needs recovery ("unable to open database file"), so DBs
+    # nothing currently holds open would otherwise degrade to the raw-copy
+    # fallback below. backup() over the read-write connection still
+    # produces a consistent snapshot.
+    last_exc: Optional[Exception] = None
+    for source, is_uri in ((f"file:{src}?mode=ro", True), (str(src), False)):
         try:
-            shutil.copy2(src, dst)
+            conn = sqlite3.connect(source, uri=is_uri)
+            try:
+                backup_conn = sqlite3.connect(str(dst))
+                try:
+                    conn.backup(backup_conn)
+                finally:
+                    backup_conn.close()
+            finally:
+                conn.close()
             return True
-        except Exception as exc2:
-            logger.error("Raw copy also failed for %s: %s", src, exc2)
-            return False
+        except Exception as exc:
+            last_exc = exc
+    logger.warning("SQLite safe copy failed for %s: %s", src, last_exc)
+    try:
+        shutil.copy2(src, dst)
+        return True
+    except Exception as exc2:
+        logger.error("Raw copy also failed for %s: %s", src, exc2)
+        return False
 
 
 # ---------------------------------------------------------------------------

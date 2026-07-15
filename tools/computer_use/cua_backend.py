@@ -100,6 +100,18 @@ _DESKTOP_WINDOW_NAMES = (
     "finder", "desktop", "dock",              # macOS desktop / shell
 )
 
+# cua-driver 0.7.x can embed bullet/list prefixes ("- ", "• ", "* ") in app
+# names returned by both list_apps and list_windows.  These are presentation
+# artefacts, not part of the name, and break app-scoped capture because the
+# user passes the clean name ("Safari") while list_windows carries the
+# un-prefixed name.  Strip them everywhere (#63428).
+_BULLET_PREFIX_RE = re.compile(r'^[-•*\u2013\u2014]\s+')
+
+
+def _normalize_app_name(name: str) -> str:
+    """Strip bullet/list prefixes that cua-driver may embed in app names."""
+    return _BULLET_PREFIX_RE.sub('', (name or "").strip())
+
 
 # Env var cua-driver reads to gate its anonymous usage telemetry (PostHog).
 # Setting it to "0" disables telemetry; absence => the binary's own default
@@ -878,6 +890,12 @@ class _CuaDriverSession:
         self._capability_version = ""
         self._start_lifecycle_locked()
         self._started = True
+        # Re-declare the session identity after reconnect — the daemon treats
+        # the old session as ended, so start_session must be re-issued (#63428).
+        try:
+            self._session.call_tool("start_session", {"session": self._session_id})
+        except Exception as e:
+            logger.debug("cua-driver start_session after reconnect failed: %s", e)
 
     def _call_tool_via_cli(self, name: str, args: Dict[str, Any], timeout: float) -> Dict[str, Any]:
         """Fallback transport: invoke ``cua-driver call <tool> <json>`` as a
@@ -1134,7 +1152,7 @@ def _ingest_windows(raw_windows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         except (TypeError, ValueError):
             continue
         windows.append({
-            "app_name": w.get("app_name", ""),
+            "app_name": _normalize_app_name(w.get("app_name", "")),
             "pid": pid_int,
             "window_id": window_id_int,
             "off_screen": not w.get("is_on_screen", True),
@@ -1291,8 +1309,16 @@ class CuaDriverBackend(ComputerUseBackend):
                 logger.error("cua-driver CLI re-fetch for list_windows failed: %s", cli_exc)
 
         if not windows:
-            return CaptureResult(mode=mode, width=0, height=0, png_b64=None,
-                                 elements=[], app="", window_title="", png_bytes_len=0)
+            return CaptureResult(
+                mode=mode, width=0, height=0, png_b64=None,
+                elements=[], app="",
+                window_title=(
+                    "<cua-driver returned 0 on-screen windows; the session "
+                    "may be stale or ended — call list_apps to verify the "
+                    "session is alive>"
+                ),
+                png_bytes_len=0,
+            )
 
         # Filter by app name (case-insensitive substring) if requested.
         # When the filter matches nothing, surface that explicitly instead of
@@ -1721,19 +1747,26 @@ class CuaDriverBackend(ComputerUseBackend):
     def list_apps(self) -> List[Dict[str, Any]]:
         out = self._session.call_tool("list_apps", {"session": self._session_id})
         data = out["data"]
+        apps: List[Dict[str, Any]]
         if isinstance(data, list):
-            return data
-        if isinstance(data, dict):
-            return data.get("apps", [])
-        # list_apps returns plain text — parse app lines.
-        if isinstance(data, str):
+            apps = data
+        elif isinstance(data, dict):
+            apps = data.get("apps", [])
+        elif isinstance(data, str):
+            # list_apps returns plain text — parse app lines.
             apps = []
             for line in data.splitlines():
                 m = re.search(r'(.+?)\s+\(pid\s+(\d+)\)', line)
                 if m:
                     apps.append({"name": m.group(1).strip(), "pid": int(m.group(2))})
-            return apps
-        return []
+        else:
+            apps = []
+        # Normalize bullet prefixes so app names from list_apps match the
+        # app_name field in list_windows (#63428).
+        for entry in apps:
+            if "name" in entry:
+                entry["name"] = _normalize_app_name(entry["name"])
+        return apps
 
     def focus_app(self, app: str, raise_window: bool = False) -> ActionResult:
         """Target an app for subsequent actions without stealing system focus.

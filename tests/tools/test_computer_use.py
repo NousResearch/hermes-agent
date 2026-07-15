@@ -1799,6 +1799,71 @@ class TestFocusAppFilterNoMatch:
         assert backend._active_window_id == 2
 
 
+class TestCuaBulletPrefixNormalization:
+    """Regression tests for #63428: cua-driver 0.7.x can embed bullet/list
+    prefixes ("- Safari") in app names, breaking app-scoped capture."""
+
+    def test_normalize_app_name_strips_common_bullets(self):
+        from tools.computer_use.cua_backend import _normalize_app_name
+        assert _normalize_app_name("- Safari") == "Safari"
+        assert _normalize_app_name("• Notes") == "Notes"
+        assert _normalize_app_name("* Finder") == "Finder"
+        assert _normalize_app_name("\u2013 Mail") == "Mail"
+        assert _normalize_app_name("Safari") == "Safari"
+        assert _normalize_app_name("") == ""
+
+    def test_ingest_windows_strips_bullet_prefix(self):
+        from tools.computer_use.cua_backend import _ingest_windows
+        raw = [
+            {"app_name": "- Safari", "pid": 100, "window_id": 1, "is_on_screen": True},
+            {"app_name": "Brave Browser", "pid": 200, "window_id": 2, "is_on_screen": True},
+        ]
+        windows = _ingest_windows(raw)
+        assert windows[0]["app_name"] == "Safari"
+        assert windows[1]["app_name"] == "Brave Browser"
+
+    def test_list_apps_strips_bullet_prefix_from_structured(self):
+        """list_apps structured output should have bullet prefixes stripped."""
+        from unittest.mock import MagicMock
+        from tools.computer_use.cua_backend import CuaDriverBackend
+
+        backend = CuaDriverBackend()
+        backend._session = MagicMock()
+        backend._session.call_tool.return_value = {
+            "data": [{"name": "- Safari", "pid": 100}, {"name": "• Mail", "pid": 200}],
+            "images": [],
+            "isError": False,
+        }
+        apps = backend.list_apps()
+        names = [a["name"] for a in apps]
+        assert names == ["Safari", "Mail"]
+
+    def test_capture_matches_window_with_bullet_prefix(self):
+        """App-scoped capture should match even when list_windows has bullet prefixes."""
+        windows = [
+            {"app_name": "- Safari", "pid": 100, "window_id": 1,
+             "is_on_screen": True, "title": "Safari", "z_index": 0},
+        ]
+        backend = _make_cua_backend_with_windows(windows)
+        backend._session.call_tool.side_effect = [
+            {"data": "", "images": [], "isError": False,
+             "structuredContent": {"windows": windows}},
+            {"data": "Safari — 0 elements\n", "images": [], "isError": False,
+             "structuredContent": None},
+        ]
+        cap = backend.capture(mode="ax", app="Safari")
+        # Should have matched the window despite the bullet prefix.
+        assert backend._active_pid == 100
+
+    def test_empty_windows_returns_diagnostic_title(self):
+        """Empty window inventory should return a diagnostic message, not blank."""
+        backend = _make_cua_backend_with_windows([])
+        cap = backend.capture(mode="som")
+        assert cap.width == 0
+        assert cap.height == 0
+        assert "stale" in cap.window_title.lower() or "ended" in cap.window_title.lower()
+
+
 class TestCuaEnvironmentScrubbing:
     """Verify that cua-driver subprocess environment is sanitized (issue #37878)."""
 

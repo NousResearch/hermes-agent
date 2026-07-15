@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Any, NamedTuple, Optional
 
 from hermes_constants import (
+    DEFAULT_INDICATOR_STYLE,
+    INDICATOR_STYLES,
     get_hermes_home,
     get_hermes_home_override,
     reset_hermes_home_override,
@@ -2167,12 +2169,6 @@ def _set_session_cwd(session: dict, cwd: str) -> str:
 
 # ── Config I/O ────────────────────────────────────────────────────────
 
-
-# Keep aligned with `INDICATOR_STYLES` / `DEFAULT_INDICATOR_STYLE` in
-# ``ui-tui/src/app/interfaces.ts`` — both ends validate against the
-# same shape so `config.get indicator` and the live TUI render agree.
-_INDICATOR_STYLES: tuple[str, ...] = ("ascii", "emoji", "kaomoji", "unicode")
-_INDICATOR_DEFAULT = "kaomoji"
 
 _DASHBOARD_TURN_ISOLATION_DEFAULT = False
 _DASHBOARD_COMPUTE_HOST_HEARTBEAT_SECS_DEFAULT = 15
@@ -12031,11 +12027,11 @@ def _(rid, params: dict) -> dict:
         # non-string inputs (0, False, []) still surface as themselves
         # in the error message instead of looking like a blank value.
         raw = ("" if value is None else str(value)).strip().lower()
-        if raw not in _INDICATOR_STYLES:
+        if raw not in INDICATOR_STYLES:
             return _err(
                 rid,
                 4002,
-                f"unknown indicator: {raw!r}; pick one of {'|'.join(_INDICATOR_STYLES)}",
+                f"unknown indicator: {raw!r}; pick one of {'|'.join(INDICATOR_STYLES)}",
             )
         _write_config_key("display.tui_status_indicator", raw)
         return _ok(rid, {"key": key, "value": raw})
@@ -12728,13 +12724,13 @@ def _(rid, params: dict) -> dict:
         # Normalize so a hand-edited config.yaml with stray casing or
         # an unknown value reads back the SAME value the TUI actually
         # rendered (frontend's `normalizeIndicatorStyle` falls back to
-        # `_INDICATOR_DEFAULT` for the same inputs).  Otherwise
+        # `DEFAULT_INDICATOR_STYLE` for the same inputs).  Otherwise
         # `/indicator` would print one thing while the UI shows another.
         raw = (_load_cfg().get("display") or {}).get("tui_status_indicator", "")
         norm = str(raw).strip().lower()
         return _ok(
             rid,
-            {"value": norm if norm in _INDICATOR_STYLES else _INDICATOR_DEFAULT},
+            {"value": norm if norm in INDICATOR_STYLES else DEFAULT_INDICATOR_STYLE},
         )
     if key == "personality":
         return _ok(

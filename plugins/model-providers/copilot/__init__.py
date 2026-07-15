@@ -12,6 +12,7 @@ Key quirks for the chat_completions subset:
 
 from typing import Any
 
+from hermes_constants import project_reasoning_effort
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -25,6 +26,7 @@ class CopilotProfile(ProviderProfile):
         model: str | None = None,
         reasoning_config: dict | None = None,
         supports_reasoning: bool = False,
+        supported_reasoning_efforts: list[str] | None = None,
         **ctx,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         extra_body: dict[str, Any] = {}
@@ -33,14 +35,23 @@ class CopilotProfile(ProviderProfile):
                 from hermes_cli.models import github_model_reasoning_efforts
 
                 supported_efforts = github_model_reasoning_efforts(model)
-                if supported_efforts and reasoning_config:
-                    effort = reasoning_config.get("effort", "medium")
-                    # Normalize stronger generic levels to the nearest supported.
-                    if effort in {"xhigh", "max", "ultra"}:
-                        effort = "high"
-                    if effort in supported_efforts:
-                        extra_body["reasoning"] = {"effort": effort}
-                elif supported_efforts:
+                if not supported_efforts:
+                    # Fall back to the caller-provided list for models
+                    # not in the static Copilot catalog.
+                    supported_efforts = supported_reasoning_efforts or []
+                if not supported_efforts:
+                    return extra_body, {}
+
+                if reasoning_config and reasoning_config.get("enabled") is False:
+                    return extra_body, {}
+
+                effort = reasoning_config.get("effort", "medium") if reasoning_config else "medium"
+                if effort == "minimal" and "low" in supported_efforts:
+                    effort = "low"
+                projected = project_reasoning_effort(effort, supported_efforts)
+                if projected is not None:
+                    extra_body["reasoning"] = {"effort": projected}
+                else:
                     extra_body["reasoning"] = {"effort": "medium"}
             except Exception:
                 pass

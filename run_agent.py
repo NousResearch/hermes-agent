@@ -62,7 +62,7 @@ from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
-from hermes_constants import get_hermes_home
+from hermes_constants import get_hermes_home, project_reasoning_effort
 
 
 def _launch_cwd_for_session(source: str) -> Optional[str]:
@@ -5429,9 +5429,9 @@ class AIAgent:
             or base_url_host_matches(self._base_url_lower, "githubcopilot.com")
         ):
             try:
-                from hermes_cli.models import github_model_reasoning_efforts
+                from hermes_cli.models import get_copilot_reasoning_efforts
 
-                return bool(github_model_reasoning_efforts(self.model))
+                return bool(get_copilot_reasoning_efforts(self.model, self.api_key))
             except Exception:
                 return False
         if (self.provider or "").strip().lower() == "lmstudio":
@@ -5507,11 +5507,11 @@ class AIAgent:
     def _github_models_reasoning_extra_body(self) -> dict | None:
         """Format reasoning payload for GitHub Models/OpenAI-compatible routes."""
         try:
-            from hermes_cli.models import github_model_reasoning_efforts
+            from hermes_cli.models import get_copilot_reasoning_efforts
         except Exception:
             return None
 
-        supported_efforts = github_model_reasoning_efforts(self.model)
+        supported_efforts = get_copilot_reasoning_efforts(self.model, self.api_key)
         if not supported_efforts:
             return None
 
@@ -5523,6 +5523,13 @@ class AIAgent:
             ).strip().lower()
         else:
             requested_effort = "medium"
+
+        if requested_effort == "max":
+            projected_effort = project_reasoning_effort(
+                requested_effort, supported_efforts
+            )
+            if projected_effort is not None:
+                return {"effort": projected_effort}
 
         if requested_effort == "xhigh" and "high" in supported_efforts:
             requested_effort = "high"

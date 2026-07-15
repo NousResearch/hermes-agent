@@ -810,13 +810,22 @@ def _install_neutts_deps() -> bool:
         if prompt_yes_no("Install espeak-ng now?", True):
             try:
                 if sys.platform == "darwin":
-                    subprocess.run(["brew", "install", "espeak-ng"], check=True)
+                    subprocess.run(
+                        ["brew", "install", "espeak-ng"], check=True,
+                        timeout=300, stdin=subprocess.DEVNULL,
+                    )
                 elif sys.platform == "win32":
-                    subprocess.run(["choco", "install", "espeak-ng", "-y"], check=True)
+                    subprocess.run(
+                        ["choco", "install", "espeak-ng", "-y"], check=True,
+                        timeout=300, stdin=subprocess.DEVNULL,
+                    )
                 else:
-                    subprocess.run(["sudo", "apt", "install", "-y", "espeak-ng"], check=True)
+                    subprocess.run(
+                        ["sudo", "apt", "install", "-y", "espeak-ng"], check=True,
+                        timeout=300, stdin=subprocess.DEVNULL,
+                    )
                 print_success("espeak-ng installed")
-            except (subprocess.CalledProcessError, FileNotFoundError) as e:
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired, FileNotFoundError) as e:
                 print_warning(f"Could not install espeak-ng automatically: {e}")
                 print_info("Please install it manually and re-run setup.")
                 return False

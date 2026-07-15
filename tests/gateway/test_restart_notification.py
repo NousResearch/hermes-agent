@@ -45,12 +45,11 @@ def test_planned_restart_notification_pending_roundtrip(tmp_path, monkeypatch):
     assert gateway_run._planned_restart_notification_pending() is False
 
 
-# ── _handle_restart_command writes .restart_notify.json ──────────────────
+# ── _handle_restart_command is fail-closed and writes no markers ─────────
 
 
 @pytest.mark.asyncio
-async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
-    """When /restart fires, the requester's routing info is persisted to disk."""
+async def test_restart_command_writes_no_notify_file(tmp_path, monkeypatch):
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
 
     runner, _adapter = make_restart_runner()
@@ -65,16 +64,10 @@ async def test_restart_command_writes_notify_file(tmp_path, monkeypatch):
     )
 
     result = await runner._handle_restart_command(event)
-    assert "Restarting" in result
-
-    notify_path = tmp_path / ".restart_notify.json"
-    assert notify_path.exists()
-    data = json.loads(notify_path.read_text())
-    assert data["platform"] == "telegram"
-    assert data["chat_id"] == "42"
-    assert data["chat_type"] == "dm"
-    assert data["message_id"] == "m1"
-    assert "thread_id" not in data  # no thread → omitted
+    assert isinstance(result, str)
+    assert "external" in result.lower()
+    assert not (tmp_path / ".restart_notify.json").exists()
+    runner.request_restart.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -95,7 +88,7 @@ async def test_restart_command_uses_service_restart_under_systemd(tmp_path, monk
     )
 
     await runner._handle_restart_command(event)
-    runner.request_restart.assert_called_once_with(detached=False, via_service=True)
+    runner.request_restart.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -116,7 +109,7 @@ async def test_restart_command_uses_detached_without_systemd(tmp_path, monkeypat
     )
 
     await runner._handle_restart_command(event)
-    runner.request_restart.assert_called_once_with(detached=True, via_service=False)
+    runner.request_restart.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -136,12 +129,12 @@ async def test_restart_command_preserves_thread_id(tmp_path, monkeypatch):
         message_id="m2",
     )
 
-    await runner._handle_restart_command(event)
+    result = await runner._handle_restart_command(event)
 
-    data = json.loads((tmp_path / ".restart_notify.json").read_text())
-    assert data["chat_type"] == "dm"
-    assert data["thread_id"] == "777"
-    assert data["message_id"] == "m2"
+    assert isinstance(result, str)
+    assert "external" in result.lower()
+    assert not (tmp_path / ".restart_notify.json").exists()
+    runner.request_restart.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -173,9 +166,8 @@ async def test_restart_command_uses_atomic_json_writes_for_marker_files(tmp_path
     await runner._handle_restart_command(event)
 
     names = [name for name, _payload, _kwargs in calls]
-    assert names == [".restart_notify.json", ".restart_last_processed.json"]
-    assert calls[0][1]["chat_id"] == "42"
-    assert calls[1][1]["platform"] == "telegram"
+    assert names == []
+    runner.request_restart.assert_not_called()
 
 
 @pytest.mark.asyncio

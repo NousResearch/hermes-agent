@@ -27,8 +27,8 @@ def _make_restart_event(update_id: int | None = 100) -> MessageEvent:
 
 
 @pytest.mark.asyncio
-async def test_restart_handler_writes_dedup_marker_with_update_id(tmp_path, monkeypatch):
-    """First /restart writes .restart_last_processed.json with the triggering update_id."""
+async def test_restart_handler_does_not_write_dedup_marker(tmp_path, monkeypatch):
+    """Fail-closed chat /restart leaves lifecycle marker state untouched."""
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     monkeypatch.delenv("INVOCATION_ID", raising=False)
 
@@ -38,13 +38,10 @@ async def test_restart_handler_writes_dedup_marker_with_update_id(tmp_path, monk
     event = _make_restart_event(update_id=12345)
     result = await runner._handle_restart_command(event)
 
-    assert "Restarting gateway" in result
-    marker_path = tmp_path / ".restart_last_processed.json"
-    assert marker_path.exists()
-    data = json.loads(marker_path.read_text())
-    assert data["platform"] == "telegram"
-    assert data["update_id"] == 12345
-    assert isinstance(data["requested_at"], (int, float))
+    assert isinstance(result, str)
+    assert "external" in result.lower()
+    assert not (tmp_path / ".restart_last_processed.json").exists()
+    runner.request_restart.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -116,12 +113,13 @@ async def test_fresh_restart_with_higher_update_id_is_processed(tmp_path, monkey
     event = _make_restart_event(update_id=12346)  # strictly higher → fresh
     result = await runner._handle_restart_command(event)
 
-    assert "Restarting gateway" in result
-    runner.request_restart.assert_called_once()
+    assert isinstance(result, str)
+    assert "external" in result.lower()
+    runner.request_restart.assert_not_called()
 
-    # Marker is overwritten with the new update_id
+    # A blocked chat command must not mutate the previous dedup marker.
     data = json.loads(marker.read_text())
-    assert data["update_id"] == 12346
+    assert data["update_id"] == 12345
 
 
 @pytest.mark.asyncio
@@ -144,8 +142,9 @@ async def test_stale_marker_older_than_5min_does_not_block(tmp_path, monkeypatch
     event = _make_restart_event(update_id=12345)
     result = await runner._handle_restart_command(event)
 
-    assert "Restarting gateway" in result
-    runner.request_restart.assert_called_once()
+    assert isinstance(result, str)
+    assert "external" in result.lower()
+    runner.request_restart.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -160,8 +159,9 @@ async def test_no_marker_file_allows_restart(tmp_path, monkeypatch):
     event = _make_restart_event(update_id=100)
     result = await runner._handle_restart_command(event)
 
-    assert "Restarting gateway" in result
-    runner.request_restart.assert_called_once()
+    assert isinstance(result, str)
+    assert "external" in result.lower()
+    runner.request_restart.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -179,8 +179,9 @@ async def test_corrupt_marker_file_is_treated_as_absent(tmp_path, monkeypatch):
     event = _make_restart_event(update_id=100)
     result = await runner._handle_restart_command(event)
 
-    assert "Restarting gateway" in result
-    runner.request_restart.assert_called_once()
+    assert isinstance(result, str)
+    assert "external" in result.lower()
+    runner.request_restart.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -203,8 +204,9 @@ async def test_event_without_update_id_bypasses_dedup(tmp_path, monkeypatch):
     event = _make_restart_event(update_id=None)
     result = await runner._handle_restart_command(event)
 
-    assert "Restarting gateway" in result
-    runner.request_restart.assert_called_once()
+    assert isinstance(result, str)
+    assert "external" in result.lower()
+    runner.request_restart.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -242,8 +244,9 @@ async def test_different_platform_bypasses_dedup(tmp_path, monkeypatch):
     )
     result = await runner._handle_restart_command(event)
 
-    assert "Restarting gateway" in result
-    runner.request_restart.assert_called_once()
+    assert isinstance(result, str)
+    assert "external" in result.lower()
+    runner.request_restart.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -291,8 +294,9 @@ async def test_marker_missing_fresh_boot_allows_restart(tmp_path, monkeypatch):
     event = _make_restart_event(update_id=100)
     result = await runner._handle_restart_command(event)
 
-    assert "Restarting gateway" in result
-    runner.request_restart.assert_called_once()
+    assert isinstance(result, str)
+    assert "external" in result.lower()
+    runner.request_restart.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -313,5 +317,6 @@ async def test_marker_missing_booted_from_restart_but_old_process_allows(tmp_pat
     event = _make_restart_event(update_id=100)
     result = await runner._handle_restart_command(event)
 
-    assert "Restarting gateway" in result
-    runner.request_restart.assert_called_once()
+    assert isinstance(result, str)
+    assert "external" in result.lower()
+    runner.request_restart.assert_not_called()

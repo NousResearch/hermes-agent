@@ -125,6 +125,61 @@ MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversation
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+# Maximum payload size for delegate_task SSE completion events (bytes).
+# The raw delegate result can carry per-child summaries; this cap prevents
+# oversized SSE frames while still passing actionable sub-agent metadata.
+MAX_DELEGATE_TASK_RESULT_BYTES = 4_096
+
+
+def _redact_delegate_task_result(function_result: str) -> dict:
+    """Project delegate_task metadata into a small, redacted SSE payload.
+
+    Drops summary, error text, and file paths to avoid leaking internal
+    agent content or credentials through the API-server SSE stream.
+    Keeps only structured metadata needed by downstream UIs for sub-agent
+    panels: subagent_id, model, status, duration, tokens, toolsets,
+    exit_reason.
+    """
+    import json as _json
+
+    _SAFE_KEYS = frozenset({
+        "subagent_id", "model", "status", "duration_seconds",
+        "input_tokens", "output_tokens", "total_tokens",
+        "granted_toolsets", "missing_toolsets", "exit_reason",
+    })
+    _TOKEN_KEYS = frozenset({"input_tokens", "output_tokens", "total_tokens"})
+    payload: dict = {}
+    try:
+        if isinstance(function_result, str):
+            raw = _json.loads(function_result)
+        elif isinstance(function_result, dict):
+            raw = function_result
+        else:
+            return {"_error": "unparseable delegate result"}
+    except Exception:
+        return {"_error": "unparseable delegate result"}
+
+    for key in _SAFE_KEYS:
+        value = raw.get(key)
+        if value is None:
+            continue
+        if key in _TOKEN_KEYS:
+            try:
+                payload[key] = int(value)
+            except (TypeError, ValueError):
+                pass
+        elif isinstance(value, (str, int, float, bool, list)):
+            payload[key] = value
+
+    # Guard against ballooning payloads from unexpectedly large lists.
+    result_bytes = len(_json.dumps(payload, ensure_ascii=False).encode("utf-8"))
+    if result_bytes > MAX_DELEGATE_TASK_RESULT_BYTES:
+        payload = {
+            k: v
+            for k, v in payload.items()
+            if k in ("subagent_id", "status", "exit_reason")
+        }
+    return payload
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -2844,11 +2899,14 @@ class APIServerAdapter(BasePlatformAdapter):
                     "toolCallId": tool_call_id,
                     "status": "completed",
                 }
-                # Include tool body for delegate_task so desktop clients can
-                # populate Subagents panel (api_server does not forward
-                # tool_progress_callback subagent.* events on this path).
+                # Include a redacted metadata projection for delegate_task so
+                # downstream SSE consumers can populate sub-agent panels
+                # without exposing raw summaries, file paths, or secrets.
+                # Fields kept: subagent_id, model, status, duration, tokens,
+                # granted/missing toolsets, exit_reason.  Summary and error
+                # content are dropped.
                 if function_result and function_name == "delegate_task":
-                    payload["result"] = function_result
+                    payload["result"] = _redact_delegate_task_result(function_result)
                 _stream_q.put(("__tool_progress__", payload))
 
             # Start agent in background.  agent_ref is a mutable container

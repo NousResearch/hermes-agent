@@ -2,6 +2,7 @@
 
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
+import pytest
 
 from hermes_cli.commands import (
     COMMAND_REGISTRY,
@@ -1591,6 +1592,250 @@ class TestTelegramMenuCommands:
         assert "valid_skill" in menu_names
         # No empty string in menu names
         assert "" not in menu_names
+
+
+class TestTelegramMenuQuickCommands:
+    """User-configured quick commands appear in the Telegram command menu.
+
+    Quick commands (``quick_commands`` in config.yaml) dispatch in the
+    gateway without an agent turn.  ``type: exec`` entries should be
+    discoverable in Telegram's ``/`` menu alongside built-ins, subject to
+    the same sanitization, 32-char clamp, priority, and cap rules.
+    """
+
+    @staticmethod
+    def _write_config(tmp_path, monkeypatch, body: str) -> None:
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    @pytest.mark.parametrize(
+        ("config", "expected_description"),
+        [
+            (
+                "    description: Daily note\n",
+                "Daily note",
+            ),
+            ("", "Run /dn"),
+        ],
+    )
+    def test_exec_quick_command_visible_in_menu(
+        self, tmp_path, monkeypatch, config, expected_description,
+    ):
+        """Exec commands use their description or Telegram's non-empty fallback."""
+        self._write_config(
+            tmp_path,
+            monkeypatch,
+            "quick_commands:\n"
+            "  dn:\n"
+            "    type: exec\n"
+            "    command: echo daily-note\n"
+            + config,
+        )
+
+        menu, _ = telegram_menu_commands(max_commands=100)
+
+        assert dict(menu).get("dn") == expected_description
+
+    def test_quick_commands_read_through_config_seam(self, tmp_path, monkeypatch):
+        """Quick commands must resolve via read_raw_config(), which honors
+        HERMES_HOME and the active profile — never a hardcoded
+        ~/.hermes/config.yaml parse."""
+        from unittest.mock import patch
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))  # no config.yaml here
+
+        with patch(
+            "hermes_cli.config.read_raw_config",
+            return_value={
+                "quick_commands": {
+                    "dn": {
+                        "type": "exec",
+                        "command": "echo daily-note",
+                        "description": "Daily note",
+                    }
+                }
+            },
+        ):
+            menu, _ = telegram_menu_commands(max_commands=100)
+
+        assert "dn" in {name for name, _desc in menu}
+
+    def test_alias_quick_commands_not_listed(self, tmp_path, monkeypatch):
+        """Alias quick commands forward to a target that already has its own
+        menu entry — Telegram shows one entry per canonical command."""
+        self._write_config(
+            tmp_path,
+            monkeypatch,
+            "quick_commands:\n"
+            "  st:\n"
+            "    type: alias\n"
+            "    target: status\n",
+        )
+
+        menu, _ = telegram_menu_commands(max_commands=100)
+
+        assert "st" not in {name for name, _desc in menu}
+
+    def test_long_name_clamped_to_limit(self, tmp_path, monkeypatch):
+        long_name = "a" * 40
+        self._write_config(
+            tmp_path,
+            monkeypatch,
+            "quick_commands:\n"
+            f"  {long_name}:\n"
+            "    type: exec\n"
+            "    command: echo hi\n",
+        )
+
+        menu, _ = telegram_menu_commands(max_commands=100)
+        names = {name for name, _desc in menu}
+
+        assert long_name not in names
+        assert "a" * _TG_NAME_LIMIT in names
+        for name in names:
+            assert 1 <= len(name) <= _TG_NAME_LIMIT
+
+    def test_truncation_collision_gets_digit_suffix(self, tmp_path, monkeypatch):
+        """Two long names sharing a 32-char prefix stay distinct after clamping."""
+        first = "q" * 40
+        second = "q" * 35 + "zzzzz"
+        self._write_config(
+            tmp_path,
+            monkeypatch,
+            "quick_commands:\n"
+            f"  {first}:\n"
+            "    type: exec\n"
+            "    command: echo one\n"
+            f"  {second}:\n"
+            "    type: exec\n"
+            "    command: echo two\n",
+        )
+
+        menu, _ = telegram_menu_commands(max_commands=100)
+        names = [name for name, _desc in menu]
+
+        assert "q" * _TG_NAME_LIMIT in names
+        assert "q" * (_TG_NAME_LIMIT - 1) + "0" in names
+        assert len(names) == len(set(names)), "menu must not contain duplicates"
+
+    def test_sanitized_collision_dedupes_deterministically(self, tmp_path, monkeypatch):
+        """Names that sanitize to the same Telegram name yield one entry,
+        chosen by sorted raw-name order."""
+        self._write_config(
+            tmp_path,
+            monkeypatch,
+            "quick_commands:\n"
+            "  My--Note:\n"
+            "    type: exec\n"
+            "    command: echo one\n"
+            "    description: first\n"
+            "  my_note:\n"
+            "    type: exec\n"
+            "    command: echo two\n"
+            "    description: second\n",
+        )
+
+        menu, _ = telegram_menu_commands(max_commands=100)
+        entries = [(name, desc) for name, desc in menu if name == "my_note"]
+
+        # "My--Note" sorts before "my_note" (uppercase < lowercase) — it wins.
+        assert entries == [("my_note", "first")]
+
+    def test_builtin_collision_builtin_wins(self, tmp_path, monkeypatch):
+        """A quick command shadowing a built-in name never displaces it."""
+        builtin_desc = next(
+            cmd.description for cmd in COMMAND_REGISTRY if cmd.name == "status"
+        )
+        self._write_config(
+            tmp_path,
+            monkeypatch,
+            "quick_commands:\n"
+            "  status:\n"
+            "    type: exec\n"
+            "    command: echo shadow\n"
+            "    description: shadowed\n",
+        )
+
+        menu, _ = telegram_menu_commands(max_commands=100)
+        entries = [(name, desc) for name, desc in menu if name == "status"]
+
+        assert entries == [("status", builtin_desc)]
+
+    def test_configured_priority_keeps_quick_command_under_cap(self, tmp_path, monkeypatch):
+        """Quick commands participate in the configurable priority assembly."""
+        self._write_config(
+            tmp_path,
+            monkeypatch,
+            "quick_commands:\n"
+            "  dn:\n"
+            "    type: exec\n"
+            "    command: echo daily-note\n"
+            "platforms:\n"
+            "  telegram:\n"
+            "    extra:\n"
+            "      command_menu:\n"
+            "        priority_mode: prepend\n"
+            "        priority:\n"
+            "          - dn\n",
+        )
+
+        menu, _ = telegram_menu_commands(max_commands=5)
+        names = [name for name, _desc in menu]
+
+        assert len(names) == 5
+        assert names[0] == "dn"
+
+    def test_unprioritized_quick_command_trimmed_before_builtins(self, tmp_path, monkeypatch):
+        """Under a tight cap, quick commands are bumped before built-ins."""
+        self._write_config(
+            tmp_path,
+            monkeypatch,
+            "quick_commands:\n"
+            "  zzz_quick:\n"
+            "    type: exec\n"
+            "    command: echo hi\n",
+        )
+
+        menu, hidden = telegram_menu_commands(max_commands=10)
+        names = [name for name, _desc in menu]
+
+        assert "zzz_quick" not in names
+        assert "help" in names
+        assert hidden > 0
+
+    def test_malformed_quick_commands_ignored(self, tmp_path, monkeypatch):
+        """Non-mapping quick_commands or entries never break menu assembly."""
+        self._write_config(
+            tmp_path,
+            monkeypatch,
+            "quick_commands:\n"
+            "  broken: just-a-string\n"
+            "  1234:\n"
+            "    type: exec\n"
+            "    command: echo hi\n"
+            "  ok:\n"
+            "    type: exec\n"
+            "    command: echo hi\n",
+        )
+
+        menu, _ = telegram_menu_commands(max_commands=100)
+        names = {name for name, _desc in menu}
+
+        assert "ok" in names
+        assert "broken" not in names
+
+    def test_non_mapping_quick_commands_section_ignored(self, tmp_path, monkeypatch):
+        self._write_config(
+            tmp_path,
+            monkeypatch,
+            "quick_commands:\n"
+            "  - dn\n"
+            "  - st\n",
+        )
+
+        menu, _ = telegram_menu_commands(max_commands=100)
+
+        assert "help" in {name for name, _desc in menu}
 
 
 # ---------------------------------------------------------------------------

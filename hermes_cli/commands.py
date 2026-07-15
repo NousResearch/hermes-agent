@@ -763,6 +763,67 @@ def _clamp_command_names(
 _clamp_telegram_names = _clamp_command_names
 
 
+_TELEGRAM_QUICK_COMMAND_DESC_LIMIT = 40
+"""Description cap for quick-command menu entries — matches the skill tier."""
+
+
+def telegram_quick_command_entries(
+    quick_commands: Mapping[str, Any] | object,
+) -> list[tuple[str, str, str]]:
+    """Return Telegram ``(display_name, description, raw_name)`` exec entries.
+
+    The third value is deliberately retained through sanitization and clamping:
+    Telegram sends the displayed name back to the gateway, which must execute
+    the underlying configured command.  Entries are sorted by raw name so
+    sanitize/clamp collisions resolve deterministically.  Built-ins reserve
+    their names; aliases are not menu-exposed.
+    """
+    if not isinstance(quick_commands, Mapping):
+        return []
+    entries: list[tuple[str, str, str]] = []
+    for raw_name in sorted(k for k in quick_commands if isinstance(k, str)):
+        meta = quick_commands[raw_name]
+        if not isinstance(meta, Mapping):
+            continue
+        if str(meta.get("type") or "").strip().lower() != "exec":
+            continue
+        name = _sanitize_telegram_name(raw_name)
+        if not name:
+            continue
+        desc = str(meta.get("description") or "").strip() or f"Run /{raw_name}"
+        if len(desc) > _TELEGRAM_QUICK_COMMAND_DESC_LIMIT:
+            desc = desc[:_TELEGRAM_QUICK_COMMAND_DESC_LIMIT - 3] + "..."
+        entries.append((name, desc, raw_name))
+    return [
+        (name, desc, raw_name)
+        for name, desc, raw_name in _clamp_command_names(
+            entries, {name for name, _ in telegram_bot_commands()}
+        )
+    ]
+
+
+def resolve_telegram_quick_command(
+    quick_commands: Mapping[str, Any] | object,
+    displayed_name: str,
+) -> str | None:
+    """Resolve a Telegram menu name to its configured exec quick-command key."""
+    for name, _desc, raw_name in telegram_quick_command_entries(quick_commands):
+        if name == displayed_name:
+            return raw_name
+    return None
+
+
+def _configured_telegram_quick_commands() -> Mapping[str, Any]:
+    """Load quick commands through the profile-aware config seam."""
+    try:
+        from hermes_cli.config import read_raw_config
+        raw_cfg = read_raw_config() or {}
+    except Exception:
+        return {}
+    quick_commands = raw_cfg.get("quick_commands") if isinstance(raw_cfg, Mapping) else None
+    return quick_commands if isinstance(quick_commands, Mapping) else {}
+
+
 # ---------------------------------------------------------------------------
 # Shared skill/plugin collection for gateway platforms
 # ---------------------------------------------------------------------------
@@ -897,21 +958,32 @@ def telegram_menu_commands(max_commands: int = 100) -> tuple[list[tuple[str, str
 
     Priority order (higher priority = never bumped by overflow):
       1. Core CommandDef commands (always included)
-      2. Plugin slash commands (take precedence over skills)
-      3. Built-in skill commands (fill remaining slots, alphabetical)
+      2. User-configured quick commands (``type: exec``; sorted, after
+         built-ins unless raised via configured menu priority)
+      3. Plugin slash commands (take precedence over skills)
+      4. Built-in skill commands (fill remaining slots, alphabetical)
 
     Skills are the only tier that gets trimmed when the cap is hit.
     User-installed hub skills are excluded — accessible via /skills.
     Skills disabled for the ``"telegram"`` platform (via ``hermes skills
     config``) are excluded from the menu entirely.
 
+    Quick commands share the core tier's priority/cap assembly: their
+    names go through the same sanitize + 32-char clamp path, collisions
+    with built-in (or earlier quick-command) names are dropped so
+    built-ins always win, and ``platforms.telegram.extra.command_menu``
+    priority entries can raise them above built-ins.
+
     Returns:
         (menu_commands, hidden_count) where hidden_count is the number of
         commands omitted due to the cap.
     """
-    core_commands = _prioritize_telegram_menu_commands(list(telegram_bot_commands()))
+    core_commands = list(telegram_bot_commands())
+    quick_entries = telegram_quick_command_entries(_configured_telegram_quick_commands())
+    quick_commands = [(name, desc) for name, desc, _raw_name in quick_entries]
     reserved_names = {n for n, _ in core_commands}
-    all_commands = list(core_commands)
+    reserved_names.update(n for n, _ in quick_commands)
+    all_commands = _prioritize_telegram_menu_commands(core_commands + quick_commands)
     hidden_core_count = max(0, len(all_commands) - max_commands)
 
     remaining_slots = max(0, max_commands - len(all_commands))

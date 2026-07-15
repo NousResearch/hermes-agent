@@ -9748,9 +9748,16 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 quick_commands = self.config.get("quick_commands", {}) or {}
             else:
                 quick_commands = getattr(self.config, "quick_commands", {}) or {}
-            if isinstance(quick_commands, dict) and command in quick_commands:
-                qcmd = quick_commands[command]
-                if qcmd.get("type") == "alias":
+            if isinstance(quick_commands, dict):
+                from hermes_cli.commands import resolve_telegram_quick_command
+
+                quick_command = (
+                    resolve_telegram_quick_command(quick_commands, command)
+                    if source.platform == Platform.TELEGRAM
+                    else None
+                ) or command
+                qcmd = quick_commands.get(quick_command)
+                if isinstance(qcmd, dict) and qcmd.get("type") == "alias":
                     target = (qcmd.get("target") or "").strip()
                     if target:
                         target = target if target.startswith("/") else f"/{target}"
@@ -10122,18 +10129,29 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 quick_commands = getattr(self.config, "quick_commands", {}) or {}
             if not isinstance(quick_commands, dict):
                 quick_commands = {}
-            if command in quick_commands:
+            if quick_commands:
+                from hermes_cli.commands import resolve_telegram_quick_command
+
+                quick_command = (
+                    resolve_telegram_quick_command(quick_commands, command)
+                    if source.platform == Platform.TELEGRAM
+                    else None
+                ) or command
+                qcmd = quick_commands.get(quick_command)
+            else:
+                quick_command = command
+                qcmd = None
+            if isinstance(qcmd, dict):
                 # Quick commands are slash capabilities too — and type:exec
                 # ones run a shell command in the gateway process. The early
                 # gate above only fires for registry-known commands, so quick
                 # commands (never in the registry) would otherwise reach this
                 # dispatch sink unchecked. Apply the same admin/user policy to
-                # the raw typed name here so non-admins can't invoke admin-only
-                # quick commands. (#44727)
-                _denied = self._check_slash_access(source, command)
+                # the configured raw name so Telegram menu aliases cannot
+                # grant access to a differently named command. (#44727)
+                _denied = self._check_slash_access(source, quick_command)
                 if _denied is not None:
                     return _denied
-                qcmd = quick_commands[command]
                 if qcmd.get("type") == "exec":
                     exec_cmd = qcmd.get("command", "")
                     if exec_cmd:

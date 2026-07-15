@@ -1005,6 +1005,7 @@ class TestCapabilitiesEndpoint:
             assert data["features"]["chat_completions"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
+            assert data["features"]["run_permission_mode"] is True
             assert data["features"]["run_task_updates"] is True
             assert data["features"]["run_subagent_updates"] is True
             assert data["features"]["mobile_notifications"] is True

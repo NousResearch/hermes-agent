@@ -186,6 +186,55 @@ class TestStartRun:
         assert adapter._run_statuses == {}
 
     @pytest.mark.asyncio
+    async def test_start_invalid_permission_mode_does_not_allocate_run(self, adapter):
+        app = _create_runs_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                json={"input": "hello", "permission_mode": "unrestricted"},
+            )
+            data = await resp.json()
+
+        assert resp.status == 400
+        assert data["error"]["code"] == "invalid_permission_mode"
+        assert adapter._run_streams == {}
+        assert adapter._run_statuses == {}
+
+    @pytest.mark.asyncio
+    async def test_full_access_permission_is_scoped_to_one_run(self, adapter):
+        app = _create_runs_app(adapter)
+        observed = []
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent") as mock_create:
+                mock_agent = MagicMock()
+
+                def run_conversation(**_kwargs):
+                    observed.append(approval_mod.is_current_session_yolo_enabled())
+                    return {"final_response": "done"}
+
+                mock_agent.run_conversation.side_effect = run_conversation
+                mock_agent.session_prompt_tokens = 0
+                mock_agent.session_completion_tokens = 0
+                mock_agent.session_total_tokens = 0
+                mock_create.return_value = mock_agent
+
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "permission_mode": "full-access"},
+                )
+                assert resp.status == 202
+                run_id = (await resp.json())["run_id"]
+
+                for _ in range(20):
+                    status = await (await cli.get(f"/v1/runs/{run_id}")).json()
+                    if status["status"] == "completed":
+                        break
+                    await asyncio.sleep(0.05)
+
+        assert observed == [True]
+        assert approval_mod.is_session_yolo_enabled(run_id) is False
+
+    @pytest.mark.asyncio
     async def test_start_requires_auth(self, auth_adapter):
         app = _create_runs_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:

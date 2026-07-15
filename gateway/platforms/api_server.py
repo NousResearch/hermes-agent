@@ -1742,6 +1742,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_stop": True,
                 "run_approval_response": True,
                 "run_reasoning_effort": True,
+                "run_permission_mode": True,
                 "thinking_progress_events": self._thinking_progress_enabled(),
                 "run_task_updates": True,
                 "run_subagent_updates": True,
@@ -4719,6 +4720,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     status=400,
                 )
 
+        permission_mode = body.get("permission_mode", "default")
+        if not isinstance(permission_mode, str) or permission_mode not in {"default", "full-access"}:
+            return web.json_response(
+                _openai_error(
+                    f"Invalid permission_mode: {permission_mode!r}",
+                    code="invalid_permission_mode",
+                ),
+                status=400,
+            )
+
         # Accept explicit conversation_history from the request body.
         # Precedence: explicit conversation_history > previous_response_id.
         conversation_history: List[Dict[str, str]] = []
@@ -4911,6 +4922,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 def _run_sync():
                     from gateway.session_context import clear_session_vars
                     from tools.approval import (
+                        clear_session,
+                        enable_session_yolo,
                         register_gateway_notify,
                         reset_current_session_key,
                         set_current_session_key,
@@ -4929,6 +4942,8 @@ class APIServerAdapter(BasePlatformAdapter):
                             session_key=approval_session_key,
                         )
                         register_gateway_notify(approval_session_key, _approval_notify)
+                        if permission_mode == "full-access":
+                            enable_session_yolo(approval_session_key)
                         r = agent.run_conversation(
                             user_message=user_message,
                             conversation_history=conversation_history,
@@ -4938,6 +4953,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         try:
                             unregister_gateway_notify(approval_session_key)
                         finally:
+                            clear_session(approval_session_key)
                             if approval_token is not None:
                                 try:
                                     reset_current_session_key(approval_token)
@@ -5057,9 +5073,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 # waits immediately; the in-thread unregister is harmlessly
                 # idempotent on normal completion.
                 try:
-                    from tools.approval import unregister_gateway_notify
+                    from tools.approval import clear_session, unregister_gateway_notify
 
                     unregister_gateway_notify(approval_session_key)
+                    clear_session(approval_session_key)
                 except Exception:
                     pass
                 # Sentinel: signal SSE stream to close

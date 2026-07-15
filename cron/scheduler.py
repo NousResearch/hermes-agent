@@ -12,6 +12,7 @@ import asyncio
 import atexit
 import concurrent.futures
 import contextvars
+import hashlib
 import json
 import logging
 import os
@@ -1277,7 +1278,7 @@ def _send_media_via_adapter(
     loop,
     job: dict,
     platform=None,
-) -> None:
+) -> tuple[int, int]:
     """Send extracted MEDIA files as native platform attachments via a live adapter.
 
     Routes each file to the appropriate adapter method (send_voice, send_image_file,
@@ -1288,7 +1289,9 @@ def _send_media_via_adapter(
 
     from gateway.platforms.base import BasePlatformAdapter, should_send_media_as_audio
 
+    requested_count = len(media_files)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    confirmed_count = 0
 
     for media_path, _is_voice in media_files:
         try:
@@ -1310,19 +1313,29 @@ def _send_media_via_adapter(
                     "Job '%s': cannot send media %s, gateway loop unavailable",
                     job.get("id", "?"), media_path,
                 )
-                return
+                break
             try:
                 result = future.result(timeout=30)
             except TimeoutError:
                 future.cancel()
                 raise
-            if result and not getattr(result, "success", True):
+            if isinstance(result, dict):
+                media_success = result.get("success") is True
+                media_error = result.get("error", "unknown")
+            else:
+                media_success = getattr(result, "success", None) is True
+                media_error = getattr(result, "error", "unknown")
+            if media_success:
+                confirmed_count += 1
+            else:
                 logger.warning(
                     "Job '%s': media send failed for %s: %s",
-                    job.get("id", "?"), media_path, getattr(result, "error", "unknown"),
+                    job.get("id", "?"), media_path, media_error,
                 )
         except Exception as e:
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
+
+    return requested_count, confirmed_count
 
 
 def _confirm_adapter_delivery(send_result) -> bool:
@@ -1402,7 +1415,139 @@ def _is_channel_dm_topic(
     return is_channel
 
 
-def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
+def _sha256_text(value: str) -> str:
+    return "sha256:" + hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def _delivery_dedup_key(content: str, targets: list[dict]) -> str:
+    """Hash deterministic output plus its resolved destination without storing IDs."""
+    target_hashes = []
+    for target in targets:
+        identity = "\0".join(
+            (
+                str(target.get("platform") or "").lower(),
+                str(target.get("chat_id") or ""),
+                str(target.get("thread_id") or ""),
+            )
+        )
+        target_hashes.append(_sha256_text(identity))
+    canonical = json.dumps(
+        {
+            "content_sha256": _sha256_text(content),
+            "target_hashes": target_hashes,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return _sha256_text(canonical)
+
+
+def _new_delivery_receipt(
+    confirmation: str,
+    *,
+    dedup_holds_key: bool = False,
+    delivery_key: Optional[str] = None,
+    target_count: int = 0,
+    error_kind: Optional[str] = None,
+) -> dict:
+    """Build the bounded, privacy-safe latest receipt stored on a cron job."""
+    return {
+        "schema": "hermes.cron-delivery-receipt/v1",
+        "created_at": _hermes_now().isoformat(),
+        "confirmation": confirmation,
+        "dedup_holds_key": bool(dedup_holds_key),
+        "delivery_key_sha256": delivery_key,
+        "target_count": int(target_count),
+        "message_id_hashes": [],
+        "attempt_counts": [],
+        "thread_fallback": False,
+        "error_kind": error_kind,
+    }
+
+
+def _hash_message_ids(values: Any) -> list[str]:
+    if not isinstance(values, (list, tuple)):
+        values = [values] if values is not None else []
+    return [_sha256_text(str(value)) for value in values[:64] if value is not None]
+
+
+def _record_delivery_result(receipt: dict, send_result: Any) -> None:
+    """Copy only bounded non-sensitive diagnostics from an adapter result."""
+    if isinstance(send_result, dict):
+        raw = send_result.get("raw_response") or {}
+        message_id = send_result.get("message_id")
+    else:
+        raw = getattr(send_result, "raw_response", None) or {}
+        message_id = getattr(send_result, "message_id", None)
+    if not isinstance(raw, dict):
+        raw = {}
+    message_ids = raw.get("message_ids") or raw.get("continuation_message_ids")
+    if not message_ids and message_id is not None:
+        message_ids = [message_id]
+    receipt["message_id_hashes"] = _hash_message_ids(message_ids)
+    attempts = raw.get("attempt_counts")
+    if isinstance(attempts, (list, tuple)):
+        receipt["attempt_counts"] = [
+            max(0, int(value)) for value in attempts[:64] if isinstance(value, (int, float))
+        ]
+    receipt["thread_fallback"] = bool(raw.get("thread_fallback", False))
+
+
+def _classify_standalone_delivery(result: Any) -> tuple[str, bool, str | None]:
+    """Classify a standalone sender response without guessing delivery truth.
+
+    The standalone sender contract spans built-in and plugin platforms, so the
+    response may be a mapping or a ``SendResult``-like object.  Only an
+    explicit whole-payload success is confirmed.  An absent/unknown response is
+    ambiguous and therefore holds the dedup key; an explicit failure or a
+    success carrying warnings remains retryable.  ``filtered`` is an intentional
+    drop and must neither be replayed nor suppress a later real alert.
+    """
+    if isinstance(result, dict):
+        success = result.get("success")
+        delivered = result.get("delivered")
+        warnings = result.get("warnings")
+        error = result.get("error")
+        message_id = result.get("message_id")
+        raw = result.get("raw_response")
+    else:
+        success = getattr(result, "success", None)
+        delivered = getattr(result, "delivered", None)
+        warnings = getattr(result, "warnings", None)
+        error = getattr(result, "error", None)
+        message_id = getattr(result, "message_id", None)
+        raw = getattr(result, "raw_response", None)
+
+    raw = raw if isinstance(raw, dict) else {}
+    if raw.get("partial_send") is True:
+        return "partial", True, "partial_send"
+    if success is True and delivered is False:
+        return "filtered", False, None
+    if success is True and not warnings and not error:
+        return "confirmed", True, None
+    if success is True:
+        return "partial", False, "partial_delivery"
+    partial_evidence = bool(
+        message_id
+        or raw.get("message_ids")
+        or raw.get("continuation_message_ids")
+    )
+    if success is not True and partial_evidence:
+        return "partial", True, "partial_delivery"
+    if error:
+        return "failed", False, "delivery_failed"
+    if success is False:
+        return "failed", False, "delivery_failed"
+    return "unconfirmed", True, "delivery_unconfirmed"
+
+
+def _deliver_result(
+    job: dict,
+    content: str,
+    adapters=None,
+    loop=None,
+    receipt_out: Optional[dict] = None,
+) -> Optional[str]:
     """
     Deliver job output to the configured target(s) (origin chat, specific platform, etc.).
 
@@ -1414,9 +1559,23 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     Returns None on success, or an error string on failure.
     """
     targets = _resolve_delivery_targets(job)
+    receipt = receipt_out if isinstance(receipt_out, dict) else None
+    if receipt is not None:
+        receipt.clear()
+        receipt.update(
+            _new_delivery_receipt(
+                "failed" if len(targets) == 1 else "ineligible",
+                target_count=len(targets),
+                error_kind="delivery_failed" if len(targets) == 1 else None,
+            )
+        )
     if not targets:
         deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
         if deliver_value == "local":
+            if receipt is not None:
+                receipt.update(
+                    _new_delivery_receipt("local", target_count=0)
+                )
             return None  # local-only jobs don't deliver — not a failure
         # deliver=origin with no resolvable origin and no configured home
         # channels: treat as local rather than reporting an error.  CLI-created
@@ -1430,9 +1589,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 "skipping delivery (output saved in last_output)",
                 job.get("name", job.get("id", "?")),
             )
+            if receipt is not None:
+                receipt.update(
+                    _new_delivery_receipt("local", target_count=0)
+                )
             return None
         msg = f"no delivery target resolved for deliver={deliver_value}"
         logger.warning("Job '%s': %s", job["id"], msg)
+        if receipt is not None:
+            receipt.update(
+                _new_delivery_receipt(
+                    "failed", target_count=0, error_kind="no_delivery_target"
+                )
+            )
         return msg
 
     from tools.send_message_tool import _send_to_platform
@@ -1465,7 +1634,9 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
     # Extract MEDIA: tags so attachments are forwarded as files, not raw text
     from gateway.platforms.base import BasePlatformAdapter
     media_files, cleaned_delivery_content = BasePlatformAdapter.extract_media(delivery_content)
+    requested_media_count = len(media_files)
     media_files = BasePlatformAdapter.filter_media_delivery_paths(media_files)
+    rejected_media_count = requested_media_count - len(media_files)
 
     # Resolve the delivery-mirror gate ONCE (default off). When on, each
     # successful delivery is also appended to the target chat's gateway session
@@ -1488,6 +1659,27 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         return msg
 
     delivery_errors = []
+
+    def _record_rejected_media() -> str | None:
+        if rejected_media_count <= 0:
+            return None
+        msg = (
+            f"{rejected_media_count} media attachment(s) rejected by "
+            "safe-path validation"
+        )
+        if receipt is not None and len(targets) == 1:
+            # A partial text send already carries stronger evidence that a
+            # full retry would duplicate a delivered prefix. Preserve that
+            # hold; otherwise the rejected attachment makes whole-payload
+            # confirmation false and the deterministic alert stays retryable.
+            if not (
+                receipt.get("confirmation") == "partial"
+                and receipt.get("dedup_holds_key") is True
+            ):
+                receipt["confirmation"] = "partial"
+                receipt["dedup_holds_key"] = False
+                receipt["error_kind"] = "media_path_rejected"
+        return msg
 
     for target in targets:
         platform_name = target["platform"]
@@ -1540,6 +1732,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)
         delivered = False
+        standalone_allowed = True
         target_errors = []
 
         # Continuable cron surface (D1/D2/D6): resolve the delivery surface for
@@ -1752,6 +1945,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 timeout_handled = True
                             else:
                                 timed_out = True
+                                if receipt is not None and len(targets) == 1:
+                                    receipt.update(
+                                        _new_delivery_receipt(
+                                            "assumed",
+                                            dedup_holds_key=True,
+                                            target_count=1,
+                                        )
+                                    )
+                                    receipt["attempt_counts"] = [1]
                                 timeout_handled = True
                                 logger.warning(
                                     "Job '%s': live adapter send to %s:%s timed out "
@@ -1789,7 +1991,52 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 send_success = _confirm_adapter_delivery(send_result)
                                 send_raw_response = getattr(send_result, "raw_response", None)
 
-                            if not send_success:
+                            send_raw_response = (
+                                send_raw_response
+                                if isinstance(send_raw_response, dict)
+                                else {}
+                            )
+                            partial_send = send_raw_response.get("partial_send") is True
+                            filtered = (
+                                isinstance(send_result, dict)
+                                and send_result.get("success") is True
+                                and send_result.get("delivered") is False
+                            )
+
+                            if partial_send:
+                                msg = (
+                                    f"live adapter delivery to {platform_name}:{chat_id} "
+                                    "partially completed; full-payload replay suppressed"
+                                )
+                                logger.warning("Job '%s': %s", job["id"], msg)
+                                target_errors.append(msg)
+                                standalone_allowed = False
+                                adapter_ok = False
+                                if receipt is not None and len(targets) == 1:
+                                    receipt.update(
+                                        _new_delivery_receipt(
+                                            "partial",
+                                            dedup_holds_key=True,
+                                            target_count=1,
+                                            error_kind="partial_send",
+                                        )
+                                    )
+                                    _record_delivery_result(receipt, send_result)
+                            elif filtered:
+                                # The live gateway intentionally discarded the
+                                # narration.  Replaying through standalone would
+                                # bypass that policy filter, while calling it
+                                # confirmed would poison deterministic dedup.
+                                standalone_allowed = False
+                                adapter_ok = False
+                                if receipt is not None and len(targets) == 1:
+                                    receipt.update(
+                                        _new_delivery_receipt(
+                                            "filtered",
+                                            target_count=1,
+                                        )
+                                    )
+                            elif not send_success:
                                 if isinstance(send_result, dict):
                                     err = send_result.get("error", "unknown")
                                     shape = "dict"
@@ -1809,18 +2056,28 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 )
                                 target_errors.append(msg)
                                 adapter_ok = False  # fall through to standalone path
-                            elif (
-                                send_raw_response
-                                and thread_id
-                                and send_raw_response.get("thread_fallback")
-                            ):
-                                requested_thread_id = send_raw_response.get("requested_thread_id") or thread_id
-                                msg = (
-                                    f"configured thread_id {requested_thread_id} for "
-                                    f"{platform_name}:{chat_id} was not found; delivered without thread_id"
-                                )
-                                logger.warning("Job '%s': %s", job["id"], msg)
-                                delivery_errors.append(msg)
+                            else:
+                                if receipt is not None and len(targets) == 1:
+                                    receipt.update(
+                                        _new_delivery_receipt(
+                                            "confirmed",
+                                            dedup_holds_key=True,
+                                            target_count=1,
+                                        )
+                                    )
+                                    _record_delivery_result(receipt, send_result)
+                                if (
+                                    send_raw_response
+                                    and thread_id
+                                    and send_raw_response.get("thread_fallback")
+                                ):
+                                    requested_thread_id = send_raw_response.get("requested_thread_id") or thread_id
+                                    msg = (
+                                        f"configured thread_id {requested_thread_id} for "
+                                        f"{platform_name}:{chat_id} was not found; delivered without thread_id"
+                                    )
+                                    logger.warning("Job '%s': %s", job["id"], msg)
+                                    delivery_errors.append(msg)
 
                 # Send extracted media files as native attachments via the live
                 # adapter, using the same DM-topic-aware routing as the text send
@@ -1832,7 +2089,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 # skipped attachments so the drop is visible rather than silently
                 # lost.
                 if adapter_ok and not timed_out and media_files:
-                    _send_media_via_adapter(
+                    requested_media, confirmed_media = _send_media_via_adapter(
                         runtime_adapter,
                         chat_id,
                         media_files,
@@ -1841,6 +2098,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                         job,
                         platform=platform,
                     )
+                    if confirmed_media != requested_media:
+                        msg = (
+                            f"{requested_media - confirmed_media} of "
+                            f"{requested_media} media attachment(s) were not confirmed "
+                            f"for {platform_name}:{chat_id}"
+                        )
+                        delivery_errors.append(msg)
+                        if receipt is not None and len(targets) == 1:
+                            receipt["confirmation"] = "partial"
+                            receipt["dedup_holds_key"] = False
+                            receipt["error_kind"] = "media_delivery_incomplete"
                 elif timed_out and media_files:
                     msg = (
                         f"{len(media_files)} media attachment(s) not delivered to "
@@ -1848,6 +2116,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     )
                     logger.warning("Job '%s': %s", job["id"], msg)
                     delivery_errors.append(msg)
+                    if receipt is not None and len(targets) == 1:
+                        receipt["confirmation"] = "partial"
+                        receipt["dedup_holds_key"] = False
+                        receipt["error_kind"] = "media_skipped_after_timeout"
 
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
@@ -1885,6 +2157,18 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     "Job '%s': %s, falling back to standalone",
                     job["id"], err_msg,
                 )
+
+        if not standalone_allowed:
+            rejected_error = _record_rejected_media()
+            if rejected_error:
+                target_errors.append(rejected_error)
+            delivery_errors.extend(target_errors)
+            continue
+
+        if delivered:
+            rejected_error = _record_rejected_media()
+            if rejected_error:
+                delivery_errors.append(rejected_error)
 
         if not delivered:
             # If the interpreter is finalizing (gateway SIGTERM / restart /
@@ -1954,10 +2238,37 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 delivery_errors.extend(target_errors)
                 continue
 
-            if result and result.get("error"):
-                msg = f"delivery error: {result['error']}"
+            confirmation, holds_key, error_kind = _classify_standalone_delivery(result)
+            if rejected_media_count > 0:
+                confirmation = "partial"
+                holds_key = False
+                error_kind = "media_path_rejected"
+            if receipt is not None and len(targets) == 1:
+                receipt.update(
+                    _new_delivery_receipt(
+                        confirmation,
+                        dedup_holds_key=holds_key,
+                        target_count=1,
+                        error_kind=error_kind,
+                    )
+                )
+                _record_delivery_result(receipt, result)
+
+            if confirmation == "filtered":
+                logger.info(
+                    "Job '%s': delivery to %s:%s intentionally filtered",
+                    job["id"], platform_name, chat_id,
+                )
+                continue
+            if confirmation != "confirmed":
+                if confirmation == "partial":
+                    msg = f"delivery to {platform_name}:{chat_id} partially completed"
+                elif confirmation == "failed":
+                    msg = f"delivery to {platform_name}:{chat_id} failed"
+                else:
+                    msg = f"delivery to {platform_name}:{chat_id} was not explicitly confirmed"
                 logger.error("Job '%s': %s", job["id"], msg)
-                target_errors.extend([msg])
+                target_errors.append(msg)
                 delivery_errors.extend(target_errors)
                 continue
 
@@ -3595,6 +3906,7 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
         # deferred agent is still torn down. Otherwise the outer `except` would
         # swallow the error and leak the agent's subprocesses/clients (#10200).
         delivery_error = None
+        delivery_state = None
         try:
             output_file = save_job_output(job["id"], output)
             if verbose:
@@ -3632,7 +3944,87 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
                 logger.info("Job '%s': agent returned %s — skipping delivery", job["id"], SILENT_MARKER)
                 should_deliver = False
 
-            if should_deliver:
+            dedup_enabled = bool(
+                job.get("no_agent") and job.get("deduplicate_delivery")
+            )
+            if dedup_enabled:
+                targets = _resolve_delivery_targets(job)
+                delivery_key = (
+                    _delivery_dedup_key(deliver_content, targets)
+                    if len(targets) == 1
+                    else None
+                )
+                receipt = _new_delivery_receipt(
+                    "silent" if not should_deliver else "ineligible",
+                    delivery_key=delivery_key,
+                    target_count=len(targets),
+                )
+
+                if should_deliver and len(targets) == 1 and delivery_key in {
+                    job.get("last_delivery_key"),
+                    job.get("last_delivery_hold_key"),
+                }:
+                    should_deliver = False
+                    receipt.update(
+                        _new_delivery_receipt(
+                            "suppressed",
+                            dedup_holds_key=True,
+                            delivery_key=delivery_key,
+                            target_count=1,
+                        )
+                    )
+                    logger.info(
+                        "Job '%s': identical deterministic delivery suppressed",
+                        job["id"],
+                    )
+
+                if should_deliver:
+                    try:
+                        delivery_error = _deliver_result(
+                            job,
+                            deliver_content,
+                            adapters=adapters,
+                            loop=loop,
+                            receipt_out=receipt,
+                        )
+                    except Exception as de:
+                        delivery_error = str(de)
+                        receipt.update(
+                            _new_delivery_receipt(
+                                "failed",
+                                delivery_key=delivery_key,
+                                target_count=len(targets),
+                                error_kind="delivery_exception",
+                            )
+                        )
+                        logger.error("Delivery failed for job %s: %s", job["id"], de)
+
+                # The delivery implementation owns confirmation diagnostics;
+                # the scheduler owns the content+target key. Bind them here so
+                # a receipt can never advance a key for different output.
+                receipt["delivery_key_sha256"] = delivery_key
+                confirmation = receipt.get("confirmation")
+                holds_key = bool(receipt.get("dedup_holds_key"))
+                delivery_state = {"receipt": receipt}
+                if confirmation == "confirmed" and delivery_key:
+                    delivery_state["last_delivery_key"] = delivery_key
+                    delivery_state["last_delivery_hold_key"] = delivery_key
+                elif (
+                    confirmation in {"assumed", "suppressed", "partial", "unconfirmed"}
+                    and holds_key
+                    and delivery_key
+                ):
+                    delivery_state["last_delivery_hold_key"] = delivery_key
+                elif confirmation in {"silent", "local", "ineligible", "filtered"}:
+                    # Silence is the watchdog's recovery signal. Clearing the
+                    # old fingerprint lets the same alert be delivered again
+                    # if the condition later recurs. Local/fan-out routing is
+                    # likewise outside the single-target dedup contract.
+                    delivery_state["last_delivery_key"] = None
+                    delivery_state["last_delivery_hold_key"] = None
+                elif confirmation == "failed":
+                    delivery_state["last_delivery_hold_key"] = None
+            elif should_deliver:
                 try:
                     delivery_error = _deliver_result(job, deliver_content, adapters=adapters, loop=loop)
                 except Exception as de:
@@ -3653,7 +4045,13 @@ def run_one_job(job: dict, *, adapters=None, loop=None, verbose: bool = False) -
             error = "Agent completed but produced empty response (model error, timeout, or misconfiguration)"
 
         if not _consume_interrupted_flag(job["id"]):
-            mark_job_run(job["id"], success, error, delivery_error=delivery_error)
+            mark_job_run(
+                job["id"],
+                success,
+                error,
+                delivery_error=delivery_error,
+                delivery_state=delivery_state,
+            )
         return True
 
     except Exception as e:

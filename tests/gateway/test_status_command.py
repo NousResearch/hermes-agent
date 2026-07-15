@@ -735,3 +735,84 @@ async def test_post_delivery_callback_generation_snapshot_happens_after_bind():
     assert fired == []
     assert session_key in adapter._post_delivery_callbacks
     assert adapter._post_delivery_callbacks[session_key][0] == 2
+
+
+@pytest.mark.asyncio
+async def test_pending_drain_keeps_each_generation_callback_owned():
+    """A queued follow-up must not strand or steal the prior turn's callback."""
+    import asyncio
+    from gateway.platforms.base import BasePlatformAdapter, SendResult
+
+    source = _make_source()
+    session_key = build_session_key(source)
+    fired = []
+    second_started = asyncio.Event()
+    release_second = asyncio.Event()
+
+    class _ConcreteAdapter(BasePlatformAdapter):
+        platform = Platform.TELEGRAM
+
+        async def connect(self, *, is_reconnect: bool = False): pass
+        async def disconnect(self): pass
+        async def send(self, chat_id, content, **kwargs):
+            return SendResult(success=True, message_id=content)
+        async def get_chat_info(self, chat_id): return {}
+
+    adapter = _ConcreteAdapter(
+        PlatformConfig(enabled=True, token="***", typing_indicator=False),
+        Platform.TELEGRAM,
+    )
+    call_count = 0
+
+    async def fake_handler(event):
+        nonlocal call_count
+        call_count += 1
+        interrupt_event = adapter._active_sessions[session_key]
+        generation = call_count
+        setattr(interrupt_event, "_hermes_run_generation", generation)
+        adapter.register_post_delivery_callback(
+            session_key,
+            lambda generation=generation, active=interrupt_event: fired.append(
+                (
+                    generation,
+                    getattr(
+                        getattr(active, "_hermes_last_delivery_result", None),
+                        "message_id",
+                        None,
+                    ),
+                )
+            ),
+            generation=generation,
+        )
+        if generation == 1:
+            adapter._pending_messages[session_key] = MessageEvent(
+                text="queued",
+                source=source,
+                message_id="m2",
+            )
+            return "first"
+        setattr(
+            interrupt_event,
+            "_hermes_last_delivery_result",
+            SendResult(success=True, message_id="second-overwrite"),
+        )
+        second_started.set()
+        await release_second.wait()
+        return "second"
+
+    adapter.set_message_handler(fake_handler)
+    await adapter.handle_message(
+        MessageEvent(text="first", source=source, message_id="m1")
+    )
+    await asyncio.wait_for(second_started.wait(), timeout=1)
+    release_second.set()
+
+    for _ in range(4):
+        tasks = list(adapter._background_tasks)
+        if not tasks:
+            break
+        await asyncio.gather(*tasks)
+        await asyncio.sleep(0)
+
+    assert fired == [(1, "first"), (2, "second")]
+    assert session_key not in adapter._post_delivery_callbacks

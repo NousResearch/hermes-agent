@@ -67,6 +67,15 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         ),
     )
     cron_create.add_argument(
+        "--deduplicate-delivery",
+        action="store_true",
+        default=False,
+        help=(
+            "Suppress identical deterministic deliveries after a confirmed or "
+            "in-flight send. Requires --no-agent."
+        ),
+    )
+    cron_create.add_argument(
         "--workdir",
         help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
     )
@@ -129,6 +138,21 @@ def build_cron_parser(subparsers, *, cmd_cron: Callable) -> None:
         action="store_const",
         const=False,
         help="Disable no-agent mode on this job (reverts to LLM-driven execution).",
+    )
+    cron_edit.add_argument(
+        "--deduplicate-delivery",
+        dest="deduplicate_delivery",
+        action="store_const",
+        const=True,
+        default=None,
+        help="Enable duplicate suppression for deterministic no-agent delivery.",
+    )
+    cron_edit.add_argument(
+        "--allow-duplicate-delivery",
+        dest="deduplicate_delivery",
+        action="store_const",
+        const=False,
+        help="Disable duplicate suppression for this job.",
     )
     cron_edit.add_argument(
         "--workdir",

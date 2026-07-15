@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
+import subprocess
+import threading
+import time
 from collections.abc import Mapping
 from typing import Any
 
@@ -13,6 +17,9 @@ QUICK_COMMAND_INPUT_MAX_BYTES = 8192
 QUICK_COMMAND_OUTPUT_MAX_BYTES = 65536
 QUICK_COMMAND_METADATA_MAX_BYTES = 256
 QUICK_COMMAND_DESTINATION_ALIAS_MAX_BYTES = 64
+
+_OUTPUT_READ_CHUNK_BYTES = 8192
+_PROCESS_STOP_GRACE_SECONDS = 2
 
 _DESTINATION_ALIAS_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]*$")
 _TRUSTED_BASE_ENV_KEYS = (
@@ -35,6 +42,189 @@ class QuickCommandConfigError(ValueError):
 
 class QuickCommandOutputError(ValueError):
     """Raised when deterministic command output cannot be returned safely."""
+
+
+def run_bounded_argv(
+    argv: list[str],
+    *,
+    env: Mapping[str, str],
+    timeout: float = QUICK_COMMAND_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[bytes]:
+    """Run exact argv while enforcing the combined output cap as bytes arrive."""
+    proc = subprocess.Popen(
+        argv,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env=dict(env),
+    )
+    if proc.stdout is None or proc.stderr is None:  # pragma: no cover - Popen contract
+        _terminate_sync_process(proc)
+        raise QuickCommandOutputError("output streams are unavailable")
+
+    stdout = bytearray()
+    stderr = bytearray()
+    output_lock = threading.Lock()
+    overflow = threading.Event()
+    reader_errors: list[BaseException] = []
+
+    def _read_stream(stream: Any, destination: bytearray) -> None:
+        try:
+            while True:
+                read_available = getattr(stream, "read1", stream.read)
+                chunk = read_available(_OUTPUT_READ_CHUNK_BYTES)
+                if not chunk:
+                    return
+                with output_lock:
+                    if len(stdout) + len(stderr) + len(chunk) > QUICK_COMMAND_OUTPUT_MAX_BYTES:
+                        overflow.set()
+                        return
+                    destination.extend(chunk)
+        except BaseException as exc:  # surfaced on the caller thread
+            reader_errors.append(exc)
+        finally:
+            stream.close()
+
+    readers = [
+        threading.Thread(
+            target=_read_stream,
+            args=(proc.stdout, stdout),
+            name="quick-command-stdout",
+            daemon=True,
+        ),
+        threading.Thread(
+            target=_read_stream,
+            args=(proc.stderr, stderr),
+            name="quick-command-stderr",
+            daemon=True,
+        ),
+    ]
+    for reader in readers:
+        reader.start()
+
+    deadline = time.monotonic() + timeout
+    timed_out = False
+    while proc.poll() is None and not overflow.is_set():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            timed_out = True
+            break
+        overflow.wait(min(0.05, remaining))
+
+    if timed_out or overflow.is_set():
+        _terminate_sync_process(proc)
+    else:
+        proc.wait()
+    for reader in readers:
+        reader.join(_PROCESS_STOP_GRACE_SECONDS)
+
+    if timed_out:
+        raise subprocess.TimeoutExpired(
+            argv,
+            timeout,
+            output=bytes(stdout),
+            stderr=bytes(stderr),
+        )
+    if overflow.is_set():
+        raise QuickCommandOutputError(
+            f"output exceeds {QUICK_COMMAND_OUTPUT_MAX_BYTES} UTF-8 bytes"
+        )
+    if any(reader.is_alive() for reader in readers):
+        raise QuickCommandOutputError("output streams did not close")
+    if reader_errors:
+        raise OSError("quick-command output read failed") from reader_errors[0]
+
+    return subprocess.CompletedProcess(
+        argv,
+        proc.returncode,
+        stdout=bytes(stdout),
+        stderr=bytes(stderr),
+    )
+
+
+async def communicate_bounded_async(
+    proc: asyncio.subprocess.Process,
+    *,
+    timeout: float = QUICK_COMMAND_TIMEOUT_SECONDS,
+) -> tuple[bytes, bytes]:
+    """Read an asyncio subprocess without ever buffering beyond the output cap."""
+    if proc.stdout is None or proc.stderr is None:
+        await _terminate_async_process(proc)
+        raise QuickCommandOutputError("output streams are unavailable")
+
+    stdout = bytearray()
+    stderr = bytearray()
+
+    async def _read_stream(
+        stream: asyncio.StreamReader, destination: bytearray
+    ) -> None:
+        while True:
+            chunk = await stream.read(_OUTPUT_READ_CHUNK_BYTES)
+            if not chunk:
+                return
+            # This block has no await, so the event loop makes the combined
+            # check-and-append atomic across the two reader tasks.
+            if len(stdout) + len(stderr) + len(chunk) > QUICK_COMMAND_OUTPUT_MAX_BYTES:
+                raise QuickCommandOutputError(
+                    f"output exceeds {QUICK_COMMAND_OUTPUT_MAX_BYTES} UTF-8 bytes"
+                )
+            destination.extend(chunk)
+
+    readers = [
+        asyncio.create_task(_read_stream(proc.stdout, stdout)),
+        asyncio.create_task(_read_stream(proc.stderr, stderr)),
+    ]
+    deadline = asyncio.get_running_loop().time() + timeout
+    try:
+        await asyncio.wait_for(asyncio.gather(*readers), timeout=timeout)
+        remaining = deadline - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            raise asyncio.TimeoutError
+        await asyncio.wait_for(proc.wait(), timeout=remaining)
+    except BaseException:
+        for reader in readers:
+            reader.cancel()
+        await asyncio.gather(*readers, return_exceptions=True)
+        await _terminate_async_process(proc)
+        raise
+
+    return bytes(stdout), bytes(stderr)
+
+
+def _terminate_sync_process(proc: subprocess.Popen[bytes]) -> None:
+    """Terminate, escalate if needed, and synchronously reap a child."""
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        pass
+    try:
+        proc.wait(timeout=_PROCESS_STOP_GRACE_SECONDS)
+        return
+    except subprocess.TimeoutExpired:
+        pass
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+    proc.wait()
+
+
+async def _terminate_async_process(proc: asyncio.subprocess.Process) -> None:
+    """Terminate, escalate if needed, and asynchronously reap a child."""
+    try:
+        proc.terminate()
+    except ProcessLookupError:
+        pass
+    try:
+        await asyncio.wait_for(proc.wait(), timeout=_PROCESS_STOP_GRACE_SECONDS)
+        return
+    except asyncio.TimeoutError:
+        pass
+    try:
+        proc.kill()
+    except ProcessLookupError:
+        pass
+    await proc.wait()
 
 
 def prepare_argv_command(qcmd: Any, argument_text: str) -> list[str]:

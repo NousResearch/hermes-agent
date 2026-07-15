@@ -11979,16 +11979,14 @@ def _(rid, params: dict) -> dict:
                 bounded_quick_command_output,
                 build_argv_environment,
                 prepare_argv_command,
+                run_bounded_argv,
             )
 
             try:
                 argv = prepare_argv_command(qc, arg)
-                r = subprocess.run(
+                r = run_bounded_argv(
                     argv,
-                    capture_output=True,
-                    text=True,
                     timeout=QUICK_COMMAND_TIMEOUT_SECONDS,
-                    stdin=subprocess.DEVNULL,
                     env=build_argv_environment(),
                 )
                 output = bounded_quick_command_output(r.stdout, r.stderr)

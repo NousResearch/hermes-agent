@@ -136,6 +136,26 @@ hermes cron run <job_id>    # fire it once to test
 
 That's the whole thing. No prompt, no skill, no model.
 
+### Optional duplicate suppression
+
+Deterministic watchdogs can opt in to suppress an identical message after it
+was confirmed delivered:
+
+```bash
+hermes cron create "every 5m" \
+  --no-agent \
+  --deduplicate-delivery \
+  --script memory-watchdog.sh \
+  --deliver telegram
+```
+
+This is off by default and is only valid with `--no-agent`. Hermes hashes the
+exact output and resolved destination; it does not store the raw chat or topic
+ID in the delivery receipt. A failed send remains retryable. If a send is
+already in flight but its acknowledgement times out, Hermes holds the hash to
+avoid a likely duplicate without recording the send as confirmed. Fan-out
+deliveries are reported as ineligible and are never deduplicated.
+
 
 ## How Script Output Maps to Delivery
 
@@ -198,8 +218,10 @@ hermes cron list                                    # see all jobs
 hermes cron pause <job_id>                          # stop firing, keep definition
 hermes cron resume <job_id>
 hermes cron edit <job_id> --schedule "every 10m"    # adjust cadence
-hermes cron edit <job_id> --agent                   # flip to LLM mode
+hermes cron edit <job_id> --agent --allow-duplicate-delivery # flip to LLM mode if dedup was on
 hermes cron edit <job_id> --no-agent --script …     # flip back
+hermes cron edit <job_id> --deduplicate-delivery    # opt in (no-agent only)
+hermes cron edit <job_id> --allow-duplicate-delivery # opt out
 hermes cron remove <job_id>                         # delete it
 ```
 

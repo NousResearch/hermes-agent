@@ -114,6 +114,12 @@ def _inject_fake_telegram(monkeypatch):
     monkeypatch.setitem(sys.modules, "telegram.constants", _fake_telegram_constants)
     monkeypatch.setitem(sys.modules, "telegram.ext", _fake_telegram_ext)
     monkeypatch.setitem(sys.modules, "telegram.request", _fake_telegram_request)
+    # Another collected test may have imported the adapter against the real
+    # python-telegram-bot package before this per-file fixture runs. Keep the
+    # cached module's enum aligned with the fake message fixtures as well.
+    from plugins.platforms.telegram import adapter as telegram_adapter
+
+    monkeypatch.setattr(telegram_adapter, "ChatType", _fake_telegram_constants.ChatType)
 
 
 def _make_adapter():

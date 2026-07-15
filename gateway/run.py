@@ -10172,8 +10172,107 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         QuickCommandOutputError,
                         bounded_quick_command_output,
                         build_gateway_argv_environment,
+                        communicate_bounded_async,
                         prepare_argv_command,
                     )
+
+                    canary_claim = None
+                    canary_authentication = None
+                    canary_duplicate_probe = False
+                    canary_payload_builder = None
+                    canary_receipt_path = None
+                    canary_state_path = None
+                    delivery_receipt = qcmd.get("delivery_receipt")
+                    if delivery_receipt not in (None, "telegram_canary"):
+                        return (
+                            f"Quick command '/{command}' configuration error: "
+                            "unsupported delivery_receipt."
+                        )
+                    if delivery_receipt == "telegram_canary":
+                        from hermes_cli.telegram_canary import (
+                            _auth_checks as telegram_canary_auth_checks,
+                            build_live_payload,
+                            canary_paths,
+                            claim_live_canary,
+                            mark_live_canary_pre_send_failure,
+                            strict_single_owner_id,
+                            verify_running_runtime_sha,
+                        )
+
+                        platform_name = getattr(source.platform, "value", source.platform)
+                        if platform_name != "telegram":
+                            return "Telegram canary is only available on Telegram."
+                        owner_id = strict_single_owner_id()
+                        destination_alias = str(qcmd.get("destination_alias", ""))
+                        source_chat_type = str(getattr(source, "chat_type", "")).lower()
+                        source_user_id = str(getattr(source, "user_id", "") or "")
+                        if (
+                            destination_alias != "owner"
+                            or source_chat_type not in {"dm", "private"}
+                            or owner_id is None
+                            or source_user_id != owner_id
+                        ):
+                            return "Telegram canary refused: exact owner DM authorization is required."
+                        runtime_sha = str(qcmd.get("runtime_sha", ""))
+                        if not verify_running_runtime_sha(runtime_sha):
+                            return "Telegram canary refused: running source does not match its clean runtime SHA."
+                        canary_authentication = telegram_canary_auth_checks()
+                        canary_authentication["source_authorized"] = bool(
+                            self._is_user_authorized(source)
+                            and source_user_id == owner_id
+                            and source_chat_type in {"dm", "private"}
+                        )
+                        if not all(canary_authentication.values()):
+                            return "Telegram canary refused: strict owner authorization is not active."
+                        canary_receipt_path, canary_state_path = canary_paths()
+                        try:
+                            canary_claim, duplicate = claim_live_canary(
+                                runtime_sha=runtime_sha,
+                                destination_alias=destination_alias,
+                                message_id=event.message_id,
+                                update_id=getattr(event, "platform_update_id", None),
+                                state_path=canary_state_path,
+                            )
+                        except ValueError as exc:
+                            return f"Quick command '/{command}' configuration error: {exc}."
+                        if duplicate:
+                            # Producer-level idempotency: an identical Telegram
+                            # update never spawns or emits a second response.
+                            return None
+                        _, canary_duplicate_probe = claim_live_canary(
+                            runtime_sha=runtime_sha,
+                            destination_alias=destination_alias,
+                            message_id=event.message_id,
+                            update_id=getattr(event, "platform_update_id", None),
+                            state_path=canary_state_path,
+                        )
+                        if not canary_duplicate_probe:
+                            mark_live_canary_pre_send_failure(
+                                canary_claim,
+                                state_path=canary_state_path,
+                                reason="idempotency_probe_failed",
+                            )
+                            return "Telegram canary refused: idempotency probe failed."
+                        canary_payload_builder = build_live_payload
+
+                    def _mark_canary_failure(reason: str) -> None:
+                        if canary_claim is None or canary_state_path is None:
+                            return
+                        try:
+                            from hermes_cli.telegram_canary import (
+                                mark_live_canary_pre_send_failure,
+                            )
+
+                            mark_live_canary_pre_send_failure(
+                                canary_claim,
+                                state_path=canary_state_path,
+                                reason=reason,
+                            )
+                        except Exception:
+                            logger.debug(
+                                "Telegram canary failure-state write failed",
+                                exc_info=True,
+                            )
 
                     try:
                         argv = prepare_argv_command(qcmd, event.get_command_args())
@@ -10185,9 +10284,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             update_id=getattr(event, "platform_update_id", None),
                         )
                     except QuickCommandConfigError as exc:
+                        _mark_canary_failure("quick_command_configuration_error")
                         return f"Quick command '/{command}' configuration error: {exc}."
 
-                    proc = None
                     try:
                         proc = await asyncio.create_subprocess_exec(
                             *argv,
@@ -10196,34 +10295,105 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             stderr=asyncio.subprocess.PIPE,
                             env=child_env,
                         )
-                        stdout, stderr = await asyncio.wait_for(
-                            proc.communicate(), timeout=QUICK_COMMAND_TIMEOUT_SECONDS
+                        stdout, stderr = await communicate_bounded_async(
+                            proc, timeout=QUICK_COMMAND_TIMEOUT_SECONDS
                         )
                     except asyncio.TimeoutError:
-                        if proc is not None:
-                            try:
-                                proc.terminate()
-                            except ProcessLookupError:
-                                pass
-                            try:
-                                await asyncio.wait_for(proc.wait(), timeout=2)
-                            except asyncio.TimeoutError:
-                                try:
-                                    proc.kill()
-                                except ProcessLookupError:
-                                    pass
-                                await proc.wait()
+                        _mark_canary_failure("quick_command_timeout")
                         return f"Quick command timed out ({QUICK_COMMAND_TIMEOUT_SECONDS}s)."
+                    except QuickCommandOutputError as exc:
+                        _mark_canary_failure("quick_command_output_error")
+                        return f"Quick command '/{command}' {exc}."
                     except Exception as exc:
+                        _mark_canary_failure("quick_command_spawn_error")
                         return f"Quick command error: {exc}"
 
                     try:
                         output = bounded_quick_command_output(stdout, stderr)
                     except QuickCommandOutputError as exc:
+                        _mark_canary_failure("quick_command_output_error")
                         return f"Quick command '/{command}' {exc}."
                     if proc.returncode != 0:
+                        _mark_canary_failure("quick_command_nonzero_exit")
                         detail = output or f"exit code {proc.returncode}"
                         return f"Quick command '/{command}' failed: {detail}"
+                    if canary_claim is not None:
+                        expected_payload = canary_payload_builder(
+                            canary_claim.runtime_sha
+                        )
+                        if output != expected_payload:
+                            _mark_canary_failure("unexpected_canary_payload")
+                            return "Telegram canary refused: payload did not match its runtime."
+                        adapter = self._adapter_for_source(source)
+                        active = (
+                            getattr(adapter, "_active_sessions", {}).get(_quick_key)
+                            if adapter is not None
+                            else None
+                        )
+                        if (
+                            adapter is None
+                            or active is None
+                            or not hasattr(adapter, "register_post_delivery_callback")
+                        ):
+                            _mark_canary_failure("delivery_observer_unavailable")
+                            return "Telegram canary refused: delivery observer is unavailable."
+
+                        # Quick commands run before the ordinary agent-turn
+                        # generation claim below. Claim and bind one concrete
+                        # generation now so this callback can never occupy or
+                        # consume the generation-less slot used by a fresher run.
+                        generation = self._begin_session_run_generation(_quick_key)
+                        self._bind_adapter_run_generation(
+                            adapter,
+                            _quick_key,
+                            generation,
+                        )
+                        setattr(event, "_hermes_preclaimed_run_generation", generation)
+
+                        setattr(
+                            active,
+                            "_hermes_synthetic_pre_send_connect_failure",
+                            True,
+                        )
+
+                        def _write_canary_receipt() -> None:
+                            from hermes_cli.telegram_canary import finalize_live_canary
+
+                            receipt, receipt_sha256 = finalize_live_canary(
+                                canary_claim,
+                                result=getattr(
+                                    active,
+                                    "_hermes_last_delivery_result",
+                                    None,
+                                ),
+                                payload=output,
+                                authentication=canary_authentication,
+                                duplicate_probe_suppressed=canary_duplicate_probe,
+                                receipt_path=canary_receipt_path,
+                                state_path=canary_state_path,
+                            )
+                            logger.info(
+                                "Telegram gateway canary receipt result=%s sha256=%s",
+                                receipt.get("result"),
+                                receipt_sha256,
+                            )
+
+                        try:
+                            adapter.register_post_delivery_callback(
+                                _quick_key,
+                                _write_canary_receipt,
+                                generation=generation,
+                            )
+                        except Exception:
+                            try:
+                                delattr(
+                                    active,
+                                    "_hermes_synthetic_pre_send_connect_failure",
+                                )
+                            except AttributeError:
+                                pass
+                            _mark_canary_failure("delivery_observer_registration_failed")
+                            return "Telegram canary refused: delivery observer registration failed."
                     return output if output else "Command returned no output."
                 elif qcmd_type == "alias":
                     target = (qcmd.get("target") or "").strip()
@@ -10459,7 +10629,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._running_agents[_quick_key] = _AGENT_PENDING_SENTINEL
         self._running_agents_ts[_quick_key] = time.time()
         self._persist_active_agents()
-        _run_generation = self._begin_session_run_generation(_quick_key)
+        _run_generation = getattr(event, "_hermes_preclaimed_run_generation", None)
+        if _run_generation is None:
+            _run_generation = self._begin_session_run_generation(_quick_key)
+        else:
+            try:
+                delattr(event, "_hermes_preclaimed_run_generation")
+            except AttributeError:
+                pass
 
         try:
             _agent_result = await self._handle_message_with_agent(event, source, _quick_key, _run_generation)

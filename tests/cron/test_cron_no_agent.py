@@ -12,7 +12,7 @@ Covers:
 from __future__ import annotations
 
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -77,6 +77,39 @@ def test_create_job_default_is_not_no_agent(hermes_env):
     assert job.get("no_agent") is False
 
 
+def test_create_job_delivery_dedup_is_explicit_and_no_agent_only(hermes_env):
+    from cron.jobs import create_job
+
+    script_path = hermes_env / "scripts" / "watchdog.sh"
+    script_path.write_text("#!/bin/bash\necho alert\n")
+    default_job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="watchdog.sh",
+        no_agent=True,
+        deliver="local",
+    )
+    assert default_job["deduplicate_delivery"] is False
+
+    dedup_job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="watchdog.sh",
+        no_agent=True,
+        deduplicate_delivery=True,
+        deliver="local",
+    )
+    assert dedup_job["deduplicate_delivery"] is True
+
+    with pytest.raises(ValueError, match="requires no_agent=True"):
+        create_job(
+            prompt="model task",
+            schedule="every 5m",
+            deduplicate_delivery=True,
+            deliver="local",
+        )
+
+
 def test_update_job_roundtrips_no_agent_flag(hermes_env):
     from cron.jobs import create_job, update_job, get_job
 
@@ -126,6 +159,48 @@ def test_cronjob_tool_create_no_agent_with_script_succeeds(hermes_env):
     assert result.get("success") is True
     assert result["job"]["no_agent"] is True
     assert result["job"]["script"] == "alert.sh"
+
+
+def test_cronjob_tool_roundtrips_delivery_dedup_and_rejects_model_job(hermes_env):
+    from tools.cronjob_tools import cronjob
+
+    script_path = hermes_env / "scripts" / "alert.sh"
+    script_path.write_text("#!/bin/bash\necho alert\n")
+    created = json.loads(
+        cronjob(
+            action="create",
+            schedule="every 5m",
+            script="alert.sh",
+            no_agent=True,
+            deduplicate_delivery=True,
+            deliver="local",
+        )
+    )
+    assert created["success"] is True
+    assert created["job"]["deduplicate_delivery"] is True
+
+    disabled = json.loads(
+        cronjob(
+            action="update",
+            job_id=created["job_id"],
+            deduplicate_delivery=False,
+        )
+    )
+    assert disabled["success"] is True
+    assert disabled["job"]["deduplicate_delivery"] is False
+
+    rejected = json.loads(
+        cronjob(
+            action="create",
+            schedule="every 5m",
+            prompt="model task",
+            no_agent=False,
+            deduplicate_delivery=True,
+            deliver="local",
+        )
+    )
+    assert rejected["success"] is False
+    assert "requires no_agent=True" in rejected["error"]
 
 
 def test_cronjob_tool_update_toggles_no_agent(hermes_env):
@@ -278,6 +353,694 @@ def test_run_job_no_agent_never_invokes_aiagent(hermes_env):
         run_job(job)
 
     ai_mock.assert_not_called()
+
+
+def _install_dedup_pipeline(monkeypatch, scheduler, *, content="same alert"):
+    deliveries = []
+
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda job, defer_agent_teardown=None: (True, "doc", content, None),
+    )
+    monkeypatch.setattr(
+        scheduler, "save_job_output", lambda job_id, output: f"/tmp/{job_id}.md"
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_resolve_delivery_targets",
+        lambda job: [
+            {
+                "platform": "telegram",
+                "chat_id": "raw-private-chat-id",
+                "thread_id": "raw-private-thread-id",
+            }
+        ],
+    )
+
+    def deliver(job, output, adapters=None, loop=None, receipt_out=None):
+        deliveries.append(output)
+        receipt_out.update(
+            {
+                "confirmation": "confirmed",
+                "dedup_holds_key": True,
+                "message_id_hashes": ["sha256:" + ("a" * 64)],
+                "attempt_counts": [2],
+                "thread_fallback": False,
+                "error_kind": None,
+            }
+        )
+        return None
+
+    monkeypatch.setattr(scheduler, "_deliver_result", deliver)
+    return deliveries
+
+
+def test_no_agent_confirmed_delivery_advances_key_and_suppresses_identical(
+    hermes_env, monkeypatch
+):
+    from cron.jobs import create_job, get_job
+    import cron.scheduler as scheduler
+
+    (hermes_env / "scripts" / "alert.sh").write_text("echo alert\n")
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="alert.sh",
+        no_agent=True,
+        deduplicate_delivery=True,
+        deliver="telegram:raw-private-chat-id",
+    )
+    deliveries = _install_dedup_pipeline(monkeypatch, scheduler)
+
+    assert scheduler.run_one_job(job) is True
+    after_first = get_job(job["id"])
+    assert after_first["last_delivery_key"].startswith("sha256:")
+    assert after_first["last_delivery_receipt"]["confirmation"] == "confirmed"
+    assert after_first["last_delivery_receipt"]["dedup_holds_key"] is True
+
+    assert scheduler.run_one_job(after_first) is True
+    after_second = get_job(job["id"])
+    assert deliveries == ["same alert"]
+    assert after_second["last_delivery_receipt"]["confirmation"] == "suppressed"
+    persisted = json.dumps(after_second["last_delivery_receipt"], sort_keys=True)
+    assert "raw-private-chat-id" not in persisted
+    assert "raw-private-thread-id" not in persisted
+
+
+def test_no_agent_silence_clears_key_so_same_alert_can_recur(
+    hermes_env, monkeypatch
+):
+    from cron.jobs import create_job, get_job
+    import cron.scheduler as scheduler
+
+    (hermes_env / "scripts" / "alert.sh").write_text("echo alert\n")
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="alert.sh",
+        no_agent=True,
+        deduplicate_delivery=True,
+        deliver="telegram:raw-private-chat-id",
+    )
+    deliveries = _install_dedup_pipeline(monkeypatch, scheduler)
+
+    assert scheduler.run_one_job(job) is True
+    active = get_job(job["id"])
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda job, defer_agent_teardown=None: (
+            True,
+            "doc",
+            scheduler.SILENT_MARKER,
+            None,
+        ),
+    )
+    assert scheduler.run_one_job(active) is True
+    recovered = get_job(job["id"])
+    assert recovered["last_delivery_key"] is None
+    assert recovered["last_delivery_hold_key"] is None
+
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda job, defer_agent_teardown=None: (True, "doc", "same alert", None),
+    )
+    assert scheduler.run_one_job(recovered) is True
+    assert deliveries == ["same alert", "same alert"]
+
+
+@pytest.mark.parametrize(
+    ("confirmation", "holds_key", "expected_delivery_calls", "expected_last_key"),
+    [
+        ("failed", False, 2, None),
+        ("assumed", True, 1, None),
+    ],
+)
+def test_no_agent_failed_retries_but_assumed_suppresses_without_confirmed_key(
+    hermes_env,
+    monkeypatch,
+    confirmation,
+    holds_key,
+    expected_delivery_calls,
+    expected_last_key,
+):
+    from cron.jobs import create_job, get_job
+    import cron.scheduler as scheduler
+
+    (hermes_env / "scripts" / "alert.sh").write_text("echo alert\n")
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="alert.sh",
+        no_agent=True,
+        deduplicate_delivery=True,
+        deliver="telegram:raw-private-chat-id",
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda job, defer_agent_teardown=None: (True, "doc", "same alert", None),
+    )
+    monkeypatch.setattr(
+        scheduler, "save_job_output", lambda job_id, output: f"/tmp/{job_id}.md"
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_resolve_delivery_targets",
+        lambda job: [
+            {"platform": "telegram", "chat_id": "raw-private-chat-id"}
+        ],
+    )
+    deliveries = []
+
+    def deliver(job, output, adapters=None, loop=None, receipt_out=None):
+        deliveries.append(output)
+        receipt_out.update(
+            {
+                "confirmation": confirmation,
+                "dedup_holds_key": holds_key,
+                "message_id_hashes": [],
+                "attempt_counts": [1],
+                "thread_fallback": False,
+                "error_kind": "delivery_failed" if confirmation == "failed" else None,
+            }
+        )
+        return "network failure" if confirmation == "failed" else None
+
+    monkeypatch.setattr(scheduler, "_deliver_result", deliver)
+
+    assert scheduler.run_one_job(job) is True
+    first = get_job(job["id"])
+    assert first.get("last_delivery_key") == expected_last_key
+    assert scheduler.run_one_job(first) is True
+    second = get_job(job["id"])
+    assert len(deliveries) == expected_delivery_calls
+    if confirmation == "assumed":
+        assert second["last_delivery_receipt"]["confirmation"] == "suppressed"
+        assert second["last_delivery_receipt"]["dedup_holds_key"] is True
+    else:
+        assert second["last_delivery_receipt"]["confirmation"] == "failed"
+        assert second["last_delivery_receipt"]["dedup_holds_key"] is False
+
+
+def test_no_agent_silent_local_and_multi_target_receipt_states(
+    hermes_env, monkeypatch
+):
+    from cron.jobs import create_job, get_job
+    import cron.scheduler as scheduler
+
+    (hermes_env / "scripts" / "alert.sh").write_text("echo alert\n")
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="alert.sh",
+        no_agent=True,
+        deduplicate_delivery=True,
+        deliver="local",
+    )
+    monkeypatch.setattr(
+        scheduler, "save_job_output", lambda job_id, output: f"/tmp/{job_id}.md"
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda job, defer_agent_teardown=None: (
+            True,
+            "doc",
+            scheduler.SILENT_MARKER,
+            None,
+        ),
+    )
+    assert scheduler.run_one_job(job) is True
+    assert get_job(job["id"])["last_delivery_receipt"]["confirmation"] == "silent"
+
+    local = get_job(job["id"])
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda job, defer_agent_teardown=None: (True, "doc", "alert", None),
+    )
+    monkeypatch.setattr(scheduler, "_resolve_delivery_targets", lambda job: [])
+    assert scheduler.run_one_job(local) is True
+    assert get_job(job["id"])["last_delivery_receipt"]["confirmation"] == "local"
+
+    multi = get_job(job["id"])
+    monkeypatch.setattr(
+        scheduler,
+        "_resolve_delivery_targets",
+        lambda job: [
+            {"platform": "telegram", "chat_id": "one"},
+            {"platform": "telegram", "chat_id": "two"},
+        ],
+    )
+    delivered = []
+
+    def multi_deliver(job, output, adapters=None, loop=None, receipt_out=None):
+        delivered.append(output)
+        receipt_out.update(
+            {
+                "confirmation": "ineligible",
+                "dedup_holds_key": False,
+                "message_id_hashes": [],
+                "attempt_counts": [],
+                "thread_fallback": False,
+                "error_kind": None,
+            }
+        )
+        return None
+
+    monkeypatch.setattr(scheduler, "_deliver_result", multi_deliver)
+    assert scheduler.run_one_job(multi) is True
+    assert delivered == ["alert"]
+    assert get_job(job["id"])["last_delivery_receipt"]["confirmation"] == "ineligible"
+
+
+def test_deliver_result_receipt_hashes_ids_and_omits_raw_destination(
+    hermes_env,
+):
+    from cron.scheduler import _deliver_result
+    from gateway.config import Platform
+
+    pconfig = MagicMock()
+    pconfig.enabled = True
+    config = MagicMock()
+    config.platforms = {Platform.TELEGRAM: pconfig}
+    receipt = {}
+    job = {
+        "id": "watchdog",
+        "name": "watchdog",
+        "deliver": "origin",
+        "origin": {
+            "platform": "telegram",
+            "chat_id": "raw-private-chat-id",
+            "thread_id": "raw-private-thread-id",
+        },
+    }
+
+    with patch("gateway.config.load_gateway_config", return_value=config), patch(
+        "cron.scheduler.load_config",
+        return_value={"cron": {"wrap_response": False}},
+    ), patch(
+        "tools.send_message_tool._send_to_platform",
+        new=AsyncMock(
+            return_value={"success": True, "message_id": "raw-private-message-id"}
+        ),
+    ):
+        assert _deliver_result(job, "alert", receipt_out=receipt) is None
+
+    assert receipt["confirmation"] == "confirmed"
+    assert receipt["dedup_holds_key"] is True
+    assert receipt["message_id_hashes"][0].startswith("sha256:")
+    persisted = json.dumps(receipt, sort_keys=True)
+    assert "raw-private-chat-id" not in persisted
+    assert "raw-private-thread-id" not in persisted
+    assert "raw-private-message-id" not in persisted
+
+
+def _live_delivery_fixture(result):
+    from concurrent.futures import Future
+
+    future = Future()
+    future.set_result(result)
+
+    def schedule(coro, _loop):
+        coro.close()
+        return future
+
+    return schedule
+
+
+def test_partial_live_delivery_never_replays_full_payload_standalone(hermes_env):
+    from cron.scheduler import _deliver_result
+    from gateway.config import Platform
+    from gateway.platforms.base import SendResult
+
+    pconfig = MagicMock(enabled=True)
+    config = MagicMock(platforms={Platform.TELEGRAM: pconfig})
+    loop = MagicMock()
+    loop.is_running.return_value = True
+    receipt = {}
+    partial = SendResult(
+        success=False,
+        message_id="private-prefix-id",
+        error="partial_send after 1/2 chunks",
+        raw_response={
+            "partial_send": True,
+            "message_ids": ["private-prefix-id"],
+            "delivered_chunks": 1,
+            "total_chunks": 2,
+        },
+        retryable=False,
+    )
+    standalone = AsyncMock(return_value={"success": True, "message_id": "duplicate"})
+    job = {
+        "id": "watchdog",
+        "name": "watchdog",
+        "deliver": "origin",
+        "origin": {"platform": "telegram", "chat_id": "private-chat"},
+    }
+
+    with (
+        patch("gateway.config.load_gateway_config", return_value=config),
+        patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+        patch(
+            "agent.async_utils.safe_schedule_threadsafe",
+            side_effect=_live_delivery_fixture(partial),
+        ),
+        patch("tools.send_message_tool._send_to_platform", new=standalone),
+    ):
+        error = _deliver_result(
+            job,
+            "A" * 5000,
+            adapters={Platform.TELEGRAM: MagicMock()},
+            loop=loop,
+            receipt_out=receipt,
+        )
+
+    standalone.assert_not_awaited()
+    assert error and "partial" in error
+    assert receipt["confirmation"] == "partial"
+    assert receipt["dedup_holds_key"] is True
+    assert receipt["message_id_hashes"][0].startswith("sha256:")
+
+
+def test_filtered_live_delivery_is_not_confirmed_or_replayed(hermes_env):
+    from cron.scheduler import _deliver_result
+    from gateway.config import Platform
+
+    pconfig = MagicMock(enabled=True)
+    config = MagicMock(platforms={Platform.TELEGRAM: pconfig})
+    loop = MagicMock()
+    loop.is_running.return_value = True
+    receipt = {}
+    standalone = AsyncMock(return_value={"success": True})
+    job = {
+        "id": "watchdog",
+        "name": "watchdog",
+        "deliver": "origin",
+        "origin": {"platform": "telegram", "chat_id": "private-chat"},
+    }
+
+    with (
+        patch("gateway.config.load_gateway_config", return_value=config),
+        patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+        patch(
+            "agent.async_utils.safe_schedule_threadsafe",
+            side_effect=_live_delivery_fixture(
+                {"success": True, "delivered": False, "reason": "filtered"}
+            ),
+        ),
+        patch("tools.send_message_tool._send_to_platform", new=standalone),
+    ):
+        assert (
+            _deliver_result(
+                job,
+                "filtered narration",
+                adapters={Platform.TELEGRAM: MagicMock()},
+                loop=loop,
+                receipt_out=receipt,
+            )
+            is None
+        )
+
+    standalone.assert_not_awaited()
+    assert receipt["confirmation"] == "filtered"
+    assert receipt["dedup_holds_key"] is False
+
+
+@pytest.mark.parametrize(
+    ("standalone_result", "confirmation", "holds_key", "has_error"),
+    [
+        ({"success": True, "message_id": "m1"}, "confirmed", True, False),
+        ({"success": False}, "failed", False, True),
+        (
+            {"success": False, "error": "later chunk", "message_id": "m1"},
+            "partial",
+            True,
+            True,
+        ),
+        ({"error": "network"}, "failed", False, True),
+        (None, "unconfirmed", True, True),
+        (
+            {"success": True, "message_id": "m1", "warnings": ["media failed"]},
+            "partial",
+            False,
+            True,
+        ),
+        ({"success": True, "delivered": False}, "filtered", False, False),
+    ],
+)
+def test_standalone_receipt_requires_explicit_whole_payload_confirmation(
+    hermes_env,
+    standalone_result,
+    confirmation,
+    holds_key,
+    has_error,
+):
+    from cron.scheduler import _deliver_result
+    from gateway.config import Platform
+
+    pconfig = MagicMock(enabled=True)
+    config = MagicMock(platforms={Platform.TELEGRAM: pconfig})
+    receipt = {}
+    job = {
+        "id": "watchdog",
+        "name": "watchdog",
+        "deliver": "origin",
+        "origin": {"platform": "telegram", "chat_id": "private-chat"},
+    }
+
+    with (
+        patch("gateway.config.load_gateway_config", return_value=config),
+        patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+        patch(
+            "tools.send_message_tool._send_to_platform",
+            new=AsyncMock(return_value=standalone_result),
+        ),
+    ):
+        error = _deliver_result(job, "alert", receipt_out=receipt)
+
+    assert bool(error) is has_error
+    assert receipt["confirmation"] == confirmation
+    assert receipt["dedup_holds_key"] is holds_key
+
+
+def test_error_only_standalone_failure_is_retried_next_run(
+    hermes_env,
+    monkeypatch,
+):
+    from cron.jobs import create_job, get_job
+    import cron.scheduler as scheduler
+    from gateway.config import Platform
+
+    (hermes_env / "scripts" / "alert.sh").write_text("echo alert\n")
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="alert.sh",
+        no_agent=True,
+        deduplicate_delivery=True,
+        deliver="telegram:raw-private-chat-id",
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda job, defer_agent_teardown=None: (True, "doc", "same alert", None),
+    )
+    monkeypatch.setattr(
+        scheduler, "save_job_output", lambda job_id, output: f"/tmp/{job_id}.md"
+    )
+    pconfig = MagicMock(enabled=True)
+    config = MagicMock(platforms={Platform.TELEGRAM: pconfig})
+    sender = AsyncMock(
+        side_effect=[
+            {"error": "network"},
+            {"success": True, "message_id": "m2"},
+        ]
+    )
+
+    with (
+        patch("gateway.config.load_gateway_config", return_value=config),
+        patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+        patch("tools.send_message_tool._send_to_platform", new=sender),
+    ):
+        assert scheduler.run_one_job(job) is True
+        first = get_job(job["id"])
+        assert first["last_delivery_receipt"]["confirmation"] == "failed"
+        assert first["last_delivery_hold_key"] is None
+
+        assert scheduler.run_one_job(first) is True
+        second = get_job(job["id"])
+
+    assert sender.await_count == 2
+    assert second["last_delivery_receipt"]["confirmation"] == "confirmed"
+
+
+def _live_delivery_sequence(*results):
+    from concurrent.futures import Future
+
+    pending = iter(results)
+
+    def schedule(coro, _loop):
+        coro.close()
+        result = next(pending)
+        if hasattr(result, "result") and hasattr(result, "cancel"):
+            return result
+        future = Future()
+        future.set_result(result)
+        return future
+
+    return schedule
+
+
+def test_live_media_failure_downgrades_whole_payload_receipt(
+    hermes_env,
+    monkeypatch,
+):
+    from cron.scheduler import _deliver_result
+    from gateway.config import Platform
+    from gateway.platforms.base import SendResult
+
+    media_path = hermes_env / "media" / "report.pdf"
+    media_path.parent.mkdir()
+    media_path.write_bytes(b"fixture")
+    monkeypatch.setattr(
+        "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+        (hermes_env,),
+    )
+    pconfig = MagicMock(enabled=True)
+    config = MagicMock(platforms={Platform.TELEGRAM: pconfig})
+    adapter = MagicMock()
+    adapter.send_document = AsyncMock()
+    loop = MagicMock()
+    loop.is_running.return_value = True
+    receipt = {}
+    job = {
+        "id": "watchdog",
+        "name": "watchdog",
+        "deliver": "origin",
+        "origin": {"platform": "telegram", "chat_id": "private-chat"},
+    }
+
+    with (
+        patch("gateway.config.load_gateway_config", return_value=config),
+        patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+        patch(
+            "agent.async_utils.safe_schedule_threadsafe",
+            side_effect=_live_delivery_sequence(
+                SendResult(success=True, message_id="text-id"),
+                SendResult(success=False, error="media failed"),
+            ),
+        ),
+    ):
+        error = _deliver_result(
+            job,
+            f"alert\nMEDIA:{media_path}",
+            adapters={Platform.TELEGRAM: adapter},
+            loop=loop,
+            receipt_out=receipt,
+        )
+
+    assert error and "media" in error
+    assert receipt["confirmation"] == "partial"
+    assert receipt["dedup_holds_key"] is False
+    assert receipt["error_kind"] == "media_delivery_incomplete"
+
+
+def test_live_text_timeout_with_media_is_not_whole_payload_confirmation(
+    hermes_env,
+    monkeypatch,
+):
+    from cron.scheduler import _deliver_result
+    from gateway.config import Platform
+
+    media_path = hermes_env / "media" / "report.pdf"
+    media_path.parent.mkdir()
+    media_path.write_bytes(b"fixture")
+    monkeypatch.setattr(
+        "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+        (hermes_env,),
+    )
+    pconfig = MagicMock(enabled=True)
+    config = MagicMock(platforms={Platform.TELEGRAM: pconfig})
+    loop = MagicMock()
+    loop.is_running.return_value = True
+    timed_out_future = MagicMock()
+    timed_out_future.result.side_effect = TimeoutError
+    timed_out_future.cancel.return_value = False
+    receipt = {}
+    job = {
+        "id": "watchdog",
+        "name": "watchdog",
+        "deliver": "origin",
+        "origin": {"platform": "telegram", "chat_id": "private-chat"},
+    }
+
+    with (
+        patch("gateway.config.load_gateway_config", return_value=config),
+        patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+        patch(
+            "agent.async_utils.safe_schedule_threadsafe",
+            return_value=timed_out_future,
+        ),
+    ):
+        error = _deliver_result(
+            job,
+            f"alert\nMEDIA:{media_path}",
+            adapters={Platform.TELEGRAM: MagicMock()},
+            loop=loop,
+            receipt_out=receipt,
+        )
+
+    assert error and "media" in error
+    assert receipt["confirmation"] == "partial"
+    assert receipt["dedup_holds_key"] is False
+    assert receipt["error_kind"] == "media_skipped_after_timeout"
+
+
+def test_rejected_media_path_downgrades_whole_payload_receipt(hermes_env):
+    from cron.scheduler import _deliver_result
+    from gateway.config import Platform
+    from gateway.platforms.base import SendResult
+
+    pconfig = MagicMock(enabled=True)
+    config = MagicMock(platforms={Platform.TELEGRAM: pconfig})
+    loop = MagicMock()
+    loop.is_running.return_value = True
+    receipt = {}
+    missing_path = "/definitely/missing/private-report.pdf"
+    job = {
+        "id": "watchdog",
+        "name": "watchdog",
+        "deliver": "origin",
+        "origin": {"platform": "telegram", "chat_id": "private-chat"},
+    }
+
+    with (
+        patch("gateway.config.load_gateway_config", return_value=config),
+        patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}),
+        patch(
+            "agent.async_utils.safe_schedule_threadsafe",
+            side_effect=_live_delivery_sequence(
+                SendResult(success=True, message_id="text-id"),
+            ),
+        ),
+    ):
+        error = _deliver_result(
+            job,
+            f"alert\nMEDIA:{missing_path}",
+            adapters={Platform.TELEGRAM: MagicMock()},
+            loop=loop,
+            receipt_out=receipt,
+        )
+
+    assert error and "safe-path" in error
+    assert missing_path not in error
+    assert receipt["confirmation"] == "partial"
+    assert receipt["dedup_holds_key"] is False
+    assert receipt["error_kind"] == "media_path_rejected"
 
 
 # ---------------------------------------------------------------------------

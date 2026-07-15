@@ -585,6 +585,7 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
         "last_run_at": job.get("last_run_at"),
         "last_status": job.get("last_status"),
         "last_delivery_error": job.get("last_delivery_error"),
+        "deduplicate_delivery": bool(job.get("deduplicate_delivery", False)),
         "enabled": job.get("enabled", True),
         "state": job.get("state", "scheduled" if job.get("enabled", True) else "paused"),
         "paused_at": job.get("paused_at"),
@@ -592,6 +593,8 @@ def _format_job(job: Dict[str, Any]) -> Dict[str, Any]:
     }
     if job.get("script"):
         result["script"] = job["script"]
+    if job.get("last_delivery_receipt") is not None:
+        result["last_delivery_receipt"] = job["last_delivery_receipt"]
     if job.get("no_agent"):
         result["no_agent"] = True
     if job.get("enabled_toolsets"):
@@ -677,6 +680,7 @@ def cronjob(
     workdir: Optional[str] = None,
     no_agent: Optional[bool] = None,
     attach_to_session: Optional[bool] = None,
+    deduplicate_delivery: Optional[bool] = None,
     task_id: str = None,
 ) -> str:
     """Unified cron job management tool."""
@@ -690,6 +694,7 @@ def cronjob(
                 return tool_error("schedule is required for create", success=False)
             canonical_skills = _canonical_skills(skill, skills)
             _no_agent = bool(no_agent)
+            _deduplicate_delivery = bool(deduplicate_delivery)
             # Job-shape validation differs by mode:
             #   - no_agent=True → script is the job; prompt/skills are optional
             #     (and irrelevant to execution).
@@ -702,7 +707,12 @@ def cronjob(
                         "the script is the job.",
                         success=False,
                     )
-            elif not prompt and not canonical_skills:
+            if _deduplicate_delivery and not _no_agent:
+                return tool_error(
+                    "deduplicate_delivery=True requires no_agent=True",
+                    success=False,
+                )
+            if not _no_agent and not prompt and not canonical_skills:
                 return tool_error("create requires either prompt or at least one skill", success=False)
             if prompt:
                 scan_error = _scan_cron_prompt(prompt)
@@ -749,6 +759,7 @@ def cronjob(
                 enabled_toolsets=enabled_toolsets or None,
                 workdir=_normalize_optional_job_value(workdir),
                 no_agent=_no_agent,
+                deduplicate_delivery=_deduplicate_delivery,
                 attach_to_session=attach_to_session,
             )
             _notify_provider_jobs_changed_safe()
@@ -941,6 +952,17 @@ def cronjob(
                             success=False,
                         )
                 updates["no_agent"] = target_no_agent
+            if deduplicate_delivery is not None:
+                updates["deduplicate_delivery"] = bool(deduplicate_delivery)
+            effective_no_agent = updates.get("no_agent", job.get("no_agent", False))
+            effective_dedup = updates.get(
+                "deduplicate_delivery", job.get("deduplicate_delivery", False)
+            )
+            if effective_dedup and not effective_no_agent:
+                return tool_error(
+                    "deduplicate_delivery=True requires no_agent=True",
+                    success=False,
+                )
             if repeat is not None:
                 # Normalize: treat 0 or negative as None (infinite)
                 normalized_repeat = None if repeat <= 0 else repeat
@@ -1059,6 +1081,16 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
                     "WHEN TO USE False (default): anything that needs reasoning — summarize a feed, draft a daily briefing, pick interesting items, rephrase data for a human, follow conditional logic based on content."
                 ),
             },
+            "deduplicate_delivery": {
+                "type": "boolean",
+                "default": False,
+                "description": (
+                    "Opt-in duplicate suppression for no_agent script output. "
+                    "Only exact repeats to one resolved delivery target are "
+                    "suppressed, and only after a confirmed or already in-flight "
+                    "send. Requires no_agent=True."
+                ),
+            },
             "context_from": {
                 "type": "array",
                 "items": {"type": "string"},
@@ -1140,6 +1172,7 @@ registry.register(
         enabled_toolsets=args.get("enabled_toolsets"),
         workdir=args.get("workdir"),
         no_agent=args.get("no_agent"),
+        deduplicate_delivery=args.get("deduplicate_delivery"),
         task_id=kw.get("task_id"),
     ))(),
     check_fn=check_cronjob_requirements,

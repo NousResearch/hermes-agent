@@ -8969,18 +8969,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         bounded_quick_command_output,
                         build_argv_environment,
                         prepare_argv_command,
+                        run_bounded_argv,
                     )
 
                     command_parts = cmd_original.split(maxsplit=1)
                     argument_text = command_parts[1] if len(command_parts) > 1 else ""
                     try:
                         argv = prepare_argv_command(qcmd, argument_text)
-                        result = subprocess.run(
+                        result = run_bounded_argv(
                             argv,
-                            capture_output=True,
-                            text=True,
                             timeout=QUICK_COMMAND_TIMEOUT_SECONDS,
-                            stdin=subprocess.DEVNULL,
                             env=build_argv_environment(),
                         )
                         output = bounded_quick_command_output(

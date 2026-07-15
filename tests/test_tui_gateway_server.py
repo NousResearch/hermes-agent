@@ -4721,7 +4721,9 @@ def test_command_dispatch_argv_passes_text_as_one_item_without_shell(monkeypatch
         calls.append((args, kwargs))
         return types.SimpleNamespace(returncode=0, stdout="saved", stderr="")
 
-    monkeypatch.setattr(server.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        "hermes_cli.quick_commands.run_bounded_argv", fake_run
+    )
     monkeypatch.setenv("BOT_TOKEN", "secret")
 
     resp = server.handle_request(

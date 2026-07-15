@@ -139,7 +139,10 @@ class TestCLIQuickCommands:
         })
         completed = subprocess.CompletedProcess([], 0, stdout="saved\n", stderr="")
         with patch.dict(os.environ, {"PATH": "/usr/bin", "BOT_TOKEN": "secret"}), \
-             patch("subprocess.run", return_value=completed) as run:
+             patch(
+                 "hermes_cli.quick_commands.run_bounded_argv",
+                 return_value=completed,
+             ) as run:
             result = cli.process_command("/remember hello; echo not-a-shell")
 
         assert result is True
@@ -149,8 +152,6 @@ class TestCLIQuickCommands:
             "fact",
             "hello; echo not-a-shell",
         ]
-        assert "shell" not in run.call_args.kwargs
-        assert run.call_args.kwargs["stdin"] is subprocess.DEVNULL
         assert run.call_args.kwargs["env"]["PATH"] == "/usr/bin"
         assert "BOT_TOKEN" not in run.call_args.kwargs["env"]
         assert self._printed_plain(cli.console.print.call_args[0][0]) == "saved"
@@ -167,7 +168,7 @@ class TestCLIQuickCommands:
     )
     def test_argv_malformed_config_is_user_facing(self, qcmd):
         cli = self._make_cli({"broken": qcmd})
-        with patch("subprocess.run") as run:
+        with patch("hermes_cli.quick_commands.run_bounded_argv") as run:
             cli.process_command("/broken hello")
 
         run.assert_not_called()
@@ -197,7 +198,9 @@ class TestCLIQuickCommands:
             "qstatus": {"type": "argv", "command": ["/bin/echo"]}
         })
         completed = subprocess.CompletedProcess([], 0, stdout="x" * 65537, stderr="")
-        with patch("subprocess.run", return_value=completed):
+        with patch(
+            "hermes_cli.quick_commands.run_bounded_argv", return_value=completed
+        ):
             cli.process_command("/qstatus")
 
         assert "65536 utf-8 bytes" in str(cli.console.print.call_args[0][0]).lower()
@@ -207,7 +210,9 @@ class TestCLIQuickCommands:
             "remember": {"type": "argv", "command": ["/bin/false"]}
         })
         completed = subprocess.CompletedProcess([], 9, stdout="", stderr="spool failed")
-        with patch("subprocess.run", return_value=completed):
+        with patch(
+            "hermes_cli.quick_commands.run_bounded_argv", return_value=completed
+        ):
             cli.process_command("/remember")
 
         rendered = str(cli.console.print.call_args[0][0]).lower()
@@ -221,7 +226,9 @@ class TestCLIQuickCommands:
         })
         secret = "sk-ant-api03-supersecretkey1234567890"
         completed = subprocess.CompletedProcess([], 0, stdout=secret, stderr="")
-        with patch("subprocess.run", return_value=completed):
+        with patch(
+            "hermes_cli.quick_commands.run_bounded_argv", return_value=completed
+        ):
             cli.process_command("/qstatus")
 
         rendered = self._printed_plain(cli.console.print.call_args[0][0])
@@ -375,10 +382,13 @@ class TestGatewayQuickCommands:
         })
         event = self._make_event("remember", "hello; echo not-a-shell")
         proc = MagicMock(returncode=0)
-        proc.communicate = AsyncMock(return_value=(b"saved\n", b""))
 
         with patch.dict(os.environ, {"PATH": "/usr/bin", "BOT_TOKEN": "secret"}), \
-             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)) as create:
+             patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)) as create, \
+             patch(
+                 "hermes_cli.quick_commands.communicate_bounded_async",
+                 AsyncMock(return_value=(b"saved\n", b"")),
+             ):
             result = await runner._handle_message(event)
 
         assert result == "saved"
@@ -418,7 +428,7 @@ class TestGatewayQuickCommands:
         assert "quick command" in result.lower()
 
     @pytest.mark.asyncio
-    async def test_gateway_argv_timeout_terminates_and_reaps(self):
+    async def test_gateway_argv_timeout_is_user_facing(self):
         runner = self._make_runner({
             "type": "argv",
             "command": ["/bin/echo"],
@@ -426,25 +436,14 @@ class TestGatewayQuickCommands:
         })
         proc = MagicMock()
 
-        async def communicate_forever():
-            await asyncio.Event().wait()
-
-        proc.communicate = communicate_forever
-        proc.wait = AsyncMock(return_value=0)
-
-        async def timeout_then_reap(awaitable, timeout):
-            if timeout == 30:
-                awaitable.close()
-                raise asyncio.TimeoutError
-            return await awaitable
-
         with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)), \
-             patch("asyncio.wait_for", new=timeout_then_reap):
+             patch(
+                 "hermes_cli.quick_commands.communicate_bounded_async",
+                 AsyncMock(side_effect=asyncio.TimeoutError),
+             ):
             result = await runner._handle_message(self._make_event("remember"))
 
         assert "timed out" in result.lower()
-        proc.terminate.assert_called_once_with()
-        proc.wait.assert_awaited_once_with()
 
     @pytest.mark.asyncio
     async def test_gateway_argv_output_is_bounded(self):
@@ -453,9 +452,18 @@ class TestGatewayQuickCommands:
             "command": ["/bin/echo"],
             "destination_alias": "owner",
         })
+        from hermes_cli.quick_commands import QuickCommandOutputError
+
         proc = MagicMock()
-        proc.communicate = AsyncMock(return_value=(b"x" * 65537, b""))
-        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)), \
+             patch(
+                 "hermes_cli.quick_commands.communicate_bounded_async",
+                 AsyncMock(
+                     side_effect=QuickCommandOutputError(
+                         "output exceeds 65536 UTF-8 bytes"
+                     )
+                 ),
+             ):
             result = await runner._handle_message(self._make_event("remember"))
 
         assert "65536 utf-8 bytes" in result.lower()
@@ -468,8 +476,11 @@ class TestGatewayQuickCommands:
             "destination_alias": "owner",
         })
         proc = MagicMock(returncode=7)
-        proc.communicate = AsyncMock(return_value=(b"", b"spool failed"))
-        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)):
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)), \
+             patch(
+                 "hermes_cli.quick_commands.communicate_bounded_async",
+                 AsyncMock(return_value=(b"", b"spool failed")),
+             ):
             result = await runner._handle_message(self._make_event("remember"))
 
         assert "failed" in result.lower()
@@ -482,8 +493,11 @@ class TestGatewayQuickCommands:
             "command": ["/bin/echo"],
         })
         proc = MagicMock(returncode=0)
-        proc.communicate = AsyncMock(return_value=(b"ok", b""))
-        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)) as create:
+        with patch("asyncio.create_subprocess_exec", AsyncMock(return_value=proc)) as create, \
+             patch(
+                 "hermes_cli.quick_commands.communicate_bounded_async",
+                 AsyncMock(return_value=(b"ok", b"")),
+             ):
             result = await runner._handle_message(self._make_event("remember"))
 
         assert result == "ok"

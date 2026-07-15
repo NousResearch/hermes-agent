@@ -1054,6 +1054,7 @@ def create_job(
     workdir: Optional[str] = None,
     no_agent: bool = False,
     attach_to_session: Optional[bool] = None,
+    deduplicate_delivery: bool = False,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -1098,6 +1099,8 @@ def create_job(
                 and deliver its stdout directly. Empty stdout = silent (no
                 delivery). Requires ``script`` to be set. Ideal for classic
                 watchdogs and periodic alerts that don't need LLM reasoning.
+        deduplicate_delivery: Opt-in duplicate suppression for deterministic
+                ``no_agent`` output. Model-driven jobs cannot enable it.
 
     Returns:
         The created job dict
@@ -1129,6 +1132,7 @@ def create_job(
     normalized_toolsets = normalized_toolsets or None
     normalized_workdir = _normalize_workdir(workdir)
     normalized_no_agent = bool(no_agent)
+    normalized_deduplicate_delivery = bool(deduplicate_delivery)
     normalized_attach = attach_to_session if isinstance(attach_to_session, bool) else None
 
     # no_agent jobs are meaningless without a script — the script IS the job.
@@ -1139,6 +1143,8 @@ def create_job(
             "no_agent=True requires a script — with no agent and no script "
             "there is nothing for the job to run."
         )
+    if normalized_deduplicate_delivery and not normalized_no_agent:
+        raise ValueError("deduplicate_delivery=True requires no_agent=True")
 
     # Normalize context_from: accept str or list of str, store as list or None
     if isinstance(context_from, str):
@@ -1197,6 +1203,7 @@ def create_job(
         "base_url": normalized_base_url,
         "script": normalized_script,
         "no_agent": normalized_no_agent,
+        "deduplicate_delivery": normalized_deduplicate_delivery,
         "context_from": context_from,
         "schedule": parsed_schedule,
         "schedule_display": parsed_schedule.get("display", schedule),
@@ -1317,6 +1324,8 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
 
             previous_inference_axes = _normalized_inference_axes(job)
             updated = _apply_skill_fields({**job, **updates})
+            if updated.get("deduplicate_delivery") and not updated.get("no_agent"):
+                raise ValueError("deduplicate_delivery=True requires no_agent=True")
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)
@@ -1472,7 +1481,8 @@ def remove_job(job_id: str) -> bool:
 
 
 def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+                 delivery_error: Optional[str] = None,
+                 delivery_state: Optional[Dict[str, Any]] = None):
     """
     Mark a job as having been run.
     
@@ -1492,6 +1502,14 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_error"] = error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
+                if delivery_state:
+                    job["last_delivery_receipt"] = delivery_state.get("receipt")
+                    if "last_delivery_key" in delivery_state:
+                        job["last_delivery_key"] = delivery_state["last_delivery_key"]
+                    if "last_delivery_hold_key" in delivery_state:
+                        job["last_delivery_hold_key"] = delivery_state[
+                            "last_delivery_hold_key"
+                        ]
                 # Clear any external-fire claim so a re-armed recurring job can
                 # be claimed again on its next fire (Phase 4C CAS).
                 job["fire_claim"] = None

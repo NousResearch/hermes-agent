@@ -424,7 +424,26 @@ def _compute_tool_definitions(
                         )
                 else:
                     resolved = resolve_toolset(toolset_name)
-                    tools_to_include.difference_update(resolved)
+                    # Don't strip a tool that another *enabled* toolset also
+                    # claims — otherwise disabling `browser` (which statically
+                    # lists `web_search` for URL discovery) silently removes
+                    # `web_search` even when the `web` toolset is explicitly
+                    # enabled (issue #64503). Only subtract tools that are
+                    # unique to this disabled toolset.
+                    if enabled_toolsets is not None:
+                        retained = set()
+                        for other_ts in enabled_toolsets:
+                            if other_ts == toolset_name:
+                                continue
+                            try:
+                                retained.update(resolve_toolset(other_ts))
+                            except Exception:
+                                pass
+                        removed = set(resolved) - retained
+                        tools_to_include.difference_update(removed)
+                        resolved = sorted(removed)
+                    else:
+                        tools_to_include.difference_update(resolved)
                 if not quiet_mode:
                     print(f"🚫 Disabled toolset '{toolset_name}': {', '.join(resolved) if resolved else 'no tools'}")
             elif toolset_name in _LEGACY_TOOLSET_MAP:

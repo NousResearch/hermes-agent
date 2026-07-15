@@ -169,7 +169,12 @@ class ArtifactStore:
         model: type[BaseModel], payload: Any
     ) -> tuple[bytes, BaseModel]:
         try:
-            validated = model.model_validate(payload)
+            try:
+                incoming_json = canonical_json_bytes(payload)
+            except ValueError:
+                validated = model.model_validate(payload)
+            else:
+                validated = model.model_validate_json(incoming_json, strict=True)
             encoded = canonical_json_bytes(validated.model_dump(mode="json"))
         except (ValidationError, ValueError, TypeError) as exc:
             raise ArtifactSecurityError(f"artifact validation failed: {exc}") from exc

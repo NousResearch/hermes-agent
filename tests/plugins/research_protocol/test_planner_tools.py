@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+import json
 import threading
 
 from plugins.research_protocol import register
@@ -362,6 +363,25 @@ def test_artifact_write_persists_without_accepting_a_path(tmp_path):
         "byte_length",
         "created_at",
     }
+
+
+def test_artifact_write_accepts_json_deserialized_payload(tmp_path):
+    json_payload = json.loads(PlanV1.model_validate(_plan_payload()).model_dump_json())
+
+    result = asyncio.run(
+        _handlers(tmp_path).artifact_write({
+            "artifact_type": "plan",
+            "artifact_id": "plan-json-boundary",
+            "payload": json_payload,
+        })
+    )
+
+    assert result["ok"] is True
+    assert result["receipt"]["path_relative"] == "plans/plan-json-boundary.json"
+    persisted = json.loads(
+        (tmp_path / result["receipt"]["path_relative"]).read_text(encoding="utf-8")
+    )
+    assert persisted == json_payload
 
 
 def test_artifact_write_redacts_filesystem_error_details():

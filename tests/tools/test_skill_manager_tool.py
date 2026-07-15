@@ -400,19 +400,22 @@ class TestDeleteSkill:
         bin_dir = hermes_home / "bin"
         bin_dir.mkdir(parents=True)
         wrapper = bin_dir / "run_daily.sh"
-        wrapper.write_text("hermes chat -s narrow 'run brief'\n", encoding="utf-8")
+        wrapper.write_text(
+            "hermes chat -s operations/narrow 'run brief'\n",
+            encoding="utf-8",
+        )
         monkeypatch.setenv("HERMES_HOME", str(hermes_home))
 
         with _skill_dir(tmp_path / "skills"):
             _create_skill("umbrella", VALID_SKILL_CONTENT)
-            _create_skill("narrow", VALID_SKILL_CONTENT)
+            _create_skill("narrow", VALID_SKILL_CONTENT, category="operations")
             result = _delete_skill("narrow", absorbed_into="umbrella")
 
         assert result["success"] is False
         assert "runtime entrypoints" in result["error"]
         assert result["runtime_references"][0]["path"] == str(wrapper)
         assert result["runtime_references"][0]["line"] == 1
-        assert (tmp_path / "skills" / "narrow").exists()
+        assert (tmp_path / "skills" / "operations" / "narrow").exists()
 
     def test_delete_with_absorbed_into_empty_string_means_pruned(self, tmp_path):
         with _skill_dir(tmp_path):
@@ -618,6 +621,53 @@ class TestSkillManageDispatcher:
         result = json.loads(raw)
         assert result["success"] is False
         assert "does not exist" in result["error"]
+
+    def test_delete_via_dispatcher_blocks_cron_reference(self, tmp_path, monkeypatch):
+        from cron.jobs import save_jobs, use_cron_store
+
+        hermes_home = tmp_path / ".hermes"
+        with use_cron_store(hermes_home):
+            save_jobs([
+                {
+                    "id": "job-1",
+                    "name": "daily",
+                    "skills": ["narrow"],
+                    "skill": "narrow",
+                }
+            ])
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        skills_dir = tmp_path / "skills"
+        with _skill_dir(skills_dir):
+            _create_skill("narrow", VALID_SKILL_CONTENT)
+            raw = skill_manage(action="delete", name="narrow")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "runtime entrypoints" in result["error"]
+        assert result["runtime_references"][0]["surface"] == "cron.jobs"
+        assert result["runtime_references"][0]["path"].endswith("jobs.json#job-1")
+        assert (skills_dir / "narrow").exists()
+
+    def test_delete_via_dispatcher_fails_closed_on_corrupt_cron_store(
+        self, tmp_path, monkeypatch
+    ):
+        hermes_home = tmp_path / ".hermes"
+        cron_dir = hermes_home / "cron"
+        cron_dir.mkdir(parents=True)
+        (cron_dir / "jobs.json").write_text("{not-json", encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        skills_dir = tmp_path / "skills"
+        with _skill_dir(skills_dir):
+            _create_skill("narrow", VALID_SKILL_CONTENT)
+            raw = skill_manage(action="delete", name="narrow")
+
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "could not verify" in result["error"]
+        assert result["runtime_scan_errors"][0]["surface"] == "cron.jobs"
+        assert (skills_dir / "narrow").exists()
 
     def test_background_review_delete_refuses_bundled_even_with_absorbed_into(self, tmp_path):
         from tools.skill_provenance import (

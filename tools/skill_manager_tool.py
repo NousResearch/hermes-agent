@@ -45,7 +45,10 @@ from typing import Any, Dict, List, Optional, Tuple
 from hermes_constants import get_hermes_home, display_hermes_home
 from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
-from tools.skill_runtime_contracts import blocking_skill_runtime_references
+from tools.skill_runtime_contracts import (
+    SkillRuntimeScanError,
+    blocking_skill_runtime_references,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -1087,7 +1090,21 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
     if unsafe:
         return {"success": False, "error": unsafe}
 
-    blocking_refs = blocking_skill_runtime_references(name)
+    try:
+        blocking_refs = blocking_skill_runtime_references(
+            name,
+            skill_path=skill_dir,
+            skills_root=skills_root,
+        )
+    except SkillRuntimeScanError as exc:
+        return {
+            "success": False,
+            "error": (
+                f"Skill '{name}' was not deleted because Hermes could not verify "
+                f"its runtime references: {exc}. Fix the scan error and retry."
+            ),
+            "runtime_scan_errors": [exc.to_dict()],
+        }
     if blocking_refs:
         ref_dicts = [ref.to_dict() for ref in blocking_refs]
         locations = "; ".join(
@@ -1130,6 +1147,7 @@ def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, A
         if is_consolidation:
             message += f" Content absorbed into '{absorbed_target}'."
         return {"success": True, "message": message, "_archived": True}
+
     shutil.rmtree(skill_dir)
 
     # Clean up empty category directories (don't remove the skills root itself)

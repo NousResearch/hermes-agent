@@ -9,7 +9,7 @@ pairing code to the chat.
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -17,6 +17,7 @@ from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
+from tools.process_registry import ProcessRegistry, ProcessSession
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +98,46 @@ async def test_notify_on_complete_sets_internal_flag(monkeypatch, tmp_path):
     event = adapter.handle_message.await_args.args[0]
     assert isinstance(event, MessageEvent)
     assert event.internal is True, "Synthetic completion event must be marked internal"
+
+
+@pytest.mark.asyncio
+async def test_poll_does_not_suppress_notify_on_complete_watcher(monkeypatch, tmp_path):
+    """Regression: polling an exited process must not suppress watcher injection."""
+    import tools.process_registry as pr_module
+
+    registry = ProcessRegistry()
+    session = ProcessSession(
+        id="proc_polled_completion",
+        command="echo done",
+        output_buffer="done\n",
+        exited=True,
+        exit_code=0,
+        notify_on_complete=True,
+    )
+    registry._finished[session.id] = session
+
+    poll_result = registry.poll(session.id)
+    assert poll_result["status"] == "exited"
+    assert not registry.is_completion_consumed(session.id)
+
+    monkeypatch.setattr(pr_module, "process_registry", registry)
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path)
+    adapter = runner.adapters[Platform.DISCORD]
+
+    watcher = _watcher_dict_with_notify()
+    watcher["session_id"] = session.id
+
+    await runner._run_process_watcher(watcher)
+
+    assert adapter.handle_message.await_count == 1
+    event = adapter.handle_message.await_args.args[0]
+    assert session.id in event.text
+    assert event.internal is True
 
 
 @pytest.mark.asyncio

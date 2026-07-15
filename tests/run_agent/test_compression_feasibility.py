@@ -16,6 +16,16 @@ from run_agent import AIAgent
 from agent.context_compressor import ContextCompressor
 
 
+@pytest.fixture(autouse=True)
+def _stable_aux_provider_config():
+    """Keep feasibility tests independent from the developer's config.yaml."""
+    with patch(
+        "agent.auxiliary_client._resolve_task_provider_model",
+        return_value=("auto", None, None, None, None),
+    ):
+        yield
+
+
 def _make_agent(
     *,
     compression_enabled: bool = True,
@@ -41,6 +51,8 @@ def _make_agent(
     agent.tool_progress_callback = None
     agent._compression_warning = None
     agent._aux_compression_context_length_config = None
+    agent._custom_providers = []
+    agent.tools = []
 
     compressor = MagicMock(spec=ContextCompressor)
     compressor.context_length = main_context
@@ -82,7 +94,7 @@ def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_clien
     assert "threshold:" in messages[0]
     # Warning stored for gateway replay
     assert agent._compression_warning is not None
-    # Threshold on the live compressor was actually lowered
+    # Threshold on the live compressor was actually lowered to aux_context.
     assert agent.context_compressor.threshold_tokens == 80_000
 
 
@@ -180,6 +192,8 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
         base_url="http://custom-endpoint:8080/v1",
         api_key="sk-custom",
         config_context_length=1_000_000,
+        provider="openrouter",
+        custom_providers=[],
     )
 
 
@@ -202,11 +216,20 @@ def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_
         base_url="http://custom:8080/v1",
         api_key="sk-test",
         config_context_length=None,
+        provider="openrouter",
+        custom_providers=[],
     )
 
 
 def test_init_feasibility_check_uses_aux_context_override_from_config():
-    """Real AIAgent init should cache and forward auxiliary.compression.context_length."""
+    """Lazy feasibility check should cache and forward auxiliary.compression.context_length.
+
+    NB: feasibility check is deferred from AIAgent.__init__ to the first
+    actual compression attempt (saves ~400ms cold startup on short sessions
+    that never trigger compression). The test drives the check explicitly
+    via ``agent._check_compression_model_feasibility()`` to assert the
+    config-override threading.
+    """
 
     class _StubCompressor:
         def __init__(self, *args, **kwargs):
@@ -248,12 +271,22 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
             skip_memory=True,
         )
 
-    assert agent._aux_compression_context_length_config == 1_000_000
+        # Config override is captured eagerly in __init__ (still needed
+        # because the threshold-derivation logic at construction time
+        # consults it).
+        assert agent._aux_compression_context_length_config == 1_000_000
+
+        # The expensive feasibility probe is deferred. Drive it manually
+        # to validate the call shape still forwards the override correctly.
+        agent._check_compression_model_feasibility()
+
     mock_ctx_len.assert_called_once_with(
         "custom/big-model",
         base_url="http://custom-endpoint:8080/v1",
         api_key="sk-custom",
         config_context_length=1_000_000,
+        provider="",
+        custom_providers=[],
     )
 
 
@@ -271,6 +304,39 @@ def test_warns_when_no_auxiliary_provider(mock_get_client):
     assert len(messages) == 1
     assert "No auxiliary LLM provider" in messages[0]
     assert agent._compression_warning is not None
+
+
+def test_no_unavailable_warning_when_configured_fallback_chain_resolves():
+    """Primary compression provider can be down if configured fallback works."""
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    fallback_client = MagicMock()
+    fallback_client.base_url = "https://chatgpt.com/backend-api/codex"
+    fallback_client.api_key = "codex-oauth-token"
+
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
+
+    with patch(
+        "agent.auxiliary_client._resolve_task_provider_model",
+        return_value=("ollama-cloud", "deepseek-v4-flash:cloud", None, None, None),
+    ), patch(
+        "agent.auxiliary_client.get_text_auxiliary_client",
+        return_value=(None, None),
+    ), patch(
+        "agent.auxiliary_client._try_configured_fallback_for_unavailable_client",
+        return_value=(fallback_client, "gpt-5.4-mini", "fallback_chain[0](openai-codex)"),
+    ) as mock_fallback, patch(
+        "agent.model_metadata.get_model_context_length",
+        return_value=200_000,
+    ) as mock_ctx_len:
+        agent._check_compression_model_feasibility()
+
+    assert messages == []
+    assert agent._compression_warning is None
+    mock_fallback.assert_called_once_with("compression", "ollama-cloud")
+    mock_ctx_len.assert_called_once()
+    assert mock_ctx_len.call_args.args == ("gpt-5.4-mini",)
+    assert mock_ctx_len.call_args.kwargs["provider"] == "openai-codex"
 
 
 def test_skips_check_when_compression_disabled():

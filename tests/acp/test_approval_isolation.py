@@ -13,11 +13,8 @@ Both fixed together by:
    threads don't collide.
 """
 
-import os
 import threading
-from unittest.mock import MagicMock
 
-import pytest
 
 
 class TestThreadLocalApprovalCallback:
@@ -118,6 +115,82 @@ class TestThreadLocalApprovalCallback:
         assert worker_saw == [None]
         assert _get_sudo_password_callback() is cb_main
 
+    def test_sudo_password_cache_does_not_leak_across_threads(self):
+        """Interactive sudo cache must not bleed into another executor thread."""
+        from tools.terminal_tool import (
+            _get_cached_sudo_password,
+            _reset_cached_sudo_passwords,
+            _set_cached_sudo_password,
+        )
+
+        _reset_cached_sudo_passwords()
+        _set_cached_sudo_password("main-thread-password")
+
+        worker_saw = []
+
+        def worker():
+            worker_saw.append(_get_cached_sudo_password())
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+
+        assert worker_saw == [""]
+        assert _get_cached_sudo_password() == "main-thread-password"
+
+    def test_sudo_password_cache_isolated_across_acp_sessions_on_same_pool_thread(self):
+        """ACP's ThreadPoolExecutor reuses threads. Two ACP sessions that land
+        on the same reused thread must not share the interactive sudo password
+        cache. The fix wraps each session in contextvars.copy_context() and
+        binds HERMES_SESSION_KEY per session, so the cache scope key differs
+        across sessions even when the underlying thread is identical.
+        """
+        import contextvars
+        from concurrent.futures import ThreadPoolExecutor
+
+        from gateway.session_context import (
+            clear_session_vars,
+            set_session_vars,
+        )
+        from tools.terminal_tool import (
+            _get_cached_sudo_password,
+            _reset_cached_sudo_passwords,
+            _set_cached_sudo_password,
+        )
+
+        _reset_cached_sudo_passwords()
+        executor = ThreadPoolExecutor(max_workers=1)  # force thread reuse
+
+        runs: list[tuple[str, str, str]] = []  # (session_id, before, after)
+
+        def _simulate_acp_session(session_id: str, write_password: str) -> None:
+            tokens = set_session_vars(session_key=session_id)
+            try:
+                observed_before = _get_cached_sudo_password()
+                _set_cached_sudo_password(write_password)
+                observed_after = _get_cached_sudo_password()
+                runs.append((session_id, observed_before, observed_after))
+            finally:
+                clear_session_vars(tokens)
+
+        def _run_in_fresh_context(session_id: str, pw: str) -> str:
+            ctx = contextvars.copy_context()
+            ctx.run(_simulate_acp_session, session_id, pw)
+            return session_id
+
+        try:
+            executor.submit(_run_in_fresh_context, "acp-session-A", "alpha-secret").result()
+            # Same thread. Without the fix B would see "alpha-secret".
+            executor.submit(_run_in_fresh_context, "acp-session-B", "bravo-secret").result()
+        finally:
+            executor.shutdown(wait=True)
+            _reset_cached_sudo_passwords()
+
+        assert runs[0] == ("acp-session-A", "", "alpha-secret")
+        # Core regression guard: B on the same reused thread must see an empty
+        # cache, not A's password.
+        assert runs[1] == ("acp-session-B", "", "bravo-secret")
+
 
 class TestAcpExecAskGate:
     """GHSA-96vc-wcxf-jjff: ACP's _run_agent must set HERMES_INTERACTIVE so
@@ -166,5 +239,48 @@ class TestAcpExecAskGate:
             "with HERMES_INTERACTIVE the approval path should consult the "
             "registered callback — this was the ACP bypass in "
             "GHSA-96vc-wcxf-jjff"
+        )
+        assert result["approved"] is True
+
+    def test_interactive_context_var_routes_to_callback_without_env(
+        self, monkeypatch,
+    ):
+        """Context-local interactive flag must work without touching os.environ.
+
+        Concurrent ACP sessions run on a shared ThreadPoolExecutor, so the
+        interactive flag is now a contextvar instead of a process-global env
+        var — one session can no longer clobber another's flag mid-run
+        (GHSA-96vc-wcxf-jjff).
+        """
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+
+        from tools.approval import (
+            check_all_command_guards,
+            reset_hermes_interactive_context,
+            set_hermes_interactive_context,
+        )
+
+        called_with = []
+
+        def fake_cb(command, description, *, allow_permanent=True):
+            called_with.append((command, description))
+            return "once"
+
+        tok = set_hermes_interactive_context(True)
+        try:
+            result = check_all_command_guards(
+                "rm -rf /tmp/test-context-interactive",
+                "local",
+                approval_callback=fake_cb,
+            )
+        finally:
+            reset_hermes_interactive_context(tok)
+
+        assert called_with, (
+            "set_hermes_interactive_context(True) should route dangerous "
+            "commands through the callback without HERMES_INTERACTIVE in env"
         )
         assert result["approved"] is True

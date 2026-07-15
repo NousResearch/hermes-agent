@@ -628,6 +628,9 @@
   background: rgba(0, 0, 0, 0.25);
   border: 1px solid rgba(255, 215, 0, 0.06);
   border-radius: 5px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
 }
 
 .installHint code {
@@ -636,6 +639,155 @@
   color: rgba(255, 215, 0, 0.7);
   background: none;
   padding: 0;
+  flex: 1;
+  overflow-x: auto;
+  white-space: nowrap;
+  scrollbar-width: none;
+}
+
+.installHint code::-webkit-scrollbar {
+  display: none;
+}
+
+.copyBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  flex-shrink: 0;
+  padding: 0.2rem 0.45rem;
+  border: 1px solid rgba(255, 215, 0, 0.18);
+  border-radius: 4px;
+  background: rgba(255, 215, 0, 0.06);
+  color: rgba(255, 215, 0, 0.85);
+  font-size: 0.68rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.copyBtn:hover {
+  background: rgba(255, 215, 0, 0.14);
+  color: rgba(255, 215, 0, 1);
+}
+
+.copyBtnLabel {
+  line-height: 1;
+}
+
+.cardLinks {
+  display: flex;
+  gap: 0.5rem;
+}
+
+.cardLinks .docsLink {
+  flex: 1;
+}
+
+.loadingSpinner {
+  width: 2.25rem;
+  height: 2.25rem;
+  margin: 0 auto 1rem;
+  border: 3px solid rgba(255, 215, 0, 0.15);
+  border-top-color: rgba(255, 215, 0, 0.7);
+  border-radius: 50%;
+  animation: skillsSpin 0.8s linear infinite;
+}
+
+@keyframes skillsSpin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.overviewBlock {
+  margin-bottom: 0.75rem;
+}
+
+.detailLabel {
+  display: block;
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ifm-font-color-secondary);
+  opacity: 0.55;
+  margin-bottom: 0.3rem;
+}
+
+.overviewText {
+  font-size: 0.82rem;
+  line-height: 1.5;
+  color: var(--ifm-font-color-base);
+  opacity: 0.92;
+  margin: 0;
+  white-space: pre-wrap;
+}
+
+.prereqBlock {
+  margin-bottom: 0.75rem;
+  padding: 0.5rem 0.65rem;
+  border: 1px solid rgba(255, 255, 255, 0.04);
+  border-radius: 5px;
+  background: rgba(255, 255, 255, 0.015);
+}
+
+.prereqRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin-top: 0.25rem;
+}
+
+.prereqRow:first-of-type {
+  margin-top: 0;
+}
+
+.prereqKind {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.6rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ifm-font-color-secondary);
+  opacity: 0.55;
+  min-width: 2.5rem;
+  padding-top: 0.15rem;
+}
+
+.prereqList {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.prereqItem {
+  font-family: "JetBrains Mono", monospace;
+  font-size: 0.7rem;
+  padding: 0.1rem 0.4rem;
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.02);
+  color: rgba(255, 215, 0, 0.6);
+}
+
+.docsLink {
+  display: block;
+  margin-top: 0.65rem;
+  padding: 0.45rem 0.65rem;
+  border: 1px solid rgba(96, 165, 250, 0.2);
+  border-radius: 5px;
+  background: rgba(96, 165, 250, 0.06);
+  color: rgba(96, 165, 250, 0.9);
+  font-size: 0.78rem;
+  text-decoration: none;
+  text-align: center;
+  transition: all 0.15s;
+}
+
+.docsLink:hover {
+  background: rgba(96, 165, 250, 0.12);
+  color: rgba(96, 165, 250, 1);
+  border-color: rgba(96, 165, 250, 0.35);
+  text-decoration: none;
 }
 
 .highlight {

@@ -12,7 +12,7 @@
 
 import { clamp } from './layout/geometry.js'
 import type { Screen, StylePool } from './screen.js'
-import { cellAt, cellAtIndex, CellWidth, setCellStyleId } from './screen.js'
+import { cellAt, cellAtIndex, CellWidth, isWrittenCellAt, setCellStyleId } from './screen.js'
 
 type Point = { col: number; row: number }
 
@@ -800,6 +800,20 @@ export function hasSelection(s: SelectionState): boolean {
 }
 
 /**
+ * Stable fingerprint of the user-visible selection state. Used by Ink
+ * to skip incrementing the mutation counter when notifySelectionChange()
+ * fires without an actual change to anchor/focus/isDragging — protects
+ * version-based subscribers (copy-on-select) from re-running for the
+ * same stable selection.
+ */
+export function selectionSignature(s: SelectionState): string {
+  const a = s.anchor ? `${s.anchor.row},${s.anchor.col}` : 'null'
+  const f = s.focus ? `${s.focus.row},${s.focus.col}` : 'null'
+
+  return `${a}|${f}|${s.isDragging ? 1 : 0}`
+}
+
+/**
  * Normalized selection bounds: start is always before end in reading order.
  * Returns null if no active selection.
  */
@@ -840,6 +854,43 @@ export function isCellSelected(s: SelectionState, col: number, row: number): boo
   }
 
   return true
+}
+
+function selectableCell(screen: Screen, row: number, col: number): boolean {
+  const cell = cellAt(screen, col, row)
+
+  return (
+    screen.noSelect[row * screen.width + col] !== 1 &&
+    isWrittenCellAt(screen, col, row) &&
+    !!cell &&
+    cell.width !== CellWidth.SpacerTail &&
+    cell.width !== CellWidth.SpacerHead
+  )
+}
+
+function selectionContentBounds(
+  screen: Screen,
+  row: number,
+  start: number,
+  end: number
+): { first: number; last: number } | null {
+  let first = start
+
+  while (first <= end && !selectableCell(screen, row, first)) {
+    first++
+  }
+
+  if (first > end) {
+    return null
+  }
+
+  let last = end
+
+  while (last >= first && !selectableCell(screen, row, last)) {
+    last--
+  }
+
+  return { first, last }
 }
 
 /** Extract text from one screen row. When the next row is a soft-wrap
@@ -890,6 +941,21 @@ function joinRows(lines: string[], text: string, sw: boolean | undefined): void 
   }
 }
 
+function trimEmptyEdgeRows(lines: string[]): string[] {
+  let start = 0
+  let end = lines.length
+
+  while (start < end && !lines[start]!.trim()) {
+    start++
+  }
+
+  while (end > start && !lines[end - 1]!.trim()) {
+    end--
+  }
+
+  return lines.slice(start, end)
+}
+
 /**
  * Extract text from the screen buffer within the selection range.
  * Rows are joined with newlines unless the screen's softWrap bitmap
@@ -917,16 +983,18 @@ export function getSelectedText(s: SelectionState, screen: Screen): string {
   }
 
   for (let row = start.row; row <= end.row; row++) {
-    const rowStart = row === start.row ? start.col : 0
-    const rowEnd = row === end.row ? end.col : screen.width - 1
-    joinRows(lines, extractRowText(screen, row, rowStart, rowEnd), sw[row]! > 0)
+    const rowStart = Math.max(0, row === start.row ? start.col : 0)
+    const rowEnd = Math.min(row === end.row ? end.col : screen.width - 1, screen.width - 1)
+    const bounds = selectionContentBounds(screen, row, rowStart, rowEnd)
+
+    joinRows(lines, bounds ? extractRowText(screen, row, bounds.first, bounds.last) : '', sw[row]! > 0)
   }
 
   for (let i = 0; i < s.scrolledOffBelow.length; i++) {
     joinRows(lines, s.scrolledOffBelow[i]!, s.scrolledOffBelowSW[i])
   }
 
-  return lines.join('\n')
+  return trimEmptyEdgeRows(lines).join('\n')
 }
 
 /**
@@ -1051,9 +1119,14 @@ export function applySelectionOverlay(screen: Screen, selection: SelectionState,
   for (let row = start.row; row <= end.row && row < screen.height; row++) {
     const colStart = row === start.row ? start.col : 0
     const colEnd = row === end.row ? Math.min(end.col, width - 1) : width - 1
+    const bounds = selectionContentBounds(screen, row, colStart, colEnd)
     const rowOff = row * width
 
-    for (let col = colStart; col <= colEnd; col++) {
+    if (!bounds) {
+      continue
+    }
+
+    for (let col = bounds.first; col <= bounds.last; col++) {
       const idx = rowOff + col
 
       // Skip noSelect cells — gutters stay visually unchanged so it's

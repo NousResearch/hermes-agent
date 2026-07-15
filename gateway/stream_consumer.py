@@ -240,11 +240,6 @@ class GatewayStreamConsumer:
         # _send_or_edit reads this to decide whether a failed frame should
         # wait for the next tick or fall through to a real send/edit.
         self._last_draft_retryable = False
-        # When True, all streaming edits/draft-frames are suppressed until
-        # got_done so the final message is delivered as one clean rich send.
-        # Activated the first time the adapter signals rich-hold on the buffer
-        # while no message has been sent yet (_message_id is None).
-        self._rich_hold = False
         self._before_finalize_notified = False
 
     def _metadata_for_send(
@@ -660,44 +655,25 @@ class GatewayStreamConsumer:
                         # it's a debounce heuristic ("send updates roughly
                         # every N visible characters"), not a platform-limit
                         # check. _len_fn is reserved for overflow detection.
-                        # Guard: require at least 1 second regardless of
+                        # Guard: require at least 1 second REGARDLESS of
                         # edit_interval so fast LLMs can't fire the threshold
                         # faster than platforms' per-chat edit rate limits.
+                        # A fixed constant, not min()/max() against
+                        # _current_edit_interval: for a long configured
+                        # interval (e.g. 10s, to pace gently) this still lets
+                        # a big buffer flush early at the 1s mark instead of
+                        # waiting the full interval — the whole point of this
+                        # early-fire branch, see TestBufferThresholdFloor —
+                        # while for a short interval (e.g. 0.1s) it actually
+                        # floors at 1s instead of collapsing straight back to
+                        # `interval` the way min(interval, 1.0) did, which
+                        # let a sub-second interval blow straight through the
+                        # stated one-second protection.
                         or (
                             len(self._accumulated) >= self.cfg.buffer_threshold
-                            and elapsed >= min(self._current_edit_interval, 1.0)
+                            and elapsed >= 1.0
                         )
                     )
-
-                # Rich-hold: suppress all streaming until done so the adapter
-                # can deliver one clean final rich message instead of sending
-                # partial/broken markdown frames (e.g. a table that splits at
-                # 4096 chars or garbles mid-row in the rich renderer).
-                # Activated the first time the adapter signals hold while no
-                # message is on screen yet; resets on segment break.
-                if got_segment_break:
-                    self._rich_hold = False
-                if (
-                    should_edit
-                    and not got_done
-                    and not self._rich_hold
-                    and self._message_id is None
-                    and not self._already_sent
-                ):
-                    _hold_fn = getattr(self.adapter, "should_hold_streaming_for_rich", None)
-                    if _hold_fn is not None:
-                        try:
-                            # Strict `is True` (not truthy): a bare MagicMock()
-                            # test adapter auto-vivifies this attribute as a
-                            # callable returning a truthy Mock, which would
-                            # otherwise falsely suppress streaming in every test
-                            # using an unspec'd mock adapter.
-                            if _hold_fn(self._accumulated) is True:
-                                self._rich_hold = True
-                        except Exception:
-                            pass
-                if self._rich_hold and not got_done and self._message_id is None:
-                    should_edit = False
 
                 current_update_visible = False
                 # Hold back mid-stream edits while the buffer so far could

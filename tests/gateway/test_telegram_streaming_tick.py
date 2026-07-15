@@ -4,10 +4,6 @@
 update — previously sent plain text so MarkdownV2 markup was visible
 as raw characters during streaming.  It now attempts MarkdownV2 first and
 falls back to plain text only when Telegram returns a BadRequest.
-
-Tests also cover ``should_hold_streaming_for_rich``, which returns False so
-the stream consumer never suppresses streaming for rich-content responses
-(tables, task lists, etc.).
 """
 
 from __future__ import annotations
@@ -183,29 +179,3 @@ class TestStreamingTickMarkdownV2:
         assert any(
             c.get("parse_mode") == ParseMode.MARKDOWN_V2 for c in mdv2_calls
         ), "finalize=True path must use MarkdownV2"
-
-
-# ── should_hold_streaming_for_rich ───────────────────────────────────────
-
-
-class TestShouldHoldStreamingForRich:
-    """should_hold_streaming_for_rich must return False so streaming is
-    never suppressed, even for content with tables or task lists."""
-
-    def test_returns_false_for_plain_text(self):
-        adapter = _make_adapter()
-        assert adapter.should_hold_streaming_for_rich("hello world") is False
-
-    def test_returns_false_for_table_content(self):
-        adapter = _make_adapter()
-        table = "| Col A | Col B |\n|---|---|\n| 1 | 2 |"
-        assert adapter.should_hold_streaming_for_rich(table) is False
-
-    def test_returns_false_for_empty_string(self):
-        adapter = _make_adapter()
-        assert adapter.should_hold_streaming_for_rich("") is False
-
-    def test_returns_false_for_task_list(self):
-        adapter = _make_adapter()
-        content = "- [x] Done\n- [ ] Pending"
-        assert adapter.should_hold_streaming_for_rich(content) is False

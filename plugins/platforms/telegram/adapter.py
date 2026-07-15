@@ -1527,23 +1527,6 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         return False
 
-    def should_hold_streaming_for_rich(self, content: str) -> bool:
-        """Whether to suppress all streaming edits and deliver one clean rich final.
-
-        Called by the stream consumer on each tick while no message has been
-        sent yet (_message_id is None).  When True, all draft frames and edit
-        ticks are skipped until the stream finishes, then the complete content
-        is delivered as a single rich message.
-
-        Disabled: the MarkdownV2 streaming path handles partial tables
-        gracefully (incomplete tables pass through as raw text; complete tables
-        convert to bullet groups via _wrap_markdown_tables), so suppressing
-        streaming for rich content causes worse UX than partial rendering —
-        particularly after tool calls where the response starts with tables and
-        the user would see nothing until the full answer arrives.
-        """
-        return False
-
     def streaming_overflow_limit(self) -> Optional[int]:
         """Allow the stream consumer to accumulate up to the rich-message cap
         before splitting, so a reply that fits one ``sendRichMessage`` /

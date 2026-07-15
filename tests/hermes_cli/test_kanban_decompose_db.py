@@ -228,3 +228,29 @@ def test_decompose_per_child_workspace_override(kanban_home):
         inh = kb.get_task(conn, child_ids[1])
     assert over.workspace_path == "/other/repo"
     assert inh.workspace_path == proj
+
+
+def test_decompose_rejects_invalid_child_workspace_before_inserts(kanban_home):
+    """Direct child inserts share create_task's persistent-path invariant."""
+    with kb.connect() as conn:
+        tid = _create_triage(conn)
+        before = conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0]
+
+        with pytest.raises(ValueError, match="workspace_path must be absolute"):
+            kb.decompose_triage_task(
+                conn,
+                tid,
+                root_assignee="orchestrator",
+                children=[
+                    {"title": "would otherwise be inserted first"},
+                    {
+                        "title": "invalid persistent child",
+                        "workspace_kind": "dir",
+                        "workspace_path": "../relative-child",
+                    },
+                ],
+                author="decomposer",
+            )
+
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == before
+        assert kb.get_task(conn, tid).status == "triage"

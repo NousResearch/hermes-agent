@@ -16,6 +16,9 @@ Guard layers under test:
   1. ``check_lmstudio_model_served`` — startup preflight verdicts.
   2. ``WrongModelServedError`` classification — terminal: no retry, no
      compression, no credential rotation, no model fallback hint.
+  3. ``should_hard_abort_wrong_model`` — opt-in hard abort: default walks
+     the configured fallback chain (with a truthful status line); with
+     HERMES_WRONG_MODEL_HARD_ABORT=1 the session aborts instead.
 """
 from __future__ import annotations
 
@@ -23,7 +26,7 @@ from unittest.mock import patch
 
 import agent.model_metadata as mm
 from agent.error_classifier import FailoverReason, classify_api_error
-from agent.errors import WrongModelServedError
+from agent.errors import WrongModelServedError, should_hard_abort_wrong_model
 
 
 def _mock_state(loaded, keys):
@@ -100,6 +103,21 @@ def test_wrong_model_served_error_is_terminal():
     assert classified.should_rotate_credential is False
     assert classified.should_fallback is False
     assert "ab-qwen3-32b" in classified.message
+
+
+def test_hard_abort_is_off_by_default(monkeypatch):
+    """Without the opt-in, a configured fallback chain is still walked —
+    announced with a truthful status line, not silently."""
+    monkeypatch.delenv("HERMES_WRONG_MODEL_HARD_ABORT", raising=False)
+    assert should_hard_abort_wrong_model(WrongModelServedError("x")) is False
+
+
+def test_hard_abort_opt_in(monkeypatch):
+    """HERMES_WRONG_MODEL_HARD_ABORT=1 aborts wrong-model-served sessions
+    instead of falling back, and affects ONLY that error type."""
+    monkeypatch.setenv("HERMES_WRONG_MODEL_HARD_ABORT", "1")
+    assert should_hard_abort_wrong_model(WrongModelServedError("x")) is True
+    assert should_hard_abort_wrong_model(ValueError("x")) is False
 
 
 def test_runtime_guard_comparison_semantics():

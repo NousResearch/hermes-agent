@@ -3942,13 +3942,19 @@ def run_conversation(
                 ) and not is_context_length_error
 
                 if is_client_error:
+                    # Opt-in hard abort for wrong-model-served (see
+                    # agent/errors.py): with HERMES_WRONG_MODEL_HARD_ABORT=1
+                    # the guard aborts with its own actionable message instead
+                    # of walking the configured fallback chain.
+                    from agent.errors import should_hard_abort_wrong_model
+                    _wrong_model_abort = should_hard_abort_wrong_model(api_error)
                     # Try fallback before aborting — a different provider may
                     # not have the same issue (rate limit, auth, etc.). Only
                     # announce the attempt when a fallback chain actually
                     # exists; otherwise "trying fallback..." is a lie and the
                     # session looks like it's recovering when it's about to
                     # abort silently (#35314, #17446).
-                    if agent._has_pending_fallback():
+                    if not _wrong_model_abort and agent._has_pending_fallback():
                         if classified.reason == FailoverReason.content_policy_blocked:
                             agent._buffer_status("⚠️ Provider safety filter blocked this request — trying fallback...")
                         elif classified.reason == FailoverReason.ssl_cert_verification:
@@ -3957,7 +3963,7 @@ def run_conversation(
                             agent._buffer_status("⚠️ LM Studio served a different model than requested — trying fallback...")
                         else:
                             agent._buffer_status(f"⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...")
-                    if agent._try_activate_fallback():
+                    if not _wrong_model_abort and agent._try_activate_fallback():
                         active_system_prompt = _sync_failover_system_message(
                             agent, api_messages, active_system_prompt)
                         retry_count = 0

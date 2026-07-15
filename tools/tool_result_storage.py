@@ -22,8 +22,10 @@ Defense against context-window overflow operates at three levels:
    where many medium-sized results combine to overflow context.
 """
 
+import hashlib
 import logging
 import os
+import re
 import shlex
 import uuid
 
@@ -39,6 +41,8 @@ PERSISTED_OUTPUT_CLOSING_TAG = "</persisted-output>"
 STORAGE_DIR = "/tmp/hermes-results"
 HEREDOC_MARKER = "HERMES_PERSIST_EOF"
 _BUDGET_TOOL_NAME = "__budget_enforcement__"
+_UNSAFE_RESULT_FILENAME_CHARS = re.compile(r"[^A-Za-z0-9_.-]+")
+_MAX_RESULT_FILENAME_STEM = 120
 
 
 def _resolve_storage_dir(env) -> str:
@@ -55,6 +59,24 @@ def _resolve_storage_dir(env) -> str:
                     temp_dir = temp_dir.rstrip("/") or "/"
                     return f"{temp_dir}/hermes-results"
     return STORAGE_DIR
+
+
+def _safe_result_filename(tool_use_id: str) -> str:
+    """Return a single safe filename for a tool result id."""
+    raw_id = str(tool_use_id or "tool_result")
+    safe_stem = _UNSAFE_RESULT_FILENAME_CHARS.sub("_", raw_id).strip("._-")
+    changed = safe_stem != raw_id
+
+    if not safe_stem:
+        safe_stem = "tool_result"
+        changed = True
+
+    if changed or len(safe_stem) > _MAX_RESULT_FILENAME_STEM:
+        digest = hashlib.sha256(raw_id.encode("utf-8")).hexdigest()[:12]
+        safe_stem = safe_stem[:_MAX_RESULT_FILENAME_STEM].rstrip("._-") or "tool_result"
+        safe_stem = f"{safe_stem}_{digest}"
+
+    return f"{safe_stem}.txt"
 
 
 def generate_preview(content: str, max_chars: int = DEFAULT_PREVIEW_SIZE_CHARS) -> tuple[str, bool]:
@@ -76,15 +98,21 @@ def _heredoc_marker(content: str) -> str:
 
 
 def _write_to_sandbox(content: str, remote_path: str, env) -> bool:
-    """Write content into the sandbox via env.execute(). Returns True on success."""
-    marker = _heredoc_marker(content)
+    """Write content into the sandbox via env.execute(). Returns True on success.
+
+    Pushes ``content`` through stdin rather than embedding it in the command
+    string. Linux's ``MAX_ARG_STRLEN`` caps any single argv element at 128 KB
+    (32 * PAGE_SIZE), so the previous heredoc-in-the-command-string approach
+    silently failed with ``OSError: [Errno 7] Argument list too long`` for any
+    tool result over ~128 KB — exactly the case persistence exists to handle.
+    Routing through stdin removes that ceiling on local + ssh (``_stdin_mode
+    == "pipe"``); remote backends with ``_stdin_mode == "heredoc"`` keep their
+    existing API-body sized limit, which is orders of magnitude larger than
+    the exec-arg ceiling.
+    """
     storage_dir = os.path.dirname(remote_path)
-    cmd = (
-        f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)} << '{marker}'\n"
-        f"{content}\n"
-        f"{marker}"
-    )
-    result = env.execute(cmd, timeout=30)
+    cmd = f"mkdir -p {shlex.quote(storage_dir)} && cat > {shlex.quote(remote_path)}"
+    result = env.execute(cmd, timeout=30, stdin_data=content)
     return result.get("returncode", 1) == 0
 
 
@@ -147,7 +175,7 @@ def maybe_persist_tool_result(
         return content
 
     storage_dir = _resolve_storage_dir(env)
-    remote_path = f"{storage_dir}/{tool_use_id}.txt"
+    remote_path = f"{storage_dir}/{_safe_result_filename(tool_use_id)}"
     preview, has_more = generate_preview(content, max_chars=config.preview_size)
 
     if env is not None:

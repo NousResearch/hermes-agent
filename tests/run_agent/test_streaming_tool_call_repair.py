@@ -12,7 +12,6 @@ unclosed brackets, Python None) don't kill the session.
 """
 
 import json
-import pytest
 
 from run_agent import _repair_tool_call_arguments
 
@@ -23,7 +22,7 @@ class TestStreamingAssemblyRepair:
 
     These tests verify the REPAIR FUNCTION itself works correctly for the
     cases that arise during streaming assembly.  Integration tests that
-    exercise the full streaming path are in test_agent_loop_tool_calling.py.
+    exercise the full streaming path are in run_agent.py's streaming tests.
     """
 
     # -- Truncation cases (most common streaming failure) --

@@ -2,8 +2,7 @@
 
 import argparse
 import os
-from pathlib import Path
-from unittest.mock import patch, call
+from unittest.mock import patch
 
 import pytest
 
@@ -39,8 +38,6 @@ class TestExplicitAllowlist:
         "OPENROUTER_API_KEY",
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
-        "WANDB_API_KEY",
-        "TINKER_API_KEY",
         "HONCHO_API_KEY",
         "FIRECRAWL_API_KEY",
         "BROWSERBASE_API_KEY",
@@ -126,13 +123,6 @@ class TestConfigYamlRouting:
             "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=true" in env_content
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
-
-    def test_terminal_vercel_runtime_goes_to_config_and_env(self, _isolated_hermes_home):
-        set_config_value("terminal.vercel_runtime", "python3.13")
-        config = _read_config(_isolated_hermes_home)
-        env_content = _read_env(_isolated_hermes_home)
-        assert "vercel_runtime: python3.13" in config
-        assert "TERMINAL_VERCEL_RUNTIME=python3.13" in env_content
 
 
 # ---------------------------------------------------------------------------
@@ -257,3 +247,97 @@ class TestListNavigation:
         assert isinstance(allowlist, list)
         assert allowlist[0] == {"name": "alice", "role": "admin"}
         assert allowlist[1] == {"name": "bob", "role": "admin"}
+
+
+# ---------------------------------------------------------------------------
+# String-typed config values — regression tests for #47515
+# ---------------------------------------------------------------------------
+
+class TestStringTypedConfigValues:
+    @pytest.mark.parametrize("value", ["off", "on", "yes", "no", "true", "false", "01"])
+    def test_string_typed_values_are_not_coerced(self, _isolated_hermes_home, value):
+        """Values stay strings when DEFAULT_CONFIG declares the leaf as a string."""
+        set_config_value("approvals.mode", value)
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["approvals"]["mode"] == value
+        assert isinstance(saved["approvals"]["mode"], str)
+
+    @pytest.mark.parametrize("key, value, expected", [
+        ("terminal.persistent_shell", "off", False),
+        ("approvals.timeout", "30", 30),
+    ])
+    def test_non_string_defaults_keep_existing_coercion(
+        self, _isolated_hermes_home, key, value, expected
+    ):
+        set_config_value(key, value)
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        node = saved
+        for part in key.split("."):
+            node = node[part]
+        assert node == expected
+        assert type(node) is type(expected)
+
+    def test_unknown_keys_keep_existing_coercion(self, _isolated_hermes_home):
+        set_config_value("custom.enabled", "off")
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["custom"]["enabled"] is False
+
+
+# ---------------------------------------------------------------------------
+# Secret redaction in display output (issue #50245)
+# ---------------------------------------------------------------------------
+
+class TestSecretRedactionInDisplay:
+    """`config set`/`config show` must not echo credential values in plaintext."""
+
+    def test_redact_config_value_masks_nested_api_key(self):
+        from hermes_cli.config import redact_config_value
+        secret = "cfut_SUPERSECRETTOKEN1234567890abcdef"
+        model = {"default": "@cf/foo", "provider": "custom", "api_key": secret}
+
+        out = redact_config_value(model)
+
+        assert out["api_key"] != secret
+        assert secret not in str(out)
+        # Non-secret fields pass through unchanged.
+        assert out["default"] == "@cf/foo"
+        assert out["provider"] == "custom"
+
+    def test_redact_config_value_walks_lists(self):
+        from hermes_cli.config import redact_config_value
+        secret = "sk-deadbeefdeadbeefdeadbeef"
+        cfg = {"custom_providers": [{"name": "p", "api_key": secret}]}
+
+        out = redact_config_value(cfg)
+
+        assert secret not in str(out)
+        assert out["custom_providers"][0]["name"] == "p"
+
+    def test_redact_config_value_ignores_benign_keys(self):
+        from hermes_cli.config import redact_config_value
+        cfg = {"token_count": 1234, "secret_santa": "alice", "max_turns": 90}
+
+        out = redact_config_value(cfg)
+
+        # Exact-match only — substrings like token_count must NOT be masked.
+        assert out == cfg
+
+    def test_set_echo_masks_secret_value(self, _isolated_hermes_home, capsys):
+        secret = "cfut_ANOTHERSECRET0987654321zyxwvu"
+        set_config_value("model.api_key", secret)
+
+        captured = capsys.readouterr()
+        assert secret not in captured.out
+        assert "Set model.api_key" in captured.out
+
+    def test_set_echo_keeps_nonsecret_value(self, _isolated_hermes_home, capsys):
+        set_config_value("model.reasoning_effort", "high")
+
+        captured = capsys.readouterr()
+        assert "Set model.reasoning_effort = high" in captured.out

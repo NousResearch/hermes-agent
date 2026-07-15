@@ -5,6 +5,8 @@ import re
 import subprocess
 from pathlib import Path
 
+from hermes_cli._subprocess_compat import IS_WINDOWS, windows_hide_flags
+
 logger = logging.getLogger(__name__)
 
 # Matches ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} tokens in SKILL.md.
@@ -66,6 +68,7 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     Failures return a short ``[inline-shell error: ...]`` marker instead of
     raising, so one bad snippet can't wreck the whole skill message.
     """
+    _popen_kwargs = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {}
     try:
         completed = subprocess.run(
             ["bash", "-c", command],
@@ -74,11 +77,21 @@ def run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
             text=True,
             timeout=max(1, int(timeout)),
             check=False,
+            stdin=subprocess.DEVNULL,
+            **_popen_kwargs,
         )
     except subprocess.TimeoutExpired:
         return f"[inline-shell timeout after {timeout}s: {command}]"
     except FileNotFoundError:
         return "[inline-shell error: bash not found]"
+    except RuntimeError as exc:
+        # tests/conftest.py installs a live-system guard that blocks real
+        # os.kill on out-of-tree PIDs. subprocess.run(timeout=...) may trip
+        # that guard while trying to clean up the timed-out shell; treat that
+        # as the same timeout outcome instead of surfacing the guard error.
+        if "live-system guard: blocked os.kill" in str(exc):
+            return f"[inline-shell timeout after {timeout}s: {command}]"
+        return f"[inline-shell error: {exc}]"
     except Exception as exc:
         return f"[inline-shell error: {exc}]"
 

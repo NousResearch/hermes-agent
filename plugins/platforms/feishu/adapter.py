@@ -154,11 +154,15 @@ _MARKDOWN_HINT_RE = re.compile(
     r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
-# Detect markdown tables: a line starting with | followed by a separator line.
+# Detect markdown tables with or without optional outer pipes.
 # Feishu post-type 'md' elements do not render tables directly.
-_MARKDOWN_TABLE_RE = re.compile(r"^\|.*\|\n\|[-|: ]+\|", re.MULTILINE)
+_MARKDOWN_TABLE_RE = re.compile(
+    r"^\s*\|?[^\n|]+\|[^\n|]+(?:\|[^\n|]+)*\|?\s*\n"
+    r"\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$",
+    re.MULTILINE,
+)
 _MARKDOWN_TABLE_SEPARATOR_LINE_RE = re.compile(
-    r"^\s*\|\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$"
+    r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$"
 )
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
@@ -565,11 +569,7 @@ def _build_markdown_post_payload(content: str) -> str:
 
 def _is_markdown_table_row(line: str) -> bool:
     stripped = line.strip()
-    return (
-        stripped.startswith("|")
-        and stripped.endswith("|")
-        and stripped.count("|") >= 2
-    )
+    return stripped.count("|") >= 1 and bool(stripped.strip("|").strip())
 
 
 def _is_markdown_table_separator(line: str) -> bool:

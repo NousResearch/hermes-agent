@@ -2576,6 +2576,31 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertIn("- next step", row_texts[2])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_build_outbound_payload_preserves_markdown_around_bare_pipe_table(self):
+        from plugins.platforms.feishu.adapter import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        content = (
+            "**Summary**\n\n"
+            "Name | Value\n"
+            "--- | ---\n"
+            "ok | yes\n\n"
+            "- next step"
+        )
+
+        msg_type, payload = adapter._build_outbound_payload(content)
+
+        self.assertEqual(msg_type, "post")
+        rows = json.loads(payload)["zh_cn"]["content"]
+        row_texts = [row[0]["text"] for row in rows]
+        self.assertIn("**Summary**", row_texts[0])
+        self.assertEqual(
+            row_texts[1],
+            "```\nName | Value\n--- | ---\nok | yes\n```",
+        )
+        self.assertIn("- next step", row_texts[2])
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_uses_post_for_inline_markdown(self):
         from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter

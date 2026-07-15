@@ -7242,6 +7242,8 @@ function createWindow() {
 
     if (mainWindow === createdMainWindow) {
       mainWindow = null
+      // the replacement renderer must register before queued links can be delivered.
+      _rendererReadyForDeepLink = false
     }
   })
 

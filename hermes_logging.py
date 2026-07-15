@@ -69,7 +69,7 @@ else:
     from logging.handlers import RotatingFileHandler  # noqa: E402
 
 
-from hermes_constants import get_config_path, get_hermes_home
+from hermes_constants import get_config_path, get_hermes_home, is_readonly_diagnostic
 
 # Sentinel to track whether setup_logging() has already run.  The function
 # is idempotent — calling it twice is safe but the second call is a no-op
@@ -302,6 +302,8 @@ def setup_logging(
     global _logging_initialized
     home = hermes_home or get_hermes_home()
     log_dir = home / "logs"
+    if is_readonly_diagnostic():
+        return log_dir
     if _logging_initialized and not force:
         existing_paths = [Path(h.baseFilename) for h in _queued_file_handlers]
         same_home = any(path.parent == log_dir for path in existing_paths)

@@ -64,6 +64,11 @@ except ModuleNotFoundError:
 import os
 import sys
 
+# Establish inspection-only semantics before importing config/logging surfaces.
+from hermes_constants import is_readonly_diagnostic_argv
+if is_readonly_diagnostic_argv(sys.argv):
+    os.environ["HERMES_READONLY_DIAGNOSTIC"] = "1"
+
 
 def _set_process_title() -> None:
     """Set the process title to 'hermes' so tools like 'ps', 'top', and

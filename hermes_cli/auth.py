@@ -1003,6 +1003,11 @@ def _file_lock(
     state — that would let one lock's reentrant acquisition silently skip
     the other's kernel-level flock.
     """
+    from hermes_constants import is_readonly_diagnostic
+
+    if is_readonly_diagnostic():
+        yield
+        return
     if getattr(holder, "depth", 0) > 0:
         holder.depth += 1
         try:

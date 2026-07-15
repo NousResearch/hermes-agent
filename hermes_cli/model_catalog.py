@@ -217,6 +217,10 @@ def _read_disk_cache() -> tuple[dict[str, Any] | None, float]:
 
 
 def _write_disk_cache(data: dict[str, Any]) -> None:
+    from hermes_constants import is_readonly_diagnostic
+
+    if is_readonly_diagnostic():
+        return
     path = _cache_path()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)

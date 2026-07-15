@@ -14,10 +14,30 @@ from pathlib import Path
 
 
 _profile_fallback_warned: bool = False
+_READONLY_DIAGNOSTIC_ENV = "HERMES_READONLY_DIAGNOSTIC"
 _UNSET = object()
 _HERMES_HOME_OVERRIDE: ContextVar[str | object] = ContextVar(
     "_HERMES_HOME_OVERRIDE", default=_UNSET
 )
+
+
+def is_readonly_diagnostic() -> bool:
+    """Return whether this process must avoid persistent diagnostic side effects."""
+    return os.environ.get(_READONLY_DIAGNOSTIC_ENV, "").strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+
+
+def is_readonly_diagnostic_argv(argv: list[str] | tuple[str, ...] | None = None) -> bool:
+    """Recognize CLI commands whose contract is inspection-only."""
+    args = list(sys.argv if argv is None else argv)
+    normalized = [str(arg).strip().lower() for arg in args[1:]]
+    if "doctor" in normalized:
+        return "--fix" not in normalized and "--ack" not in normalized
+    for index, arg in enumerate(normalized[:-1]):
+        if arg == "security" and normalized[index + 1] == "audit":
+            return True
+    return False
 
 
 def set_hermes_home_override(path: str | Path | None) -> Token:

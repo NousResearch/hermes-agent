@@ -326,8 +326,10 @@ _BANNER_REPEAT_HOURS = 24
 
 def _banner_cache_path() -> Optional[Path]:
     try:
-        from hermes_constants import get_hermes_home
+        from hermes_constants import get_hermes_home, is_readonly_diagnostic
         cache_dir = Path(get_hermes_home()) / "cache"
+        if is_readonly_diagnostic():
+            return cache_dir / _BANNER_CACHE_FILE if cache_dir.exists() else None
         cache_dir.mkdir(parents=True, exist_ok=True)
         return cache_dir / _BANNER_CACHE_FILE
     except Exception:
@@ -358,6 +360,10 @@ def _read_banner_cache() -> dict[str, float]:
 
 
 def _write_banner_cache(seen: dict[str, float]) -> None:
+    from hermes_constants import is_readonly_diagnostic
+
+    if is_readonly_diagnostic():
+        return
     p = _banner_cache_path()
     if p is None:
         return

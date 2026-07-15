@@ -863,6 +863,10 @@ def _write_nous_recommended_disk(base: str, data: dict[str, Any]) -> None:
     Merges into any existing per-base map, then writes atomically. Failures
     are non-fatal (logged at debug) — the in-process cache still works.
     """
+    from hermes_constants import is_readonly_diagnostic
+
+    if is_readonly_diagnostic():
+        return
     if not data:
         return
     path = _nous_recommended_disk_path()
@@ -2644,6 +2648,9 @@ def _load_provider_models_cache() -> dict:
 def _save_provider_models_cache(data: dict) -> None:
     """Persist the cache dict. Best-effort — silent on any error."""
     try:
+        from hermes_constants import is_readonly_diagnostic
+        if is_readonly_diagnostic():
+            return
         from utils import atomic_json_write
         path = _provider_models_cache_path()
         path.parent.mkdir(parents=True, exist_ok=True)

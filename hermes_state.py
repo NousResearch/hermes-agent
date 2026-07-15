@@ -515,8 +515,12 @@ def _backup_db_file(db_path: Path) -> Optional[Path]:
         return None
 
 
-def _db_opens_cleanly(db_path: Path) -> Optional[str]:
+def _db_opens_cleanly(db_path: Path, *, write_probe: bool = True) -> Optional[str]:
     """Probe a DB on a fresh connection. Returns None if healthy, else a reason.
+
+    ``write_probe=False`` opens SQLite in read-only mode and skips the FTS
+    trigger write probe, which keeps inspection-only diagnostics free of
+    WAL/SHM/journal and lock side effects.
 
     Runs the same first-statement (``PRAGMA journal_mode``) that trips the
     malformed-schema parse, then ``PRAGMA integrity_check`` and a canonical
@@ -526,7 +530,12 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
     through the FTS triggers — is reported as unhealthy rather than slipping
     past as a false "ok" (#50502).
     """
-    conn = sqlite3.connect(str(db_path), isolation_level=None)
+    if write_probe:
+        conn = sqlite3.connect(str(db_path), isolation_level=None)
+    else:
+        conn = sqlite3.connect(
+            db_path.resolve().as_uri() + "?mode=ro", uri=True, isolation_level=None
+        )
     try:
         conn.execute("PRAGMA journal_mode").fetchone()
         rows = conn.execute("PRAGMA integrity_check").fetchall()
@@ -541,6 +550,8 @@ def _db_opens_cleanly(db_path: Path) -> Optional[str]:
         # best-effort — if the messages/sessions tables don't exist yet (brand
         # new file mid-init) the OperationalError is treated as "not yet a
         # populated DB", not corruption.
+        if not write_probe:
+            return None
         probe_session_id = f"_hermes_fts_health_probe_{time.time_ns()}"
         try:
             conn.execute("BEGIN IMMEDIATE")

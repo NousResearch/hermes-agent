@@ -42,7 +42,7 @@ def _make_cli(quiet=False, session_id="20260524_111111_xyz", db=None):
 
 
 class TestResumeQuietStderr:
-    def test_session_not_found_goes_to_stderr_in_quiet_mode(self, capsys):
+    def test_session_not_found_goes_to_stderr_in_quiet_mode(self, capfd):
         db = MagicMock()
         db.get_session.return_value = None
         cli = _make_cli(quiet=True, db=db)
@@ -50,7 +50,7 @@ class TestResumeQuietStderr:
         with patch("cli._prepare_deferred_agent_startup"):
             result = cli._init_agent()
 
-        captured = capsys.readouterr()
+        captured = capfd.readouterr()
         assert result is False
         # stdout must stay clean
         assert "Session not found" not in captured.out
@@ -58,20 +58,19 @@ class TestResumeQuietStderr:
         assert "Session not found" in captured.err
         assert "hermes sessions list" in captured.err
 
-    def test_session_not_found_goes_to_stdout_in_full_mode(self, capsys):
+    def test_session_not_found_uses_interactive_printer_in_full_mode(self):
         db = MagicMock()
         db.get_session.return_value = None
         cli = _make_cli(quiet=False, db=db)
 
-        with patch("cli._prepare_deferred_agent_startup"):
+        with patch("cli._prepare_deferred_agent_startup"), patch("cli._cprint") as cprint:
             result = cli._init_agent()
 
-        captured = capsys.readouterr()
         assert result is False
-        # Interactive mode keeps the existing _cprint path → stdout.
-        assert "Session not found" in captured.out
+        rendered = " ".join(str(call.args[0]) for call in cprint.call_args_list)
+        assert "Session not found" in rendered
 
-    def test_resumed_banner_goes_to_stderr_in_quiet_mode(self, capsys):
+    def test_resumed_banner_goes_to_stderr_in_quiet_mode(self, capfd):
         db = MagicMock()
         db.get_session.return_value = {"id": "20260524_111111_xyz", "title": "demo"}
         db.resolve_resume_session_id.return_value = "20260524_111111_xyz"
@@ -93,14 +92,14 @@ class TestResumeQuietStderr:
                 # care about the printed banner that comes earlier.
                 pass
 
-        captured = capsys.readouterr()
+        captured = capfd.readouterr()
         # Banner on stderr — stdout stays clean for automation.
         assert "↻ Resumed session" not in captured.out
         assert "↻ Resumed session" in captured.err
         assert "20260524_111111_xyz" in captured.err
         assert "demo" in captured.err
 
-    def test_no_messages_goes_to_stderr_in_quiet_mode(self, capsys):
+    def test_no_messages_goes_to_stderr_in_quiet_mode(self, capfd):
         db = MagicMock()
         db.get_session.return_value = {"id": "20260524_111111_xyz"}
         db.resolve_resume_session_id.return_value = "20260524_111111_xyz"
@@ -114,7 +113,7 @@ class TestResumeQuietStderr:
             except Exception:
                 pass
 
-        captured = capsys.readouterr()
+        captured = capfd.readouterr()
         assert "has no messages" not in captured.out
         assert "has no messages" in captured.err
         assert "Starting fresh" in captured.err

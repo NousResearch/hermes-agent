@@ -49,6 +49,12 @@ logger = logging.getLogger(__name__)
 # Suppress startup messages for clean CLI experience
 os.environ["HERMES_QUIET"] = "1"  # Our own modules
 
+# Inspection-only diagnostics must establish their no-write contract before
+# config, logging, model catalogs, or advisory helpers are imported.
+from hermes_constants import is_readonly_diagnostic_argv
+if is_readonly_diagnostic_argv(sys.argv):
+    os.environ["HERMES_READONLY_DIAGNOSTIC"] = "1"
+
 import yaml
 
 from hermes_cli.fallback_config import get_fallback_chain

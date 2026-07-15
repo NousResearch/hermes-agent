@@ -60,6 +60,10 @@ def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
     followed/copied (mirrors the Gemini #21541 lstat guard) to avoid
     clobbering whatever a malicious/misconfigured symlink points at.
     """
+    from hermes_constants import is_readonly_diagnostic
+
+    if is_readonly_diagnostic():
+        return None
     try:
         if config_path.is_symlink():
             return None
@@ -919,6 +923,9 @@ def ensure_hermes_home():
     any files created (e.g. SOUL.md) are group-writable (0660).
     """
     home = get_hermes_home()
+    from hermes_constants import is_readonly_diagnostic
+    if is_readonly_diagnostic():
+        return
     # Named profiles must be created explicitly (e.g. ``hermes profile create``).
     # If a stale process keeps running after the profile was renamed/deleted,
     # silently mkdir-ing the old HERMES_HOME would resurrect an empty skeleton

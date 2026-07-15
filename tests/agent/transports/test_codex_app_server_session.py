@@ -26,9 +26,10 @@ class FakeClient:
     """Stand-in for CodexAppServerClient that records calls and lets the test
     drive the notification / server-request streams synchronously."""
 
-    def __init__(self, *, codex_bin: str = "codex", codex_home=None) -> None:
+    def __init__(self, *, codex_bin: str = "codex", codex_home=None, env=None) -> None:
         self.codex_bin = codex_bin
         self.codex_home = codex_home
+        self.env = env
         self.requests: list[tuple[str, dict]] = []
         self.notifications_responses: list[dict] = []
         self.responses: list[tuple[Any, dict]] = []

@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from unittest.mock import patch
 
-from agent.codex_runtime import _codex_turn_started_callback_from_environment
+from agent.codex_runtime import (
+    _codex_attempt_environment,
+    _codex_turn_started_callback_from_environment,
+)
 
 
 class _Response:
@@ -40,6 +43,7 @@ def test_configured_turn_callback_posts_actual_runtime_ids(monkeypatch) -> None:
         "codex_thread_id": "thread-live",
         "codex_turn_id": "turn-live",
     }
+    assert _codex_attempt_environment()["OMNICLAW_ATTEMPT_TOKEN"].startswith("eyJ")
 
 
 def test_unconfigured_turn_callback_is_disabled(monkeypatch) -> None:

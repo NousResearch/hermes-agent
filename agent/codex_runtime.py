@@ -20,11 +20,37 @@ import json
 import logging
 import os
 import time
+from base64 import urlsafe_b64encode
+from hashlib import sha256
+from hmac import new as hmac_new
 from types import SimpleNamespace
 from typing import Any, Dict, List
 from urllib.request import Request, urlopen
 
 logger = logging.getLogger(__name__)
+
+
+def _codex_attempt_environment() -> dict[str, str]:
+    """Return the attempt-scoped MCP capability exposed to Codex."""
+
+    if not os.environ.get("HERMES_CODEX_TURN_STARTED_URL", "").strip():
+        return {}
+    callback_environment = {
+        "hermes_profile": os.environ.get("HERMES_PROFILE", "").strip(),
+        "hermes_run_id": os.environ.get("HERMES_KANBAN_RUN_ID", "").strip(),
+        "hermes_task_id": os.environ.get("HERMES_KANBAN_TASK", "").strip(),
+    }
+    secret = os.environ.get("HERMES_CODEX_TURN_STARTED_TOKEN", "").strip()
+    if not secret or not all(callback_environment.values()):
+        raise RuntimeError(
+            "Codex attempt capability requires a callback token and Kanban identity"
+        )
+    payload = json.dumps(
+        callback_environment, sort_keys=True, separators=(",", ":")
+    ).encode()
+    encoded = urlsafe_b64encode(payload).decode().rstrip("=")
+    signature = hmac_new(secret.encode(), encoded.encode(), sha256).hexdigest()
+    return {"OMNICLAW_ATTEMPT_TOKEN": f"{encoded}.{signature}"}
 
 
 def _codex_turn_started_callback_from_environment():
@@ -456,6 +482,7 @@ def run_codex_app_server_turn(
             ),
             on_event=_on_codex_event,
             on_turn_started=_codex_turn_started_callback_from_environment(),
+            codex_env=_codex_attempt_environment(),
         )
 
     # NOTE: the user message is ALREADY appended to messages by the

@@ -208,6 +208,7 @@ class CodexAppServerSession:
         approval_callback: Optional[Callable[..., str]] = None,
         on_event: Optional[Callable[[dict], None]] = None,
         on_turn_started: Optional[Callable[[str, str], None]] = None,
+        codex_env: Optional[dict[str, str]] = None,
         request_routing: Optional[_ServerRequestRouting] = None,
         client_factory: Optional[Callable[..., CodexAppServerClient]] = None,
     ) -> None:
@@ -223,6 +224,7 @@ class CodexAppServerSession:
         self._approval_callback = approval_callback
         self._on_event = on_event  # Display hook (kawaii spinner ticks etc.)
         self._on_turn_started = on_turn_started
+        self._codex_env = codex_env
         self._routing = request_routing or _ServerRequestRouting()
         self._client_factory = client_factory or CodexAppServerClient
 
@@ -247,7 +249,9 @@ class CodexAppServerSession:
             return self._thread_id
         if self._client is None:
             self._client = self._client_factory(
-                codex_bin=self._codex_bin, codex_home=self._codex_home
+                codex_bin=self._codex_bin,
+                codex_home=self._codex_home,
+                env=self._codex_env,
             )
         self._client.initialize(
             client_name="hermes",

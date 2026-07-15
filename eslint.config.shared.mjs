@@ -22,7 +22,7 @@ import globals from 'globals'
 
 export default [
   {
-    ignores: ['**/node_modules/**', '**/dist/**', 'src/**/*.js']
+    ignores: ['**/node_modules/**', '**/dist/**', 'src/**/*.js', '**/package-lock.json']
   },
   js.configs.recommended,
   {

@@ -499,6 +499,34 @@ class TestIsContainer:
         monkeypatch.setattr("builtins.open", _fake_open)
         assert is_container() is True
 
+    def test_detects_rootless_podman_via_storage_root(self, monkeypatch, tmp_path):
+        """Podman/CRI-O roots live under containers/storage (no 'podman'/'crio'
+        in the path) — the root-mount check must still detect them even when
+        /run/.containerenv is unavailable."""
+        import builtins
+        self._reset_cache(monkeypatch)
+        monkeypatch.delenv("KUBERNETES_SERVICE_HOST", raising=False)
+        monkeypatch.setattr(os.path, "exists", lambda p: False)
+        cgroup_file = tmp_path / "cgroup"
+        cgroup_file.write_text("0::/\n")
+        mountinfo_file = tmp_path / "mountinfo"
+        mountinfo_file.write_text(
+            "600 599 0:58 / / rw,relatime - overlay overlay "
+            "rw,lowerdir=/home/user/.local/share/containers/storage/overlay/l/A,"
+            "upperdir=/home/user/.local/share/containers/storage/overlay/abc/diff\n"
+        )
+        _real_open = builtins.open
+
+        def _fake_open(p, *a, **kw):
+            if p == "/proc/1/cgroup":
+                return _real_open(str(cgroup_file), *a, **kw)
+            if p == "/proc/self/mountinfo":
+                return _real_open(str(mountinfo_file), *a, **kw)
+            return _real_open(p, *a, **kw)
+
+        monkeypatch.setattr("builtins.open", _fake_open)
+        assert is_container() is True
+
     def test_caches_result(self, monkeypatch):
         """Second call uses cached value without re-probing."""
         monkeypatch.setattr(hermes_constants, "_container_detected", True)

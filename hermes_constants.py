@@ -954,6 +954,11 @@ def is_container() -> bool:
     #     never bind-mounts its own /etc identity files from those paths).
     _RUNTIME_MARKERS = (
         "docker", "containerd", "crio", "podman", "kubepods", "kubelet", "buildkit",
+        # Podman and CRI-O keep container roots under the shared
+        # containers/storage tree (rootful /var/lib/containers/storage/...,
+        # rootless ~/.local/share/containers/storage/...) — those paths spell
+        # neither "podman" nor "crio".
+        "containers/storage",
     )
     _IDENTITY_MOUNTS = {"/", "/etc/resolv.conf", "/etc/hostname", "/etc/hosts"}
     try:

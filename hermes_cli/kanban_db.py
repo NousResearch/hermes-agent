@@ -2681,6 +2681,10 @@ def create_task(
                         "goal_mode": bool(goal_mode) or None,
                     },
                 )
+            # Fire the created hook AFTER the write txn commits, matching the
+            # post-commit contract at `_fire_kanban_lifecycle_hook` (L141-148):
+            # plugin callbacks must observe durable board state and never hold
+            # the SQLite write lock.
             _fire_kanban_lifecycle_hook(
                 "kanban_task_created",
                 task_id,

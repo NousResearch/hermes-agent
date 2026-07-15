@@ -987,7 +987,8 @@ class EmailAdapter(BasePlatformAdapter):
         images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None,
         human_delay: float = 0.0,
-    ) -> None:
+        reply_to: Optional[str] = None,
+    ) -> bool:
         """Send a batch of images as a single email with multiple MIME attachments.
 
         Local files are attached directly. URL images have their URL
@@ -996,7 +997,7 @@ class EmailAdapter(BasePlatformAdapter):
         attachments fine, subject to SMTP message size limits.
         """
         if not images:
-            return
+            return False
 
         from urllib.parse import unquote as _unquote
 
@@ -1016,28 +1017,31 @@ class EmailAdapter(BasePlatformAdapter):
                 body_parts.append(f"Image: {image_url}")
 
         if not local_paths and not body_parts:
-            return
+            return False
 
         body = "\n\n".join(body_parts)
 
         try:
             loop = asyncio.get_running_loop()
+            send_args = (chat_id, body, local_paths)
+            if reply_to is not None:
+                send_args += (reply_to,)
             await loop.run_in_executor(
-                None,
-                self._send_email_with_attachments,
-                chat_id,
-                body,
-                local_paths,
+                None, self._send_email_with_attachments, *send_args
             )
+            return True
         except Exception as e:
             logger.error("[Email] Multi-image send failed, falling back: %s", e, exc_info=True)
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
+            return await super().send_multiple_images(
+                chat_id, images, metadata, human_delay, reply_to
+            )
 
     def _send_email_with_attachments(
         self,
         to_addr: str,
         body: str,
         file_paths: List[str],
+        reply_to_msg_id: Optional[str] = None,
     ) -> str:
         """Send an email with multiple file attachments via SMTP."""
         msg = MIMEMultipart()
@@ -1050,7 +1054,7 @@ class EmailAdapter(BasePlatformAdapter):
             subject = f"Re: {subject}"
         msg["Subject"] = subject
 
-        original_msg_id = ctx.get("message_id")
+        original_msg_id = reply_to_msg_id or ctx.get("message_id")
         if original_msg_id:
             msg["In-Reply-To"] = original_msg_id
             msg["References"] = original_msg_id

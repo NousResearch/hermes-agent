@@ -2425,12 +2425,31 @@ class DiscordAdapter(BasePlatformAdapter):
             continuation_message_ids=tuple(continuation_ids),
         )
 
+    async def _reply_reference_for_channel(
+        self,
+        channel,
+        reply_to: Optional[str],
+    ):
+        if not reply_to or self._reply_to_mode == "off":
+            return None
+        try:
+            ref_msg = await channel.fetch_message(int(reply_to))
+            return (
+                ref_msg.to_reference(fail_if_not_exists=False)
+                if hasattr(ref_msg, "to_reference")
+                else ref_msg
+            )
+        except Exception as exc:
+            logger.debug("Could not fetch attachment reply target: %s", exc)
+            return None
+
     async def _send_file_attachment(
         self,
         chat_id: str,
         file_path: str,
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
     ) -> SendResult:
         """Send a local file as a Discord attachment.
 
@@ -2455,7 +2474,11 @@ class DiscordAdapter(BasePlatformAdapter):
                     content=(caption or "").strip(),
                     file=file,
                 )
-            msg = await channel.send(content=caption if caption else None, file=file)
+            reference = await self._reply_reference_for_channel(channel, reply_to)
+            send_kwargs = {"content": caption if caption else None, "file": file}
+            if reference is not None:
+                send_kwargs["reference"] = reference
+            msg = await channel.send(**send_kwargs)
         return SendResult(success=True, message_id=str(msg.id))
 
     async def send_multiple_images(
@@ -2464,7 +2487,8 @@ class DiscordAdapter(BasePlatformAdapter):
         images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None,
         human_delay: float = 0.0,
-    ) -> None:
+        reply_to: Optional[str] = None,
+    ) -> bool:
         """Send a batch of images as a single Discord message with multiple attachments.
 
         Discord permits up to 10 file attachments per message. Batches are
@@ -2475,17 +2499,18 @@ class DiscordAdapter(BasePlatformAdapter):
         fall back to the base per-image loop.
         """
         if not self._client:
-            return
+            return False
         if not images:
-            return
+            return False
 
         try:
             import discord as _discord_mod
             import io as _io
             from urllib.parse import unquote as _unquote
         except Exception:  # pragma: no cover
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
+            return await super().send_multiple_images(
+                chat_id, images, metadata, human_delay, reply_to
+            )
 
         try:
             channel = self._client.get_channel(int(chat_id))
@@ -2493,19 +2518,38 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel = await self._client.fetch_channel(int(chat_id))
             if not channel:
                 logger.warning("[%s] Channel %s not found for multi-image send", self.name, chat_id)
-                return
+                return False
         except Exception as e:
             logger.warning("[%s] Failed to resolve channel for multi-image send: %s", self.name, e)
-            await super().send_multiple_images(chat_id, images, metadata, human_delay)
-            return
+            return await super().send_multiple_images(
+                chat_id, images, metadata, human_delay, reply_to
+            )
+
+        reference = None
+        if reply_to and self._reply_to_mode != "off" and not self._is_forum_parent(channel):
+            try:
+                ref_msg = await channel.fetch_message(int(reply_to))
+                reference = (
+                    ref_msg.to_reference(fail_if_not_exists=False)
+                    if hasattr(ref_msg, "to_reference")
+                    else ref_msg
+                )
+            except Exception as exc:
+                logger.debug("Could not fetch multi-image reply target: %s", exc)
 
         CHUNK = 10
         chunks = [images[i:i + CHUNK] for i in range(0, len(images), CHUNK)]
+        delivered = False
 
         for chunk_idx, chunk in enumerate(chunks):
             if human_delay > 0 and chunk_idx > 0:
                 await asyncio.sleep(human_delay)
 
+            chunk_reply_to = (
+                reply_to
+                if self._reply_to_mode == "all" or not delivered
+                else None
+            )
             files: List[Any] = []
             captions: List[str] = []
             aiohttp_session = None
@@ -2571,20 +2615,37 @@ class DiscordAdapter(BasePlatformAdapter):
                         files=files,
                     )
                 else:
-                    await channel.send(content=content, files=files)
+                    chunk_reference = (
+                        reference
+                        if chunk_reply_to is not None
+                        else None
+                    )
+                    send_kwargs = {"content": content, "files": files}
+                    if chunk_reference is not None:
+                        send_kwargs["reference"] = chunk_reference
+                    await channel.send(**send_kwargs)
+                    delivered = True
             except Exception as e:
                 logger.warning(
                     "[%s] Multi-image Discord send failed (chunk %d/%d), falling back to per-image: %s",
                     self.name, chunk_idx + 1, len(chunks), e,
                     exc_info=True,
                 )
-                await super().send_multiple_images(chat_id, chunk, metadata, human_delay=human_delay)
+                fallback_delivered = await super().send_multiple_images(
+                    chat_id,
+                    chunk,
+                    metadata,
+                    human_delay=human_delay,
+                    reply_to=chunk_reply_to,
+                )
+                delivered = delivered or fallback_delivered
             finally:
                 if aiohttp_session is not None:
                     try:
                         await aiohttp_session.close()
                     except Exception:
                         pass
+        return delivered
 
     async def play_tts(
         self,
@@ -2659,7 +2720,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 waveform_b64 = base64.b64encode(waveform_bytes).decode()
 
                 import json as _json
-                payload = _json.dumps({
+                payload_data = {
                     "flags": 8192,
                     "attachments": [{
                         "id": "0",
@@ -2667,7 +2728,13 @@ class DiscordAdapter(BasePlatformAdapter):
                         "duration_secs": round(duration_secs, 2),
                         "waveform": waveform_b64,
                     }],
-                })
+                }
+                if reply_to and self._reply_to_mode != "off":
+                    payload_data["message_reference"] = {
+                        "message_id": str(reply_to),
+                        "fail_if_not_exists": False,
+                    }
+                payload = _json.dumps(payload_data)
                 form = [
                     {"name": "payload_json", "value": payload},
                     {
@@ -2685,7 +2752,13 @@ class DiscordAdapter(BasePlatformAdapter):
             except Exception as voice_err:
                 logger.debug("Voice message flag failed, falling back to file: %s", voice_err)
                 file = discord.File(io.BytesIO(file_data), filename=filename)
-                msg = await channel.send(file=file)
+                reference = await self._reply_reference_for_channel(
+                    channel, reply_to
+                )
+                send_kwargs = {"file": file}
+                if reference is not None:
+                    send_kwargs["reference"] = reference
+                msg = await channel.send(**send_kwargs)
                 return SendResult(success=True, message_id=str(msg.id))
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send audio, falling back to base adapter: %s", self.name, e, exc_info=True)
@@ -3628,7 +3701,9 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a local image file natively as a Discord file attachment."""
         try:
-            return await self._send_file_attachment(chat_id, image_path, caption)
+            return await self._send_file_attachment(
+                chat_id, image_path, caption, reply_to=reply_to
+            )
         except FileNotFoundError:
             return SendResult(success=False, error=f"Image file not found: {image_path}")
         except Exception as e:  # pragma: no cover - defensive logging
@@ -3692,10 +3767,16 @@ class DiscordAdapter(BasePlatformAdapter):
                             file=file,
                         )
 
-                    msg = await channel.send(
-                        content=caption if caption else None,
-                        file=file,
+                    reference = await self._reply_reference_for_channel(
+                        channel, reply_to
                     )
+                    send_kwargs = {
+                        "content": caption if caption else None,
+                        "file": file,
+                    }
+                    if reference is not None:
+                        send_kwargs["reference"] = reference
+                    msg = await channel.send(**send_kwargs)
                     return SendResult(success=True, message_id=str(msg.id))
 
         except ImportError:
@@ -3761,10 +3842,16 @@ class DiscordAdapter(BasePlatformAdapter):
                             file=file,
                         )
 
-                    msg = await channel.send(
-                        content=caption if caption else None,
-                        file=file,
+                    reference = await self._reply_reference_for_channel(
+                        channel, reply_to
                     )
+                    send_kwargs = {
+                        "content": caption if caption else None,
+                        "file": file,
+                    }
+                    if reference is not None:
+                        send_kwargs["reference"] = reference
+                    msg = await channel.send(**send_kwargs)
                     return SendResult(success=True, message_id=str(msg.id))
 
         except ImportError:
@@ -3793,7 +3880,9 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send a local video file natively as a Discord attachment."""
         try:
-            return await self._send_file_attachment(chat_id, video_path, caption)
+            return await self._send_file_attachment(
+                chat_id, video_path, caption, reply_to=reply_to
+            )
         except FileNotFoundError:
             return SendResult(success=False, error=f"Video file not found: {video_path}")
         except Exception as e:  # pragma: no cover - defensive logging
@@ -3811,7 +3900,13 @@ class DiscordAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Send an arbitrary file natively as a Discord attachment."""
         try:
-            return await self._send_file_attachment(chat_id, file_path, caption, file_name=file_name)
+            return await self._send_file_attachment(
+                chat_id,
+                file_path,
+                caption,
+                file_name=file_name,
+                reply_to=reply_to,
+            )
         except FileNotFoundError:
             return SendResult(success=False, error=f"File not found: {file_path}")
         except Exception as e:  # pragma: no cover - defensive logging

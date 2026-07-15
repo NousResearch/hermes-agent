@@ -1323,6 +1323,7 @@ class LineAdapter(BasePlatformAdapter):
         image_path: str,
         caption: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None,
     ) -> SendResult:
         path = Path(image_path)
         if not path.exists() or not path.is_file():
@@ -1353,6 +1354,7 @@ class LineAdapter(BasePlatformAdapter):
         audio_path: str,
         duration_ms: int = 1000,
         metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None,
     ) -> SendResult:
         path = Path(audio_path)
         if not path.exists() or not path.is_file():
@@ -1377,6 +1379,7 @@ class LineAdapter(BasePlatformAdapter):
         video_path: str,
         preview_path: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        reply_to: Optional[str] = None,
     ) -> SendResult:
         path = Path(video_path)
         if not path.exists() or not path.is_file():

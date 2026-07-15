@@ -2092,6 +2092,31 @@ class EphemeralReply(str):
         return str.__str__(self)
 
 
+class AnchoredReply(str):
+    """Normal reply whose delivery anchor differs from the trigger event.
+
+    Queue-mode agent runs may drain several user turns inside one handler
+    invocation.  The returned text then belongs to the last drained turn, not
+    necessarily to the event that originally entered the platform adapter.
+    Carrying the resolved reply anchor with the text lets the adapter preserve
+    that association without mutating the original inbound event.
+    """
+
+    reply_to_message_id: Optional[str]
+    event: Optional[MessageEvent]
+
+    def __new__(
+        cls,
+        text: str,
+        reply_to_message_id: Optional[str],
+        event: Optional[MessageEvent] = None,
+    ):
+        instance = super().__new__(cls, text)
+        instance.reply_to_message_id = reply_to_message_id
+        instance.event = event
+        return instance
+
+
 def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
@@ -2175,9 +2200,13 @@ _RETRYABLE_ERROR_PATTERNS = (
 
 
 # Type for message handlers.  Handlers may return a plain string (normal
-# reply), an ``EphemeralReply`` to opt the reply into auto-deletion, or
-# ``None`` when the response was already delivered (e.g. via streaming).
-MessageHandler = Callable[[MessageEvent], Awaitable[Optional[Union[str, "EphemeralReply"]]]]
+# reply), an ``EphemeralReply`` to opt the reply into auto-deletion, an
+# ``AnchoredReply`` when a queued turn changed the delivery anchor, or ``None``
+# when the response was already delivered (e.g. via streaming).
+MessageHandler = Callable[
+    [MessageEvent],
+    Awaitable[Optional[Union[str, "EphemeralReply", "AnchoredReply"]]],
+]
 
 
 def resolve_channel_prompt(
@@ -3240,7 +3269,8 @@ class BasePlatformAdapter(ABC):
         images: List[Tuple[str, str]],
         metadata: Optional[Dict[str, Any]] = None,
         human_delay: float = 0.0,
-    ) -> None:
+        reply_to: Optional[str] = None,
+    ) -> bool:
         """Send a batch of images.
 
         Accepts ``http(s)://``, ``file://`` URIs in the first tuple
@@ -3255,6 +3285,9 @@ class BasePlatformAdapter(ABC):
         """
         from urllib.parse import unquote as _unquote
 
+        remaining_reply_to = reply_to
+        reply_to_all_parts = getattr(self, "_reply_to_mode", None) == "all"
+        delivered = False
         for image_url, alt_text in images:
             if human_delay > 0:
                 await asyncio.sleep(human_delay)
@@ -3266,30 +3299,76 @@ class BasePlatformAdapter(ABC):
                     alt_text[:30] if alt_text else "",
                 )
                 if image_url.startswith("file://"):
-                    img_result = await self.send_image_file(
+                    kwargs = dict(
                         chat_id=chat_id,
                         image_path=_unquote(image_url[7:]),
                         caption=alt_text if alt_text else None,
                         metadata=metadata,
                     )
+                    if remaining_reply_to is not None:
+                        kwargs["reply_to"] = remaining_reply_to
+                    img_result = await self.send_image_file(**kwargs)
                 elif self._is_animation_url(image_url):
-                    img_result = await self.send_animation(
+                    kwargs = dict(
                         chat_id=chat_id,
                         animation_url=image_url,
                         caption=alt_text if alt_text else None,
                         metadata=metadata,
                     )
+                    if remaining_reply_to is not None:
+                        kwargs["reply_to"] = remaining_reply_to
+                    img_result = await self.send_animation(**kwargs)
                 else:
-                    img_result = await self.send_image(
+                    kwargs = dict(
                         chat_id=chat_id,
                         image_url=image_url,
                         caption=alt_text if alt_text else None,
                         metadata=metadata,
                     )
+                    if remaining_reply_to is not None:
+                        kwargs["reply_to"] = remaining_reply_to
+                    img_result = await self.send_image(**kwargs)
                 if not img_result.success:
                     logger.error("[%s] Failed to send image: %s", self.name, img_result.error)
+                elif not reply_to_all_parts:
+                    remaining_reply_to = None
+                if img_result.success:
+                    delivered = True
             except Exception as img_err:
                 logger.error("[%s] Error sending image: %s", self.name, img_err, exc_info=True)
+        return delivered
+
+    async def _send_multiple_images_compat(
+        self,
+        chat_id: str,
+        images: List[Tuple[str, str]],
+        metadata: Optional[Dict[str, Any]] = None,
+        human_delay: float = 0.0,
+        reply_to: Optional[str] = None,
+    ) -> bool:
+        """Call batch-image overrides without breaking legacy plugins."""
+        kwargs: Dict[str, Any] = {
+            "chat_id": chat_id,
+            "images": images,
+            "metadata": metadata,
+            "human_delay": human_delay,
+        }
+        if reply_to is not None:
+            try:
+                params = inspect.signature(self.send_multiple_images).parameters
+                accepts_reply_to = "reply_to" in params or any(
+                    param.kind is inspect.Parameter.VAR_KEYWORD
+                    for param in params.values()
+                )
+            except (TypeError, ValueError):
+                accepts_reply_to = False
+            if accepts_reply_to:
+                kwargs["reply_to"] = reply_to
+        result = await self.send_multiple_images(**kwargs)
+        # Legacy overrides used the historical ``None`` return contract after
+        # a successful send. Treat that as delivered; new implementations
+        # return an explicit bool so failures can preserve the anchor.
+        return True if result is None else bool(result)
 
     async def send_image(
         self,
@@ -4915,6 +4994,19 @@ class BasePlatformAdapter(ABC):
             # Call the handler (this can take a while with tool calls)
             response = await self._message_handler(event)
             is_ephemeral_response = isinstance(response, EphemeralReply)
+            is_anchored_response = isinstance(response, AnchoredReply)
+            response_event = (
+                response.event
+                if is_anchored_response and response.event is not None
+                else event
+            )
+            response_source = getattr(response_event, "source", None) or event.source
+            response_chat_id = response_source.chat_id
+            response_reply_anchor = (
+                response.reply_to_message_id
+                if is_anchored_response
+                else _reply_anchor_for_event(response_event)
+            )
 
             # Slash-command handlers may return an EphemeralReply sentinel to
             # request that their reply message auto-delete after a TTL (used
@@ -4996,7 +5088,7 @@ class BasePlatformAdapter(ABC):
                             "[%s] response_delivery_recovered: extract pipeline "
                             "reduced a non-empty response (%d chars) to empty with "
                             "no attachment; delivering recovered original to %s",
-                            self.name, len(_response_pre_extract), event.source.chat_id,
+                            self.name, len(_response_pre_extract), response_chat_id,
                         )
                         text_content = _recovered
 
@@ -5004,15 +5096,29 @@ class BasePlatformAdapter(ABC):
                 # the existing notify=True marker. Clone once so typing/status
                 # metadata stays unmarked and progress bubbles remain
                 # thread-strict.
-                _final_thread_metadata = _mark_notify_metadata(_thread_metadata)
+                _final_thread_metadata = _mark_notify_metadata(
+                    _thread_metadata_for_source(
+                        response_source,
+                        response_reply_anchor,
+                    )
+                )
+                anchored_reply_remaining = (
+                    response_reply_anchor if is_anchored_response else None
+                )
+                reply_to_all_parts = getattr(self, "_reply_to_mode", None) == "all"
+
+                def _consume_anchored_reply() -> None:
+                    nonlocal anchored_reply_remaining
+                    if not reply_to_all_parts:
+                        anchored_reply_remaining = None
 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
                 # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
                 # True globally and no ``/voice off`` has been issued.
                 _tts_path = None
-                if (self._should_auto_tts_for_chat(event.source.chat_id)
-                        and event.message_type == MessageType.VOICE
+                if (self._should_auto_tts_for_chat(response_chat_id)
+                        and response_event.message_type == MessageType.VOICE
                         and text_content
                         and not media_files):
                     try:
@@ -5041,15 +5147,20 @@ class BasePlatformAdapter(ABC):
                             and text_content[:1024] == text_content
                         ):
                             telegram_tts_caption = text_content
-                        tts_result = await self.play_tts(
-                            chat_id=event.source.chat_id,
+                        tts_kwargs = dict(
+                            chat_id=response_chat_id,
                             audio_path=_tts_path,
                             caption=telegram_tts_caption,
                             metadata=_final_thread_metadata,
                         )
+                        if telegram_tts_caption and anchored_reply_remaining is not None:
+                            tts_kwargs["reply_to"] = anchored_reply_remaining
+                        tts_result = await self.play_tts(**tts_kwargs)
                         _tts_caption_delivered = bool(
                             telegram_tts_caption and getattr(tts_result, "success", False)
                         )
+                        if _tts_caption_delivered:
+                            _consume_anchored_reply()
                     finally:
                         try:
                             os.remove(_tts_path)
@@ -5058,15 +5169,21 @@ class BasePlatformAdapter(ABC):
 
                 # Send the text portion
                 if text_content and not _tts_caption_delivered:
-                    logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
-                    _reply_anchor = _reply_anchor_for_event(event)
+                    logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), response_chat_id)
+                    text_reply_anchor = (
+                        anchored_reply_remaining
+                        if is_anchored_response
+                        else response_reply_anchor
+                    )
                     result = await self._send_with_retry(
-                        chat_id=event.source.chat_id,
+                        chat_id=response_chat_id,
                         content=text_content,
-                        reply_to=_reply_anchor,
+                        reply_to=text_reply_anchor,
                         metadata=_final_thread_metadata,
                     )
                     _record_delivery(result)
+                    if result.success and anchored_reply_remaining is not None:
+                        _consume_anchored_reply()
 
                     # Schedule auto-deletion of system-notice replies.
                     # Detached so the handler returns immediately; errors
@@ -5078,7 +5195,7 @@ class BasePlatformAdapter(ABC):
                         and result.message_id
                     ):
                         self._schedule_ephemeral_delete(
-                            chat_id=event.source.chat_id,
+                            chat_id=response_chat_id,
                             message_id=result.message_id,
                             ttl_seconds=_ephemeral_ttl,
                         )
@@ -5090,12 +5207,15 @@ class BasePlatformAdapter(ABC):
                 if images:
                     logger.info("[%s] Extracted %d image(s) to send as attachments", self.name, len(images))
                     try:
-                        await self.send_multiple_images(
-                            chat_id=event.source.chat_id,
+                        batch_delivered = await self._send_multiple_images_compat(
+                            chat_id=response_chat_id,
                             images=images,
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
+                            reply_to=anchored_reply_remaining,
                         )
+                        if batch_delivered and anchored_reply_remaining is not None:
+                            _consume_anchored_reply()
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
@@ -5132,12 +5252,15 @@ class BasePlatformAdapter(ABC):
                 if _image_paths:
                     try:
                         _batch = [(f"file://{_quote(p)}", "") for p in _image_paths]
-                        await self.send_multiple_images(
-                            chat_id=event.source.chat_id,
+                        batch_delivered = await self._send_multiple_images_compat(
+                            chat_id=response_chat_id,
                             images=_batch,
                             metadata=_final_thread_metadata,
                             human_delay=human_delay,
+                            reply_to=anchored_reply_remaining,
                         )
+                        if batch_delivered and anchored_reply_remaining is not None:
+                            _consume_anchored_reply()
                     except Exception as batch_err:
                         logger.warning("[%s] Error batching images: %s", self.name, batch_err, exc_info=True)
 
@@ -5146,27 +5269,37 @@ class BasePlatformAdapter(ABC):
                         await asyncio.sleep(human_delay)
                     try:
                         ext = Path(media_path).suffix.lower()
+                        media_reply_kwargs = (
+                            {"reply_to": anchored_reply_remaining}
+                            if anchored_reply_remaining is not None
+                            else {}
+                        )
                         if should_send_media_as_audio(self.platform, ext, is_voice=is_voice):
                             media_result = await self.send_voice(
-                                chat_id=event.source.chat_id,
+                                chat_id=response_chat_id,
                                 audio_path=media_path,
                                 metadata=_final_thread_metadata,
+                                **media_reply_kwargs,
                             )
                         elif ext in _VIDEO_EXTS:
                             media_result = await self.send_video(
-                                chat_id=event.source.chat_id,
+                                chat_id=response_chat_id,
                                 video_path=media_path,
                                 metadata=_final_thread_metadata,
+                                **media_reply_kwargs,
                             )
                         else:
                             media_result = await self.send_document(
-                                chat_id=event.source.chat_id,
+                                chat_id=response_chat_id,
                                 file_path=media_path,
                                 metadata=_final_thread_metadata,
+                                **media_reply_kwargs,
                             )
 
                         if not media_result.success:
                             logger.warning("[%s] Failed to send media (%s): %s", self.name, ext, media_result.error)
+                        elif anchored_reply_remaining is not None:
+                            _consume_anchored_reply()
                     except Exception as media_err:
                         logger.warning("[%s] Error sending media: %s", self.name, media_err)
 
@@ -5176,18 +5309,30 @@ class BasePlatformAdapter(ABC):
                         await asyncio.sleep(human_delay)
                     try:
                         ext = Path(file_path).suffix.lower()
+                        local_reply_kwargs = (
+                            {"reply_to": anchored_reply_remaining}
+                            if anchored_reply_remaining is not None
+                            else {}
+                        )
                         if ext in _VIDEO_EXTS:
-                            await self.send_video(
-                                chat_id=event.source.chat_id,
+                            local_result = await self.send_video(
+                                chat_id=response_chat_id,
                                 video_path=file_path,
                                 metadata=_final_thread_metadata,
+                                **local_reply_kwargs,
                             )
                         else:
-                            await self.send_document(
-                                chat_id=event.source.chat_id,
+                            local_result = await self.send_document(
+                                chat_id=response_chat_id,
                                 file_path=file_path,
                                 metadata=_final_thread_metadata,
+                                **local_reply_kwargs,
                             )
+                        if (
+                            getattr(local_result, "success", False)
+                            and anchored_reply_remaining is not None
+                        ):
+                            _consume_anchored_reply()
                     except Exception as file_err:
                         logger.error("[%s] Error sending local file %s: %s", self.name, file_path, file_err)
 
@@ -5202,7 +5347,7 @@ class BasePlatformAdapter(ABC):
                         "[%s] response_delivery_dropped: non-empty response "
                         "(%d chars) produced no delivered message or attachment "
                         "for %s (empty after extract, recovery yielded nothing).",
-                        self.name, len(_response_pre_extract), event.source.chat_id,
+                        self.name, len(_response_pre_extract), response_chat_id,
                     )
 
             # Determine overall success for the processing hook

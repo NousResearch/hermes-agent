@@ -7,6 +7,7 @@ conversation history.
 
 from __future__ import annotations
 
+import os
 import unicodedata
 from typing import Any
 
@@ -22,6 +23,45 @@ LIVE_GATEWAY_SILENT_MARKERS = frozenset({
     "NO_REPLY",
     "NO REPLY",
 })
+
+HANDOFF_GUARD_PREFIXES = ("<analysis>", "<summary>")
+HANDOFF_GUARD_MIN_CHARS = 600
+HANDOFF_GUARD_REPLACEMENT = (
+    "⚠️ Internal context handoff content was withheld. Please retry your request."
+)
+
+
+def _handoff_guard_enabled() -> bool:
+    return os.environ.get("HERMES_HANDOFF_GUARD", "1") != "0"
+
+
+def is_handoff_leak_response(response: Any) -> bool:
+    """Return True for a long internal handoff card at response start."""
+    if not _handoff_guard_enabled() or not isinstance(response, str):
+        return False
+    stripped = response.lstrip()
+    return len(stripped) > HANDOFF_GUARD_MIN_CHARS and stripped.lower().startswith(
+        HANDOFF_GUARD_PREFIXES
+    )
+
+
+def is_partial_handoff_leak_candidate(response: Any) -> bool:
+    """Hold a matching stream prefix until it is short-safe or long-blocked."""
+    if not _handoff_guard_enabled() or not isinstance(response, str):
+        return False
+    stripped = response.lstrip()
+    if not stripped or len(stripped) > HANDOFF_GUARD_MIN_CHARS:
+        return False
+    lowered = stripped.lower()
+    return any(
+        prefix.startswith(lowered) or lowered.startswith(prefix)
+        for prefix in HANDOFF_GUARD_PREFIXES
+    )
+
+
+def guard_handoff_response(response: Any) -> Any:
+    """Replace a detected internal handoff card; preserve every other value."""
+    return HANDOFF_GUARD_REPLACEMENT if is_handoff_leak_response(response) else response
 
 
 def _canonical_silence_candidate(text: str) -> str:

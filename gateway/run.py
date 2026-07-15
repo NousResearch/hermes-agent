@@ -11810,6 +11810,17 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             response = agent_result.get("final_response") or ""
             try:
+                from gateway.response_filters import guard_handoff_response
+                _guarded_response = guard_handoff_response(response)
+                if _guarded_response != response:
+                    logger.warning(
+                        "Withheld internal handoff response before delivery (%d chars)",
+                        len(response),
+                    )
+                    response = _guarded_response
+            except Exception:
+                pass
+            try:
                 from gateway.response_filters import is_intentional_silence_agent_result
                 _intentional_silence = is_intentional_silence_agent_result(
                     agent_result, response,

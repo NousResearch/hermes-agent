@@ -25,6 +25,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.response_filters import (
+    HANDOFF_GUARD_REPLACEMENT,
     is_intentional_silence_response,
     is_partial_silence_marker,
 )
@@ -122,6 +123,24 @@ def _sent_and_edited(adapter):
 
 
 class TestStreamedSilenceSuppression:
+    @pytest.mark.asyncio
+    async def test_long_handoff_stream_is_replaced_before_delivery(self):
+        adapter = _make_adapter()
+        consumer = GatewayStreamConsumer(
+            adapter, "chat_1",
+            StreamConsumerConfig(edit_interval=0.01, buffer_threshold=1),
+        )
+        consumer.on_delta("<analysis>" + ("internal state " * 50))
+        consumer.on_delta("secret tail that must also be dropped")
+        consumer.finish()
+        await consumer.run()
+
+        delivered = "".join(_sent_and_edited(adapter))
+        assert HANDOFF_GUARD_REPLACEMENT in delivered
+        assert "<analysis>" not in delivered
+        assert "internal state" not in delivered
+        assert "secret tail" not in delivered
+
     @pytest.mark.asyncio
     async def test_no_reply_only_stream_is_fully_suppressed(self):
         """A stream whose entire content is NO_REPLY sends nothing visible."""

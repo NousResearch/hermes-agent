@@ -33,7 +33,10 @@ from gateway.config import (
     DEFAULT_STREAMING_CURSOR as _DEFAULT_STREAMING_CURSOR,
 )
 from gateway.response_filters import (
+    HANDOFF_GUARD_REPLACEMENT as _HANDOFF_GUARD_REPLACEMENT,
+    is_handoff_leak_response as _is_handoff_leak_response,
     is_intentional_silence_response as _is_intentional_silence_response,
+    is_partial_handoff_leak_candidate as _is_partial_handoff_leak_candidate,
     is_partial_silence_marker as _is_partial_silence_marker,
 )
 
@@ -206,6 +209,7 @@ class GatewayStreamConsumer:
         # Think-block filter state (mirrors CLI's _stream_delta tag suppression)
         self._in_think_block = False
         self._think_buffer = ""
+        self._handoff_guard_triggered = False
 
         # Native draft-streaming state.  Resolved at the start of run() based
         # on cfg.transport, cfg.chat_type, and the adapter's
@@ -399,6 +403,8 @@ class GatewayStreamConsumer:
         discarded.  Partial tags at buffer boundaries are held back in
         ``_think_buffer`` until enough characters arrive to decide.
         """
+        if self._handoff_guard_triggered:
+            return
         buf = self._think_buffer + text
         self._think_buffer = ""
 
@@ -597,6 +603,16 @@ class GatewayStreamConsumer:
                     except queue.Empty:
                         break
 
+                _clean_accumulated = self._clean_for_display(self._accumulated)
+                if _is_handoff_leak_response(_clean_accumulated):
+                    logger.warning(
+                        "Withheld internal handoff response from stream (%d chars)",
+                        len(_clean_accumulated),
+                    )
+                    self._accumulated = _HANDOFF_GUARD_REPLACEMENT
+                    self._think_buffer = ""
+                    self._handoff_guard_triggered = True
+
                 # Flush any held-back partial-tag buffer on stream end
                 # so trailing text that was waiting for a potential open
                 # tag is not lost.
@@ -652,8 +668,13 @@ class GatewayStreamConsumer:
                     and not got_done
                     and not got_segment_break
                     and commentary_text is None
-                    and _is_partial_silence_marker(
-                        self._clean_for_display(self._accumulated)
+                    and (
+                        _is_partial_silence_marker(
+                            self._clean_for_display(self._accumulated)
+                        )
+                        or _is_partial_handoff_leak_candidate(
+                            self._clean_for_display(self._accumulated)
+                        )
                     )
                 ):
                     should_edit = False

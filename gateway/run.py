@@ -6304,6 +6304,13 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
 
     async def _launch_detached_restart_command(self) -> None:
+        # Legacy compatibility stub: never allow the gateway process to launch
+        # its own successor or scrub the self-targeting guard.
+        logger.error(
+            "Refusing gateway-owned detached restart helper; use an external supervisor"
+        )
+        return
+
         import shutil
         import subprocess
 
@@ -6444,15 +6451,15 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
 
     def _launch_systemd_restart_shortcut(self) -> None:
-        """Best-effort helper to bypass systemd's automatic restart delay.
+        """Legacy shortcut retained for API compatibility but blocked unconditionally."""
+        logger.error(
+            "Refusing gateway-owned systemd restart helper; use an external supervisor"
+        )
+        return
 
-        For planned in-chat restarts, the gateway exits cleanly so systemd does
-        not record a failure.  However, units with RestartSteps still count
-        automatic restarts and can delay repeated /restart tests.  A transient
-        user service survives our cgroup teardown and explicitly starts the
-        gateway as soon as this PID exits, while the unit keeps its normal
-        backoff for real crash loops.
-        """
+        # Historical implementation used a transient systemd unit to bypass
+        # automatic restart delay. It remains only for non-gateway compatibility
+        # callers; production gateway context is blocked above.
         if sys.platform != "linux" or not os.environ.get("INVOCATION_ID"):
             return
 
@@ -6539,21 +6546,25 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Failed to launch systemd planned-restart helper: %s", e)
 
     def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
+        if detached:
+            logger.error(
+                "Refusing detached gateway restart: an external supervisor must own successor startup"
+            )
+            return False
         if self._restart_task_started:
             return False
         self._restart_requested = True
-        self._restart_detached = detached
+        self._restart_detached = False
         self._restart_via_service = via_service
         self._restart_task_started = True
 
         async def _run_restart() -> None:
-            if detached:
-                try:
-                    await self._launch_detached_restart_command()
-                except Exception as e:
-                    logger.error("Failed to launch detached gateway restart helper: %s", e)
             await asyncio.sleep(0.05)
-            await self.stop(restart=True, detached_restart=detached, service_restart=via_service)
+            await self.stop(
+                restart=True,
+                detached_restart=False,
+                service_restart=via_service,
+            )
 
         # _run_restart is a short-lived self-terminating task (calls stop()
         # then returns).  Don't add it to _background_tasks — _stop_impl
@@ -8377,12 +8388,6 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     _phase_elapsed(),
                 )
 
-            if self._restart_requested and self._restart_detached:
-                try:
-                    await self._launch_detached_restart_command()
-                except Exception as e:
-                    logger.error("Failed to launch detached gateway restart: %s", e)
-
             await self._finalize_shutdown_agents(active_agents)
 
             # Also shut down memory providers on idle cached agents.
@@ -8544,25 +8549,9 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     logger.debug("Failed to write planned restart notification marker: %s", e)
 
             if self._restart_requested and self._restart_via_service:
-                self._launch_systemd_restart_shortcut()
-                # Always exit with TEMPFAIL (75) on service-managed
-                # restarts.  The shortcut helper above is best-effort and
-                # commonly fails on real deployments: non-root gateway
-                # units hit Polkit denials when invoking ``systemd-run
-                # --system``, headless boxes have no user bus for
-                # ``--user``, and operator-managed unit files may use
-                # ``Restart=on-failure`` rather than ``Restart=always``.
-                # Exit 75 paired with ``RestartForceExitStatus=75`` makes
-                # systemd treat the planned restart as a controlled
-                # failure and revive the unit via ``Restart=on-failure``,
-                # regardless of whether the helper survived.  Without
-                # this, a clean exit (0) on Linux left the gateway dead
-                # until someone rebooted the host.  Only the planned code
-                # (75) is whitelisted via ``RestartForceExitStatus``; a
-                # genuine crash exits non-zero-but-not-75, so real crash
-                # loops are still governed by the unit's normal
-                # ``Restart=``/``RestartSec`` (and any StartLimit the
-                # operator sets) rather than force-restarted here.
+                # The configured external supervisor is the sole lifecycle
+                # owner. Exit with the dedicated code and never spawn a
+                # transient systemd/helper job from inside the gateway.
                 self._exit_code = GATEWAY_SERVICE_RESTART_EXIT_CODE
                 self._exit_reason = self._exit_reason or "Gateway restart requested"
 

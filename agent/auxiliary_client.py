@@ -4631,6 +4631,26 @@ def get_available_vision_backends() -> List[str]:
     return available
 
 
+def _probe_zai_endpoint(url: str, api_key: Optional[str] = None, timeout: float = 3.0) -> bool:
+    """Quick connectivity probe for a Z.AI endpoint.
+
+    Returns True if the endpoint responds (any HTTP status — we only care
+    that it's reachable, not that auth succeeds).  A short timeout avoids
+    blocking vision resolution on an unreachable endpoint.
+    """
+    import httpx
+    headers = {}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+    try:
+        probe_url = url.rstrip("/") + "/models"
+        resp = httpx.get(probe_url, headers=headers, timeout=timeout)
+        # Any response means the endpoint is reachable
+        return resp.status_code is not None
+    except Exception:
+        return False
+
+
 def resolve_vision_provider_client(
     provider: Optional[str] = None,
     model: Optional[str] = None,
@@ -4777,6 +4797,12 @@ def resolve_vision_provider_client(
             "https://api.z.ai/api/paas/v4",
         ]
         for _zai_url in zai_openai_urls:
+            # Probe endpoint with a lightweight connectivity check before
+            # constructing the vision client — avoids paying client-build
+            # and auth-setup cost for an endpoint that will reject us.
+            if not _probe_zai_endpoint(_zai_url, resolved_api_key or None):
+                logger.debug("Auxiliary vision: Z.AI endpoint %s unreachable, skipping", _zai_url)
+                continue
             client, final_model = _get_cached_client(
                 requested, resolved_model, async_mode,
                 base_url=_zai_url,

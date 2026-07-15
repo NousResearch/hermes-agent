@@ -11,17 +11,10 @@ dispatcher like Telegram — the auth + resolution path is the same:
   · already-resolved or unauthorized → ephemeral "this prompt..." reply
 """
 
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
-
-# Repo root importable
-_repo = str(Path(__file__).resolve().parents[2])
-if _repo not in sys.path:
-    sys.path.insert(0, _repo)
 
 # Triggers the shared discord mock from tests/gateway/conftest.py before
 # importing the production module.

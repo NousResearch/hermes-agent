@@ -9,12 +9,7 @@ Or with pytest if available:
     python3 -m pytest tests/test_yuanbao_markdown.py -v
 """
 
-import sys
-import os
 import unittest
-
-# Ensure project root is on the path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from gateway.platforms.yuanbao import MarkdownProcessor
 

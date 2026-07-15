@@ -9,14 +9,8 @@ The fix refuses to start the adapter in webhook mode without the secret.
 
 from __future__ import annotations
 
+import importlib.resources
 import re
-import sys
-from pathlib import Path
-
-
-_repo = str(Path(__file__).resolve().parents[2])
-if _repo not in sys.path:
-    sys.path.insert(0, _repo)
 
 
 class TestTelegramWebhookSecretRequired:
@@ -31,8 +25,7 @@ class TestTelegramWebhookSecretRequired:
     """
 
     def _get_source(self) -> str:
-        path = Path(_repo) / "plugins" / "platforms" / "telegram" / "adapter.py"
-        return path.read_text(encoding="utf-8")
+        return importlib.resources.files("plugins.platforms.telegram").joinpath("adapter.py").read_text()
 
     def test_webhook_branch_checks_secret(self):
         """The webhook-mode branch of connect() must read

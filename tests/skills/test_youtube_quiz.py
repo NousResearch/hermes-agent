@@ -1,16 +1,15 @@
 """Tests for optional-skills/productivity/memento-flashcards/scripts/youtube_quiz.py"""
 
 import json
-import sys
 from pathlib import Path
 from unittest import mock
 
 import pytest
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "optional-skills" / "productivity" / "memento-flashcards" / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
+from tests import load_module_from_file
 
-import youtube_quiz
+module_file = Path("optional-skills", "productivity", "memento-flashcards", "scripts", "youtube_quiz.py")
+youtube_quiz = load_module_from_file(module_file)
 
 
 def _run(capsys, argv: list[str]) -> dict:

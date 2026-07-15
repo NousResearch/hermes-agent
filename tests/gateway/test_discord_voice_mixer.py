@@ -17,16 +17,7 @@ import pytest
 # math needs it, so skip this whole module when it isn't installed.
 np = pytest.importorskip("numpy")
 
-# voice_mixer lives inside the discord plugin package dir; import by path the
-# same way the adapter does.
-_DISCORD_DIR = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
-    "plugins", "platforms", "discord",
-)
-if _DISCORD_DIR not in sys.path:
-    sys.path.insert(0, _DISCORD_DIR)
-
-import voice_mixer as vm  # noqa: E402
+import plugins.platforms.discord.voice_mixer as vm  # noqa: E402
 
 
 # =====================================================================

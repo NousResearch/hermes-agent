@@ -2,19 +2,18 @@
 
 import csv
 import json
-import sys
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Final
 from unittest import mock
 
 import pytest
 
-# Add the scripts dir so we can import the module directly
-SCRIPTS_DIR = Path(__file__).resolve().parents[2] / "optional-skills" / "productivity" / "memento-flashcards" / "scripts"
-sys.path.insert(0, str(SCRIPTS_DIR))
+from tests import load_module_from_file
 
-import memento_cards
+module_file: Final = Path("optional-skills", "productivity", "memento-flashcards", "scripts", "memento_cards.py")
+memento_cards: Final = load_module_from_file(module_file)
 
 
 @pytest.fixture(autouse=True)

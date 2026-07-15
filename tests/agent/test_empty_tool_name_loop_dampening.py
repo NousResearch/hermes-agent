@@ -31,11 +31,6 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
 
-# Repo root = three levels up from tests/agent/<file>.
-_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-if _REPO_ROOT not in sys.path:
-    sys.path.insert(0, _REPO_ROOT)
-
 
 class _MockHandler(BaseHTTPRequestHandler):
     # Set by the fixture before each request cycle.

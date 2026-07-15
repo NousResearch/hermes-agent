@@ -3,18 +3,10 @@
 import importlib.util
 import json
 import sys
-from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-
-# ---------------------------------------------------------------------------
-# Ensure the repo root is importable
-# ---------------------------------------------------------------------------
-_repo = str(Path(__file__).resolve().parents[2])
-if _repo not in sys.path:
-    sys.path.insert(0, _repo)
 
 
 # ---------------------------------------------------------------------------

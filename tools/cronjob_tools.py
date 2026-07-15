@@ -16,9 +16,6 @@ from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
 
-# Import from cron module (will be available when properly installed)
-sys.path.insert(0, str(Path(__file__).parent.parent))
-
 from cron.jobs import (
     AmbiguousJobReference,
     claim_job_for_fire,

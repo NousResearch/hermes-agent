@@ -41,9 +41,6 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
-sys.path.insert(0, str(REPO_ROOT))
-
 HS = os.environ.get("E2E_MATRIX_HS", "http://127.0.0.1:26167")
 COMPOSE_DIR = Path(__file__).parent
 CONTAINER_NAME = "matrix_xsign_bootstrap-homeserver-1"

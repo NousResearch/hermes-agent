@@ -10,13 +10,7 @@ job runs without the instructions it was scheduled to follow.
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
 import pytest
-
-# Ensure project root is importable
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 
 
 @pytest.fixture

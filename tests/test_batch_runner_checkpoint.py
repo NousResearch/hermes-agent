@@ -1,14 +1,10 @@
 """Tests for batch_runner checkpoint behavior — incremental writes, resume, atomicity."""
 
 import json
-from pathlib import Path
 from threading import Lock
 
 import pytest
 
-# batch_runner uses relative imports, ensure project root is on path
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from batch_runner import BatchRunner, _process_batch_worker
 

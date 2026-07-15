@@ -293,6 +293,7 @@ from hermes_cli.subcommands.login import build_login_parser
 from hermes_cli.subcommands.logout import build_logout_parser
 from hermes_cli.subcommands.auth import build_auth_parser
 from hermes_cli.subcommands.status import build_status_parser
+from hermes_cli.subcommands.usage import build_usage_parser
 from hermes_cli.subcommands.webhook import build_webhook_parser
 from hermes_cli.subcommands.hooks import build_hooks_parser
 from hermes_cli.subcommands.doctor import build_doctor_parser
@@ -4258,6 +4259,13 @@ def cmd_status(args):
     from hermes_cli.status import show_status
 
     show_status(args)
+
+
+def cmd_usage(args):
+    """Show provider-reported account limits outside an interactive session."""
+    from hermes_cli.account_usage_command import account_usage_command
+
+    return account_usage_command(args)
 
 
 def cmd_cron(args):
@@ -12408,7 +12416,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "project", "proxy",
         "prompt-size",
         "send", "sessions", "setup",
-        "skills", "slack", "status", "tools", "uninstall", "update",
+        "skills", "slack", "status", "tools", "uninstall", "update", "usage",
         "version", "webhook", "whatsapp", "whatsapp-cloud", "chat", "secrets", "security",
         # Help-ish invocations — plugin commands not being listed in
         # top-level --help is an acceptable trade-off for skipping an
@@ -13164,6 +13172,7 @@ def main():
     # status command  (parser built in hermes_cli/subcommands/status.py)
     # =========================================================================
     build_status_parser(subparsers, cmd_status=cmd_status)
+    build_usage_parser(subparsers, cmd_usage=cmd_usage)
 
     # =========================================================================
     # cron command  (parser built in hermes_cli/subcommands/cron.py)

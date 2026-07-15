@@ -40,10 +40,12 @@ def codex_usage_payload():
             "primary_window": {
                 "used_percent": 21,
                 "reset_at": 1779846359,
+                "limit_window_seconds": 18000,
             },
             "secondary_window": {
                 "used_percent": 4,
                 "reset_at": 1780230796,
+                "limit_window_seconds": 604800,
             },
         },
         "credits": {"has_credits": False},
@@ -235,6 +237,61 @@ def test_codex_usage_treats_wham_used_percent_as_used_not_remaining(monkeypatch)
     assert "14% used" in rendered
     assert "15% used" not in rendered
     assert "86% used" not in rendered
+
+
+def test_codex_usage_classifies_weekly_primary_from_provider_duration(monkeypatch):
+    payload = {
+        "rate_limit": {
+            "primary_window": {
+                "used_percent": 17,
+                "reset_at": 1780230796,
+                "limit_window_seconds": 604800,
+            },
+        },
+    }
+    monkeypatch.setattr(account_usage.httpx, "Client", lambda timeout: _FakeClient([], payload))
+
+    snapshot = account_usage.fetch_account_usage(
+        "openai-codex",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="live-agent-token",
+    )
+
+    assert snapshot is not None
+    assert [(window.label, window.window_minutes) for window in snapshot.windows] == [
+        ("Weekly", 10_080),
+    ]
+
+
+def test_account_usage_snapshot_dict_preserves_provider_observation():
+    snapshot = account_usage.AccountUsageSnapshot(
+        provider="openai-codex",
+        source="usage_api",
+        fetched_at=account_usage.datetime(2026, 7, 15, 10, 0, tzinfo=account_usage.timezone.utc),
+        plan="Pro",
+        windows=(
+            account_usage.AccountUsageWindow(
+                label="Weekly",
+                used_percent=17,
+                reset_at=account_usage.datetime(2026, 7, 20, 0, 0, tzinfo=account_usage.timezone.utc),
+            ),
+        ),
+    )
+
+    payload = account_usage.account_usage_snapshot_dict(snapshot)
+
+    assert payload["provider"] == "openai-codex"
+    assert payload["source"] == "usage_api"
+    assert payload["fetchedAt"] == "2026-07-15T10:00:00Z"
+    assert payload["windows"] == [
+        {
+            "label": "Weekly",
+            "usedPercent": 17,
+            "resetAt": "2026-07-20T00:00:00Z",
+            "windowMinutes": None,
+            "detail": None,
+        }
+    ]
 
 
 # ── Banked rate-limit reset credits (`/usage reset`) ─────────────────────────

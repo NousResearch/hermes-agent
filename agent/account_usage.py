@@ -27,6 +27,7 @@ class AccountUsageWindow:
     label: str
     used_percent: Optional[float] = None
     reset_at: Optional[datetime] = None
+    window_minutes: Optional[int] = None
     detail: Optional[str] = None
 
 
@@ -44,6 +45,39 @@ class AccountUsageSnapshot:
     @property
     def available(self) -> bool:
         return bool(self.windows or self.details) and not self.unavailable_reason
+
+
+def account_usage_snapshot_dict(snapshot: AccountUsageSnapshot) -> dict[str, Any]:
+    """Serialize an account-limit observation without exposing credentials.
+
+    This is deliberately a snapshot of provider-reported subscription limits,
+    not Hermes's per-session token counters.  The stable camelCase shape is
+    suitable for local sidecars and other cache-only consumers.
+    """
+    return {
+        "schemaVersion": 1,
+        "provider": snapshot.provider,
+        "source": snapshot.source,
+        "fetchedAt": snapshot.fetched_at.isoformat().replace("+00:00", "Z"),
+        "title": snapshot.title,
+        "plan": snapshot.plan,
+        "windows": [
+            {
+                "label": window.label,
+                "usedPercent": window.used_percent,
+                "resetAt": (
+                    window.reset_at.isoformat().replace("+00:00", "Z")
+                    if window.reset_at is not None
+                    else None
+                ),
+                "windowMinutes": window.window_minutes,
+                "detail": window.detail,
+            }
+            for window in snapshot.windows
+        ],
+        "details": list(snapshot.details),
+        "unavailableReason": snapshot.unavailable_reason,
+    }
 
 
 def _title_case_slug(value: Optional[str]) -> Optional[str]:
@@ -525,16 +559,34 @@ def _fetch_codex_account_usage(
     payload = response.json() or {}
     rate_limit = payload.get("rate_limit") or {}
     windows: list[AccountUsageWindow] = []
-    for key, label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
+    for key, fallback_label in (("primary_window", "Session"), ("secondary_window", "Weekly")):
         window = rate_limit.get(key) or {}
         used = window.get("used_percent")
         if used is None:
             continue
+        limit_seconds = window.get("limit_window_seconds")
+        window_minutes = (
+            int(float(limit_seconds) / 60)
+            if isinstance(limit_seconds, (int, float)) and float(limit_seconds) > 0
+            else None
+        )
+        if window_minutes == 300:
+            label = "Session"
+        elif window_minutes == 10_080:
+            label = "Weekly"
+        elif window_minutes is not None:
+            label = f"{window_minutes} minute window"
+        else:
+            # Older/self-hosted backends may omit duration. Preserve the legacy
+            # display fallback, but consumers can see windowMinutes=null and
+            # must not treat lane position as authoritative semantics.
+            label = fallback_label
         windows.append(
             AccountUsageWindow(
                 label=label,
                 used_percent=float(used),
                 reset_at=_parse_dt(window.get("reset_at")),
+                window_minutes=window_minutes,
             )
         )
     details: list[str] = []
@@ -776,6 +828,7 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
                 label=label,
                 used_percent=used,
                 reset_at=_parse_dt(window.get("resets_at")),
+                window_minutes=300 if key == "five_hour" else 10_080 if key.startswith("seven_day") else None,
             )
         )
     details: list[str] = []

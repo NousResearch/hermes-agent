@@ -1553,6 +1553,75 @@ class TestEnvironmentProbeIntegration:
         assert "Python toolchain:" not in prompt
 
 
+class TestAttributionConfigIntegration:
+    """End-to-end coverage for ``agent.attribution``: config.yaml value ->
+    ``hermes_cli.config.load_config()`` -> ``init_agent`` -> ``AIAgent._attribution``
+    -> generated system prompt.
+
+    The factory/prompt-assembly units live in tests/agent/test_attribution.py;
+    those construct ``_attribution`` directly and therefore do NOT verify the
+    config-loading wiring.  This class patches ``load_config`` (the real path
+    ``init_agent`` reads) so a wrong key or dropped config value is caught.
+    """
+
+    def _make_agent(self, attribution=None):
+        agent_section = {}
+        if attribution is not None:
+            agent_section["attribution"] = attribution
+        with (
+            patch(
+                "run_agent.get_tool_definitions",
+                return_value=_make_tool_defs("terminal"),
+            ),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"agent": agent_section},
+            ),
+        ):
+            a = AIAgent(
+                model="anthropic/claude-opus-4.8",
+                api_key="test-key-1234567890",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            a.client = MagicMock()
+            return a
+
+    def test_default_when_key_absent(self):
+        """No attribution key -> historical Nous Research identity."""
+        agent = self._make_agent(attribution=None)
+        prompt = agent._build_system_prompt()
+        assert "created by Nous Research" in prompt
+        assert "(by Nous Research)" in prompt
+
+    def test_custom_attribution_rebrands_prompt(self):
+        """Custom org from config actually reaches the generated prompt."""
+        agent = self._make_agent(attribution="Acme Corp")
+        prompt = agent._build_system_prompt()
+        assert "created by Acme Corp." in prompt
+        assert "(by Acme Corp)" in prompt
+        assert "Nous Research" not in prompt
+
+    def test_empty_attribution_drops_clause_keeps_help_pointer(self):
+        """Empty string omits attribution but preserves the docs/skill pointer."""
+        agent = self._make_agent(attribution="")
+        prompt = agent._build_system_prompt()
+        assert "created by" not in prompt
+        assert "(by" not in prompt
+        # Functional help-routing payload must survive an empty attribution.
+        assert "hermes-agent.nousresearch.com/docs" in prompt
+
+    def test_non_string_attribution_falls_back_to_default(self):
+        """A misconfigured non-string value must not crash or blank identity."""
+        agent = self._make_agent(attribution=123)
+        prompt = agent._build_system_prompt()
+        assert "created by Nous Research" in prompt
+
+
 class TestInvalidateSystemPrompt:
     def test_clears_cache(self, agent):
         agent._cached_system_prompt = "cached value"

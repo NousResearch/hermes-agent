@@ -836,6 +836,107 @@ def remove_board(slug: str, *, archive: bool = True) -> dict:
 # Data classes
 # ---------------------------------------------------------------------------
 
+@dataclass(frozen=True)
+class OrchestrationPolicy:
+    """Immutable, bounded authority for one dynamically expanded program."""
+
+    allowed_assignees: tuple[str, ...]
+    orchestrator_assignees: tuple[str, ...]
+    max_depth: int
+    max_tasks: int
+    max_runtime_seconds: int
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.allowed_assignees, (list, tuple))
+            or not isinstance(self.orchestrator_assignees, (list, tuple))
+            or any(type(item) is not str for item in self.allowed_assignees)
+            or any(type(item) is not str for item in self.orchestrator_assignees)
+            or any(
+                type(value) is not int
+                for value in (
+                    self.max_depth,
+                    self.max_tasks,
+                    self.max_runtime_seconds,
+                )
+            )
+        ):
+            raise ValueError("malformed orchestration policy")
+        assignees = tuple(
+            dict.fromkeys(_canonical_assignee(a) for a in self.allowed_assignees)
+        )
+        orchestrators = tuple(
+            dict.fromkeys(_canonical_assignee(a) for a in self.orchestrator_assignees)
+        )
+        if not assignees or any(not a for a in assignees) or len(assignees) > 64:
+            raise ValueError("allowed_assignees must contain 1 to 64 profile names")
+        if not orchestrators or any(not a for a in orchestrators):
+            raise ValueError("orchestrator_assignees must contain profile names")
+        if not set(orchestrators).issubset(assignees):
+            raise ValueError("orchestrator_assignees must be a subset of allowed_assignees")
+        if not 1 <= self.max_depth <= 32:
+            raise ValueError("max_depth must be between 1 and 32")
+        if not 1 <= self.max_tasks <= 10_000:
+            raise ValueError("max_tasks must be between 1 and 10000")
+        if not 1 <= self.max_runtime_seconds <= 604_800:
+            raise ValueError("max_runtime_seconds must be between 1 and 604800")
+        object.__setattr__(self, "allowed_assignees", assignees)
+        object.__setattr__(self, "orchestrator_assignees", orchestrators)
+
+    def to_json(self) -> str:
+        return json.dumps(
+            {
+                "allowed_assignees": list(self.allowed_assignees),
+                "orchestrator_assignees": list(self.orchestrator_assignees),
+                "max_depth": self.max_depth,
+                "max_tasks": self.max_tasks,
+                "max_runtime_seconds": self.max_runtime_seconds,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+    @classmethod
+    def from_json(cls, value: str) -> "OrchestrationPolicy":
+        try:
+            data = json.loads(value)
+            if not isinstance(data, dict) or set(data) != {
+                "allowed_assignees",
+                "orchestrator_assignees",
+                "max_depth",
+                "max_tasks",
+                "max_runtime_seconds",
+            }:
+                raise ValueError
+            if (
+                not isinstance(data["allowed_assignees"], list)
+                or not isinstance(data["orchestrator_assignees"], list)
+                or any(type(item) is not str for item in data["allowed_assignees"])
+                or any(type(item) is not str for item in data["orchestrator_assignees"])
+                or any(type(data[key]) is not int for key in (
+                    "max_depth", "max_tasks", "max_runtime_seconds"
+                ))
+            ):
+                raise ValueError
+            return cls(
+                allowed_assignees=tuple(data["allowed_assignees"]),
+                orchestrator_assignees=tuple(data["orchestrator_assignees"]),
+                max_depth=data["max_depth"],
+                max_tasks=data["max_tasks"],
+                max_runtime_seconds=data["max_runtime_seconds"],
+            )
+        except (TypeError, ValueError, json.JSONDecodeError, KeyError) as exc:
+            raise ValueError("malformed orchestration policy") from exc
+
+
+@dataclass(frozen=True)
+class CreationAuthority:
+    task_id: str
+    run_id: int
+    claim_lock: str
+    actor_profile: str
+
+
 @dataclass
 class Task:
     """In-memory view of a row from the ``tasks`` table."""
@@ -915,6 +1016,10 @@ class Task:
     # Unblock-loop counter. See the column comment in SCHEMA_SQL and
     # ``BLOCK_RECURRENCE_LIMIT``. Reset only on successful completion.
     block_recurrences: int = 0
+    orchestration_policy: Optional[OrchestrationPolicy] = None
+    orchestration_root_id: Optional[str] = None
+    orchestration_depth: Optional[int] = None
+    orchestration_parent_id: Optional[str] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -998,6 +1103,20 @@ class Task:
                 int(row["block_recurrences"])
                 if "block_recurrences" in keys and row["block_recurrences"] is not None
                 else 0
+            ),
+            orchestration_policy=(
+                OrchestrationPolicy.from_json(row["orchestration_policy"])
+                if "orchestration_policy" in keys and row["orchestration_policy"] else None
+            ),
+            orchestration_root_id=(
+                row["orchestration_root_id"] if "orchestration_root_id" in keys else None
+            ),
+            orchestration_depth=(
+                row["orchestration_depth"] if "orchestration_depth" in keys else None
+            ),
+            orchestration_parent_id=(
+                row["orchestration_parent_id"]
+                if "orchestration_parent_id" in keys else None
             ),
         )
 
@@ -1117,6 +1236,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     tenant               TEXT,
     result               TEXT,
     idempotency_key      TEXT,
+    orchestration_policy TEXT,
+    orchestration_root_id TEXT,
+    orchestration_depth  INTEGER,
+    orchestration_parent_id TEXT,
     -- Unified consecutive-failure counter. Incremented on spawn
     -- failure, timeout, or crash; reset only on successful completion.
     -- The circuit breaker in _record_task_failure trips when this
@@ -1987,6 +2110,23 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
             "block_recurrences INTEGER NOT NULL DEFAULT 0",
         )
 
+    if "orchestration_policy" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "orchestration_policy", "orchestration_policy TEXT"
+        )
+    if "orchestration_root_id" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "orchestration_root_id", "orchestration_root_id TEXT"
+        )
+    if "orchestration_depth" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "orchestration_depth", "orchestration_depth INTEGER"
+        )
+    if "orchestration_parent_id" not in cols:
+        _add_column_if_missing(
+            conn, "tasks", "orchestration_parent_id", "orchestration_parent_id TEXT"
+        )
+
     # Indexes over additive ``tasks`` columns must be created after the
     # columns exist. Keeping them in SCHEMA_SQL breaks legacy boards: SQLite
     # parses each statement in ``executescript`` against the live schema, so a
@@ -2408,6 +2548,9 @@ def create_task(
     session_id: Optional[str] = None,
     board: Optional[str] = None,
     project_id: Optional[str] = None,
+    orchestration_policy: Optional[OrchestrationPolicy] = None,
+    current_orchestrator_task_id: Optional[str] = None,
+    creation_authority: Optional[CreationAuthority] = None,
 ) -> str:
     """Create a new task and optionally link it under parent tasks.
 
@@ -2433,6 +2576,12 @@ def create_task(
     translation skill regardless of the profile's default config).
     """
     assignee = _canonical_assignee(assignee)
+    if orchestration_policy is not None and not isinstance(
+        orchestration_policy, OrchestrationPolicy
+    ):
+        raise ValueError("orchestration_policy must be an OrchestrationPolicy")
+    if orchestration_policy is not None and current_orchestrator_task_id is not None:
+        raise ValueError("a child cannot supply orchestration policy authority")
     if not title or not title.strip():
         raise ValueError("title is required")
     if initial_status not in VALID_INITIAL_STATUSES:
@@ -2448,6 +2597,9 @@ def create_task(
         branch_name = str(branch_name).strip() or None
     if branch_name and workspace_kind != "worktree":
         raise ValueError("branch_name is only valid for worktree workspaces")
+
+    requested_tenant = tenant
+    project_was_requested = bool(project_id is not None and str(project_id).strip())
 
     # Resolve an optional first-class Project link. A project-linked task is
     # anchored to the project's primary repo as a git worktree, so its branch
@@ -2490,7 +2642,11 @@ def create_task(
                 # ``<repo>/.worktrees/<task-id>`` dir keyed on the new task id.
                 project_repo = str(project_obj.primary_path)
 
+    requested_project_id = project_id
+    project_resolution_failed = project_was_requested and project_obj is None
+
     parents = tuple(p for p in parents if p)
+    requested_parents = parents
 
     # Normalise + validate skills: strip whitespace, drop empties, dedupe
     # (preserving order). Refuse commas inside a single name so we don't
@@ -2537,21 +2693,6 @@ def create_task(
             )
         skills_list = cleaned
 
-    # Idempotency check — return the existing task instead of creating a
-    # duplicate. Done BEFORE entering write_txn to keep the fast path fast
-    # and to avoid holding a write lock during the lookup. Race is
-    # acceptable: two concurrent creators with the same key might both
-    # insert, at which point both rows exist but the next lookup stabilises.
-    if idempotency_key:
-        row = conn.execute(
-            "SELECT id FROM tasks WHERE idempotency_key = ? "
-            "AND status != 'archived' "
-            "ORDER BY created_at DESC LIMIT 1",
-            (idempotency_key,),
-        ).fetchone()
-        if row:
-            return row["id"]
-
     now = int(time.time())
 
     # Resolve workspace_path from board-level default_workdir when the
@@ -2579,6 +2720,140 @@ def create_task(
         task_id = _new_task_id()
         try:
             with write_txn(conn):
+                policy = orchestration_policy
+                orchestration_root_id = None
+                orchestration_depth = None
+                orchestration_parent_id = None
+                if current_orchestrator_task_id is not None:
+                    authority = get_task(conn, current_orchestrator_task_id)
+                    if authority is None:
+                        raise ValueError("current task has no orchestration authority")
+                    # Dispatcher context is also present for legacy workers.
+                    # A real current task without policy keeps the unrestricted
+                    # pre-policy create behavior; a missing row still fails
+                    # closed (most importantly on an explicitly foreign board).
+                    if authority.orchestration_policy is None:
+                        authority = None
+                    else:
+                        policy = authority.orchestration_policy
+                if current_orchestrator_task_id is not None and authority is not None:
+                    if (
+                        not isinstance(creation_authority, CreationAuthority)
+                        or type(creation_authority.run_id) is not int
+                        or not isinstance(creation_authority.task_id, str)
+                        or not creation_authority.task_id
+                        or not isinstance(creation_authority.claim_lock, str)
+                        or not creation_authority.claim_lock
+                        or not isinstance(creation_authority.actor_profile, str)
+                        or not creation_authority.actor_profile
+                    ):
+                        raise ValueError("missing active orchestration authority")
+                    active = conn.execute(
+                        "SELECT 1 FROM tasks t JOIN task_runs r ON r.id = t.current_run_id "
+                        "WHERE t.id = ? AND t.status = 'running' "
+                        "AND t.current_run_id = ? AND t.claim_lock = ? "
+                        "AND t.assignee = ? AND r.task_id = t.id "
+                        "AND r.profile = ? AND r.status = 'running' "
+                        "AND r.claim_lock = ? AND r.ended_at IS NULL",
+                        (
+                            creation_authority.task_id,
+                            creation_authority.run_id,
+                            creation_authority.claim_lock,
+                            creation_authority.actor_profile,
+                            creation_authority.actor_profile,
+                            creation_authority.claim_lock,
+                        ),
+                    ).fetchone()
+                    if (
+                        creation_authority.task_id != current_orchestrator_task_id
+                        or active is None
+                    ):
+                        raise ValueError("missing or stale active orchestration authority")
+                    if creation_authority.actor_profile not in policy.orchestrator_assignees:
+                        raise ValueError("profile is not allowed to orchestrate")
+                    orchestration_root_id = authority.orchestration_root_id
+                    orchestration_parent_id = authority.id
+                    if not orchestration_root_id or authority.orchestration_depth is None:
+                        raise ValueError("malformed orchestration authority")
+                    if requested_tenant is not None and requested_tenant != authority.tenant:
+                        raise ValueError("tenant does not match orchestration program")
+                    if project_resolution_failed or (
+                        project_was_requested and requested_project_id != authority.project_id
+                    ):
+                        raise ValueError("project does not match orchestration program")
+                    if requested_parents:
+                        parent_rows = conn.execute(
+                            "SELECT id, orchestration_root_id FROM tasks WHERE id IN ("
+                            + ",".join("?" * len(requested_parents)) + ")",
+                            requested_parents,
+                        ).fetchall()
+                        if len(parent_rows) != len(set(requested_parents)) or any(
+                            row["orchestration_root_id"] != orchestration_root_id
+                            for row in parent_rows
+                        ):
+                            raise ValueError("dependency parent is outside orchestration program")
+                    orchestration_depth = authority.orchestration_depth + 1
+                    tenant = authority.tenant
+                    project_id = authority.project_id
+                    parents = requested_parents or (authority.id,)
+                    max_runtime_seconds = policy.max_runtime_seconds
+                elif policy is not None:
+                    if project_resolution_failed:
+                        raise ValueError("project does not match orchestration program")
+                    orchestration_root_id = task_id
+                    orchestration_depth = 0
+                    max_runtime_seconds = policy.max_runtime_seconds
+
+                # Re-check under the write lock so concurrent replay cannot
+                # spend quota twice. A key already owned by another program is
+                # an authority mismatch, never a successful replay.
+                if idempotency_key:
+                    existing = conn.execute(
+                        "SELECT id, assignee, tenant, project_id, orchestration_policy, "
+                        "orchestration_root_id, orchestration_depth, orchestration_parent_id "
+                        "FROM tasks "
+                        "WHERE idempotency_key = ? AND status != 'archived' "
+                        "ORDER BY created_at DESC LIMIT 1",
+                        (idempotency_key,),
+                    ).fetchone()
+                    if existing:
+                        if current_orchestrator_task_id is not None and policy is not None:
+                            same_scope = (
+                                existing["orchestration_root_id"] == orchestration_root_id
+                            )
+                        elif orchestration_policy is not None:
+                            same_scope = (
+                                existing["id"] == existing["orchestration_root_id"]
+                                and existing["orchestration_depth"] == 0
+                                and existing["orchestration_parent_id"] is None
+                                and existing["orchestration_policy"] == orchestration_policy.to_json()
+                                and existing["assignee"] == assignee
+                                and existing["tenant"] == tenant
+                                and existing["project_id"] == project_id
+                            )
+                        else:
+                            same_scope = existing["orchestration_root_id"] is None
+                        if not same_scope:
+                            raise ValueError(
+                                "idempotency key belongs to another program"
+                            )
+                        return existing["id"]
+
+                if policy is not None:
+                    if assignee not in policy.allowed_assignees:
+                        raise ValueError("assignee is not allowed by orchestration policy")
+                    if (
+                        orchestration_depth is None
+                        or orchestration_depth > policy.max_depth
+                    ):
+                        raise ValueError("maximum orchestration depth exceeded")
+                    program_size = conn.execute(
+                        "SELECT COUNT(*) FROM tasks WHERE orchestration_root_id = ?",
+                        (orchestration_root_id,),
+                    ).fetchone()[0]
+                    if program_size >= policy.max_tasks:
+                        raise ValueError("maximum orchestration task count exceeded")
+
                 # Determine task status from parent status, unless the caller
                 # parks it directly in blocked for human-ops review or in
                 # triage for a specifier.
@@ -2635,9 +2910,11 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
-                        max_runtime_seconds,
+                        max_runtime_seconds, orchestration_policy,
+                        orchestration_root_id, orchestration_depth,
+                        orchestration_parent_id,
                         skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2655,6 +2932,10 @@ def create_task(
                         tenant,
                         idempotency_key,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
+                        policy.to_json() if policy is not None else None,
+                        orchestration_root_id,
+                        orchestration_depth,
+                        orchestration_parent_id,
                         json.dumps(skills_list) if skills_list is not None else None,
                         int(max_retries) if max_retries is not None else None,
                         1 if goal_mode else 0,

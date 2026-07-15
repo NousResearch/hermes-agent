@@ -902,6 +902,31 @@ def _handle_create(args: dict, **kw) -> str:
     try:
         kb, conn = _connect(board=board)
         try:
+            current_orchestrator_task_id = os.environ.get("HERMES_KANBAN_TASK")
+            creation_authority = None
+            if current_orchestrator_task_id:
+                try:
+                    creation_authority = kb.CreationAuthority(
+                        task_id=current_orchestrator_task_id,
+                        run_id=int(os.environ["HERMES_KANBAN_RUN_ID"]),
+                        claim_lock=os.environ["HERMES_KANBAN_CLAIM_LOCK"],
+                        actor_profile=os.environ["HERMES_PROFILE"],
+                    )
+                except (KeyError, TypeError, ValueError):
+                    creation_authority = None
+                if (
+                    creation_authority is None
+                    and not os.environ.get("HERMES_KANBAN_RUN_ID")
+                    and not os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
+                    and board is None
+                    and kb.get_task(conn, current_orchestrator_task_id) is None
+                ):
+                    # Pre-authority worker fixtures and unmanaged callers may
+                    # carry only a stale task id across a HERMES_HOME switch.
+                    # They have no bounded policy to exercise; preserve their
+                    # legacy create behavior. Any dispatcher authority fields
+                    # make this a bounded attempt and therefore fail closed.
+                    current_orchestrator_task_id = None
             # Inherit the spawning worker's own task workspace when the
             # caller didn't specify one (see resolution note above).
             if _inherit_workspace:
@@ -940,6 +965,11 @@ def _handle_create(args: dict, **kw) -> str:
                 initial_status=str(initial_status),
                 created_by=os.environ.get("HERMES_PROFILE") or "worker",
                 session_id=session_id,
+                # Trusted dispatcher context, deliberately absent from the
+                # model-facing schema/body. The DB resolves all authority from
+                # this task row and fails closed if it belongs to another board.
+                current_orchestrator_task_id=current_orchestrator_task_id,
+                creation_authority=creation_authority,
             )
             new_task = kb.get_task(conn, new_tid)
             subscribed = _maybe_auto_subscribe(conn, new_tid)

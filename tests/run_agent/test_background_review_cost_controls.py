@@ -271,3 +271,55 @@ def test_fraction_falls_back_on_bad_value():
     cfg = {"auxiliary": {"background_review": {"local_skip_context_fraction": "nope"}}}
     with patch("hermes_cli.config.load_config", return_value=cfg):
         assert br._review_local_skip_fraction() == br._DEFAULT_LOCAL_SKIP_FRACTION
+
+
+def test_fraction_registered_in_default_config():
+    """DEFAULT_CONFIG must declare the knob so `config check` discovers it.
+
+    hermes-sweeper review on #54255: the option lived only in
+    cli-config.yaml.example + the runtime reader fallback, so recursive
+    DEFAULT_CONFIG walks (get_missing_config_fields) never surfaced it.
+    """
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    bg = DEFAULT_CONFIG["auxiliary"]["background_review"]
+    assert "local_skip_context_fraction" in bg
+    assert bg["local_skip_context_fraction"] == br._DEFAULT_LOCAL_SKIP_FRACTION
+    assert bg["local_skip_context_fraction"] == 0.45
+
+
+def test_fraction_merged_config_default_path(tmp_path, monkeypatch):
+    """load_config deep-merge supplies the DEFAULT_CONFIG value when user yaml omits it.
+
+    Covers the real merged-config path (not only the mocked reader).
+    """
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    # Minimal user config that does NOT set local_skip_context_fraction.
+    (hermes_home / "config.yaml").write_text(
+        "auxiliary:\n"
+        "  background_review:\n"
+        "    provider: auto\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    from hermes_cli.config import load_config
+
+    # Clear any process-level load_config cache keyed on path.
+    try:
+        from hermes_cli import config as cfg_mod
+        cache = getattr(cfg_mod, "_CONFIG_CACHE", None)
+        if isinstance(cache, dict):
+            cache.clear()
+        for attr in ("_load_config_cache", "_config_cache"):
+            if hasattr(cfg_mod, attr):
+                setattr(cfg_mod, attr, None)
+    except Exception:
+        pass
+
+    cfg = load_config()
+    bg = cfg.get("auxiliary", {}).get("background_review", {})
+    assert bg.get("local_skip_context_fraction") == 0.45
+    # Reader should observe the merged default without a mock.
+    assert br._review_local_skip_fraction() == 0.45

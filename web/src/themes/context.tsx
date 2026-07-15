@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useState,
   type ReactNode,
@@ -39,6 +40,22 @@ const STORAGE_KEY = "hermes-dashboard-theme";
  *  sentinel / absent = "use the active theme's font". Pre-applied before
  *  the React tree mounts (see `main.tsx`) to avoid a font flash. */
 const FONT_STORAGE_KEY = "hermes-dashboard-font";
+
+interface ThemeBootstrap {
+  active: string;
+  definition?: DashboardTheme;
+}
+
+declare global {
+  interface Window {
+    __HERMES_THEME_BOOTSTRAP__?: ThemeBootstrap;
+  }
+}
+
+function themeBootstrap(): ThemeBootstrap | undefined {
+  if (typeof window === "undefined") return undefined;
+  return window.__HERMES_THEME_BOOTSTRAP__;
+}
 
 /** Renames of built-in theme keys we've shipped previously. Without this,
  *  users who saved one of the old names in localStorage (or had it
@@ -412,31 +429,47 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   /** Name of the currently active theme (built-in id or user YAML name). */
   const [themeName, setThemeName] = useState<string>(() => {
     if (typeof window === "undefined") return "default";
-    const stored = window.localStorage.getItem(STORAGE_KEY) ?? "default";
+    const bootstrapName = themeBootstrap()?.active;
+    const stored =
+      bootstrapName ?? window.localStorage.getItem(STORAGE_KEY) ?? "default";
     const migrated = migrateThemeName(stored);
-    // Write the migrated name back so future reads converge on the new
-    // key and we eventually retire the alias entry.
-    if (migrated !== stored) {
+    // Server bootstrap is authoritative. Persist it locally so subsequent
+    // development/static loads can still start from the last active theme.
+    if (migrated !== stored || bootstrapName) {
       window.localStorage.setItem(STORAGE_KEY, migrated);
     }
     return migrated;
   });
 
-  /** All selectable themes (shown in the picker). Starts with just the
-   *  built-ins; the API call below merges in user themes. */
-  const [availableThemes, setAvailableThemes] = useState<ThemeListEntry[]>(() =>
-    Object.values(BUILTIN_THEMES).map((t) => ({
-      name: t.name,
-      label: t.label,
-      description: t.description,
-    })),
+  /** All selectable themes (shown in the picker). Starts with built-ins plus
+   *  the server-bootstrapped active custom theme, when present. */
+  const [availableThemes, setAvailableThemes] = useState<ThemeListEntry[]>(
+    () => {
+      const themes = Object.values(BUILTIN_THEMES).map((t) => ({
+        name: t.name,
+        label: t.label,
+        description: t.description,
+      }));
+      const definition = themeBootstrap()?.definition;
+      if (definition && !BUILTIN_THEMES[definition.name]) {
+        themes.push({
+          name: definition.name,
+          label: definition.label,
+          description: definition.description,
+        });
+      }
+      return themes;
+    },
   );
 
-  /** Full definitions for user themes keyed by name — the API provides
-   *  these so custom YAMLs apply without a client-side stub. */
+  /** Full definitions for user themes keyed by name — seeded by the HTML
+   *  bootstrap so the active custom theme exists before first paint. */
   const [userThemeDefs, setUserThemeDefs] = useState<
     Record<string, DashboardTheme>
-  >({});
+  >(() => {
+    const definition = themeBootstrap()?.definition;
+    return definition ? { [definition.name]: definition } : {};
+  });
 
   /** Active font-override id (independent of theme). `THEME_DEFAULT_FONT_ID`
    *  = no override. Seeded from localStorage so it's applied flash-free. */
@@ -465,7 +498,7 @@ export function ThemeProvider({ children }: { children: ReactNode }) {
   // whenever the theme, the resolver, OR the font override changes. Folding
   // font into the same effect means clearing the override re-runs applyTheme,
   // which restores the theme's own font; setting it re-asserts the override.
-  useEffect(() => {
+  useLayoutEffect(() => {
     _ACTIVE_FONT_OVERRIDE = fontId;
     applyTheme(resolveTheme(themeName));
   }, [themeName, resolveTheme, fontId]);

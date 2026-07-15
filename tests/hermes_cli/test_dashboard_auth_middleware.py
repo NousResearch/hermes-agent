@@ -133,6 +133,37 @@ def test_gated_login_html_is_public_and_lists_providers(gated_app):
     assert 'href="/auth/login?provider=stub"' in r.text
 
 
+def test_gated_login_uses_active_custom_dashboard_theme(
+    gated_app, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(
+        "dashboard:\n  theme: hermes-cloud\n",
+        encoding="utf-8",
+    )
+    themes = tmp_path / "dashboard-themes"
+    themes.mkdir()
+    (themes / "hermes-cloud.yaml").write_text(
+        "name: hermes-cloud\n"
+        "label: Hermes Cloud\n"
+        "palette:\n"
+        "  background: '#f8f8f8'\n"
+        "  midground: '#18181b'\n"
+        "colorOverrides:\n"
+        "  primary: '#ff6700'\n"
+        "  card: '#ffffff'\n",
+        encoding="utf-8",
+    )
+
+    r = gated_app.get("/login")
+
+    assert r.status_code == 200
+    assert '<html lang="en" data-theme="hermes-cloud">' in r.text
+    assert "--background-base: #f8f8f8;" in r.text
+    assert "--primary: #ff6700;" in r.text
+    assert '<div class="brand">Hermes Cloud</div>' in r.text
+
+
 def test_gated_static_asset_path_is_public(gated_app):
     """``/assets/*`` is allowlisted so the SPA's CSS/JS loads pre-login."""
     r = gated_app.get("/assets/_nonexistent.css")

@@ -3082,6 +3082,51 @@ class TestWebServerEndpoints:
 
         assert seen_encodings == {"index": "utf-8", "css": "utf-8"}
 
+    def test_spa_bootstraps_active_custom_theme_before_body(
+        self, monkeypatch, tmp_path
+    ):
+        from fastapi import FastAPI
+        from starlette.testclient import TestClient
+        import hermes_cli.web_server as ws
+
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        (home / "config.yaml").write_text(
+            "dashboard:\n  theme: hermes-cloud\n",
+            encoding="utf-8",
+        )
+        themes = home / "dashboard-themes"
+        themes.mkdir()
+        (themes / "hermes-cloud.yaml").write_text(
+            "name: hermes-cloud\n"
+            "label: Hermes Cloud\n"
+            "palette:\n"
+            "  background: '#f8f8f8'\n"
+            "  midground: '#18181b'\n"
+            "colorOverrides:\n"
+            "  primary: '#ff6700'\n"
+            "customCSS: 'body { background: #f8f8f8; }'\n",
+            encoding="utf-8",
+        )
+        dist = tmp_path / "web_dist"
+        (dist / "assets").mkdir(parents=True)
+        (dist / "index.html").write_text(
+            "<html><head></head><body><div id=\"root\"></div></body></html>",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr(ws, "WEB_DIST", dist)
+        spa_app = FastAPI()
+        ws.mount_spa(spa_app)
+
+        page = TestClient(spa_app).get("/chat").text
+
+        assert 'window.__HERMES_THEME_BOOTSTRAP__={"active":"hermes-cloud"' in page
+        assert '"--background-base":"#f8f8f8"' in page
+        assert '"--color-primary":"#ff6700"' in page
+        assert "body { background: #f8f8f8; }" in page
+        assert page.index("__HERMES_THEME_BOOTSTRAP__") < page.index("<body>")
+
     def test_headless_serve_disables_spa_even_with_a_dist(self, monkeypatch, tmp_path):
         """`hermes serve` (HERMES_SERVE_HEADLESS) must NOT serve the SPA even
         when a built dist is present — only the API/WS surface is reachable."""

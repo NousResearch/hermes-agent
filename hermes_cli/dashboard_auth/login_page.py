@@ -4,15 +4,9 @@ No React, no JavaScript dependency. Listed providers come from the
 registry; clicking a provider sends a GET to
 ``/auth/login?provider=<name>``.
 
-Visual styling mirrors the Nous Research design system (the
-``@nous-research/ui`` package the React dashboard uses): the same
-``Collapse`` / ``Rules Compressed`` typeface, amber-on-dark colour
-tokens (``#170d02`` / ``#ffac02`` / ``#fff``), uppercase + wide-tracking
-brand chrome, and the inset-bevel button shadow. Fonts are served
-out of the SPA's ``/fonts/`` directory which the dashboard-auth gate
-already allowlists pre-auth (see ``_GATE_PUBLIC_PREFIXES`` in
-``middleware.py``), so the page renders without needing the React
-bundle loaded.
+Visual styling uses the active dashboard theme when the caller supplies
+its normalised definition. The page remains self-contained: no React or
+SPA bundle required before authentication.
 
 Test-stable class names: the existing test suite extracts the
 ``class="provider-btn"`` anchor href to walk the OAuth flow. That
@@ -22,6 +16,8 @@ class name MUST NOT change without updating
 from __future__ import annotations
 
 import html
+import re
+from typing import Any, Mapping, Optional
 
 from hermes_cli.dashboard_auth import list_session_providers
 
@@ -34,7 +30,7 @@ from hermes_cli.dashboard_auth import list_session_providers
 # are doubled (``{{`` / ``}}``).
 _LOGIN_HTML_TEMPLATE = """\
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="{theme_name}">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -55,29 +51,30 @@ _LOGIN_HTML_TEMPLATE = """\
     font-display: swap;
     src: url('/fonts/Collapse-Bold.woff2') format('woff2');
   }}
-  @font-face {{
-    font-family: 'Rules Compressed';
-    font-style: normal;
-    font-weight: 400;
-    font-display: swap;
-    src: url('/fonts/RulesCompressed-Regular.woff2') format('woff2');
-  }}
-  @font-face {{
-    font-family: 'Rules Compressed';
-    font-style: normal;
-    font-weight: 600;
-    font-display: swap;
-    src: url('/fonts/RulesCompressed-Medium.woff2') format('woff2');
-  }}
-
   :root {{
     --background-base: #170d02;
     --background: #170d02;
     --midground: #ffac02;
     --foreground: #ffffff;
-    --hairline: color-mix(in srgb, #ffac02 18%, transparent);
-    --hairline-strong: color-mix(in srgb, #ffac02 35%, transparent);
+    --primary: #ffac02;
+    --primary-foreground: #170d02;
+    --card: color-mix(in srgb, #ffffff 2%, var(--background-base));
+    --card-foreground: #ffffff;
+    --muted-foreground: color-mix(in srgb, #ffffff 65%, transparent);
+    --border: color-mix(in srgb, #ffac02 18%, transparent);
+    --input: color-mix(in srgb, #ffac02 35%, transparent);
+    --ring: #ffac02;
+    --radius: 0;
+    --font-sans: 'Collapse', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --font-mono: 'Courier New', monospace;
+    --base-size: 16px;
+    --line-height: 1.5;
+    --letter-spacing: 0;
+    --hairline: var(--border);
+    --hairline-strong: var(--input);
   }}
+
+{theme_css}
 
   *, *::before, *::after {{ box-sizing: border-box; }}
 
@@ -86,10 +83,11 @@ _LOGIN_HTML_TEMPLATE = """\
     padding: 0;
     min-height: 100%;
     background: var(--background-base);
-    color: var(--foreground);
-    font-family: 'Collapse', system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    font-size: 16px;
-    line-height: 1.5;
+    color: var(--card-foreground);
+    font-family: var(--font-sans);
+    font-size: var(--base-size);
+    line-height: var(--line-height);
+    letter-spacing: var(--letter-spacing);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }}
@@ -99,11 +97,11 @@ _LOGIN_HTML_TEMPLATE = """\
     background-image:
       radial-gradient(
         ellipse at top,
-        color-mix(in srgb, var(--midground) 6%, transparent) 0%,
+        color-mix(in srgb, var(--primary) 6%, transparent) 0%,
         transparent 55%
       ),
       repeating-conic-gradient(
-        color-mix(in srgb, var(--midground) 4%, transparent) 0% 25%,
+        color-mix(in srgb, var(--primary) 4%, transparent) 0% 25%,
         transparent 0% 50%
       );
     background-size: auto, 3px 3px;
@@ -138,28 +136,20 @@ _LOGIN_HTML_TEMPLATE = """\
   .brand {{
     text-align: center;
     margin-bottom: 1.75rem;
-    font-family: 'Rules Compressed', 'Collapse', sans-serif;
+    font-family: var(--font-sans);
     font-weight: 600;
     font-size: 1.05rem;
     letter-spacing: 0.32em;
     text-transform: uppercase;
-    color: var(--midground);
+    color: var(--primary);
   }}
-  .brand .dot {{
-    display: inline-block;
-    width: 6px;
-    height: 6px;
-    background: var(--midground);
-    margin: 0 0.55em 0.18em;
-    vertical-align: middle;
-    border-radius: 1px;
-  }}
-
   .card {{
     position: relative;
     padding: 2.25rem 2rem 2rem;
-    background: color-mix(in srgb, #ffffff 2%, var(--background-base));
+    background: var(--card);
+    color: var(--card-foreground);
     border: 1px solid var(--hairline);
+    border-radius: var(--radius);
     /* Hairline highlight + bevel shadow — matches DS Button SHADOW_DEFAULT
        (`inset -1px -1px 0 #00000080, inset 1px 1px 0 #ffffff80`) at panel scale. */
     box-shadow:
@@ -170,17 +160,17 @@ _LOGIN_HTML_TEMPLATE = """\
 
   h1 {{
     margin: 0 0 0.4rem;
-    font-family: 'Rules Compressed', 'Collapse', sans-serif;
+    font-family: var(--font-sans);
     font-weight: 600;
     font-size: 1.85rem;
     letter-spacing: 0.05em;
     text-transform: uppercase;
-    color: var(--foreground);
+    color: var(--card-foreground);
   }}
 
   .subtitle {{
     margin: 0 0 1.75rem;
-    color: color-mix(in srgb, var(--foreground) 65%, transparent);
+    color: var(--muted-foreground);
     font-size: 0.95rem;
   }}
 
@@ -189,24 +179,23 @@ _LOGIN_HTML_TEMPLATE = """\
     gap: 0.75rem;
   }}
 
-  /* Provider button — mirrors DS Button (default variant):
-     amber surface, dark text, uppercase + wide tracking, inset bevel. */
+  /* Provider button uses the theme's primary surface and focus ring. */
   .provider-btn {{
     display: block;
     width: 100%;
     box-sizing: border-box;
     padding: 0.95rem 1rem;
     text-align: center;
-    background: var(--midground);
-    color: var(--background-base);
-    font-family: 'Collapse', sans-serif;
+    background: var(--primary);
+    color: var(--primary-foreground);
+    font-family: var(--font-sans);
     font-weight: 700;
     font-size: 0.78rem;
     letter-spacing: 0.2em;
     text-transform: uppercase;
     text-decoration: none;
     border: 0;
-    border-radius: 0;  /* DS Button is squared — no rounded corners. */
+    border-radius: var(--radius);
     cursor: pointer;
     box-shadow:
       inset 1px 1px 0 0 rgba(255, 255, 255, 0.5),
@@ -221,24 +210,23 @@ _LOGIN_HTML_TEMPLATE = """\
     filter: invert(1);
   }}
   .provider-btn:focus-visible {{
-    outline: 2px solid var(--midground);
+    outline: 2px solid var(--ring);
     outline-offset: 3px;
   }}
 
-  /* Password provider form — same visual language as the OAuth buttons:
-     squared inputs, hairline borders, amber focus ring. */
+  /* Password provider form shares themed inputs and focus treatment. */
   .provider-form {{
     display: grid;
     gap: 0.75rem;
     text-align: left;
   }}
   .form-title {{
-    font-family: 'Rules Compressed', 'Collapse', sans-serif;
+    font-family: var(--font-sans);
     font-weight: 600;
     font-size: 0.72rem;
     letter-spacing: 0.18em;
     text-transform: uppercase;
-    color: color-mix(in srgb, var(--foreground) 70%, transparent);
+    color: var(--muted-foreground);
   }}
   .field {{
     display: grid;
@@ -248,23 +236,23 @@ _LOGIN_HTML_TEMPLATE = """\
     font-size: 0.72rem;
     letter-spacing: 0.12em;
     text-transform: uppercase;
-    color: color-mix(in srgb, var(--foreground) 55%, transparent);
+    color: var(--muted-foreground);
   }}
   .field-input {{
     width: 100%;
     box-sizing: border-box;
     padding: 0.7rem 0.8rem;
-    background: color-mix(in srgb, #000000 25%, var(--background-base));
-    color: var(--foreground);
+    background: var(--card);
+    color: var(--card-foreground);
     border: 1px solid var(--hairline-strong);
-    border-radius: 0;
-    font-family: 'Collapse', sans-serif;
+    border-radius: var(--radius);
+    font-family: var(--font-sans);
     font-size: 0.95rem;
   }}
   .field-input:focus-visible {{
     outline: none;
-    border-color: var(--midground);
-    box-shadow: 0 0 0 1px var(--midground);
+    border-color: var(--ring);
+    box-shadow: 0 0 0 1px var(--ring);
   }}
   .form-error {{
     color: #ff6b6b;
@@ -278,7 +266,7 @@ _LOGIN_HTML_TEMPLATE = """\
   footer {{
     margin-top: 1.75rem;
     text-align: center;
-    color: color-mix(in srgb, var(--foreground) 45%, transparent);
+    color: var(--muted-foreground);
     font-size: 0.75rem;
     letter-spacing: 0.1em;
     text-transform: uppercase;
@@ -295,14 +283,14 @@ _LOGIN_HTML_TEMPLATE = """\
 
   /* Selection — DS uses midground bg + background text. */
   ::selection {{
-    background: var(--midground);
-    color: var(--background-base);
+    background: var(--primary);
+    color: var(--primary-foreground);
   }}
 </style>
 </head>
 <body>
 <main>
-  <div class="brand">Nous<span class="dot"></span>Research</div>
+  <div class="brand">{brand_label}</div>
   <div class="card">
     <h1>Sign in</h1>
     <p class="subtitle">Choose a sign-in method to continue to the Hermes Agent dashboard.</p>
@@ -455,7 +443,82 @@ _PASSWORD_FORM_SCRIPT = """\
 """
 
 
-def render_login_html(*, next_path: str = "") -> str:
+def _login_theme_values(
+    theme: Optional[Mapping[str, Any]],
+) -> tuple[str, str, str]:
+    if not theme:
+        return "default", "Nous Research", ""
+
+    palette = theme.get("palette") if isinstance(theme.get("palette"), Mapping) else {}
+    typography = (
+        theme.get("typography") if isinstance(theme.get("typography"), Mapping) else {}
+    )
+    layout = theme.get("layout") if isinstance(theme.get("layout"), Mapping) else {}
+    overrides = (
+        theme.get("colorOverrides")
+        if isinstance(theme.get("colorOverrides"), Mapping)
+        else {}
+    )
+
+    def layer(name: str, fallback: str) -> str:
+        value = palette.get(name)
+        if isinstance(value, Mapping):
+            value = value.get("hex")
+        return value if isinstance(value, str) and value else fallback
+
+    background = layer("background", "#170d02")
+    midground = layer("midground", "#ffac02")
+    foreground = layer("foreground", "#ffffff")
+
+    def value(source: Mapping[str, Any], key: str, fallback: str) -> str:
+        result = source.get(key)
+        return result if isinstance(result, str) and result else fallback
+
+    font_sans = value(typography, "fontSans", "system-ui, sans-serif")
+    font_mono = value(typography, "fontMono", "ui-monospace, monospace")
+    variables = {
+        "--background-base": background,
+        "--background": background,
+        "--midground": midground,
+        "--foreground": foreground,
+        "--primary": value(overrides, "primary", midground),
+        "--primary-foreground": value(overrides, "primaryForeground", background),
+        "--card": value(overrides, "card", background),
+        "--card-foreground": value(overrides, "cardForeground", midground),
+        "--muted-foreground": value(overrides, "mutedForeground", midground),
+        "--border": value(overrides, "border", midground),
+        "--input": value(overrides, "input", midground),
+        "--ring": value(overrides, "ring", value(overrides, "primary", midground)),
+        "--radius": value(layout, "radius", "0"),
+        "--font-sans": font_sans,
+        "--font-mono": font_mono,
+        "--theme-font-sans": font_sans,
+        "--theme-font-mono": font_mono,
+        "--theme-font-display": value(typography, "fontDisplay", font_sans),
+        "--base-size": value(typography, "baseSize", "16px"),
+        "--line-height": value(typography, "lineHeight", "1.5"),
+        "--letter-spacing": value(typography, "letterSpacing", "0"),
+    }
+    css = (
+        "  :root {\n"
+        + "".join(
+            f"    {name}: {css_value};\n" for name, css_value in variables.items()
+        )
+        + "  }"
+    )
+    custom_css = theme.get("customCSS")
+    if isinstance(custom_css, str) and custom_css:
+        css += "\n" + re.sub(r"</style", r"<\\/style", custom_css, flags=re.I)
+    name = value(theme, "name", "default")
+    label = value(theme, "label", name)
+    return name, label, css
+
+
+def render_login_html(
+    *,
+    next_path: str = "",
+    theme: Optional[Mapping[str, Any]] = None,
+) -> str:
     """Return the full HTML for ``GET /login``.
 
     ``next_path`` — when set, the post-login landing path the user
@@ -492,9 +555,13 @@ def render_login_html(*, next_path: str = "") -> str:
                 f'Sign in with {html.escape(p.display_name)}</a>'
             )
     script = _PASSWORD_FORM_SCRIPT if needs_password_script else ""
+    theme_name, brand_label, theme_css = _login_theme_values(theme)
     return _LOGIN_HTML_TEMPLATE.format(
         provider_buttons="\n".join(buttons),
         password_script=script,
+        theme_name=html.escape(theme_name, quote=True),
+        brand_label=html.escape(brand_label),
+        theme_css=theme_css,
     )
 
 

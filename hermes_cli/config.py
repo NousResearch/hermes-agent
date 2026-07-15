@@ -2205,12 +2205,12 @@ DEFAULT_CONFIG = {
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
     },
 
-    # "Hey Hermes" hands-free wake word (CLI). Always-on, on-device hotword
+    # "Hey Hermes" hands-free wake word. Always-on, on-device hotword
     # detection that starts a fresh voice session — the "Hey Siri" pattern.
     # Off by default; toggle with /wake or `wake_word.enabled: true`.
     "wake_word": {
         "enabled": False,
-        "surface": "auto",            # which surface owns the listener / opens the new session: "auto" (the running one) | "cli" | "tui" | "gui"
+        "surface": "auto",            # eligible surface: "auto" (first claimant) | "cli" | "tui" | "gui"
         "provider": "openwakeword",   # "openwakeword" (free, local) | "porcupine" (premium; needs PORCUPINE_ACCESS_KEY)
         "phrase": "hey jarvis",       # cosmetic label only; detection is keyed by the engine model/keyword below
         "sensitivity": 0.5,           # 0.0-1.0 detection threshold (higher = stricter)

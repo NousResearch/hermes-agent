@@ -137,30 +137,32 @@ export function useComposerVoice({
   )
 
   useEffect(() => {
-    if (
-      target === 'main' &&
-      !disabled &&
-      takeVoiceConversationStart(voiceStartRequest) &&
-      !voiceConversationActive
-    ) {
+    if (target === 'main' && !disabled && takeVoiceConversationStart(voiceStartRequest) && !voiceConversationActive) {
       setVoiceConversationActive(true)
     }
   }, [disabled, target, voiceConversationActive, voiceStartRequest])
 
   const wakePausedRef = useRef(false)
+
   const resumeWakeIfPaused = useCallback(() => {
     if (!wakePausedRef.current) {
       return
     }
 
     wakePausedRef.current = false
-    void $gateway.get()?.request('wake.resume', {}).catch(() => undefined)
+    void $gateway
+      .get()
+      ?.request('wake.resume', {})
+      .catch(() => undefined)
   }, [])
 
   useEffect(() => {
     if (voiceConversationActive) {
       wakePausedRef.current = true
-      void $gateway.get()?.request('wake.pause', {}).catch(() => undefined)
+      void $gateway
+        .get()
+        ?.request('wake.pause', {})
+        .catch(() => undefined)
     } else {
       resumeWakeIfPaused()
     }

@@ -319,7 +319,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
     // Arm "Hey Hermes" if this surface owns it (server gates on config).
     // Fire-and-forget + idempotent server-side, so reconnects are harmless.
-    void rpc('wake.start', { surface: 'tui' })
+    void rpc('wake.start', { surface: 'tui' }).catch(() => undefined)
 
     rpc<CommandsCatalogResponse>('commands.catalog', {})
       .then(r => {
@@ -643,14 +643,23 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           if (ev.payload?.start_new_session !== false) {
             await newSession()
           }
+
           const sid = getUiState().sid
+
           if (!sid) {
+            await rpc('wake.resume', {}).catch(() => undefined)
+
             return
           }
+
           setVoiceEnabled(true)
           await rpc('voice.toggle', { action: 'on' })
           await rpc('voice.record', { action: 'start', session_id: sid })
-        })()
+        })().catch((e: unknown) => {
+          sys(`wake: ${rpcErrorMessage(e)}`)
+
+          void rpc('wake.resume', {}).catch(() => undefined)
+        })
 
         return
       }

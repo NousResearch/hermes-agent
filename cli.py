@@ -925,6 +925,7 @@ def _cleanup_all_browsers(*args, **kwargs):
 
 # Guard to prevent cleanup from running multiple times on exit
 _cleanup_done = False
+_cli_wake_owner = None
 # One-shot CLI finalization runs before process cleanup so plugins can observe
 # the session boundary while the agent is still attached. If a signal lands in
 # that narrow window, atexit cleanup must not emit that session finalize again.
@@ -1076,7 +1077,8 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
 
     try:
         from tools.wake_word import stop_listening as _stop_wake_word
-        _stop_wake_word()
+        if _cli_wake_owner is not None:
+            _stop_wake_word(owner=_cli_wake_owner)
     except Exception:
         pass
     try:
@@ -11616,7 +11618,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
     # threading resume logic through the voice machinery.
 
     def _maybe_start_wake_word(self):
-        """Start the wake-word listener at CLI startup if this surface owns it."""
+        """Start the wake-word listener at CLI startup if this surface is eligible."""
         try:
             from tools.wake_word import wake_surface_enabled
             if not wake_surface_enabled("cli"):
@@ -11627,20 +11629,23 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def _start_wake_word_listener(self, announce: bool = False) -> bool:
         """Build + start the hotword detector. Returns True on success."""
-        if getattr(self, "_wake_word_active", False):
-            if announce:
-                _cprint(f"{_DIM}Wake word is already listening.{_RST}")
-            return True
         try:
             from tools.wake_word import (
                 check_wake_word_requirements,
                 load_wake_word_config,
+                owns_listener,
                 start_listening,
             )
         except Exception as e:
             if announce:
                 _cprint(f"{_DIM}Wake word unavailable: {e}{_RST}")
             return False
+
+        if getattr(self, "_wake_word_active", False) and owns_listener(self):
+            if announce:
+                _cprint(f"{_DIM}Wake word is already listening.{_RST}")
+            return True
+        self._wake_word_active = False
 
         cfg = load_wake_word_config()
         reqs = check_wake_word_requirements(cfg)
@@ -11653,7 +11658,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         self._wake_start_new_session = bool(cfg.get("start_new_session", True))
         try:
-            start_listening(self._on_wake_word, config=cfg)
+            start_listening(self._on_wake_word, owner=self, config=cfg)
         except Exception as e:
             if announce:
                 _cprint(f"\n{_DIM}Failed to start wake word: {e}{_RST}")
@@ -11661,6 +11666,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         self._wake_word_active = True
         self._wake_suspended = False
+        global _cli_wake_owner
+        _cli_wake_owner = self
         self._start_wake_watchdog()
         if announce:
             _cprint(f"\n{_ACCENT}Wake word listening{_RST} "
@@ -11669,14 +11676,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def _stop_wake_word_listener(self, announce: bool = False):
         """Stop and tear down the hotword detector."""
+        global _cli_wake_owner
         was_active = getattr(self, "_wake_word_active", False)
         self._wake_word_active = False
         self._wake_suspended = False
         try:
             from tools.wake_word import stop_listening
-            stop_listening()
+            stop_listening(owner=self)
         except Exception:
             pass
+        if _cli_wake_owner is self:
+            _cli_wake_owner = None
         if announce:
             if was_active:
                 _cprint(f"{_DIM}Wake word stopped.{_RST}")
@@ -11684,7 +11694,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _cprint(f"{_DIM}Wake word is not running.{_RST}")
 
     def _on_wake_word(self):
-        """Fired (on the detector thread) when the wake phrase is heard."""
+        """Fired after the detector hears the wake phrase."""
         if getattr(self, "_should_exit", False):
             return
         # Ignore wake while a turn is in flight or the mic is already in use.
@@ -11694,9 +11704,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # Release the mic so STT can capture the command utterance.
         try:
             from tools.wake_word import pause_listening
-            pause_listening()
-        except Exception:
-            pass
+            if not pause_listening(owner=self):
+                self._wake_word_active = False
+                return
+        except Exception as e:
+            logger.debug("wake word pause failed: %s", e)
+            return
         self._wake_suspended = True
 
         _cprint(f"\n{_ACCENT}✦ Wake word detected — listening...{_RST}")
@@ -11753,8 +11766,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         idle_polls = 0
                         try:
                             from tools.wake_word import resume_listening
-                            resume_listening()
-                            self._wake_suspended = False
+                            if resume_listening(owner=self):
+                                self._wake_suspended = False
+                            else:
+                                self._wake_word_active = False
                         except Exception as e:
                             logger.debug("wake word resume failed: %s", e)
             finally:
@@ -11764,21 +11779,27 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
     def _show_wake_word_status(self):
         """Show current wake-word listener status."""
-        from tools.wake_word import check_wake_word_requirements, load_wake_word_config
+        from tools.wake_word import (
+            check_wake_word_requirements,
+            is_listening,
+            load_wake_word_config,
+            owns_listener,
+        )
 
         cfg = load_wake_word_config()
         reqs = check_wake_word_requirements(cfg)
-        active = getattr(self, "_wake_word_active", False)
+        owned = owns_listener(self)
+        state = "LISTENING" if owned and is_listening() else "PAUSED" if owned else "OFF"
 
         _cprint(f"\n{_BOLD}Wake Word Status{_RST}")
-        _cprint(f"  State:       {'LISTENING' if active else 'OFF'}")
+        _cprint(f"  State:       {state}")
         _cprint(f"  Phrase:      \"{reqs['phrase']}\"")
         _cprint(f"  Provider:    {reqs['provider']}")
         _cprint(f"  Surface:     {cfg.get('surface', 'auto')}")
         _cprint(f"  New session: {'yes' if cfg.get('start_new_session', True) else 'no'}")
         if not reqs["available"] and reqs.get("hint"):
             _cprint(f"  {_DIM}{reqs['hint']}{_RST}")
-        if not active:
+        if not owned:
             _cprint(f"  {_DIM}Enable with /wake on{_RST}")
 
     def _toggle_voice_tts(self):

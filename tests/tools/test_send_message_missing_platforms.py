@@ -334,7 +334,7 @@ class TestSendDingtalk:
         client.post.assert_awaited_once()
         call_kwargs = client.post.await_args
         assert call_kwargs[0][0] == "https://oapi.dingtalk.com/robot/send?access_token=abc"
-        assert call_kwargs[1]["json"] == {"msgtype": "text", "text": {"content": "hello dingtalk"}}
+        assert call_kwargs[1]["json"] == {"msgtype": "markdown", "markdown": {"title": "Hermes", "text": "hello dingtalk"}}
 
     def test_api_error_in_response_body(self):
         """DingTalk always returns HTTP 200 but signals errors via errcode."""

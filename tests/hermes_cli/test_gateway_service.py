@@ -505,6 +505,13 @@ class TestGeneratedSystemdUnits:
         assert str(local_bin) in plist
         assert str(profile_node_bin) not in plist
 
+    def test_launchd_plist_includes_umask_077(self):
+        """SEC-04A: generated plist must set Umask=63 (octal 077) so all
+        files created by the gateway process are owner-only."""
+        plist = gateway_cli.generate_launchd_plist()
+        assert "<key>Umask</key>" in plist
+        assert "<integer>63</integer>" in plist
+
     def test_user_unit_includes_wsl_windows_interop_paths(self, monkeypatch):
         monkeypatch.setattr(gateway_cli, "is_wsl", lambda: True)
         monkeypatch.setenv(

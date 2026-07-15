@@ -4044,6 +4044,9 @@ def generate_launchd_plist() -> str:
     <key>ExitTimeOut</key>
     <integer>25</integer>
 
+    <key>Umask</key>
+    <integer>63</integer>
+
     <key>StandardOutPath</key>
     <string>{log_dir}/gateway.log</string>
     

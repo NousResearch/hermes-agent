@@ -19,12 +19,13 @@ import { useOnProfileSwitch } from '../hooks/use-on-profile-switch'
 import { PanelEmpty } from '../overlays/panel'
 
 import { CONTROL_TEXT, EMPTY_SELECT_VALUE, FIELD_DESCRIPTIONS, FIELD_LABELS } from './constants'
+import { FallbackModelsField } from './fallback-models-field'
 import { fieldCopyForSchemaKey } from './field-copy'
 import { enumOptionsFor, getNested, prettyName, sectionFieldEntries, setNested } from './helpers'
 import { MemoryConnect } from './memory/connect'
+import { ProviderConfigPanel } from './memory/provider-config-panel'
 import { ModelSettings, ModelSettingsSkeleton } from './model-settings'
 import { EmptyState, ListRow, LoadingState, SettingsContent } from './primitives'
-import { ProviderConfigPanel } from './memory/provider-config-panel'
 
 // On the Voice page, only surface the sub-fields of the *selected* TTS/STT
 // provider — otherwise every provider's options render at once (the "totally
@@ -99,6 +100,13 @@ function ConfigField({
   const row = (action: ReactNode, wide = false) => (
     <ListRow action={action} description={descriptionNode} title={label} wide={wide} />
   )
+
+  // `fallback_providers` is a list of {provider, model} objects; the generic
+  // `list` branch below would stringify them to "[object Object]". Render the
+  // dedicated structured editor instead.
+  if (schemaKey === 'fallback_providers') {
+    return row(<FallbackModelsField onChange={onChange} value={value} />, true)
+  }
 
   if (schema.type === 'boolean') {
     return row(

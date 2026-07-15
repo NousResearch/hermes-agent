@@ -1098,6 +1098,8 @@ class TeamsAdapter(BasePlatformAdapter):
         session_key: str,
         description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None,
+        allow_permanent: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         """Send an Adaptive Card approval prompt with Allow/Deny buttons."""
         if not self._app:
@@ -1111,39 +1113,34 @@ class TeamsAdapter(BasePlatformAdapter):
             "desc": description,
         }
 
-        card = (
-            AdaptiveCard()
-            .with_version("1.4")
-            .with_body([
-                TextBlock(text="⚠️ Command Approval Required", wrap=True, weight="Bolder"),
-                TextBlock(text=f"```\n{cmd_preview}\n```", wrap=True),
-                TextBlock(text=f"Reason: {description}", wrap=True, isSubtle=True),
-            ])
-            .with_actions([
-                ExecuteAction(
-                    title="Allow Once",
-                    verb="hermes_approve",
-                    data={**btn_data_base, "hermes_action": "approve_once"},
-                    style="positive",
-                ),
-                ExecuteAction(
-                    title="Allow Session",
-                    verb="hermes_approve",
-                    data={**btn_data_base, "hermes_action": "approve_session"},
-                ),
-                ExecuteAction(
-                    title="Always Allow",
-                    verb="hermes_approve",
+        actions = [ExecuteAction(
+            title="Allow Once", verb="hermes_approve",
+            data={**btn_data_base, "hermes_action": "approve_once"}, style="positive",
+        )]
+        if not smart_denied:
+            actions.append(ExecuteAction(
+                title="Allow Session", verb="hermes_approve",
+                data={**btn_data_base, "hermes_action": "approve_session"},
+            ))
+            if allow_permanent:
+                actions.append(ExecuteAction(
+                    title="Always Allow", verb="hermes_approve",
                     data={**btn_data_base, "hermes_action": "approve_always"},
-                ),
-                ExecuteAction(
-                    title="Deny",
-                    verb="hermes_approve",
-                    data={**btn_data_base, "hermes_action": "deny"},
-                    style="destructive",
-                ),
-            ])
-        )
+                ))
+        actions.append(ExecuteAction(
+            title="Deny", verb="hermes_approve",
+            data={**btn_data_base, "hermes_action": "deny"}, style="destructive",
+        ))
+        body = [
+            TextBlock(text="⚠️ Command Approval Required", wrap=True, weight="Bolder"),
+            TextBlock(text=f"```\n{cmd_preview}\n```", wrap=True),
+            TextBlock(text=f"Reason: {description}", wrap=True, isSubtle=True),
+        ]
+        if smart_denied:
+            body.append(TextBlock(
+                text="Smart DENY: owner override applies to this one operation only.", wrap=True
+            ))
+        card = AdaptiveCard().with_version("1.4").with_body(body).with_actions(actions)
 
         try:
             result = await self._send_card(chat_id, card)

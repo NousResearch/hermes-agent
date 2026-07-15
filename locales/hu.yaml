@@ -7,6 +7,10 @@ approval:
   choose_short:    "      [o]egyszer  |  [s]munkamenet  |  [d]elutasít"
   prompt_long:     "      Választás [o/s/a/D]: "
   prompt_short:    "      Választás [o/s/D]: "
+  choose_smart_deny: "      [o]egyszer  |  [d]elutasít"
+  prompt_smart_deny: "      Választás [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
   timeout:         "      ⏱ Időtúllépés - parancs elutasítva"
   allowed_once:    "      ✓ Egyszer engedélyezve"
   allowed_session: "      ✓ Engedélyezve ehhez a munkamenethez"
@@ -360,6 +364,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_estimated_context:  "Becsült kontextus: ~{count} token"
     detailed_after_first:     "_(A részletes használat az első ügynökválasz után érhető el)_"
     no_data:                  "Ehhez a munkamenethez nincsenek elérhető használati adatok."
+    unknown_subcommand:       "Ismeretlen /usage alparancs: `{args}`. Próbáld: `/usage` vagy `/usage reset [--force]`."
+    reset_wrong_provider:     "A félretett limit-visszaállítások csak az openai-codex szolgáltatónál érhetők el. Válts először a `/model` paranccsal."
 
   credits:
     not_logged_in:            "Nincs bejelentkezve a Nous Portalra. Jelentkezz be a kreditegyenleg megtekintéséhez és feltöltéséhez."

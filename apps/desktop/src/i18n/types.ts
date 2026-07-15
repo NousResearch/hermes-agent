@@ -133,9 +133,13 @@ export interface Translations {
       retry: string
       repairInstall: string
       useLocalGateway: string
+      gatewaySettings: string
+      back: string
       openLogs: string
       repairHint: string
-      remoteSignInHint: string
+      remoteSignInHint: (signInLabel: string) => string
+      signOutAndSignIn: string
+      remoteFailureHint: string
       hideRecentLogs: string
       showRecentLogs: string
       signedInTitle: string
@@ -228,6 +232,8 @@ export interface Translations {
     openSettings: string
     openStarmap: string
     openKeybinds: string
+    layoutEditor: string
+    layoutEditorTitle: string
   }
 
   keybinds: {
@@ -273,6 +279,20 @@ export interface Translations {
       archivedChats: string
       about: string
       notifications: string
+      plugins: string
+    }
+    plugins: {
+      title: string
+      blurb: string
+      count: (n: number) => string
+      openFolder: string
+      rescan: string
+      reveal: string
+      enable: string
+      disable: string
+      failed: string
+      empty: string
+      kinds: { bundled: string; disk: string; runtime: string }
     }
     notifications: {
       title: string
@@ -307,6 +327,8 @@ export interface Translations {
       uiScaleDesc: (percent: number) => string
       translucencyTitle: string
       translucencyDesc: string
+      backdropTitle: string
+      backdropDesc: string
       embedsTitle: string
       embedsDesc: string
       embedsAsk: string
@@ -442,10 +464,39 @@ export interface Translations {
       profileConnection: (profile: string) => string
       envOverrideTitle: string
       envOverrideDesc: string
+      modeTitle: string
       localTitle: string
       localDesc: string
       remoteTitle: string
       remoteDesc: string
+      remoteAuthHint: string
+      cloudTitle: string
+      cloudDesc: string
+      cloudSignInTitle: string
+      cloudSignIn: string
+      cloudSignedIn: string
+      cloudNeedsSignIn: string
+      cloudSignedInDesc: string
+      cloudAgentsTitle: string
+      cloudOrgPickerTitle: string
+      cloudOrgSelect: string
+      cloudOrgChange: string
+      cloudOrgRole: (role: string) => string
+      cloudLoadingAgents: string
+      cloudNoAgents: { before: string; linkText: string; after: string }
+      cloudRefresh: string
+      cloudConnect: string
+      cloudConnecting: string
+      cloudDiscoverFailed: string
+      cloudConnectFailed: string
+      cloudSignInFailed: string
+      cloudSignedOutTitle: string
+      cloudSignedOutMessage: string
+      cloudConnectedTitle: string
+      cloudConnectedPill: string
+      cloudConnectedTo: (name: string) => string
+      cloudAgentProvisioning: string
+      cloudStatusLabel: (status: string) => string
       remoteUrlTitle: string
       remoteUrlDesc: string
       probing: string
@@ -578,6 +629,9 @@ export interface Translations {
       change: string
       autoUseMain: string
       providerDefault: string
+      fallbackAdd: string
+      fallbackEmpty: string
+      notInCatalog: string
       tasks: Record<string, AuxTaskCopy>
     }
     providers: {
@@ -829,6 +883,7 @@ export interface Translations {
     goTo: string
     goToSession: string
     branches: string
+    commands: string
     startInBranch: (branch: string) => string
     commandCenter: string
     appearance: string
@@ -1175,7 +1230,10 @@ export interface Translations {
     customPlaceholder: string
     customHint: string
     optional: string
+    promptRequired: string
     promptScheduleRequired: string
+    scheduleRequired: string
+    scriptOnlyEditHint: string
     saveChanges: string
     createAction: string
   }
@@ -1273,6 +1331,9 @@ export interface Translations {
       newWorktreeTitle: string
       newWorktreeDesc: string
       branchPlaceholder: string
+      branchOff: () => { after: string; before: string }
+      baseBranchPlaceholder: string
+      baseBranchNone: string
       startWorkFailed: string
       convertBranch: string
       convertBranchTitle: string
@@ -1308,18 +1369,24 @@ export interface Translations {
       rename: string
       archive: string
       newWindow: string
+      hideTabBar: string
+      openInNewTab: string
+      openInSplit: string
       copyIdFailed: string
       actionsFor: (title: string) => string
       sessionActions: string
       sessionRunning: string
       needsInput: string
       waitingForAnswer: string
+      finishedUnread: string
+      backgroundRunning: string
       handoffOrigin: (platform: string) => string
       renamed: string
       renameFailed: string
       renameTitle: string
       renameDesc: string
       untitledPlaceholder: string
+      untitledChat: (id: string) => string
       ageNow: string
       ageDay: string
       ageHour: string
@@ -1639,7 +1706,9 @@ export interface Translations {
       low: string
       medium: string
       high: string
+      xhigh: string
       max: string
+      ultra: string
       updateFailed: string
       fastFailed: string
     }
@@ -1657,6 +1726,16 @@ export interface Translations {
       recentActivity: string
       viewAllLogs: string
       messagingPlatforms: string
+    }
+    approvalMode: {
+      title: string
+      ariaLabel: (mode: string) => string
+      manual: string
+      manualDescription: string
+      smart: string
+      smartDescription: string
+      off: string
+      offDescription: string
     }
     statusbar: {
       unknown: string
@@ -1854,6 +1933,51 @@ export interface Translations {
     }
   }
 
+  zones: {
+    showHeader: string
+    hideHeader: string
+    minimize: string
+    restore: string
+    closeRunningTitle: string
+    closeRunningBody: string
+    closeRunningConfirm: string
+    closeOthers: string
+    closeToRight: string
+    closeAll: string
+    split: (dir: string) => string
+    move: (dir: string) => string
+    dirUp: string
+    dirDown: string
+    dirLeft: string
+    dirRight: string
+    pluginDisabled: (pluginId: string) => string
+    pluginDisabledBody: string
+    missingPane: (paneId: string) => string
+    editTitle: string
+    editHint: string
+    reset: string
+    templates: string
+    custom: string
+    newGridLayout: string
+    saveCurrentAs: string
+    nameLayoutPlaceholder: string
+    deletePreset: (name: string) => string
+    zoneEditorTitle: string
+    editorHintPre: string
+    editorHintPost: string
+    templateColumns: string
+    templateRows: string
+    templateGrid: string
+    templatePriority: string
+    zoneTag: (index: number) => string
+    mergeZones: (count: number) => string
+    customZoneName: (count: number) => string
+    layoutNamePlaceholder: (fallback: string) => string
+    saveApply: string
+    notExpressible: string
+    zoneCount: (count: number) => string
+  }
+
   assistant: {
     thread: {
       loadingSession: string
@@ -1909,6 +2033,7 @@ export interface Translations {
       other: string
       placeholder: string
       skip: string
+      skipped: string
       continueLabel: string
     }
     tool: {

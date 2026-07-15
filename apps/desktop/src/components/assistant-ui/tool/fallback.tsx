@@ -611,6 +611,15 @@ function ToolEntry({ part }: ToolEntryProps) {
 // auto-scrolling window; fewer than this stays a plain inline stack.
 const TOOL_GROUP_SCROLL_THRESHOLD = 3
 
+// Tools whose body (an interactive form, a full-size image) must never be
+// trapped behind the window's max-height + fade mask. A run holding any of
+// them stays a plain, fully-visible stack no matter how long it is.
+export const UNBOUNDABLE_TOOLS = new Set(['clarify', 'image_generate'])
+
+export function shouldBoundToolGroup(childCount: number, hasUnboundable: boolean) {
+  return childCount >= TOOL_GROUP_SCROLL_THRESHOLD && !hasUnboundable
+}
+
 // Pin-to-bottom + top-fade for the bounded tool window. Pins the newest row on
 // growth (a call lands or a row expands) unless the user scrolled up, and fades
 // the top edge once anything sits above it. Mirrors ThinkingDisclosure's live
@@ -678,13 +687,21 @@ function useToolWindow(enabled: boolean) {
  */
 export const ToolGroupSlot: FC<PropsWithChildren<{ endIndex: number; startIndex: number }>> = ({
   children,
+  endIndex,
   startIndex
 }) => {
   const messageId = useAuiState(s => s.message.id)
   const messageRunning = useAuiState(selectMessageRunning)
+
+  const hasUnboundable = useAuiState(s =>
+    s.message.parts
+      .slice(Math.max(0, startIndex), endIndex + 1)
+      .some(part => part.type === 'tool-call' && UNBOUNDABLE_TOOLS.has(part.toolName))
+  )
+
   const enterRef = useEnterAnimation(messageRunning, `tool-group:${messageId}:${startIndex}`)
 
-  const bounded = Children.count(children) >= TOOL_GROUP_SCROLL_THRESHOLD
+  const bounded = shouldBoundToolGroup(Children.count(children), hasUnboundable)
   const { contentRef, faded, onScroll, scrollRef } = useToolWindow(bounded)
 
   return (

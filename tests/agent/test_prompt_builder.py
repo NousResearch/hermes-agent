@@ -1092,15 +1092,22 @@ class TestPromptBuilderConstants:
         hint = PLATFORM_HINTS["telegram"]
         lowered = hint.lower()
         assert "Telegram has NO table syntax" not in hint
-        assert "rich markdown" in lowered
-        assert "table" in lowered
-        assert "task list" in lowered
-        assert "math" in lowered
+        # Base hint covers MarkdownV2-compatible constructs.
+        assert "MEDIA:" in hint
+        # Rich-messages extension (TELEGRAM_RICH_MESSAGES_HINT) covers the
+        # Bot API 10.1 guidance; it is injected conditionally in
+        # system_prompt.py when rich_messages: true.
+        from agent.prompt_builder import TELEGRAM_RICH_MESSAGES_HINT
+        rich_lowered = TELEGRAM_RICH_MESSAGES_HINT.lower()
+        assert "rich markdown" in rich_lowered
+        assert "table" in rich_lowered
+        assert "task list" in rich_lowered
+        assert "math" in rich_lowered
         # Hint should proactively steer toward structured formatting, not just
         # permit it: bullet + numbered lists for scannable, structured output.
-        assert "bullet" in lowered
-        assert "numbered" in lowered
-        # Local media delivery guidance must remain intact.
+        assert "bullet" in rich_lowered
+        assert "numbered" in rich_lowered
+        # Local media delivery guidance must remain intact in the base hint.
         assert "include MEDIA:" in hint
 
     def test_platform_hints_mattermost(self):

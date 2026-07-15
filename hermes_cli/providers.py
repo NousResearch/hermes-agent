@@ -196,6 +196,17 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         base_url_override="https://api.gmi-serving.com/v1",
         base_url_env_var="GMI_BASE_URL",
     ),
+    "fireworks": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("FIREWORKS_API_KEY",),
+        base_url_override="https://api.fireworks.ai/inference/v1",
+    ),
+    "upstage": HermesOverlay(
+        transport="openai_chat",
+        extra_env_vars=("UPSTAGE_API_KEY",),
+        base_url_override="https://api.upstage.ai/v1",
+        base_url_env_var="UPSTAGE_BASE_URL",
+    ),
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
         base_url_override="https://ollama.com/v1",
@@ -343,6 +354,13 @@ ALIASES: Dict[str, str] = {
     "gmi-cloud": "gmi",
     "gmicloud": "gmi",
 
+    # fireworks
+    "fireworks-ai": "fireworks",
+    "fw": "fireworks",
+
+    # upstage
+    "solar": "upstage",
+
     # Local server aliases → virtual "local" concept (resolved via user config)
     "lmstudio": "lmstudio",
     "lm-studio": "lmstudio",
@@ -367,6 +385,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",
+    "upstage": "Upstage Solar",
     "tencent-tokenhub": "Tencent TokenHub",
     "lmstudio": "LM Studio",
     "local": "Local endpoint",

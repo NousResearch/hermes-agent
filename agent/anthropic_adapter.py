@@ -65,6 +65,7 @@ THINKING_BUDGET = {"xhigh": 32000, "high": 16000, "medium": 8000, "low": 4000}
 # maps to low on every model.  See:
 # https://platform.claude.com/docs/en/about-claude/models/migration-guide
 ADAPTIVE_EFFORT_MAP = {
+    "ultra":   "max",
     "max":     "max",
     "xhigh":   "xhigh",
     "high":    "high",
@@ -2102,7 +2103,7 @@ def _convert_user_message(content: Any) -> Dict[str, Any]:
     if isinstance(content, list):
         converted_blocks = _convert_content_to_anthropic(content)
         if not converted_blocks or all(
-            b.get("text", "").strip() == ""
+            (b.get("text") or "").strip() == ""
             for b in converted_blocks
             if isinstance(b, dict) and b.get("type") == "text"
         ):

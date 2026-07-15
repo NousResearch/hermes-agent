@@ -223,6 +223,71 @@ class TestGatewayPidState:
 
         assert status.get_running_pid() == os.getpid()
 
+    def test_get_running_pid_cached_reuses_runtime_lock_probe(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        status._clear_running_pid_cache()
+
+        pid_path = tmp_path / "gateway.pid"
+        record = {
+            "pid": os.getpid(),
+            "kind": "hermes-gateway",
+            "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+            "start_time": 123,
+        }
+        pid_path.write_text(json.dumps(record))
+        (tmp_path / "gateway.lock").write_text(json.dumps(record))
+
+        calls = {"lock_active": 0}
+
+        def _lock_active(lock_path=None):
+            calls["lock_active"] += 1
+            return True
+
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", _lock_active)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        assert status.get_running_pid_cached(ttl_seconds=60) == os.getpid()
+        assert status.get_running_pid_cached(ttl_seconds=60) == os.getpid()
+        assert calls["lock_active"] == 1
+
+    def test_get_running_pid_cached_invalidates_when_pid_file_changes(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        status._clear_running_pid_cache()
+
+        pid_path = tmp_path / "gateway.pid"
+
+        def _write_record(pid: int, start_time: int) -> None:
+            record = {
+                "pid": pid,
+                "kind": "hermes-gateway",
+                "argv": ["python", "-m", "hermes_cli.main", "gateway"],
+                "start_time": start_time,
+            }
+            pid_path.write_text(json.dumps(record))
+            (tmp_path / "gateway.lock").write_text(json.dumps(record))
+
+        _write_record(111, 123)
+
+        calls = {"lock_active": 0}
+
+        def _lock_active(lock_path=None):
+            calls["lock_active"] += 1
+            return True
+
+        monkeypatch.setattr(status, "is_gateway_runtime_lock_active", _lock_active)
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 123 if pid == 111 else 456)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: None)
+
+        assert status.get_running_pid_cached(ttl_seconds=60) == 111
+
+        _write_record(2222, 456)
+
+        assert status.get_running_pid_cached(ttl_seconds=60) == 2222
+        assert calls["lock_active"] == 2
+
     def test_get_running_pid_cleans_stale_metadata_from_dead_foreign_pid(self, tmp_path, monkeypatch):
         """Stale PID file from a *different* PID (crashed process) must still be cleaned.
 

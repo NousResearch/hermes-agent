@@ -7,6 +7,10 @@ approval:
   choose_short:    "      [o]una vez  |  [s]sesión  |  [d]denegar"
   prompt_long:     "      Opción [o/s/a/D]: "
   prompt_short:    "      Opción [o/s/D]: "
+  choose_smart_deny: "      [o]una vez  |  [d]denegar"
+  prompt_smart_deny: "      Opción [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
   timeout:         "      ⏱ Tiempo agotado — comando denegado"
   allowed_once:    "      ✓ Permitido una vez"
   allowed_session: "      ✓ Permitido en esta sesión"
@@ -357,6 +361,8 @@ gateway:
     label_estimated_context:  "Contexto estimado: ~{count} tokens"
     detailed_after_first:     "_(Uso detallado disponible tras la primera respuesta del agente)_"
     no_data:                  "No hay datos de uso disponibles para esta sesión."
+    unknown_subcommand:       "Subcomando /usage desconocido: `{args}`. Prueba `/usage` o `/usage reset [--force]`."
+    reset_wrong_provider:     "Los reinicios de límite acumulados solo están disponibles con el proveedor openai-codex. Cambia primero con `/model`."
 
   credits:
     not_logged_in:            "No has iniciado sesión en Nous Portal. Inicia sesión para ver tu saldo de créditos y recargar."

@@ -98,6 +98,21 @@ def _clamp_trust(value: float) -> float:
 class MemoryStore:
     """SQLite-backed fact store with entity resolution and trust scoring."""
 
+    # --- Process-wide shared connection registry -------------------------
+    # SQLite permits only one writer at a time. Each MemoryStore instance used
+    # to open its own connection guarded by its own RLock, so the several
+    # providers that coexist in one process (the main agent plus every
+    # delegate_task subagent) raced as independent WAL writers. Combined with
+    # writes that were not rolled back on error, one connection could leave an
+    # open write transaction that pinned the write lock and made every other
+    # connection's write fail with "database is locked" for the full busy
+    # timeout. All instances for the same database now share ONE connection and
+    # ONE re-entrant lock, so access is fully serialized and cross-connection
+    # contention is impossible. The shared connection is refcounted, so closing
+    # one instance never tears the connection out from under a live sibling.
+    _shared: dict = {}
+    _shared_guard = threading.Lock()
+
     def __init__(
         self,
         db_path: "str | Path | None" = None,
@@ -112,14 +127,41 @@ class MemoryStore:
         self.default_trust = _clamp_trust(default_trust)
         self.hrr_dim = hrr_dim
         self._hrr_available = hrr._HAS_NUMPY
-        self._conn: sqlite3.Connection = sqlite3.connect(
-            str(self.db_path),
-            check_same_thread=False,
-            timeout=10.0,
-        )
-        self._lock = threading.RLock()
-        self._conn.row_factory = sqlite3.Row
-        self._init_db()
+
+        # Acquire (or open) the process-wide shared connection for this DB.
+        # resolve() (not just expanduser) so symlinked/relative paths to the
+        # same file share ONE connection instead of silently reintroducing
+        # the multi-writer contention this registry exists to prevent.
+        try:
+            self._key = str(self.db_path.resolve())
+        except OSError:
+            self._key = str(self.db_path)
+        with MemoryStore._shared_guard:
+            entry = MemoryStore._shared.get(self._key)
+            if entry is None:
+                conn = sqlite3.connect(
+                    self._key,
+                    check_same_thread=False,
+                    timeout=10.0,
+                    # Autocommit: every statement is its own transaction, so a
+                    # write that raises mid-method can never leave a dangling
+                    # transaction (and its write lock) open. The explicit
+                    # commit() calls below become harmless no-ops.
+                    isolation_level=None,
+                )
+                conn.row_factory = sqlite3.Row
+                entry = {"conn": conn, "lock": threading.RLock(), "refs": 0, "ready": False}
+                MemoryStore._shared[self._key] = entry
+            entry["refs"] += 1
+            self._entry = entry
+            self._conn = entry["conn"]
+            self._lock = entry["lock"]
+
+        # Initialise the schema once per shared connection.
+        with self._lock:
+            if not self._entry["ready"]:
+                self._init_db()
+                self._entry["ready"] = True
 
     # ------------------------------------------------------------------
     # Initialisation
@@ -575,8 +617,25 @@ class MemoryStore:
         return dict(row)
 
     def close(self) -> None:
-        """Close the database connection."""
-        self._conn.close()
+        """Release this instance's reference to the shared connection.
+
+        The underlying connection is closed only when the last MemoryStore
+        referencing the same database is closed, so closing one instance can
+        never break sibling instances that still hold it. Idempotent.
+        """
+        if getattr(self, "_entry", None) is None:
+            return
+        with MemoryStore._shared_guard:
+            entry = self._entry
+            if entry is None:
+                return
+            entry["refs"] -= 1
+            if entry["refs"] <= 0:
+                try:
+                    entry["conn"].close()
+                finally:
+                    MemoryStore._shared.pop(self._key, None)
+            self._entry = None
 
     def __enter__(self) -> "MemoryStore":
         return self

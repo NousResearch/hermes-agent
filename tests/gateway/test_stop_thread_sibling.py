@@ -156,3 +156,67 @@ async def test_stop_does_not_interrupt_sibling_when_unauthorized(monkeypatch):
 
     assert interrupted == []
     assert "no active" in str(getattr(result, "text", result)).lower()
+
+
+# ---------------------------------------------------------------------------
+# /stop with no active agent still clears a stuck platform status (#32295)
+# ---------------------------------------------------------------------------
+
+
+class _FakeStatusAdapter:
+    def __init__(self):
+        self.cleared = []
+
+    async def _stop_typing_with_metadata(self, chat_id, metadata=None):
+        self.cleared.append((chat_id, metadata))
+
+
+@pytest.mark.asyncio
+async def test_stop_no_active_agent_clears_stuck_status():
+    runner = object.__new__(GatewayRunner)
+    runner._running_agents = {}
+    key = _per_user_key("userA")
+    runner.session_store = _FakeStore(key)
+    runner._is_user_authorized = lambda source: True
+
+    adapter = _FakeStatusAdapter()
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner._thread_metadata_for_source = (
+        lambda source, reply_to_message_id=None: {"thread_id": source.thread_id}
+    )
+    runner._reply_anchor_for_event = lambda event: None
+
+    event = MessageEvent(
+        text="/stop", message_type=MessageType.TEXT, source=_thread_source("userA")
+    )
+    result = await runner._handle_stop_command(event)
+
+    assert "no active" in str(getattr(result, "text", result)).lower()
+    assert adapter.cleared == [("chan1", {"thread_id": "thr1"})]
+
+
+@pytest.mark.asyncio
+async def test_stop_no_active_agent_survives_status_clear_failure():
+    """A failing adapter clear must not break the /stop reply."""
+    runner = object.__new__(GatewayRunner)
+    runner._running_agents = {}
+    key = _per_user_key("userA")
+    runner.session_store = _FakeStore(key)
+    runner._is_user_authorized = lambda source: True
+
+    class _BoomAdapter:
+        async def _stop_typing_with_metadata(self, chat_id, metadata=None):
+            raise RuntimeError("boom")
+
+    runner.adapters = {Platform.DISCORD: _BoomAdapter()}
+    runner._thread_metadata_for_source = (
+        lambda source, reply_to_message_id=None: None
+    )
+    runner._reply_anchor_for_event = lambda event: None
+
+    event = MessageEvent(
+        text="/stop", message_type=MessageType.TEXT, source=_thread_source("userA")
+    )
+    result = await runner._handle_stop_command(event)
+
+    assert "no active" in str(getattr(result, "text", result)).lower()

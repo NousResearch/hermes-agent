@@ -109,7 +109,7 @@ describe('useModelControls', () => {
     expect($currentProvider.get()).toBe('deepseek')
   })
 
-  it('routes active-session picker changes through config.set with an explicit provider', async () => {
+  it('routes active-session picker changes through config.set with an explicit session-scoped provider', async () => {
     const requestGateway = vi.fn(async () => ({ key: 'model', value: 'claude-sonnet-4.6' }) as never)
     let controls!: Controls
 
@@ -127,9 +127,31 @@ describe('useModelControls', () => {
     expect(requestGateway).toHaveBeenCalledWith('config.set', {
       session_id: 'session-1',
       key: 'model',
-      value: 'claude-sonnet-4.6 --provider anthropic'
+      value: 'claude-sonnet-4.6 --provider anthropic --session'
     })
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
+  })
+
+  it('session-scopes MoA preset selections so they cannot persist as the global gateway default', async () => {
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'BeastMode' }) as never)
+    let controls!: Controls
+
+    render(
+      <Harness activeSessionId="session-1" onReady={value => (controls = value)} requestGateway={requestGateway} />
+    )
+
+    await expect(
+      controls.selectModel({
+        model: 'BeastMode',
+        provider: 'moa'
+      })
+    ).resolves.toBe(true)
+
+    expect(requestGateway).toHaveBeenCalledWith('config.set', {
+      session_id: 'session-1',
+      key: 'model',
+      value: 'BeastMode --provider moa --session'
+    })
   })
 
   it('stores a no-session pick as UI state with no gateway or global write', async () => {

@@ -1,6 +1,6 @@
 import { atom, computed, type ReadableAtom } from 'nanostores'
 
-import { $clarifyRequest } from './clarify'
+import { $clarifyRequest, $clarifyRequests } from './clarify'
 import { $activeSessionId } from './session'
 
 // Blocking interactive prompts the gateway raises mid-turn. Each maps to a
@@ -23,6 +23,7 @@ interface KeyedPrompt {
 
 interface PromptStore<T extends KeyedPrompt> {
   $active: ReadableAtom<null | T>
+  $all: ReadableAtom<Record<string, T>>
   clear: (sessionId?: string | null, requestId?: string) => void
   reset: () => void
   set: (request: T) => void
@@ -38,6 +39,7 @@ function keyedPromptStore<T extends KeyedPrompt>(): PromptStore<T> {
 
   return {
     $active: computed([$all, $activeSessionId], (all, activeId) => all[keyFor(activeId)] ?? null),
+    $all,
     reset: () => $all.set({}),
     set: request => $all.set({ ...$all.get(), [keyFor(request.sessionId)]: request }),
     clear(sessionId, requestId) {
@@ -71,8 +73,10 @@ function keyedPromptStore<T extends KeyedPrompt>(): PromptStore<T> {
 export interface ApprovalRequest extends KeyedPrompt {
   // false when the backend won't honor a permanent allow (tirith warning) → hide "Always allow".
   allowPermanent?: boolean
+  choices?: string[]
   command: string
   description: string
+  smartDenied?: boolean
 }
 
 export interface SudoRequest extends KeyedPrompt {
@@ -88,20 +92,42 @@ export interface SecretRequest extends KeyedPrompt {
 const approval = keyedPromptStore<ApprovalRequest>()
 const sudo = keyedPromptStore<SudoRequest>()
 const secret = keyedPromptStore<SecretRequest>()
-const $approvalInlineAnchorCount = atom(0)
+
+// Inline approval anchors, keyed by session: a tile's inline bar mounting must
+// not suppress the PRIMARY session's floating fallback (and vice versa).
+const $approvalInlineAnchors = atom<Record<string, number>>({})
 
 export const $approvalRequest = approval.$active
 export const setApprovalRequest = approval.set
 export const clearApprovalRequest = approval.clear
-export const $approvalInlineVisible = computed($approvalInlineAnchorCount, count => count > 0)
 
-export function registerApprovalInlineAnchor(): () => void {
-  $approvalInlineAnchorCount.set($approvalInlineAnchorCount.get() + 1)
+/** The prompt request for one specific session — the tile counterpart of the
+ *  active-session `$*Request` views (same map, fixed key). */
+export const sessionApprovalRequest = (sessionId: string | null) =>
+  computed(approval.$all, all => all[keyFor(sessionId)] ?? null)
+export const sessionSudoRequest = (sessionId: string | null) =>
+  computed(sudo.$all, all => all[keyFor(sessionId)] ?? null)
+export const sessionSecretRequest = (sessionId: string | null) =>
+  computed(secret.$all, all => all[keyFor(sessionId)] ?? null)
 
-  return () => {
-    $approvalInlineAnchorCount.set(Math.max(0, $approvalInlineAnchorCount.get() - 1))
+export function registerApprovalInlineAnchor(sessionId: string | null): () => void {
+  const key = keyFor(sessionId)
+
+  const bump = (delta: number) => {
+    const all = $approvalInlineAnchors.get()
+    const next = Math.max(0, (all[key] ?? 0) + delta)
+    $approvalInlineAnchors.set({ ...all, [key]: next })
   }
+
+  bump(1)
+
+  return () => bump(-1)
 }
+
+/** True when session `sessionId` has an inline approval bar mounted, so its
+ *  floating fallback should stand down. Per-session (not global). */
+export const sessionApprovalInlineVisible = (sessionId: string | null) =>
+  computed($approvalInlineAnchors, anchors => (anchors[keyFor(sessionId)] ?? 0) > 0)
 
 export const $sudoRequest = sudo.$active
 export const setSudoRequest = sudo.set
@@ -121,6 +147,20 @@ export const $activeSessionAwaitingInput = computed(
   (clarify, approval, sudo, secret) => Boolean(clarify || approval || sudo || secret)
 )
 
+/** Per-session `awaitingInput` — the tile composer's counterpart of
+ *  `$activeSessionAwaitingInput` (same sources, fixed session instead of the
+ *  active one). */
+export function sessionAwaitingInput(sessionId: string | null) {
+  return computed(
+    [$clarifyRequests, approval.$all, sudo.$all, secret.$all],
+    (clarify, approvals, sudos, secrets) => {
+      const key = keyFor(sessionId)
+
+      return Boolean(clarify[key] || approvals[key] || sudos[key] || secrets[key])
+    }
+  )
+}
+
 // Drop in-flight prompts for `sessionId` (a turn ended) across all three kinds —
 // or every parked prompt when no session is given (global reset / tests).
 export function clearAllPrompts(sessionId?: string | null): void {
@@ -128,7 +168,7 @@ export function clearAllPrompts(sessionId?: string | null): void {
     approval.reset()
     sudo.reset()
     secret.reset()
-    $approvalInlineAnchorCount.set(0)
+    $approvalInlineAnchors.set({})
 
     return
   }

@@ -73,6 +73,27 @@ const segments = (path: string): string[] =>
 /** A path with trailing separators stripped, for stable equality checks. */
 const normalizePath = (path: null | string | undefined): string => (path ?? '').replace(/[/\\]+$/, '')
 
+// Windows spellings: drive-letter (`C:\…`), UNC (`\\srv`, `//srv`), or any
+// backslash-rooted path (`\wsl.localhost\…`). A single leading `/` stays POSIX.
+// Mirrors the backend `_is_windows_path` so the live overlay places rows into
+// the same project the backend tree would.
+const isWindowsPath = (path: string): boolean =>
+  /^[A-Za-z]:[/\\]/.test(path) || path.startsWith('\\') || path.startsWith('//')
+
+/**
+ * Segments for identity comparison: Windows paths fold case (and separators, via
+ * {@link segments}) so `C:\Work` and `c:/work` are one lane; POSIX stays
+ * case-sensitive. Comparison-only — emitted ids/labels keep their spelling.
+ */
+const comparisonSegments = (path: string): string[] => {
+  const segs = segments(path)
+
+  return isWindowsPath(path) ? segs.map(seg => seg.toLowerCase()) : segs
+}
+
+/** Canonical per-host comparison key (separator/case/trailing-slash agnostic). */
+const pathKey = (path: null | string | undefined): string => comparisonSegments(path ?? '').join('/')
+
 /** Last path segment. */
 export const baseName = (path: string): string | undefined => segments(path).pop()
 
@@ -317,8 +338,8 @@ export function mergeRepoWorktreeGroups(
 
 /** True when `target` equals `folder` or is nested under it (segment-wise). */
 function isPathUnder(folder: string, target: string): boolean {
-  const f = segments(folder)
-  const t = segments(target)
+  const f = comparisonSegments(folder)
+  const t = comparisonSegments(target)
 
   if (!f.length || f.length > t.length) {
     return false
@@ -347,9 +368,8 @@ export function liveSessionProjectId(session: SessionInfo, explicitProjects: Pro
 
   // No persisted repo root yet (brand-new session) → the cwd is the root.
   const repoRoot = (session.git_repo_root || '').trim() || cwd
-  const underRepo = cwd === repoRoot || cwd.startsWith(`${repoRoot}/`) || cwd.startsWith(`${repoRoot}\\`)
 
-  if (!underRepo) {
+  if (!isPathUnder(repoRoot, cwd)) {
     return null
   }
 
@@ -423,7 +443,7 @@ export function overlayRepoLanes(
   live: SessionInfo[],
   removed: ReadonlySet<string> = NO_REMOVED
 ): SidebarWorkspaceTree {
-  const repoRoot = normalizePath(repo.path)
+  const repoRootKey = pathKey(repo.path)
   let changed = false
 
   // Snapshot lanes minus anything the user just deleted/archived.
@@ -457,7 +477,7 @@ export function overlayRepoLanes(
     for (const g of lanes) {
       const lanePath = normalizePath(g.path)
 
-      if (!lanePath || lanePath === repoRoot || !isPathUnder(lanePath, cwd)) {
+      if (!lanePath || pathKey(lanePath) === repoRootKey || !isPathUnder(lanePath, cwd)) {
         continue
       }
 
@@ -480,14 +500,14 @@ export function overlayRepoLanes(
         continue
       }
 
-      const placedPath = normalizePath(placed.path)
+      const placedKey = pathKey(placed.path)
 
       lane =
         lanes.find(g => g.id === placed.id) ??
         (placed.isMain
           ? lanes.find(g => g.isMain && g.label.toLowerCase() === placed.label.toLowerCase())
           : undefined) ??
-        (!placed.isMain && placedPath ? lanes.find(g => normalizePath(g.path) === placedPath) : undefined)
+        (!placed.isMain && placedKey ? lanes.find(g => pathKey(g.path) === placedKey) : undefined)
 
       if (!lane) {
         lane = { ...placed, sessions: [] }

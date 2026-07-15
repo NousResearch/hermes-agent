@@ -92,6 +92,9 @@ export function derivePetState(activity: PetActivity): PetState {
 export const $petInfo = atom<PetInfo>({ enabled: false })
 export const $petActivity = atom<PetActivity>({})
 
+/** Pet installed + enabled with a loaded spritesheet (ready to show/react). */
+export const $petActive = computed($petInfo, info => info.enabled && Boolean(info.spritesheetBase64))
+
 /**
  * Profile the pet RPCs should resolve against. Pets are per-profile — the active
  * pet (`display.pet.*`) and the installed sprites live under each profile's

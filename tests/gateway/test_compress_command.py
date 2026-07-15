@@ -369,11 +369,14 @@ async def test_compress_command_does_not_repoint_session_when_transcript_write_f
 
 
 @pytest.mark.asyncio
-async def test_compress_command_in_place_write_failure_reports_error():
-    """In-place compaction (compression.in_place / #38763) does not rotate the
-    session_id, so a failed rewrite_transcript would leave the DB untouched
-    while the handler reported success. The write failure must surface as a
-    failure banner, not a false "Compressed" success."""
+async def test_compress_command_in_place_skips_destructive_rewrite():
+    """In-place compaction (compression.in_place / #38763) persists via
+    archive_and_compact() inside _compress_context — the previous active rows
+    are soft-archived and the compacted set inserted. Calling
+    rewrite_transcript() afterwards would invoke
+    replace_messages(active_only=False), DELETEing the just-archived rows
+    (silent data loss, #61145). The handler must skip the rewrite and still
+    report success."""
     history = _make_history()
     compressed = [
         history[0],
@@ -383,7 +386,7 @@ async def test_compress_command_in_place_write_failure_reports_error():
     runner = _make_runner(history)
     runner._session_db = object()
     session_entry = runner.session_store.get_or_create_session.return_value
-    runner.session_store.rewrite_transcript = MagicMock(return_value=False)
+    runner.session_store.rewrite_transcript = MagicMock()
 
     agent_instance = MagicMock()
     agent_instance.shutdown_memory_provider = MagicMock()
@@ -397,7 +400,11 @@ async def test_compress_command_in_place_write_failure_reports_error():
     agent_instance._compress_context.return_value = (compressed, "")
 
     def _estimate(messages, **_kwargs):
-        return 100
+        if messages == history:
+            return 100
+        if messages == compressed:
+            return 60
+        raise AssertionError(f"unexpected transcript: {messages!r}")
 
     with (
         patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
@@ -407,10 +414,11 @@ async def test_compress_command_in_place_write_failure_reports_error():
     ):
         result = await runner._handle_compress_command(_make_event())
 
-    assert "failed" in result.lower()
-    assert "Compressed:" not in result
+    assert "Compressed:" in result
+    # The destructive rewrite must NOT run — archive_and_compact() already
+    # persisted, and rewrite_transcript would wipe the archived rows.
+    runner.session_store.rewrite_transcript.assert_not_called()
     assert session_entry.session_id == "sess-1"
-    runner.session_store._save.assert_not_called()
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
 

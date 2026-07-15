@@ -266,6 +266,127 @@ class TestLoadConfigParseFailure:
 
             assert not list(tmp_path.glob("config.yaml.corrupt.*.bak"))
 
+    def test_last_known_good_retained_within_process(self, tmp_path, capsys):
+        """Port of openai/codex#31188's invariant: a parse failure must not
+        silently replace the effective config (policy included) with
+        defaults when the process already loaded a good config.
+
+        Scenario: long-running gateway, user mid-edits config.yaml into
+        broken YAML. Before this fix the next load_config() dropped every
+        override — including ``approvals.deny`` security rules. Now the
+        last successfully loaded config keeps being served until the file
+        parses again.
+        """
+        import time
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            cfg = tmp_path / "config.yaml"
+            cfg.write_text(
+                "model:\n  default: test/custom-model\n"
+                "approvals:\n  deny:\n    - 'curl*evil.com*'\n"
+            )
+
+            good = load_config()
+            assert good["model"]["default"] == "test/custom-model"
+            assert good["approvals"]["deny"] == ["curl*evil.com*"]
+            capsys.readouterr()
+
+            # Corrupt the file (mtime must change to bust the cache)
+            time.sleep(0.05)
+            cfg.write_text("approvals:\n  deny: [unclosed\n  :::bad {{{\n")
+
+            after = load_config()
+            # Last-known-good retained — NOT defaults
+            assert after["model"]["default"] == "test/custom-model"
+            assert after["approvals"]["deny"] == ["curl*evil.com*"]
+            # Warning says we kept the previous config, not defaults
+            err = capsys.readouterr().err
+            assert "previously loaded config" in err
+
+    def test_last_known_good_recovers_after_fix(self, tmp_path):
+        """Fixing the YAML picks up the new content on the next load."""
+        import time
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            cfg = tmp_path / "config.yaml"
+            cfg.write_text("model:\n  default: test/first\n")
+            assert load_config()["model"]["default"] == "test/first"
+
+            time.sleep(0.05)
+            cfg.write_text("\tbroken:\n")
+            assert load_config()["model"]["default"] == "test/first"
+
+            time.sleep(0.05)
+            cfg.write_text("model:\n  default: test/second\n")
+            assert load_config()["model"]["default"] == "test/second"
+
+    def test_fresh_process_still_falls_back_to_defaults(self, tmp_path):
+        """With no last-known-good (fresh process for this path), a broken
+        config still falls back to DEFAULT_CONFIG as before."""
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text("\tbroken:\n")
+            # No prior good load for this path in _LAST_EXPANDED_CONFIG_BY_PATH
+            cfg_mod._LAST_EXPANDED_CONFIG_BY_PATH.pop(
+                str(tmp_path / "config.yaml"), None
+            )
+            config = load_config()
+            assert config["model"] == DEFAULT_CONFIG["model"]
+
+    def test_last_known_good_cached_no_rewarn_spam(self, tmp_path, capsys):
+        """Repeated loads of the same broken file serve the cached LKG and
+        don't re-warn (dedup on mtime/size still applies)."""
+        import time
+        from hermes_cli import config as cfg_mod
+        cfg_mod._CONFIG_PARSE_WARNED.clear()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            cfg = tmp_path / "config.yaml"
+            cfg.write_text("model:\n  default: test/custom\n")
+            load_config()
+            time.sleep(0.05)
+            cfg.write_text("\tbroken:\n")
+
+            load_config()
+            capsys.readouterr()
+            second = load_config()
+            assert second["model"]["default"] == "test/custom"
+            assert capsys.readouterr().err == ""
+
+
+class TestEmptyConfigSections:
+    """Empty section keys (``terminal:`` with no value) parse as YAML None
+    and must not replace the default dict for that section (#58277)."""
+
+    def test_null_section_keeps_defaults_in_load_config(self, tmp_path):
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            (tmp_path / "config.yaml").write_text(
+                "model:\n  default: test/custom\n"
+                "terminal:\n"
+                "display:\n"
+            )
+            config = load_config()
+            assert config["model"]["default"] == "test/custom"
+            assert isinstance(config["terminal"], dict)
+            assert config["terminal"] == DEFAULT_CONFIG["terminal"]
+            assert isinstance(config["display"], dict)
+
+    def test_null_override_of_non_dict_default_still_applies(self, tmp_path):
+        """None only shields dict defaults — explicit null for a scalar
+        key remains an override (unchanged behavior)."""
+        from hermes_cli.config import _deep_merge
+
+        merged = _deep_merge({"scalar": 5, "section": {"a": 1}},
+                             {"scalar": None, "section": None})
+        assert merged["scalar"] is None
+        assert merged["section"] == {"a": 1}
+
 
 class TestSaveAndLoadRoundtrip:
     @staticmethod
@@ -1522,6 +1643,114 @@ class TestMigrationWriteInvariant:
         # Defaults still take effect transparently via the read-time merge.
         assert loaded["curator"]["enabled"] == DEFAULT_CONFIG["curator"]["enabled"]
         assert loaded["display"]["compact"] == DEFAULT_CONFIG["display"]["compact"]
+
+
+class TestSaveConfigPartialWritePreservation:
+    """Regression for #62723: partial migration writes must not drop unrelated sections."""
+
+    def test_merge_existing_preserves_platforms_on_partial_write(self, tmp_path):
+        body = """_config_version: 30
+model:
+  default: deepseek-v4-pro
+  provider: deepseek
+agent:
+  max_turns: 60
+platforms:
+  feishu:
+    enabled: true
+    extra:
+      app_id: cli_xxx
+      app_secret: xxx
+feishu:
+  require_mention: true
+"""
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config(
+                {
+                    "_config_version": 30,
+                    "model": {"default": "deepseek-v4-pro", "provider": "deepseek"},
+                    "agent": {"max_turns": 60, "verify_on_stop": False},
+                },
+                merge_existing=True,
+            )
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+
+        assert raw["platforms"]["feishu"]["extra"]["app_id"] == "cli_xxx"
+        assert raw["feishu"]["require_mention"] is True
+        assert raw["agent"]["verify_on_stop"] is False
+
+    def test_partial_write_without_merge_drops_omitted_sections(self, tmp_path):
+        """Full-replacement callers (raw YAML editor) rely on merge_existing=False."""
+        body = """_config_version: 30
+model:
+  default: deepseek-v4-pro
+  provider: deepseek
+platforms:
+  feishu:
+    enabled: true
+"""
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            save_config({"model": {"default": "other-model", "provider": "openrouter"}})
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+
+        assert raw["model"]["default"] == "other-model"
+        assert "platforms" not in raw
+
+    def test_persist_migration_writes_full_read_raw_config(self, tmp_path):
+        from hermes_cli.config import _persist_migration, read_raw_config
+
+        body = """_config_version: 30
+model:
+  default: deepseek-v4-pro
+  provider: deepseek
+agent:
+  max_turns: 60
+platforms:
+  feishu:
+    enabled: true
+    extra:
+      app_id: cli_xxx
+      app_secret: xxx
+"""
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = read_raw_config()
+            config.setdefault("agent", {})["verify_on_stop"] = False
+            config["_config_version"] = 32
+            _persist_migration(config)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+
+        assert raw["platforms"]["feishu"]["extra"]["app_id"] == "cli_xxx"
+        assert raw["agent"]["verify_on_stop"] is False
+        assert raw["agent"]["max_turns"] == 60
+        assert raw["_config_version"] == 32
+
+    def test_v30_to_latest_migration_keeps_platforms(self, tmp_path):
+        """End-to-end: reporter's v30 feishu profile survives version bump."""
+        body = """_config_version: 30
+model:
+  default: deepseek-v4-pro
+  provider: deepseek
+agent:
+  max_turns: 60
+platforms:
+  feishu:
+    enabled: true
+    extra:
+      app_id: cli_xxx
+      app_secret: xxx
+feishu:
+  require_mention: true
+"""
+        (tmp_path / "config.yaml").write_text(body, encoding="utf-8")
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load((tmp_path / "config.yaml").read_text(encoding="utf-8"))
+
+        assert raw["platforms"]["feishu"]["extra"]["app_id"] == "cli_xxx"
+        assert raw["feishu"]["require_mention"] is True
 
 
 class TestVerifyOnStopMigration:

@@ -115,6 +115,18 @@ def make_restart_runner(
     runner._running_agent_count = GatewayRunner._running_agent_count.__get__(
         runner, GatewayRunner
     )
+    runner._active_cron_job_count = GatewayRunner._active_cron_job_count.__get__(
+        runner, GatewayRunner
+    )
+    runner._active_api_run_count = GatewayRunner._active_api_run_count.__get__(
+        runner, GatewayRunner
+    )
+    runner._active_work_count = GatewayRunner._active_work_count.__get__(
+        runner, GatewayRunner
+    )
+    runner._persist_active_agents = GatewayRunner._persist_active_agents.__get__(
+        runner, GatewayRunner
+    )
     runner._snapshot_running_agents = GatewayRunner._snapshot_running_agents.__get__(
         runner, GatewayRunner
     )

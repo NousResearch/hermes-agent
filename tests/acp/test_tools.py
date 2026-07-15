@@ -116,6 +116,18 @@ class TestBuildToolTitle:
         title = build_tool_title("web_search", {"query": "python asyncio"})
         assert "python asyncio" in title
 
+    def test_web_extract_title_unwraps_search_result_object(self):
+        title = build_tool_title("web_extract", {
+            "urls": [
+                {"url": "https://example.com/a", "title": "A"},
+                {"href": "https://example.org/b"},
+            ]
+        })
+        assert title == "extract: https://example.com/a (+1)"
+
+    def test_web_extract_title_handles_malformed_object(self):
+        assert build_tool_title("web_extract", {"urls": [{"title": "missing"}]}) == "extract: ?"
+
     def test_skill_view_title_includes_skill_name(self):
         title = build_tool_title("skill_view", {"name": "github-pitfalls"})
         assert title == "skill view (github-pitfalls)"
@@ -214,6 +226,26 @@ class TestBuildToolStart:
         assert result.kind == "read"
         assert result.content is None
         assert result.raw_input is None
+
+    def test_build_tool_start_survives_non_string_command(self):
+        """A malformed (non-string) terminal command previously raised
+        TypeError in build_tool_title (len(None)) and aborted the render."""
+        result = build_tool_start("tc-bad-cmd", "terminal", {"command": None})
+        assert isinstance(result, ToolCallStart)
+        assert result.kind == "execute"  # tool identity preserved in the fallback
+
+    def test_build_tool_start_survives_non_string_path(self):
+        """A non-string read_file path previously raised a ToolCallLocation
+        pydantic ValidationError in extract_locations and aborted the render."""
+        result = build_tool_start("tc-bad-path", "read_file", {"path": {"p": "x"}})
+        assert isinstance(result, ToolCallStart)
+        assert result.kind == "read"
+
+    def test_build_tool_start_survives_non_string_goal(self):
+        """A non-string delegate_task goal previously raised TypeError
+        (len(123)) in build_tool_title and aborted the render."""
+        result = build_tool_start("tc-bad-goal", "delegate_task", {"goal": 123})
+        assert isinstance(result, ToolCallStart)
 
     def test_build_tool_start_for_web_extract_is_compact(self):
         """web_extract start should stay compact; title identifies URLs."""

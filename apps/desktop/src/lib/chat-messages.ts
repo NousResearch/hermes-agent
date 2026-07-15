@@ -46,6 +46,7 @@ export type GatewayEventPayload = {
   reasoning_effort?: string
   service_tier?: string
   fast?: boolean
+  approval_mode?: string
   yolo?: boolean
   running?: boolean
   cwd?: string
@@ -66,6 +67,7 @@ export type GatewayEventPayload = {
   description?: string
   // False when a tirith content-security warning forbids a permanent allow.
   allow_permanent?: boolean
+  smart_denied?: boolean
   // secret.request (skill credential capture)
   env_var?: string
   prompt?: string

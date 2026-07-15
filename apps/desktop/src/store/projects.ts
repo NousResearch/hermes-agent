@@ -1,7 +1,7 @@
 import { atom } from 'nanostores'
 
 import { liveSessionProjectId, type SidebarProjectTree } from '@/app/chat/sidebar/projects/workspace-groups'
-import type { HermesGitBranch } from '@/global'
+import type { HermesGitBaseBranch, HermesGitBranch } from '@/global'
 import { translateNow } from '@/i18n'
 import { desktopDefaultCwd, selectDesktopPaths, writeDesktopFileText } from '@/lib/desktop-fs'
 import { desktopGit } from '@/lib/desktop-git'
@@ -11,7 +11,7 @@ import { activeGateway, ensureActiveGatewayOpen } from '@/store/gateway'
 import { setSidebarAgentsGrouped } from '@/store/layout'
 import { notify } from '@/store/notifications'
 import { requestFreshSession } from '@/store/profile'
-import { $selectedStoredSessionId, $sessions, workspaceCwdForNewSession } from '@/store/session'
+import { $selectedStoredSessionId, $sessions, sessionMatchesStoredId, workspaceCwdForNewSession } from '@/store/session'
 import type { ProjectInfo, ProjectsPayload } from '@/types/hermes'
 
 // First-class, per-profile Projects (named, multi-folder workspaces). State is
@@ -585,7 +585,7 @@ function openSessionBelongsToProject(projectId: string, projects: ProjectInfo[])
     return false
   }
 
-  const open = $sessions.get().find(s => s.id === openId || s._lineage_root_id === openId)
+  const open = $sessions.get().find(s => sessionMatchesStoredId(s, openId))
 
   return Boolean(open && liveSessionProjectId(open, projects) === projectId)
 }
@@ -707,6 +707,19 @@ export async function listRepoBranches(repoPath: string): Promise<HermesGitBranc
   }
 
   return git.branchList(repoPath)
+}
+
+// Local + remote-tracking branches for the base-branch picker in the
+// new-worktree dialog. The remote default (origin/HEAD) is flagged so the
+// UI can preselect it. Empty on a remote backend / non-repo.
+export async function listBaseBranches(repoPath: string): Promise<HermesGitBaseBranch[]> {
+  const git = desktopGit()
+
+  if (!git?.baseBranchList || !repoPath) {
+    return []
+  }
+
+  return git.baseBranchList(repoPath)
 }
 
 export async function switchBranchInRepo(repoPath: string, branch: string): Promise<void> {

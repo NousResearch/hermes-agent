@@ -25,12 +25,17 @@ import {
   Play,
   Eraser,
   Download,
+  Upload,
   Pencil,
   Check,
   Archive,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { shouldRefreshSessions } from "@/lib/session-refresh";
+import {
+  importSummary,
+  parseImportSessions,
+} from "@/lib/session-import";
 import type {
   SessionInfo,
   SessionMessage,
@@ -387,7 +392,6 @@ function SessionRow({
   resumeInChatEnabled,
 }: SessionRowProps) {
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState(session.title ?? "");
@@ -396,15 +400,20 @@ function SessionRow({
   const navigate = useNavigate();
 
   useEffect(() => {
-    if (isExpanded && messages === null && !loading) {
-      setLoading(true);
-      api
-        .getSessionMessages(session.id)
-        .then((resp) => setMessages(resp.messages))
-        .catch((err) => setError(String(err)))
-        .finally(() => setLoading(false));
-    }
-  }, [isExpanded, session.id, messages, loading]);
+    if (!isExpanded || messages !== null) return;
+    let cancelled = false;
+    api
+      .getSessionMessages(session.id)
+      .then((resp) => {
+        if (!cancelled) setMessages(resp.messages);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isExpanded, session.id, messages]);
 
   const sourceInfo = (session.source
     ? SOURCE_CONFIG[session.source]
@@ -639,7 +648,7 @@ function SessionRow({
 
       {isExpanded && (
         <div className="min-w-0 border-t border-border bg-background/50 p-4">
-          {loading && (
+          {messages === null && !error && (
             <div className="flex items-center justify-center py-8">
               <Spinner className="text-xl text-primary" />
             </div>
@@ -725,6 +734,7 @@ export default function SessionsPage() {
   >(null);
   const [searching, setSearching] = useState(false);
   const debounceRef = useRef<ReturnType<typeof setTimeout>>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const logScrollRef = useRef<HTMLPreElement | null>(null);
   const [status, setStatus] = useState<StatusResponse | null>(null);
   const [overviewSessions, setOverviewSessions] = useState<SessionInfo[]>([]);
@@ -757,6 +767,7 @@ export default function SessionsPage() {
   const [pruneOpen, setPruneOpen] = useState(false);
   const [pruneDays, setPruneDays] = useState("90");
   const [pruning, setPruning] = useState(false);
+  const [importingSessions, setImportingSessions] = useState(false);
   const { toast, showToast } = useToast();
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
@@ -831,6 +842,37 @@ export default function SessionsPage() {
       .catch(() => {});
   }, []);
 
+  const handleImportSessions = useCallback(
+    async (files: FileList | null) => {
+      const file = files?.[0];
+      if (!file) return;
+      setImportingSessions(true);
+      try {
+        const text = await file.text();
+        const importedSessions = parseImportSessions(text);
+        const result = await api.importSessions(importedSessions);
+        showToast(`Import complete: ${importSummary(result)}`, "success");
+        clearSelection();
+        loadSessions(page, true);
+        loadStats();
+        refreshEmptyCount();
+      } catch (error) {
+        showToast(`Import failed: ${error}`, "error");
+      } finally {
+        setImportingSessions(false);
+        if (importInputRef.current) importInputRef.current.value = "";
+      }
+    },
+    [
+      clearSelection,
+      loadSessions,
+      loadStats,
+      page,
+      refreshEmptyCount,
+      showToast,
+    ],
+  );
+
   useEffect(() => {
     loadStats();
   }, [loadStats]);
@@ -842,11 +884,21 @@ export default function SessionsPage() {
   // baseline without triggering a redundant reload (mount already loads).
   const newestSeenRef = useRef<string | null>(null);
   const pageRef = useRef(page);
-  pageRef.current = page;
 
   useEffect(() => {
-    loadSessions(page);
-    refreshEmptyCount();
+    pageRef.current = page;
+  }, [page]);
+
+  useEffect(() => {
+    let cancelled = false;
+    queueMicrotask(() => {
+      if (cancelled) return;
+      loadSessions(page);
+      refreshEmptyCount();
+    });
+    return () => {
+      cancelled = true;
+    };
   }, [loadSessions, page, refreshEmptyCount]);
 
   useEffect(() => {
@@ -902,6 +954,7 @@ export default function SessionsPage() {
   const updateSearch = useCallback(
     (value: string) => {
       setSearch(value);
+      if (value.trim()) setView("list");
       clearSelection();
     },
     [clearSelection],
@@ -919,13 +972,15 @@ export default function SessionsPage() {
     if (debounceRef.current) clearTimeout(debounceRef.current);
 
     if (!search.trim()) {
-      setSearchResults(null);
-      setSearching(false);
+      debounceRef.current = setTimeout(() => {
+        setSearchResults(null);
+        setSearching(false);
+      }, 0);
       return;
     }
 
-    setSearching(true);
     debounceRef.current = setTimeout(() => {
+      setSearching(true);
       api
         .searchSessions(search.trim())
         .then((resp) => setSearchResults(resp.results))
@@ -1210,10 +1265,6 @@ export default function SessionsPage() {
   const showList = view === "list" || isSearching || !showOverviewTab;
   const showPagination = showList && !searchResults && total > PAGE_SIZE;
 
-  useEffect(() => {
-    if (isSearching) setView("list");
-  }, [isSearching]);
-
   const alerts: { message: string; detail?: string }[] = [];
   if (status) {
     if (status.gateway_state === "startup_failed") {
@@ -1249,6 +1300,13 @@ export default function SessionsPage() {
     <div className="flex min-w-0 w-full max-w-full flex-col gap-4">
       <PluginSlot name="sessions:top" />
       <Toast toast={toast} />
+      <input
+        ref={importInputRef}
+        type="file"
+        accept=".json,.jsonl,application/json,application/x-ndjson"
+        className="hidden"
+        onChange={(event) => void handleImportSessions(event.currentTarget.files)}
+      />
 
       <DeleteConfirmDialog
         open={sessionDelete.isOpen}
@@ -1524,6 +1582,23 @@ export default function SessionsPage() {
               >
                 <span className="font-mondwest normal-case text-xs">
                   {t.sessions.deleteEmpty} ({emptyCount})
+                </span>
+              </Button>
+            )}
+
+            {!isSearching && (
+              <Button
+                outlined
+                size="sm"
+                className="shrink-0"
+                disabled={importingSessions}
+                onClick={() => importInputRef.current?.click()}
+                aria-label="Import exported sessions"
+                title="Import exported session JSON or JSONL"
+                prefix={importingSessions ? <Spinner /> : <Upload />}
+              >
+                <span className="font-mondwest normal-case text-xs">
+                  Import sessions
                 </span>
               </Button>
             )}

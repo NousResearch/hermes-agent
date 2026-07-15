@@ -23,6 +23,8 @@ export type GatewayEventName =
 
 export interface GatewayEvent<P = unknown> {
   payload?: P
+  /** Renderer-side source tag added by the Desktop gateway registry. */
+  profile?: string
   session_id?: string
   type: GatewayEventName
 }

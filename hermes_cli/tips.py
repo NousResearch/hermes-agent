@@ -433,7 +433,7 @@ TIPS = [
     "hermes chat --source tool tags programmatic chats so they don't clutter hermes sessions list.",
     'hermes dump --show-keys includes redacted API key fingerprints for deeper support debugging.',
     'hermes sessions rename <ID> "new title" renames any past session; hermes sessions delete <ID> removes one.',
-    'hermes import restores a session export or profile archive produced by sessions export or profile export.',
+    'hermes import restores a full Hermes backup zip; session JSON/JSONL exports import from the dashboard Sessions page.',
     'hermes fallback manages the fallback_model chain interactively — no hand-editing config.yaml.',
     'hermes pairing rotates the DM pairing token — the first messager after rotation claims access to the bot.',
     'hermes setup walks first-time users through provider, keys, and platform wiring in one interactive flow.',

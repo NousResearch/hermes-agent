@@ -7,7 +7,7 @@ import { cn } from '@/lib/utils'
 // Small status/metadata tag. App radius (not a full pill); tones map to the
 // shared accent/muted/destructive surfaces so badges read consistently.
 const badgeVariants = cva(
-  'inline-flex w-fit shrink-0 items-center gap-1 rounded-[3px] px-1.5 py-0.5 text-[0.65rem] font-medium leading-none whitespace-nowrap [&_svg]:size-3 [&_svg]:pointer-events-none',
+  'inline-flex w-fit shrink-0 items-center gap-1 rounded-[3px] font-medium leading-none whitespace-nowrap [&_svg]:pointer-events-none',
   {
     variants: {
       variant: {
@@ -16,9 +16,13 @@ const badgeVariants = cva(
         warn: 'bg-amber-500/10 text-amber-600 dark:text-amber-300',
         destructive: 'bg-destructive/10 text-destructive',
         outline: 'border border-(--ui-stroke-secondary) text-muted-foreground'
+      },
+      size: {
+        default: 'px-1.5 py-0.5 text-[0.65rem] [&_svg]:size-3',
+        xs: 'px-1 py-px text-[0.6rem] [&_svg]:size-2.5'
       }
     },
-    defaultVariants: { variant: 'default' }
+    defaultVariants: { variant: 'default', size: 'default' }
   }
 )
 
@@ -26,10 +30,10 @@ export interface BadgeProps extends React.ComponentProps<'span'>, VariantProps<t
   asChild?: boolean
 }
 
-export function Badge({ asChild = false, className, variant, ...props }: BadgeProps) {
+export function Badge({ asChild = false, className, size, variant, ...props }: BadgeProps) {
   const Comp = asChild ? Slot.Root : 'span'
 
-  return <Comp className={cn(badgeVariants({ variant }), className)} data-slot="badge" {...props} />
+  return <Comp className={cn(badgeVariants({ size, variant }), className)} data-slot="badge" {...props} />
 }
 
 export { badgeVariants }

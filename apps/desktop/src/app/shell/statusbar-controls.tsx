@@ -25,6 +25,10 @@ export interface StatusbarMenuItem {
 
 export interface StatusbarItem {
   id: string
+  /** Escape hatch: render an arbitrary node into the bar (own state, tooltip,
+   *  events). When set, it OWNS the slot — label/variant/onSelect are ignored.
+   *  This is how a plugin drops a full stateful React component into the bar. */
+  render?: () => ReactNode
   label?: ReactNode
   detail?: ReactNode
   icon?: ReactNode
@@ -92,6 +96,11 @@ export function StatusbarControls({ className, leftItems = [], items = [], ...pr
 function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: ReturnType<typeof useNavigate> }) {
   const [menuOpen, setMenuOpen] = useState(false)
 
+  // Render escape hatch: the contribution owns its own chrome/state/tooltip.
+  if (item.render) {
+    return <>{item.render()}</>
+  }
+
   const content = (
     <>
       {item.icon}
@@ -100,7 +109,7 @@ function StatusbarItemView({ item, navigate }: { item: StatusbarItem; navigate: 
     </>
   )
 
-  if (item.variant === 'menu' && (item.menuContent || (item.menuItems && item.menuItems.length > 0))) {
+  if (item.variant === 'menu' && (item.menuContent || !!item.menuItems?.length)) {
     // The `Tip` helper can't wrap a menu: its TooltipTrigger needs a DOM child,
     // but DropdownMenu's Root renders no element, so the hover listeners never
     // land on the button and the tooltip silently never shows. Compose the two

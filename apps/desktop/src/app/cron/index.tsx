@@ -54,6 +54,7 @@ import {
 } from '../overlays/panel'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { cronEditorUpdates, jobIsScriptOnly, validateCronEditor } from './cron-job-model'
 import { jobState, jobTitle, STATE_DOT } from './job-state'
 
 const DEFAULT_DELIVER = 'local'
@@ -396,12 +397,12 @@ export function CronView({ onClose, onOpenSession, setStatusbarItemGroup: _setSt
       updateCronJobs(rows => [...rows, created])
       notify({ kind: 'success', title: c.created, message: truncate(jobTitle(created), 60) })
     } else if (editor.mode === 'edit') {
-      const updated = await updateCronJob(editor.job.id, {
-        prompt: values.prompt,
-        schedule: values.schedule,
-        name: values.name,
-        deliver: values.deliver
-      })
+      const scriptOnlyJob = jobIsScriptOnly(editor.job)
+
+      const updated = await updateCronJob(
+        editor.job.id,
+        cronEditorUpdates(values, { scriptOnlyJob })
+      )
 
       updateCronJobs(rows => rows.map(row => (row.id === updated.id ? updated : row)))
       notify({ kind: 'success', title: c.updated, message: truncate(jobTitle(updated), 60) })
@@ -712,6 +713,7 @@ function CronEditorDialog({
   const open = editor.mode !== 'closed'
   const isEdit = editor.mode === 'edit'
   const initial = isEdit ? editor.job : null
+  const scriptOnlyJob = initial ? jobIsScriptOnly(initial) : false
 
   const [name, setName] = useState('')
   const [prompt, setPrompt] = useState('')
@@ -755,11 +757,21 @@ function CronEditorDialog({
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault()
-    const trimmedPrompt = prompt.trim()
-    const trimmedSchedule = schedule.trim()
 
-    if (!trimmedPrompt || !trimmedSchedule) {
-      setError(c.promptScheduleRequired)
+    const validationError = validateCronEditor({
+      prompt,
+      schedule,
+      scriptOnlyJob
+    })
+
+    if (validationError) {
+      setError(
+        validationError === 'schedule'
+          ? c.scheduleRequired
+          : validationError === 'prompt'
+            ? c.promptRequired
+            : c.promptScheduleRequired
+      )
 
       return
     }
@@ -771,8 +783,8 @@ function CronEditorDialog({
       await onSave({
         deliver,
         name: name.trim(),
-        prompt: trimmedPrompt,
-        schedule: trimmedSchedule
+        prompt: prompt.trim(),
+        schedule: schedule.trim()
       })
     } catch (err) {
       setError(err instanceof Error ? err.message : c.failedSave)
@@ -790,6 +802,12 @@ function CronEditorDialog({
         </DialogHeader>
 
         <form className="grid gap-4" onSubmit={handleSubmit}>
+          {scriptOnlyJob && initial && (
+            <FieldHint>
+              {c.scriptOnlyEditHint} <span className="font-mono">{initial.id}</span>
+            </FieldHint>
+          )}
+
           <Field htmlFor="cron-name" label={c.nameLabel} optional optionalLabel={c.optional}>
             <Input
               autoFocus
@@ -800,7 +818,12 @@ function CronEditorDialog({
             />
           </Field>
 
-          <Field htmlFor="cron-prompt" label={c.promptLabel}>
+          <Field
+            htmlFor="cron-prompt"
+            label={c.promptLabel}
+            optional={scriptOnlyJob}
+            optionalLabel={c.optional}
+          >
             <Textarea
               className="min-h-24 font-mono"
               id="cron-prompt"

@@ -24,7 +24,7 @@ describe('requestModelOptions', () => {
 
     await expect(requestModelOptions({ gateway: gateway as never, sessionId: null })).resolves.toBe(gatewayPayload)
 
-    expect(gateway.request).toHaveBeenCalledWith('model.options', {})
+    expect(gateway.request).toHaveBeenCalledWith('model.options', { explicit_only: true })
     expect(getGlobalModelOptions).not.toHaveBeenCalled()
   })
 
@@ -36,6 +36,7 @@ describe('requestModelOptions', () => {
     await requestModelOptions({ gateway: gateway as never, refresh: true, sessionId: 'session-1' })
 
     expect(gateway.request).toHaveBeenCalledWith('model.options', {
+      explicit_only: true,
       refresh: true,
       session_id: 'session-1'
     })
@@ -44,6 +45,6 @@ describe('requestModelOptions', () => {
   it('falls back to REST when no gateway is connected', async () => {
     await requestModelOptions({ refresh: true })
 
-    expect(getGlobalModelOptions).toHaveBeenCalledWith({ refresh: true })
+    expect(getGlobalModelOptions).toHaveBeenCalledWith({ explicitOnly: true, refresh: true })
   })
 })

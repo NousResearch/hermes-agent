@@ -171,6 +171,13 @@ class ProcessRegistry:
         # gateway drain this after each agent turn to auto-trigger new turns.
         import queue as _queue_mod
         self.completion_queue: _queue_mod.Queue = _queue_mod.Queue()
+        # Rehydrate durable delegation completions only at registry startup.
+        # Consumers still inject them as fresh turns through this existing rail.
+        try:
+            from tools.async_delegation import restore_undelivered_completions
+            restore_undelivered_completions(self.completion_queue)
+        except Exception as exc:
+            logger.warning("Could not restore async delegation completions: %s", exc)
 
         # Track sessions whose completion was already consumed by the agent
         # via wait/log.  Drain loops AND gateway/tui watchers skip notifications
@@ -1091,6 +1098,10 @@ class ProcessRegistry:
                 "completion_reason": session.completion_reason,
                 "termination_source": session.termination_source,
                 "output": output_tail,
+                # Stable producer identity across checkpoint recovery; unlike
+                # a consumer-observed completion timestamp, this does not vary
+                # based on which watcher notices exit first.
+                "started_at": session.started_at,
             })
 
     # ----- Query Methods -----
@@ -1200,6 +1211,19 @@ class ProcessRegistry:
                     if evt_session_key != session_key:
                         requeue.append(evt)
                         continue
+                elif evt.get("restored"):
+                    # Legacy unfiltered drain (no ownership callback, no
+                    # session key). That behavior was safe when the in-memory
+                    # queue could only hold events created by this very
+                    # process — but durable restore (#63494) re-enqueues
+                    # completions from PREVIOUS processes at startup, so an
+                    # unfiltered consumer here would adopt a dead, unrelated
+                    # session's conversation payload (#64484). Fail closed:
+                    # leave restored events queued (still 'pending' on disk)
+                    # for a consumer that can positively prove ownership,
+                    # e.g. the owning session's --resume.
+                    requeue.append(evt)
+                    continue
             text = format_process_notification(evt)
             if text:
                 results.append((evt, text))
@@ -1347,8 +1371,13 @@ class ProcessRegistry:
         # Default: last N lines
         if offset == 0 and limit > 0:
             selected = lines[-limit:]
+            observed_completion_output = bool(selected) or total_lines == 0
         else:
             selected = lines[offset:offset + limit]
+            stop = slice(offset, offset + limit).indices(total_lines)[1]
+            observed_completion_output = (
+                total_lines == 0 or (bool(selected) and stop == total_lines)
+            )
 
         result = {
             "session_id": session.id,
@@ -1358,7 +1387,7 @@ class ProcessRegistry:
             "total_lines": total_lines,
             "showing": f"{len(selected)} lines",
         }
-        if session.exited:
+        if session.exited and observed_completion_output:
             self._completion_consumed.add(session_id)
         return result
 
@@ -1449,17 +1478,41 @@ class ProcessRegistry:
             result["timeout_note"] = f"Waited {effective_timeout}s, process still running"
         return result
 
-    def kill_process(self, session_id: str, *, source: str = "process.kill") -> dict:
-        """Kill a background process."""
+    def kill_process(
+        self,
+        session_id: str,
+        *,
+        source: str = "process.kill",
+        consume_output: bool = True,
+    ) -> dict:
+        """Kill a background process and return its output snapshot.
+
+        ``consume_output`` is true for explicit tool/RPC kills because their
+        caller observes the returned output. Bulk cleanup passes false: it
+        discards each result and therefore must not suppress an autonomous
+        output-bearing completion notification.
+        """
+        from tools.ansi_strip import strip_ansi
+
         session = self.get(session_id)
         if session is None:
             return {"status": "not_found", "error": f"No process with ID {session_id}"}
 
         if session.exited:
-            return {
-                "status": "already_exited",
-                "exit_code": session.exit_code,
-            }
+            with session._lock:
+                result = {
+                    "status": "already_exited",
+                    "command": session.command,
+                    "exit_code": session.exit_code,
+                    "completion_reason": session.completion_reason,
+                    "termination_source": session.termination_source,
+                    "output": strip_ansi(session.output_buffer[-2000:]),
+                }
+            # Only suppress the autonomous turn after its output is present in
+            # the explicit kill result, matching wait/log consumption.
+            if consume_output:
+                self._completion_consumed.add(session_id)
+            return result
 
         # Kill via PTY, Popen (local), or env execute (non-local)
         try:
@@ -1486,10 +1539,14 @@ class ProcessRegistry:
                     with session._lock:
                         session.exited = True
                         session.exit_code = None
+                        output = strip_ansi(session.output_buffer[-2000:])
+                    if consume_output:
+                        self._completion_consumed.add(session_id)
                     self._move_to_finished(session)
                     return {
                         "status": "already_exited",
                         "exit_code": session.exit_code,
+                        "output": output,
                     }
                 self._terminate_host_pid(session.pid, session.host_start_time)
             else:
@@ -1500,10 +1557,17 @@ class ProcessRegistry:
                         "its original runtime handle is no longer available"
                     ),
                 }
-            session.exited = True
-            session.exit_code = -15  # SIGTERM
-            session.completion_reason = "killed"
-            session.termination_source = source
+            # Capture output before marking consumed, then mark consumed before
+            # exposing ``exited`` to watcher tasks. This closes the delayed
+            # notification race without discarding the terminal transcript.
+            with session._lock:
+                output = strip_ansi(session.output_buffer[-2000:])
+                if consume_output:
+                    self._completion_consumed.add(session_id)
+                session.exited = True
+                session.exit_code = -15  # SIGTERM
+                session.completion_reason = "killed"
+                session.termination_source = source
             self._move_to_finished(session)
             self._write_checkpoint()
             return {
@@ -1511,6 +1575,7 @@ class ProcessRegistry:
                 "session_id": session.id,
                 "completion_reason": session.completion_reason,
                 "termination_source": session.termination_source,
+                "output": output,
             }
         except Exception as e:
             return {"status": "error", "error": str(e)}
@@ -1747,7 +1812,11 @@ class ProcessRegistry:
 
         killed = 0
         for session in targets:
-            result = self.kill_process(session.id, source="kill_all")
+            result = self.kill_process(
+                session.id,
+                source="kill_all",
+                consume_output=False,
+            )
             if result.get("status") in {"killed", "already_exited"}:
                 killed += 1
         return killed
@@ -2238,7 +2307,10 @@ def _handle_process(args, **kw):
         elif action == "wait":
             return json.dumps(_redact_process_result(process_registry.wait(session_id, timeout=args.get("timeout"))), ensure_ascii=False)
         elif action == "kill":
-            return json.dumps(process_registry.kill_process(session_id), ensure_ascii=False)
+            return json.dumps(
+                _redact_process_result(process_registry.kill_process(session_id)),
+                ensure_ascii=False,
+            )
         elif action == "write":
             return json.dumps(process_registry.write_stdin(session_id, str(args.get("data", ""))), ensure_ascii=False)
         elif action == "submit":

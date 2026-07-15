@@ -85,6 +85,10 @@ class TestAutoResetBlockReSyncsBinding:
         for stmt in ast.walk(block):
             if isinstance(stmt, ast.Assign):
                 val = stmt.value
+                # reset_session is async at the gateway boundary, so the
+                # assignment value is Await(Call(...)), not a bare Call.
+                if isinstance(val, ast.Await):
+                    val = val.value
                 if (
                     isinstance(val, ast.Call)
                     and isinstance(val.func, ast.Attribute)

@@ -2,11 +2,13 @@ import { getSession } from '@/hermes'
 import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
+import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboarding } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import {
   $currentCwd,
   $sessions,
+  sessionMatchesStoredId,
   setCurrentBranch,
   setCurrentCwd,
   setCurrentFastMode,
@@ -19,6 +21,10 @@ import {
   setSessions,
   setYoloActive
 } from '@/store/session'
+
+// Re-exported for the many session-actions/tile call sites that already import
+// it from here; the canonical definition lives in @/store/session.
+export { sessionMatchesStoredId }
 import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
 import type { SessionCreateResponse, SessionInfo, SessionRuntimeInfo } from '@/types/hermes'
 
@@ -182,10 +188,6 @@ export function patchSessionWorkspace(sessionId: string, cwd: string | undefined
   setSessions(prev => prev.map(session => (session.id === sessionId ? { ...session, cwd } : session)))
 }
 
-export function sessionMatchesStoredId(session: SessionInfo, storedSessionId: string): boolean {
-  return session.id === storedSessionId || session._lineage_root_id === storedSessionId
-}
-
 export function sessionShouldHaveTranscript(session: SessionInfo | undefined): boolean {
   return (session?.message_count ?? 0) > 0
 }
@@ -265,6 +267,10 @@ export function applyRuntimeInfo(info: SessionRuntimeInfo | undefined): SessionR
   const sessionState: SessionRuntimeStatePatch = {}
 
   reportBackendContract(info.desktop_contract)
+
+  if (info.approval_mode !== undefined) {
+    reconcileApprovalModeForProfile($activeGatewayProfile.get(), info.approval_mode)
+  }
 
   if (info.credential_warning) {
     requestDesktopOnboarding(info.credential_warning)

@@ -12,7 +12,7 @@ import logging
 import os
 import json
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
@@ -128,6 +128,11 @@ def _coerce_optional_positive_int(value: Any, key: str) -> Optional[int]:
     if parsed <= 0:
         return None
     return parsed
+
+
+def _coerce_dict(value: Any) -> Dict[str, Any]:
+    """Return *value* when it is a mapping, otherwise an empty dict."""
+    return value if isinstance(value, dict) else {}
 
 
 def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> str:
@@ -383,6 +388,7 @@ class SessionResetPolicy:
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionResetPolicy":
+        data = _coerce_dict(data)
         # Handle both missing keys and explicit null values (YAML null → None)
         mode = data.get("mode")
         at_hour = data.get("at_hour")
@@ -492,24 +498,26 @@ class PlatformConfig:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "PlatformConfig":
+        data = _coerce_dict(data)
         home_channel = None
-        if "home_channel" in data:
+        if isinstance(data.get("home_channel"), dict):
             home_channel = HomeChannel.from_dict(data["home_channel"])
 
         # gateway_restart_notification may be bridged into extra via the
         # shared-key loop in load_gateway_config(); check both top-level
         # and extra so YAML ``discord: gateway_restart_notification: false``
         # works without needing a separate platforms: block.
+        extra = _coerce_dict(data.get("extra", {}))
         _grn = data.get("gateway_restart_notification")
         if _grn is None:
-            _grn = data.get("extra", {}).get("gateway_restart_notification")
+            _grn = extra.get("gateway_restart_notification")
 
         # typing_indicator mirrors gateway_restart_notification: it may arrive
         # top-level or bridged into extra by the shared-key loop in
         # load_gateway_config(), so check both.
         _typing = data.get("typing_indicator")
         if _typing is None:
-            _typing = data.get("extra", {}).get("typing_indicator")
+            _typing = extra.get("typing_indicator")
 
         channel_overrides: Dict[str, ChannelOverride] = {}
         raw_overrides = data.get("channel_overrides") or {}
@@ -527,7 +535,7 @@ class PlatformConfig:
             gateway_restart_notification=_coerce_bool(_grn, True),
             typing_indicator=_coerce_bool(_typing, True),
             channel_overrides=channel_overrides,
-            extra=data.get("extra", {}),
+            extra=extra,
         )
 
 
@@ -586,7 +594,7 @@ class StreamingConfig:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "StreamingConfig":
-        if not data:
+        if not isinstance(data, dict) or not data:
             return cls()
         return cls(
             enabled=_coerce_bool(data.get("enabled"), False),
@@ -713,6 +721,11 @@ class GatewayConfig:
     # fresh session exactly as if the reset policy had fired.  0 = disabled.
     session_store_max_age_days: int = 90
 
+    # Profile-based routing: route specific guilds/channels/threads to
+    # different profiles. See gateway/profile_routing.py. Each entry is a
+    # dict with: name, platform, profile, and optional guild_id/chat_id/thread_id.
+    profile_routes: list = field(default_factory=list)
+
     def get_connected_platforms(self) -> List[Platform]:
         """Return list of platforms that are enabled and configured."""
         connected = []
@@ -819,12 +832,20 @@ class GatewayConfig:
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
+            "profile_routes": [
+                asdict(r) if is_dataclass(r) and not isinstance(r, type) else r
+                for r in self.profile_routes
+            ],
         }
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "GatewayConfig":
+        data = _coerce_dict(data)
         platforms = {}
-        for platform_name, platform_data in data.get("platforms", {}).items():
+        platforms_data = _coerce_dict(data.get("platforms", {}))
+        for platform_name, platform_data in platforms_data.items():
+            if not isinstance(platform_data, dict):
+                continue
             try:
                 platform = Platform(platform_name)
                 platforms[platform] = PlatformConfig.from_dict(platform_data)
@@ -832,11 +853,11 @@ class GatewayConfig:
                 pass  # Skip unknown platforms
         
         reset_by_type = {}
-        for type_name, policy_data in data.get("reset_by_type", {}).items():
+        for type_name, policy_data in _coerce_dict(data.get("reset_by_type", {})).items():
             reset_by_type[type_name] = SessionResetPolicy.from_dict(policy_data)
         
         reset_by_platform = {}
-        for platform_name, policy_data in data.get("reset_by_platform", {}).items():
+        for platform_name, policy_data in _coerce_dict(data.get("reset_by_platform", {})).items():
             try:
                 platform = Platform(platform_name)
                 reset_by_platform[platform] = SessionResetPolicy.from_dict(policy_data)
@@ -907,6 +928,10 @@ class GatewayConfig:
         except (TypeError, ValueError):
             session_store_max_age_days = 90
 
+        # Parse profile routes (validated by gateway.profile_routing)
+        from gateway.profile_routing import parse_profile_routes
+        profile_routes = parse_profile_routes(data.get("profile_routes") or [])
+
         return cls(
             platforms=platforms,
             default_reset_policy=default_policy,
@@ -929,6 +954,7 @@ class GatewayConfig:
             unauthorized_dm_behavior=unauthorized_dm_behavior,
             streaming=StreamingConfig.from_dict(data.get("streaming", {})),
             session_store_max_age_days=session_store_max_age_days,
+            profile_routes=profile_routes,
         )
 
     def get_unauthorized_dm_behavior(self, platform: Optional[Platform] = None) -> str:
@@ -1027,6 +1053,8 @@ def load_gateway_config() -> GatewayConfig:
             if "stt_echo_transcripts" in yaml_cfg:
                 gw_data["stt_echo_transcripts"] = yaml_cfg["stt_echo_transcripts"]
 
+            gateway_cfg = yaml_cfg.get("gateway")
+
             if "group_sessions_per_user" in yaml_cfg:
                 gw_data["group_sessions_per_user"] = yaml_cfg["group_sessions_per_user"]
 
@@ -1038,6 +1066,17 @@ def load_gateway_config() -> GatewayConfig:
             # ``hermes config set gateway.multiplex_profiles true``).
             if "multiplex_profiles" in yaml_cfg:
                 gw_data["multiplex_profiles"] = yaml_cfg["multiplex_profiles"]
+
+            # Profile-based routing rules: accept either top-level
+            # ``profile_routes`` or the nested ``gateway.profile_routes`` form
+            # (matching the multiplex_profiles parity above).
+            _pr = yaml_cfg.get("profile_routes")
+            if _pr is None:
+                _gw_section = yaml_cfg.get("gateway")
+                if isinstance(_gw_section, dict):
+                    _pr = _gw_section.get("profile_routes")
+            if isinstance(_pr, list):
+                gw_data["profile_routes"] = _pr
 
             gateway_section = yaml_cfg.get("gateway")
             if isinstance(gateway_section, dict):
@@ -1054,7 +1093,11 @@ def load_gateway_config() -> GatewayConfig:
             if not isinstance(streaming_cfg, dict):
                 # Fall back to nested gateway.streaming written by
                 # ``hermes config set gateway.streaming.*``
-                streaming_cfg = yaml_cfg.get("gateway", {}).get("streaming")
+                streaming_cfg = (
+                    gateway_cfg.get("streaming")
+                    if isinstance(gateway_cfg, dict)
+                    else None
+                )
             if isinstance(streaming_cfg, dict):
                 gw_data["streaming"] = streaming_cfg
 
@@ -1087,7 +1130,6 @@ def load_gateway_config() -> GatewayConfig:
             # ``gateway.platforms`` are loaded the same way as top-level
             # ``platforms``. Merge nested first so top-level config keeps
             # precedence, matching the existing gateway.streaming fallback.
-            gateway_cfg = yaml_cfg.get("gateway")
             gateway_platforms = gateway_cfg.get("platforms") if isinstance(gateway_cfg, dict) else None
             platforms_data = gw_data.setdefault("platforms", {})
             if not isinstance(platforms_data, dict):

@@ -1,0 +1,20 @@
+{
+  "name": "@hermes/root-tests",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm run test",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
+    "fix": "npm run lint:fix"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.4",
+    "@types/plist": "^3.0.5",
+    "plist": "^3.1.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.9"
+  }
+}

@@ -75,6 +75,16 @@ class TestCodexBuildKwargs:
         )
         assert kw.get("reasoning", {}).get("effort") == "high"
 
+    @pytest.mark.parametrize("effort, wire_effort", [("max", "max"), ("ultra", "max")])
+    def test_extended_reasoning_efforts_use_api_wire_value(self, transport, effort, wire_effort):
+        kw = transport.build_kwargs(
+            model="gpt-5.6-sol",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+        assert kw.get("reasoning", {}).get("effort") == wire_effort
+
     def test_reasoning_disabled(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(
@@ -120,6 +130,118 @@ class TestCodexBuildKwargs:
             is_github_responses=True,
         )
         assert "prompt_cache_key" not in kw
+
+    def test_github_responses_drops_message_item_id_end_to_end(self, transport):
+        # #32716: Copilot binds codex_message_items ids to a backend
+        # "connection" that doesn't survive credential rotation, a gateway
+        # restart, or load-balancer churn — replaying a stale id gets HTTP
+        # 401 "input item ID does not belong to this connection", even for
+        # ids well under the #27038 64-char length cap. build_kwargs must
+        # thread is_github_responses through to the input converter so the
+        # id never reaches the request.
+        messages = [
+            {"role": "system", "content": "You are Hermes."},
+            {
+                "role": "assistant",
+                "content": "pong",
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "in_progress",
+                        "content": [{"type": "output_text", "text": "pong"}],
+                        "id": "msg_short_but_connection_scoped",
+                        "phase": "final_answer",
+                    }
+                ],
+            },
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=messages, tools=[],
+            is_github_responses=True,
+        )
+        message_item = next(item for item in kw["input"] if item.get("type") == "message")
+        assert "id" not in message_item
+        assert message_item["phase"] == "final_answer"
+        assert message_item["status"] == "in_progress"
+        assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
+
+    def test_github_responses_requires_literal_true(self, transport):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "pong",
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "pong"}],
+                        "id": "msg_short_id",
+                    }
+                ],
+            },
+        ]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=messages, tools=[],
+            is_github_responses="false",
+        )
+
+        message_item = next(item for item in kw["input"] if item.get("type") == "message")
+        assert message_item["id"] == "msg_short_id"
+
+    def test_github_preflight_drops_id_reintroduced_by_request_override(self, transport):
+        injected = {
+            "type": "message",
+            "role": "assistant",
+            "status": "in_progress",
+            "content": [{"type": "output_text", "text": "pong"}],
+            "id": "stale_short",
+            "phase": "final_answer",
+        }
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=[{"role": "user", "content": "continue"}],
+            tools=[],
+            is_github_responses=True,
+            request_overrides={"input": [injected]},
+        )
+
+        preflight = transport.preflight_kwargs(
+            kw,
+            is_github_responses=True,
+        )
+
+        message_item = preflight["input"][0]
+        assert "id" not in message_item
+        assert message_item["status"] == "in_progress"
+        assert message_item["phase"] == "final_answer"
+        assert message_item["content"] == [{"type": "output_text", "text": "pong"}]
+
+    def test_non_github_responses_keeps_message_item_id_end_to_end(self, transport):
+        messages = [
+            {"role": "system", "content": "You are Hermes."},
+            {
+                "role": "assistant",
+                "content": "pong",
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "pong"}],
+                        "id": "msg_short_id",
+                    }
+                ],
+            },
+        ]
+        kw = transport.build_kwargs(
+            model="gpt-5.5", messages=messages, tools=[],
+            is_codex_backend=True,
+        )
+        message_item = next(item for item in kw["input"] if item.get("type") == "message")
+        assert message_item["id"] == "msg_short_id"
 
     def test_xai_responses_sends_cache_key_via_extra_body(self, transport):
         """xAI's Responses API documents ``prompt_cache_key`` as the
@@ -288,6 +410,17 @@ class TestCodexBuildKwargs:
         # tests/run_agent/test_codex_xai_oauth_recovery.py for the
         # full history.
         assert "reasoning.encrypted_content" in kw.get("include", [])
+
+    @pytest.mark.parametrize("effort", ["xhigh", "max", "ultra"])
+    def test_xai_stronger_generic_efforts_clamp_to_high(self, transport, effort):
+        kw = transport.build_kwargs(
+            model="grok-4.3",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=[],
+            is_xai_responses=True,
+            reasoning_config={"enabled": True, "effort": effort},
+        )
+        assert kw.get("reasoning") == {"effort": "high"}
 
     def test_xai_injects_native_web_search_when_client_web_search_present(self, transport):
         """xAI path swaps a client-side ``web_search`` function for xAI's
@@ -538,6 +671,34 @@ class TestCodexValidateResponse:
         """validate_response is strict — output_text doesn't make it valid.
         The caller handles output_text fallback with diagnostic logging."""
         r = SimpleNamespace(output=None, output_text="Some text")
+        assert transport.validate_response(r) is False
+
+    def test_empty_output_content_filter_incomplete_is_valid(self, transport):
+        r = SimpleNamespace(
+            status="incomplete",
+            incomplete_details=SimpleNamespace(reason="content_filter"),
+            output=[],
+            output_text="",
+        )
+        assert transport.validate_response(r) is True
+
+    def test_empty_output_content_filter_dict_incomplete_is_valid(self, transport):
+        r = SimpleNamespace(
+            status=" incomplete ",
+            incomplete_details={"reason": " content_filter "},
+            output=[],
+            output_text="",
+        )
+        assert transport.validate_response(r) is True
+
+    @pytest.mark.parametrize("reason", ["max_output_tokens", "length", "", None])
+    def test_empty_output_other_incomplete_reasons_remain_invalid(self, transport, reason):
+        r = SimpleNamespace(
+            status="incomplete",
+            incomplete_details=SimpleNamespace(reason=reason),
+            output=[],
+            output_text="",
+        )
         assert transport.validate_response(r) is False
 
 

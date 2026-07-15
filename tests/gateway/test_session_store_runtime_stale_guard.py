@@ -142,6 +142,24 @@ class TestRuntimeStaleGuard:
         # A brand-new session row must NOT have been created.
         db.create_session.assert_not_called()
 
+    def test_stale_ws_orphan_reap_entry_recovered_preserving_session_id(self, tmp_path):
+        """Stale ``ws_orphan_reap`` entry → recovery reopens the SAME session_id (#63207)."""
+        source = _source()
+        db = _db_returning({"sid_stale": {"end_reason": "ws_orphan_reap", "id": "sid_stale"}})
+        db.find_latest_gateway_session_for_peer.return_value = {
+            "id": "sid_stale",
+            "started_at": (datetime.now() - timedelta(hours=2)).timestamp(),
+        }
+        store = _make_store_with_db(tmp_path, db)
+        key = store._generate_session_key(source)
+        store._entries[key] = _make_entry(key, "sid_stale")
+
+        result = store.get_or_create_session(source)
+
+        assert result.session_id == "sid_stale"
+        db.reopen_session.assert_called_once_with("sid_stale")
+        db.create_session.assert_not_called()
+
     def test_stale_entry_creates_fresh_when_recovery_returns_none(self, tmp_path):
         """Stale entry, no recoverable row → brand-new session (no silent drop)."""
         source = _source()

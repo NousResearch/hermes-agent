@@ -143,6 +143,13 @@ class TestRunConversationCodexPath:
                 turn_id="turn-compact-1",
                 thread_id="thread-compact-1",
                 compacted=True,
+                token_usage_last={
+                    "totalTokens": 300_000,
+                    "inputTokens": 300_000,
+                    "cachedInputTokens": 0,
+                    "outputTokens": 0,
+                    "reasoningOutputTokens": 0,
+                },
             )
 
         monkeypatch.setattr(CodexAppServerSession, "run_turn", fake_run_turn)
@@ -157,8 +164,11 @@ class TestRunConversationCodexPath:
 
         assert result["completed"] is True
         assert agent.context_compressor.compression_count == 1
-        assert agent.context_compressor.last_prompt_tokens == -1
-        assert agent.context_compressor.awaiting_real_usage_after_compression is True
+        # A compacted turn with real usage is judged against that same real
+        # prompt count, exactly like a normal completed compression boundary.
+        assert agent.context_compressor.last_prompt_tokens == 300_000
+        assert agent.context_compressor.awaiting_real_usage_after_compression is False
+        assert agent.context_compressor._ineffective_compression_count == 1
         assert events == [
             (
                 "session:compress",

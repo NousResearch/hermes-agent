@@ -7,6 +7,10 @@ approval:
   choose_short:    "      [o]eenmalig  |  [s]sessie  |  [d]weier"
   prompt_long:     "      Keuse [o/s/a/D]: "
   prompt_short:    "      Keuse [o/s/D]: "
+  choose_smart_deny: "      [o]eenmalig  |  [d]weier"
+  prompt_smart_deny: "      Keuse [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
   timeout:         "      ⏱ Tyd verstreke - opdrag word geweier"
   allowed_once:    "      ✓ Eenmalig toegelaat"
   allowed_session: "      ✓ Vir hierdie sessie toegelaat"
@@ -360,6 +364,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_estimated_context:  "Geskatte konteks: ~{count} tokens"
     detailed_after_first:     "_(Gedetailleerde gebruik beskikbaar na die eerste agent-antwoord)_"
     no_data:                  "Geen gebruiksdata beskikbaar vir hierdie sessie nie."
+    unknown_subcommand:       "Onbekende /usage subopdrag: `{args}`. Probeer `/usage` of `/usage reset [--force]`."
+    reset_wrong_provider:     "Gebankte gebruikslimiet-terugstellings is slegs beskikbaar op die openai-codex verskaffer. Skakel eers oor met `/model`."
 
   credits:
     not_logged_in:            "Nie by Nous Portal aangemeld nie. Meld aan om jou kredietsaldo te sien en op te laai."

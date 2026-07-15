@@ -2,6 +2,7 @@ import type { useSensors } from '@dnd-kit/core'
 import type * as React from 'react'
 import { useMemo } from 'react'
 
+import type { SessionDragPayload } from '@/app/chat/composer/inline-refs'
 import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
 import { DisclosureCaret } from '@/components/ui/disclosure-caret'
 import { SidebarGroup, SidebarGroupContent } from '@/components/ui/sidebar'
@@ -135,6 +136,14 @@ interface SidebarSessionsSectionProps {
   // Rendered atop the entered-project body (a "back to overview" row).
   projectBackRow?: React.ReactNode
   dndSensors?: ReturnType<typeof useSensors>
+  // Native session-drag (drag-to-pin/unpin/reorder): the owner hands each row
+  // body's drag start/end down so it can drive drop-zone previews in flight.
+  onSessionDragEnd?: () => void
+  onSessionDragStart?: (payload: SessionDragPayload) => void
+  /** True while an acceptable row drag hovers this section (lights the frame). */
+  dropActive?: boolean
+  /** Native session-drag drop target handlers, spread onto the section frame. */
+  dropHandlers?: Pick<React.DOMAttributes<HTMLDivElement>, 'onDragEnter' | 'onDragLeave' | 'onDragOver' | 'onDrop'>
 }
 
 export function SidebarSessionsSection({
@@ -174,7 +183,11 @@ export function SidebarSessionsSection({
   onReorderSessions,
   onReorderProjects,
   projectBackRow,
-  dndSensors
+  dndSensors,
+  onSessionDragEnd,
+  onSessionDragStart,
+  dropActive = false,
+  dropHandlers
 }: SidebarSessionsSectionProps) {
   const sectionOpen = collapsible ? open : true
   const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
@@ -202,6 +215,8 @@ export function SidebarSessionsSection({
       onDelete: () => onDeleteSession(session.id),
       onPin: () => onTogglePin(sessionPinId(session)),
       onResume: () => onResumeSession(session.id),
+      onSessionDragEnd,
+      onSessionDragStart,
       reorderable: draggable && !branchStem,
       session
     }
@@ -309,6 +324,8 @@ export function SidebarSessionsSection({
         onBranchSession={onBranchSession}
         onDeleteSession={onDeleteSession}
         onResumeSession={onResumeSession}
+        onSessionDragEnd={onSessionDragEnd}
+        onSessionDragStart={onSessionDragStart}
         onTogglePin={onTogglePin}
         pinned={pinned}
         sortable={sessionsDraggable}
@@ -339,7 +356,15 @@ export function SidebarSessionsSection({
   const resolvedContentClassName = cn(contentClassName, flatVirtualized && 'overflow-y-visible')
 
   return (
-    <SidebarGroup className={rootClassName}>
+    <SidebarGroup
+      className={cn(
+        rootClassName,
+        // Light the whole section (header included — drops there count too, even
+        // collapsed) while an acceptable row drag hovers it.
+        dropActive && 'rounded-lg bg-(--ui-control-hover-background) ring-1 ring-inset ring-(--ui-stroke-tertiary)'
+      )}
+      {...dropHandlers}
+    >
       <SidebarSectionHeader
         action={headerAction}
         collapsible={collapsible}
@@ -368,6 +393,8 @@ interface SortableSessionRowProps {
   onDelete: () => void
   onPin: () => void
   onResume: () => void
+  onSessionDragEnd?: () => void
+  onSessionDragStart?: (payload: SessionDragPayload) => void
 }
 
 function SortableSidebarSessionRow(props: SortableSessionRowProps) {

@@ -79,18 +79,26 @@ def _check_kanban_mode() -> bool:
     return _profile_has_kanban_toolset()
 
 
-def _check_kanban_orchestrator_mode() -> bool:
-    """Board-routing tools (kanban_list, kanban_unblock) are intentionally
-    hidden from task workers.
+def _has_kanban_routing_authority() -> bool:
+    """Whether this process may route work beyond its current task.
 
-    Dispatcher-spawned workers should close their own task via the
-    lifecycle tools (complete/block/heartbeat), not enumerate or unblock
-    board state. Profiles that explicitly opt into the kanban toolset
-    and are NOT scoped to a single task are the orchestrator surface.
+    Normal sessions must explicitly enable the full ``kanban`` toolset.
+    Dispatcher workers instead receive a trusted flag derived from the root
+    config's ``kanban.routing_profiles`` allowlist.
     """
     if os.environ.get("HERMES_KANBAN_TASK"):
-        return False
+        return os.environ.get("HERMES_KANBAN_ROUTING_AUTHORITY") == "1"
     return _profile_has_kanban_toolset()
+
+
+def _check_kanban_orchestrator_mode() -> bool:
+    """Board-routing tools are visible only with routing authority."""
+    return _has_kanban_routing_authority()
+
+
+def _check_kanban_routing_mode() -> bool:
+    """Schema gate for create/link and other routing mutations."""
+    return _has_kanban_routing_authority()
 
 
 # ---------------------------------------------------------------------------
@@ -172,10 +180,25 @@ def _connect(board: Optional[str] = None):
     routes the connection to that board's sqlite file. ``None`` (the
     default) preserves the legacy resolution chain
     (``HERMES_KANBAN_DB`` → ``HERMES_KANBAN_BOARD`` env → current symlink
-    → ``default``). Per-tool ``board`` lets a Telegram-side agent override
-    the env-pinned active board without restarting Hermes.
+    → ``default``). Per-tool ``board`` lets a normal interactive orchestrator
+    override its active board. Dispatcher workers are hard-pinned to
+    ``HERMES_KANBAN_BOARD``, including routing-authorized workers.
     """
     from hermes_cli import kanban_db as kb
+
+    if os.environ.get("HERMES_KANBAN_TASK") and board is not None:
+        requested = kb._normalize_board_slug(board) or "default"
+        pinned = (
+            kb._normalize_board_slug(
+                os.environ.get("HERMES_KANBAN_BOARD", "default")
+            )
+            or "default"
+        )
+        if requested != pinned:
+            raise ValueError(
+                f"task worker is pinned to board {pinned!r}; "
+                f"refusing cross-board access to {requested!r}"
+            )
     return kb, kb.connect(board=board)
 
 
@@ -315,22 +338,28 @@ def _parse_bool_arg(args: dict, name: str, *, default: bool = False):
     return default, f"{name} must be a boolean or 'true'/'false'"
 
 
-def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
-    """Belt-and-suspenders runtime guard for orchestrator-only handlers.
+def _require_routing_authority(tool_name: str) -> Optional[str]:
+    """Runtime guard for every operation that can affect another task."""
+    if _has_kanban_routing_authority():
+        return None
+    return tool_error(
+        f"{tool_name} requires Kanban routing authority; this worker is scoped "
+        "to its assigned task. Add the worker profile to "
+        "kanban.routing_profiles only if it is intentionally an orchestrator."
+    )
 
-    The check_fn (`_check_kanban_orchestrator_mode`) keeps these tools
-    out of the worker schema entirely, but in case a stale registration
-    or test harness routes a worker to one of them anyway, return a
-    structured tool_error so the model gets a clear refusal instead of
-    silently mutating board state from a worker context.
-    """
-    if os.environ.get("HERMES_KANBAN_TASK"):
-        return tool_error(
-            f"{tool_name} is orchestrator-only; dispatcher-spawned workers "
-            "must use kanban_complete, kanban_block, kanban_heartbeat, or "
-            "kanban_comment for their assigned task."
-        )
-    return None
+
+def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
+    """Backward-compatible name for board-routing handler guards."""
+    return _require_routing_authority(tool_name)
+
+
+def _require_current_task_or_routing(tid: str, tool_name: str) -> Optional[str]:
+    """Allow a worker's own task; require routing authority for any other."""
+    env_tid = os.environ.get("HERMES_KANBAN_TASK")
+    if not env_tid or tid == env_tid:
+        return None
+    return _require_routing_authority(tool_name)
 
 
 def _task_summary_dict(kb, conn, task) -> dict[str, Any]:
@@ -372,6 +401,9 @@ def _handle_show(args: dict, **kw) -> str:
         return tool_error(
             "task_id is required (or set HERMES_KANBAN_TASK in the env)"
         )
+    guard = _require_current_task_or_routing(tid, "kanban_show")
+    if guard:
+        return guard
     board = args.get("board")
     try:
         kb, conn = _connect(board=board)
@@ -812,6 +844,9 @@ def _handle_comment(args: dict, **kw) -> str:
     body = args.get("body")
     if not body or not str(body).strip():
         return tool_error("body is required")
+    guard = _require_current_task_or_routing(str(tid), "kanban_comment")
+    if guard:
+        return guard
     body = redact_sensitive_text(str(body), force=True)
     # Author is intentionally derived from the worker's own runtime
     # identity, NOT from caller-supplied args. Comments are injected
@@ -839,11 +874,14 @@ def _handle_comment(args: dict, **kw) -> str:
 
 
 def _handle_create(args: dict, **kw) -> str:
-    """Create a child task. Orchestrator workers use this to fan out.
+    """Create a child task. Routing-authorized workers use this to fan out.
 
     ``parents`` can be a list of task ids; dependency-gated promotion
     works as usual.
     """
+    guard = _require_routing_authority("kanban_create")
+    if guard:
+        return guard
     title = args.get("title")
     if not title or not str(title).strip():
         return tool_error("title is required")
@@ -1086,6 +1124,9 @@ def _handle_unblock(args: dict, **kw) -> str:
 
 def _handle_link(args: dict, **kw) -> str:
     """Add a parent→child dependency edge after the fact."""
+    guard = _require_routing_authority("kanban_link")
+    if guard:
+        return guard
     parent_id = args.get("parent_id")
     child_id = args.get("child_id")
     if not parent_id or not child_id:
@@ -1139,8 +1180,10 @@ KANBAN_SHOW_SCHEMA = {
         "Read a task's full state — title, body, assignee, parent task "
         "handoffs, your prior attempts on this task if any, comments, "
         "and recent events. Use this to (re)orient yourself before "
-        "starting work, especially on retries. The response includes a "
-        "pre-formatted ``worker_context`` string suitable for inclusion "
+        "starting work, especially on retries. Task-scoped workers may read "
+        "only their assigned task; routing profiles may inspect other tasks. "
+        "The response includes a pre-formatted ``worker_context`` string "
+        "suitable for inclusion "
         "verbatim in your reasoning."
     ),
     "parameters": {
@@ -1165,8 +1208,8 @@ KANBAN_LIST_SCHEMA = {
         "with ids, title, status, assignee, priority, parent/child ids, and "
         "counts. Bounded to 50 rows by default, 200 max, with truncation "
         "metadata. Also recomputes ready tasks before listing, matching the "
-        "CLI. Orchestrator-only — dispatcher-spawned task workers never see "
-        "this tool."
+        "CLI. Routing-authority only — ordinary dispatcher workers never "
+        "see this tool."
     ),
     "parameters": {
         "type": "object",
@@ -1373,8 +1416,10 @@ KANBAN_COMMENT_SCHEMA = {
     "description": (
         "Append a comment to a task's thread. Use for durable notes "
         "that should outlive this run (questions for the next worker, "
-        "partial findings, rationale). Ephemeral reasoning doesn't "
-        "belong here — use your normal response instead."
+        "partial findings, rationale). Task-scoped workers may comment only "
+        "on their assigned task; routing profiles may comment on others. "
+        "Ephemeral reasoning doesn't belong here — use your normal response "
+        "instead."
     ),
     "parameters": {
         "type": "object",
@@ -1382,8 +1427,8 @@ KANBAN_COMMENT_SCHEMA = {
             "task_id": {
                 "type": "string",
                 "description": (
-                    "Task id. Required (may be your own task or "
-                    "another's — comment threads are per-task)."
+                    "Task id. Task-scoped workers must use their assigned "
+                    "task; routing profiles may target another task."
                 ),
             },
             "body": {
@@ -1658,7 +1703,7 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_CREATE_SCHEMA,
     handler=_handle_create,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_routing_mode,
     emoji="➕",
 )
 
@@ -1676,6 +1721,6 @@ registry.register(
     toolset="kanban",
     schema=KANBAN_LINK_SCHEMA,
     handler=_handle_link,
-    check_fn=_check_kanban_mode,
+    check_fn=_check_kanban_routing_mode,
     emoji="🔗",
 )

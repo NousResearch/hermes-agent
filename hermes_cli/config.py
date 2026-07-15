@@ -2782,6 +2782,13 @@ DEFAULT_CONFIG = {
         # decomposer prompt, model, or skills; configure that LLM path under
         # auxiliary.kanban_decomposer.
         "orchestrator_profile": "",
+        # Dispatcher-spawned profiles allowed to route board work from inside
+        # a task run. Profiles absent from this allowlist receive only the
+        # current-task lifecycle surface (show/complete/block/heartbeat/comment).
+        # Empty by default: existing top-level orchestrator sessions that
+        # explicitly enable the full `kanban` toolset keep working, while task
+        # workers fail closed unless intentionally promoted.
+        "routing_profiles": [],
         # Where a child task lands if the orchestrator can't match an
         # assignee to any installed profile. When unset, falls back to the
         # default profile. A task never ends up with assignee=None.

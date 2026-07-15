@@ -14,7 +14,7 @@ Hermes Kanban is a durable task board, shared across all your Hermes profiles, t
 
 The board has two front doors, both backed by the same `~/.hermes/kanban.db`:
 
-- **Agents drive the board through a dedicated `kanban_*` toolset** — `kanban_show`, `kanban_list`, `kanban_complete`, `kanban_block`, `kanban_heartbeat`, `kanban_comment`, `kanban_create`, `kanban_link`, `kanban_unblock`. The dispatcher spawns each worker with these tools already in its schema; orchestrator profiles can also enable the `kanban` toolset explicitly. The model reads and routes tasks by calling tools directly, *not* by shelling out to `hermes kanban`. See [How workers interact with the board](#how-workers-interact-with-the-board) below.
+- **Agents drive the board through dedicated `kanban_*` tools.** Ordinary dispatcher workers receive the lifecycle-only `kanban-worker` surface (`show`, `complete`, `block`, `heartbeat`, `comment` on their assigned task). Profiles listed in `kanban.routing_profiles` receive the broader `kanban` routing surface (`list`, `create`, `link`, `unblock`, and foreign-task reads/comments). The model calls these tools directly, *not* by shelling out to `hermes kanban`. See [How workers interact with the board](#how-workers-interact-with-the-board) below.
 - **You (and scripts, and cron) drive the board through `hermes kanban …`** on the CLI, `/kanban …` as a slash command, or the dashboard. These are for humans and automation — the places without a tool-calling model behind them.
 
 Both surfaces route through the same `kanban_db` layer, so reads see a consistent view and writes can't drift. The rest of this page shows CLI examples because they're easy to copy-paste, but every CLI verb has a tool-call equivalent the model uses.
@@ -220,7 +220,11 @@ up on the next tick (60s by default).
 kanban:
   dispatch_in_gateway: true        # default
   dispatch_interval_seconds: 60    # default
+  routing_profiles:                # task workers allowed to route/fan out
+    - my-orchestrator
 ```
+
+`routing_profiles` defaults to an empty list. The dispatcher derives routing authority from this allowlist before switching into the assignee's profile, so task prose and profile-local toolset settings cannot grant it. Ordinary task workers receive only the lifecycle surface even if their profile config names the full `kanban` toolset. A normal, non-dispatched profile may still explicitly enable `kanban` for interactive orchestration.
 
 Override the config flag at runtime via `HERMES_KANBAN_DISPATCH_IN_GATEWAY=0`
 for debugging. Standard gateway supervision applies: run `hermes gateway
@@ -261,19 +265,19 @@ hermes kanban block    t_abc "need input" --ids t_def t_hij
 
 ## How workers interact with the board
 
-**Workers do not shell out to `hermes kanban`.** When the dispatcher spawns a worker it sets `HERMES_KANBAN_TASK=t_abcd` in the child's env, and that env var flips on a dedicated **kanban toolset** in the model's schema. The same toolset is also available to orchestrator profiles that enable `kanban` in their toolsets config. These tools read and mutate the board directly via the Python `kanban_db` layer, same as the CLI does. A running worker calls these like any other tool; it never sees or needs the `hermes kanban` CLI.
+**Workers do not shell out to `hermes kanban`.** When the dispatcher spawns a worker it sets `HERMES_KANBAN_TASK=t_abcd` and derives routing authority from `kanban.routing_profiles`. Ordinary workers get the lifecycle-only **`kanban-worker` toolset**; allowlisted orchestrators get the full **`kanban` toolset**. Both surfaces call the Python `kanban_db` layer directly. A running worker calls these like any other tool; it never sees or needs the `hermes kanban` CLI.
 
 | Tool | Purpose | Required params |
 |---|---|---|
-| `kanban_show` | Read the current task (title, body, prior attempts, parent handoffs, comments, full pre-formatted `worker_context`). Defaults to the env's task id. | — |
-| `kanban_list` | List task summaries with filters for `assignee`, `status`, `tenant`, archived visibility, and limit. Intended for orchestrators discovering board work. | — |
+| `kanban_show` | Read the assigned task. Routing profiles may pass another task id. | — |
+| `kanban_list` | (Routing profiles) list task summaries with filters for `assignee`, `status`, `tenant`, archived visibility, and limit. | — |
 | `kanban_complete` | Finish with `summary` + `metadata` structured handoff. | at least one of `summary` / `result` |
 | `kanban_block` | Stop work and route by why: `kind=dependency` (waits in `todo`, auto-resumes), `needs_input`/`capability`/`transient` (surface to a human). Repeated same-kind re-blocks auto-escalate to `triage`. | `reason` |
 | `kanban_heartbeat` | Signal liveness during long operations. Pure side-effect. | — |
-| `kanban_comment` | Append a durable note to the task thread. | `task_id`, `body` |
-| `kanban_create` | (Orchestrators) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. | `title`, `assignee` |
-| `kanban_link` | (Orchestrators) add a `parent_id → child_id` dependency edge after the fact. | `parent_id`, `child_id` |
-| `kanban_unblock` | (Orchestrators) move a blocked task back to `ready`. | `task_id` |
+| `kanban_comment` | Append a durable note to the assigned task thread. Routing profiles may comment on foreign tasks. | `task_id`, `body` |
+| `kanban_create` | (Routing profiles) fan out into child tasks with an `assignee`, optional `parents`, `skills`, etc. | `title`, `assignee` |
+| `kanban_link` | (Routing profiles) add a `parent_id → child_id` dependency edge after the fact. | `parent_id`, `child_id` |
+| `kanban_unblock` | (Routing profiles) move a blocked task back to `ready`. | `task_id` |
 
 A typical worker turn looks like:
 
@@ -310,7 +314,7 @@ kanban_create(
 kanban_complete(summary="decomposed into 2 research tasks + 1 writer; linked dependencies")
 ```
 
-The "(Orchestrators)" tools — `kanban_list`, `kanban_create`, `kanban_link`, `kanban_unblock`, and `kanban_comment` on foreign tasks — are available through the same toolset; the convention (encoded in the auto-injected kanban guidance) is that worker profiles don't fan out or route unrelated work, and orchestrator profiles don't execute implementation work. Dispatcher-spawned workers are still task-scoped for destructive lifecycle operations and cannot mutate unrelated tasks.
+The routing tools — `kanban_list`, `kanban_create`, `kanban_link`, `kanban_unblock`, plus foreign-task `kanban_show` and `kanban_comment` — are code-enforced capabilities, not a prompt convention. A dispatched worker receives them only when its normalized profile name appears in the dispatcher's `kanban.routing_profiles` allowlist. All handlers also enforce the boundary at runtime, so stale schemas or direct handler calls fail closed.
 
 ### Why tools instead of shelling to `hermes kanban`
 
@@ -320,7 +324,7 @@ Three reasons:
 2. **No shell-quoting fragility.** Passing `--metadata '{"files": [...]}'` through shlex + argparse is a latent footgun. Structured tool args skip it entirely.
 3. **Better errors.** Tool results are structured JSON the model can reason about, not stderr strings it has to parse.
 
-**Zero schema footprint on normal sessions.** A regular `hermes chat` session has zero `kanban_*` tools in its schema unless the active profile explicitly enables the `kanban` toolset for orchestrator work. Dispatcher-spawned task workers get task-scoped tools because `HERMES_KANBAN_TASK` is set; orchestrator profiles get the broader routing surface through config. No tool bloat for users who never touch kanban.
+**Zero schema footprint on normal sessions.** A regular `hermes chat` session has zero `kanban_*` tools unless the active profile explicitly enables `kanban`. Dispatched leaf workers get only `kanban-worker`; allowlisted routing profiles get full `kanban`. No tool bloat for users who never touch Kanban, and no routing schema for workers that do not need it.
 
 The auto-injected kanban guidance teaches the model which tool to call when and in what order.
 

@@ -139,10 +139,9 @@ EXPOSED_TOOLS: tuple[str, ...] = (
     "kanban_heartbeat",
     "kanban_show",
     "kanban_list",
-    # NOTE: kanban_create / kanban_unblock / kanban_link are orchestrator-
-    # only — the kanban tool gates them on HERMES_KANBAN_TASK being unset.
-    # They're exposed here for orchestrator agents running on the codex
-    # runtime that need to dispatch new tasks.
+    # Routing tools remain listed for authorized Codex-runtime orchestrators;
+    # their normal Kanban check_fn/runtime guards enforce
+    # HERMES_KANBAN_ROUTING_AUTHORITY for dispatched workers.
     "kanban_create",
     "kanban_unblock",
     "kanban_link",

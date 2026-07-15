@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import subprocess
 
+import pytest
+
 
 def _make_task(kb, *, assignee: str):
     return kb.Task(
@@ -197,3 +199,53 @@ toolsets:
     assert "web" in resolved
     assert "kanban" in resolved  # recovered worker lifecycle surface
     assert resolved != ["kanban"]
+
+
+@pytest.mark.parametrize(
+    ("assignee", "expected_authority"),
+    [("router", "1"), ("leaf", None)],
+)
+def test_default_spawn_derives_routing_authority_from_root_allowlist(
+    monkeypatch, tmp_path, assignee, expected_authority
+):
+    root = tmp_path / ".hermes"
+    root.mkdir()
+    root.joinpath("config.yaml").write_text(
+        "kanban:\n  routing_profiles:\n    - router\n",
+        encoding="utf-8",
+    )
+    for name in ("router", "leaf"):
+        profile = root / "profiles" / name
+        profile.mkdir(parents=True)
+        profile.joinpath("config.yaml").write_text(
+            "platform_toolsets:\n  cli:\n    - terminal\n"
+            + (
+                "kanban:\n  routing_profiles:\n    - leaf\n"
+                if name == "leaf"
+                else ""
+            ),
+            encoding="utf-8",
+        )
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("HERMES_KANBAN_ROUTING_AUTHORITY", "1")
+
+    from hermes_cli import kanban_db as kb
+
+    monkeypatch.setattr(kb, "_resolve_hermes_argv", lambda: ["hermes"])
+    captured = {}
+
+    class FakeProc:
+        pid = 4242
+
+    def fake_popen(cmd, *args, **kwargs):
+        captured["cmd"] = list(cmd)
+        captured["env"] = dict(kwargs.get("env") or {})
+        return FakeProc()
+
+    monkeypatch.setattr(subprocess, "Popen", fake_popen)
+    workspace = tmp_path / f"workspace-{assignee}"
+    workspace.mkdir()
+
+    kb._default_spawn(_make_task(kb, assignee=assignee), str(workspace))
+
+    assert captured["env"].get("HERMES_KANBAN_ROUTING_AUTHORITY") == expected_authority

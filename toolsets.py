@@ -257,15 +257,26 @@ TOOLSETS = {
         "includes": []
     },
 
+    "kanban-worker": {
+        "description": (
+            "Current-task Kanban lifecycle for dispatcher-spawned workers. "
+            "Workers can inspect and hand off only their assigned task; board "
+            "routing remains reserved for allowlisted profiles."
+        ),
+        "tools": [
+            "kanban_show", "kanban_complete", "kanban_block",
+            "kanban_heartbeat", "kanban_comment",
+        ],
+        "includes": [],
+    },
+
     "kanban": {
         "description": (
-            "Kanban multi-agent coordination — only active when the agent "
-            "is spawned by the kanban dispatcher (HERMES_KANBAN_TASK env "
-            "set). The dispatcher runs inside the gateway by default; see "
-            "`kanban.dispatch_in_gateway` in config.yaml. Lets workers mark "
-            "tasks done with structured handoffs, block for human input, "
-            "heartbeat during long ops, comment on threads, and (for "
-            "orchestrators) list, unblock, and fan out tasks."
+            "Full Kanban multi-agent routing and lifecycle surface. Available "
+            "to normal profiles that explicitly enable it and to dispatcher-"
+            "spawned profiles listed in `kanban.routing_profiles`. Lets "
+            "authorized routers list, create, link, unblock, and comment across "
+            "tasks in addition to current-task lifecycle operations."
         ),
         "tools": [
             "kanban_show", "kanban_list", "kanban_complete", "kanban_block",

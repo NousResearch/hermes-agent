@@ -8055,6 +8055,33 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _routing_profiles_from_config(hermes_home: Optional[str]) -> set[str]:
+    """Return normalized profiles trusted to route from dispatched task runs."""
+    try:
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+        from hermes_cli.config import cfg_get, load_config
+        from hermes_cli.profiles import normalize_profile_name
+
+        token = set_hermes_home_override(hermes_home) if hermes_home else None
+        try:
+            configured = cfg_get(
+                load_config(), "kanban", "routing_profiles", default=[]
+            )
+        finally:
+            if token is not None:
+                reset_hermes_home_override(token)
+        if not isinstance(configured, (list, tuple, set)):
+            return set()
+        return {
+            normalize_profile_name(str(name))
+            for name in configured
+            if str(name).strip()
+        }
+    except Exception as exc:
+        _log.debug("kanban worker: could not resolve routing profile allowlist (%s)", exc)
+        return set()
+
+
 def _default_spawn(
     task: Task,
     workspace: str,
@@ -8083,6 +8110,13 @@ def _default_spawn(
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
+    # Routing authority is derived by the dispatcher from its root config,
+    # never from task prose or the assignee's profile-local config. Strip any
+    # inherited flag first so a gateway accidentally launched from a worker
+    # shell cannot confer authority on unrelated children.
+    env.pop("HERMES_KANBAN_ROUTING_AUTHORITY", None)
+    if profile_arg in _routing_profiles_from_config(env.get("HERMES_HOME")):
+        env["HERMES_KANBAN_ROUTING_AUTHORITY"] = "1"
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml
     # (fallback_providers, toolsets, agent settings, etc.) instead of the root

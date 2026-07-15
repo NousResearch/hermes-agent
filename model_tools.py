@@ -322,6 +322,7 @@ def get_tool_definitions(
             registry._generation,
             cfg_fp,
             bool(os.environ.get("HERMES_KANBAN_TASK")),
+            os.environ.get("HERMES_KANBAN_ROUTING_AUTHORITY") == "1",
             bool(skip_tool_search_assembly),
         )
         cached = _tool_defs_cache.get(cache_key)
@@ -366,13 +367,25 @@ def _compute_tool_definitions(
 
     if enabled_toolsets is not None:
         effective_enabled_toolsets = list(enabled_toolsets)
-        if os.environ.get("HERMES_KANBAN_TASK") and "kanban" not in effective_enabled_toolsets:
-            # Dispatcher-spawned workers are scoped by HERMES_KANBAN_TASK and
-            # must always receive the lifecycle handoff tools. Assignee
-            # profiles may intentionally restrict their normal chat toolsets
-            # (for token/cost reasons), but that should not strip the kanban
-            # worker's completion/block/heartbeat surface.
-            effective_enabled_toolsets.append("kanban")
+        if os.environ.get("HERMES_KANBAN_TASK"):
+            worker_surface = (
+                "kanban"
+                if os.environ.get("HERMES_KANBAN_ROUTING_AUTHORITY") == "1"
+                else "kanban-worker"
+            )
+            # Dispatcher-spawned workers always receive the lifecycle handoff
+            # surface. Only dispatcher-authorized routing profiles receive the
+            # full board-routing surface.
+            if worker_surface not in effective_enabled_toolsets:
+                effective_enabled_toolsets.append(worker_surface)
+            if worker_surface == "kanban-worker":
+                # A leaf profile may have `kanban` in its normal config. Task
+                # scope wins: strip it so routing tools do not leak into the
+                # model schema merely because the profile is broadly useful
+                # outside dispatched work.
+                effective_enabled_toolsets = [
+                    name for name in effective_enabled_toolsets if name != "kanban"
+                ]
         for toolset_name in effective_enabled_toolsets:
             if validate_toolset(toolset_name):
                 resolved = resolve_toolset(toolset_name)

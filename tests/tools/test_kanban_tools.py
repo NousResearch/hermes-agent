@@ -56,7 +56,7 @@ def test_kanban_tools_visible_with_env_var(monkeypatch, tmp_path):
     kanban = {n for n in names if n and n.startswith("kanban_")}
     expected = {
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
-        "kanban_comment", "kanban_create", "kanban_link",
+        "kanban_comment",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
 
@@ -92,7 +92,7 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
 
     Even if a worker process happens to also have ``toolsets: [kanban]``
     in its config, the HERMES_KANBAN_TASK env var means it's a focused
-    worker and must not see kanban_list / kanban_unblock.
+    worker and must not see list/create/link/unblock.
     """
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
     home = tmp_path / ".hermes"
@@ -110,10 +110,12 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
     kanban = {n for n in names if n and n.startswith("kanban_")}
     assert {
         "kanban_list",
+        "kanban_create",
+        "kanban_link",
         "kanban_unblock",
     }.isdisjoint(kanban), (
         f"Board-routing tools leaked into worker schema: "
-        f"{kanban & {'kanban_list', 'kanban_unblock'}}"
+        f"{kanban & {'kanban_list', 'kanban_create', 'kanban_link', 'kanban_unblock'}}"
     )
 
 
@@ -148,12 +150,13 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
 
 @pytest.fixture
 def worker_env(monkeypatch, tmp_path):
-    """Simulate being a worker: HERMES_HOME isolated, HERMES_KANBAN_TASK set
-    after we've created the task."""
+    """Simulate an allowlisted routing worker on one current task."""
     home = tmp_path / ".hermes"
     home.mkdir()
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HERMES_PROFILE", "test-worker")
+    monkeypatch.setenv("HERMES_KANBAN_ROUTING_AUTHORITY", "1")
     monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
     from pathlib import Path as _Path
     monkeypatch.setattr(_Path, "home", lambda: tmp_path)
@@ -1454,21 +1457,46 @@ def test_kanban_guidance_in_worker_prompt(monkeypatch, tmp_path):
     assert "kanban_show()" in prompt
     assert "kanban_complete" in prompt
     assert "kanban_block" in prompt
-    assert "kanban_create" in prompt
+    assert "Orchestrator mode" not in prompt
+    assert "kanban_create(" not in prompt
     # Anti-shell guidance
     assert "Do not shell out" in prompt or "tools — they work" in prompt
+
+
+def test_kanban_routing_guidance_only_for_authorized_worker(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
+    monkeypatch.setenv("HERMES_KANBAN_ROUTING_AUTHORITY", "1")
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    from pathlib import Path as _P
+    monkeypatch.setattr(_P, "home", lambda: tmp_path)
+
+    from tools.registry import invalidate_check_fn_cache
+    from model_tools import _clear_tool_defs_cache
+    invalidate_check_fn_cache()
+    _clear_tool_defs_cache()
+
+    from run_agent import AIAgent
+    a = AIAgent(
+        api_key="test",
+        base_url="https://openrouter.ai/api/v1",
+        quiet_mode=True,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    prompt = a._build_system_prompt()
+    assert "Orchestrator mode" in prompt
+    assert "kanban_create" in prompt
 
 
 def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
     """Sanity: the guidance block stays lean so it doesn't blow up the
     cached prompt.
 
-    The ceiling guards against unbounded growth, not against any growth.
-    The block absorbed the load-bearing worker/orchestrator reference
-    details (workspace kinds, deliverable artifacts, created-card claims,
-    profile discovery) when the standalone kanban-worker / kanban-orchestrator
-    skills were removed and folded into this always-injected guidance, so the
-    ceiling is sized to fit that content with a little headroom.
+    The common lifecycle block and the optional routing block are bounded
+    separately so leaf prompts stay lean and routing guidance cannot grow
+    without an explicit test update.
     """
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
     home = tmp_path / ".hermes"
@@ -1477,9 +1505,12 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
     from pathlib import Path as _P
     monkeypatch.setattr(_P, "home", lambda: tmp_path)
 
-    from agent.prompt_builder import KANBAN_GUIDANCE
+    from agent.prompt_builder import KANBAN_GUIDANCE, KANBAN_ROUTING_GUIDANCE
     assert 1_500 < len(KANBAN_GUIDANCE) < 5_500, (
         f"KANBAN_GUIDANCE is {len(KANBAN_GUIDANCE)} chars — too short (missing?) or too long"
+    )
+    assert 300 < len(KANBAN_ROUTING_GUIDANCE) < 1_500, (
+        f"KANBAN_ROUTING_GUIDANCE is {len(KANBAN_ROUTING_GUIDANCE)} chars"
     )
 
 
@@ -1487,17 +1518,13 @@ def test_kanban_guidance_prompt_size_bounded(monkeypatch, tmp_path):
 # Worker task-ownership enforcement (regression tests for #19534)
 # ---------------------------------------------------------------------------
 #
-# A worker process has HERMES_KANBAN_TASK set to its own task id. The
-# destructive tools (kanban_complete, kanban_block, kanban_heartbeat,
-# kanban_unblock) must refuse to operate
-# on any OTHER task id, even if the caller supplies an explicit `task_id`
-# argument. Workers legitimately call kanban_show / kanban_list /
-# kanban_comment / kanban_create / kanban_link on other tasks, so those
-# are unrestricted.
+# A worker process has HERMES_KANBAN_TASK set to its own task id. Lifecycle
+# tools must refuse to operate on any OTHER task id. Routing-authorized workers
+# may use show/comment/create/link/list/unblock across tasks; ordinary workers
+# do not receive those routing capabilities.
 #
-# Orchestrator profiles (no HERMES_KANBAN_TASK in env) are intentionally
-# exempt — their job is routing, and they sometimes close out child
-# tasks on behalf of the child.
+# Normal orchestrator profiles (no HERMES_KANBAN_TASK in env) are intentionally
+# exempt when they explicitly enable the full kanban toolset.
 
 
 def test_worker_complete_rejects_foreign_task_id(worker_env):
@@ -1566,15 +1593,8 @@ def test_worker_heartbeat_rejects_foreign_task_id(worker_env):
     assert "refusing to mutate" in d.get("error", "")
 
 
-def test_worker_can_comment_on_foreign_task(worker_env):
-    """Cross-task commenting must remain unrestricted (#19713 policy).
-
-    The author-forgery hardening removed args['author'] but deliberately
-    did NOT add an ownership gate to kanban_comment — comments are the
-    documented handoff channel between tasks. This test pins that policy
-    so a future change accidentally adding ``_enforce_worker_task_ownership``
-    to ``_handle_comment`` would fail CI immediately.
-    """
+def test_routing_worker_can_comment_on_foreign_task(worker_env):
+    """Allowlisted routing workers may use comments as cross-task handoffs."""
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
@@ -1602,14 +1622,9 @@ def test_worker_can_comment_on_foreign_task(worker_env):
         conn.close()
 
 
-def test_worker_unblock_rejects_foreign_task_id(worker_env):
-    """A worker cannot unblock any task — kanban_unblock is orchestrator-only.
-
-    The check fires before the per-task ownership check, so the error
-    surface is the orchestrator-only refusal rather than the
-    cross-task-ownership refusal. Either is fine — the property we're
-    pinning is "worker cannot mutate foreign task via kanban_unblock".
-    """
+def test_worker_unblock_rejects_foreign_task_id(monkeypatch, worker_env):
+    """A non-routing worker cannot unblock any task."""
+    monkeypatch.delenv("HERMES_KANBAN_ROUTING_AUTHORITY", raising=False)
     from hermes_cli import kanban_db as kb
     conn = kb.connect()
     try:
@@ -1622,7 +1637,7 @@ def test_worker_unblock_rejects_foreign_task_id(worker_env):
     out = kt._handle_unblock({"task_id": other})
     d = json.loads(out)
     err = d.get("error", "")
-    assert "orchestrator-only" in err or "refusing to mutate" in err, (
+    assert "routing authority" in err, (
         f"expected worker-rejection error, got {err}"
     )
 
@@ -1739,6 +1754,7 @@ def multi_board_env(monkeypatch, tmp_path):
     """
     home = tmp_path / ".hermes"
     home.mkdir()
+    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
     monkeypatch.setenv("HERMES_HOME", str(home))
     # Make sure neither HERMES_KANBAN_DB nor HERMES_KANBAN_BOARD pin a
     # board — the test is specifically about the per-call override.
@@ -1965,6 +1981,7 @@ def test_board_param_routes_heartbeat_to_alt_board(monkeypatch, tmp_path):
         tid = kb.create_task(conn, title="alt hb", assignee="alt-worker")
         kb.claim_task(conn, tid)
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_BOARD", "alt")
 
     from tools import kanban_tools as kt
     out = kt._handle_heartbeat({"note": "alive on alt", "board": "alt"})

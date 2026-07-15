@@ -2,6 +2,7 @@ import { useStore } from '@nanostores/react'
 import { atom } from 'nanostores'
 import { useCallback, useEffect, useMemo } from 'react'
 
+import { $showHiddenFiles, isHiddenFileName } from '@/store/file-browser'
 import { $connection } from '@/store/session'
 import { $workspaceChangeTick } from '@/store/workspace-events'
 
@@ -28,6 +29,37 @@ const ERROR_PLACEHOLDER_ID = '__error__'
 
 function makeNode(path: string, name: string, isDirectory: boolean): TreeNode {
   return { id: path, isDirectory, name }
+}
+
+/** Hide dotfiles without discarding the cached tree. Returning the original
+ * array when nothing changes preserves reference identity and avoids repainting
+ * large trees for a no-op filter pass. */
+function visibleTreeNodes(nodes: TreeNode[], showHiddenFiles: boolean): TreeNode[] {
+  if (showHiddenFiles) {
+    return nodes
+  }
+
+  let changed = false
+  const visible: TreeNode[] = []
+
+  for (const node of nodes) {
+    if (isHiddenFileName(node.name)) {
+      changed = true
+
+      continue
+    }
+
+    const children = node.children ? visibleTreeNodes(node.children, false) : node.children
+
+    if (children !== node.children) {
+      changed = true
+      visible.push({ ...node, children })
+    } else {
+      visible.push(node)
+    }
+  }
+
+  return changed ? visible : nodes
 }
 
 function patchNode(nodes: TreeNode[] | undefined | null, id: string, patch: (n: TreeNode) => TreeNode): TreeNode[] {
@@ -275,6 +307,7 @@ async function revalidateTree(cwd: string): Promise<void> {
  */
 export function useProjectTree(cwd: string): UseProjectTreeResult {
   const state = useStore($projectTree)
+  const showHiddenFiles = useStore($showHiddenFiles)
   const connection = useStore($connection)
   const workspaceTick = useStore($workspaceChangeTick)
   const connectionKey = `${connection?.mode || 'local'}:${connection?.profile || ''}:${connection?.baseUrl || ''}`
@@ -421,7 +454,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
     () => ({
       collapseAll,
       collapseNonce: state.cwd === cwd ? state.collapseNonce : 0,
-      data: state.cwd === cwd ? state.data : [],
+      data: state.cwd === cwd ? visibleTreeNodes(state.data, showHiddenFiles) : [],
       effectiveCwd: state.cwd === cwd && state.resolvedCwd ? state.resolvedCwd : cwd,
       loadChildren,
       openState: state.cwd === cwd ? state.openState : {},
@@ -436,6 +469,7 @@ export function useProjectTree(cwd: string): UseProjectTreeResult {
       loadChildren,
       refreshRoot,
       setNodeOpen,
+      showHiddenFiles,
       state.collapseNonce,
       state.cwd,
       state.data,

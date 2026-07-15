@@ -187,6 +187,12 @@ export const zhHant = defineLocale({
     openStarmap: '開啟記憶圖譜'
   },
 
+  keybinds: {
+    actions: {
+      'view.toggleHiddenFiles': '顯示／隱藏隱藏檔案'
+    }
+  },
+
   language: {
     label: '語言',
     description: '選擇桌面介面的語言。',
@@ -281,6 +287,9 @@ export const zhHant = defineLocale({
     appearance: {
       title: '外觀',
       intro: '這些是僅限桌面端的顯示偏好。模式控制亮度；主題控制強調色與聊天介面樣式。',
+      fileBrowserTitle: '檔案瀏覽器',
+      showHiddenFilesTitle: '顯示隱藏檔案',
+      showHiddenFilesDesc: '顯示 .env、.github 等點檔案。檔案樹取得焦點時可按 Ctrl+H 切換。',
       colorMode: '色彩模式',
       colorModeDesc: '選擇固定模式，或讓 Hermes 跟隨系統設定。',
       toolViewTitle: '工具呼叫顯示',

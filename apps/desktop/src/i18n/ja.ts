@@ -193,6 +193,12 @@ export const ja = defineLocale({
     openStarmap: 'メモリグラフを開く'
   },
 
+  keybinds: {
+    actions: {
+      'view.toggleHiddenFiles': '隠しファイルの表示／非表示'
+    }
+  },
+
   language: {
     label: '言語',
     description: 'デスクトップインターフェイスの言語を選択します。',
@@ -289,6 +295,10 @@ export const ja = defineLocale({
       title: '外観',
       intro:
         'デスクトップ専用の表示設定です。モードは明るさ、テーマはアクセントカラーとチャット面のスタイルを制御します。',
+      fileBrowserTitle: 'ファイルブラウザ',
+      showHiddenFilesTitle: '隠しファイルを表示',
+      showHiddenFilesDesc:
+        '.env や .github などのドットファイルを表示します。ファイルツリーにフォーカス中は Ctrl+H で切り替えられます。',
       colorMode: 'カラーモード',
       colorModeDesc: '固定モードを選ぶか、Hermes をシステム設定に合わせます。',
       toolViewTitle: 'ツール呼び出しの表示',

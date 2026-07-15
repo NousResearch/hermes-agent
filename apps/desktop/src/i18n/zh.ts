@@ -241,6 +241,7 @@ export const zh: Translations = {
       'view.toggleRightSidebar': '切换文件浏览器',
       'view.toggleReview': '切换审查面板',
       'view.showFiles': '显示文件浏览器',
+      'view.toggleHiddenFiles': '显示/隐藏隐藏文件',
       'view.showTerminal': '显示终端',
       'view.terminalSelection': '将终端选区发送到输入框',
       'view.closeTab': '关闭标签',
@@ -391,6 +392,9 @@ export const zh: Translations = {
     appearance: {
       title: '外观',
       intro: '这些是仅桌面端的显示偏好。模式控制明暗；主题控制强调色与对话界面样式。',
+      fileBrowserTitle: '文件浏览器',
+      showHiddenFilesTitle: '显示隐藏文件',
+      showHiddenFilesDesc: '显示 .env、.github 等点文件。文件树获得焦点时可按 Ctrl+H 切换。',
       colorMode: '颜色模式',
       colorModeDesc: '选择固定模式，或让 Hermes 跟随系统设置。',
       toolViewTitle: '工具调用显示',

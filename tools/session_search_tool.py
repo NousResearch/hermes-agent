@@ -54,6 +54,24 @@ _DEMOTED_SESSION_SOURCES = ("cron",)
 # interactive matches buried under a wall of cron hits, so this is well above
 # the handful of distinct sessions a typical query returns.
 _DISCOVER_SCAN_LIMIT = 300
+_DEFAULT_DISCOVERY_LIMIT = 3
+_DEFAULT_BROWSE_LIMIT = 10
+_MAX_SESSION_SEARCH_LIMIT = 10
+
+
+def _coerce_session_limit(
+    raw_limit: Optional[int],
+    *,
+    default: int,
+    maximum: int = _MAX_SESSION_SEARCH_LIMIT,
+) -> int:
+    """Clamp a caller-provided session count, preserving mode-specific defaults."""
+    if not isinstance(raw_limit, int):
+        try:
+            raw_limit = int(raw_limit)
+        except (TypeError, ValueError):
+            raw_limit = default
+    return max(1, min(raw_limit, maximum))
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -261,7 +279,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
         sessions = db.list_sessions_rich(
-            limit=limit + 5,
+            limit=max(limit + 5, limit * 2),
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
             order_by_last_active=True,
         )  # fetch extra so we can skip current
@@ -619,7 +637,7 @@ def _discover(
 def session_search(
     query: str = "",
     role_filter: str = None,
-    limit: int = 3,
+    limit: Optional[int] = None,
     db=None,
     current_session_id: str = None,
     # Scroll shape
@@ -706,17 +724,12 @@ def session_search(
                 return json.dumps(found, ensure_ascii=False)
         return result
 
-    # Limit clamp [1, 10]
-    if not isinstance(limit, int):
-        try:
-            limit = int(limit)
-        except (TypeError, ValueError):
-            limit = 3
-    limit = max(1, min(limit, 10))
-
     # Browse shape: no query → recent sessions.
     if not query or not isinstance(query, str) or not query.strip():
-        return _list_recent_sessions(db, limit, current_session_id)
+        browse_limit = _coerce_session_limit(limit, default=_DEFAULT_BROWSE_LIMIT)
+        return _list_recent_sessions(db, browse_limit, current_session_id)
+
+    limit = _coerce_session_limit(limit, default=_DEFAULT_DISCOVERY_LIMIT)
 
     # Parse role_filter
     role_list: Optional[List[str]] = None
@@ -830,11 +843,11 @@ SESSION_SEARCH_SCHEMA = {
             "limit": {
                 "type": "integer",
                 "description": (
-                    "Discovery shape only. Max sessions to return (default 3, max 10). "
-                    "Bump to 5–10 when the topic likely spans several sessions and you "
-                    "want to pick the right one to scroll into."
+                    "Max sessions to return. Discovery defaults to 3; browse/no-args "
+                    "defaults to 10. Max 10. Bump discovery to 5–10 when the topic "
+                    "likely spans several sessions and you want to pick the right one "
+                    "to scroll into."
                 ),
-                "default": 3,
             },
             "sort": {
                 "type": "string",
@@ -907,7 +920,7 @@ registry.register(
     handler=lambda args, **kw: session_search(
         query=args.get("query") or "",
         role_filter=args.get("role_filter"),
-        limit=args.get("limit", 3),
+        limit=args.get("limit"),
         session_id=args.get("session_id"),
         around_message_id=args.get("around_message_id"),
         window=args.get("window", 5),

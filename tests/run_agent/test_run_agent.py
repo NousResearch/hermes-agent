@@ -2342,6 +2342,29 @@ class TestExecuteToolCalls:
         assert messages[0]["role"] == "tool"
         assert "search result" in messages[0]["content"]
 
+    @pytest.mark.parametrize(
+        "executor_name",
+        ["_execute_tool_calls_sequential", "_execute_tool_calls_concurrent"],
+    )
+    def test_session_search_no_args_preserves_browse_default(
+        self, agent, executor_name
+    ):
+        """Both live dispatchers must let session_search select its browse limit."""
+        tc = _mock_tool_call(name="session_search", arguments="{}", call_id="s1")
+        mock_msg = _mock_assistant_msg(content="", tool_calls=[tc])
+        messages = []
+        agent._get_session_db_for_recall = MagicMock(return_value=object())
+
+        with patch(
+            "tools.session_search_tool.session_search",
+            return_value=json.dumps({"success": True, "mode": "browse"}),
+        ) as mock_search:
+            getattr(agent, executor_name)(mock_msg, messages, "task-1")
+
+        mock_search.assert_called_once()
+        assert mock_search.call_args.kwargs["limit"] is None
+        assert messages[-1]["tool_call_id"] == "s1"
+
     def test_sequential_memory_remove_notifies_provider_with_tool_result(self, agent):
         old_text = "stale preference entry"
         tc = _mock_tool_call(

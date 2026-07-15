@@ -58,6 +58,20 @@ def _seed_modpack_sessions(db):
     db._conn.commit()
 
 
+def _seed_browse_sessions(db, count=10):
+    now = int(time.time())
+    for idx in range(count):
+        session_id = f"s_browse_{idx}"
+        db.create_session(session_id, source="cli")
+        db._conn.execute(
+            "UPDATE sessions SET started_at = ?, title = ? WHERE id = ?",
+            (now - idx, f"Browse Session {idx}", session_id),
+        )
+        db.append_message(session_id, role="user", content=f"browse topic {idx}")
+        db.append_message(session_id, role="assistant", content=f"browse reply {idx}")
+    db._conn.commit()
+
+
 # =========================================================================
 # Schema invariants
 # =========================================================================
@@ -137,6 +151,26 @@ class TestBrowseShape:
         assert result["mode"] == "browse"
         assert result["count"] >= 3
 
+    def test_no_args_browse_defaults_to_ten_sessions(self, db):
+        _seed_browse_sessions(db, count=10)
+
+        result = json.loads(session_search(db=db))
+
+        assert result["success"] is True
+        assert result["mode"] == "browse"
+        assert result["count"] == 10
+        assert len(result["results"]) == 10
+
+    def test_browse_respects_explicit_limit(self, db):
+        _seed_browse_sessions(db, count=10)
+
+        result = json.loads(session_search(db=db, limit=4))
+
+        assert result["success"] is True
+        assert result["mode"] == "browse"
+        assert result["count"] == 4
+        assert len(result["results"]) == 4
+
     def test_browse_excludes_current_session(self, db):
         _seed_modpack_sessions(db)
         result = json.loads(session_search(db=db, current_session_id="s_newest"))
@@ -161,6 +195,15 @@ class TestDiscoveryShape:
         assert result["success"] is True
         assert result["mode"] == "discover"
         assert result["count"] >= 1
+
+    def test_discovery_default_stays_three_sessions(self, db):
+        _seed_browse_sessions(db, count=5)
+
+        result = json.loads(session_search(query="browse", db=db))
+
+        assert result["success"] is True
+        assert result["mode"] == "discover"
+        assert result["count"] == 3
 
     def test_discovery_result_has_bookends_and_window(self, db):
         _seed_modpack_sessions(db)

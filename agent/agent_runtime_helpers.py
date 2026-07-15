@@ -2294,7 +2294,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 _session_search(
                     query=next_args.get("query", ""),
                     role_filter=next_args.get("role_filter"),
-                    limit=next_args.get("limit", 3),
+                    limit=next_args.get("limit"),
                     session_id=next_args.get("session_id"),
                     around_message_id=next_args.get("around_message_id"),
                     window=next_args.get("window", 5),

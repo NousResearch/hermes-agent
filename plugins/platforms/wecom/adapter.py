@@ -270,14 +270,42 @@ class WeComAdapter(BasePlatformAdapter):
         logger.info("[%s] Disconnected", self.name)
 
     async def _cleanup_ws(self) -> None:
-        """Close the live websocket/session, if any."""
-        if self._ws and not self._ws.closed:
-            await self._ws.close()
-        self._ws = None
+        """Close the live websocket/session, if any.
 
-        if self._session and not self._session.closed:
-            await self._session.close()
-        self._session = None
+        Defensive: each ``close()`` call is wrapped in try/except because
+        Python asyncio can raise ``RuntimeError("Cannot write to closing
+        transport")`` on a transport in "closing" state. Without this
+        guard, the assignment to ``None`` is skipped and the broken
+        transport persists, blocking all future reconnection attempts.
+        Fix for #64512.
+        """
+        if self._ws:
+            if not self._ws.closed:
+                try:
+                    await self._ws.close()
+                except Exception:
+                    # Defensive: a closing transport can raise on close().
+                    # We still need to drop the reference below.
+                    logger.debug(
+                        "[%s] _ws.close() raised during cleanup; "
+                        "dropping reference anyway",
+                        self.name,
+                        exc_info=True,
+                    )
+            self._ws = None
+
+        if self._session:
+            if not self._session.closed:
+                try:
+                    await self._session.close()
+                except Exception:
+                    logger.debug(
+                        "[%s] _session.close() raised during cleanup; "
+                        "dropping reference anyway",
+                        self.name,
+                        exc_info=True,
+                    )
+            self._session = None
 
     async def _open_connection(self) -> None:
         """Open and authenticate a websocket connection."""

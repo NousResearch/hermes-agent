@@ -68,7 +68,9 @@ Usage:
 
 import json
 import logging
+import math
 import time
+import unicodedata
 
 from hermes_constants import get_hermes_home, display_hermes_home
 import os
@@ -101,6 +103,85 @@ _SKILLS_CACHE: dict = {}          # {cache_key: (signature, timestamp, skills_li
 _SKILLS_CACHE_TTL_SECONDS = 30.0
 _SKILLS_CACHE_KEY_DISABLED = "with_disabled"
 _SKILLS_CACHE_KEY_FILTERED = "filtered"
+
+_SKILL_SEARCH_DEFAULT_LIMIT = 10
+_SKILL_SEARCH_MAX_LIMIT = 50
+_SKILL_SEARCH_MAX_QUERY_CHARS = 500
+_SKILL_SEARCH_STOPWORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "by",
+        "for",
+        "from",
+        "in",
+        "is",
+        "it",
+        "of",
+        "on",
+        "or",
+        "that",
+        "the",
+        "this",
+        "to",
+        "use",
+        "using",
+        "when",
+        "with",
+    }
+)
+
+
+def _normalise_search_text(value: Any) -> str:
+    """Return stable, Unicode-aware text for lexical skill search."""
+    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    return " ".join(text.replace("_", " ").replace("-", " ").replace("/", " ").split())
+
+
+def _search_tokens(value: Any) -> tuple[str, ...]:
+    """Tokenize skill metadata without language-specific dependencies."""
+    normalised = _normalise_search_text(value)
+    return tuple(
+        token
+        for token in re.findall(r"[^\W_]+(?:\+\+|#)?", normalised, flags=re.UNICODE)
+        if len(token) > 1 and token not in _SKILL_SEARCH_STOPWORDS
+    )
+
+
+def _frontmatter_routing_terms(frontmatter: Dict[str, Any]) -> tuple[str, ...]:
+    """Extract optional discovery hints while keeping them out of tool output."""
+    metadata = frontmatter.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    hermes = metadata.get("hermes")
+    hermes = hermes if isinstance(hermes, dict) else {}
+
+    values: list[Any] = []
+    for raw in (
+        frontmatter.get("triggers"),
+        hermes.get("triggers"),
+        hermes.get("tags"),
+    ):
+        if isinstance(raw, str):
+            values.append(raw)
+        elif isinstance(raw, (list, tuple)):
+            values.extend(raw)
+
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        if not isinstance(value, str):
+            continue
+        term = value.strip()
+        key = _normalise_search_text(term)
+        if key and key not in seen:
+            seen.add(key)
+            result.append(term)
+    return tuple(result)
 
 
 def _skills_scan_signature(dirs_to_scan, disabled) -> tuple:
@@ -758,6 +839,7 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
                     "name": name,
                     "description": description,
                     "category": category,
+                    "_routing_terms": _frontmatter_routing_terms(frontmatter),
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:
@@ -782,7 +864,104 @@ def _sort_skills(skills: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     return sorted(skills, key=lambda s: (s.get("category") or "", s["name"]))
 
 
-def skills_list(category: str = None, task_id: str = None) -> str:
+def _public_skill_metadata(skill: Dict[str, Any]) -> Dict[str, Any]:
+    """Return the stable public projection of an internal discovery record."""
+    return {
+        "name": skill["name"],
+        "description": skill.get("description", ""),
+        "category": skill.get("category"),
+    }
+
+
+def _rank_skills_for_query(
+    skills: List[Dict[str, Any]], query: str
+) -> List[Dict[str, Any]]:
+    """Rank skill metadata with a deterministic, dependency-free fielded scorer.
+
+    Name, optional routing terms, category, and description are weighted in
+    that order. IDF downweights catalog-wide words, while exact phrases give
+    precise skill names and author-provided triggers a deterministic boost.
+    Skills with no lexical evidence abstain instead of returning arbitrary
+    alphabetic matches.
+    """
+    query_text = _normalise_search_text(query[:_SKILL_SEARCH_MAX_QUERY_CHARS])
+    query_tokens = set(_search_tokens(query_text))
+    if not query_text:
+        return []
+
+    records: list[tuple[Dict[str, Any], Dict[str, tuple[str, ...]], Dict[str, str]]] = []
+    document_frequency = {token: 0 for token in query_tokens}
+
+    for skill in skills:
+        routing_terms = tuple(skill.get("_routing_terms") or ())
+        field_text = {
+            "name": _normalise_search_text(skill.get("name", "")),
+            "routing": _normalise_search_text(" ".join(routing_terms)),
+            "category": _normalise_search_text(skill.get("category", "")),
+            "description": _normalise_search_text(skill.get("description", "")),
+        }
+        field_tokens = {key: _search_tokens(value) for key, value in field_text.items()}
+        document_tokens = set().union(*(set(value) for value in field_tokens.values()))
+        for token in query_tokens & document_tokens:
+            document_frequency[token] += 1
+        records.append((skill, field_tokens, field_text))
+
+    field_weights = {
+        "name": 8.0,
+        "routing": 5.0,
+        "category": 3.0,
+        "description": 1.0,
+    }
+    catalog_size = max(1, len(records))
+    scored: list[tuple[float, str, str, Dict[str, Any]]] = []
+
+    for skill, field_tokens, field_text in records:
+        score = 0.0
+        for field, tokens in field_tokens.items():
+            matched = query_tokens & set(tokens)
+            for token in matched:
+                frequency = document_frequency[token]
+                idf = math.log(1.0 + (catalog_size - frequency + 0.5) / (frequency + 0.5))
+                score += field_weights[field] * idf
+
+        name_text = field_text["name"]
+        if query_text == name_text:
+            score += 100.0
+        elif query_text in name_text or name_text in query_text:
+            score += 24.0
+
+        if any(
+            term_text
+            and (term_text in query_text or query_text in term_text)
+            for term_text in (
+                _normalise_search_text(term)
+                for term in skill.get("_routing_terms") or ()
+            )
+        ):
+            # One bounded phrase bonus: repeated/overlapping trigger metadata
+            # must not outrank an exact skill-name champion by stuffing terms.
+            score += 16.0
+
+        if score > 0.0:
+            scored.append(
+                (
+                    score,
+                    str(skill.get("category") or ""),
+                    str(skill.get("name") or ""),
+                    skill,
+                )
+            )
+
+    scored.sort(key=lambda item: (-item[0], item[1], item[2]))
+    return [item[3] for item in scored]
+
+
+def skills_list(
+    category: Optional[str] = None,
+    task_id: Optional[str] = None,
+    query: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> str:
     """
     List all available skills (progressive disclosure tier 1 - minimal metadata).
 
@@ -791,6 +970,8 @@ def skills_list(category: str = None, task_id: str = None) -> str:
 
     Args:
         category: Optional category filter (e.g., "mlops")
+        query: Optional lexical query ranked across skill metadata
+        limit: Maximum query matches to return (1-50, default 10)
         task_id: Optional task identifier used to probe the active backend
 
     Returns:
@@ -828,8 +1009,22 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         if category:
             all_skills = [s for s in all_skills if s.get("category") == category]
 
-        # Sort by category then name
-        all_skills = _sort_skills(all_skills)
+        query_text = str(query or "").strip()[:_SKILL_SEARCH_MAX_QUERY_CHARS]
+        total_matches = None
+        if query_text:
+            all_skills = _rank_skills_for_query(all_skills, query_text)
+            total_matches = len(all_skills)
+            try:
+                result_limit = int(limit) if limit is not None else _SKILL_SEARCH_DEFAULT_LIMIT
+            except (TypeError, ValueError):
+                result_limit = _SKILL_SEARCH_DEFAULT_LIMIT
+            result_limit = max(1, min(result_limit, _SKILL_SEARCH_MAX_LIMIT))
+            all_skills = all_skills[:result_limit]
+        else:
+            # Preserve the historical full-list order when no query is supplied.
+            all_skills = _sort_skills(all_skills)
+
+        public_skills = [_public_skill_metadata(skill) for skill in all_skills]
 
         # Extract unique categories
         categories = sorted(
@@ -839,10 +1034,19 @@ def skills_list(category: str = None, task_id: str = None) -> str:
         return json.dumps(
             {
                 "success": True,
-                "skills": all_skills,
+                "skills": public_skills,
                 "categories": categories,
-                "count": len(all_skills),
-                "hint": "Use skill_view(name) to see full content, tags, and linked files",
+                "count": len(public_skills),
+                "hint": (
+                    "Use skill_view(name) to load a result"
+                    if public_skills
+                    else "No lexical matches. Retry with skill, category, or domain keywords."
+                ),
+                **(
+                    {"query": query_text, "total_matches": total_matches}
+                    if query_text
+                    else {}
+                ),
             },
             ensure_ascii=False,
         )
@@ -1683,14 +1887,25 @@ if __name__ == "__main__":
 
 SKILLS_LIST_SCHEMA = {
     "name": "skills_list",
-    "description": "List available skills (name + description). Use skill_view(name) to load full content.",
+    "description": "List available skills or rank them for a task with query. Returns name + description; use skill_view(name) to load full content.",
     "parameters": {
         "type": "object",
         "properties": {
             "category": {
                 "type": "string",
                 "description": "Optional category filter to narrow results",
-            }
+            },
+            "query": {
+                "type": "string",
+                "maxLength": _SKILL_SEARCH_MAX_QUERY_CHARS,
+                "description": "Optional task or keywords used to rank relevant skills",
+            },
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": _SKILL_SEARCH_MAX_LIMIT,
+                "description": "Maximum query matches to return (default 10)",
+            },
         },
         "required": [],
     },
@@ -1720,7 +1935,10 @@ registry.register(
     toolset="skills",
     schema=SKILLS_LIST_SCHEMA,
     handler=lambda args, **kw: skills_list(
-        category=args.get("category"), task_id=kw.get("task_id")
+        category=args.get("category"),
+        query=args.get("query"),
+        limit=args.get("limit"),
+        task_id=kw.get("task_id"),
     ),
     check_fn=check_skills_requirements,
     emoji="📚",

@@ -228,7 +228,15 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // registry row in desktop-slash-commands.ts plus an entry here — never a
       // new branch in a dispatch ladder.
       const actionHandlers: Record<DesktopActionId, (ctx: SlashActionCtx) => Promise<void>> = {
+        // A plain new session (top nav "New Session", /new, the Cmd+N keybind)
+        // leaves $newChatProfile null so createBackendSessionForSend() falls
+        // back to the active gateway profile — only an explicit per-profile
+        // "+" (newSessionInProfile) or /profile <name> is meant to set it.
+        // The top-nav row and the keybind already clear it; /new must too, or
+        // a stale per-profile selection from an earlier "+" silently keeps
+        // targeting the old profile.
         new: async () => {
+          $newChatProfile.set(null)
           startFreshSessionDraft()
         },
         branch: async () => {

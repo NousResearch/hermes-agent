@@ -16429,6 +16429,28 @@ def main(
                                     _exit_code = _RL_CODE
                                 except Exception:
                                     _exit_code = 1
+                            # Parser-friendly structured log for ops dashboards
+                            # and synthetic tests. Complements
+                            # ``t_8acdc493`` / ``t_a2c1ced7`` (envelope field
+                            # population) by emitting a single JSON line that
+                            # scrapes ``failure_reason`` / ``error_class`` /
+                            # ``provider`` / ``model`` / ``http_status``
+                            # without free-text parsing. Skipped on success
+                            # paths (no-op when ``failed`` is falsy) so happy
+                            # runs stay non-regressive.
+                            if os.environ.get("HERMES_KANBAN_TASK"):
+                                try:
+                                    from hermes_cli.kanban_db import (
+                                        _emit_failure_envelope_log as _emit_envelope,
+                                    )
+                                    _emit_envelope(
+                                        task_id=os.environ.get("HERMES_KANBAN_TASK"),
+                                        result=result,
+                                        exit_code=_exit_code,
+                                    )
+                                except Exception:
+                                    # Logging must never break the worker exit.
+                                    pass
                         sys.exit(_exit_code)
 
                 # Exit with error code if credentials or agent init fails

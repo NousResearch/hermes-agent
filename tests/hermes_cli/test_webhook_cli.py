@@ -256,6 +256,11 @@ class TestGetWebhookConfigEnvOverrides:
         monkeypatch.setenv("WEBHOOK_ENABLED", "1")
         assert _get_webhook_config()["enabled"] is True
 
+    def test_env_on_enables_when_yaml_absent(self, monkeypatch):
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        monkeypatch.setenv("WEBHOOK_ENABLED", "on")
+        assert _get_webhook_config()["enabled"] is True
+
     def test_env_secret_overrides_yaml_secret(self, monkeypatch):
         monkeypatch.setattr(
             "hermes_cli.config.load_config",

@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Dict
 
 from hermes_constants import display_hermes_home
-from utils import atomic_replace
+from utils import atomic_replace, is_truthy_value
 from hermes_cli.config import cfg_get
 
 
@@ -95,7 +95,7 @@ def _get_webhook_config() -> dict:
         wh = {}
 
     # Must stay in sync with gateway/config.py:_apply_env_overrides webhook block.
-    if os.getenv("WEBHOOK_ENABLED", "").lower() in ("true", "1", "yes"):
+    if is_truthy_value(os.getenv("WEBHOOK_ENABLED", "")):
         wh["enabled"] = True
         extra = dict(wh.get("extra", {}))
         webhook_port = os.getenv("WEBHOOK_PORT")

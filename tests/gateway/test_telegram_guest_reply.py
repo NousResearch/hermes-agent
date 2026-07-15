@@ -113,6 +113,42 @@ async def test_branch1_opc_text_result_edits_stub():
     assert "Here is your answer." in kw["text"]
 
 
+@pytest.mark.asyncio
+async def test_branch1_opc_truncates_by_utf16_units_not_python_length():
+    """A reply with many astral-plane emoji is short in Python string length
+    but can exceed Telegram's 4,096 *UTF-16 code unit* limit — each emoji is
+    a surrogate pair (2 units). A naive text[:4096] slice would pass this
+    reply through untruncated and let the real editMessageText call fail
+    after guest state has already been torn down, silently dropping the
+    turn. Every editMessageText call (typewriter frames and the final edit)
+    must stay within the UTF-16 cap."""
+    from gateway.platforms.base import ProcessingOutcome, utf16_len
+
+    adapter = _make_adapter()
+    adapter._guest_inline_message_ids["42"] = "imi_abc"
+    # 2,049 emoji: 2,049 Python chars, but 4,098 UTF-16 units — over the cap
+    # despite `len(_plain) < 4096` looking safe.
+    adapter._guest_reply_buffer["42"] = "😀" * 2049
+    adapter._guest_only_chats.add("42")
+
+    event = MagicMock()
+    event.source.chat_id = "42"
+
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    calls = adapter._bot.do_api_request.await_args_list
+    edit_texts = [
+        c.kwargs["api_kwargs"]["text"]
+        for c in calls
+        if c.args[0] == "editMessageText"
+    ]
+    assert edit_texts, "expected at least one editMessageText call"
+    for text in edit_texts:
+        assert utf16_len(text) <= adapter.MAX_MESSAGE_LENGTH, (
+            f"editMessageText frame exceeds UTF-16 cap: {utf16_len(text)} units"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Caller authorization gate (fail-closed) — _handle_guest_message_update
 #

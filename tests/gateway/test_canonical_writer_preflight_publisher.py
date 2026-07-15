@@ -82,6 +82,9 @@ def _plan() -> dict[str, object]:
             "writer_config": str(publisher.DEFAULT_WRITER_CONFIG_SOURCE_PATH),
             "gateway_config": str(publisher.DEFAULT_GATEWAY_CONFIG_SOURCE_PATH),
             "writer_unit": str(publisher.DEFAULT_STAGED_WRITER_UNIT_PATH),
+            "phase_b_readiness_unit": str(
+                publisher.DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH
+            ),
             "gateway_unit": str(publisher.DEFAULT_STAGED_GATEWAY_UNIT_PATH),
             "native_observation_plan": str(publisher.DEFAULT_STAGED_NATIVE_PLAN_PATH),
             "publication_evidence_root": str(publisher.PUBLICATION_EVIDENCE_ROOT),
@@ -352,6 +355,10 @@ def test_apply_seals_terminal_receipt_without_install_or_start(tmp_path, monkeyp
                 ("writer_config", publisher.DEFAULT_WRITER_CONFIG_SOURCE_PATH),
                 ("gateway_config", publisher.DEFAULT_GATEWAY_CONFIG_SOURCE_PATH),
                 ("writer_unit", publisher.DEFAULT_STAGED_WRITER_UNIT_PATH),
+                (
+                    "phase_b_readiness_unit",
+                    publisher.DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH,
+                ),
                 ("gateway_unit", publisher.DEFAULT_STAGED_GATEWAY_UNIT_PATH),
                 (
                     "native_observation_plan",
@@ -479,6 +486,7 @@ def test_native_bound_rollback_ignores_unrelated_historical_receipts(monkeypatch
     )
     unit_bytes = {
         publisher.DEFAULT_STAGED_WRITER_UNIT_PATH: b"writer-unit",
+        publisher.DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH: b"phase-b-unit",
         publisher.DEFAULT_STAGED_GATEWAY_UNIT_PATH: b"gateway-unit",
     }
     monkeypatch.setattr(
@@ -497,6 +505,7 @@ def test_native_bound_rollback_ignores_unrelated_historical_receipts(monkeypatch
     assert removed == [
         publisher.DEFAULT_STAGED_NATIVE_PLAN_PATH,
         publisher.DEFAULT_STAGED_GATEWAY_UNIT_PATH,
+        publisher.DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH,
         publisher.DEFAULT_STAGED_WRITER_UNIT_PATH,
     ]
 
@@ -718,6 +727,10 @@ def test_apply_retry_is_safe_after_every_durable_boundary(
                     ("writer_config", plan["fixed_output_paths"]["writer_config"]),
                     ("gateway_config", plan["fixed_output_paths"]["gateway_config"]),
                     ("writer_unit", plan["fixed_output_paths"]["writer_unit"]),
+                    (
+                        "phase_b_readiness_unit",
+                        plan["fixed_output_paths"]["phase_b_readiness_unit"],
+                    ),
                     ("gateway_unit", plan["fixed_output_paths"]["gateway_unit"]),
                     (
                         "native_observation_plan",

@@ -72,11 +72,13 @@ on the production host are never transition inputs.
 /etc/muncho/writer-activation/staged/owner-approval.json
 /etc/muncho/writer-activation/staged/external-iam-receipt.json
 /etc/muncho/writer-activation/staged/muncho-canonical-writer.service
+/etc/muncho/writer-activation/staged/muncho-canonical-writer-phase-b-readiness.service
 /etc/muncho/writer-activation/staged/hermes-cloud-gateway.service
 /etc/muncho/writer-activation/native-observation-plan.json
 /etc/muncho/writer-activation/activation-plan.json
 /etc/muncho/writer-activation/deployment-manifest.json
 /etc/systemd/system/muncho-canonical-writer.service
+/etc/systemd/system/muncho-canonical-writer-phase-b-readiness.service
 /etc/systemd/system/hermes-cloud-gateway.service
 /etc/systemd/system/muncho-canonical-writer-export.service
 /etc/tmpfiles.d/muncho-canonical-writer.conf

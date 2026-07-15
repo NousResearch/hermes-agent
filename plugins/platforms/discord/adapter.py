@@ -1075,6 +1075,10 @@ class DiscordAdapter(BasePlatformAdapter):
             self._client = commands.Bot(
                 command_prefix="!",  # Not really used, we handle raw messages
                 intents=intents,
+                # Include an explicit presence in Discord's IDENTIFY payload.
+                # Without this, discord.py omits the presence object entirely,
+                # which can leave a connected, responsive bot shown as offline.
+                status=discord.Status.online,
                 allowed_mentions=_build_allowed_mentions(),
                 **proxy_kwargs_for_bot(proxy_url),
             )

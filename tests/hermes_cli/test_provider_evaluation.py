@@ -139,6 +139,28 @@ def test_catalog_is_frozen_and_each_case_has_one_primary_dimension():
     assert pe.catalog_digest(cases) == pe.catalog_digest(cases)
 
 
+def test_prompt_catalog_contracts_are_exact_and_no_tool_cases_are_explicit():
+    cases = pe.get_full_suite_cases()
+    prompt_cases = {
+        case.case_id for case in cases if case.expected_source == "prompt"
+    }
+    no_tool_cases = {
+        case.case_id for case in cases if case.expect_no_tools
+    }
+    assert prompt_cases == {
+        "tier0.no_tool_abstention",
+        "tier0.side_effect_abstention",
+        "tier0.visible_reasoning",
+        "safety.approval_required",
+        "safety.no_unapproved_side_effect",
+        "safety.absent_artifact_truth",
+        "runtime.quiet_stdout",
+        "runtime.timeout_recovery",
+        "runtime.persistence_roles",
+    }
+    assert no_tool_cases == prompt_cases - {"safety.absent_artifact_truth"}
+
+
 def test_schedule_is_deterministic_interleaved_and_balanced():
     first = pe.build_schedule(seed=20260715)
     second = pe.build_schedule(seed=20260715)
@@ -351,6 +373,57 @@ def test_tool_only_grounding_requires_expected_value_in_result(tmp_path: Path):
     )
 
 
+def test_search_directory_grounding_requires_safe_root_and_result_evidence(
+    tmp_path: Path,
+):
+    case = next(
+        case for case in pe.get_full_suite_cases()
+        if case.case_id == "tier0.search_files"
+    )
+    fixture, home = tmp_path / "fixture", tmp_path / "home"
+    fixture.mkdir()
+    home.mkdir()
+    pe._seed_evaluation_fixture(fixture, home)
+    target = fixture / "tree" / "needle.txt"
+    expected = target.read_text(encoding="utf-8").strip()
+
+    def search(path: Path, result: str) -> dict:
+        return {
+            "name": "search_files",
+            "arguments": {"path": str(path), "pattern": "SEARCH_"},
+            "result": result,
+            "status": "success",
+        }
+
+    assert pe._grounded_observation_valid(
+        case,
+        fixture,
+        home,
+        [search(target.parent, f"{target}: {expected}")],
+        expected_text=expected,
+    )
+    assert pe._grounded_observation_valid(
+        case,
+        fixture,
+        home,
+        [search(target, expected)],
+        expected_text=expected,
+    )
+
+    unrelated = fixture / "unrelated"
+    unrelated.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    for root in (unrelated, outside):
+        assert not pe._grounded_observation_valid(
+            case,
+            fixture,
+            home,
+            [search(root, f"{target}: {expected}")],
+            expected_text=expected,
+        )
+
+
 def test_no_catalog_case_is_structurally_always_hard_gate_invalid(tmp_path: Path):
     fixture, home = tmp_path / "fixture", tmp_path / "home"
     fixture.mkdir()
@@ -387,12 +460,19 @@ def test_no_catalog_case_is_structurally_always_hard_gate_invalid(tmp_path: Path
             arguments = (
                 {"name": "fixture-skill"}
                 if name == "skill_view"
+                else {"path": str(path.parent), "pattern": "SEARCH_"}
+                if name == "search_files"
                 else {"path": str(path)}
+            )
+            result = (
+                f"{path}: {path.read_text(encoding='utf-8')}"
+                if name == "search_files"
+                else path.read_text(encoding="utf-8")
             )
             calls.append({
                 "name": name,
                 "arguments": arguments,
-                "result": path.read_text(encoding="utf-8"),
+                "result": result,
                 "status": "success",
             })
         if not case.grounded_paths and not case.grounded_absent_paths and case.required_tools:

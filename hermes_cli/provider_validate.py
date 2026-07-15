@@ -46,6 +46,7 @@ class ValidationCase:
     expect_no_tools: bool = False
     expected_tool_sequence: tuple[tuple[str, str, str], ...] = ()
     forbidden_artifacts: tuple[str, ...] = ()
+    exact_text: bool = False
 
 
 @dataclass
@@ -407,7 +408,11 @@ def score_case(
         "timeout_not_triggered": not timed_out,
         "session_id_found": bool(session_id),
         "session_receipt_loaded": session_receipt_loaded,
-        "expected_text_found": case.expected_text in final_text,
+        "expected_text_found": (
+            final_text.strip() == case.expected_text
+            if case.exact_text
+            else case.expected_text in final_text
+        ),
         "visible_reasoning_clean": not _has_visible_reasoning_leak(final_text),
         "required_tools_called": all(tool in tool_names for tool in case.required_tools),
         "forbidden_tools_absent": not any(tool in tool_names for tool in case.forbidden_tools),

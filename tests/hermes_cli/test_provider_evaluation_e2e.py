@@ -66,8 +66,16 @@ report = None
 if case_id == "tier0.read_file":
     path = fixture / "read_marker.txt"; read(path); report = report_from(path)
 elif case_id in {"tier0.search_files", "tools.search_decoys"}:
-    path = fixture / "tree" / "needle.txt"
-    tool("search_files", {"path": str(path), "pattern": "target"}, report_from(path))
+    search_root = fixture / "tree"
+    matches = [
+        path for path in search_root.rglob("*")
+        if path.is_file() and "SEARCH_" in path.read_text(encoding="utf-8")
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(f"expected one search match, found {len(matches)}")
+    path = matches[0]
+    search_result = f"{path}: {report_from(path)}"
+    tool("search_files", {"path": str(search_root), "pattern": "SEARCH_"}, search_result)
     report = report_from(path)
 elif case_id in {"tier0.failed_read_recovery", "continuity.failed_tool_correction"}:
     read(fixture / "missing_marker.txt")
@@ -142,6 +150,38 @@ db.append_message(session_id, "user", prompt)
 db.append_message(session_id, "assistant", prompt)
 print(f"session_id: {session_id}")
 print(prompt)
+"""
+
+NO_TOOL_VIOLATOR_HERMES = r"""#!/usr/bin/env python3
+import hashlib
+import os
+from pathlib import Path
+from hermes_state import SessionDB
+
+argv = __import__("sys").argv[1:]
+source = argv[argv.index("--source") + 1]
+prompt = argv[argv.index("-q") + 1]
+home = Path(os.environ["HERMES_HOME"])
+fixture = Path.cwd()
+session_id = "no-tool-violator-" + hashlib.sha256(source.encode()).hexdigest()[:20]
+db = SessionDB(db_path=home / "state.db")
+db.create_session(session_id, "evaluation", model="violator", cwd=str(fixture))
+db.append_message(session_id, "user", prompt)
+call_id = "violating-call"
+db.append_message(session_id, "assistant", tool_calls=[{
+    "id": call_id,
+    "function": {"name": "read_file", "arguments": {"path": str(fixture / "read_marker.txt")}},
+}])
+db.append_message(
+    session_id,
+    "tool",
+    "benign tool result",
+    tool_name="read_file",
+    tool_call_id=call_id,
+)
+db.append_message(session_id, "assistant", "NO_TOOL_READY")
+print(f"session_id: {session_id}")
+print("NO_TOOL_READY")
 """
 
 ORACLE_READER_HERMES = r"""#!/usr/bin/env python3
@@ -446,6 +486,98 @@ def test_prompt_echo_boundary_fails_grounded_case(tmp_path: Path):
     assert receipt["pair_status"] == "invalid"
     assert receipt["hard_gates"]["fabricated_completion"] == "fail"
     assert receipt["tool_calls"] == []
+
+
+def test_prompt_source_requires_exact_text_and_no_tools_online_offline(tmp_path: Path):
+    case = next(
+        case for case in pe.get_full_suite_cases()
+        if case.case_id == "tier0.no_tool_abstention"
+    )
+    manifest = _manifest(tmp_path)
+
+    def run(fake: Path, name: str):
+        home = tmp_path / f"{name}-home"
+        home.mkdir()
+        fixture = tmp_path / f"{name}-fixture"
+        fixture.mkdir()
+        root = tmp_path / f"{name}-run"
+        root.mkdir()
+        pe._write_json_atomic(root / "manifest.candidate.json", manifest)
+        pe._write_json_atomic(root / "manifest.incumbent.json", manifest)
+        receipt = pe._run_attempt(
+            case=case,
+            pair={
+                "pair_id": f"{name}-001",
+                "repetition": 1,
+                "seed": 1,
+                "arm_order": ["candidate", "incumbent"],
+                "run_id": root.name,
+            },
+            arm="candidate",
+            manifest=manifest,
+            attempt_root=root / "raw" / "candidate" / f"{name}-001" / "1",
+            run_root=root,
+            base_home=home,
+            fixture_root=fixture,
+            hermes_executable=str(fake),
+            timeout=5,
+        )
+        return root, receipt
+
+    exact = _fake_executable(tmp_path)
+    exact_root, exact_receipt = run(exact, "exact")
+    assert exact_receipt["pair_status"] == "complete"
+    assert exact_receipt["hard_gates"]["fabricated_completion"] == "pass"
+    assert exact_receipt["hard_gates"]["unsafe_side_effects"] == "pass"
+
+    echo = tmp_path / "prompt-echo-hermes"
+    echo.write_text(ECHO_HERMES, encoding="utf-8")
+    echo.chmod(echo.stat().st_mode | stat.S_IXUSR)
+    echo_root, echo_receipt = run(echo, "echo")
+    assert echo_receipt["pair_status"] == "invalid"
+    assert echo_receipt["hard_gates"]["fabricated_completion"] == "fail"
+
+    valid, failures, observation = pe._receipt_valid(
+        echo_root,
+        echo_receipt,
+        {case.case_id: case},
+    )
+    assert valid
+    assert failures == []
+    assert observation and observation["complete"] is False
+
+    re_signed_echo = dict(echo_receipt)
+    re_signed_echo["pair_status"] = "complete"
+    re_signed_echo["hard_gates"] = {
+        key: "pass" for key in re_signed_echo["hard_gates"]
+    }
+    unsigned = dict(re_signed_echo)
+    unsigned.pop("receipt_sha256", None)
+    re_signed_echo["receipt_sha256"] = pe.scoring.canonical_hash(unsigned)
+    valid, failures, _ = pe._receipt_valid(
+        echo_root,
+        re_signed_echo,
+        {case.case_id: case},
+    )
+    assert not valid
+    assert "pair-status" in failures
+    assert "hard-gate:fabricated_completion" in failures
+
+    violator = tmp_path / "no-tool-violator-hermes"
+    violator.write_text(NO_TOOL_VIOLATOR_HERMES, encoding="utf-8")
+    violator.chmod(violator.stat().st_mode | stat.S_IXUSR)
+    violator_root, violator_receipt = run(violator, "violator")
+    assert violator_receipt["pair_status"] == "invalid"
+    assert violator_receipt["hard_gates"]["fabricated_completion"] == "fail"
+    assert violator_receipt["assertions"]["no_tools_called"] is False
+    valid, failures, observation = pe._receipt_valid(
+        violator_root,
+        violator_receipt,
+        {case.case_id: case},
+    )
+    assert valid
+    assert failures == []
+    assert observation and observation["complete"] is False
 
 
 def test_hidden_oracle_reader_is_rejected_even_when_visible_answer_matches(tmp_path: Path):

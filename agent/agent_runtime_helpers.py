@@ -2345,8 +2345,13 @@ def looks_like_codex_intermediate_ack(
         # CJK acks have no Latin future-ack phrase for the regex above to
         # match, so check common Chinese future-ack phrases via substring
         # containment instead (mirrors how action_markers below already work).
-        cjk_future_ack_markers = ("我先", "我來", "我会", "我會", "讓我", "让我", "我直接", "接下來我", "接下来我")
-        has_future_ack = any(marker in assistant_text for marker in cjk_future_ack_markers)
+        # "我先" is checked with a lookahead instead of bare containment,
+        # which would also match "我先前" ("previously I..."), a past-tense
+        # report rather than a promise of future work.
+        cjk_future_ack_markers = ("我來", "我会", "我會", "讓我", "让我", "我直接", "接下來我", "接下来我")
+        has_future_ack = any(
+            marker in assistant_text for marker in cjk_future_ack_markers
+        ) or bool(re.search(r"我先(?!前)", assistant_text))
     if not has_future_ack:
         return False
 

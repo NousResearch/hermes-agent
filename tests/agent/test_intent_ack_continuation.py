@@ -216,3 +216,16 @@ def test_chinese_final_answer_does_not_fire():
     assert not looks_like_codex_intermediate_ack(
         a, user_msg, final, msgs, require_workspace=False
     )
+
+
+def test_chinese_past_tense_report_does_not_fire():
+    """"我先前" ("previously I...") reports completed work; it must not match
+    the "我先" future-ack marker even when an action verb like "查" appears.
+    """
+    a = _agent(True, "chat_completions")
+    user_msg = "服務現在正常嗎？"
+    final = "我先前查過的資料顯示服務正常。"
+    msgs = [{"role": "user", "content": user_msg}]
+    assert not looks_like_codex_intermediate_ack(
+        a, user_msg, final, msgs, require_workspace=False
+    )

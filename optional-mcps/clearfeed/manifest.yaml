@@ -2,7 +2,7 @@ manifest_version: 1
 
 name: clearfeed
 description: Search, inspect, and manage ClearFeed requests, customers, collections, teams, users, tickets, and insights.
-source: https://github.com/clearfeed/clearfeed-mcp
+source: https://docs.clearfeed.ai/clearfeed-help-center/managing-requests/api-and-mcp#mcp-server
 
 transport:
   type: http

@@ -1041,6 +1041,25 @@ a { color: inherit; }
   color: var(--status-serious);
   border-color: color-mix(in srgb, var(--status-serious) 40%, transparent);
 }
+.agent-approval {
+  align-self: stretch;
+  max-width: 100%;
+  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  border-left: 2px solid var(--accent);
+  background: var(--accent-dim);
+  border-radius: 4px;
+  padding: 9px 11px;
+}
+.agent-approval-head {
+  margin: 0 0 4px;
+  font-family: ui-monospace, Menlo, monospace;
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--accent);
+}
+.agent-approval-body { margin: 0 0 8px; font-size: 12.5px; color: var(--ink); overflow-wrap: anywhere; }
+.agent-approval-btns { display: flex; gap: 8px; }
+.agent-approval-btns .btn { padding: 4px 14px; font-size: 12px; }
 .agent-quick { display: flex; gap: 12px; margin: 8px 2px 6px; flex-wrap: wrap; }
 .agent-quick .link-btn:last-child { margin-left: auto; color: var(--muted); }
 .agent-tool-block {

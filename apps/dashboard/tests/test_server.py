@@ -1089,6 +1089,33 @@ class RouterTests(unittest.TestCase):
         self.assertIsNone(status["routing"])
 
 
+class PermissionTierTests(unittest.TestCase):
+    def test_tiers_cover_every_shipped_tool(self):
+        client_tools = {t["name"] for t in assistant.DASHBOARD_TOOLS}
+        server_tools = set(assistant.SERVER_TOOLS)
+        for name in client_tools | server_tools:
+            self.assertIn(assistant.tool_tier(name), ("auto", "confirm"),
+                          f"{name} is unclassified (would be blocked)")
+
+    def test_sensitive_actions_require_confirm(self):
+        for name in ("add_app", "open_url", "create_automation", "delete_automation"):
+            self.assertEqual(assistant.tool_tier(name), "confirm", name)
+
+    def test_frequent_actions_are_auto(self):
+        for name in ("add_task", "complete_task", "add_event", "add_note",
+                     "switch_news_topic", "get_news"):
+            self.assertEqual(assistant.tool_tier(name), "auto", name)
+
+    def test_unknown_tool_is_blocked(self):
+        self.assertEqual(assistant.tool_tier("run_shell"), "blocked")
+        self.assertEqual(assistant.tool_tier("send_money"), "blocked")
+
+    def test_status_exposes_permission_map(self):
+        perms = assistant.Assistant().status()["permissions"]
+        self.assertEqual(perms["add_task"], "auto")
+        self.assertEqual(perms["open_url"], "confirm")
+
+
 class BackupHttpTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

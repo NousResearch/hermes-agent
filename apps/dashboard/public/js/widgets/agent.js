@@ -6,7 +6,7 @@
 // are fed back until the turn ends. Nothing personal is stored server-side.
 
 import { h, clear, toast } from "../utils.js";
-import { executeAction, buildContext } from "../actions.js";
+import { executeAction, buildContext, toolTier, describeAction } from "../actions.js";
 import { api } from "../api.js";
 import { enableSystemAlerts } from "../notifications.js";
 
@@ -102,6 +102,40 @@ export default {
       log.scrollTop = log.scrollHeight;
     };
 
+    // Permission gate (Layer F): a confirm-tier tool pauses the loop here until
+    // the user clicks. Resolves true (approve) / false (deny).
+    const requestApproval = (name, input) => new Promise((resolve) => {
+      const card = h("div.agent-msg.agent-approval", { role: "group", "aria-label": "Approval required" },
+        h("p.agent-approval-head", {}, "◆ APPROVAL REQUIRED"),
+        h("p.agent-approval-body", {}, describeAction(name, input)),
+        h("div.agent-approval-btns", {},
+          h("button.btn.btn-primary", {
+            type: "button",
+            onclick: () => { card.remove(); resolve(true); },
+          }, "Approve"),
+          h("button.btn", {
+            type: "button",
+            onclick: () => { card.remove(); resolve(false); },
+          }, "Deny"),
+        ),
+      );
+      log.append(card);
+      log.scrollTop = log.scrollHeight;
+    });
+
+    // Run a single tool call through the permission gate.
+    const runGatedTool = async (name, input) => {
+      const tier = toolTier(name);
+      if (tier === "blocked") {
+        return { ok: false, result: "blocked by dashboard policy" };
+      }
+      if (tier === "confirm") {
+        const approved = await requestApproval(name, input);
+        if (!approved) return { ok: false, result: "the user declined this action" };
+      }
+      return executeAction(name, input);
+    };
+
     let busy = false;
     const setBusy = (value) => {
       busy = value;
@@ -150,7 +184,7 @@ export default {
           for (const block of res.content) {
             if (block.type === "text" && block.text.trim()) texts.push(block.text.trim());
             if (block.type === "tool_use") {
-              const outcome = await executeAction(block.name, block.input);
+              const outcome = await runGatedTool(block.name, block.input);
               actions.push(outcome);
               toolResults.push({
                 type: "tool_result",

@@ -276,6 +276,27 @@ SERVER_TOOLS = {
     "remember", "create_automation", "list_automations", "delete_automation",
 }
 
+# Jarvis Layer F — permission gate. Every tool call is classified server-side
+# (this map is the source of truth; the client mirrors it for pre-flight UX but
+# the tiers are never agent-editable). "confirm" tools pause the agent loop for
+# a click; "blocked" tools are refused outright. Unknown tools default to
+# "blocked" — a future sensitive tool (shell, email, payments) is denied until
+# it is explicitly classified here.
+TOOL_TIERS = {
+    # auto — read-only or trivially reversible dashboard edits
+    "add_task": "auto", "complete_task": "auto", "add_event": "auto",
+    "add_note": "auto", "switch_news_topic": "auto", "remember": "auto",
+    "get_news": "auto", "read_article": "auto", "get_weather": "auto",
+    "get_worldstate": "auto", "get_markets": "auto", "list_automations": "auto",
+    # confirm — outward-facing or unattended-effect actions
+    "add_app": "confirm", "open_url": "confirm",
+    "create_automation": "confirm", "delete_automation": "confirm",
+}
+
+
+def tool_tier(name: str) -> str:
+    return TOOL_TIERS.get(name, "blocked")
+
 
 def _credentials_available() -> bool:
     if os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN"):
@@ -403,6 +424,7 @@ class Assistant:
             # default core tier as the headline, with the full table alongside.
             "model": (self.router.pin or TIERS["core"]) if claude else None,
             "routing": self.router.snapshot() if claude else None,
+            "permissions": dict(TOOL_TIERS),
             "sdk_installed": _HAVE_SDK,
             "hint": None if claude else (
                 "Local rule-based mode. For full AI: pip install anthropic, "

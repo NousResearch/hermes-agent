@@ -79,7 +79,7 @@ with two engines:
 | Mode | When | What you get |
 |---|---|---|
 | **LOCAL** | default, zero setup | command parser (`add task…`, `complete…`, `open GitHub`, `add event tomorrow: …`, `show tech news`, `brief me`), extractive summaries, rule-based daily briefing with automation suggestions |
-| **CLAUDE** | `pip install anthropic` + `ANTHROPIC_API_KEY` (or `ant auth login`), then restart | full conversational agent (Claude Opus 4.8 by default, override with `HERMES_HUB_MODEL`) that plans, chats, and calls dashboard tools; model-written summaries and briefings |
+| **CLAUDE** | `pip install anthropic` + `ANTHROPIC_API_KEY` (or `ant auth login`), then restart | full conversational agent that plans, chats, and calls dashboard tools; model-written summaries and briefings |
 
 In both modes the agent can **act** (add/complete tasks, events, notes,
 launcher apps, open URLs in the viewer, switch news topics — executed in your
@@ -89,6 +89,21 @@ dashboard's own feeds). It also has **long-term memory**: say
 "remember: …" and the fact persists in `data/memory.md` across sessions
 ("what do you remember" reads it back; in Claude mode it is injected into the
 agent's context automatically).
+
+**Cost-aware routing (Claude mode).** The agent doesn't burn the biggest model
+on every turn. A router (`router.py`) picks the cheapest viable tier per task —
+Haiku for summaries, Sonnet for chat, Opus only for hard/ambiguous/security- or
+finance-sensitive turns — and rate-caps the expensive tier. Override any tier
+with `HERMES_HUB_MODEL_FAST` / `_CORE` / `_DEEP`, or pin one model for
+everything with `HERMES_HUB_MODEL`.
+
+**Permission gate.** Every tool call is classified server-side (Jarvis Layer F,
+not agent-editable). Read-only and reversible edits (tasks, notes, events,
+research) run instantly; outward-facing or unattended-effect actions (adding a
+launcher app, opening a URL, arming or deleting an automation) pop an
+**approval card** in the Agent widget and wait for your click; anything
+unclassified is refused. See `JARVIS.md` for the full agent architecture and
+roadmap.
 
 Every widget (and every news story, and the article viewer) has a **∑**
 button that summarizes that piece of data with the active engine. In
@@ -161,9 +176,11 @@ public/            zero-build frontend (ES modules, design-system CSS)
   js/viewer.js     in-app reader/embed overlay
   js/actions.js    executes agent tool calls against local state
 tests/
-  test_server.py   94 unit tests (feeds+sources, worldstate, reader, assistant,
-                   sync, auth, automations, memory, watchlist, SSE, ICS, HTTP)
-  e2e.mjs          88-check Playwright suite (needs playwright-core + Chromium)
+  router.py        cost-aware model routing (Jarvis Layer I)
+  test_server.py   114 unit tests (feeds+sources, worldstate, reader, assistant,
+                   sync, auth, automations, memory, watchlist, SSE, ICS,
+                   backups, model router, permission tiers, HTTP)
+  e2e.mjs          91-check Playwright suite (needs playwright-core + Chromium)
                    — also runs in CI (.github/workflows/dashboard.yml)
 ```
 

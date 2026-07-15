@@ -199,12 +199,30 @@ await page.waitForFunction(() =>
   [...document.querySelectorAll(".task-text")].some((el) => el.textContent.includes("e2e agent made this")));
 check("agent task visible in Lists widget", true);
 
+// open_url is confirm-tier (permission gate): an approval card appears first
 await page.locator(".agent-input").fill("open GitHub");
 await page.locator(".agent-form .btn-primary").click();
+await page.waitForSelector(".agent-approval", { timeout: 10000 });
+check("confirm-tier tool shows approval card", true);
+await page.locator(".agent-approval .btn-primary").click(); // Approve
 await page.waitForSelector(".viewer", { timeout: 10000 });
-check("agent opens app in viewer", true);
+check("agent opens app in viewer after approval", true);
 await page.keyboard.press("Escape");
 await page.waitForSelector(".viewer", { state: "detached" });
+
+// deny path: add_app is confirm-tier; denying must NOT add the launcher tile
+const appsBefore = await page.evaluate(() =>
+  import("/js/store.js").then(({ store }) => store.state.launcher.links.length));
+await page.locator(".agent-input").fill("add app DeniedApp https://denied.example.org");
+await page.locator(".agent-form .btn-primary").click();
+await page.waitForSelector(".agent-approval", { timeout: 10000 });
+await page.locator(".agent-approval .btn:not(.btn-primary)").click(); // Deny
+await page.waitForSelector(".agent-approval", { state: "detached" });
+const appsAfter = await page.evaluate(() =>
+  import("/js/store.js").then(({ store }) => store.state.launcher.links.length));
+check("denied confirm-tier tool does not execute", appsAfter === appsBefore);
+check("agent reports the declined action",
+  (await page.locator(".agent-chip-err").last().innerText()).includes("declined"));
 
 // briefing
 await page.locator(".agent-quick .link-btn").first().click();
@@ -218,6 +236,9 @@ await shot(page, "05-agent");
 // ---- automations via the agent ------------------------------------------------
 await page.locator(".agent-input").fill("alert me if BTC moves 0.5%");
 await page.locator(".agent-form .btn-primary").click();
+// create_automation is confirm-tier → approve it
+await page.waitForSelector(".agent-approval", { timeout: 10000 });
+await page.locator(".agent-approval .btn-primary").click();
 await page.waitForFunction(() =>
   [...document.querySelectorAll(".agent-chip")].some((el) => el.textContent.includes("armed")),
   null, { timeout: 10000 });

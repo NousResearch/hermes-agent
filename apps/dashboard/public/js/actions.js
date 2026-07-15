@@ -13,6 +13,33 @@ const SERVER_TOOLS = new Set([
   "remember", "create_automation", "list_automations", "delete_automation",
 ]);
 
+// Permission gate (Jarvis Layer F) — mirrors assistant.TOOL_TIERS. The server
+// is the source of truth; this copy drives pre-flight UX so the loop doesn't
+// have to await a fetch per tool. Unknown tools default to "blocked".
+const TOOL_TIERS = {
+  add_task: "auto", complete_task: "auto", add_event: "auto", add_note: "auto",
+  switch_news_topic: "auto", remember: "auto", get_news: "auto",
+  read_article: "auto", get_weather: "auto", get_worldstate: "auto",
+  get_markets: "auto", list_automations: "auto",
+  add_app: "confirm", open_url: "confirm",
+  create_automation: "confirm", delete_automation: "confirm",
+};
+
+export function toolTier(name) {
+  return TOOL_TIERS[name] || "blocked";
+}
+
+/** Human-readable one-liner describing a pending tool call, for approval cards. */
+export function describeAction(name, input = {}) {
+  switch (name) {
+    case "add_app": return `Add app “${input.name || input.url}” → ${input.url}`;
+    case "open_url": return `Open ${input.title || input.url} in the viewer`;
+    case "create_automation": return `Arm automation “${input.name || "untitled"}”`;
+    case "delete_automation": return `Delete automation #${input.id}`;
+    default: return `${name} ${JSON.stringify(input)}`;
+  }
+}
+
 function findList(state, name) {
   const lower = (name || "").toLowerCase();
   return state.tasks.lists.find((l) => l.name.toLowerCase() === lower);

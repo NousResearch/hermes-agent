@@ -128,9 +128,7 @@ class CarbonVoiceAdapter(BasePlatformAdapter):
     # contract (one bubble, text + audio together).
     #
     # The base class default is False, so adapters that don't override
-    # this are unaffected. Requires the patched base.py from PR 6 (and
-    # the parallel upstream PR) — without it the attribute is read but
-    # ignored, and we ship a duplicate text bubble.
+    # this are unaffected.
     voice_out_carries_text = True
 
     def __init__(self, config: PlatformConfig):

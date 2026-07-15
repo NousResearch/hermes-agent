@@ -4,6 +4,9 @@ import json
 import os
 import subprocess
 import sys
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -463,6 +466,28 @@ class TestGatewayRuntimeStatus:
         assert first["gateway_start_id"].startswith("gw_")
         assert first["gateway_start_id"] != "gw-previous"
         assert second["gateway_start_id"] == first["gateway_start_id"]
+
+    def test_gateway_start_id_is_thread_stable_on_first_initialization(
+        self, monkeypatch
+    ):
+        monkeypatch.setattr(status, "_gateway_start_identity", None)
+        uuid_calls = 0
+        calls_lock = threading.Lock()
+
+        def delayed_uuid4():
+            nonlocal uuid_calls
+            with calls_lock:
+                uuid_calls += 1
+                value = uuid_calls
+            time.sleep(0.05)
+            return SimpleNamespace(hex=f"{value:032x}")
+
+        monkeypatch.setattr(status.uuid, "uuid4", delayed_uuid4)
+        with ThreadPoolExecutor(max_workers=8) as executor:
+            start_ids = list(executor.map(lambda _index: status._get_gateway_start_id(), range(8)))
+
+        assert uuid_calls == 1
+        assert len(set(start_ids)) == 1
 
     def test_runtime_status_start_id_changes_across_gateway_processes(self, tmp_path):
         env = os.environ.copy()

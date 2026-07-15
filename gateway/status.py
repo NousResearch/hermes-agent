@@ -46,6 +46,7 @@ _WINDOWS_LOCK_OFFSET = 1024 * 1024
 _GATEWAY_RUNNING_PID_CACHE_TTL_SECONDS = 1.0
 _gateway_running_pid_cache_lock = threading.Lock()
 _gateway_running_pid_cache: dict[tuple[str, bool, bool], tuple[float, tuple[Any, ...], Optional[int]]] = {}
+_gateway_start_identity_lock = threading.Lock()
 _gateway_start_identity: tuple[int, str] | None = None
 
 
@@ -103,7 +104,9 @@ def _get_gateway_start_id() -> str:
 
     pid = os.getpid()
     if _gateway_start_identity is None or _gateway_start_identity[0] != pid:
-        _gateway_start_identity = (pid, f"gw_{uuid.uuid4().hex[:20]}")
+        with _gateway_start_identity_lock:
+            if _gateway_start_identity is None or _gateway_start_identity[0] != pid:
+                _gateway_start_identity = (pid, f"gw_{uuid.uuid4().hex[:20]}")
     return _gateway_start_identity[1]
 
 

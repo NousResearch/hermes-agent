@@ -392,6 +392,44 @@ def test_reference_messages_fresh_user_turn_ends_on_that_user():
     assert view[-1] == {"role": "user", "content": "q2 current"}
 
 
+def test_reference_messages_drops_empty_user_turns():
+    """Empty user turns must not leak into the advisory view.
+
+    A user message whose content is "" or a non-string/multimodal payload
+    (flattened to "" by the text-extraction step) carries nothing advisory.
+    Strict providers (Kimi/Moonshot and others that enforce non-empty user
+    content) reject such a message with
+    400 "message ... with role 'user' must not be empty", while lenient
+    providers (DeepSeek) accept it — so a fan-out over the identical rendered
+    view fails on one reference and passes on another. The renderer must emit
+    NO empty user turn, mirroring how empty assistant turns are dropped.
+    """
+    from agent.moa_loop import _reference_messages
+
+    messages = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "real question"},
+        {"role": "assistant", "content": "", "tool_calls": [
+            {"function": {"name": "read_file", "arguments": '{"path":"c.yaml"}'}}
+        ]},
+        {"role": "tool", "content": "some result"},
+        {"role": "user", "content": ""},  # empty string user turn
+        {"role": "user", "content": [{"type": "text", "text": "multimodal"}]},  # non-string -> ""
+    ]
+
+    view = _reference_messages(messages)
+
+    # No user turn in the view may be empty/whitespace-only.
+    empty_users = [
+        m for m in view
+        if m.get("role") == "user" and not str(m.get("content", "")).strip()
+    ]
+    assert empty_users == [], f"empty user turn leaked into advisory view: {empty_users}"
+    # The real user prompt survives and the view still ends on a user turn.
+    assert view[0] == {"role": "user", "content": "real question"}
+    assert view[-1]["role"] == "user"
+
+
 def test_run_reference_prepends_advisory_system_prompt(monkeypatch):
     """Each reference call gets the advisory-role system prompt first.
 
@@ -1203,3 +1241,27 @@ def test_reference_guidance_appends_text_part_to_decorated_trailing_user():
     assert content[0] == marked_part
     # The guidance rides as a trailing text part outside the cached span.
     assert content[1] == {"type": "text", "text": "\n\nREFERENCE BLOCK"}
+
+
+def test_reference_messages_drops_whitespace_only_string_user_turn():
+    """A whitespace-only STRING user turn is dropped, not placeholdered.
+
+    The non-text placeholder exists for structured content (image-only turns)
+    where a real turn happened that the reference should know about. A bare
+    whitespace string carries nothing — emitting it would 400 strict
+    providers (Kimi/Moonshot 'role user must not be empty'), and
+    placeholdering it would fabricate an attachment that never existed.
+    """
+    from agent.moa_loop import _reference_messages
+
+    messages = [
+        {"role": "user", "content": "   "},
+        {"role": "assistant", "content": "a"},
+        {"role": "user", "content": "real"},
+    ]
+
+    view = _reference_messages(messages)
+
+    assert view[0] == {"role": "assistant", "content": "a"}
+    assert view[-1] == {"role": "user", "content": "real"}
+    assert all(str(m["content"]).strip() for m in view)

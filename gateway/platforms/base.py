@@ -63,9 +63,17 @@ def _thread_metadata_for_source(source, reply_to_message_id: str | None = None) 
     ``direct_messages_topic_id`` when the Bot API supports it.
     """
     thread_id = getattr(source, "thread_id", None)
-    if thread_id is None:
+    metadata = {"thread_id": thread_id} if thread_id is not None else {}
+    # Slack workspace identity is durable routing state, not ephemeral event
+    # metadata. Carry it on every outbound path (including unthreaded sends)
+    # so a multi-workspace Socket Mode gateway never falls back to its primary
+    # WebClient after an async, stream, or recovery boundary.
+    if _platform_name(getattr(source, "platform", None)) == "slack":
+        scope_id = getattr(source, "scope_id", None)
+        if scope_id:
+            metadata["slack_team_id"] = str(scope_id)
+    if not metadata:
         return None
-    metadata = {"thread_id": thread_id}
     if _platform_name(getattr(source, "platform", None)) == "telegram" and getattr(source, "chat_type", None) == "dm":
         metadata["telegram_dm_topic_reply_fallback"] = True
         tid = str(thread_id)
@@ -3202,6 +3210,30 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
+    async def _stop_typing_with_metadata(self, chat_id: str, metadata=None) -> None:
+        """Stop typing while preserving platform-specific routing metadata.
+
+        Most adapters key typing state by chat and retain the historical
+        ``stop_typing(chat_id)`` signature. Slack AI status is per thread and
+        workspace, however, so losing metadata can clear a sibling thread or
+        leave the current one active. Introspect at this shared chokepoint so
+        existing adapters remain source-compatible.
+        """
+        if metadata:
+            try:
+                params = inspect.signature(self.stop_typing).parameters
+                accepts_metadata = "metadata" in params or any(
+                    param.kind is inspect.Parameter.VAR_KEYWORD
+                    for param in params.values()
+                )
+            except (TypeError, ValueError):
+                accepts_metadata = False
+            if accepts_metadata:
+                stop_typing = getattr(self, "stop_typing")
+                await stop_typing(chat_id, metadata=metadata)
+                return
+        await self.stop_typing(chat_id)
+
     async def send_multiple_images(
         self,
         chat_id: str,
@@ -3879,7 +3911,7 @@ class BasePlatformAdapter(ABC):
             # Cancelling _keep_typing alone won't clean that up.
             if hasattr(self, "stop_typing"):
                 try:
-                    await self.stop_typing(chat_id)
+                    await self._stop_typing_with_metadata(chat_id, metadata)
                 except Exception:
                     pass
             self._typing_paused.discard(chat_id)
@@ -3889,6 +3921,7 @@ class BasePlatformAdapter(ABC):
         chat_id: str,
         typing_task: asyncio.Task | None = None,
         *,
+        metadata=None,
         timeout: float = 0.5,
         stop_attempts: int = 2,
     ) -> None:
@@ -3908,7 +3941,7 @@ class BasePlatformAdapter(ABC):
             attempts = max(1, stop_attempts)
             for attempt in range(attempts):
                 try:
-                    await self.stop_typing(chat_id)
+                    await self._stop_typing_with_metadata(chat_id, metadata)
                 except Exception:
                     pass
                 if attempt < attempts - 1:
@@ -3928,14 +3961,14 @@ class BasePlatformAdapter(ABC):
         """Resume typing indicator for a chat after approval resolves."""
         self._typing_paused.discard(chat_id)
 
-    async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
+    async def interrupt_session_activity(self, session_key: str, chat_id: str, metadata=None) -> None:
         """Signal the active session loop to stop and clear typing immediately."""
         if session_key:
             interrupt_event = self._active_sessions.get(session_key)
             if interrupt_event is not None:
                 interrupt_event.set()
         try:
-            await self.stop_typing(chat_id)
+            await self._stop_typing_with_metadata(chat_id, metadata)
         except Exception:
             pass
 
@@ -4873,6 +4906,7 @@ class BasePlatformAdapter(ABC):
             await self._stop_typing_refresh(
                 event.source.chat_id,
                 typing_task,
+                metadata=_thread_metadata,
             )
         
         try:
@@ -5296,6 +5330,7 @@ class BasePlatformAdapter(ABC):
             await self._stop_typing_refresh(
                 event.source.chat_id,
                 None,
+                metadata=_thread_metadata,
                 stop_attempts=1,
             )
             # Final drain/release boundary: force-flush any timer that missed
@@ -5464,6 +5499,7 @@ class BasePlatformAdapter(ABC):
         user_id_alt: Optional[str] = None,
         chat_id_alt: Optional[str] = None,
         is_bot: bool = False,
+        scope_id: Optional[str] = None,
         guild_id: Optional[str] = None,
         parent_chat_id: Optional[str] = None,
         message_id: Optional[str] = None,
@@ -5487,6 +5523,7 @@ class BasePlatformAdapter(ABC):
             user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt,
             is_bot=is_bot,
+            scope_id=str(scope_id) if scope_id else None,
             guild_id=str(guild_id) if guild_id else None,
             parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
             message_id=str(message_id) if message_id else None,

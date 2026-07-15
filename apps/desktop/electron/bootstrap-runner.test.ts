@@ -2,9 +2,18 @@ import assert from 'node:assert/strict'
 import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
-import test from 'node:test'
 
-import { cachedScriptPath, installedAgentInstallScript, resolveInstallScript, runBootstrap } from './bootstrap-runner'
+import { test } from 'vitest'
+
+import {
+  buildPinArgs,
+  buildPosixPinArgs,
+  cachedScriptPath,
+  hasExistingGitCheckout,
+  installedAgentInstallScript,
+  resolveInstallScript,
+  runBootstrap
+} from './bootstrap-runner'
 
 const SCRIPT_NAME = process.platform === 'win32' ? 'install.ps1' : 'install.sh'
 
@@ -52,6 +61,58 @@ test('installedAgentInstallScript resolves the installer in the agent checkout',
   } finally {
     fs.rmSync(home, { recursive: true, force: true })
   }
+})
+
+test('existing checkout detection requires git metadata', () => {
+  const home = mkTmpHome()
+
+  try {
+    const activeRoot = path.join(home, 'hermes-agent')
+    assert.equal(hasExistingGitCheckout(activeRoot), false)
+
+    fs.mkdirSync(path.join(activeRoot, '.git'), { recursive: true })
+    assert.equal(hasExistingGitCheckout(activeRoot), true)
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+})
+
+test('fresh bootstrap args include the packaged commit pin', () => {
+  const installStamp = { commit: 'a'.repeat(40), branch: 'main' }
+
+  assert.deepEqual(buildPinArgs(installStamp), ['-Commit', installStamp.commit, '-Branch', 'main'])
+  assert.deepEqual(
+    buildPosixPinArgs({
+      installStamp,
+      activeRoot: '/tmp/hermes-agent',
+      hermesHome: '/tmp/hermes'
+    }),
+    [
+      '--dir',
+      '/tmp/hermes-agent',
+      '--hermes-home',
+      '/tmp/hermes',
+      '--branch',
+      'main',
+      '--commit',
+      installStamp.commit
+    ]
+  )
+})
+
+test('existing-checkout bootstrap args keep branch but skip the packaged commit pin', () => {
+  const installStamp = { commit: 'a'.repeat(40), branch: 'main' }
+
+  assert.deepEqual(buildPinArgs(installStamp, { pinCommit: false }), ['-Branch', 'main'])
+  assert.deepEqual(
+    buildPosixPinArgs({
+      installStamp,
+      activeRoot: '/tmp/hermes-agent',
+      hermesHome: '/tmp/hermes',
+      pinCommit: false
+    }),
+    ['--dir', '/tmp/hermes-agent', '--hermes-home', '/tmp/hermes', '--branch', 'main']
+  )
 })
 
 test('resolveInstallScript prefers a cached script without touching the network', async () => {

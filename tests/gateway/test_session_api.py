@@ -117,6 +117,7 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
     assert usage["output_tokens"] == 0
     assert usage["total_tokens"] == 0
     assert isinstance(usage.get("runtime"), dict)
+    assert "model_lock" not in usage["runtime"]
     assert observed == {
         "task_id": "request-session",
         "context_session_id": "request-session",
@@ -447,6 +448,39 @@ def _register_session_model_route(app, adapter):
     app.router.add_post("/api/sessions/{session_id}/model", adapter._handle_session_model_lock)
 
 
+def _patch_api_server_runtime(monkeypatch):
+    monkeypatch.setattr(
+        "gateway.run._resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openrouter",
+            "api_key": "sk-global",
+            "base_url": "https://openrouter.example/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+    monkeypatch.setattr("gateway.run._resolve_gateway_model", lambda: "global/model")
+    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {})
+    monkeypatch.setattr(
+        "gateway.run.GatewayRunner._load_reasoning_config",
+        staticmethod(lambda model="": {}),
+    )
+    monkeypatch.setattr(
+        "gateway.run.GatewayRunner._load_fallback_model",
+        staticmethod(lambda: None),
+    )
+    monkeypatch.setattr("gateway.run._current_max_iterations", lambda: 90)
+    monkeypatch.setattr("hermes_cli.tools_config._get_platform_tools", lambda *_: set())
+    monkeypatch.setattr(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        lambda provider: {
+            "provider": provider,
+            "api_key": f"sk-{provider}",
+            "base_url": f"https://{provider}.example/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+
+
 @pytest.mark.asyncio
 async def test_session_chat_builds_raw_provider_model_route_when_alias_missing(adapter, session_db):
     session_id = session_db.create_session("route-session", "api_server")
@@ -573,6 +607,7 @@ async def test_create_session_respects_browser_source_and_model_lock(adapter, se
                 "source": "hermes_browser",
                 "provider": "nous",
                 "model": "x-ai/grok-4.5",
+                "require_model_lock": True,
                 "title": "Browser lock",
                 "system_prompt": "browser prompt",
             },
@@ -591,6 +626,7 @@ async def test_create_session_respects_browser_source_and_model_lock(adapter, se
         model_config = _json.loads(model_config)
     assert model_config["browser_model_lock"]["provider"] == "nous"
     assert model_config["browser_model_lock"]["model"] == "x-ai/grok-4.5"
+    assert model_config["browser_model_lock"]["confirmed"] is True
 
 
 @pytest.mark.asyncio
@@ -631,6 +667,309 @@ async def test_session_model_lock_endpoint_persists_and_invalidates_prompt(adapt
         model_config = _json.loads(model_config)
     assert model_config["_branched_from"] == "parent-session"
     assert model_config["browser_model_lock"]["provider"] == "nous"
+
+
+@pytest.mark.asyncio
+async def test_session_model_lock_endpoint_then_chat_reuses_persisted_lock_and_provider_credentials(
+    adapter,
+    session_db,
+    monkeypatch,
+):
+    session_id = session_db.create_session(
+        "endpoint-lock-chat",
+        "api_server",
+        model="gpt-5.5",
+        system_prompt="Conversation started:\nModel: gpt-5.5\nProvider: openai-codex\n",
+    )
+    captured = {}
+
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+            self.session_id = kwargs["session_id"]
+            self.provider = kwargs.get("provider") or ""
+            self.model = kwargs.get("model") or ""
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            return {"final_response": "locked", "session_id": self.session_id}
+
+    _patch_api_server_runtime(monkeypatch)
+    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+    monkeypatch.setattr(
+        adapter,
+        "_session_model_override_for",
+        lambda *_: {
+            "model": "session/override-model",
+            "provider": "openai-codex",
+            "api_key": "sk-session-override",
+            "base_url": "https://override.example/v1",
+            "api_mode": "codex_responses",
+        },
+    )
+
+    app = _create_session_app(adapter)
+    _register_session_model_route(app, adapter)
+    with patch.object(adapter, "_resolve_route", return_value=None):
+        async with TestClient(TestServer(app)) as cli:
+            lock_resp = await cli.post(
+                f"/api/sessions/{session_id}/model",
+                json={
+                    "provider": "nous",
+                    "model": "x-ai/grok-4.5",
+                    "require_model_lock": True,
+                },
+            )
+            assert lock_resp.status == 200, await lock_resp.text()
+
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={"message": "use the stored lock"},
+            )
+            assert resp.status == 200, await resp.text()
+            payload = await resp.json()
+
+    assert captured["provider"] == "nous"
+    assert captured["model"] == "x-ai/grok-4.5"
+    assert captured["api_key"] == "sk-nous"
+    assert captured["base_url"] == "https://nous.example/v1"
+    assert payload["runtime"]["provider"] == "nous"
+    assert payload["runtime"]["model"] == "x-ai/grok-4.5"
+    assert payload["runtime"]["requested"] == {
+        "provider": "nous",
+        "model": "x-ai/grok-4.5",
+    }
+    assert payload["runtime"]["route_source"] == "session_model_lock"
+
+
+@pytest.mark.asyncio
+async def test_session_model_lock_endpoint_then_chat_stream_reuses_persisted_lock(
+    adapter,
+    session_db,
+):
+    session_id = session_db.create_session("endpoint-lock-stream", "api_server")
+    captured = {}
+
+    async def fake_run(**kwargs):
+        captured.update(kwargs)
+        kwargs["stream_delta_callback"]("hi")
+        return (
+            {
+                "final_response": "hi",
+                "session_id": session_id,
+                "runtime": {
+                    "provider": "nous",
+                    "model": "x-ai/grok-4.5",
+                    "requested": {"provider": "nous", "model": "x-ai/grok-4.5"},
+                    "route_source": "session_model_lock",
+                },
+            },
+            {
+                "total_tokens": 1,
+                "runtime": {
+                    "provider": "nous",
+                    "model": "x-ai/grok-4.5",
+                    "requested": {"provider": "nous", "model": "x-ai/grok-4.5"},
+                    "route_source": "session_model_lock",
+                },
+            },
+        )
+
+    app = _create_session_app(adapter)
+    _register_session_model_route(app, adapter)
+    with patch.object(adapter, "_resolve_route", return_value=None), patch.object(
+        adapter,
+        "_run_agent",
+        side_effect=fake_run,
+    ):
+        async with TestClient(TestServer(app)) as cli:
+            lock_resp = await cli.post(
+                f"/api/sessions/{session_id}/model",
+                json={
+                    "provider": "nous",
+                    "model": "x-ai/grok-4.5",
+                    "require_model_lock": True,
+                },
+            )
+            assert lock_resp.status == 200, await lock_resp.text()
+
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat/stream",
+                json={"message": "stream with stored lock"},
+            )
+            assert resp.status == 200, await resp.text()
+            body = await resp.text()
+
+    assert captured["route"] == {"provider": "nous", "model": "x-ai/grok-4.5"}
+    assert captured["requested_runtime"]["provider"] == "nous"
+    assert captured["requested_runtime"]["model"] == "x-ai/grok-4.5"
+    assert captured["route_source"] == "session_model_lock"
+    assert "x-ai/grok-4.5" in body
+
+
+@pytest.mark.asyncio
+async def test_run_agent_reports_actual_agent_runtime_not_requested_metadata(adapter, monkeypatch):
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+
+        def __init__(self):
+            self.session_id = "runtime-session"
+            self.provider = "actual-provider"
+            self.model = "actual-model"
+            self._hermes_api_runtime = {
+                "provider": "requested-provider",
+                "model": "requested-model",
+                "route_source": "raw_request",
+            }
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            return {"final_response": "ok", "session_id": self.session_id}
+
+    monkeypatch.setattr(adapter, "_create_agent", lambda **kwargs: FakeAgent())
+
+    result, usage = await adapter._run_agent(
+        user_message="hello",
+        conversation_history=[],
+        session_id="runtime-session",
+        route={"provider": "requested-provider", "model": "requested-model"},
+        requested_runtime={
+            "provider": "requested-provider",
+            "model": "requested-model",
+        },
+        route_source="session_model_lock",
+    )
+
+    assert result["runtime"]["provider"] == "actual-provider"
+    assert result["runtime"]["model"] == "actual-model"
+    assert result["runtime"]["requested"] == {
+        "provider": "requested-provider",
+        "model": "requested-model",
+    }
+    assert usage["runtime"]["provider"] == "actual-provider"
+    assert usage["runtime"]["model"] == "actual-model"
+
+
+@pytest.mark.asyncio
+async def test_confirmed_runtime_lock_rejects_actual_runtime_mismatch(adapter, monkeypatch):
+    class FakeAgent:
+        session_prompt_tokens = 0
+        session_completion_tokens = 0
+        session_total_tokens = 0
+        session_id = "mismatch-session"
+        provider = "fallback-provider"
+        model = "fallback-model"
+
+        def run_conversation(self, user_message, conversation_history, task_id):
+            return {"final_response": "wrong runtime", "session_id": self.session_id}
+
+    monkeypatch.setattr(adapter, "_create_agent", lambda **kwargs: FakeAgent())
+
+    with pytest.raises(RuntimeError, match="confirmed model lock runtime mismatch"):
+        await adapter._run_agent(
+            user_message="hello",
+            conversation_history=[],
+            session_id="mismatch-session",
+            route={"provider": "nous", "model": "x-ai/grok-4.5"},
+            requested_runtime={"provider": "nous", "model": "x-ai/grok-4.5"},
+            route_source="session_model_lock",
+            confirmed_runtime_lock=True,
+        )
+
+
+def test_confirmed_runtime_lock_fails_closed_on_provider_resolution_error(adapter, monkeypatch):
+    _patch_api_server_runtime(monkeypatch)
+    monkeypatch.setattr(
+        "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+        lambda provider: (_ for _ in ()).throw(RuntimeError("provider unavailable")),
+    )
+    agent_ctor = patch("run_agent.AIAgent")
+    with agent_ctor as mocked_agent:
+        with pytest.raises(RuntimeError, match="provider unavailable"):
+            adapter._create_agent(
+                session_id="locked-session",
+                route={"provider": "nous", "model": "x-ai/grok-4.5"},
+                confirmed_runtime_lock=True,
+            )
+    mocked_agent.assert_not_called()
+
+
+def test_confirmed_runtime_lock_disables_global_fallback_model(adapter, monkeypatch):
+    _patch_api_server_runtime(monkeypatch)
+    monkeypatch.setattr(
+        "gateway.run.GatewayRunner._load_fallback_model",
+        staticmethod(lambda: "openrouter/fallback-model"),
+    )
+    captured = {}
+
+    class FakeAgent:
+        provider = "nous"
+        model = "x-ai/grok-4.5"
+
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    monkeypatch.setattr("run_agent.AIAgent", FakeAgent)
+
+    adapter._create_agent(
+        session_id="locked-session",
+        route={"provider": "nous", "model": "x-ai/grok-4.5"},
+        confirmed_runtime_lock=True,
+    )
+
+    assert captured["fallback_model"] is None
+
+
+@pytest.mark.asyncio
+async def test_unconfirmed_request_does_not_replace_confirmed_session_lock(adapter, session_db):
+    session_id = session_db.create_session("one-off-override", "api_server")
+    session_db.update_session_runtime_lock(
+        session_id,
+        provider="nous",
+        model="x-ai/grok-4.5",
+        route_source="raw_request",
+        confirmed=True,
+    )
+    mock_run = AsyncMock(
+        return_value=(
+            {
+                "final_response": "ok",
+                "session_id": session_id,
+                "runtime": {"provider": "openrouter", "model": "anthropic/claude-sonnet"},
+            },
+            {"total_tokens": 1},
+        )
+    )
+    app = _create_session_app(adapter)
+    with patch.object(adapter, "_resolve_route", return_value=None), patch.object(
+        adapter,
+        "_run_agent",
+        mock_run,
+    ):
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                f"/api/sessions/{session_id}/chat",
+                json={
+                    "message": "one turn only",
+                    "provider": "openrouter",
+                    "model": "anthropic/claude-sonnet",
+                },
+            )
+            assert resp.status == 200, await resp.text()
+
+    import json as _json
+
+    row = session_db.get_session(session_id)
+    config = row["model_config"]
+    if isinstance(config, str):
+        config = _json.loads(config)
+    assert config["browser_model_lock"]["provider"] == "nous"
+    assert config["browser_model_lock"]["model"] == "x-ai/grok-4.5"
+    assert config["browser_model_lock"]["confirmed"] is True
 
 
 @pytest.mark.asyncio

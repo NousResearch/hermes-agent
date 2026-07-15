@@ -963,7 +963,10 @@ def _extract_text(item_list: List[Dict[str, Any]]) -> str:
         if item.get("type") == ITEM_VOICE:
             voice_text = str((item.get("voice_item") or {}).get("text") or "")
             if voice_text:
-                return voice_text
+                # Weixin can supply its own speech-to-text result without the
+                # original audio. Preserve the voice origin so the agent can
+                # distinguish this from text typed by the user.
+                return f"[Voice transcription provided by Weixin]\n{voice_text}"
     return ""
 
 

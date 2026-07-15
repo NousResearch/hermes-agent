@@ -206,7 +206,13 @@ async def _shutdown_abandoned_app(app) -> None:
         except Exception:
             logger.debug("Abandoned Telegram request shutdown failed", exc_info=True)
 
-_THINKING_VERBS: list = ["Thinking"]
+try:
+    _tv_ns: dict = {}
+    with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "thinking_verbs.py")) as _tv_f:
+        exec(_tv_f.read(), _tv_ns)
+    _THINKING_VERBS: list = _tv_ns.get("THINKING_VERBS") or ["Thinking"]
+except Exception:
+    _THINKING_VERBS = ["Thinking"]
 
 try:
     from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup

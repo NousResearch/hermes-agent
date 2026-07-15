@@ -857,6 +857,54 @@ def get_toolset_names() -> List[str]:
     return sorted(names)
 
 
+def normalize_toolset_spec(value) -> Optional[List[str]]:
+    """Coerce a toolset list that arrived as a string back into a list.
+
+    ``agent.enabled_toolsets`` / ``agent.disabled_toolsets`` written as a
+    YAML-quoted string (``disabled_toolsets: '["web", "browser"]'``) or a
+    bare scalar (``disabled_toolsets: web``) parse as a Python *string*.
+    Every consumer then iterates it character by character, matching no
+    toolset — the denylist is silently ignored and the full tool schema set
+    is sent on every model call (#61264, #61265).
+
+    Returns ``None`` for ``None``, a list of names for list/tuple/set input,
+    and for a string input: the JSON-decoded list when the string looks like
+    one, otherwise the comma-split names. String coercion logs a warning so
+    the config mistake is visible instead of silent.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (list, tuple, set)):
+        return [str(name) for name in value]
+    if isinstance(value, str):
+        import json
+        import logging
+
+        stripped = value.strip()
+        parsed = None
+        if stripped.startswith("["):
+            try:
+                decoded = json.loads(stripped)
+                if isinstance(decoded, list):
+                    parsed = [str(name) for name in decoded]
+            except ValueError:
+                parsed = None
+        if parsed is None:
+            # Comma-split fallback also covers near-JSON like '[web, browser]'
+            # (unquoted names) and malformed JSON — strip brackets and quotes
+            # per part so the intended names are still recovered.
+            parsed = [
+                part.strip().strip("[]").strip("'\"")
+                for part in stripped.split(",")
+                if part.strip().strip("[]").strip("'\"")
+            ]
+        logging.getLogger(__name__).warning(
+            "Toolset list was configured as the string %r — interpreting it as %s. "
+            "Use a YAML list instead, e.g. disabled_toolsets: [web, browser].",
+            value, parsed,
+        )
+        return parsed
+    return [str(name) for name in value]
 
 
 def validate_toolset(name: str) -> bool:

@@ -30,7 +30,7 @@ import time
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
-from toolsets import resolve_toolset, validate_toolset
+from toolsets import normalize_toolset_spec, resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
 
@@ -300,6 +300,12 @@ def get_tool_definitions(
     Returns:
         Filtered list of OpenAI-format tool definitions.
     """
+    # Repair string-typed toolset lists before anything (including the cache
+    # key) sees them: a YAML-quoted `disabled_toolsets: '["web"]'` otherwise
+    # iterates per character, silently disabling nothing (#61264, #61265).
+    enabled_toolsets = normalize_toolset_spec(enabled_toolsets)
+    disabled_toolsets = normalize_toolset_spec(disabled_toolsets)
+
     # Fast path: memoized result when the caller doesn't need stdout prints.
     # The cache key captures every argument-level input; the registry
     # generation captures registry mutations (MCP refresh, plugin load).

@@ -127,9 +127,13 @@ def _resolve_cron_disabled_toolsets(cfg: dict) -> list[str]:
     ordinary agent runs (#25752 — LLM-supplied enabled_toolsets was widening
     past config.yaml's denylist).
     """
+    from toolsets import normalize_toolset_spec
+
     disabled = ["cronjob", "messaging", "clarify"]
     agent_cfg = (cfg or {}).get("agent") or {}
-    user_disabled = agent_cfg.get("disabled_toolsets") or []
+    # normalize_toolset_spec repairs a string-typed config value that would
+    # otherwise be iterated per character here (#61264, #61265).
+    user_disabled = normalize_toolset_spec(agent_cfg.get("disabled_toolsets")) or []
     for name in user_disabled:
         name = str(name).strip()
         if name and name not in disabled:

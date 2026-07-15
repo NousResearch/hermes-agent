@@ -25,7 +25,7 @@ Configure in your agent's config:
   mcp_servers:
     1939:
       command: python3
-      args: ["path/to/1939/palettes/mcp_1939_server.py"]
+      args: ["path/to/1939/server/mcp_1939_server.py"]
       timeout: 30
 """
 
@@ -402,7 +402,7 @@ def _match_palette(name: str) -> Optional[str]:
                 return slug
 
     # Also try description keyword search as final resort
-    hits = _keyword_search(name, _descriptions_cache)
+    hits = _keyword_search(key, _descriptions_cache)
     if hits:
         slug = hits[0]["slug"]
         if slug in _flagship_cache:

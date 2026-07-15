@@ -114,5 +114,5 @@ Note: Memes cards have center colors only. For full 10-tint scales and
 ```
 
 - **hodl_rate**: Percentage of holders who haven't sold (engagement conviction)
-- **tdh**: Total Diamond Hands metric (aggregate engagement score from 6529.io)
+- **tdh**: Total Days Held metric (aggregate engagement score from 6529.io)
 - **tdh_rank**: Ranking among all 496 cards (1 = highest engagement)

@@ -636,7 +636,20 @@ class _FakeSDKResponse:
         self.results = results
 
 
-def _make_bare_client(search_results, *, forget_id_raises=False):
+class _FakeForgetError(Exception):
+    def __init__(self, status_code):
+        super().__init__(f"Supermemory error {status_code}")
+        self.status_code = status_code
+
+
+class _FakeForgetResponse:
+    def __init__(self, item_id):
+        self.id = item_id
+
+
+def _make_bare_client(
+    search_results, *, forget_id_status=None, content_forget_id="content_forget_id"
+):
     """Build a real _SupermemoryClient with a stubbed SDK to exercise forget_by_query."""
     from plugins.memory.supermemory import _SupermemoryClient
 
@@ -644,9 +657,14 @@ def _make_bare_client(search_results, *, forget_id_raises=False):
 
     class _Memories:
         def forget(self, *, container_tag, id=None, content=None):
-            recorded["forget"].append({"container_tag": container_tag, "id": id, "content": content})
-            if forget_id_raises and id is not None:
-                raise RuntimeError("404 Memory not found")
+            recorded["forget"].append(
+                {"container_tag": container_tag, "id": id, "content": content}
+            )
+            if forget_id_status is not None and id is not None:
+                raise _FakeForgetError(forget_id_status)
+            if content is not None:
+                return _FakeForgetResponse(content_forget_id)
+            return _FakeForgetResponse(id or "")
 
     class _Search:
         def memories(self, **kwargs):
@@ -684,16 +702,33 @@ def test_forget_by_query_forces_memories_mode_and_skips_chunk_hits():
     assert recorded["forget"][0]["id"] == "mem_123"
 
 
-def test_forget_by_query_falls_back_to_content_when_id_forget_fails():
-    # When the memory-entry id is rejected, fall back to exact-content forget.
+def test_forget_by_query_falls_back_to_content_when_id_forget_404s():
+    # When the memory-entry id is rejected with a confirmed 404, fall back to
+    # exact-content forget and report the successful fallback response id.
     results = [_FakeSDKItem("stale_id", "Jordan prefers dark roast")]
-    client, recorded = _make_bare_client(results, forget_id_raises=True)
+    client, recorded = _make_bare_client(
+        results, forget_id_status=404, content_forget_id="fallback_id"
+    )
 
     result = client.forget_by_query("dark roast")
 
     assert result["success"] is True
+    assert result["id"] == "fallback_id"
     assert recorded["forget"][0]["id"] == "stale_id"
     assert recorded["forget"][1]["content"] == "Jordan prefers dark roast"
+
+
+def test_forget_by_query_does_not_fall_back_for_non_404_forget_failure():
+    # Auth, rate-limit, timeout, and server failures should not trigger a
+    # second destructive content-based forget request.
+    results = [_FakeSDKItem("stale_id", "Jordan prefers dark roast")]
+    client, recorded = _make_bare_client(results, forget_id_status=429)
+
+    with pytest.raises(_FakeForgetError):
+        client.forget_by_query("dark roast")
+
+    assert len(recorded["forget"]) == 1
+    assert recorded["forget"][0]["id"] == "stale_id"
 
 
 def test_forget_by_query_returns_failure_when_no_memory_entries():

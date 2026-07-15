@@ -221,7 +221,7 @@ VALID_HOOKS: Set[str] = {
     #   {"action": "block",  "reason": "..."}  → 阻止创建
     # Kwargs: name, content, category (str or None)
     # Post hook is observer-only (return value ignored).
-    # Kwargs: name, category, path (abs str), success (bool)
+    # Kwargs: name, category, path (abs str; "" when handled by plugin), success (bool)
     "pre_skill_create",
     "post_skill_create",
     # Skill lifecycle — edit. Fired by skill_manage(action='edit') before

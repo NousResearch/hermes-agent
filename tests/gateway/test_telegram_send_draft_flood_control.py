@@ -117,6 +117,9 @@ async def test_long_flood_control_returns_retryable_without_sleeping():
     assert result.success is False
     assert getattr(result, "retryable", False) is True
     assert "flood_control" in (getattr(result, "error", "") or "")
+    # The consumer's cooldown skip-guard reads the numeric field, not the
+    # error string — must be populated, not just embedded in the message.
+    assert result.retry_after == 280.0
     mock_sleep.assert_not_awaited()
 
 
@@ -163,4 +166,5 @@ async def test_boundary_just_above_five_seconds_treated_as_long():
     assert result.success is False
     assert getattr(result, "retryable", False) is True
     assert "flood_control" in (getattr(result, "error", "") or "")
+    assert result.retry_after == 5.01
     mock_sleep.assert_not_awaited()

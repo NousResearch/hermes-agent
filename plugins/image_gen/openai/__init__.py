@@ -27,6 +27,7 @@ import logging
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
+from agent.process_bootstrap import build_keepalive_http_client
 from agent.image_gen_provider import (
     DEFAULT_ASPECT_RATIO,
     ImageGenProvider,
@@ -116,6 +117,17 @@ def _resolve_model() -> Tuple[str, Dict[str, Any]]:
         return candidate, _MODELS[candidate]
 
     return DEFAULT_MODEL, _MODELS[DEFAULT_MODEL]
+
+
+def _openai_client_kwargs() -> Dict[str, Any]:
+    base_url = os.environ.get("OPENAI_BASE_URL", "").strip()
+    if not base_url:
+        return {}
+    kwargs: Dict[str, Any] = {"base_url": base_url}
+    http_client = build_keepalive_http_client(base_url)
+    if http_client is not None:
+        kwargs["http_client"] = http_client
+    return kwargs
 
 
 # ---------------------------------------------------------------------------
@@ -270,7 +282,7 @@ class OpenAIImageGenProvider(ImageGenProvider):
         is_edit = bool(sources)
         modality = "image" if is_edit else "text"
 
-        client = openai.OpenAI()
+        client = openai.OpenAI(**_openai_client_kwargs())
 
         if is_edit:
             # images.edit() expects file-like objects. Download/read each

@@ -176,7 +176,7 @@ export const ru = defineLocale({
 
   remoteDisplayBanner: {
     message: reason => `Удалённый сеанс: ${reason}`,
-    dismiss: 'Закрыть',
+
   },
 
   titlebar: {
@@ -719,8 +719,8 @@ export const ru = defineLocale({
       enterValueFirst: 'Сначала введите значение.',
       couldNotSave: 'Не удалось сохранить учётные данные.',
       remove: 'Удалить',
-      or: 'или',
-      escToCancel: 'esc для отмены',
+
+
       getKey: 'Получить ключ',
       saving: 'Сохранение',
     },
@@ -1211,7 +1211,7 @@ export const ru = defineLocale({
     ageHours: hours => `${hours}ч назад`,
     durationSeconds: seconds => `${seconds}с`,
     durationMinutes: (minutes, seconds) => `${minutes}м ${seconds}с`,
-    tokensK: k => `${k}к ток`,
+
     tokens: value => `${value} ток`,
   },
 

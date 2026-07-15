@@ -1489,6 +1489,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     delivery_errors = []
 
+    # Confirmed-dead delivery targets (deleted group, blocked/kicked bot,
+    # deactivated user) are tracked persistently so a job doesn't waste a send
+    # against the platform's flood control on every tick — see
+    # gateway/dead_targets.py. gateway/delivery.py's DeliveryRouter.deliver()
+    # already checks this, but cron's live-adapter path calls the private
+    # _deliver_to_platform() directly (bypassing deliver()'s reply-anchor
+    # requirement, which cron sends have no inbound anchor to satisfy — see
+    # below), so it never consulted the registry. One instance is shared for
+    # the whole delivery pass so a target marked dead by an earlier target's
+    # failure this same tick is honored immediately.
+    from gateway.dead_targets import DeadTargetRegistry
+    _dead_targets = DeadTargetRegistry()
+
     for target in targets:
         platform_name = target["platform"]
         chat_id = target["chat_id"]
@@ -1533,6 +1546,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         if not pconfig or not pconfig.enabled:
             msg = f"platform '{platform_name}' not configured/enabled"
             logger.warning("Job '%s': %s", job["id"], msg)
+            delivery_errors.append(msg)
+            continue
+
+        if chat_id and _dead_targets.is_dead(platform.value, str(chat_id)):
+            msg = (
+                f"delivery to {platform_name}:{chat_id} skipped — target "
+                "previously confirmed unreachable (send to it again to clear)"
+            )
+            logger.info("Job '%s': %s", job["id"], msg)
             delivery_errors.append(msg)
             continue
 
@@ -1691,7 +1713,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if text_to_send:
                     from agent.async_utils import safe_schedule_threadsafe
 
-                    router = DeliveryRouter(config, adapters)
+                    router = DeliveryRouter(config, adapters, dead_targets=_dead_targets)
                     route_target = DeliveryTarget(
                         platform=platform,
                         chat_id=str(chat_id),
@@ -1765,6 +1787,15 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                             # through to the standalone path so the message is
                             # still delivered.
                             target_errors.append(f"live adapter send failed: {ex}")
+                            if chat_id:
+                                from gateway.delivery import _classify_dead_from_error_text
+
+                                _dead_kind = _classify_dead_from_error_text(str(ex))
+                                if _dead_kind:
+                                    _dead_targets.mark_dead(
+                                        platform.value, str(chat_id),
+                                        reason=f"{_dead_kind}: {str(ex)[:120]}",
+                                    )
                             raise
 
                         if timeout_handled:
@@ -1852,6 +1883,12 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)
                     delivered = True
+                    # Self-healing: a live send got through (or, in the
+                    # assume-delivered in-flight-timeout case, is presumed to
+                    # have), so clear any stale dead flag — the user re-added
+                    # the bot / the chat came back.
+                    if chat_id:
+                        _dead_targets.clear(platform.value, str(chat_id))
                     # Seed the thread session only now that delivery into it
                     # succeeded (deferred from thread-open above).
                     if opened_thread_id and not thread_seeded:
@@ -1885,6 +1922,19 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                     "Job '%s': %s, falling back to standalone",
                     job["id"], err_msg,
                 )
+
+        if not delivered and chat_id and _dead_targets.is_dead(platform.value, str(chat_id)):
+            # The live-adapter attempt above just classified this failure as a
+            # whole-chat death and marked it. Don't burn a second, guaranteed-
+            # to-fail attempt via the standalone HTTP path on this same tick —
+            # the next tick's pre-loop check would skip it anyway.
+            msg = (
+                f"delivery to {platform_name}:{chat_id} skipped standalone "
+                "fallback — target confirmed unreachable"
+            )
+            logger.info("Job '%s': %s", job["id"], msg)
+            delivery_errors.extend(target_errors)
+            continue
 
         if not delivered:
             # If the interpreter is finalizing (gateway SIGTERM / restart /

@@ -586,6 +586,27 @@ def _strip_historical_media(messages: List[Dict[str, Any]]) -> List[Dict[str, An
     return result if changed else messages
 
 
+def _image_part_label(part: Dict[str, Any]) -> str:
+    """Render a multimodal image part as a short text label for the summarizer.
+
+    Keeps a real, referenceable URL when the image lives at an http(s)
+    address — the summary can then preserve the handle so the agent (or a
+    later vision_analyze call) can still reach the image after compaction.
+    Base64 ``data:`` URLs carry no reusable reference and would flood the
+    summarizer input, so they collapse to ``[image]``.
+    """
+    url = ""
+    if isinstance(part.get("image_url"), dict):
+        url = str(part["image_url"].get("url") or "")
+    elif isinstance(part.get("image_url"), str):
+        url = part["image_url"]
+    elif isinstance(part.get("url"), str):
+        url = part["url"]
+    if url.startswith(("http://", "https://")):
+        return f"[image: {url}]"
+    return "[image]"
+
+
 def _str_arg(args: dict, key: str, default: str = "") -> str:
     """Safely get a string argument from parsed tool args.
 
@@ -1669,12 +1690,15 @@ class ContextCompressor(ContextEngine):
                 text_parts: list[str] = []
                 for part in content:
                     if isinstance(part, dict):
-                        if part.get("type") == "text":
+                        ptype = part.get("type")
+                        if ptype == "text":
                             text_parts.append(part.get("text", ""))
-                        elif part.get("type") in {
-                            "image", "image_url", "input_image",
-                        }:
-                            text_parts.append("[image]")
+                        elif ptype in {"image", "image_url", "input_image"}:
+                            text_parts.append(_image_part_label(part))
+                        else:
+                            # Unknown part type — keep a marker so the
+                            # summarizer knows content existed here.
+                            text_parts.append(f"[{ptype or 'attachment'}]")
                     elif isinstance(part, str):
                         text_parts.append(part)
                 content = "\n".join(text_parts)

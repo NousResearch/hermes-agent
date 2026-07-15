@@ -15177,7 +15177,9 @@ def main():
 
     # Execute the command
     if hasattr(args, "func"):
-        args.func(args)
+        result = args.func(args)
+        if isinstance(result, int):
+            return result
     else:
         parser.print_help()
 

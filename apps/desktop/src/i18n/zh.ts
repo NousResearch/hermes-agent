@@ -409,7 +409,7 @@ export const zh: Translations = {
         roamTitle: '漫游',
         roamDesc: '空闲时让宠物自己在窗口内四处走动。',
         bubbleTitle: '气泡提示',
-        bubbleDesc: '显示显示宠物当前活动状态的气泡提示。',
+        bubbleDesc: '显示宠物当前活动状态的气泡提示。',
         controlsTitle: '宠物控制',
         controlsDesc: '显示悬停控制按钮，用于隐藏或弹出宠物。',
         on: '开启',

@@ -355,6 +355,14 @@ export function DesktopController() {
   }, [])
 
   useEffect(() => {
+    const unsubscribe = window.hermesDesktop?.onComposerAppendSelection?.(text => {
+      requestComposerInsert(text, { mode: 'block', target: 'main' })
+    })
+
+    return () => unsubscribe?.()
+  }, [])
+
+  useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.altKey || event.shiftKey || event.key.toLowerCase() !== 'w' || (!event.metaKey && !event.ctrlKey)) {
         return

@@ -141,9 +141,15 @@ def test_runtime_sha_verification_requires_exact_clean_checkout(tmp_path):
     tracked.write_text("clean\n", encoding="utf-8")
     tracked_module = tmp_path / "tracked_module.py"
     tracked_module.write_text("VALUE = 1\n", encoding="utf-8")
+    tests_init = tmp_path / "tests" / "__init__.py"
+    tests_init.parent.mkdir()
+    tests_init.write_text("", encoding="utf-8")
     tracked_test = tmp_path / "tests" / "test_tracked.py"
-    tracked_test.parent.mkdir()
-    tracked_test.write_text("def test_value():\n    assert 1 == 1\n", encoding="utf-8")
+    tracked_test.write_text(
+        'RUNTIME_MARKER = "tracked-source"\n\n'
+        "def test_value():\n    assert 1 == 1\n",
+        encoding="utf-8",
+    )
     (tmp_path / ".gitignore").write_text("*.pyc\n", encoding="utf-8")
     subprocess.run(
         [
@@ -151,6 +157,7 @@ def test_runtime_sha_verification_requires_exact_clean_checkout(tmp_path):
             "add",
             "tracked.txt",
             "tracked_module.py",
+            "tests/__init__.py",
             "tests/test_tracked.py",
             ".gitignore",
         ],
@@ -190,7 +197,40 @@ def test_runtime_sha_verification_requires_exact_clean_checkout(tmp_path):
     )
     pytest_caches = list((tracked_test.parent / "__pycache__").glob("*-pytest-*.pyc"))
     assert len(pytest_caches) == 1
+    malicious_pytest_source = tmp_path / "malicious_pytest_cache.py"
+    malicious_pytest_source.write_text(
+        'RUNTIME_MARKER = "forged-pytest-cache"\n',
+        encoding="utf-8",
+    )
+    py_compile.compile(
+        str(malicious_pytest_source),
+        cfile=str(pytest_caches[0]),
+        doraise=True,
+    )
+    malicious_pytest_source.unlink()
     assert verify_running_runtime_sha(sha, source_root=tmp_path) is True
+    standard_import_env = os.environ.copy()
+    standard_import_env["PYTHONPATH"] = str(tmp_path)
+    standard_import = subprocess.run(
+        [
+            sys.executable,
+            "-B",
+            "-c",
+            "from tests import test_tracked; "
+            "print(test_tracked.RUNTIME_MARKER); "
+            "print(test_tracked.__cached__)",
+        ],
+        cwd=tmp_path,
+        env=standard_import_env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    standard_lines = standard_import.stdout.strip().splitlines()
+    assert standard_lines[0] == "tracked-source"
+    assert Path(standard_lines[1]).name == (
+        f"test_tracked.{sys.implementation.cache_tag}.pyc"
+    )
     ordinary_cache = Path(
         py_compile.compile(str(tracked_module), doraise=True)
     )

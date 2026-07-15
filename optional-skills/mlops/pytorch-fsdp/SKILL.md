@@ -11,7 +11,8 @@ metadata:
   hermes:
     tags: [pytorch, fsdp, distributed-training, sharding, checkpointing]
     category: mlops
-    related_skills: [accelerate, torchtitan, pytorch-lightning]
+    related_skills:
+      [huggingface-accelerate, distributed-llm-pretraining-torchtitan, pytorch-lightning]
 ---
 
 # PyTorch FSDP Skill
@@ -88,10 +89,10 @@ loss values. A sharded run is not a useful diagnostic baseline by itself.
 Completion criterion: the baseline trains deterministically enough to compare
 loss and checkpoint behavior with the sharded run.
 
-### 2. Initialize one process per device
+### 2. Initialize one process per CUDA device
 
-Set the local device before constructing CUDA modules and initialize the
-process group exactly once:
+For a CUDA/NCCL job, set the local device before constructing CUDA modules and
+initialize the process group exactly once:
 
 ```python
 import os
@@ -103,8 +104,10 @@ torch.cuda.set_device(local_rank)
 dist.init_process_group(backend="nccl")
 ```
 
-Use a backend appropriate for the actual device. Do not silently switch
-backends to hide an NCCL or rendezvous failure.
+This example is CUDA-only. For another supported device type, use its
+documented device-selection API and process-group backend; do not call
+`torch.cuda.set_device()` on non-CUDA systems. Do not silently switch backends
+to hide an NCCL or rendezvous failure.
 
 Completion criterion: every rank reports the expected global rank, local
 device, backend, and world size, then exits cleanly.

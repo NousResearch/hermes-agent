@@ -46,6 +46,21 @@ def test_author_preserves_provenance(frontmatter: dict) -> None:
     assert "Orchestra Research" in author
 
 
+def test_related_skills_resolve_by_frontmatter_name(frontmatter: dict) -> None:
+    repo_root = SKILL_DIR.parents[2]
+    skill_names = set()
+    for skills_root in (repo_root / "skills", repo_root / "optional-skills"):
+        for skill_path in skills_root.rglob("SKILL.md"):
+            with skill_path.open(encoding="utf-8") as handle:
+                header = handle.read(4096)
+            match = re.search(r"^name:\s*([^\n#]+)", header, re.MULTILINE)
+            if match:
+                skill_names.add(match.group(1).strip().strip('"\''))
+
+    related = frontmatter["metadata"]["hermes"]["related_skills"]
+    assert set(related) <= skill_names
+
+
 def test_main_skill_stays_loadable_and_readable(skill_text: str) -> None:
     assert len(skill_text) <= 100_000
     assert max(map(len, skill_text.splitlines())) < 500

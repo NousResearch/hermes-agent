@@ -1643,9 +1643,11 @@ What counts as "active" is surface-specific:
   slot back automatically and transparently re-acquires it on the next
   message — so open-but-idle tabs don't pin the cap overnight. If the cap is
   full at re-acquire time, that message fails with the standard limit
-  message; retry when a slot frees up. Tune the idle window with the
-  `HERMES_TUI_LEASE_IDLE_S` environment variable (seconds; `0` keeps slots
-  held until the tab closes).
+  message; retry when a slot frees up. Tune the idle window in `config.yaml`:
+
+```yaml
+tui_lease_idle_seconds: 1800  # 30 minutes; 0 keeps the slot until tab close
+```
 
 The canonical key is top-level `max_concurrent_sessions`. Hermes also accepts
 `gateway.max_concurrent_sessions` as a fallback, but the top-level key wins when

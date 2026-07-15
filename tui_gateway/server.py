@@ -459,7 +459,7 @@ def _ensure_turn_lease(sid: str, session: dict) -> str | None:
     TUI/desktop sessions acquire their registry lease lazily on the first
     turn (not at session.create/resume, which fire for every composer paint
     and sidebar switch) and keep it across turns; the idle reaper hands the
-    slot back after ``_LEASE_IDLE_RELEASE_S`` without conversational
+    slot back after the configured idle window without conversational
     activity (see ``_release_idle_session_leases``). This is the re-acquire
     half: mirrors the platform gateway's claim-per-turn in
     ``gateway/run.py`` handle_message.
@@ -926,11 +926,21 @@ def _session_is_evictable(sid: str, session: dict, now: float) -> bool:
 # sitting open in a CONNECTED desktop app hold their slot forever: the TTL
 # reaper above requires a dead transport, so N idle overnight tabs pin the cap
 # at N and lock out every other surface. 0 disables idle release.
-try:
-    _LEASE_IDLE_RELEASE_S = float(os.environ.get("HERMES_TUI_LEASE_IDLE_S") or 1800.0)
-except (TypeError, ValueError):
-    _LEASE_IDLE_RELEASE_S = 1800.0
-_LEASE_IDLE_RELEASE_S = max(0.0, _LEASE_IDLE_RELEASE_S)
+_LEASE_IDLE_RELEASE_DEFAULT_S = 1800.0
+
+
+def _lease_idle_release_seconds() -> float:
+    """Resolve the user-facing idle window from config.yaml."""
+    raw = _load_cfg().get("tui_lease_idle_seconds", _LEASE_IDLE_RELEASE_DEFAULT_S)
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        logger.warning(
+            "Ignoring invalid tui_lease_idle_seconds=%r; using %s",
+            raw,
+            int(_LEASE_IDLE_RELEASE_DEFAULT_S),
+        )
+        return _LEASE_IDLE_RELEASE_DEFAULT_S
 
 
 def _release_idle_session_leases(now: float) -> None:
@@ -944,7 +954,8 @@ def _release_idle_session_leases(now: float) -> None:
     lock every turn-start path sets it under, so a lease can't be pulled out
     from under a turn that is about to reuse it.
     """
-    if _LEASE_IDLE_RELEASE_S <= 0:
+    idle_release_s = _lease_idle_release_seconds()
+    if idle_release_s <= 0:
         return
     with _sessions_lock:
         candidates = list(_sessions.items())
@@ -965,7 +976,7 @@ def _release_idle_session_leases(now: float) -> None:
             last_active = float(session.get("last_active") or 0.0)
             created_at = float(session.get("created_at") or 0.0)
             reference = max(last_active, created_at)
-            if (now - reference) <= _LEASE_IDLE_RELEASE_S:
+            if (now - reference) <= idle_release_s:
                 continue
             lease = session.pop("active_session_lease", None)
         if lease is None:

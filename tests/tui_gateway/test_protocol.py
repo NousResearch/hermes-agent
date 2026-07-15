@@ -1096,11 +1096,15 @@ def test_idle_lease_release_frees_slot_and_next_turn_reacquires(
     server, monkeypatch, tmp_path
 ):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    monkeypatch.setattr(server, "_load_cfg", lambda: {"max_concurrent_sessions": 1})
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"max_concurrent_sessions": 1, "tui_lease_idle_seconds": 1800},
+    )
     from hermes_cli.active_sessions import active_session_registry_snapshot
 
     now = time.time()
-    stale = now - server._LEASE_IDLE_RELEASE_S - 60
+    stale = now - 1800 - 60
     session = _lease_test_session(last_active=stale, created_at=stale)
     assert server._ensure_turn_lease("ui-1", session) is None
     assert session["active_session_lease"] is not None
@@ -1123,9 +1127,9 @@ def test_idle_lease_release_skips_busy_recent_and_pending_sessions(
     server, monkeypatch, tmp_path
 ):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    monkeypatch.setattr(server, "_load_cfg", lambda: None)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"tui_lease_idle_seconds": 1800})
     now = time.time()
-    stale = now - server._LEASE_IDLE_RELEASE_S - 60
+    stale = now - 1800 - 60
 
     running = _lease_test_session(
         "session-running", last_active=stale, created_at=stale, running=True
@@ -1161,7 +1165,7 @@ def test_idle_lease_release_skips_busy_recent_and_pending_sessions(
 
 def test_idle_lease_release_disabled_with_zero_window(server, monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
-    monkeypatch.setattr(server, "_LEASE_IDLE_RELEASE_S", 0.0)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"tui_lease_idle_seconds": 0})
     now = time.time()
     session = _lease_test_session(last_active=now - 999999, created_at=now - 999999)
     session["active_session_lease"] = object.__new__(type("_Sentinel", (), {}))
@@ -1169,6 +1173,14 @@ def test_idle_lease_release_disabled_with_zero_window(server, monkeypatch, tmp_p
 
     server._release_idle_session_leases(now)
     assert session["active_session_lease"] is not None
+
+
+def test_lease_idle_release_seconds_defaults_and_coerces(server, monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+    assert server._lease_idle_release_seconds() == 1800.0
+
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"tui_lease_idle_seconds": "45"})
+    assert server._lease_idle_release_seconds() == 45.0
 
 
 def test_session_resume_live_payload_uses_current_history_with_ancestors(server, monkeypatch):

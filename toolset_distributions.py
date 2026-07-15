@@ -30,10 +30,10 @@ DISTRIBUTIONS = {
     "reasoning": _dist("Heavy research/reasoning distribution with minimal other tools", web=90, file=60, terminal=20),
     "browser_use": _dist("Full browser-based web interaction with search, vision, and page control", browser=100, web=80, vision=70),
     "browser_only": _dist("Only browser automation tools for pure web interaction tasks", browser=100),
-    # browser-use-tasks.jsonl: the browser toolset includes web_search since Google blocks direct browser searches
+    # browser-use-tasks.jsonl: web_search for finding URLs since Google blocks direct browser searches
     "browser_tasks": _dist(
-        "Browser-focused distribution (browser toolset includes web_search for finding URLs since Google blocks direct browser searches)",
-        browser=97, vision=12, terminal=15,
+        "Browser-focused distribution with web_search for finding URLs (Google blocks direct browser searches)",
+        browser=97, search=97, vision=12, terminal=15,
     ),
     # nous-terminal-tasks.jsonl
     "terminal_tasks": _dist("Terminal-focused distribution with high terminal/file availability, occasional other tools",

@@ -373,9 +373,6 @@ unknown-argument = "warn"
 redundant-cast = "ignore"
 
 [tool.ruff]
-feat/proxy-tester-skill
-exclude = ["*"]
-=======
 preview = true  # required for PLW1514 (unspecified-encoding) — preview rule
 
 [tool.ruff.lint]
@@ -395,4 +392,3 @@ select = ["PLW1514"]
 "skills/**" = ["PLW1514"]
 "optional-skills/**" = ["PLW1514"]
 "plugins/**" = ["PLW1514"]
-main

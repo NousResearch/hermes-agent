@@ -7,6 +7,7 @@ request through the proxy. All traffic goes to https://httpbin.org/ip by default
 """
 
 import argparse
+import html
 import json
 import sys
 import time
@@ -53,13 +54,21 @@ def parse_proxy(uri: str) -> Dict:
     if scheme not in ("http", "https", "socks4", "socks5"):
         raise ValueError(f"Unsupported protocol: {scheme}")
 
+    username, password = (None, None)
+    if parsed.auth:
+        # Split ONCE after the username so passwords containing ':' survive
+        # (e.g. host:port:user:p@ss:w0rd -> user='user', password='p@ss:w0rd').
+        # Matches convert_credentials.py, which preserves colon-bearing passwords.
+        username, _, password = parsed.auth.partition(":")
+        password = password or None
+
     return {
         "uri": uri,
         "scheme": scheme,
         "host": parsed.host,
         "port": parsed.port,
-        "username": parsed.auth.split(":")[0] if parsed.auth and ":" in parsed.auth else parsed.auth,
-        "password": parsed.auth.split(":")[1] if parsed.auth and ":" in parsed.auth else None,
+        "username": username,
+        "password": password,
     }
 
 
@@ -224,17 +233,17 @@ def main():
 
     args.output.mkdir(parents=True, exist_ok=True)
 
-    print(f"\n🔍 Proxy Tester\n   Input: {args.file} ({len(proxies)} proxies)\n")
-    all_results = []
+    print(f"\n🔍 Proxy Tester\n   Input: {args.file} ({len(proxies)} proxies) · concurrency {args.concurrency}\n")
 
-    # ── Iterate over proxies ──────────────────────────────────────────────────
-    for idx, uri in enumerate(proxies, 1):
-        print(f"[{idx:03d}/{len(proxies)}] Testing {uri} … ", end="", flush=True)
+    concurrency = max(1, min(args.concurrency, 50))  # clamp per --help max
+
+    # ── Bounded concurrent probing ───────────────────────────────────────────
+    def test_one(uri: str) -> dict:
+        """Probe a single proxy across N iterations and return its aggregated result."""
         try:
             proxy_cfg = parse_proxy(uri)
         except Exception as e:
-            print(f"❌ malformed: {e}")
-            all_results.append({
+            return {
                 "proxy": uri,
                 "success_rate": 0.0,
                 "avg_latency_ms": None,
@@ -242,24 +251,19 @@ def main():
                 "ip_type": "unknown",
                 "error": str(e),
                 "iterations": [],
-            })
-            continue
+            }
 
-        # Run N iterations
         iter_results = []
         for i in range(args.iterations):
-            res = probe_proxy(proxy_cfg, args.probe_url, args.timeout)
-            iter_results.append(res)
+            iter_results.append(probe_proxy(proxy_cfg, args.probe_url, args.timeout))
             if i < args.iterations - 1:
                 time.sleep(0.2)  # brief stagger between iterations
 
-        # Aggregate
         successes = [r for r in iter_results if r["success"]]
         success_rate = len(successes) / args.iterations * 100
         avg_latency = (sum(r["latency_ms"] for r in successes) / len(successes)) if successes else None
         exit_ip = successes[0]["exit_ip"] if successes else None
 
-        # Capture response_snippet from the first successful non-JSON response
         response_snippet = None
         for s in successes:
             snippet = s.get("response_snippet")
@@ -267,22 +271,11 @@ def main():
                 response_snippet = snippet
                 break
 
-        # Classification (if enabled & we have an IP)
         ip_type = "unknown"
         if not args.no_ip_intel and exit_ip:
             ip_type = classify_ip(exit_ip)
 
-        # Summary print
-        if success_rate == 100:
-            snippet_note = f' — {response_snippet}' if response_snippet else ""
-            print(f"✅ alive — {avg_latency:.0f}ms — {exit_ip or response_snippet or '—'}{snippet_note}")
-        elif success_rate > 0:
-            print(f"⚠ flaky — {success_rate:.0f}% — {avg_latency:.0f}ms")
-        else:
-            print(f"❌ dead — {iter_results[0]['error']}")
-
-        # Store aggregated result
-        agg = {
+        return {
             "proxy": uri,
             "success_rate": round(success_rate, 1),
             "avg_latency_ms": round(avg_latency, 1) if avg_latency else None,
@@ -291,7 +284,35 @@ def main():
             "ip_type": ip_type,
             "iterations": iter_results,
         }
-        all_results.append(agg)
+
+    all_results = []
+    done = 0
+    total = len(proxies)
+    with ThreadPoolExecutor(max_workers=concurrency) as pool:
+        future_to_uri = {pool.submit(test_one, uri): uri for uri in proxies}
+        for fut in as_completed(future_to_uri):
+            uri = future_to_uri[fut]
+            done += 1
+            res = fut.result()
+            all_results.append(res)
+            # Preserve original proxy order for stable report output
+            print(f"[{done:03d}/{total}] {uri}", flush=True)
+
+    # Restore input order so summary/report match the file order
+    order = {uri: i for i, uri in enumerate(proxies)}
+    all_results.sort(key=lambda r: order.get(r["proxy"], 0))
+
+    # Per-proxy human-readable summary line
+    for r in all_results:
+        uri = r["proxy"]
+        sr = r["success_rate"]
+        if sr == 100:
+            print(f"✅ {uri} — alive — {r['avg_latency_ms']:.0f}ms — {r.get('exit_ip') or r.get('response_snippet') or '—'}")
+        elif sr > 0:
+            print(f"⚠ {uri} — flaky — {sr:.0f}% — {r['avg_latency_ms']:.0f}ms")
+        else:
+            err = (r.get("iterations") or [{}])[0].get("error", "unknown error")
+            print(f"❌ {uri} — dead — {err}")
 
     # ── Write outputs ────────────────────────────────────────────────────────
     import json
@@ -315,23 +336,27 @@ def main():
             latency = f"{r['avg_latency_ms']:.0f}ms" if r["avg_latency_ms"] else "—"
             ip = r.get("exit_ip") or "—"
             ip_short = ip[:15] + "…" if len(ip) > 15 else ip
+            ip_type = r.get("ip_type") or "unknown"
+            proxy_disp = html.escape(str(r["proxy"]))
             # Show response snippet for non-JSON probes (e.g. site returns HTML)
             if r.get("response_snippet") and ip == "—":
-                ip_display = f'<em style="color:var(--text-muted);font-size:0.75rem">{r["response_snippet"]}</em>'
+                # Escape: a probe endpoint could return markup that executes on open.
+                snippet_esc = html.escape(r["response_snippet"])
+                ip_display = f'<em style="color:var(--text-muted);font-size:0.75rem">{snippet_esc}</em>'
             else:
-                ip_display = f'<code>{ip_short}</code>'
+                ip_display = f'<code>{html.escape(ip_short)}</code>'
             row_class = "row-healthy" if r["success_rate"] == 100 else ("row-flaky" if r["success_rate"] > 0 else "row-dead")
             rows_html += f"""<tr class="{row_class}">
-                <td class="proxy-cell">{r["proxy"]}</td>
+                <td class="proxy-cell">{proxy_disp}</td>
                 <td>{status_icon}</td>
                 <td>{latency}</td>
                 <td>{ip_display}</td>
-                <td><span class="tag tag-{r.get('ip_type','unknown')}">{r.get('ip_type','unknown')}</span></td>
+                <td><span class="tag tag-{html.escape(ip_type)}">{html.escape(ip_type)}</span></td>
                 <td>{r["success_rate"]:.0f}%</td>
             </tr>"""
 
         type_badges = "".join(
-            f'<span class="type-chip">{t}: {c}</span>' for t, c in sorted(type_counts.items())
+            f'<span class="type-chip">{html.escape(t)}: {c}</span>' for t, c in sorted(type_counts.items())
         ) if type_counts else '<span class="type-chip">none classified</span>'
 
         html_content = f"""<!DOCTYPE html>
@@ -339,7 +364,7 @@ def main():
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Proxy Test Report — {timestamp}</title>
+<title>Proxy Test Report — {html.escape(timestamp)}</title>
 <style>
   :root {{
     --bg: #0d1117;
@@ -392,7 +417,7 @@ def main():
 <div class="container">
   <header>
     <h1>PROXY TEST REPORT</h1>
-    <p class="meta">{timestamp} · {total} proxies · {args.iterations} iteration(s) · probe: {args.probe_url}</p>
+    <p class="meta">{html.escape(timestamp)} · {total} proxies · {args.iterations} iteration(s) · probe: {html.escape(args.probe_url)}</p>
   </header>
 
   <div class="stats">
@@ -431,7 +456,7 @@ def main():
     </tbody>
   </table>
 
-  <footer>Generated by Hermes proxy-tester skill · {args.probe_url}</footer>
+  <footer>Generated by Hermes proxy-tester skill · {html.escape(args.probe_url)}</footer>
 </div>
 </body>
 </html>"""

@@ -91,6 +91,34 @@ _DEFAULT_FILE_TIMEOUT_SECONDS = 300.0
 _DURATIONS_FILE = "test_durations.json"
 
 
+def _resolve_repo_root() -> Path:
+    """Resolve the caller's worktree before falling back to this script path.
+
+    The shell wrapper normally selects this same root. Keeping the helper
+    deterministic when invoked directly prevents an editable checkout from
+    becoming the source root merely because its runner script was selected.
+    ``git`` supplies the worktree boundary; no environment-provided path is
+    trusted here.
+    """
+    script_root = Path(__file__).resolve().parent.parent
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(Path.cwd()), "rev-parse", "--show-toplevel"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return script_root
+    if result.returncode != 0:
+        return script_root
+    candidate = Path(result.stdout.strip()).resolve()
+    if (candidate / "scripts" / "run_tests_parallel.py").is_file():
+        return candidate
+    return script_root
+
+
 def _approximately_count_tests(
     files: List[Path], repo_root: Path
 ) -> dict[Path, int]:
@@ -744,7 +772,7 @@ def main() -> int:
             print(f"error: --slice must be I/N (e.g. 1/4), got: {slice_raw!r}", file=sys.stderr)
             sys.exit(2)
 
-    repo_root = Path(__file__).resolve().parent.parent
+    repo_root = _resolve_repo_root()
 
     # --files: explicit file list from the CI generate job — skip discovery.
     if args.files:

@@ -33,9 +33,30 @@
 
 set -euo pipefail
 
-# ── Locate repo root ────────────────────────────────────────────────────────
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# ── Locate the current worktree ────────────────────────────────────────────
+# Resolve from the caller's git worktree first. An editable install or a
+# runner reached through another checkout must not make that checkout the
+# source of truth when the caller is already inside an isolated worktree.
+CALLER_REPO_ROOT=""
+if CALLER_REPO_ROOT="$(git -C "$PWD" rev-parse --show-toplevel 2>/dev/null)"; then
+  CALLER_REPO_ROOT="$(cd "$CALLER_REPO_ROOT" && pwd -P)"
+fi
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+SCRIPT_REPO_ROOT=""
+if SCRIPT_REPO_ROOT="$(git -C "$SCRIPT_DIR" rev-parse --show-toplevel 2>/dev/null)"; then
+  SCRIPT_REPO_ROOT="$(cd "$SCRIPT_REPO_ROOT" && pwd -P)"
+fi
+
+if [ -n "$CALLER_REPO_ROOT" ] && [ -f "$CALLER_REPO_ROOT/scripts/run_tests_parallel.py" ]; then
+  REPO_ROOT="$CALLER_REPO_ROOT"
+elif [ -n "$SCRIPT_REPO_ROOT" ]; then
+  REPO_ROOT="$SCRIPT_REPO_ROOT"
+else
+  echo "error: unable to determine Hermes repository root" >&2
+  exit 1
+fi
+SCRIPT_DIR="$REPO_ROOT/scripts"
 
 # ── Activate venv ───────────────────────────────────────────────────────────
 VENV=""
@@ -71,23 +92,45 @@ echo "  (TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0; clean env)"
 
 cd "$REPO_ROOT"
 
+# All runner-created bytecode lives in a mktemp-owned directory. The path is
+# never accepted from an inherited environment variable, and the directory
+# is removed after the child exits. Pytest's own cache and test_durations.json
+# remain relative to the selected worktree root.
+RUNTIME_DIR="$(mktemp -d "${TMPDIR:-/tmp}/hermes-test-runtime.XXXXXX")"
+trap 'rm -rf -- "$RUNTIME_DIR" || true' EXIT
+BYTECODE_DIR="$RUNTIME_DIR/pycache"
+mkdir -p "$BYTECODE_DIR"
+
 # ── Pre-compile .pyc bytecode cache ─────────────────────────────────────────
 # Each test file runs in its own subprocess via run_tests_parallel.py.
 # Pre-building the bytecode cache once here (instead of each subprocess
 # compiling on first import) avoids redundant work across ~2000 processes.
 # Uses git to list tracked .py files (skips venv, node_modules, etc).
 echo "▶ pre-compiling bytecode cache"
-"$PYTHON" -m compileall -q -j 0 -- $(git ls-files '*.py') >/dev/null 2>&1 || true
+TRACKED_PYTHON_FILES="$RUNTIME_DIR/tracked-python-files"
+git ls-files '*.py' > "$TRACKED_PYTHON_FILES"
+"$PYTHON" -X "pycache_prefix=$BYTECODE_DIR" -m compileall -q -j 0 -i "$TRACKED_PYTHON_FILES" >/dev/null 2>&1 || true
 
 echo "▶ launching test runner"
-exec env -i \
+PYTHONPATH_VALUE="$REPO_ROOT"
+if [ -n "$EXTRA_PYTHONPATH" ]; then
+  PYTHONPATH_VALUE="$REPO_ROOT:$EXTRA_PYTHONPATH"
+fi
+
+set +e
+env -i \
   PATH="$PATH" \
   HOME="$HOME" \
   TZ=UTC \
   LANG=C.UTF-8 \
   LC_ALL=C.UTF-8 \
   PYTHONHASHSEED=0 \
+  PYTHONPATH="$PYTHONPATH_VALUE" \
+  PYTHONNOUSERSITE=1 \
+  PYTHONPYCACHEPREFIX="$BYTECODE_DIR" \
   ${HERMES_RUN_SLOW_PET_TESTS:+HERMES_RUN_SLOW_PET_TESTS="$HERMES_RUN_SLOW_PET_TESTS"} \
-  ${EXTRA_PYTHONPATH:+PYTHONPATH="$EXTRA_PYTHONPATH"} \
   ${EXTRA_PYTEST_PLUGINS:+PYTEST_PLUGINS="$EXTRA_PYTEST_PLUGINS"} \
   "$PYTHON" "$SCRIPT_DIR/run_tests_parallel.py" "$@"
+status=$?
+set -e
+exit "$status"

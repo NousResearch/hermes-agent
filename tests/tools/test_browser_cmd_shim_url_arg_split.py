@@ -22,7 +22,11 @@ source-level guard keep the fix covered on the Linux CI runner too.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -36,6 +40,15 @@ _WINDOWS_ONLY = pytest.mark.skipif(
     os.name != "nt",
     reason="exercises the real ntpath-coupled .cmd-shim resolver (Windows-only bug)",
 )
+
+_NEEDS_REAL_NODE = pytest.mark.skipif(
+    os.name != "nt" or not shutil.which("node.exe"),
+    reason="needs a real Windows node.exe to prove the &-URL argv round-trip",
+)
+
+# A JS entrypoint that echoes its received argv as JSON, so a real node spawn can
+# report exactly what reached the child process.
+_ARGV_ECHO_JS = "console.log(JSON.stringify(process.argv.slice(2)));\n"
 
 
 # npm cmd-shim package format — what ``node_modules/.bin/agent-browser.cmd``
@@ -147,23 +160,38 @@ class TestCmdShimBypass:
         assert os.path.normpath(rewritten[1]) == os.path.normpath(str(entry))
 
     def test_node_resolved_via_path_when_not_colocated(self, tmp_path, _force_windows, monkeypatch):
-        # Drop the colocated node.exe so the PATH fallback (shutil.which) runs.
+        # Drop the colocated node.exe so the merged-PATH fallback runs. The fix
+        # resolves "node.exe" specifically (a bare "node" lookup honours PATHEXT
+        # and could resolve node.js / node.cmd), so the mock only answers to it.
         cmd, entry = _make_agent_browser_shim(tmp_path)
         (cmd.parent / "node.exe").unlink()
         fake_node = tmp_path / "node.exe"
         fake_node.write_text("", encoding="utf-8")
         monkeypatch.setattr(
             browser_tool.shutil, "which",
-            lambda name, path=None: str(fake_node) if name == "node" else None,
+            lambda name, path=None: str(fake_node) if name == "node.exe" else None,
         )
         target = browser_tool._windows_cmd_shim_node_target(str(cmd))
         assert target == [str(fake_node), os.path.normpath(str(entry))]
 
+    def test_bare_node_name_not_used(self, tmp_path, _force_windows, monkeypatch):
+        # Guard the fix for defect #1: resolution must NOT fall through to a bare
+        # "node" (PATHEXT could turn that into node.js/node.cmd). If only "node"
+        # resolves and "node.exe" does not, there is no target.
+        cmd, _entry = _make_agent_browser_shim(tmp_path)
+        (cmd.parent / "node.exe").unlink()
+        monkeypatch.setattr(
+            browser_tool.shutil, "which",
+            lambda name, path=None: r"C:\stray\node.js" if name == "node" else None,
+        )
+        assert browser_tool._windows_cmd_shim_node_target(str(cmd)) is None
+
 
 @_WINDOWS_ONLY
 class TestAmpersandUrlNotArgSplit:
-    """The actual bug: an '&'-bearing URL must reach the child as ONE argv
-    element, with cmd.exe out of the spawn chain."""
+    """Unit-level check that the bypass builds a cmd.exe-free argv with the
+    '&'-URL intact. The end-to-end proof — a REAL node.exe actually receiving the
+    URL as one argument — is in :class:`TestRealNodeArgvRoundTrip` below."""
 
     def test_ampersand_url_stays_single_arg_after_bypass(self, tmp_path, _force_windows):
         cmd, _entry = _make_agent_browser_shim(tmp_path)
@@ -191,6 +219,51 @@ class TestAmpersandUrlNotArgSplit:
         assert not any(part.lower().endswith(".cmd") for part in cmd_parts)
 
 
+@_NEEDS_REAL_NODE
+class TestRealNodeArgvRoundTrip:
+    """End-to-end proof (the evidence the resolver unit tests above can't give):
+    spawn a REAL node.exe through the bypassed prefix exactly as production does
+    and confirm the '&'-URL arrives as ONE unmodified ``process.argv`` element."""
+
+    def _make_real_shim(self, tmp_path):
+        bin_dir = tmp_path / "node_modules" / ".bin"
+        bin_dir.mkdir(parents=True)
+        cmd = bin_dir / "agent-browser.cmd"
+        cmd.write_text(_CMD_SHIM_TEMPLATE, encoding="utf-8")
+        entry = tmp_path / "node_modules" / "agent-browser" / "bin" / "agent-browser.js"
+        entry.parent.mkdir(parents=True)
+        entry.write_text(_ARGV_ECHO_JS, encoding="utf-8")
+        return cmd, entry
+
+    def test_ampersand_url_survives_real_node_spawn(self, tmp_path, _force_windows):
+        cmd, _entry = self._make_real_shim(tmp_path)
+        # Build the argv exactly as _run_browser_command does: bypass, then args.
+        argv = browser_tool._bypass_windows_cmd_shim([str(cmd)]) + ["--json", "open", X_SEARCH_URL]
+        assert not argv[0].lower().endswith(".cmd")  # cmd.exe is out of the chain
+        result = subprocess.run(argv, capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
+        seen = json.loads(result.stdout.strip())
+        # node received the '&'-URL as exactly one, unmodified argv element.
+        assert seen == ["--json", "open", X_SEARCH_URL]
+        assert seen.count(X_SEARCH_URL) == 1
+        assert not any(frag in seen for frag in ("src=typed_query", "f=live"))
+
+    def test_raw_cmd_control_splits_the_url(self, tmp_path, _force_windows):
+        # Negative control: the UN-bypassed .cmd (the status quo ante) mis-splits
+        # the URL under cmd.exe — proving the fix addresses a real failure, not a
+        # no-op. Best-effort: if the shim's own node probe can't locate node the
+        # control is inconclusive, so only assert when node actually echoed argv.
+        cmd, _entry = self._make_real_shim(tmp_path)
+        raw = subprocess.run(
+            [str(cmd), "--json", "open", X_SEARCH_URL], capture_output=True, text=True
+        )
+        out = raw.stdout.strip()
+        if out.startswith("["):
+            seen = json.loads(out)
+            # The URL was torn at '&': the full URL is NOT present intact.
+            assert X_SEARCH_URL not in seen
+
+
 class TestPosixAndFallbacks:
     """Portable across platforms — guards the do-no-harm / fail-safe paths."""
 
@@ -207,27 +280,79 @@ class TestPosixAndFallbacks:
     def test_empty_prefix_unchanged(self, _force_windows):
         assert browser_tool._bypass_windows_cmd_shim([]) == []
 
-    def test_missing_entry_js_falls_back_to_original(self, tmp_path, _force_windows):
+    def test_missing_entry_js_falls_back_to_original(self, tmp_path, _force_windows, caplog):
         # A .cmd shim whose referenced .js doesn't exist must NOT be rewritten
-        # (fail-safe: keep the original prefix rather than spawn a bogus path).
+        # (fail-safe: keep the original prefix rather than spawn a bogus path) —
+        # and the un-bypassable shortfall must be logged, not hidden.
         bin_dir = tmp_path / "node_modules" / ".bin"
         bin_dir.mkdir(parents=True)
         cmd = bin_dir / "agent-browser.cmd"
         cmd.write_text(_CMD_SHIM_TEMPLATE, encoding="utf-8")
         # NOTE: intentionally do not create the agent-browser.js entry.
         assert browser_tool._windows_cmd_shim_node_target(str(cmd)) is None
-        assert browser_tool._bypass_windows_cmd_shim([str(cmd)]) == [str(cmd)]
+        browser_tool._warned_unbypassable_shims.discard(str(cmd))
+        with caplog.at_level(logging.WARNING):
+            assert browser_tool._bypass_windows_cmd_shim([str(cmd)]) == [str(cmd)]
+        assert any("could not bypass" in r.getMessage() for r in caplog.records)
 
 
 class TestBypassWiredAtSpawnSites:
-    """Source-level guard (runs on Linux CI too): the bypass must stay applied
-    to ``cmd_prefix`` at BOTH agent-browser spawn sites so a future refactor
-    can't silently re-expose the &-URL splitting bug."""
+    """Guard (runs on Linux CI too): both agent-browser spawn sites must route
+    their prefix through the bypass, so a future refactor can't silently
+    re-expose the &-URL split. Function-scoped AST assertion — robust to
+    formatting and to the local variable's name, unlike a whole-file substring
+    count."""
 
-    def test_both_spawn_prefixes_apply_bypass(self):
+    def test_both_launchers_wire_bypass_and_npx(self):
+        import ast
+
         root = Path(__file__).resolve().parents[2]
-        src = (root / "tools" / "browser_tool.py").read_text(encoding="utf-8")
-        assert src.count("_bypass_windows_cmd_shim(cmd_prefix)") >= 2, (
-            "both browser_tool spawn sites must run cmd_prefix through "
-            "_bypass_windows_cmd_shim() before building the argv"
+        tree = ast.parse((root / "tools" / "browser_tool.py").read_text(encoding="utf-8"))
+        funcs = {
+            n.name: n
+            for n in ast.walk(tree)
+            if isinstance(n, ast.FunctionDef)
+            and n.name in {"_run_browser_command", "_run_chrome_fallback_command"}
+        }
+        # Both the bypass AND the npx re-resolution must stay wired at each spawn
+        # site: dropping _bypass_windows_cmd_shim re-exposes the &-URL split, and
+        # reverting to a bare "npx" (instead of _resolve_npx_launcher) silently
+        # reintroduces the npx-fallback bypass evasion.
+        required = {"_bypass_windows_cmd_shim", "_resolve_npx_launcher"}
+        for name in ("_run_browser_command", "_run_chrome_fallback_command"):
+            assert name in funcs, f"{name} not found in browser_tool.py"
+            called = {
+                node.func.id
+                for node in ast.walk(funcs[name])
+                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            }
+            missing = required - called
+            assert not missing, f"{name} must call {missing} before spawning"
+
+
+class TestNpxLauncherResolution:
+    """Fix for defect #2: ``_find_agent_browser`` can locate ``npx`` only via the
+    extended browser PATH but returns a sentinel, so the spawn sites must
+    re-resolve the real ``npx.cmd`` (not a bare ``"npx"`` the bypass would skip)."""
+
+    def test_prefers_ordinary_path(self, monkeypatch):
+        monkeypatch.setattr(
+            browser_tool.shutil, "which",
+            lambda name, path=None: r"C:\sys\npx.cmd" if (name == "npx" and path is None) else None,
         )
+        assert browser_tool._resolve_npx_launcher() == r"C:\sys\npx.cmd"
+
+    def test_falls_back_to_extended_path(self, monkeypatch):
+        # npx is NOT on the ordinary PATH — only reachable via the merged PATH.
+        def fake_which(name, path=None):
+            if name != "npx":
+                return None
+            return r"C:\managed\npx.cmd" if path is not None else None
+
+        monkeypatch.setattr(browser_tool.shutil, "which", fake_which)
+        # Returns the resolved .cmd (so the bypass can apply), never bare "npx".
+        assert browser_tool._resolve_npx_launcher() == r"C:\managed\npx.cmd"
+
+    def test_bare_npx_is_last_resort(self, monkeypatch):
+        monkeypatch.setattr(browser_tool.shutil, "which", lambda name, path=None: None)
+        assert browser_tool._resolve_npx_launcher() == "npx"

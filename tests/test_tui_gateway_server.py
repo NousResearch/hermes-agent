@@ -8384,12 +8384,18 @@ def test_browser_manage_connect_default_local_retries_after_launch(monkeypatch):
             patch(
                 "hermes_cli.browser_connect.launch_chrome_debug",
                 return_value=launched,
-            ),
+            ) as launch_chrome,
             patch("hermes_cli.browser_connect.local_port_in_use", return_value=False),
+            patch(
+                "hermes_cli.browser_connect.get_chrome_debug_candidates",
+                return_value=[],
+            ),
         ):
             resp = server.handle_request(
                 {"id": "1", "method": "browser.manage", "params": {"action": "connect"}}
             )
+    launch_chrome.assert_called_once()
+    assert attempts["n"] == 3
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == "http://127.0.0.1:9222"

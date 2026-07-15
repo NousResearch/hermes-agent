@@ -316,8 +316,25 @@ def _check_cron_ticker_warning() -> Optional[str]:
     Surfacing this at create time stops the silent "I scheduled it but it never
     ran" trap. Best-effort: any failure to determine gateway status returns
     ``None`` (no warning) rather than blocking job creation.
+
+    Only the built-in ticker depends on a live gateway process. An external
+    provider (e.g. Chronos) fires jobs via its own managed scheduler while the
+    gateway is scaled to zero, so a missing gateway PID does NOT mean those jobs
+    won't fire — warning there would be a false alarm. Mirror the CLI contract
+    (``hermes_cli/cron.py``) and stay silent for any non-builtin scheduler.
     """
     try:
+        try:
+            from cron.scheduler_provider import resolve_cron_scheduler
+
+            scheduler_name = resolve_cron_scheduler().name or "builtin"
+        except Exception:
+            # Fall back to the historical ticker-based check on any failure.
+            scheduler_name = "builtin"
+
+        if scheduler_name != "builtin":
+            return None
+
         from gateway.status import get_running_pid
 
         if get_running_pid() is None:

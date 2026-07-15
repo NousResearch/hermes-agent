@@ -2960,6 +2960,60 @@ def _is_github_models_base_url(base_url: Optional[str]) -> bool:
     )
 
 
+def _is_native_gemini_base_url(base_url: Optional[str]) -> bool:
+    """True only for Google's *native* Generative Language API base URLs.
+
+    Google AI Studio's native endpoint authenticates with a ``?key=`` query
+    parameter and returns ``models[].name`` shaped as ``models/<id>``. Its
+    OpenAI-compatibility endpoint (``.../v1beta/openai``) is intentionally
+    treated as OpenAI-shaped elsewhere (Bearer auth + ``data[].id`` with the
+    ``models/`` prefix stripped), so it must be excluded here to avoid routing
+    it through the native ``models[].name`` parser.
+    """
+    normalized = (base_url or "").strip().rstrip("/").lower()
+    if not normalized:
+        return False
+    parsed = urllib.parse.urlparse(normalized)
+    if parsed.hostname != "generativelanguage.googleapis.com":
+        return False
+    # Exclude the OpenAI-compat surface (.../v1beta/openai[/...]).
+    if "/openai" in parsed.path:
+        return False
+    return True
+
+
+def _fetch_native_gemini_models(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
+    """Fetch model IDs from Google's native Generative Language API.
+
+    Uses ``?key=`` query auth (not ``Authorization: Bearer``) and parses the
+    ``models[].name`` shape, stripping the ``models/`` prefix. Routed through
+    ``_urlopen_model_catalog_request`` so the shared redirect
+    credential-hardening contract is preserved for query-auth probing.
+    """
+    if not api_key:
+        return None
+    normalized = (base_url or "").strip().rstrip("/")
+    if not normalized:
+        normalized = "https://generativelanguage.googleapis.com/v1beta"
+    url = f"{normalized}/models?key={urllib.parse.quote(api_key, safe='')}"
+    req = urllib.request.Request(url, headers={"User-Agent": _HERMES_USER_AGENT})
+    try:
+        with _urlopen_model_catalog_request(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception:
+        return None
+    models = data.get("models", [])
+    return [
+        m["name"].split("/")[-1]
+        for m in models
+        if isinstance(m, dict) and m.get("name")
+    ]
+
+
 def _lmstudio_server_root(base_url: Optional[str]) -> Optional[str]:
     """Return the LM Studio server root for native ``/api/v1`` endpoints.
 
@@ -3579,6 +3633,21 @@ def probe_api_models(
             "models": models,
             "probed_url": COPILOT_MODELS_URL,
             "resolved_base_url": COPILOT_BASE_URL,
+            "suggested_base_url": None,
+            "used_fallback": False,
+        }
+
+    # Google AI Studio's *native* API uses ?key= query auth (not Bearer) and
+    # returns models[].name. The OpenAI-compat surface (.../v1beta/openai) is
+    # deliberately excluded so it keeps flowing through the generic Bearer path.
+    if _is_native_gemini_base_url(normalized):
+        models = _fetch_native_gemini_models(
+            api_key=api_key, base_url=normalized, timeout=timeout,
+        )
+        return {
+            "models": models,
+            "probed_url": f"{normalized}/models",
+            "resolved_base_url": normalized,
             "suggested_base_url": None,
             "used_fallback": False,
         }

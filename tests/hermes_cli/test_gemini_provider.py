@@ -354,3 +354,111 @@ class TestGeminiModelsDev:
         assert "gemma-3-27b-it" not in result
         assert "gemini-1.5-pro" not in result
         assert "gemini-2.0-flash" not in result
+
+
+# ── Native Gemini model probing (?key= query auth) ──
+
+class TestNativeGeminiProbe:
+    """probe_api_models must route Google's *native* Generative Language API
+    through ?key= query auth + models[].name parsing, while leaving the
+    OpenAI-compat surface (.../v1beta/openai) on the generic Bearer path."""
+
+    def test_native_base_url_detected(self):
+        from hermes_cli.models import _is_native_gemini_base_url
+
+        assert _is_native_gemini_base_url(
+            "https://generativelanguage.googleapis.com/v1beta"
+        )
+        assert _is_native_gemini_base_url(
+            "https://generativelanguage.googleapis.com/v1beta/"
+        )
+
+    def test_openai_compat_surface_excluded(self):
+        from hermes_cli.models import _is_native_gemini_base_url
+
+        assert not _is_native_gemini_base_url(
+            "https://generativelanguage.googleapis.com/v1beta/openai"
+        )
+        assert not _is_native_gemini_base_url(
+            "https://generativelanguage.googleapis.com/v1beta/openai/"
+        )
+
+    def test_non_google_host_excluded(self):
+        from hermes_cli.models import _is_native_gemini_base_url
+
+        assert not _is_native_gemini_base_url("https://api.openai.com/v1")
+        assert not _is_native_gemini_base_url("")
+        assert not _is_native_gemini_base_url(None)
+
+    def test_probe_uses_query_auth_and_catalog_urlopen(self):
+        """The fix routes native probing through _urlopen_model_catalog_request
+        (the redirect credential-hardening path) with a ?key= URL and parses
+        models[].name -> stripped id."""
+        import hermes_cli.models as models
+
+        captured = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return (
+                    b'{"models": [{"name": "models/gemini-2.5-pro"},'
+                    b' {"name": "models/gemini-2.0-flash"}]}'
+                )
+
+        def _fake_urlopen(req, timeout=5.0):
+            captured["url"] = req.full_url
+            captured["headers"] = dict(req.header_items())
+            return _Resp()
+
+        with patch.object(models, "_urlopen_model_catalog_request", _fake_urlopen):
+            result = models.probe_api_models(
+                api_key="secret-key",
+                base_url="https://generativelanguage.googleapis.com/v1beta",
+            )
+
+        # Query auth, not Bearer.
+        assert "?key=secret-key" in captured["url"]
+        assert not any(
+            k.lower() == "authorization" for k in captured["headers"]
+        )
+        # models[].name parsed with models/ prefix stripped.
+        assert result["models"] == ["gemini-2.5-pro", "gemini-2.0-flash"]
+
+    def test_probe_openai_compat_uses_generic_bearer_path(self):
+        """The OpenAI-compat endpoint must NOT hit the native ?key= branch;
+        it flows through the generic data[].id + Bearer probing path."""
+        import hermes_cli.models as models
+
+        captured = {}
+
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b'{"data": [{"id": "models/gemini-2.5-pro"}]}'
+
+        def _fake_urlopen(req, timeout=5.0):
+            captured["url"] = req.full_url
+            captured["headers"] = dict(req.header_items())
+            return _Resp()
+
+        with patch.object(models, "_urlopen_model_catalog_request", _fake_urlopen):
+            result = models.probe_api_models(
+                api_key="secret-key",
+                base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+            )
+
+        # Generic path: Bearer header present, no ?key= in URL.
+        assert "?key=" not in captured["url"]
+        assert captured["headers"].get("Authorization") == "Bearer secret-key"
+        assert result["models"] == ["models/gemini-2.5-pro"]

@@ -12,13 +12,17 @@ import time
 
 import pytest
 
+from agent.context_compressor import SUMMARY_PREFIX, _MERGED_SUMMARY_DELIMITER
 from hermes_state import SessionDB
 from tools.session_search_tool import (
     SESSION_SEARCH_SCHEMA,
     _HIDDEN_SESSION_SOURCES,
     _MESSAGE_CONTENT_MAX_CHARS,
+    _RESPONSE_FIELD_MAX_CHARS,
+    _RESPONSE_MAX_CHARS,
     _SNIPPET_MAX_CHARS,
     _TOOL_CALL_ARGUMENTS_MAX_CHARS,
+    _TOOL_CALL_METADATA_MAX_CHARS,
     _TOOL_CALLS_MAX_ITEMS,
     _format_timestamp,
     session_search,
@@ -313,7 +317,7 @@ class TestRecallPayloadSafety:
         db.create_session("s_compacted", source="cli")
         db.append_message("s_compacted", role="user", content="opener")
         summary = (
-            "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted.\n"
+            f"{SUMMARY_PREFIX}\n"
             "needle ## Historical Remaining Work\n"
             "stale task text "
             + ("x" * 12000)
@@ -339,6 +343,95 @@ class TestRecallPayloadSafety:
         assert hit["snippet_omitted"] == "context_compaction_summary"
         assert "Historical Remaining Work" not in hit["snippet"]
         assert "stale task text" not in hit["snippet"]
+
+    def test_discovery_omits_merged_context_compaction_summary_messages(self, db):
+        db.create_session("s_merged_compaction", source="cli")
+        db.append_message("s_merged_compaction", role="user", content="opener")
+        merged_summary = (
+            "[PRIOR CONTEXT — for reference only; not a new message]\n"
+            "prior tail text\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n"
+            f"{SUMMARY_PREFIX}\n"
+            "needle stale merged task "
+            + ("x" * 12000)
+        )
+        db.append_message(
+            "s_merged_compaction",
+            role="assistant",
+            content=merged_summary,
+        )
+        db._conn.commit()
+
+        result = json.loads(session_search(query="needle", limit=1, db=db))
+
+        assert result["success"] is True
+        hit = result["results"][0]
+        all_messages = hit["bookend_start"] + hit["messages"] + hit["bookend_end"]
+        summary_messages = [
+            m
+            for m in all_messages
+            if m.get("content_omitted") == "context_compaction_summary"
+        ]
+        assert summary_messages
+        assert all("stale merged task" not in m["content"] for m in all_messages)
+        assert summary_messages[0]["original_content_chars"] == len(merged_summary)
+        assert hit["snippet_omitted"] == "context_compaction_summary"
+
+    def test_discovery_omits_structured_merged_compaction_summary(self, db):
+        db.create_session("s_structured_summary", source="cli")
+        structured_summary = [
+            {"type": "text", "text": "prior tail"},
+            {
+                "type": "text",
+                "text": (
+                    f"{_MERGED_SUMMARY_DELIMITER}\n"
+                    f"{SUMMARY_PREFIX}\n"
+                    "needle stale structured task"
+                ),
+            },
+        ]
+        db.append_message(
+            "s_structured_summary",
+            role="assistant",
+            content=structured_summary,
+        )
+        db._conn.commit()
+
+        result = json.loads(session_search(session_id="s_structured_summary", db=db))
+
+        message = result["messages"][0]
+        assert message["content_omitted"] == "context_compaction_summary"
+        assert "stale structured task" not in message["content"]
+
+    def test_discovery_omits_deep_summary_snippet_from_full_content(self, db):
+        db.create_session("s_deep_summary", source="cli")
+        summary = (
+            f"{SUMMARY_PREFIX}\n"
+            + ("filler " * 100)
+            + "needle stale deep task"
+        )
+        db.append_message("s_deep_summary", role="assistant", content=summary)
+        db._conn.commit()
+
+        result = json.loads(session_search(query="needle", limit=1, db=db))
+
+        hit = result["results"][0]
+        assert hit["snippet_omitted"] == "context_compaction_summary"
+        assert "stale deep task" not in hit["snippet"]
+
+    def test_context_compaction_lookalike_is_not_omitted(self, db):
+        db.create_session("s_lookalike", source="cli")
+        content = "[CONTEXT COMPACTION is a topic, not a generated summary] needle"
+        db.append_message("s_lookalike", role="user", content=content)
+        db._conn.commit()
+
+        result = json.loads(session_search(query="needle", limit=1, db=db))
+
+        hit = result["results"][0]
+        anchor = next(m for m in hit["messages"] if m.get("anchor"))
+        assert anchor["content"] == content
+        assert "content_omitted" not in anchor
+        assert "snippet_omitted" not in hit
 
     def test_discovery_truncates_large_snippet(self, db):
         db.create_session("s_large_snippet", source="cli")
@@ -440,6 +533,133 @@ class TestRecallPayloadSafety:
         assert len(args) < _TOOL_CALL_ARGUMENTS_MAX_CHARS + 200
         assert "z" * (_TOOL_CALL_ARGUMENTS_MAX_CHARS + 100) not in args
         assert "session_search truncated" in args
+
+    def test_read_omits_unbounded_provider_tool_call_fields(self, db):
+        db.create_session("s_provider_fields", source="cli")
+        oversized = "provider-bookkeeping-" + ("r" * 12000)
+        oversized_id = "call_" + ("i" * 12000)
+        tool_calls = [
+            {
+                "id": oversized_id,
+                "type": "function",
+                "response_item_id": oversized,
+                "provider_payload": {"opaque": oversized},
+                "function": {
+                    "name": "session_search",
+                    "arguments": '{"query": "needle"}',
+                    "response_item_id": oversized,
+                },
+            }
+        ]
+        db.append_message(
+            "s_provider_fields",
+            role="assistant",
+            content="",
+            tool_calls=tool_calls,
+        )
+        db._conn.commit()
+
+        result = json.loads(session_search(session_id="s_provider_fields", db=db))
+
+        assert result["success"] is True
+        message = result["messages"][0]
+        call = message["tool_calls"][0]
+        assert set(call) == {"id", "type", "function"}
+        assert call["type"] == "function"
+        assert call["function"] == {
+            "name": "session_search",
+            "arguments": '{"query": "needle"}',
+        }
+        assert len(call["id"]) < _TOOL_CALL_METADATA_MAX_CHARS + 200
+        assert "session_search truncated" in call["id"]
+        assert message["tool_call_fields_truncated"] is True
+        assert message["tool_call_fields_omitted"] is True
+        assert oversized not in json.dumps(message)
+        assert oversized_id not in json.dumps(message)
+
+    def test_read_bounds_message_tool_identifiers_and_numeric_metadata(self, db):
+        db.create_session("s_message_tool_fields", source="cli")
+        oversized_name = "tool_" + ("n" * 12000)
+        oversized_call_id = "call_" + ("c" * 12000)
+        oversized_index = int("9" * 4000)
+        db.append_message(
+            "s_message_tool_fields",
+            role="tool",
+            content="done",
+            tool_name=oversized_name,
+            tool_call_id=oversized_call_id,
+            tool_calls=[{"name": "x", "index": oversized_index}],
+        )
+        db._conn.commit()
+
+        result = json.loads(session_search(session_id="s_message_tool_fields", db=db))
+
+        message = result["messages"][0]
+        assert message["tool_name_truncated"] is True
+        assert message["tool_call_id_truncated"] is True
+        assert message["tool_call_fields_truncated"] is True
+        assert len(message["tool_name"]) < _TOOL_CALL_METADATA_MAX_CHARS + 200
+        assert len(message["tool_call_id"]) < _TOOL_CALL_METADATA_MAX_CHARS + 200
+        assert isinstance(message["tool_calls"][0]["index"], str)
+        assert "session_search truncated" in message["tool_calls"][0]["index"]
+        assert oversized_name not in json.dumps(message)
+        assert oversized_call_id not in json.dumps(message)
+
+    def test_read_enforces_aggregate_response_budget(self, db):
+        db.create_session("s_response_budget", source="cli")
+        for index in range(30):
+            db.append_message(
+                "s_response_budget",
+                role="user" if index % 2 == 0 else "assistant",
+                content=f"message {index} " + ("x" * _MESSAGE_CONTENT_MAX_CHARS),
+            )
+        db._conn.commit()
+
+        raw = session_search(session_id="s_response_budget", db=db)
+        result = json.loads(raw)
+
+        assert len(raw) <= _RESPONSE_MAX_CHARS
+        assert result["response_truncated"] is True
+        assert result["original_response_chars"] > _RESPONSE_MAX_CHARS
+        assert len(result["messages"]) == 30
+
+    def test_read_bounds_large_metadata_below_aggregate_budget(self, db):
+        db.create_session("s_large_metadata", source="cli")
+        title = "T" * 100_000
+        db._conn.execute(
+            "UPDATE sessions SET title = ? WHERE id = ?",
+            (title, "s_large_metadata"),
+        )
+        db.append_message("s_large_metadata", role="user", content="small")
+        db._conn.commit()
+
+        raw = session_search(session_id="s_large_metadata", db=db)
+        result = json.loads(raw)
+
+        assert len(raw) <= _RESPONSE_MAX_CHARS
+        assert result["success"] is True
+        assert len(result["session_meta"]["title"]) <= _RESPONSE_FIELD_MAX_CHARS
+        assert result["response_fields_truncated"] is True
+        assert result["response_truncated"] is True
+        assert result["original_response_chars"] > len(raw)
+        assert title not in raw
+
+    def test_read_bounds_pathological_structured_keys_without_dropping_shape(self, db):
+        db.create_session("s_structured_keys", source="cli")
+        content = {"K" * 5800: ""}
+        for _ in range(40):
+            db.append_message("s_structured_keys", role="assistant", content=content)
+        db._conn.commit()
+
+        raw = session_search(session_id="s_structured_keys", db=db)
+        result = json.loads(raw)
+
+        assert len(raw) <= _RESPONSE_MAX_CHARS
+        assert result["success"] is True
+        assert result["mode"] == "read"
+        assert result["message_count"] == 40
+        assert len(result["messages"]) == 30
+        assert result["response_truncated"] is True
 
 
 # =========================================================================
@@ -623,16 +843,29 @@ class TestReadShape:
         result = json.loads(session_search(session_id="ghost", db=db))
         assert result["success"] is False
 
-    def test_read_truncates_large_session(self, db):
+    def test_read_truncates_large_session_without_loading_the_middle(self, db, monkeypatch):
         db.create_session("s_big", source="cli")
         for i in range(50):
             db.append_message("s_big", role="user" if i % 2 == 0 else "assistant", content=f"m{i}")
         db._conn.commit()
+
+        original_get_messages = db.get_messages
+        calls = []
+
+        def recording_get_messages(*args, **kwargs):
+            calls.append((args, kwargs))
+            return original_get_messages(*args, **kwargs)
+
+        monkeypatch.setattr(db, "get_messages", recording_get_messages)
         result = json.loads(session_search(session_id="s_big", db=db))
         assert result["mode"] == "read"
         assert result["message_count"] == 50
         assert result["truncated"] is True
         assert len(result["messages"]) == 30  # head 20 + tail 10
+        assert calls == [
+            (("s_big",), {"limit": 20}),
+            (("s_big",), {"limit": 10, "offset": 40}),
+        ]
 
 
 # =========================================================================

@@ -67,11 +67,12 @@ _DISCOVER_SCAN_LIMIT = 300
 _MESSAGE_CONTENT_MAX_CHARS = 6_000
 _SNIPPET_MAX_CHARS = 1_200
 _TOOL_CALL_ARGUMENTS_MAX_CHARS = 1_200
+_TOOL_CALL_METADATA_MAX_CHARS = 256
 _TOOL_CALLS_MAX_ITEMS = 6
-_COMPACTION_SUMMARY_MARKERS = (
-    "[CONTEXT COMPACTION",
-    "[CONTEXT SUMMARY]",
-)
+_RESPONSE_FIELD_MAX_CHARS = 8_000
+_RESPONSE_MAX_CHARS = 120_000
+_TOOL_CALL_METADATA_FIELDS = ("id", "call_id", "type", "name", "status", "index")
+_TOOL_CALL_ARGUMENT_FIELDS = ("arguments", "input")
 
 
 def _format_timestamp(ts: Union[int, float, str, None]) -> str:
@@ -151,17 +152,13 @@ def _text_char_len(content: Any) -> int:
 
 
 def _is_compaction_summary_content(content: Any) -> bool:
-    if not isinstance(content, str):
-        return False
-    stripped = content.lstrip()
-    return any(stripped.startswith(marker) for marker in _COMPACTION_SUMMARY_MARKERS)
+    # Import lazily so loading the core tool schema does not pull in the
+    # compressor and its provider dependencies. The invocation path still uses
+    # the compressor's one canonical detector, including multimodal content and
+    # every exact historical prefix.
+    from agent.context_compressor import is_context_summary_content
 
-
-def _contains_compaction_summary_marker(content: Any) -> bool:
-    if not isinstance(content, str):
-        return False
-    normalized = content.replace(">>>", "").replace("<<<", "")
-    return any(marker in normalized for marker in _COMPACTION_SUMMARY_MARKERS)
+    return is_context_summary_content(content)
 
 
 def _truncate_string(value: str, limit: int) -> tuple[str, bool, int]:
@@ -174,6 +171,98 @@ def _truncate_string(value: str, limit: int) -> tuple[str, bool, int]:
         + f"\n[session_search truncated {omitted:,} chars from this field; scroll/read a narrower window if needed]",
         True,
         original_len,
+    )
+
+
+def _truncate_string_to_budget(value: str, limit: int) -> str:
+    """Truncate a string to an exact final size for response budgeting."""
+    if len(value) <= limit:
+        return value
+    suffix = "...[session_search response budget]"
+    if limit <= len(suffix):
+        return value[:limit]
+    return value[: limit - len(suffix)].rstrip() + suffix
+
+
+def _limit_response_strings(value: Any, limit: int) -> Any:
+    """Return a copy with every string key and value capped to ``limit`` chars."""
+    if isinstance(value, str):
+        return _truncate_string_to_budget(value, limit)
+    if isinstance(value, list):
+        return [_limit_response_strings(item, limit) for item in value]
+    if isinstance(value, dict):
+        return {
+            _truncate_string_to_budget(key, limit) if isinstance(key, str) else key:
+            _limit_response_strings(item, limit)
+            for key, item in value.items()
+        }
+    return value
+
+
+def _bound_serialized_response(serialized: str) -> str:
+    """Enforce per-field and total ceilings on the final JSON response."""
+    original_response_chars = len(serialized)
+    if original_response_chars <= _RESPONSE_FIELD_MAX_CHARS:
+        return serialized
+
+    try:
+        payload = json.loads(serialized)
+    except (TypeError, ValueError):
+        return json.dumps(
+            {
+                "success": False,
+                "response_truncated": True,
+                "original_response_chars": original_response_chars,
+                "error": "session_search produced an oversized non-JSON response",
+            },
+            ensure_ascii=False,
+        )
+
+    if not isinstance(payload, dict):
+        payload = {"success": True, "result": payload}
+
+    field_bounded = _limit_response_strings(payload, _RESPONSE_FIELD_MAX_CHARS)
+    if field_bounded != payload:
+        payload = field_bounded
+        payload["response_truncated"] = True
+        payload["response_fields_truncated"] = True
+        payload["original_response_chars"] = original_response_chars
+        serialized = json.dumps(payload, ensure_ascii=False)
+
+    if len(serialized) <= _RESPONSE_MAX_CHARS:
+        return serialized
+
+    payload["response_truncated"] = True
+    payload["original_response_chars"] = original_response_chars
+
+    # Preserve the response structure while finding the largest uniform value
+    # cap that fits the final serialization inside the hard ceiling.
+    low, high = 32, max(32, _RESPONSE_FIELD_MAX_CHARS)
+    best: Optional[str] = None
+    while low <= high:
+        candidate_limit = (low + high) // 2
+        candidate = _limit_response_strings(payload, candidate_limit)
+        candidate_json = json.dumps(candidate, ensure_ascii=False)
+        if len(candidate_json) <= _RESPONSE_MAX_CHARS:
+            best = candidate_json
+            low = candidate_limit + 1
+        else:
+            high = candidate_limit - 1
+    if best is not None:
+        return best
+
+    # Fixed structural overhead can only exceed the budget for pathological
+    # persisted shapes. Fail closed rather than reinjecting an unbounded payload.
+    return json.dumps(
+        {
+            "success": False,
+            "mode": payload.get("mode"),
+            "response_truncated": True,
+            "original_response_chars": original_response_chars,
+            "error": "session_recall_response_too_large",
+            "message": "Session recall exceeded the response budget; request a narrower window.",
+        },
+        ensure_ascii=False,
     )
 
 
@@ -212,13 +301,17 @@ def _shape_content_for_recall(content: Any) -> tuple[Any, Dict[str, Any]]:
     return content, {}
 
 
-def _shape_snippet_for_recall(snippet: Any) -> tuple[str, Dict[str, Any]]:
+def _shape_snippet_for_recall(
+    snippet: Any,
+    *,
+    source_content: Any = None,
+) -> tuple[str, Dict[str, Any]]:
     """Return a bounded discovery snippet plus metadata."""
     if not isinstance(snippet, str):
         snippet = "" if snippet is None else str(snippet)
 
     original_chars = len(snippet)
-    if _contains_compaction_summary_marker(snippet):
+    if _is_compaction_summary_content(source_content):
         return (
             "[Context compaction summary snippet omitted by session_search.]",
             {
@@ -250,13 +343,30 @@ def _shape_tool_call_arguments(arguments: Any) -> tuple[Any, bool]:
     return arguments, False
 
 
-def _shape_tool_calls_for_recall(tool_calls: Any) -> tuple[Any, Dict[str, Any]]:
-    """Return bounded tool-call metadata for recall output.
+def _shape_tool_call_metadata(value: Any) -> tuple[Any, bool]:
+    """Bound a retained provider-neutral tool-call metadata value."""
+    if value is None or isinstance(value, bool):
+        return value, False
+    if isinstance(value, (int, float)):
+        rendered = str(value)
+        if len(rendered) <= _TOOL_CALL_METADATA_MAX_CHARS:
+            return value, False
+        value = rendered
+    if not isinstance(value, str):
+        try:
+            value = json.dumps(value, ensure_ascii=False)
+        except Exception:
+            value = str(value)
+    shaped, truncated, _ = _truncate_string(value, _TOOL_CALL_METADATA_MAX_CHARS)
+    return shaped, truncated
 
-    Tool-call-only assistant messages often carry large JSON arguments (for
-    example a prior ``session_search`` call that itself embedded bookends). Those
-    args are rarely the answer-bearing content the next model needs, so cap them
-    independently from message text.
+
+def _shape_tool_calls_for_recall(tool_calls: Any) -> tuple[Any, Dict[str, Any]]:
+    """Return bounded provider-neutral tool-call metadata for recall output.
+
+    Persisted call objects can include arbitrarily large provider bookkeeping.
+    Keep only fields useful for understanding the historical call, and bound
+    every retained value before it re-enters the active model context.
     """
     if not tool_calls:
         return tool_calls, {}
@@ -268,28 +378,56 @@ def _shape_tool_calls_for_recall(tool_calls: Any) -> tuple[Any, Dict[str, Any]]:
         calls = tool_calls
         original_count = len(tool_calls)
 
+    allowed_fields = {
+        *_TOOL_CALL_METADATA_FIELDS,
+        *_TOOL_CALL_ARGUMENT_FIELDS,
+        "function",
+    }
     shaped_calls = []
     truncated_args = False
+    truncated_fields = False
+    omitted_fields = False
     for call in calls[:_TOOL_CALLS_MAX_ITEMS]:
         if not isinstance(call, dict):
-            shaped_calls.append(call)
+            shaped_call, did_truncate = _shape_tool_call_arguments(call)
+            shaped_calls.append(shaped_call)
+            truncated_args = truncated_args or did_truncate
             continue
 
-        shaped = dict(call)
-        fn = shaped.get("function")
+        shaped: Dict[str, Any] = {}
+        for field in _TOOL_CALL_METADATA_FIELDS:
+            if field not in call:
+                continue
+            shaped_value, did_truncate = _shape_tool_call_metadata(call[field])
+            shaped[field] = shaped_value
+            truncated_fields = truncated_fields or did_truncate
+
+        for field in _TOOL_CALL_ARGUMENT_FIELDS:
+            if field not in call:
+                continue
+            shaped_value, did_truncate = _shape_tool_call_arguments(call[field])
+            shaped[field] = shaped_value
+            truncated_args = truncated_args or did_truncate
+
+        fn = call.get("function")
         if isinstance(fn, dict):
-            fn_shaped = dict(fn)
-            args = fn_shaped.get("arguments")
-            new_args, did_truncate = _shape_tool_call_arguments(args)
-            if did_truncate:
-                truncated_args = True
-                fn_shaped["arguments"] = new_args
+            fn_shaped: Dict[str, Any] = {}
+            if "name" in fn:
+                shaped_name, did_truncate = _shape_tool_call_metadata(fn["name"])
+                fn_shaped["name"] = shaped_name
+                truncated_fields = truncated_fields or did_truncate
+            if "arguments" in fn:
+                shaped_args, did_truncate = _shape_tool_call_arguments(fn["arguments"])
+                fn_shaped["arguments"] = shaped_args
+                truncated_args = truncated_args or did_truncate
             shaped["function"] = fn_shaped
-        elif "arguments" in shaped:
-            new_args, did_truncate = _shape_tool_call_arguments(shaped.get("arguments"))
-            if did_truncate:
-                truncated_args = True
-                shaped["arguments"] = new_args
+            omitted_fields = omitted_fields or bool(set(fn) - {"name", "arguments"})
+        elif "function" in call:
+            shaped_function, did_truncate = _shape_tool_call_metadata(fn)
+            shaped["function"] = shaped_function
+            truncated_fields = truncated_fields or did_truncate
+
+        omitted_fields = omitted_fields or bool(set(call) - allowed_fields)
         shaped_calls.append(shaped)
 
     meta: Dict[str, Any] = {}
@@ -298,6 +436,10 @@ def _shape_tool_calls_for_recall(tool_calls: Any) -> tuple[Any, Dict[str, Any]]:
         meta["original_tool_call_count"] = original_count
     if truncated_args:
         meta["tool_call_arguments_truncated"] = True
+    if truncated_fields:
+        meta["tool_call_fields_truncated"] = True
+    if omitted_fields:
+        meta["tool_call_fields_omitted"] = True
 
     return shaped_calls, meta
 
@@ -313,13 +455,19 @@ def _shape_message(m: Dict[str, Any], anchor_id: Optional[int] = None) -> Dict[s
     }
     entry.update(content_meta)
     if m.get("tool_name"):
-        entry["tool_name"] = m.get("tool_name")
+        tool_name, truncated = _shape_tool_call_metadata(m.get("tool_name"))
+        entry["tool_name"] = tool_name
+        if truncated:
+            entry["tool_name_truncated"] = True
     if m.get("tool_calls"):
         shaped_tool_calls, tool_meta = _shape_tool_calls_for_recall(m.get("tool_calls"))
         entry["tool_calls"] = shaped_tool_calls
         entry.update(tool_meta)
     if m.get("tool_call_id"):
-        entry["tool_call_id"] = m.get("tool_call_id")
+        tool_call_id, truncated = _shape_tool_call_metadata(m.get("tool_call_id"))
+        entry["tool_call_id"] = tool_call_id
+        if truncated:
+            entry["tool_call_id_truncated"] = True
     if anchor_id is not None and m.get("id") == anchor_id:
         entry["anchor"] = True
     # Strip None values to keep payload tight, but always keep content
@@ -411,15 +559,26 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
         return tool_error(f"session_id not found: {session_id}", success=False)
 
     try:
-        rows = db.get_messages(session_id)
+        total = max(0, int(meta.get("message_count") or 0))
+    except (TypeError, ValueError):
+        total = 0
+
+    try:
+        if total > head + tail:
+            rows = db.get_messages(session_id, limit=head)
+            rows += db.get_messages(session_id, limit=tail, offset=max(total - tail, 0))
+            truncated = True
+        else:
+            rows = db.get_messages(session_id)
+            total = len(rows)
+            truncated = total > head + tail
+            if truncated:
+                rows = rows[:head] + rows[-tail:]
     except Exception as e:
         logging.error("get_messages failed for %s: %s", session_id, e, exc_info=True)
         return tool_error(f"failed to load session: {e}", success=False)
 
-    shaped = [_shape_message(m) for m in rows]
-    total = len(shaped)
-    truncated = total > head + tail
-    window = shaped[:head] + shaped[-tail:] if truncated else shaped
+    window = [_shape_message(m) for m in rows]
 
     response = {
         "success": True,
@@ -443,7 +602,7 @@ def _read_session(db, session_id: str, head: int = 20, tail: int = 10) -> str:
     return json.dumps(response, ensure_ascii=False)
 
 
-def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
+def _list_recent_sessions(db, limit: int, current_session_id: Optional[str] = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls, no FTS5)."""
     try:
         sessions = db.list_sessions_rich(
@@ -491,7 +650,7 @@ def _scroll(
     session_id: str,
     around_message_id: int,
     window: int = 5,
-    current_session_id: str = None,
+    current_session_id: Optional[str] = None,
 ) -> str:
     """Scroll shape: return a window of messages centered on an anchor.
 
@@ -688,7 +847,7 @@ def _discover(
     role_filter: Optional[List[str]],
     limit: int,
     sort: Optional[str],
-    current_session_id: str = None,
+    current_session_id: Optional[str] = None,
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
@@ -771,7 +930,18 @@ def _discover(
         except Exception:
             session_meta = {}
 
-        shaped_snippet, snippet_meta = _shape_snippet_for_recall(match_info.get("snippet"))
+        anchor_content = next(
+            (
+                message.get("content")
+                for message in (view.get("window") or [])
+                if message.get("id") == msg_id
+            ),
+            None,
+        )
+        shaped_snippet, snippet_meta = _shape_snippet_for_recall(
+            match_info.get("snippet"),
+            source_content=anchor_content,
+        )
         entry = {
             "session_id": hit_sid,
             "when": _format_timestamp(
@@ -804,20 +974,20 @@ def _discover(
     }, ensure_ascii=False)
 
 
-def session_search(
+def _session_search_impl(
     query: str = "",
-    role_filter: str = None,
+    role_filter: Optional[str] = None,
     limit: int = 3,
     db=None,
-    current_session_id: str = None,
+    current_session_id: Optional[str] = None,
     # Scroll shape
-    session_id: str = None,
-    around_message_id: int = None,
+    session_id: Optional[str] = None,
+    around_message_id: Optional[int] = None,
     window: int = 5,
     # Discovery shape
-    sort: str = None,
+    sort: Optional[str] = None,
     # Cross-profile (any shape)
-    profile: str = None,
+    profile: Optional[str] = None,
 ) -> str:
     """Single-shape tool. Mode inferred from which args are set.
 
@@ -925,6 +1095,35 @@ def session_search(
         limit=limit,
         sort=sort_norm,
         current_session_id=current_session_id,
+    )
+
+
+def session_search(
+    query: str = "",
+    role_filter: Optional[str] = None,
+    limit: int = 3,
+    db=None,
+    current_session_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    around_message_id: Optional[int] = None,
+    window: int = 5,
+    sort: Optional[str] = None,
+    profile: Optional[str] = None,
+) -> str:
+    """Run session recall and enforce the final serialized response budget."""
+    return _bound_serialized_response(
+        _session_search_impl(
+            query=query,
+            role_filter=role_filter,
+            limit=limit,
+            db=db,
+            current_session_id=current_session_id,
+            session_id=session_id,
+            around_message_id=around_message_id,
+            window=window,
+            sort=sort,
+            profile=profile,
+        )
     )
 
 

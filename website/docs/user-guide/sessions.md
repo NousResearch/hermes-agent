@@ -525,7 +525,7 @@ For deeper analytics — token usage, cost estimates, tool breakdown, and activi
 
 ## Session Search Tool
 
-The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. No LLM calls, no summarization, no truncation. Every shape returns actual messages from the DB.
+The agent has a built-in `session_search` tool that performs full-text search across all past conversations using SQLite's FTS5 engine — and lets the agent scroll through any session it finds. It makes no LLM calls and does not generate summaries. Every shape returns DB-sourced messages, but recall payloads are bounded before they enter the active model context: old compaction-summary bodies are omitted, oversized message, snippet, and tool-call fields are truncated or filtered, and metadata records those elisions.
 
 ### Three calling shapes
 

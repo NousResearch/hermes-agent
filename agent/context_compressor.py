@@ -389,6 +389,22 @@ def _content_text_for_contains(content: Any) -> str:
     return str(content)
 
 
+def is_context_summary_content(content: Any) -> bool:
+    """Return whether content is a persisted context-compaction summary.
+
+    This is the canonical detector for both the compressor and recall tools.
+    Keep the exact-prefix and structured-content semantics here so historical
+    summaries are neither reactivated nor confused with ordinary discussion
+    that merely mentions context compaction.
+    """
+    text = _content_text_for_contains(content).lstrip()
+    if _MERGED_SUMMARY_DELIMITER in text:
+        text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
+    if text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX):
+        return True
+    return any(text.startswith(prefix) for prefix in _HISTORICAL_SUMMARY_PREFIXES)
+
+
 def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -> Any:
     """Append or prepend plain text to message content safely.
 
@@ -2465,17 +2481,7 @@ This compaction should PRIORITISE preserving all information related to the focu
 
     @staticmethod
     def _is_context_summary_content(content: Any) -> bool:
-        text = _content_text_for_contains(content).lstrip()
-        # Merge-into-tail summaries wrap prior tail content before the summary,
-        # so the handoff prefix lands after _MERGED_SUMMARY_DELIMITER rather than
-        # at the start. Detect the summary in that region too, otherwise callers
-        # (auto-focus skip, carry-forward summary find, last-real-user anchor)
-        # mistake a merged summary message for a real user turn.
-        if _MERGED_SUMMARY_DELIMITER in text:
-            text = text.split(_MERGED_SUMMARY_DELIMITER, 1)[1].lstrip()
-        if text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX):
-            return True
-        return any(text.startswith(p) for p in _HISTORICAL_SUMMARY_PREFIXES)
+        return is_context_summary_content(content)
 
     @staticmethod
     def _has_compressed_summary_metadata(message: Any) -> bool:

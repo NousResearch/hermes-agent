@@ -12,10 +12,11 @@ import { $reauthNonce, loadTarget, setTarget, type GatewayTarget } from '~bridge
 
 import { ConnectScreen } from '~mobile/connect/ConnectScreen'
 import { LoginScreen } from '~mobile/connect/LoginScreen'
+import { TokenScreen } from '~mobile/connect/TokenScreen'
 import { MobileBehaviors } from '~mobile/mobile-behaviors'
 import { initNativeChrome } from '~mobile/native-init'
 
-type View = 'loading' | 'connect' | 'login' | 'connected'
+type View = 'loading' | 'connect' | 'login' | 'token' | 'connected'
 
 export function MobileRoot() {
   const [view, setView] = useState<View>('loading')
@@ -32,15 +33,18 @@ export function MobileRoot() {
     })()
   }, [])
 
-  // A 401 demanding re-login bounces us back to the login form.
+  // A 401 demanding re-login bounces us back to the right entry form for the
+  // gateway's auth mode (token gateways re-collect the token, not a password).
   useEffect(() => {
-    if (reauthNonce > 0 && probe) setView('login')
+    if (reauthNonce > 0 && probe) setView(probe.authMode === 'token' ? 'token' : 'login')
   }, [reauthNonce, probe])
 
   async function onProbeResult(p: ProbeResult) {
     setProbe(p)
     if (p.authMode === 'token') {
-      await commit({ baseUrl: p.baseUrl, authMode: 'token', provider: null })
+      // Token gateways need a static session token; collect it before committing
+      // (an empty token is rejected by both the gateway and desktop parity).
+      setView('token')
       return
     }
     if (!p.needsLogin) {
@@ -74,6 +78,18 @@ export function MobileRoot() {
         probe={probe}
         onBack={() => setView('connect')}
         onLoggedIn={(provider) => commit({ baseUrl: probe.baseUrl, authMode: 'oauth', provider })}
+      />
+    )
+  }
+
+  if (view === 'token' && probe) {
+    return (
+      <TokenScreen
+        probe={probe}
+        onBack={() => setView('connect')}
+        onToken={(token) =>
+          commit({ baseUrl: probe.baseUrl, authMode: 'token', provider: null, token })
+        }
       />
     )
   }

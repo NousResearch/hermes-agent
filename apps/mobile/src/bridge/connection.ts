@@ -28,9 +28,9 @@ export async function getGatewayWsUrl(): Promise<string> {
     const ticket = await mintWsTicket(target.baseUrl)
     return buildGatewayWsUrlWithTicket(target.baseUrl, ticket)
   }
-  // token mode: the (currently empty) token rides in the URL. Token-auth
-  // gateways aren't the primary target here but the path is kept for parity.
-  return buildGatewayWsUrl(target.baseUrl, '')
+  // token mode: the saved static session token rides in the ws URL (?token=),
+  // matching the desktop's buildGatewayWsUrl(baseUrl, token).
+  return buildGatewayWsUrl(target.baseUrl, target.token ?? '')
 }
 
 /** Resolve a full connection descriptor. `wsUrl` is minted fresh so a cached
@@ -46,7 +46,8 @@ export async function getConnection(): Promise<HermesConnection> {
     authMode: target.authMode,
     nativeOverlayWidth: 0,
     source: 'settings',
-    token: '',
+    // token gateways carry the static token; oauth authenticates via cookies.
+    token: target.authMode === 'token' ? (target.token ?? '') : '',
     wsUrl,
     logs: [],
     windowButtonPosition: null,

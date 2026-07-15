@@ -17,6 +17,10 @@ export interface GatewayTarget {
   authMode: AuthMode
   /** Auth provider name (e.g. "basic") when password-gated; null for token mode. */
   provider: string | null
+  /** Static session token for `authMode: 'token'` gateways (sent as the
+   *  `X-Hermes-Session-Token` REST header and the ws `?token=`); null/absent for
+   *  oauth, which authenticates via session cookies + a minted ws-ticket. */
+  token?: string | null
 }
 
 export type AuthStatus =

@@ -82,3 +82,37 @@ export function authModeFromStatus(statusBody: unknown): AuthMode {
     ? 'oauth'
     : 'token'
 }
+
+/** Mirror of the desktop's connectionScopeKey: a trimmed profile name, or null
+ *  for the primary/default connection (null/'' collapse to the primary). */
+export function connectionScopeKey(profile: null | string | undefined): null | string {
+  return String(profile ?? '').trim() || null
+}
+
+/**
+ * Append `?profile=<name>` to a REST path for profile-scoped calls — the mobile
+ * equivalent of the desktop's `pathWithGlobalRemoteProfile` in global-remote
+ * mode, which the mobile client always is (one remote gateway, no per-profile
+ * backend overrides). Without this, profile-scoped requests from the vendored
+ * renderer hit the gateway's primary profile and return the wrong data. A
+ * null/blank profile, an empty path, or a path that already pins `profile` is
+ * returned unchanged.
+ */
+export function pathWithProfileQuery(path: string, profile: null | string | undefined): string {
+  const scoped = connectionScopeKey(profile)
+  if (!scoped) return path
+
+  const raw = String(path || '')
+  if (!raw) return path
+
+  let parsed: URL
+  try {
+    parsed = new URL(raw, 'http://hermes.local')
+  } catch {
+    return path
+  }
+
+  if (parsed.searchParams.has('profile')) return path
+  parsed.searchParams.set('profile', scoped)
+  return `${parsed.pathname}${parsed.search}${parsed.hash}`
+}

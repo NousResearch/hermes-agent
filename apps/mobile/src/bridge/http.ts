@@ -13,7 +13,7 @@
 
 import { Capacitor, CapacitorHttp } from '@capacitor/core'
 
-import { buildApiUrl } from './connection-config'
+import { buildApiUrl, pathWithProfileQuery } from './connection-config'
 import { captureSetCookie, cookieHeader } from './cookie-jar'
 import { currentTarget, requireReauth } from './state'
 
@@ -123,10 +123,21 @@ export async function api<T>(request: {
     throw new Error('Not connected to a gateway.')
   }
 
+  // Token gateways authenticate REST with the static session-token header (the
+  // desktop's fetchJson sends the same). OAuth gateways use the session cookie,
+  // replayed by rawRequest from the jar.
+  const headers =
+    target.authMode === 'token' && target.token
+      ? { 'X-Hermes-Session-Token': target.token }
+      : undefined
+
   const res = await rawRequest({
     baseUrl: target.baseUrl,
-    path: request.path,
+    // Profile-scoped calls append `?profile=<name>` so the gateway serves that
+    // profile's data instead of the primary's.
+    path: pathWithProfileQuery(request.path, request.profile),
     method: request.method,
+    headers,
     body: request.body,
     timeoutMs: request.timeoutMs,
   })

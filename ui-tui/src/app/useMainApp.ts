@@ -9,6 +9,7 @@ import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { composeTabTitle, fmtCwdBranch, shortCwd } from '../domain/paths.js'
+import { sessionScopedModelArg } from '../domain/slash.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
@@ -37,6 +38,7 @@ import { planGatewayRecovery } from './gatewayRecovery.js'
 import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
+import { $goodVibesTick } from './petFlashStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { turnController } from './turnController.js'
 import { patchTurnState, useTurnSelector } from './turnStore.js'
@@ -48,7 +50,6 @@ import { useLongRunToolCharms } from './useLongRunToolCharms.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
 import { useSubmission } from './useSubmission.js'
 
-const GOOD_VIBES_RE = /\b(good bot|thanks|thank you|thx|ty|ily|love you)\b/i
 const BRACKET_PASTE_ON = '\x1b[?2004h'
 const BRACKET_PASTE_OFF = '\x1b[?2004l'
 const MAX_HEIGHT_CACHE_BUCKETS = 12
@@ -116,7 +117,7 @@ export async function startPromptLiveSession({
     return null
   }
 
-  const requestedModel = modelArg?.trim()
+  const requestedModel = modelArg ? sessionScopedModelArg(modelArg) : ''
 
   if (requestedModel) {
     const result = await rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: sid, value: requestedModel })
@@ -185,7 +186,8 @@ export function useMainApp(gw: GatewayClient) {
   const [sessionStartedAt, setSessionStartedAt] = useState(() => Date.now())
   const [turnStartedAt, setTurnStartedAt] = useState<null | number>(null)
   const [lastTurnEndedAt, setLastTurnEndedAt] = useState<null | number>(null)
-  const [goodVibesTick, setGoodVibesTick] = useState(0)
+  // Bumped by the gateway `reaction` event (core-detected affection).
+  const goodVibesTick = useStore($goodVibesTick)
   const [bellOnComplete, setBellOnComplete] = useState(false)
 
   const ui = useStore($uiState)
@@ -445,12 +447,6 @@ export function useMainApp(gw: GatewayClient) {
     [sys]
   )
 
-  const maybeGoodVibes = useCallback((text: string) => {
-    if (GOOD_VIBES_RE.test(text)) {
-      setGoodVibesTick(v => v + 1)
-    }
-  }, [])
-
   const rpc: GatewayRpc = useCallback(
     async <T extends Record<string, any> = Record<string, any>>(
       method: string,
@@ -690,7 +686,6 @@ export function useMainApp(gw: GatewayClient) {
     composerRefs,
     composerState,
     gw,
-    maybeGoodVibes,
     setLastUserMsg,
     slashRef,
     submitRef,
@@ -916,7 +911,13 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      return respondWith('sudo.respond', { password: pw, request_id: overlay.sudo.requestId }, () => {
+      const requestId = overlay.sudo.requestId
+
+      if (!pw) {
+        patchOverlayState({ sudo: null })
+      }
+
+      return respondWith('sudo.respond', { password: pw, request_id: requestId }, () => {
         patchOverlayState({ sudo: null })
         patchUiState({ status: 'running…' })
       })
@@ -930,7 +931,13 @@ export function useMainApp(gw: GatewayClient) {
         return
       }
 
-      return respondWith('secret.respond', { request_id: overlay.secret.requestId, value }, () => {
+      const requestId = overlay.secret.requestId
+
+      if (!value) {
+        patchOverlayState({ secret: null })
+      }
+
+      return respondWith('secret.respond', { request_id: requestId, value }, () => {
         patchOverlayState({ secret: null })
         patchUiState({ status: 'running…' })
       })

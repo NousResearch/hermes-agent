@@ -399,16 +399,19 @@ def _compute_tool_definitions(
     if disabled_toolsets:
         for toolset_name in disabled_toolsets:
             if validate_toolset(toolset_name):
-                if toolset_name.startswith("hermes-"):
-                    # Platform bundles (hermes-*) include _HERMES_CORE_TOOLS, so
-                    # subtracting the whole bundle would strip core tools shared
-                    # by other enabled toolsets and empty the tool list (#33924).
-                    # Subtract only the bundle's non-core delta; keep core.
-                    from toolsets import bundle_non_core_tools
+                from toolsets import bundle_non_core_tools, get_toolset
+                if toolset_name.startswith("hermes-") or (get_toolset(toolset_name) or {}).get("posture"):
+                    # Platform bundles (hermes-*) include _HERMES_CORE_TOOLS, and
+                    # posture toolsets (`posture: True`, e.g. `coding`) re-list
+                    # those same core tools without owning them, so subtracting
+                    # the whole toolset would strip core tools shared by other
+                    # enabled toolsets and empty the tool list (#33924, #57315).
+                    # Subtract only the non-core delta; keep core.
                     to_remove = bundle_non_core_tools(toolset_name)
                     tools_to_include.difference_update(to_remove)
                     resolved = sorted(to_remove)
-                    if not quiet_mode and toolset_name not in _WARNED_DISABLED_BUNDLES:
+                    if (not quiet_mode and toolset_name.startswith("hermes-")
+                            and toolset_name not in _WARNED_DISABLED_BUNDLES):
                         _WARNED_DISABLED_BUNDLES.add(toolset_name)
                         logger.info(
                             "agent.disabled_toolsets contains platform-bundle "
@@ -580,7 +583,13 @@ def _resolve_active_context_length() -> int:
         if not model_id:
             return 0
         from agent.model_metadata import get_model_context_length
-        return int(get_model_context_length(model_id) or 0)
+        # Honor explicit `model.context_length` in config.yaml — short-circuits
+        # the OpenRouter /models probe at get_model_context_length step 0, so
+        # non-OpenRouter providers don't pay the ~2-3s OpenRouter fetch at every
+        # CLI startup.  See issue #46620.
+        raw_ctx = model_cfg.get("context_length")
+        config_ctx = raw_ctx if isinstance(raw_ctx, int) and raw_ctx > 0 else None
+        return int(get_model_context_length(model_id, config_context_length=config_ctx) or 0)
     except Exception as e:
         logger.debug("Could not resolve active context length: %s", e)
         return 0
@@ -1158,21 +1167,22 @@ def handle_function_call(
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
-        # Check plugin hooks for a block directive (unless caller already
-        # checked — e.g. run_agent._invoke_tool passes skip=True to
+        # Check plugin hooks for a block/approve directive (unless caller
+        # already checked — e.g. run_agent._invoke_tool passes skip=True to
         # avoid double-firing the hook).
         #
         # Single-fire contract: pre_tool_call fires exactly once per tool
-        # execution. get_pre_tool_call_block_message() internally calls
-        # invoke_hook("pre_tool_call", ...) and returns the first block
-        # directive (if any), so observer plugins see the hook on that same
-        # pass. When skip=True, the caller already fired it — do nothing
-        # here.
+        # execution. resolve_pre_tool_block() internally calls
+        # invoke_hook("pre_tool_call", ...) once and returns the block message
+        # for a `block` directive OR for an `approve` directive whose human
+        # gate denied/timed-out/errored (fail-closed). Observer plugins see
+        # the hook on that same pass. When skip=True, the caller already
+        # fired it — do nothing here.
         if not skip_pre_tool_call_hook:
             block_message: Optional[str] = None
             try:
-                from hermes_cli.plugins import get_pre_tool_call_block_message
-                block_message = get_pre_tool_call_block_message(
+                from hermes_cli.plugins import resolve_pre_tool_block
+                block_message = resolve_pre_tool_block(
                     function_name,
                     function_args,
                     task_id=task_id or "",

@@ -977,6 +977,12 @@ def memory_tool(
     if store is None:
         return tool_error("Memory is not available. It may be disabled in config or this environment.", success=False)
 
+    # Some strict providers fill optional schema fields with JSON null rather
+    # than omitting them.  Treat ``target: null`` as omitted so memory writes
+    # still use the documented default store instead of failing validation.
+    if target is None:
+        target = "memory"
+
     if target not in {"memory", "user"}:
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
 

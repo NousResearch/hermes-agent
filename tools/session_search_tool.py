@@ -478,6 +478,7 @@ def _title_match_result(
     entry = {
         "session_id": session_id,
         "when": _format_timestamp(session_meta.get("started_at")),
+        "started_at": _format_timestamp(session_meta.get("started_at")),
         "source": session_meta.get("source", "unknown"),
         "model": session_meta.get("model") or "unknown",
         "title": session_meta.get("title") or title_query,

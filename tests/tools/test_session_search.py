@@ -324,7 +324,7 @@ class TestDiscoverWhenTimestamp:
         hit = result["results"][0]
 
         # 'when' must reflect the matched message, not session start
-        assert hit["when"] != _format_timestamp(session_start)
+        assert hit["when"] == _format_timestamp(msg_ts)
         assert "started_at" in hit
         assert hit["started_at"] == _format_timestamp(session_start)
 

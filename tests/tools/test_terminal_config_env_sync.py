@@ -254,6 +254,59 @@ def test_docker_extra_args_is_bridged_everywhere():
     assert "TERMINAL_DOCKER_EXTRA_ARGS" in _terminal_tool_env_var_names()
 
 
+def test_tenki_config_backend_defaults_to_terminate_only(monkeypatch, tmp_path):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from hermes_cli import config as hc_config
+
+    hc_config._LOAD_CONFIG_CACHE.clear()
+    (tmp_path / "config.yaml").write_text("terminal:\n  backend: tenki\n", encoding="utf-8")
+
+    cfg = hc_config.load_config()
+    assert cfg["terminal"]["container_persistent"] is False
+
+    env = {}
+    hc_config.apply_terminal_config_to_env(env=env, config=cfg)
+    assert env["TERMINAL_CONTAINER_PERSISTENT"] == "False"
+
+    hc_config._LOAD_CONFIG_CACHE.clear()
+    (tmp_path / "config.yaml").write_text(
+        "terminal:\n  backend: tenki\n  container_persistent: true\n",
+        encoding="utf-8",
+    )
+
+    cfg = hc_config.load_config()
+    assert cfg["terminal"]["container_persistent"] is True
+
+
+def test_tenki_managed_persistence_survives_env_bridge(monkeypatch, tmp_path):
+    home = tmp_path / "home"
+    managed = tmp_path / "managed"
+    home.mkdir()
+    managed.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+
+    from hermes_cli import config as hc_config
+    from hermes_cli import managed_scope
+
+    hc_config._LOAD_CONFIG_CACHE.clear()
+    hc_config._RAW_CONFIG_CACHE.clear()
+    managed_scope.invalidate_managed_cache()
+    (home / "config.yaml").write_text("terminal:\n  backend: tenki\n", encoding="utf-8")
+    (managed / "config.yaml").write_text(
+        "terminal:\n  container_persistent: true\n",
+        encoding="utf-8",
+    )
+
+    cfg = hc_config.load_config()
+    assert cfg["terminal"]["container_persistent"] is True
+
+    env = {"TERMINAL_CONTAINER_PERSISTENT": "false"}
+    hc_config.apply_terminal_config_to_env(env=env, config=cfg, override=True)
+    assert env["TERMINAL_CONTAINER_PERSISTENT"] == "True"
+
+
 def test_docker_persist_across_processes_is_bridged_everywhere():
     """Regression pin for the cross-process container reuse toggle.
 
@@ -322,3 +375,26 @@ def test_docker_forward_env_is_bridged_everywhere():
     assert "docker_forward_env" in _gateway_env_map_keys()
     assert "docker_forward_env" in _save_config_env_sync_keys()
     assert "TERMINAL_DOCKER_FORWARD_ENV" in _terminal_tool_env_var_names()
+
+
+def test_tenki_config_is_bridged_everywhere():
+    """Tenki backend config must reach every Hermes entry point."""
+    tenki_keys = {
+        "tenki_image": "TERMINAL_TENKI_IMAGE",
+        "tenki_api_endpoint": "TERMINAL_TENKI_API_ENDPOINT",
+        "tenki_workspace_id": "TERMINAL_TENKI_WORKSPACE_ID",
+        "tenki_project_id": "TERMINAL_TENKI_PROJECT_ID",
+        "tenki_name_prefix": "TERMINAL_TENKI_NAME_PREFIX",
+        "tenki_allow_inbound": "TERMINAL_TENKI_ALLOW_INBOUND",
+        "tenki_allow_outbound": "TERMINAL_TENKI_ALLOW_OUTBOUND",
+        "tenki_max_duration": "TERMINAL_TENKI_MAX_DURATION",
+        "tenki_idle_timeout": "TERMINAL_TENKI_IDLE_TIMEOUT",
+        "tenki_pause_retention": "TERMINAL_TENKI_PAUSE_RETENTION",
+        "tenki_sync_hermes_home": "TERMINAL_TENKI_SYNC_HERMES_HOME",
+        "tenki_forward_env": "TERMINAL_TENKI_FORWARD_ENV",
+    }
+    for key, env_var in tenki_keys.items():
+        assert key in _cli_env_map_keys()
+        assert key in _gateway_env_map_keys()
+        assert key in _save_config_env_sync_keys()
+        assert env_var in _terminal_tool_env_var_names()

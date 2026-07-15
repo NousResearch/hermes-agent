@@ -112,6 +112,12 @@ class TestCwdHandling:
             f"Backend {backend}: expected /root default, got {config['cwd']}"
         )
 
+    def test_default_cwd_is_tenki_home_for_tenki(self, monkeypatch):
+        monkeypatch.setenv("TERMINAL_ENV", "tenki")
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        config = _tt_mod._get_env_config()
+        assert config["cwd"] == "/home/tenki"
+
     def test_docker_default_cwd_maps_current_directory_when_enabled(self, monkeypatch):
         """Docker should use /workspace when cwd mounting is explicitly enabled."""
         monkeypatch.setattr("tools.terminal_tool.os.getcwd", lambda: "/home/user/project")
@@ -345,6 +351,7 @@ class TestDockerHostBindApproval:
         assert A._should_skip_container_guards("modal", has_host_access=True) is True
         assert A._should_skip_container_guards("singularity") is True
         assert A._should_skip_container_guards("daytona") is True
+        assert A._should_skip_container_guards("tenki") is True
         assert A._should_skip_container_guards("local") is False
 
     def test_isolated_docker_keeps_fast_path(self, monkeypatch):

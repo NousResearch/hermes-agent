@@ -491,6 +491,37 @@ def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tm
     assert config["terminal"]["modal_mode"] == "direct"
 
 
+def test_tenki_setup_switch_resets_inherited_persistent_container(monkeypatch):
+    config = {
+        "terminal": {
+            "backend": "docker",
+            "container_persistent": True,
+            "cwd": "/workspace",
+        }
+    }
+
+    def fake_prompt_choice(question, choices, default=0):
+        if question == "Select terminal backend:":
+            assert "Tenki Agent - Tenki cloud sandbox" in choices
+            return choices.index("Tenki Agent - Tenki cloud sandbox")
+        raise AssertionError(f"Unexpected prompt_choice call: {question}")
+
+    monkeypatch.setitem(sys.modules, "tenki_sandbox", types.ModuleType("tenki_sandbox"))
+    monkeypatch.setenv("TENKI_AUTH_TOKEN", "tok")
+    monkeypatch.setattr("hermes_cli.setup.prompt_choice", fake_prompt_choice)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("hermes_cli.setup.save_config", lambda _config: None)
+    monkeypatch.setattr("hermes_cli.setup.save_env_value", lambda *_args, **_kwargs: None)
+
+    from hermes_cli.setup import setup_terminal_backend
+
+    setup_terminal_backend(config)
+
+    assert config["terminal"]["backend"] == "tenki"
+    assert config["terminal"]["container_persistent"] is False
+    assert config["terminal"]["cwd"] == "/home/tenki"
+
+
 # test_setup_slack_* moved to tests/gateway/test_slack_plugin_setup.py — the
 # _setup_slack wizard migrated to the slack plugin's interactive_setup (#41112).
 
@@ -539,4 +570,3 @@ def test_prompt_yes_no_keyboard_interrupt_still_exits(monkeypatch):
 
     with pytest.raises(SystemExit):
         setup_mod.prompt_yes_no("Install it now?", True)
-

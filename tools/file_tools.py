@@ -1052,7 +1052,9 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         _creation_locks_lock,
         _resolve_container_task_id,
         _is_unusable_container_cwd,
+        _is_backend_guest_subpath,
         _CONTAINER_BACKENDS,
+        _container_config_from_env_config,
     )
     import time
 
@@ -1110,6 +1112,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                 image = overrides.get("modal_image") or config["modal_image"]
             elif env_type == "daytona":
                 image = overrides.get("daytona_image") or config["daytona_image"]
+            elif env_type == "tenki":
+                image = overrides.get("tenki_image") or config["tenki_image"]
             else:
                 image = ""
 
@@ -1126,7 +1130,11 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             # bypass the guard.  Valid in-container override paths (RL/benchmark
             # sandboxes that set cwd to /workspace, /root, etc.) are absolute
             # non-host paths and pass through untouched.
-            if env_type in _CONTAINER_BACKENDS and _is_unusable_container_cwd(cwd):
+            if (
+                env_type in _CONTAINER_BACKENDS
+                and _is_unusable_container_cwd(cwd)
+                and not _is_backend_guest_subpath(env_type, cwd)
+            ):
                 if cwd != config["cwd"]:
                     logger.info(
                         "Ignoring host/relative cwd override %r for %s backend "
@@ -1137,18 +1145,8 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
-            if env_type in {"docker", "singularity", "modal", "daytona"}:
-                container_config = {
-                    "container_cpu": config.get("container_cpu", 1),
-                    "container_memory": config.get("container_memory", 5120),
-                    "container_disk": config.get("container_disk", 51200),
-                    "container_persistent": config.get("container_persistent", True),
-                    "docker_volumes": config.get("docker_volumes", []),
-                    "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
-                    "docker_forward_env": config.get("docker_forward_env", []),
-                    "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
-                    "docker_network": config.get("docker_network", True),
-                }
+            if env_type in _CONTAINER_BACKENDS:
+                container_config = _container_config_from_env_config(config)
 
             ssh_config = None
             if env_type == "ssh":

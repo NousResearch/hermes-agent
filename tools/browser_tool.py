@@ -795,7 +795,7 @@ def _is_local_backend() -> bool:
     and network access on the same machine, so the check adds no security
     value.
 
-    However, when the terminal runs in a container (docker, modal, daytona,
+    However, when the terminal runs in a container (docker, modal, daytona, tenki,
     ssh, singularity), the browser on the host can access internal networks
     that the terminal cannot.  In this case, SSRF protection should be
     enabled even though the browser is technically "local".

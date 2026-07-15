@@ -16,6 +16,12 @@ def _clear_terminal_env(monkeypatch):
         "TERMINAL_DOCKER_VOLUMES",
         "TERMINAL_LIFETIME_SECONDS",
         "TERMINAL_MODAL_MODE",
+        "TERMINAL_TENKI_API_ENDPOINT",
+        "TERMINAL_TENKI_PROJECT_ID",
+        "TERMINAL_TENKI_WORKSPACE_ID",
+        "TENKI_API_KEY",
+        "TENKI_AUTH_TOKEN",
+        "TENKI_CONFIG_PATH",
         "TERMINAL_SSH_HOST",
         "TERMINAL_SSH_PORT",
         "TERMINAL_SSH_USER",
@@ -183,5 +189,40 @@ def test_modal_backend_managed_mode_without_feature_flag_logs_clear_error(monkey
     assert ok is False
     assert any(
         "Nous Tool Gateway access is not currently available" in record.getMessage()
+        for record in caplog.records
+    )
+
+
+def test_tenki_backend_with_sdk_and_cli_auth_returns_true(monkeypatch, tmp_path):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "tenki")
+    monkeypatch.setenv("TENKI_CONFIG_PATH", str(tmp_path / "tenki.yaml"))
+    (tmp_path / "tenki.yaml").write_text("auth_token: tok-secret\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        terminal_tool_module.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "tenki_sandbox" else None,
+    )
+
+    assert terminal_tool_module.check_terminal_requirements() is True
+
+
+def test_tenki_backend_without_auth_logs_specific_error(monkeypatch, caplog, tmp_path):
+    _clear_terminal_env(monkeypatch)
+    monkeypatch.setenv("TERMINAL_ENV", "tenki")
+    monkeypatch.setenv("TENKI_CONFIG_PATH", str(tmp_path / "missing.yaml"))
+    monkeypatch.setattr(
+        terminal_tool_module.importlib.util,
+        "find_spec",
+        lambda name: object() if name == "tenki_sandbox" else None,
+    )
+
+    with caplog.at_level(logging.ERROR):
+        ok = terminal_tool_module.check_terminal_requirements()
+
+    assert ok is False
+    assert any(
+        "no Tenki auth was found" in record.getMessage()
         for record in caplog.records
     )

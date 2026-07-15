@@ -1805,13 +1805,25 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
         if not os.environ.get("HERMES_QUIET"):
             print("Installing TUI dependencies…")
         npm_cwd = _workspace_root(tui_dir)
-        # --workspace ui-tui avoids resolving apps/desktop (Electron + node-pty).
-        # See #38772.
+        # Scope the install to the TUI and its nested @hermes/ink workspace so
+        # npm does not resolve apps/desktop (Electron + node-pty). Selecting
+        # only ui-tui leaves @hermes/ink's runtime dependencies uninstalled on
+        # npm 11, and the subsequent esbuild step fails on chalk, wrap-ansi,
+        # react-reconciler, and the rest of that package's dependency set.
         # When ui-tui/ has its own package-lock.json (e.g. curl install),
         # _workspace_root() returns tui_dir itself.  Passing --workspace in
         # that case fails because npm cannot find a workspace named "ui-tui"
         # inside ui-tui/.  See #42973.
-        npm_workspace_args: tuple[str, ...] = () if npm_cwd == tui_dir else ("--workspace", "ui-tui")
+        npm_workspace_args: tuple[str, ...] = (
+            ()
+            if npm_cwd == tui_dir
+            else (
+                "--workspace",
+                "ui-tui",
+                "--workspace",
+                "ui-tui/packages/hermes-ink",
+            )
+        )
         if termux_startup:
             npm_cwd, npm_workspace_args = _termux_workspace_install_context(
                 tui_dir,
@@ -8430,9 +8442,18 @@ def _update_node_dependencies() -> list[str]:
             print(f"    {stderr.splitlines()[-1]}")
         return _partial_update_failure("repo root")
 
-    # Step 2: install only the workspaces update needs (ui-tui, web).
+    # Step 2: install only the workspaces update needs (ui-tui, its nested
+    # @hermes/ink package, and web).
     # --workspace selects specific workspaces; the rest (desktop) are skipped.
-    ws_args = [*extra_args, "--workspace", "ui-tui", "--workspace", "web"]
+    ws_args = [
+        *extra_args,
+        "--workspace",
+        "ui-tui",
+        "--workspace",
+        "ui-tui/packages/hermes-ink",
+        "--workspace",
+        "web",
+    ]
     ws_result = _run_npm_install_deterministic(
         npm,
         PROJECT_ROOT,
@@ -8442,14 +8463,14 @@ def _update_node_dependencies() -> list[str]:
     )
     if ws_result.returncode == 0:
         _record_npm_lockfile_hash(shared_hermes_root)
-        print("  ✓ repo root + ui-tui, web workspaces (desktop skipped)")
+        print("  ✓ repo root + ui-tui, @hermes/ink, web workspaces (desktop skipped)")
         return []
 
     print("  ⚠ npm workspace install failed")
     stderr = (ws_result.stderr or "").strip() if ws_result.stderr else ""
     if stderr:
         print(f"    {stderr.splitlines()[-1]}")
-    return _partial_update_failure("ui-tui, web workspaces")
+    return _partial_update_failure("ui-tui, @hermes/ink, web workspaces")
 
 
 class _UpdateOutputStream:

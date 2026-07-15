@@ -466,7 +466,7 @@ class TestCmdUpdateBranchFallback:
 
         # cmd_update runs npm commands in these locations:
         #   1. repo root  — root-only install (--workspaces=false)
-        #   2. repo root  — workspace install (--workspace ui-tui --workspace web)
+        #   2. repo root  — workspace install (ui-tui + nested Ink + web)
         #   3. web/       — npm ci --silent (if lockfile not at root)
         #                  via _build_web_ui (subprocess.run)
         #   4. web/       — npm run build (_run_with_idle_timeout)
@@ -498,6 +498,8 @@ class TestCmdUpdateBranchFallback:
             "--progress=false",
             "--workspace",
             "ui-tui",
+            "--workspace",
+            "ui-tui/packages/hermes-ink",
             "--workspace",
             "web",
         ]

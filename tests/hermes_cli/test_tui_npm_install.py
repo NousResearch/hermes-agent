@@ -265,6 +265,8 @@ def test_make_tui_argv_keeps_desktop_workspace_install_behaviour(
         "install",
         "--workspace",
         "ui-tui",
+        "--workspace",
+        "ui-tui/packages/hermes-ink",
         "--include=dev",
         "--silent",
         "--no-fund",
@@ -536,7 +538,7 @@ def test_no_stray_lockfiles_in_workspace_subdirs(main_mod) -> None:
 def test_tui_launch_install_uses_workspace_scope(
     tmp_path: Path, main_mod, monkeypatch
 ) -> None:
-    """TUI launch npm install must pass --workspace ui-tui to avoid pulling apps/desktop."""
+    """TUI install includes its nested Ink workspace without pulling desktop."""
     tui_dir = tmp_path / "ui-tui"
     tui_dir.mkdir()
     (tui_dir / "package.json").write_text("{}")
@@ -562,8 +564,9 @@ def test_tui_launch_install_uses_workspace_scope(
 
     assert npm_calls, "expected npm install to be called"
     install_cmd = npm_calls[0]
-    assert "--workspace" in install_cmd
+    assert install_cmd.count("--workspace") == 2
     assert "ui-tui" in install_cmd
+    assert "ui-tui/packages/hermes-ink" in install_cmd
 
 def test_make_tui_argv_omits_workspace_when_tui_has_own_lockfile(
     tmp_path: Path, main_mod, monkeypatch

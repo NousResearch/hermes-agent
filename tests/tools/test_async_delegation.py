@@ -613,3 +613,23 @@ def test_gateway_cli_origin_event_left_unrouted():
     assert "platform" not in evt
 
 
+def test_get_executor_recovers_from_shutdown_executor():
+    """When the shared singleton executor is shut down, _get_executor must
+    transparently return a fresh, usable replacement (instance-level recovery).
+
+    Regression guard for the stale-shutdown recovery path: a returned executor
+    that has been .shutdown() must not be handed back to the next caller.
+    """
+    e1 = ad._get_executor(4)
+    e1.shutdown(wait=False)
+    assert getattr(e1, "_shutdown", False) is True
+
+    e2 = ad._get_executor(4)
+    assert e2 is not e1
+    assert getattr(e2, "_shutdown", False) is False
+
+    # The replacement must actually accept and run new work.
+    future = e2.submit(lambda: 42)
+    assert future.result(timeout=5) == 42
+
+

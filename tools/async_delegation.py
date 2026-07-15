@@ -82,23 +82,6 @@ def _get_executor(max_workers: int) -> ThreadPoolExecutor:
     futures keep running on the old pool until it's garbage collected.
     """
     global _executor, _executor_max_workers
-    # Reset the module-level _shutdown flag in concurrent.futures.thread when
-    # it has been set to True by atexit handlers. In a long-running Hermes
-    # process this flag can be left set after interpreter shutdown begins
-    # (e.g. during cron session cleanup), which then prevents ALL subsequent
-    # ThreadPoolExecutor.submit() calls across the process — even in
-    # unrelated sessions — with "cannot schedule new futures after
-    # interpreter shutdown". Resetting it here is safe because we only
-    # reach this point when we are about to submit real work.
-    try:
-        from concurrent.futures.thread import _shutdown as _cf_shutdown
-        if _cf_shutdown:
-            from concurrent.futures.thread import _global_shutdown_lock as _cf_lock
-            with _cf_lock:
-                import concurrent.futures.thread as _cft
-                _cft._shutdown = False
-    except Exception:  # noqa: BLE001 — must never block executor creation
-        pass
     with _executor_lock:
         if (
             _executor is None

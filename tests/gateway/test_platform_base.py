@@ -672,6 +672,39 @@ class TestMediaExtensionAllowlistParity:
             assert "MEDIA:" not in stripped, f".{ext} tag not stripped"
 
 
+class TestSupportedDocumentTypeMappings:
+    """Regression for PR #60069 — Telegram consumes SUPPORTED_DOCUMENT_TYPES
+    when assigning incoming document media types. The new allowlist entries
+    must map to their exact MIME types (and pre-existing entries must not
+    regress)."""
+
+    def test_new_mime_mappings_present(self):
+        from gateway.platforms.base import SUPPORTED_DOCUMENT_TYPES as T
+
+        assert T[".markdown"] == "text/markdown"
+        assert T[".stl"] == "model/stl"
+        assert T[".3mf"] == "model/3mf"
+
+    def test_preexisting_mime_mappings_intact(self):
+        from gateway.platforms.base import SUPPORTED_DOCUMENT_TYPES as T
+
+        # A sample of long-standing mappings must be untouched by the extension.
+        assert T[".pdf"] == "application/pdf"
+        assert T[".md"] == "text/markdown"
+        assert T[".txt"] == "text/plain"
+        assert T[".csv"] == "text/csv"
+
+    def test_extension_keys_are_normalized_lowercase(self):
+        from gateway.platforms.base import SUPPORTED_DOCUMENT_TYPES as T
+
+        # Telegram document lookups are case-insensitive on the suffix; the
+        # table must key on lowercase dotted extensions.
+        for key in (".markdown", ".stl", ".3mf", ".py", ".md"):
+            assert key in T
+            assert key == key.lower()
+            assert key.startswith(".")
+
+
 class TestExtensionlessMediaDelivery:
     """Regression: MEDIA: tags for extension-less files (Caddyfile, Makefile)."""
 

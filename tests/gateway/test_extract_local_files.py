@@ -331,6 +331,25 @@ class TestEdgeCases:
         paths, _ = _extract("See /tmp/script.py and /tmp/server.log here")
         assert paths == []
 
+    def test_py_excluded_from_inbound_extraction_but_deliverable_via_media_tag(self):
+        """Regression for PR #60069 — the inbound bare-path extractor and the
+        outbound MEDIA: tag deliverable must agree on ``.py`` without leaking.
+
+        A script referenced as a bare path in prose must NOT be auto-shipped
+        by ``extract_local_files`` (a surprise to the user), while an explicit
+        ``MEDIA:/abs/path/script.py`` tag MUST still be deliverable via
+        ``extract_media`` (the outbound allowlist deliberately includes ``.py``).
+        """
+        from gateway.platforms.base import BasePlatformAdapter
+
+        # Inbound: bare .py path is not extracted.
+        inbound_paths, _ = _extract("The helper lives at /tmp/script.py — review it")
+        assert inbound_paths == []
+
+        # Outbound: explicit MEDIA: tag for the same .py path IS extracted.
+        media, _ = BasePlatformAdapter.extract_media("Here: MEDIA:/tmp/script.py")
+        assert media == [("/tmp/script.py", False)]
+
     def test_path_with_spaces_not_matched(self):
         """Paths with spaces are intentionally not matched (avoids false positives)."""
         paths, _ = _extract("File at /tmp/my file.png here")

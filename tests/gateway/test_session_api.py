@@ -116,8 +116,7 @@ async def test_run_agent_binds_api_session_context_for_tool_env(adapter, monkeyp
     assert usage["input_tokens"] == 0
     assert usage["output_tokens"] == 0
     assert usage["total_tokens"] == 0
-    assert isinstance(usage.get("runtime"), dict)
-    assert "model_lock" not in usage["runtime"]
+    assert "runtime" not in usage
     assert observed == {
         "task_id": "request-session",
         "context_session_id": "request-session",

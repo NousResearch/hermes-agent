@@ -4697,57 +4697,71 @@ class APIServerAdapter(BasePlatformAdapter):
                 _eff_sid = getattr(agent, "session_id", session_id)
                 if isinstance(_eff_sid, str) and _eff_sid:
                     result["session_id"] = _eff_sid
-                runtime = dict(getattr(agent, "_hermes_api_runtime", {}) or {})
-                actual_provider = self._clean_runtime_id(
-                    getattr(agent, "provider", ""),
-                    max_len=80,
+                include_runtime = bool(
+                    requested_runtime
+                    or route
+                    or confirmed_runtime_lock
+                    or (route_source and route_source != "global")
                 )
-                actual_model = self._clean_runtime_id(getattr(agent, "model", ""))
-                if actual_provider:
-                    runtime["provider"] = actual_provider
-                else:
-                    runtime.setdefault("provider", "")
-                if actual_model:
-                    runtime["model"] = actual_model
-                else:
-                    runtime.setdefault("model", "")
-                if confirmed_runtime_lock:
-                    expected_provider = self._clean_runtime_id(
-                        (route or {}).get("provider")
-                        or (requested_runtime or {}).get("provider"),
-                        max_len=80,
+                if include_runtime:
+                    runtime = dict(getattr(agent, "_hermes_api_runtime", {}) or {})
+                    raw_provider = getattr(agent, "provider", "")
+                    raw_model = getattr(agent, "model", "")
+                    actual_provider = (
+                        self._clean_runtime_id(raw_provider, max_len=80)
+                        if isinstance(raw_provider, str)
+                        else ""
                     )
-                    expected_model = self._clean_runtime_id(
-                        (route or {}).get("model")
-                        or (requested_runtime or {}).get("model")
+                    actual_model = (
+                        self._clean_runtime_id(raw_model)
+                        if isinstance(raw_model, str)
+                        else ""
                     )
-                    mismatched = (
-                        (expected_provider and actual_provider != expected_provider)
-                        or (expected_model and actual_model != expected_model)
-                    )
-                    if mismatched:
-                        raise RuntimeError(
-                            "confirmed model lock runtime mismatch: "
-                            f"expected provider={expected_provider or '<unspecified>'} "
-                            f"model={expected_model or '<unspecified>'}; "
-                            f"actual provider={actual_provider or '<unknown>'} "
-                            f"model={actual_model or '<unknown>'}"
+                    if actual_provider:
+                        runtime["provider"] = actual_provider
+                    else:
+                        runtime.setdefault("provider", "")
+                    if actual_model:
+                        runtime["model"] = actual_model
+                    else:
+                        runtime.setdefault("model", "")
+                    if confirmed_runtime_lock:
+                        expected_provider = self._clean_runtime_id(
+                            (route or {}).get("provider")
+                            or (requested_runtime or {}).get("provider"),
+                            max_len=80,
                         )
-                if requested_runtime:
-                    runtime["requested"] = {
-                        "provider": self._clean_runtime_id((requested_runtime or {}).get("provider"), max_len=80),
-                        "model": self._clean_runtime_id((requested_runtime or {}).get("model")),
-                    }
-                runtime["route_source"] = route_source or runtime.get("route_source") or "global"
-                runtime = self._sanitize_runtime_metadata(
-                    runtime=runtime,
-                    requested_runtime=requested_runtime,
-                    route_source=route_source or "global",
-                    model_lock=("confirmed" if confirmed_runtime_lock else ""),
-                )
-                if isinstance(result, dict):
-                    result["runtime"] = runtime
-                usage["runtime"] = runtime
+                        expected_model = self._clean_runtime_id(
+                            (route or {}).get("model")
+                            or (requested_runtime or {}).get("model")
+                        )
+                        mismatched = (
+                            (expected_provider and actual_provider != expected_provider)
+                            or (expected_model and actual_model != expected_model)
+                        )
+                        if mismatched:
+                            raise RuntimeError(
+                                "confirmed model lock runtime mismatch: "
+                                f"expected provider={expected_provider or '<unspecified>'} "
+                                f"model={expected_model or '<unspecified>'}; "
+                                f"actual provider={actual_provider or '<unknown>'} "
+                                f"model={actual_model or '<unknown>'}"
+                            )
+                    if requested_runtime:
+                        runtime["requested"] = {
+                            "provider": self._clean_runtime_id((requested_runtime or {}).get("provider"), max_len=80),
+                            "model": self._clean_runtime_id((requested_runtime or {}).get("model")),
+                        }
+                    runtime["route_source"] = route_source or runtime.get("route_source") or "global"
+                    runtime = self._sanitize_runtime_metadata(
+                        runtime=runtime,
+                        requested_runtime=requested_runtime,
+                        route_source=route_source or "global",
+                        model_lock=("confirmed" if confirmed_runtime_lock else ""),
+                    )
+                    if isinstance(result, dict):
+                        result["runtime"] = runtime
+                    usage["runtime"] = runtime
                 return result, usage
             finally:
                 clear_session_vars(tokens)

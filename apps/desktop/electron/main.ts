@@ -107,6 +107,7 @@ import {
 import { nativeOverlayWidth as computeNativeOverlayWidth, macTitleBarOverlayHeight } from './titlebar-overlay-width'
 import { resolveBehindCount, shouldCountCommits } from './update-count'
 import { readLiveUpdateMarker, writeUpdateMarker } from './update-marker'
+import { electronOwnedUpdateEnvironment } from './update-owner'
 import { runRebuildWithRetry } from './update-rebuild'
 import {
   buildRelaunchScript,
@@ -2704,10 +2705,10 @@ async function applyUpdatesPosixInApp(opts: any) {
   // Put the Hermes-managed Node and the venv on PATH so `hermes desktop`'s
   // npm build can find them on a machine with no system Node. Windows portable
   // Node lives directly under %LOCALAPPDATA%\hermes\node, not node\bin.
-  const env: Record<string, string> = {
+  const env: Record<string, string> = electronOwnedUpdateEnvironment({
     HERMES_HOME,
     PATH: pathWithHermesManagedNode(path.join(updateRoot, 'venv', 'bin'))
-  }
+  })
 
   // `hermes update` reaps stale `hermes serve` backends (a code update
   // leaves the running process serving old Python against the freshly-updated

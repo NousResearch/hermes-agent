@@ -156,7 +156,7 @@ def _plan_tool_batch_segments(tool_calls) -> List[tuple]:
             function_args = json.loads(tool_call.function.arguments)
         except Exception:
             _raw = tool_call.function.arguments
-            logging.debug(
+            logger.debug(
                 "Could not parse args for %s — treating as sequential barrier; raw=%s",
                 tool_name,
                 _raw[:200] if isinstance(_raw, str) else repr(_raw)[:200],
@@ -164,7 +164,7 @@ def _plan_tool_batch_segments(tool_calls) -> List[tuple]:
             _add_sequential(tool_call)
             continue
         if not isinstance(function_args, dict):
-            logging.debug(
+            logger.debug(
                 "Non-dict args for %s (%s) — treating as sequential barrier",
                 tool_name,
                 type(function_args).__name__,

@@ -65,7 +65,6 @@ import {
 } from './desktop-uninstall'
 import { installEmbedReferer } from './embed-referer'
 import { readDirForIpc } from './fs-read-dir'
-import { resolvePickerDefaultPath } from './wsl-path-bridge'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -97,6 +96,7 @@ import {
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import { recoverRendererAfterCrash } from './renderer-crash-recovery'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -131,6 +131,7 @@ import { buildPathExtCandidates, chooseUpdaterArgs, getVenvSitePackagesEntries, 
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
+import { resolvePickerDefaultPath } from './wsl-path-bridge'
 
 const USER_DATA_OVERRIDE = process.env.HERMES_DESKTOP_USER_DATA_DIR
 
@@ -7241,32 +7242,41 @@ function createWindow() {
 
   wireCommonWindowHandlers(mainWindow, zoomWiringForWindowKind('chat'))
 
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+  mainWindow.webContents.on('render-process-gone', (event, details) => {
     rememberLog(`[renderer] render-process-gone reason=${details?.reason} exitCode=${details?.exitCode}`)
 
     if (details?.reason === 'crashed' || details?.reason === 'oom') {
-      const now = Date.now()
-      rendererReloadTimes = rendererReloadTimes.filter(t => now - t < RENDERER_RELOAD_WINDOW_MS)
+      rendererReloadTimes = recoverRendererAfterCrash({
+        disposeTerminalSession,
+        maxReloads: RENDERER_RELOAD_MAX,
+        now: Date.now(),
+        onDisposeError: (terminalId, error) => {
+          rememberLog(
+            `[renderer] failed to dispose terminal ${terminalId} after crash: ${error instanceof Error ? error.message : String(error)}`
+          )
+        },
+        onReload: () => {
+          setImmediate(() => {
+            if (!mainWindow || mainWindow.isDestroyed()) {
+              return
+            }
 
-      if (rendererReloadTimes.length >= RENDERER_RELOAD_MAX) {
-        rememberLog(
-          `[renderer] suppressing reload: ${rendererReloadTimes.length} crashes within ${RENDERER_RELOAD_WINDOW_MS}ms (likely a crash loop)`
-        )
-
-        return
-      }
-
-      rendererReloadTimes.push(now)
-      setImmediate(() => {
-        if (!mainWindow || mainWindow.isDestroyed()) {
-          return
-        }
-
-        try {
-          mainWindow.webContents.reload()
-        } catch (err) {
-          rememberLog(`[renderer] reload after crash failed: ${err?.message || err}`)
-        }
+            try {
+              mainWindow.webContents.reload()
+            } catch (err) {
+              rememberLog(`[renderer] reload after crash failed: ${err?.message || err}`)
+            }
+          })
+        },
+        onSuppress: count => {
+          rememberLog(
+            `[renderer] suppressing reload: ${count} crashes within ${RENDERER_RELOAD_WINDOW_MS}ms (likely a crash loop)`
+          )
+        },
+        reloadTimes: rendererReloadTimes,
+        reloadWindowMs: RENDERER_RELOAD_WINDOW_MS,
+        rendererWebContentsId: event.sender.id,
+        terminalSessions
       })
     }
   })

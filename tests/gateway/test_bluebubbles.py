@@ -193,26 +193,31 @@ class TestBlueBubblesWebhookAuth:
         assert handled == []
 
     @pytest.mark.asyncio
-    async def test_webhook_fails_closed_when_password_unconfigured(self, monkeypatch):
-        # Fail closed: when the adapter has no password (None/empty), a caller
-        # that also omits the token must be rejected. The old ``token !=
-        # self.password`` compared ``None != None`` -> False and accepted the
-        # request unauthenticated.
-        adapter = _make_adapter(monkeypatch)
-        adapter.password = None
-        handled = []
+    async def test_connect_fails_closed_when_password_unconfigured(self, monkeypatch):
+        # Lifecycle invariant: connect() returns early when password is falsy
+        # (gateway/platforms/bluebubbles.py), so an unconfigured adapter never
+        # binds the aiohttp webhook route. Do not mutate adapter.password after
+        # construction to simulate that state — assert connect() itself refuses.
+        monkeypatch.setenv("BLUEBUBBLES_SERVER_URL", "http://localhost:1234")
+        monkeypatch.delenv("BLUEBUBBLES_PASSWORD", raising=False)
+        from gateway.config import PlatformConfig
+        from gateway.platforms.bluebubbles import BlueBubblesAdapter
 
-        async def fake_handle_message(event):
-            handled.append(event)
-
-        monkeypatch.setattr(adapter, "handle_message", fake_handle_message)
-        req = _FakeBlueBubblesRequest({"type": "new-message"}, password=None)
-        req.query = {}
-        response = await adapter._handle_webhook(req)
-        await asyncio.sleep(0)
-
-        assert response.status == 401
-        assert handled == []
+        cfg = PlatformConfig(
+            enabled=True,
+            extra={
+                "server_url": "http://localhost:1234",
+                # explicit empty password: unconfigured webhook auth
+                "password": "",
+            },
+        )
+        adapter = BlueBubblesAdapter(cfg)
+        assert not adapter.password
+        ok = await adapter.connect()
+        assert ok is False
+        # No webhook app should have been started for an unconfigured adapter.
+        assert getattr(adapter, "_runner", None) is None
+        assert getattr(adapter, "_site", None) is None
 
 
 class TestBlueBubblesMentionGating:

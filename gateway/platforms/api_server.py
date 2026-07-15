@@ -575,7 +575,7 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key, X-Request-Id, X-Request-ID, X-Stream-Token",
 }
 
 
@@ -2782,6 +2782,16 @@ class APIServerAdapter(BasePlatformAdapter):
         # with that route's model/provider instead of the global default.
         route = self._resolve_route(model_name)
 
+        # Client correlation for observability — parse once, use in Perf logs
+        from gateway.client_correlation import (
+            format_correlation_log_suffix,
+            parse_correlation_headers,
+        )
+        client_correlation = parse_correlation_headers(request.headers)
+        _corr_suffix = format_correlation_log_suffix(
+            client_correlation, session_id=session_id,
+        )
+
         if stream:
             import queue as _q
             _stream_q: _q.Queue = _q.Queue()
@@ -2865,6 +2875,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent_ref=agent_ref,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                client_correlation=client_correlation or None,
             ))
             # Ensure SSE drain loops can terminate without relying on polling
             # agent_task.done(), which can race with queue timeout checks.
@@ -2885,6 +2896,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 gateway_session_key=gateway_session_key,
                 route=route,
+                client_correlation=client_correlation or None,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -4632,6 +4644,7 @@ class APIServerAdapter(BasePlatformAdapter):
         agent_ref: Optional[list] = None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        client_correlation: Optional[Dict[str, str]] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -4663,6 +4676,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     session_key=gateway_session_key or session_id or "",
                     session_id=session_id or "",
                 )
+
                 try:
                     agent = self._create_agent(
                         ephemeral_system_prompt=ephemeral_system_prompt,
@@ -4696,6 +4710,44 @@ class APIServerAdapter(BasePlatformAdapter):
                     return result, usage
                 finally:
                     clear_session_vars(tokens)
+
+                if agent_ref is not None:
+                    agent_ref[0] = agent
+                effective_task_id = session_id or str(uuid.uuid4())
+                result = agent.run_conversation(
+                    user_message=user_message,
+                    conversation_history=conversation_history,
+                    task_id=effective_task_id,
+                )
+                usage = {
+                    "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
+                    "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
+                    "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                }
+                # Include the effective session ID in the result so callers
+                # (e.g. X-Hermes-Session-Id header) can track compression-
+                # triggered session rotations. (#16938)
+                _eff_sid = getattr(agent, "session_id", session_id)
+                if isinstance(_eff_sid, str) and _eff_sid:
+                    result["session_id"] = _eff_sid
+                if client_correlation:
+                    from gateway.client_correlation import format_correlation_log_suffix
+                    _suffix = format_correlation_log_suffix(
+                        client_correlation,
+                        session_id=_eff_sid if isinstance(_eff_sid, str) else session_id,
+                    )
+                    if _suffix:
+                        logger.info(
+                            "[Perf] agent_run done%s in=%d out=%d total=%d",
+                            _suffix,
+                            usage.get("input_tokens", 0),
+                            usage.get("output_tokens", 0),
+                            usage.get("total_tokens", 0),
+                        )
+                return result, usage
+            finally:
+                clear_session_vars(tokens)
+
 
         self._activate_admitted_request()
         self._inflight_agent_runs += 1

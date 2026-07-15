@@ -51,6 +51,7 @@ def _ensure_telegram_mock():
 _ensure_telegram_mock()
 
 # Now we can safely import
+from plugins.platforms.telegram import adapter as telegram_adapter_module  # noqa: E402
 from plugins.platforms.telegram.adapter import TelegramAdapter  # noqa: E402
 
 
@@ -119,8 +120,40 @@ def _make_update(msg):
 
 def _make_video(file_obj=None):
     video = MagicMock()
+    video.file_size = 1024
     video.get_file = AsyncMock(return_value=file_obj or _make_file_obj(b"video-bytes"))
     return video
+
+
+def _make_video_note(file_obj=None):
+    video_note = MagicMock()
+    video_note.file_size = 1024
+    video_note.get_file = AsyncMock(return_value=file_obj or _make_file_obj(b"video-note-bytes"))
+    return video_note
+
+
+class _FakeTelegramFilter:
+    def __init__(self, names):
+        self.names = set(names)
+
+    def __or__(self, other):
+        return _FakeTelegramFilter(self.names | other.names)
+
+    def matches(self, update):
+        message = update.message
+        return any(getattr(message, name.lower(), None) is not None for name in self.names)
+
+
+def _fake_media_filters():
+    return SimpleNamespace(
+        PHOTO=_FakeTelegramFilter({"PHOTO"}),
+        VIDEO=_FakeTelegramFilter({"VIDEO"}),
+        VIDEO_NOTE=_FakeTelegramFilter({"VIDEO_NOTE"}),
+        AUDIO=_FakeTelegramFilter({"AUDIO"}),
+        VOICE=_FakeTelegramFilter({"VOICE"}),
+        Document=SimpleNamespace(ALL=_FakeTelegramFilter({"DOCUMENT"})),
+        Sticker=SimpleNamespace(ALL=_FakeTelegramFilter({"STICKER"})),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -476,6 +509,18 @@ class TestDocumentDownloadBlock:
 
 
 class TestVideoDownloadBlock:
+    def test_video_note_update_matches_registered_media_filter(self, monkeypatch):
+        """VIDEO_NOTE updates must be routed to the media handler registration."""
+        monkeypatch.setattr(telegram_adapter_module, "filters", _fake_media_filters())
+        file_obj = _make_file_obj(b"fake-round-mp4")
+        msg = _make_message()
+        msg.video_note = _make_video_note(file_obj)
+        update = _make_update(msg)
+
+        media_filter = telegram_adapter_module._telegram_media_message_filter()
+
+        assert media_filter.matches(update)
+
     @pytest.mark.asyncio
     async def test_native_video_is_cached(self, adapter):
         file_obj = _make_file_obj(b"fake-mp4")
@@ -490,6 +535,33 @@ class TestVideoDownloadBlock:
         assert len(event.media_urls) == 1
         assert os.path.exists(event.media_urls[0])
         assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+    @pytest.mark.asyncio
+    async def test_video_note_is_cached_as_video(self, adapter):
+        """Telegram round video messages expose video_note, not video."""
+        file_obj = _make_file_obj(b"fake-round-mp4")
+        file_obj.file_path = None
+        msg = _make_message()
+        msg.video_note = _make_video_note(file_obj)
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.VIDEO
+        assert len(event.media_urls) == 1
+        assert os.path.exists(event.media_urls[0])
+        assert event.media_types == [SUPPORTED_VIDEO_TYPES[".mp4"]]
+
+    @pytest.mark.asyncio
+    async def test_magicmock_without_explicit_video_note_is_not_treated_as_video(self, adapter):
+        """Unset MagicMock.video_note children must not mask the document fallback."""
+        msg = _make_message()
+        update = _make_update(msg)
+
+        await adapter._handle_media_message(update, MagicMock())
+        event = adapter.handle_message.call_args[0][0]
+        assert event.message_type == MessageType.DOCUMENT
+        assert event.media_urls == []
 
     @pytest.mark.asyncio
     async def test_mp4_document_is_treated_as_video(self, adapter):

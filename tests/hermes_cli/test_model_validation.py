@@ -957,7 +957,7 @@ class TestProbeApiModelsUserAgent:
                 "https://generativelanguage.googleapis.com/v1beta/openai",
             )
 
-        req = mock_urlopen.call_args[0][0]
+        req = mock_urlopen.call_args.args[0]
         assert req.get_header("X-goog-api-client") == f"hermes-agent/{_HERMES_VERSION}"
 
     def test_probe_omits_gemini_client_context_for_other_providers(self):
@@ -970,5 +970,5 @@ class TestProbeApiModelsUserAgent:
         ) as mock_urlopen:
             probe_api_models("provider-key", "https://api.example.com/v1")
 
-        req = mock_urlopen.call_args[0][0]
+        req = mock_urlopen.call_args.args[0]
         assert req.get_header("X-goog-api-client") is None

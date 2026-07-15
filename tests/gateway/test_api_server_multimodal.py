@@ -22,6 +22,7 @@ from gateway.platforms.api_server import (
     cors_middleware,
     security_headers_middleware,
 )
+from hermes_state import SessionDB
 
 
 # ---------------------------------------------------------------------------
@@ -334,34 +335,41 @@ async def _wait_for_capture(agent: _CapturingAgent):
 
 class TestRunsSessionHistoryHTTP:
     @pytest.mark.asyncio
-    async def test_runs_load_server_session_history_for_stable_session_id(self, adapter):
+    async def test_runs_load_server_session_history_for_stable_session_id(self, adapter, tmp_path):
         app = _create_app(adapter)
         agent = _CapturingAgent()
-        stored_history = [
+        session_id = "workspace-session-1"
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session(session_id=session_id, source="api_server")
+        db.append_message(session_id, role="user", content="load the skill")
+        db.append_message(session_id, role="assistant", content="skill loaded")
+        adapter._session_db = db
+
+        try:
+            with patch.object(adapter, "_create_agent", return_value=agent):
+                async with TestClient(TestServer(app)) as cli:
+                    resp = await cli.post(
+                        "/v1/runs",
+                        json={
+                            "model": "hermes-agent",
+                            "session_id": session_id,
+                            "input": "continue from there",
+                        },
+                    )
+                    assert resp.status == 202, await resp.text()
+                    captured = await _wait_for_capture(agent)
+        finally:
+            db.close()
+
+        assert captured["user_message"] == "continue from there"
+        assert [
+            {"role": message["role"], "content": message["content"]}
+            for message in captured["conversation_history"]
+        ] == [
             {"role": "user", "content": "load the skill"},
             {"role": "assistant", "content": "skill loaded"},
         ]
-
-        with (
-            patch.object(adapter, "_create_agent", return_value=agent),
-            patch.object(adapter, "_conversation_history_for_session", return_value=stored_history) as load_history,
-        ):
-            async with TestClient(TestServer(app)) as cli:
-                resp = await cli.post(
-                    "/v1/runs",
-                    json={
-                        "model": "hermes-agent",
-                        "session_id": "workspace-session-1",
-                        "input": "continue from there",
-                    },
-                )
-                assert resp.status == 202, await resp.text()
-                captured = await _wait_for_capture(agent)
-
-        load_history.assert_called_once_with("workspace-session-1")
-        assert captured["user_message"] == "continue from there"
-        assert captured["conversation_history"] == stored_history
-        assert captured["task_id"] == "workspace-session-1"
+        assert captured["task_id"] == session_id
 
     @pytest.mark.asyncio
     async def test_runs_keep_legacy_message_array_history(self, adapter):

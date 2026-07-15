@@ -468,6 +468,90 @@ def test_artifacts_terminal_cleanup_idempotent_and_validations():
         _close_and_unlink(conn, path)
 
 
+def test_persisted_identity_conflicts_reject_before_mutation_and_exact_repeats_return_same_row():
+    conn, path = _make_temp_db()
+    try:
+        ensure_project_finalization_schema(conn)
+        create_project_finalization(conn, board_id="b", root_task_id="rt", final_checker_task_id="checker")
+        good_sha = "a" * 64
+
+        checker = record_checker_verdict(
+            conn, board_id="b", root_task_id="rt", generation=1,
+            checker_task_id="checker", verdict="PASS",
+        )
+        assert record_checker_verdict(
+            conn, board_id="b", root_task_id="rt", generation=1,
+            checker_task_id="checker", verdict="PASS",
+        ) == checker
+        with pytest.raises(ValueError, match="immutable checker_verdict conflict"):
+            record_checker_verdict(
+                conn, board_id="b", root_task_id="rt", generation=1,
+                checker_task_id="checker", verdict="FAIL_REPAIRABLE",
+            )
+        assert get_project_finalization(conn, board_id="b", root_task_id="rt", generation=1) == checker
+        assert conn.execute("SELECT COUNT(*) FROM project_finalizations").fetchone()[0] == 1
+
+        artifacts = record_final_artifacts(
+            conn, board_id="b", root_task_id="rt", generation=1,
+            report_path="/report.md", report_sha256=good_sha,
+            manifest_path="/manifest.json", manifest_sha256=good_sha,
+        )
+        assert record_final_artifacts(
+            conn, board_id="b", root_task_id="rt", generation=1,
+            report_path="/report.md", report_sha256=good_sha,
+            manifest_path="/manifest.json", manifest_sha256=good_sha,
+        ) == artifacts
+        for field, changed_value in (
+            ("report_path", "/other-report.md"),
+            ("report_sha256", "b" * 64),
+            ("manifest_path", "/other-manifest.json"),
+            ("manifest_sha256", "c" * 64),
+        ):
+            values = {
+                "report_path": "/report.md",
+                "report_sha256": good_sha,
+                "manifest_path": "/manifest.json",
+                "manifest_sha256": good_sha,
+            }
+            values[field] = changed_value
+            persisted_field = f"final_{field}" if field.startswith("report_") else field
+            with pytest.raises(ValueError, match=f"immutable {persisted_field} conflict"):
+                record_final_artifacts(conn, board_id="b", root_task_id="rt", generation=1, **values)
+            assert get_project_finalization(conn, board_id="b", root_task_id="rt", generation=1) == artifacts
+            assert conn.execute("SELECT COUNT(*) FROM project_finalizations").fetchone()[0] == 1
+
+        terminal = record_terminal_outcome(
+            conn, board_id="b", root_task_id="rt", generation=1, outcome="COMPLETE",
+        )
+        assert record_terminal_outcome(
+            conn, board_id="b", root_task_id="rt", generation=1, outcome="COMPLETE",
+        ) == terminal
+        with pytest.raises(ValueError, match="immutable terminal_outcome conflict"):
+            record_terminal_outcome(
+                conn, board_id="b", root_task_id="rt", generation=1, outcome="FAILED",
+            )
+        assert get_project_finalization(conn, board_id="b", root_task_id="rt", generation=1) == terminal
+        assert conn.execute("SELECT COUNT(*) FROM project_finalizations").fetchone()[0] == 1
+
+        cleanup = schedule_project_cleanup(
+            conn, board_id="b", root_task_id="rt", generation=1,
+            cleanup_after="2026-08-01T00:00:00Z",
+        )
+        assert schedule_project_cleanup(
+            conn, board_id="b", root_task_id="rt", generation=1,
+            cleanup_after="2026-08-01T00:00:00Z",
+        ) == cleanup
+        with pytest.raises(ValueError, match="immutable cleanup_after conflict"):
+            schedule_project_cleanup(
+                conn, board_id="b", root_task_id="rt", generation=1,
+                cleanup_after="2026-08-02T00:00:00Z",
+            )
+        assert get_project_finalization(conn, board_id="b", root_task_id="rt", generation=1) == cleanup
+        assert conn.execute("SELECT COUNT(*) FROM project_finalizations").fetchone()[0] == 1
+    finally:
+        _close_and_unlink(conn, path)
+
+
 def test_membership_idempotent_and_separate_from_task_links():
     conn, path = _make_temp_db()
     try:

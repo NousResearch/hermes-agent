@@ -830,6 +830,15 @@ def _get_project_finalization_row(
     ).fetchone()
 
 
+def _validate_immutable_persisted_value(
+    row: sqlite3.Row, field: str, candidate: object,
+) -> None:
+    """Reject a changed durable identity before its recorder mutates the row."""
+    persisted = row[field]
+    if persisted is not None and persisted != candidate:
+        raise ValueError(f"immutable {field} conflict")
+
+
 # ---------------------------------------------------------------------------
 # Public CRUD + locking + membership (per contract section 13)
 # ---------------------------------------------------------------------------
@@ -1104,6 +1113,7 @@ def record_checker_verdict(
             raise ValueError(f"no project finalization for {board_id}/{root_task_id}/{generation}")
         if row["final_checker_task_id"] != checker_task_id:
             raise ValueError("checker_task_id does not match designated final_checker_task_id")
+        _validate_immutable_persisted_value(row, "checker_verdict", verdict)
         if row["checker_verdict"] == verdict:
             return _row_to_project_finalization(row)
 
@@ -1143,6 +1153,13 @@ def record_final_artifacts(
         row = _get_project_finalization_row(conn, board_id, root_task_id, generation)
         if row is None:
             raise ValueError("project finalization does not exist")
+        for field, candidate in (
+            ("final_report_path", report_path),
+            ("final_report_sha256", report_sha256),
+            ("manifest_path", manifest_path),
+            ("manifest_sha256", manifest_sha256),
+        ):
+            _validate_immutable_persisted_value(row, field, candidate)
         # Idempotent if identical
         if (
             row["final_report_path"] == report_path
@@ -1202,6 +1219,7 @@ def record_terminal_outcome(
         row = _get_project_finalization_row(conn, board_id, root_task_id, generation)
         if row is None:
             raise ValueError("project finalization does not exist")
+        _validate_immutable_persisted_value(row, "terminal_outcome", outcome)
         if row["terminal_outcome"] == outcome:
             return _row_to_project_finalization(row)
 
@@ -1239,7 +1257,8 @@ def schedule_project_cleanup(
         row = _get_project_finalization_row(conn, board_id, root_task_id, generation)
         if row is None:
             raise ValueError("project finalization does not exist")
-        if row["cleanup_after"] == cleanup_after and row["state"] == "cleanup_scheduled":
+        _validate_immutable_persisted_value(row, "cleanup_after", cleanup_after)
+        if row["cleanup_after"] == cleanup_after:
             return _row_to_project_finalization(row)
 
         conn.execute(

@@ -87,7 +87,7 @@ When multiple routes match, the **most specific** one wins. Specificity is addit
 | `thread_id` | 8 |
 | `chat_id` | 4 |
 | `guild_id` | 2 |
-| (platform only) | 1 |
+| (platform only) | 0 |
 
 So a thread route (8) beats a channel route (4) beats a guild route (2) within the same server.
 If no route matches, the message uses the default/active profile.
@@ -108,8 +108,10 @@ If no route matches, the message uses the default/active profile.
 Because `gateway_runner` is injected for **all** adapters (declared on `BasePlatformAdapter`),
 every platform goes through this path — not just Discord.
 
-## Migration / coexistence with multiplexing
+## Relationship to multiplexing
 
-`profile_routes` is independent of `gateway.multiplex_profiles`. Multiplexing splits the
-gateway across model credentials; profile routing splits conversation state across profiles.
-They compose: you may multiplex credentials while also routing channels to distinct profiles.
+`profile_routes` requires `gateway.multiplex_profiles: true`. Multiplexing is what
+activates the per-profile runtime scope (per-profile `HERMES_HOME`, secret scope, and
+profile-namespaced session keys); routing is the decision layer that picks *which*
+profile a given guild/channel/thread lands in. With multiplexing off, `profile_routes`
+is ignored entirely — behavior is byte-identical to a single-profile gateway.

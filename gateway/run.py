@@ -17265,14 +17265,23 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
     def _profile_name_for_source(self, source: SessionSource) -> Optional[str]:
         """Resolve the profile name for an inbound source via configured routes.
 
-        Returns ``None`` when no routes are configured or no route matches.
-        Callers (``build_source``, ``_resolve_profile_home_for_source``) treat
-        ``None`` as "use the default/active profile". When
-        ``gateway.profile_routes`` is configured, the most specific matching
-        route wins (guild < channel < thread). See :mod:`gateway.profile_routing`
-        for matching rules.
+        Returns ``None`` when multiplexing is off, no routes are configured, or
+        no route matches. Callers (``build_source``,
+        ``_resolve_profile_home_for_source``) treat ``None`` as "use the
+        default/active profile". When ``gateway.profile_routes`` is configured,
+        the most specific matching route wins (guild < channel < thread). See
+        :mod:`gateway.profile_routing` for matching rules.
+
+        Gated on ``gateway.multiplex_profiles``: routing stamps
+        ``source.profile``, which selects the session-key namespace and batch
+        keys — but the profile-scoped agent run only activates under
+        multiplexing. Without this gate, a configured route with multiplexing
+        off would namespace batch/session keys by profile while the agent
+        still runs in ``agent:main``, splitting the two out of agreement.
         """
         config = getattr(self, "config", None)
+        if not getattr(config, "multiplex_profiles", False):
+            return None
         routes = getattr(config, "profile_routes", None)
         if not routes:
             return None
@@ -17294,7 +17303,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             return None
         if matched:
             return matched.profile
-        logger.info(
+        logger.debug(
             "No profile route matched: platform=%s chat_id=%s thread_id=%s parent_chat_id=%s",
             source.platform.value, source.chat_id,
             getattr(source, "thread_id", None), getattr(source, "parent_chat_id", None),

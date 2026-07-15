@@ -203,3 +203,15 @@ Reason: ตรงกติกา relay v2.16 (ผู้ตรวจเดิม+
 - เครื่องมือ §10 ครบ 7 ตัว merged main (PR #35 6/7 + PR #36 ตัวที่ 7) · mw suite 252 · §13.1 COMPLETE 32/32 (mw-spec-check ด่าน 6)
 - แนวทางที่ได้ผล: Grok เขียน · GPT-5 (cross-check MCP) ตรวจข้ามค่าย 2 รอบ/ตัว จับ false-positive รวม ~44 จุด · แก้ fail-closed ทุกจุด · เกิน 2 รอบผู้ตรวจ/Grok cap → Opus แก้เอง + เทสต์ตัดสิน
 - P4 install: mw-setup.sh symlink 8 เครื่องมือ + ยิง --help จริง · ค้าง = รัน backend-check กับ RoadSafeFund จริง (ต้องมี backend เจ้าของ)
+
+## DEC-MW-005 · Flow Enforcement — บังคับ 13 ขั้นด้วยเครื่อง (2026-07-15)
+- **ปฐมเหตุ:** AI (Opus) ข้าม flow Use Migrate Web กลางแชท — เดา workflow 6 ขั้นเองแทนการเปิด flow13 · เจ้าของสั่ง "แก้ต้นเหตุ ถ้าส่งให้ทีมพังหมด"
+- **ต้นเหตุ (Fable + Codex ตรวจค้าน):** G5 5 ชั้นในเอกสารมีโค้ดจริงแค่ menu-gate (ปลายทาง M8) · "ด่านก่อนเขียน" อยู่ในตารางเครื่องมือแต่ไม่มีไฟล์ · ไม่มีสถานะต่อเมนูที่เครื่องอ่านได้ · งานที่เป็น migrate-web แต่ไม่พิมพ์ชื่อ shortcut หลุดทุกด่าน
+- **ทางแก้ (merged PR #42+#43):** flow_eval/flow-rules (สถานะคำนวณสดจากหลักฐาน — ไม่มี state ไฟล์ให้ปลอม · ตรวจเนื้อไฟล์ไม่ใช่แค่มีไฟล์) + flow_gate CLI + hook PreToolUse enforce-flow-gate (บังคับที่ตัวโปรเจกต์ .work/profile.yaml · คุม Edit/Write/shell · fail-closed) + menu-gate --menu + mw-doctor เช็คติดตั้ง
+- **หลักที่ล็อก:** checkpoint เจ้าของคง 4 จุดเดิม (M0/M3/M3.5/M5) ไม่เพิ่มคำถาม · เจ้าของทดสอบรับงานเอง 5/5 ก่อนประกาศทีม (OWNER-ACCEPTANCE-MW.md = แบบแผนรอบหน้า)
+- **บทเรียนซ้ำ:** กฎที่เป็นตัวหนังสือหยุด AI ไม่ได้ — ต้องมีเครื่อง block ก่อนลงมือ + สถานะต้อง derive จากหลักฐาน ห้ามให้ AI เขียนเอง
+
+## DEC-MW-006 · ข้อเท็จจริงระบบ RSF ที่ต้องจำ (2026-07-15)
+- API synerry-engine ใช้ prefix **`/api/v1`** (setGlobalPrefix ใน main.ts) — ยิง `/api/...` เฉยๆ = 404
+- RSF = site_id **78** ใน DB `synerry_engine` (postgres :5438) · ฟอร์ม contact: `POST /api/v1/contact` (public · ต้องส่ง siteId ใน body)
+- วงจรฟอร์ม submit→DB พิสูจน์แล้ว PASS · ข้อมูลทดสอบใช้ป้าย TEST-MW- แล้วลบทิ้ง (ตรวจซ้ำ = 0)

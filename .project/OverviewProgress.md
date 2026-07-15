@@ -2,9 +2,17 @@
 > อ่านตามลำดับ: plan-wtl.md (plan_id: WTL — active · Worktree Lifecycle) → plan.md (plan_id: QAQC/MW) → plan-grd.md (แผน GRD จบแล้ว + คิว GRD-P5..P9) → decisions.md → hermes-standard/REQUIREMENTS.md (บัญชีความต้องการ 66 ข้อ)
 
 # Overview & Progress — Hermes Agent
-อัปเดตล่าสุด: 2026-07-14 (Use Migrate Web P3 ครบ 7/7 + §13 + P4 installer · merged main) · branch งานถัดไป: แตกใหม่จาก `main` · ป้าย: [fact] เว้นแต่ระบุ
+อัปเดตล่าสุด: 2026-07-15 (MW-P4 จบจริง + MW-P6 Flow Enforcement · เจ้าของทดสอบรับงาน 5/5 · ประกาศทีมแล้ว) · branch งานถัดไป: แตกใหม่จาก `main` · ป้าย: [fact] เว้นแต่ระบุ
 
 ## สถานะล่าสุด
+- **2026-07-15 (แชท Opus→Fable · merged main แล้ว 2 PR): `Use Migrate Web` พร้อมทีมใช้จริง — MW-P4 จบ + MW-P6 Flow Enforcement + เจ้าของทดสอบรับงานผ่าน 5/5 + ประกาศทีมส่งแล้ว** [fact]
+  - **MW-P4 จบจริง**: `mw-backend-check` รันจริงกับ RSF site 78 บน VPS (อ่าน 3/3 PASS + negative 2/2 FAIL ถูกต้อง) + **วงจรฟอร์มจริง PASS** (`POST /api/v1/contact` 201 → DB → เทียบค่าตรง · **prefix API จริง = `/api/v1` ไม่ใช่ `/api`**) · ข้อมูลทดสอบ TEST-MW ลบเกลี้ยง (ตรวจซ้ำ = 0) · config ตัวอย่างอยู่ `/home/linux-nat/mw-p4/` บน VPS
+  - **เหตุการณ์สำคัญ: AI (Opus) ข้าม flow เองกลางแชท** — เดา workflow 6 ขั้นแทนการเปิดไฟล์ flow13 → เจ้าของสั่ง "แก้ต้นเหตุ" → เกิด **MW-P6**
+  - **MW-P6 Flow Enforcement (PR #42 merged)**: ตรวจพบ G5 5 ชั้นในเอกสารมีโค้ดจริงแค่ menu-gate ปลายทาง · สร้าง `flow_eval.py`+`flow-rules.yaml` (สถานะ 13 ขั้นคำนวณสดจากหลักฐาน ไม่มี state ไฟล์ให้ปลอม) + `flow_gate.py` CLI (status/can-enter/guard-write) + hook PreToolUse `enforce-flow-gate.py` (โปรเจกต์มี `.work/profile.yaml` = คุม Edit/Write/shell · fail-closed) + ผูก menu-gate `--menu` + mw-doctor · **Fable วิเคราะห์ · Codex ตรวจค้านดีไซน์ + เขียนโค้ด 3 ใบ (ledger MW-P6-I2/I3/I4) · Fable รีวิว+รันเทสต์เอง**
+  - **team-ready (PR #43 merged)**: แก้เทสต์ payload 2 เคสแดง (เทสต์ตรึงรุ่นเก่า 2.6/4.4 — ไฟล์จริงเป็น 2.7/4.5 กลไก Worktree Manager) → **310 passed 0 failed** + ชุดทดสอบรับงาน `team-shortcuts/OWNER-ACCEPTANCE-MW.md` (5 ข้อ) — **เจ้าของกดเองผ่านครบ 5/5** + hook บนเครื่องเจ้าของอัปจากรุ่น MVP 13 ก.ค. (ไม่คุม Bash) เป็นรุ่นใหม่แล้ว (เจ้าของรัน installer เอง)
+  - **ประกาศทีมส่งให้เจ้าของแล้ว**: ติดตั้ง 1 คำสั่ง (`curl ... install-from-github.sh | bash` — รวม hook + เครื่องมือ MW อัตโนมัติ) · ทำทีละ 1 เมนู จองคิวก่อน
+  - เก็บงานเซสชันอื่นกันหายระหว่างทาง: curse/badword tracker + กฎ shortcut "ทุก Use ..." (commit `923dfa374`+`77d47159f` บน `feature/spec-central` · `20b0c1a4c` บน `control_webengine_flow`) — **ยังไม่ merged อยู่บน branch เหล่านั้น**
+  - เหตุแทรก: VPS linux-nat ดับ ~8 ชม. กลางคืน (Tailscale offline) — กลับมาปกติเช้า 2026-07-15
 - **2026-07-14 (แชท Opus · merged เข้า main แล้ว): `Use Migrate Web` — P3 เครื่องมือ 7/7 ครบ + สัญญา §13 COMPLETE + P4 installer** [fact]
   - **เครื่องมือ 7/7** (`scripts/mw/`): work_locks · menu_gate · page_check · mw_doctor · rtm_report · wow_report · backend_check — ทุกตัว Grok เขียน · GPT-5 ตรวจข้ามค่าย · ปิด ~44 false-positive (false-green/ready/verified/healthy) · **mw suite 252 passed**
   - **§13.1 COMPLETE 32/32** (`mw-spec-check.py` ด่าน 6 · `.project/mw-g-testid-map.md`) · pending 0 · strict mode ผ่าน · สัญญา §13 ครบ 3/3
@@ -42,9 +50,9 @@
 - สาย JARVIS v2: รอเจ้าของทดสอบเสียง P0 แล้วเปิดแชตใหม่ส่ง Use AI Relay [fact]
 
 ## งานถัดไป
-1. **MW-P4 verify ข้อสุดท้าย: รัน `mw-backend-check` กับ RoadSafeFund จริง** — เดิน flow หลังบ้าน 1 เมนู (submit→DB→admin) หลักฐาน tier 3+ · ต้องมีจากเจ้าของ: API base + วิธี query DB (query_cmd) + token (หรือสิทธิ์ VPS ที่ RoadSafeFund รันอยู่) → ทำ `.work/backend-check.yaml` ของโปรเจกต์จริง
-2. **MW-P4 install PR** (`feature/mw-p4-install`): mw-setup.sh + install-shortcuts wiring — รอเจ้าของกด merge
-3. (ถ้าต้องการ) รัน mw-setup.sh บน VPS จริงเพื่อยืนยันติดตั้ง 2 ทาง
+1. **เริ่มใช้จริงกับทีม**: ทีมติดตั้งตามประกาศ → เมนูแรกจริงบน RSF ต้องเริ่มที่ **FW-P0** (สร้าง `.work/profile.yaml` — เจ้าของล็อกค่า) เพราะยังไม่มี = flow-gate ยังไม่คุมโปรเจกต์นั้น
+2. **merge งานเซสชันอื่นที่เก็บกันหายไว้**: `feature/spec-central` (curse tracker + กฎ shortcut + spec ทดลอง) + `control_webengine_flow` (badword WIP + snapshot content) — รวม PR ให้เจ้าของกด
+3. MW-P4 โซนแดงส่วนหลังบ้าน admin (ดูผ่านจอ admin จริง = M5 ของเมนูแรก) ทำตอนเดินเมนูจริง
 4. (คิวเดิม) GRD-P5..P8 + QAQC-P5 รอเจ้าของสั่ง
 
 ## ข้อห้าม/กติกาล็อก
@@ -56,6 +64,8 @@
 - สมองแผน GRD = Fable ตามคำสั่งเจ้าของ 2026-07-07 (ข้อยกเว้นจากกติกา relay v2.7 ที่ปกติใช้ Opus) · Codex/Claude เขียน-ตรวจสลับค่ายผ่าน relay-call · **verified = มีแถว gate-run เท่านั้น**
 
 ## งานค้าง/ส่งต่อ
+- **ใหม่ 2026-07-15: branch งานเซสชันอื่นยังไม่ merged** — `feature/spec-central` (commit `923dfa374` curse tracker + `77d47159f` กฎ shortcut + spec-central 2 commit) และ `control_webengine_flow` (`20b0c1a4c` badword WIP + snapshot content v22) · เก็บกันหายแล้ว test เขียว แต่ต้องรวม PR ให้เจ้าของกด · เจ้าของถัดไป: เซสชันที่ทำงานนั้นต่อ
+- claimed (ยังไม่ตรวจ): ทีมติดตั้งจริงตามประกาศแล้วใช้ได้ทุกเครื่อง (พิสูจน์แล้วแค่เครื่องเจ้าของ) · mw-setup.sh บน VPS ยังไม่ได้รันยืนยัน
 - ~~**2026-07-11: local main pointer เพี้ยน** (ahead1/behind20 + orphan DEC-036)~~ **แก้แล้ว 2026-07-14: main สะอาดตรง origin/main `7087b8fcd` · orphan เก็บ tag `archive/local-main-orphan-2026-07-11`** [fact] · vps เหลือ branch cache (prune ได้ถ้าอยาก)
 - ~~รอเจ้าของ: ตรวจ+กด merge PR #17 + PR #14~~ **merged หมดแล้ว 2026-07-11 (PR ค้าง = 0)** [fact]
 - รอเจ้าของ (เดิม): **ตรวจ+กด merge PR #17** (install guard) และ **PR #14** (relay-relogin ที่เปิดค้าง) · ส่งปัญหาชุดสุดท้าย (ปลดล็อก GRD-P6..P8) · rotate GitLab token (ค้างจาก 2026-07-04) · **push คลัง Obsidian ขึ้น GitLab** (commit คลัง 7b52e4b + 614e00a ค้างในเครื่อง 2 ตัว — คนละ repo กับตัวนี้ · AI push main ตรงไม่ได้ ด่านบล็อก) · ติดตั้ง memory-audit รายสัปดาห์ (ถ้าต้องการ): `(crontab -l 2>/dev/null; echo '0 9 * * 1 cd "/Users/rattanasak/Documents/Viber Project/Tech Tools/Hermes Agent" && ./venv/bin/python scripts/memory-audit/memory_audit.py >> ~/.claude/ai-fail-stats/memory-audit.log 2>&1') | crontab -`

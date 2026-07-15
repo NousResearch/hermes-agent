@@ -2286,6 +2286,36 @@ class SessionDB:
             )
         self._execute_write(_do)
 
+    def promote_to_session_reset(self, session_id: str) -> bool:
+        """Mark a session as ended by session_reset — but only when safe.
+
+        Promotes *only* live rows (``ended_at IS NULL``) or rows ended with
+        ``agent_close``.  Explicit conversation boundaries such as
+        ``compression``, ``session_reset``, ``new_command``, etc. are
+        preserved — the first writer wins for those, and a later expiry
+        finalization must not silently overwrite them.
+
+        Returns ``True`` when the row was promoted, ``False`` when skipped
+        (already has a different explicit end_reason, or row not found).
+        """
+        if not session_id:
+            return False
+        now = time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                "UPDATE sessions SET ended_at = ?, end_reason = 'session_reset' "
+                "WHERE id = ? AND (ended_at IS NULL OR end_reason = 'agent_close')",
+                (now, session_id),
+            )
+            return cursor.rowcount
+
+        try:
+            rows = self._execute_write(_do)
+            return bool(rows)
+        except Exception:
+            return False
+
     def update_session_cwd(
         self, session_id: str, cwd: str, git_branch: str = None, git_repo_root: str = None
     ) -> None:

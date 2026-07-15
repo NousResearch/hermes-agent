@@ -1587,12 +1587,15 @@ class SessionStore:
                 # a durable ``session_reset`` end_reason, later agent cleanup can
                 # close the row as ``agent_close``; stale-route recovery treats
                 # that as resumable and resurrects the expired full history.
-                # Reopen first because SessionDB.end_session is first-writer-wins.
-                self._db.reopen_session(entry.session_id)
-                self._db.end_session(entry.session_id, "session_reset")
+                #
+                # promote_to_session_reset is conditional: it only promotes
+                # live rows or rows ended with ``agent_close``.  Explicit
+                # boundaries (compression, session_reset, new_command, etc.)
+                # are preserved — the first writer wins.
+                self._db.promote_to_session_reset(entry.session_id)
             except Exception as exc:
                 logger.debug(
-                    "Session DB end_session(session_reset) failed for %s: %s",
+                    "Session DB promote_to_session_reset failed for %s: %s",
                     entry.session_id, exc,
                 )
     

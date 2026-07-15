@@ -33,3 +33,7 @@ optional_env:
     description: "Display name for the Telegram home channel"
     prompt: "Home channel display name"
     password: false
+  - name: TELEGRAM_IGNORE_HUMAN_MENTIONS
+    description: "When true, ignore group messages that @mention human users (not the bot)"
+    prompt: "Ignore @mentions of humans? (true/false)"
+    password: false

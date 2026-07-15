@@ -7042,6 +7042,104 @@ class TelegramAdapter(BasePlatformAdapter):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
 
+    def _telegram_ignore_human_mentions(self) -> bool:
+        """Return whether to ignore messages that @mention human users.
+
+        When enabled, messages in group chats that contain @mentions of human
+        users (but not the bot itself) are silently ignored.  This prevents the
+        bot from responding to group messages that are addressing other people.
+        The message is still processed if it also @mentions the bot or replies
+        to the bot.
+        """
+        configured = self.config.extra.get("ignore_human_mentions")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return os.getenv("TELEGRAM_IGNORE_HUMAN_MENTIONS", "false").lower() in {
+            "true",
+            "1",
+            "yes",
+            "on",
+        }
+
+    def _message_only_mentions_humans(self, message: Message) -> bool:
+        """Return True when the message @mentions human users, not the bot.
+
+        Scans MessageEntity objects for:
+        - ``text_mention`` entities (always target a human user)
+        - ``mention`` entities (target a username) that do NOT end with "bot"
+
+        Returns False if the bot itself is also @mentioned, because the
+        message is intended to include the bot alongside the human.
+        """
+        if not self._bot:
+            return False
+
+        bot_username = (getattr(self._bot, "username", None) or "").lstrip("@").lower()
+        bot_expected = f"@{bot_username}" if bot_username else None
+        bot_id = getattr(self._bot, "id", None)
+
+        found_human_mention = False
+
+        def _iter_sources():
+            yield getattr(message, "text", None) or "", getattr(message, "entities", None) or []
+            yield getattr(message, "caption", None) or "", getattr(message, "caption_entities", None) or []
+
+        for source_text, entities in _iter_sources():
+            for entity in entities:
+                entity_type = str(getattr(entity, "type", "")).split(".")[-1].lower()
+
+                # text_mention always targets a human user
+                if entity_type == "text_mention":
+                    user = getattr(entity, "user", None)
+                    if user and getattr(user, "id", None) != bot_id:
+                        found_human_mention = True
+                    continue
+
+                if entity_type != "mention":
+                    continue
+
+                offset = int(getattr(entity, "offset", -1))
+                length = int(getattr(entity, "length", 0))
+                if offset < 0 or length <= 0:
+                    continue
+
+                entity_text = source_text[offset : offset + length].strip()
+                handle = entity_text.lstrip("@").lower()
+
+                # Skip bot mentions
+                if bot_expected and entity_text.lower() == bot_expected:
+                    continue
+
+                # Skip other bot usernames (ending in "bot") — this adapter's
+                # _explicit_bot_mentions_exclude_self already handles exclusive
+                # multi-bot routing separately.
+                if re.fullmatch(r"[a-z0-9_]{2,29}bot", handle, re.IGNORECASE):
+                    continue
+
+                if handle:
+                    found_human_mention = True
+
+        # Entity-less fallback: if Telegram supplied entities for a source,
+        # do not regex-rescue — trust the server-side parse.
+        for raw_text, entities in _iter_sources():
+            if not raw_text or entities:
+                continue
+            for match in re.finditer(
+                r"(?i)(?<![A-Za-z0-9_`/])@([A-Za-z0-9_]{4,32})\\b", raw_text
+            ):
+                handle = match.group(1).lower()
+                # Skip bot mentions (own username)
+                if bot_username and handle == bot_username:
+                    continue
+                # Skip other bot usernames
+                if re.fullmatch(r"[a-z0-9_]{2,29}bot", handle, re.IGNORECASE):
+                    continue
+                found_human_mention = True
+
+        return found_human_mention
+
     def _telegram_allowed_chats(self) -> set[str]:
         """Return the whitelist of group/supergroup chat IDs the bot will respond in.
 
@@ -7698,6 +7796,11 @@ class TelegramAdapter(BasePlatformAdapter):
         - the bot is @mentioned
         - the text/caption matches a configured regex wake-word pattern
 
+        When ``ignore_human_mentions`` is enabled, messages that @mention human
+        users (but not the bot) are silently ignored even if they pass the
+        other gates.  This prevents the bot from responding to group messages
+        that are addressing other people.
+
         When ``allowed_chats`` is non-empty, it remains a hard gate except for
         the narrow ``guest_mode`` bypass: group/supergroup messages that
         explicitly @mention this bot. Replies and regex wake words do not bypass
@@ -7769,7 +7872,17 @@ class TelegramAdapter(BasePlatformAdapter):
         # _message_mentions_bot above — skip the redundant second call.
         if not self._telegram_guest_mode() and self._message_mentions_bot(message):
             return True
-        return self._message_matches_mention_patterns(message)
+        if self._message_matches_mention_patterns(message):
+            return True
+        # When ignore_human_mentions is enabled, reject messages that only
+        # @mention human users (not this bot).  This prevents the bot from
+        # responding to group chat messages that are addressing other people.
+        # The message already passed all other gates (free_response, require_mention
+        # disabled, reply-to-bot, @bot, wake-word patterns) so this is the final
+        # filter before falling through to the default-reject path.
+        if self._telegram_ignore_human_mentions() and self._message_only_mentions_humans(message):
+            return False
+        return False
 
     async def _ensure_forum_commands(self, message) -> None:
         """Lazy-register bot commands for forum supergroups.

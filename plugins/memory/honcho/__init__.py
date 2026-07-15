@@ -181,7 +181,36 @@ CONCLUDE_SCHEMA = {
 }
 
 
-ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCHEMA, CONCLUDE_SCHEMA]
+LIST_CONCLUSIONS_SCHEMA = {
+    "name": "honcho_list_conclusions",
+    "description": (
+        "List conclusions about a peer with their IDs, content, and metadata. "
+        "Use this to find the ID of a conclusion you want to delete via honcho_conclude(delete_id=...). "
+        "Returns id, content, observer, observed, session_id, created_at for each conclusion. "
+        "Optional `query` parameter does a semantic search instead of listing recent."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "query": {
+                "type": "string",
+                "description": "Optional semantic search query. If omitted, returns most recent conclusions.",
+            },
+            "limit": {
+                "type": "integer",
+                "description": "Max results to return (default 20, max 100).",
+            },
+            "peer": {
+                "type": "string",
+                "description": "Peer to query. Built-in aliases: 'user' (default), 'ai'. Or pass any peer ID from this workspace.",
+            },
+        },
+        "required": [],
+    },
+}
+
+
+ALL_TOOL_SCHEMAS = [PROFILE_SCHEMA, SEARCH_SCHEMA, REASONING_SCHEMA, CONTEXT_SCHEMA, CONCLUDE_SCHEMA, LIST_CONCLUSIONS_SCHEMA]
 
 
 # ---------------------------------------------------------------------------
@@ -1404,6 +1433,17 @@ class HonchoMemoryProvider(MemoryProvider):
                 if ok:
                     return json.dumps({"result": f"Conclusion saved for {peer}: {conclusion}"})
                 return tool_error("Failed to save conclusion.")
+
+            elif tool_name == "honcho_list_conclusions":
+                query = (args.get("query") or "").strip() or None
+                limit = min(max(int(args.get("limit", 20)), 1), 100)
+                peer = args.get("peer", "user")
+                items = self._manager.list_conclusions(
+                    self._session_key, query=query, limit=limit, peer=peer
+                )
+                if not items:
+                    return json.dumps({"result": "No conclusions found.", "conclusions": []})
+                return json.dumps({"result": f"{len(items)} conclusion(s) found.", "conclusions": items})
 
             return tool_error(f"Unknown tool: {tool_name}")
 

@@ -1229,6 +1229,64 @@ class HonchoSessionManager:
             logger.error("Failed to delete conclusion %s: %s", conclusion_id, e)
             return False
 
+    def list_conclusions(
+        self,
+        session_key: str,
+        query: str | None = None,
+        limit: int = 20,
+        peer: str = "user",
+    ) -> list[dict]:
+        """List conclusions about a peer with their IDs and metadata.
+
+        Used by honcho_list_conclusions tool to expose IDs needed for delete_id.
+
+        Args:
+            session_key: Session key for peer resolution.
+            query: Optional semantic search query. If None, returns recent.
+            limit: Max number of results (clamped to 100).
+            peer: Peer alias or explicit peer ID.
+
+        Returns:
+            List of dicts with id, content, observer, observed, session_id, created_at.
+        """
+        session = self._cache.get(session_key)
+        if not session:
+            return []
+
+        try:
+            target_peer_id = self._resolve_peer_id(session, peer)
+            if target_peer_id is None:
+                return []
+
+            if target_peer_id == session.assistant_peer_id:
+                observer = self._get_or_create_peer(session.assistant_peer_id)
+                scope = observer.conclusions_of(session.assistant_peer_id)
+            elif self._ai_observe_others:
+                observer = self._get_or_create_peer(session.assistant_peer_id)
+                scope = observer.conclusions_of(target_peer_id)
+            else:
+                target_peer = self._get_or_create_peer(target_peer_id)
+                scope = target_peer.conclusions_of(target_peer_id)
+
+            results = scope.query(query=query) if query else scope.list()
+
+            items: list[dict] = []
+            for c in results:
+                if len(items) >= limit:
+                    break
+                items.append({
+                    "id": getattr(c, "id", None),
+                    "content": getattr(c, "content", ""),
+                    "observer": getattr(c, "observer_id", None),
+                    "observed": getattr(c, "observed_id", None),
+                    "session_id": getattr(c, "session_id", None),
+                    "created_at": str(c.created_at) if getattr(c, "created_at", None) else None,
+                })
+            return items
+        except Exception as e:
+            logger.error("Failed to list conclusions: %s", e)
+            return []
+
     def set_peer_card(self, session_key: str, card: list[str], peer: str = "user") -> list[str] | None:
         """Update a peer's card.
 

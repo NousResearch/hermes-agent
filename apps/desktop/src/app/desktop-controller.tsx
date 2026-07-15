@@ -74,6 +74,7 @@ import { onSessionsChanged } from '../store/session-sync'
 import { clearSessionTodos, setSessionTodos, todosForHydration } from '../store/todos'
 import { openUpdatesWindow, startUpdatePoller, stopUpdatePoller } from '../store/updates'
 import { isSecondaryWindow } from '../store/windows'
+import { loadAvatar, $activeProfileName } from '../store/avatar'
 
 import { ChatView } from './chat'
 import { requestComposerFocus, requestComposerInsert } from './chat/composer/focus'
@@ -262,6 +263,7 @@ export function DesktopController() {
 
   useEffect(() => {
     startUpdatePoller()
+    loadAvatar()
     const unsubscribe = window.hermesDesktop?.onOpenUpdatesRequested?.(() => openUpdatesWindow())
 
     return () => {
@@ -671,6 +673,12 @@ export function DesktopController() {
     void refreshCurrentModel(true)
     void refreshActiveProfile()
   }, [activeGatewayProfile, refreshCurrentModel])
+
+  // Sync the avatar store's active profile so per-profile avatars follow the
+  // active gateway profile.
+  useEffect(() => {
+    $activeProfileName.set(activeGatewayProfile || 'default')
+  }, [activeGatewayProfile])
 
   const composer = useComposerActions({
     activeSessionId,

@@ -9,6 +9,7 @@ import {
 import { useStore } from '@nanostores/react'
 import { type FC, useCallback, useMemo, useState } from 'react'
 
+import { AssistantAvatar } from '@/components/assistant-ui/thread/assistant-avatar'
 import {
   contentHasVisibleText,
   messageContentText,
@@ -97,42 +98,47 @@ export const AssistantMessage: FC<{
       data-streaming={isRunning ? 'true' : undefined}
       ref={enterRef}
     >
-      <div
-        className="wrap-anywhere min-w-0 max-w-full overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
-        data-slot="aui_assistant-message-content"
-      >
-        {/* Todos render in the composer status stack now, not inline. */}
-        <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
-        {isRunning && <StreamStallIndicator />}
-        {previewTargets.length > 0 && (
-          <div className="mt-3 flex flex-wrap gap-2">
-            {previewTargets.map(target => (
-              <PreviewAttachment key={target} source="explicit-link" target={target} />
-            ))}
-          </div>
-        )}
-        <MessagePrimitive.Error>
-          <ErrorPrimitive.Root
-            className="mt-1.5 flex items-start gap-1.5 text-[0.78rem] leading-5 text-[color-mix(in_srgb,var(--dt-destructive)_78%,var(--ui-text-secondary))]"
-            role="alert"
+      <div className="flex w-full min-w-0 gap-2.5 pr-(--message-text-indent) pl-(--message-text-indent)">
+        <AssistantAvatar className="mt-0.5" />
+        <div className="flex min-w-0 flex-1 flex-col">
+          <div
+            className="wrap-anywhere min-w-0 overflow-hidden text-pretty text-[length:var(--conversation-text-font-size)] leading-(--dt-line-height) text-foreground"
+            data-slot="aui_assistant-message-content"
           >
-            <ErrorPrimitive.Message className="min-w-0 flex-1" />
-            {onDismissError && (
-              <TooltipIconButton
-                className="-my-0.5 shrink-0 text-current opacity-70 hover:opacity-100"
-                onClick={() => onDismissError(messageId)}
-                side="top"
-                tooltip={t.assistant.thread.dismissError}
-              >
-                <XIcon className="size-3.5" />
-              </TooltipIconButton>
+            {/* Todos render in the composer status stack now, not inline. */}
+            <MessagePrimitive.Parts components={MESSAGE_PARTS_COMPONENTS} />
+            {isRunning && <StreamStallIndicator />}
+            {previewTargets.length > 0 && (
+              <div className="mt-3 flex flex-wrap gap-2">
+                {previewTargets.map(target => (
+                  <PreviewAttachment key={target} source="explicit-link" target={target} />
+                ))}
+              </div>
             )}
-          </ErrorPrimitive.Root>
-        </MessagePrimitive.Error>
+            <MessagePrimitive.Error>
+              <ErrorPrimitive.Root
+                className="mt-1.5 flex items-start gap-1.5 text-[0.78rem] leading-5 text-[color-mix(in_srgb,var(--dt-destructive)_78%,var(--ui-text-secondary))]"
+                role="alert"
+              >
+                <ErrorPrimitive.Message className="min-w-0 flex-1" />
+                {onDismissError && (
+                  <TooltipIconButton
+                    className="-my-0.5 shrink-0 text-current opacity-70 hover:opacity-100"
+                    onClick={() => onDismissError(messageId)}
+                    side="top"
+                    tooltip={t.assistant.thread.dismissError}
+                  >
+                    <XIcon className="size-3.5" />
+                  </TooltipIconButton>
+                )}
+              </ErrorPrimitive.Root>
+            </MessagePrimitive.Error>
+          </div>
+          {hasVisibleText && (
+            <AssistantFooter getMessageText={getMessageText} messageId={messageId} onBranchInNewChat={onBranchInNewChat} />
+          )}
+        </div>
       </div>
-      {hasVisibleText && (
-        <AssistantFooter getMessageText={getMessageText} messageId={messageId} onBranchInNewChat={onBranchInNewChat} />
-      )}
     </MessagePrimitive.Root>
   )
 }

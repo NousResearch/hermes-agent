@@ -6,7 +6,7 @@ import { Tip } from '@/components/ui/tooltip'
 import { getHermesConfigDefaults, getHermesConfigRecord, saveHermesConfig } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
-import { Archive, Bell, Download, Globe, Info, KeyRound, RefreshCw, Settings2, Upload, Wrench, Zap } from '@/lib/icons'
+import { Archive, Bell, Download, Globe, ImageIcon, Info, KeyRound, RefreshCw, Settings2, Upload, Wrench, Zap } from '@/lib/icons'
 import { notifyError } from '@/store/notifications'
 
 import { useRouteEnumParam } from '../hooks/use-route-enum-param'
@@ -15,6 +15,7 @@ import { OverlayMain, OverlayNav, type OverlayNavGroup, OverlaySplitLayout } fro
 import { OverlayView } from '../overlays/overlay-view'
 import { SKILLS_ROUTE } from '../routes'
 
+import { AvatarSettings } from './avatar-settings'
 import { AboutSettings } from './about-settings'
 import { AppearanceSettings } from './appearance-settings'
 import { ConfigSettings } from './config-settings'
@@ -28,6 +29,7 @@ import type { SettingsPageProps, SettingsView as SettingsViewId } from './types'
 
 const SETTINGS_VIEWS: readonly SettingsViewId[] = [
   ...SECTIONS.map(s => `config:${s.id}` as SettingsViewId),
+  'avatar',
   'providers',
   'gateway',
   'keys',
@@ -125,6 +127,13 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         onSelect: () => setActiveView(view)
       }
     }),
+    {
+      active: activeView === 'avatar',
+      icon: ImageIcon,
+      id: 'avatar',
+      label: 'Avatar',
+      onSelect: () => setActiveView('avatar')
+    },
     {
       active: activeView === 'notifications',
       icon: Bell,
@@ -240,7 +249,9 @@ export function SettingsView({ onClose, onConfigSaved, onMainModelChanged }: Set
         <OverlayNav footer={navFooter} groups={navGroups} />
 
         <OverlayMain className="px-0 pb-0">
-          {activeView === 'config:appearance' ? (
+          {activeView === 'avatar' ? (
+            <AvatarSettings />
+          ) : activeView === 'config:appearance' ? (
             <AppearanceSettings />
           ) : activeView === 'about' ? (
             <AboutSettings />

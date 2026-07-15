@@ -738,6 +738,54 @@ class TestToolHandler:
         finally:
             _servers.pop("test_srv", None)
 
+    def test_forwards_run_mcp_meta_to_call_tool(self):
+        from tools.mcp_run_meta import reset_mcp_run_meta, set_mcp_run_meta
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result("ok", is_error=False)
+        )
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+        token = set_mcp_run_meta({"hermes/run_token": "abc123"})
+
+        try:
+            handler = _make_tool_handler("test_srv", "greet", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({"name": "world"}))
+            assert result["result"] == "ok"
+            mock_session.call_tool.assert_called_once_with(
+                "greet",
+                arguments={"name": "world"},
+                meta={"hermes/run_token": "abc123"},
+            )
+        finally:
+            reset_mcp_run_meta(token)
+            _servers.pop("test_srv", None)
+
+    def test_drops_run_mcp_meta_when_call_tool_lacks_meta_kwarg(self):
+        from tools.mcp_run_meta import reset_mcp_run_meta, set_mcp_run_meta
+        from tools.mcp_tool import _make_tool_handler, _servers
+
+        async def _call_tool_no_meta(name, arguments=None):
+            return _make_call_result("ok", is_error=False)
+
+        mock_session = MagicMock()
+        mock_session.call_tool = _call_tool_no_meta
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+        token = set_mcp_run_meta({"hermes/run_token": "abc123"})
+
+        try:
+            handler = _make_tool_handler("test_srv", "greet", 120)
+            with self._patch_mcp_loop():
+                result = json.loads(handler({"name": "world"}))
+            assert result["result"] == "ok"
+        finally:
+            reset_mcp_run_meta(token)
+            _servers.pop("test_srv", None)
+
     def test_mcp_error_result(self):
         from tools.mcp_tool import _make_tool_handler, _servers
 

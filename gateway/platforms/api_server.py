@@ -4368,6 +4368,19 @@ class APIServerAdapter(BasePlatformAdapter):
         if not user_message:
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
+        # Optional opaque MCP `_meta` for every tools/call in this run
+        # (#64890). Validate before allocating run state so bad payloads
+        # never create a stream/status entry.
+        raw_mcp_meta = body.get("mcp_meta")
+        mcp_meta: Optional[Dict[str, Any]] = None
+        if raw_mcp_meta is not None:
+            if not isinstance(raw_mcp_meta, dict):
+                return web.json_response(
+                    _openai_error("'mcp_meta' must be a JSON object"),
+                    status=400,
+                )
+            mcp_meta = dict(raw_mcp_meta)
+
         instructions = body.get("instructions")
         previous_response_id = body.get("previous_response_id")
 
@@ -4527,9 +4540,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         set_current_session_key,
                         unregister_gateway_notify,
                     )
+                    from tools.mcp_run_meta import reset_mcp_run_meta, set_mcp_run_meta
 
                     effective_task_id = session_id or run_id
                     approval_token = None
+                    mcp_meta_token = None
                     session_tokens = []
                     try:
                         # Bind approval/session identity for this API run via
@@ -4539,6 +4554,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         session_tokens = self._bind_api_server_session(
                             session_key=approval_session_key,
                         )
+                        if mcp_meta is not None:
+                            mcp_meta_token = set_mcp_run_meta(mcp_meta)
                         register_gateway_notify(approval_session_key, _approval_notify)
                         r = agent.run_conversation(
                             user_message=user_message,
@@ -4549,6 +4566,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         try:
                             unregister_gateway_notify(approval_session_key)
                         finally:
+                            if mcp_meta_token is not None:
+                                try:
+                                    reset_mcp_run_meta(mcp_meta_token)
+                                except Exception:
+                                    pass
                             if approval_token is not None:
                                 try:
                                     reset_current_session_key(approval_token)

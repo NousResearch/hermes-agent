@@ -1748,11 +1748,16 @@ def _run_single_child(
     goal: str,
     child=None,
     parent_agent=None,
+    mcp_meta: Optional[Dict[str, Any]] = None,
     **_kwargs,
 ) -> Dict[str, Any]:
     """
     Run a pre-built child agent. Called from within a thread.
     Returns a structured result dict.
+
+    ``mcp_meta`` is the parent's run-scoped MCP ``_meta`` snapshot (from
+    ``POST /v1/runs``). Child workers do not inherit ContextVars across the
+    delegation ThreadPool, so we re-bind it inside the worker (#64890).
     """
     child_start = time.monotonic()
 
@@ -1944,12 +1949,27 @@ def _run_single_child(
                 logger.debug("Child text relay failed: %s", e)
 
         def _run_with_thread_capture():
+            # Re-bind run-scoped MCP `_meta` for this worker. Delegation
+            # ThreadPools do not inherit parent ContextVars; without this,
+            # subagent tools/call would drop POST /v1/runs mcp_meta (#64890).
+            from tools.mcp_run_meta import reset_mcp_run_meta, set_mcp_run_meta
+
             _worker_thread_holder["t"] = threading.current_thread()
-            return child.run_conversation(
-                user_message=goal,
-                task_id=child_task_id,
-                stream_callback=_relay_child_text,
-            )
+            mcp_meta_token = None
+            try:
+                if mcp_meta is not None:
+                    mcp_meta_token = set_mcp_run_meta(mcp_meta)
+                return child.run_conversation(
+                    user_message=goal,
+                    task_id=child_task_id,
+                    stream_callback=_relay_child_text,
+                )
+            finally:
+                if mcp_meta_token is not None:
+                    try:
+                        reset_mcp_run_meta(mcp_meta_token)
+                    except Exception:
+                        pass
 
         _child_future = _timeout_executor.submit(_run_with_thread_capture)
         try:
@@ -2550,10 +2570,20 @@ def delegate_task(
         results block. That is the contract: fan-out runs in the background,
         waits on each other, and returns together.
         """
+        # Snapshot run MCP `_meta` on this thread before any further executor
+        # hop so every child tools/call in the batch still receives it (#64890).
+        from tools.mcp_run_meta import get_mcp_run_meta
+
+        _parent_mcp_meta = get_mcp_run_meta()
+        if _parent_mcp_meta is not None:
+            _parent_mcp_meta = dict(_parent_mcp_meta)
+
         if n_tasks == 1:
             # Single task -- run directly (no thread pool overhead)
             _i, _t, child = children[0]
-            result = _run_single_child(_i, _t["goal"], child, parent_agent)
+            result = _run_single_child(
+                _i, _t["goal"], child, parent_agent, mcp_meta=_parent_mcp_meta,
+            )
             results.append(result)
         else:
             # Batch -- run in parallel with per-task progress lines
@@ -2573,6 +2603,7 @@ def delegate_task(
                         goal=t["goal"],
                         child=child,
                         parent_agent=parent_agent,
+                        mcp_meta=_parent_mcp_meta,
                     )
                     futures[future] = i
 

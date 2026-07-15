@@ -63,6 +63,27 @@ class TestScanSkillCommands:
             result = scan_skill_commands()
         assert result == {}
 
+    def test_finds_skills_when_scan_root_has_excluded_ancestor(self, tmp_path):
+        """A skills root nested under an excluded-name ancestor (e.g. `.git`)
+        must still register slash commands. The excluded-dir filter applies
+        RELATIVE to the scan root, not against absolute path parts (#54035).
+        """
+        skills_root = tmp_path / ".archive" / "profile" / "skills"
+        skills_root.mkdir(parents=True)
+        with patch("tools.skills_tool.SKILLS_DIR", skills_root):
+            _make_skill(skills_root, "my-skill")
+            result = scan_skill_commands()
+        assert "/my-skill" in result
+
+    def test_excludes_dir_relative_to_scan_root(self, tmp_path):
+        """An excluded dir *inside* the scan root is still skipped."""
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+            _make_skill(tmp_path, "keep-me")
+            _make_skill(tmp_path / ".git", "skip-me")
+            result = scan_skill_commands()
+        assert "/keep-me" in result
+        assert "/skip-me" not in result
+
     def test_excludes_incompatible_platform(self, tmp_path):
         """macOS-only skills should not register slash commands on Linux."""
         with (

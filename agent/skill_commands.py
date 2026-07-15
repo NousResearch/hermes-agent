@@ -368,7 +368,18 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
 
         for scan_dir in dirs_to_scan:
             for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
-                if any(part in {'.git', '.github', '.hub', '.archive'} for part in skill_md.parts):
+                # Apply the excluded-dir filter to the path RELATIVE to
+                # scan_dir, not the absolute path. Otherwise any ancestor of
+                # the skills root that happens to be named like an excluded
+                # dir (e.g. a profile-local root under ~/.hermes sitting below
+                # a `.git`/`.archive` ancestor) makes every command match the
+                # exclusion and disappear from discovery even though SKILL.md
+                # files exist on disk (#54035, sibling of the tools_tool fix).
+                try:
+                    rel_parts = skill_md.relative_to(scan_dir).parts
+                except ValueError:
+                    rel_parts = skill_md.parts
+                if any(part in {'.git', '.github', '.hub', '.archive'} for part in rel_parts):
                     continue
                 try:
                     content = skill_md.read_text(encoding='utf-8')

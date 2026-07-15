@@ -1015,6 +1015,48 @@ def test_first_install_nous_auto_configures_video_gen(monkeypatch):
 class TestPlatformToolsetConsistency:
     """Every platform in tools_config.PLATFORMS must have a matching toolset."""
 
+    def test_sms_platform_registered_with_hermes_sms_toolset(self):
+        """SMS must be in the static platform registry with hermes-sms.
+
+        Registry membership alone is not enough for interactive discovery
+        (see test_get_enabled_platforms_detects_twilio_sms), but it is
+        required so tools_command can index PLATFORMS['sms'] safely.
+        Salvage continuity for #14112 / #52898.
+        """
+        from hermes_cli.tools_config import PLATFORMS
+
+        assert "sms" in PLATFORMS
+        assert PLATFORMS["sms"]["default_toolset"] == "hermes-sms"
+
+    def test_get_enabled_platforms_detects_twilio_sms(self, monkeypatch):
+        """Interactive discovery must treat TWILIO_ACCOUNT_SID as SMS-enabled.
+
+        Regression for the real remaining gap on #52898: gateway auto-enables
+        SMS from Twilio SID, but _get_enabled_platforms omitted SMS so
+        `hermes tools` never offered the platform menu entry.
+        """
+        from hermes_cli import tools_config as tc
+
+        def fake_get_env(key: str):
+            if key == "TWILIO_ACCOUNT_SID":
+                return "ACxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+            return None
+
+        monkeypatch.setattr(tc, "get_env_value", fake_get_env)
+        enabled = tc._get_enabled_platforms()
+        assert "cli" in enabled
+        assert "sms" in enabled
+        assert enabled.count("sms") == 1
+
+    def test_get_enabled_platforms_skips_sms_without_twilio(self, monkeypatch):
+        """No Twilio SID means SMS must not appear in discovery."""
+        from hermes_cli import tools_config as tc
+
+        monkeypatch.setattr(tc, "get_env_value", lambda key: None)
+        enabled = tc._get_enabled_platforms()
+        assert enabled == ["cli"]
+        assert "sms" not in enabled
+
     def test_all_platforms_have_toolset_definitions(self):
         """Each platform's default_toolset must exist in TOOLSETS."""
         from hermes_cli.tools_config import PLATFORMS

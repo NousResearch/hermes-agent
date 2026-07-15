@@ -1565,6 +1565,10 @@ def _get_enabled_platforms() -> List[str]:
         enabled.append("slack")
     if get_env_value("WHATSAPP_ENABLED"):
         enabled.append("whatsapp")
+    # Mirror gateway SMS auto-enable (TWILIO_ACCOUNT_SID) so interactive
+    # `hermes tools` discovery includes the Twilio SMS platform.
+    if get_env_value("TWILIO_ACCOUNT_SID"):
+        enabled.append("sms")
     if get_env_value("QQ_APP_ID"):
         enabled.append("qqbot")
     return enabled

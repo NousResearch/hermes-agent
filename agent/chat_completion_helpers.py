@@ -1172,9 +1172,6 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
             combined = "\n\n".join(b.strip() for b in think_blocks if b.strip())
             reasoning_text = combined or None
 
-    if reasoning_text:
-        reasoning_text = _sanitize_surrogates(reasoning_text)
-
     # Same defence-in-depth for reasoning: a model quoting a credential in
     # its thinking otherwise exposes it via callbacks/logging and persists it
     # in plaintext via the reasoning / reasoning_content fields of state.db
@@ -1201,6 +1198,11 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                 agent.reasoning_callback(reasoning_text)
             except Exception:
                 pass
+
+    # Keep the callback contract aligned with current main when redaction is
+    # disabled, then make the persisted copy safe for JSON serialization.
+    if reasoning_text:
+        reasoning_text = _sanitize_surrogates(reasoning_text)
 
     # Sanitize surrogates from API response — some models (e.g. Kimi/GLM via Ollama)
     # can return invalid surrogate code points that crash json.dumps() on persist.
@@ -1245,14 +1247,10 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
         if isinstance(model_extra, dict) and "reasoning_content" in model_extra:
             raw_reasoning_content = model_extra["reasoning_content"]
     if raw_reasoning_content is not None:
-        _rc = _sanitize_surrogates(raw_reasoning_content)
-        # Credential redaction, same as the reasoning field above (#43666).
-        # Never empties a non-empty string, so the DeepSeek/Kimi non-empty
-        # reasoning_content requirement (#15250) is unaffected.
-        if isinstance(_rc, str) and _rc:
-            from agent.redact import redact_sensitive_text
-            _rc = redact_sensitive_text(_rc)
-        msg["reasoning_content"] = _rc
+        # This is a provider-native echo field. Keep its current sanitization
+        # behaviour, but never redact it: DeepSeek/Kimi/MiMo require the exact
+        # provider value on the next turn.
+        msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
     elif assistant_tool_calls and agent._needs_thinking_reasoning_pad():
         # DeepSeek v4 thinking mode and Kimi / Moonshot thinking mode
         # both require reasoning_content on every assistant tool-call

@@ -4809,12 +4809,6 @@ class AIAgent:
 
     def _fire_reasoning_delta(self, text: str) -> None:
         """Fire reasoning callback if registered."""
-        if isinstance(text, str) and text:
-            try:
-                from agent.redact import redact_sensitive_text
-                text = redact_sensitive_text(text)
-            except Exception:
-                text = ""
         cb = self.reasoning_callback
         if cb is not None:
             try:

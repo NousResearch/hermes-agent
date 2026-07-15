@@ -9,7 +9,11 @@ Covers:
 """
 
 import asyncio
+import hashlib
+import hmac
+import json
 import threading
+import time
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -25,16 +29,25 @@ from gateway.platforms.api_server import (
 from tools import approval as approval_mod
 
 
+OWNER_PASSKEY = "run-owner-passkey-for-tests-only-0123456789"
+AUTH_HEADERS = {"Authorization": "Bearer sk-secret"}
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 
-def _make_adapter(api_key: str = "") -> APIServerAdapter:
+def _make_adapter(
+    api_key: str = "",
+    approval_passkey: str = "",
+) -> APIServerAdapter:
     """Create an adapter with optional API key."""
     extra = {}
     if api_key:
         extra["key"] = api_key
+    if approval_passkey:
+        extra["approval_passkey"] = approval_passkey
     config = PlatformConfig(enabled=True, extra=extra)
     adapter = APIServerAdapter(config)
     return adapter
@@ -91,7 +104,53 @@ def adapter():
 
 @pytest.fixture
 def auth_adapter():
-    return _make_adapter(api_key="sk-secret")
+    return _make_adapter(
+        api_key="sk-secret",
+        approval_passkey=OWNER_PASSKEY,
+    )
+
+
+def _owner_authority(
+    *,
+    session_id: str,
+    run_id: str,
+    approval_id: str,
+    choice: str,
+    capability_epoch_sha256: str,
+    nonce: str = "a" * 32,
+    issued_at: int | None = None,
+    expires_at: int | None = None,
+) -> dict:
+    issued_at = int(time.time()) if issued_at is None else issued_at
+    expires_at = issued_at + 60 if expires_at is None else expires_at
+    authority = {
+        "schema": "hermes.api.approval-owner-authority.v1",
+        "nonce": nonce,
+        "issued_at_unix": issued_at,
+        "expires_at_unix": expires_at,
+        "capability_epoch_sha256": capability_epoch_sha256,
+    }
+    payload = APIServerAdapter._api_approval_authority_payload(
+        session_id=session_id,
+        run_id=run_id,
+        approval_id=approval_id,
+        choice=choice,
+        nonce=nonce,
+        issued_at_unix=issued_at,
+        expires_at_unix=expires_at,
+        capability_epoch_sha256=capability_epoch_sha256,
+    )
+    authority["signature"] = hmac.new(
+        OWNER_PASSKEY.encode(),
+        json.dumps(
+            payload,
+            sort_keys=True,
+            separators=(",", ":"),
+            ensure_ascii=True,
+        ).encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return authority
 
 
 # ---------------------------------------------------------------------------
@@ -340,10 +399,10 @@ class TestRunEvents:
 
 
     @pytest.mark.asyncio
-    async def test_approval_response_without_pending_returns_409(self, adapter):
-        app = _create_runs_app(adapter)
+    async def test_approval_response_without_pending_returns_409(self, auth_adapter):
+        app = _create_runs_app(auth_adapter)
         async with TestClient(TestServer(app)) as cli:
-            with patch.object(adapter, "_create_agent") as mock_create:
+            with patch.object(auth_adapter, "_create_agent") as mock_create:
                 mock_agent = MagicMock()
                 mock_agent.run_conversation.return_value = {"final_response": "done"}
                 mock_agent.session_prompt_tokens = 0
@@ -351,13 +410,21 @@ class TestRunEvents:
                 mock_agent.session_total_tokens = 0
                 mock_create.return_value = mock_agent
 
-                resp = await cli.post("/v1/runs", json={"input": "hello"})
+                resp = await cli.post(
+                    "/v1/runs",
+                    json={"input": "hello", "session_id": "no-pending"},
+                    headers=AUTH_HEADERS,
+                )
                 data = await resp.json()
                 run_id = data["run_id"]
 
                 approval_resp = await cli.post(
                     f"/v1/runs/{run_id}/approval",
-                    json={"choice": "once"},
+                    json={"approval_id": "1" * 32, "choice": "deny"},
+                    headers={
+                        **AUTH_HEADERS,
+                        "X-Hermes-Session-Id": "no-pending",
+                    },
                 )
                 assert approval_resp.status == 409
                 approval_data = await approval_resp.json()
@@ -367,96 +434,178 @@ class TestRunEvents:
                 }
 
     @pytest.mark.asyncio
-    async def test_approval_string_false_does_not_resolve_all(self, adapter):
-        """Quoted false must not fan out approval resolution across the queue."""
-        app = _create_runs_app(adapter)
+    async def test_approval_alias_and_blanket_fields_are_rejected(self, auth_adapter):
+        """Text aliases and resolve-all fields never become approval authority."""
+        app = _create_runs_app(auth_adapter)
         run_id = "run_bool_parse"
-        adapter._run_statuses[run_id] = {"run_id": run_id, "status": "running"}
-        adapter._run_approval_sessions[run_id] = "session-123"
-
-        async with TestClient(TestServer(app)) as cli:
-            with patch("tools.approval.resolve_gateway_approval", return_value=1) as mock_resolve:
-                approval_resp = await cli.post(
-                    f"/v1/runs/{run_id}/approval",
-                    json={"choice": "once", "all": "false"},
-                )
-
-        assert approval_resp.status == 200
-        mock_resolve.assert_called_once_with(
-            "session-123",
-            "once",
-            resolve_all=False,
+        session_id = "session-123"
+        epoch = "1" * 64
+        entry = approval_mod._ApprovalEntry(
+            {
+                "command": "rm -rf /tmp/example",
+                "allow_permanent": True,
+            },
+            capability_epoch_sha256=epoch,
         )
+        auth_adapter._run_statuses[run_id] = {
+            "run_id": run_id,
+            "session_id": session_id,
+            "status": "running",
+        }
+        auth_adapter._run_approval_sessions[run_id] = run_id
+        with approval_mod._lock:
+            approval_mod._gateway_queues[run_id] = [entry]
+
+        try:
+            async with TestClient(TestServer(app)) as cli:
+                alias = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={
+                        "approval_id": entry.approval_id,
+                        "choice": "approve",
+                    },
+                    headers={
+                        **AUTH_HEADERS,
+                        "X-Hermes-Session-Id": session_id,
+                    },
+                )
+                assert alias.status == 400
+                blanket = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={
+                        "approval_id": entry.approval_id,
+                        "choice": "deny",
+                        "resolve_all": True,
+                    },
+                    headers={
+                        **AUTH_HEADERS,
+                        "X-Hermes-Session-Id": session_id,
+                    },
+                )
+                assert blanket.status == 400
+            assert not entry.event.is_set()
+        finally:
+            with approval_mod._lock:
+                approval_mod._gateway_queues.pop(run_id, None)
 
     @pytest.mark.asyncio
-    async def test_approval_resolve_all_is_scoped_to_target_run(self, auth_adapter):
-        """Same client session_id must not let one run approve another run's queue."""
+    async def test_run_approval_is_exact_owner_bound_and_out_of_order(self, auth_adapter):
+        """Exact run/session/id proof resolves one sibling and never FIFO-falls back."""
         app = _create_runs_app(auth_adapter)
-        async with TestClient(TestServer(app)) as cli:
-            with patch.object(auth_adapter, "_create_agent") as mock_create:
-                victim_agent, victim_ready, victim_interrupted = _make_slow_agent()
-                attacker_agent, attacker_ready, attacker_interrupted = _make_slow_agent()
-                mock_create.side_effect = [victim_agent, attacker_agent]
+        run_id = "run_exact_owner"
+        session_id = "shared-project"
+        epoch = "2" * 64
+        first = approval_mod._ApprovalEntry(
+            {
+                "command": "bash -c first-danger",
+                "description": "first approval",
+                "pattern_keys": ["shell-c"],
+                "allow_permanent": True,
+            },
+            capability_epoch_sha256=epoch,
+        )
+        second = approval_mod._ApprovalEntry(
+            {
+                "command": "bash -c second-danger",
+                "description": "second approval",
+                "pattern_keys": ["shell-c"],
+                "allow_permanent": True,
+            },
+            capability_epoch_sha256=epoch,
+        )
+        auth_adapter._run_statuses[run_id] = {
+            "run_id": run_id,
+            "session_id": session_id,
+            "status": "waiting_for_approval",
+        }
+        auth_adapter._run_approval_sessions[run_id] = run_id
+        with approval_mod._lock:
+            approval_mod._gateway_queues[run_id] = [first, second]
 
-                victim_resp = await cli.post(
-                    "/v1/runs",
-                    json={"input": "victim", "session_id": "shared-project"},
-                    headers={"Authorization": "Bearer sk-secret"},
+        authority = _owner_authority(
+            session_id=session_id,
+            run_id=run_id,
+            approval_id=second.approval_id,
+            choice="once",
+            capability_epoch_sha256=epoch,
+        )
+        headers = {
+            **AUTH_HEADERS,
+            "X-Hermes-Session-Id": session_id,
+        }
+        try:
+            async with TestClient(TestServer(app)) as cli:
+                cross_session = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"approval_id": second.approval_id, "choice": "deny"},
+                    headers={
+                        **AUTH_HEADERS,
+                        "X-Hermes-Session-Id": "another-session",
+                    },
                 )
-                attacker_resp = await cli.post(
-                    "/v1/runs",
-                    json={"input": "attacker", "session_id": "shared-project"},
-                    headers={"Authorization": "Bearer sk-secret"},
+                assert cross_session.status == 404
+
+                generic_grant = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"approval_id": second.approval_id, "choice": "once"},
+                    headers=headers,
                 )
-                assert victim_resp.status == 202
-                assert attacker_resp.status == 202
-                victim_run = (await victim_resp.json())["run_id"]
-                attacker_run = (await attacker_resp.json())["run_id"]
+                assert generic_grant.status == 403
 
-                victim_ready.wait(timeout=3.0)
-                attacker_ready.wait(timeout=3.0)
-                assert auth_adapter._run_approval_sessions[victim_run] == victim_run
-                assert auth_adapter._run_approval_sessions[attacker_run] == attacker_run
-                assert auth_adapter._run_approval_sessions[victim_run] != auth_adapter._run_approval_sessions[attacker_run]
-
-                victim_entry = approval_mod._ApprovalEntry({
-                    "command": "bash -c victim-danger",
-                    "description": "victim approval",
-                    "pattern_keys": ["shell-c"],
-                })
-                attacker_entry = approval_mod._ApprovalEntry({
-                    "command": "bash -c attacker-danger",
-                    "description": "attacker approval",
-                    "pattern_keys": ["shell-c"],
-                })
-                with approval_mod._lock:
-                    approval_mod._gateway_queues[victim_run] = [victim_entry]
-                    approval_mod._gateway_queues[attacker_run] = [attacker_entry]
-
-                approval_resp = await cli.post(
-                    f"/v1/runs/{attacker_run}/approval",
-                    json={"choice": "always", "resolve_all": True},
-                    headers={"Authorization": "Bearer sk-secret"},
+                wrong_run_proof = dict(authority)
+                wrong_run_proof["signature"] = _owner_authority(
+                    session_id=session_id,
+                    run_id="run_other",
+                    approval_id=second.approval_id,
+                    choice="once",
+                    capability_epoch_sha256=epoch,
+                )["signature"]
+                wrong_run = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={
+                        "approval_id": second.approval_id,
+                        "choice": "once",
+                        "owner_authority": wrong_run_proof,
+                    },
+                    headers=headers,
                 )
-                approval_data = await approval_resp.json()
+                assert wrong_run.status == 403
 
-                assert approval_resp.status == 200
-                assert approval_data["resolved"] == 1
-                assert attacker_entry.result == "always"
-                assert attacker_entry.event.is_set()
-                assert victim_entry.result is None
-                assert not victim_entry.event.is_set()
-                with approval_mod._lock:
-                    assert approval_mod._gateway_queues[victim_run] == [victim_entry]
-                    assert victim_run in approval_mod._gateway_queues
-                    assert attacker_run not in approval_mod._gateway_queues
+                resolved = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={
+                        "approval_id": second.approval_id,
+                        "choice": "once",
+                        "owner_authority": authority,
+                    },
+                    headers=headers,
+                )
+                assert resolved.status == 200
+                payload = await resolved.json()
+                assert payload["approval_id"] == second.approval_id
+                assert second.event.is_set()
+                assert second.result == "once"
+                assert not first.event.is_set()
 
-                # Clean up the synthetic pending victim approval and unblock the
-                # slow test agents so their background run tasks can finish.
-                with approval_mod._lock:
-                    approval_mod._gateway_queues.pop(victim_run, None)
-                victim_interrupted.set()
-                attacker_interrupted.set()
+                stale = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"approval_id": second.approval_id, "choice": "deny"},
+                    headers=headers,
+                )
+                assert stale.status == 409
+                assert not first.event.is_set()
+
+                denied = await cli.post(
+                    f"/v1/runs/{run_id}/approval",
+                    json={"approval_id": first.approval_id, "choice": "deny"},
+                    headers=headers,
+                )
+                assert denied.status == 200
+                assert first.event.is_set()
+                assert first.result == "deny"
+        finally:
+            with approval_mod._lock:
+                approval_mod._gateway_queues.pop(run_id, None)
 
 
     @pytest.mark.asyncio

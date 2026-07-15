@@ -1124,6 +1124,7 @@ def test_systemd_bundle_rejects_installable_temporary_exporter():
     value = {
         "schema": activation.SYSTEMD_BUNDLE_SCHEMA,
         "writer_service": "[Service]\nType=notify\n",
+        "phase_b_readiness_service": "[Service]\nType=oneshot\n",
         "gateway_service": "[Service]\nType=notify\n",
         "exporter_service": "[Service]\nType=oneshot\n[Install]\n",
         "tmpfiles": "d /run/x 0700 root root - -\n",

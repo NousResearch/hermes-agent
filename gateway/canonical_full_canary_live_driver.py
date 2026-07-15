@@ -5,23 +5,23 @@ The runtime lifecycle owns systemd installation/start/stop.  This module owns
 only the live observation which cannot be fabricated by an offline fixture:
 
 * a one-shot API session key is selected before the plan is built and only its
-  digest is staged in the privileged writer configuration;
+  digest is staged in the sealed canary fixture;
 * a root AF_UNIX collector authenticates the gateway MainPID with
   ``SO_PEERCRED`` and maintains an append-only frame hash chain;
 * the exact fixture prompt is submitted through the authenticated loopback API
   without a system-message override;
 * the Discord edge journal is logically identical across the deliberately
   invalid private-target probe;
-* the writer's reviewed one-shot projection exporter supplies post-revocation
-  Canonical truth, and the edge journal supplies the signed public request and
-  receipt; and
+* the writer's reviewed projection exporter supplies Canonical Task Workspace
+  and append-only event-log truth, and the edge journal supplies the signed
+  public request and receipt; and
 * evidence is written only at the plan-addressed root-owned path and passed to
   the packaged offline verifier before services are stopped in reverse order.
 
 There is no Discord ingress claim here.  The source is explicitly the
 authenticated loopback API.  This module contains no keyword classifier,
 semantic router, task decomposition, or external effort choice.  The model
-authors plan steps, criteria, revisions, decisions, and the adaptive xhigh
+authors plan steps, criteria, revisions, decisions, and the adaptive max
 directive; this driver checks mechanical identities, state transitions, and
 receipts only.
 """
@@ -49,6 +49,8 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from gateway.canonical_full_canary_e2e import (
+    CANONICAL_EVENT_LOG_RECEIPT_SCHEMA,
+    CANONICAL_TASK_WORKSPACE_RECEIPT_SCHEMA,
     CANONICAL_TRUTH_RECEIPT_SCHEMA,
     EVIDENCE_SCHEMA,
     MODEL_CALL_RECEIPT_SCHEMA,
@@ -63,7 +65,6 @@ from gateway.canonical_full_canary_runtime import (
     COLLECTOR_READINESS_SCHEMA,
     DEFAULT_API_SERVER_CONTROL_KEY,
     DEFAULT_APPROVAL_PATH,
-    DEFAULT_CANARY_PRECLAIM_RECONCILIATION_PATH,
     DEFAULT_COLLECTOR_READINESS_PATH,
     DEFAULT_COLLECTOR_SOCKET,
     DEFAULT_EDGE_READINESS_PATH,
@@ -71,20 +72,15 @@ from gateway.canonical_full_canary_runtime import (
     FULL_CANARY_RECEIPT_SCHEMA,
     PLUGIN_FRAME_SCHEMA,
     PLUGIN_READINESS_SCHEMA,
-    BootstrapProvisioner,
     CollectorReadiness,
     FullCanaryLifecycle,
     FullCanaryOwnerApproval,
     FullCanaryPlan,
     _api_loopback_listener_identity,
-    _validate_canary_preclaim_reconciliation_value,
     _validated_e2e_fixture,
-    canonical_canary_bootstrap_authorization_sha256,
     expected_live_evidence_path,
     load_full_canary_approval,
     load_start_receipt,
-    observe_canary_preclaim_reconciliation_generation,
-    validate_canary_preclaim_reconciliation_receipt,
 )
 from gateway.canonical_writer_activation import ActivationExecutor, ActivationPlan
 from gateway.canonical_writer_boundary import (
@@ -232,16 +228,6 @@ def _utc_ms(value: Any, code: str) -> int:
     if parsed.tzinfo is None or parsed.utcoffset() != dt.timedelta(0):
         _fail(code)
     return int(parsed.timestamp() * 1000)
-
-
-def _fixture_expiry_iso(fixture: Mapping[str, Any]) -> str:
-    value = fixture.get("valid_until_unix_ms")
-    if type(value) is not int or value <= 0:
-        _fail("fixture_expiry_invalid")
-    return dt.datetime.fromtimestamp(
-        value / 1000,
-        tz=dt.timezone.utc,
-    ).isoformat(timespec="milliseconds")
 
 
 def _stable_read(
@@ -490,7 +476,13 @@ def _reconcile_existing_staged_writer_config(
     gid: int,
     reconciler: PrestageReconciler | None,
 ) -> str | None:
-    """Preserve an interrupted plan source until fresh DB retirement proof."""
+    """Require mechanical stopped-service proof before replacing stale input.
+
+    The callback is intentionally unable to authorize a model operation.  It
+    may prove only that the old staged file is no longer consumed by a live
+    service.  Canonical meaning, approval, and task routing never enter this
+    boundary.
+    """
 
     if not os.path.lexists(path):
         return None
@@ -503,44 +495,22 @@ def _reconcile_existing_staged_writer_config(
     original_sha256 = _sha256_bytes(original_raw)
     if original_raw == payload:
         return original_sha256
-    config = _decode_existing_staged_writer_config(original_raw)
-    service = config.get("service")
-    scope = config.get("canary_scope_preapproval")
-    if (
-        reconciler is None
-        or not isinstance(service, Mapping)
-        or type(service.get("writer_uid")) is not int
-        or service.get("writer_uid", 0) <= 0
-        or service.get("writer_gid") != gid
-        or not isinstance(scope, Mapping)
-    ):
+    _decode_existing_staged_writer_config(original_raw)
+    if reconciler is None:
         _fail("staged_writer_config_unreconciled")
     try:
-        prior_receipt_generation = (
-            observe_canary_preclaim_reconciliation_generation(
-                DEFAULT_CANARY_PRECLAIM_RECONCILIATION_PATH
-            )
-        )
         durable = reconciler()
-        if durable is None:
-            validate_canary_preclaim_reconciliation_receipt(
-                source_config_path=path,
-                source_config_raw=original_raw,
-                writer_config=config,
-                writer_uid=service["writer_uid"],
-                writer_gid=gid,
-                allowed_outcomes=frozenset({"retired", "claimed"}),
-                prior_generation=prior_receipt_generation,
-                require_fresh_generation=True,
-            )
-        else:
-            _validate_canary_preclaim_reconciliation_value(
-                durable,
-                source_config_path=path,
-                source_config_raw=original_raw,
-                writer_config=config,
-                allowed_outcomes=frozenset({"retired", "claimed"}),
-            )
+        if (
+            not isinstance(durable, Mapping)
+            or set(durable)
+            != {"schema", "staged_path", "stale_sha256", "services_stopped"}
+            or durable.get("schema")
+            != "muncho-full-canary-stale-artifact-clearance.v1"
+            or durable.get("staged_path") != str(path)
+            or durable.get("stale_sha256") != original_sha256
+            or durable.get("services_stopped") is not True
+        ):
+            _fail("staged_writer_config_unreconciled")
     except Exception as exc:
         raise LiveCanaryError("staged_writer_config_unreconciled") from exc
     current_raw, current = _read_staged_writer_config(
@@ -689,6 +659,7 @@ class SessionBoundPlan:
         "_plan",
         "_session_key",
         "_session_key_sha256",
+        "_fixture_sha256",
         "_writer_config_sha256",
     )
 
@@ -697,6 +668,7 @@ class SessionBoundPlan:
         *,
         session_key: str,
         session_key_sha256: str,
+        fixture_sha256: str,
         writer_config_sha256: str,
         plan: FullCanaryPlan,
         approval: FullCanaryOwnerApproval,
@@ -707,6 +679,10 @@ class SessionBoundPlan:
         self._session_key_sha256 = _digest(
             session_key_sha256,
             "session_key_digest_invalid",
+        )
+        self._fixture_sha256 = _digest(
+            fixture_sha256,
+            "fixture_digest_invalid",
         )
         self._writer_config_sha256 = _digest(
             writer_config_sha256,
@@ -735,6 +711,10 @@ class SessionBoundPlan:
     @property
     def writer_config_sha256(self) -> str:
         return self._writer_config_sha256
+
+    @property
+    def fixture_sha256(self) -> str:
+        return self._fixture_sha256
 
     @property
     def plan(self) -> FullCanaryPlan:
@@ -769,6 +749,7 @@ class SessionBoundPlan:
         return (
             "SessionBoundPlan("
             f"session_key_sha256={self.session_key_sha256!r}, "
+            f"fixture_sha256={self.fixture_sha256!r}, "
             f"writer_config_sha256={self.writer_config_sha256!r}, "
             f"plan={self.plan!r}, approval={self.approval!r}, "
             f"consumed={self.consumed!r})"
@@ -784,25 +765,35 @@ def prepare_session_bound_plan(
     writer_config: Mapping[str, Any],
     fixture: Mapping[str, Any],
     writer_gid: int,
-    bootstrap_sql_sha256: str,
-    bootstrap_retire_sql_sha256: str,
     staged_writer_config: Path,
+    staged_fixture: Path,
+    fixture_gid: int,
     plan_builder: PlanBuilder,
     approval_provider: ApprovalProvider,
     session_key_factory: Callable[[], str] = lambda: secrets.token_urlsafe(32),
     writer: Callable[..., None] = _atomic_stage_writer_config,
+    fixture_writer: Callable[..., None] = _atomic_stage_writer_config,
     prestage_reconciler: PrestageReconciler | None = None,
     process_guard: Callable[[], None] = _require_root_linux,
 ) -> SessionBoundPlan:
-    """Stage the final session digest before building and approving the plan.
+    """Bind a one-shot API session digest before plan construction/approval.
 
     ``approval_provider`` is deliberately called only after ``plan_builder``.
     It represents the separate owner-approval gate and cannot be replaced by
     this function.  The raw session key never enters JSON, a plan, or a
     receipt; the returned object keeps it in memory for the one live request.
+    The writer configuration is staged byte-for-byte without a semantic canary
+    scope.  Only the sealed fixture receives ``api_session_key_sha256``.
     """
 
     process_guard()
+    if (
+        type(writer_gid) is not int
+        or writer_gid <= 0
+        or type(fixture_gid) is not int
+        or fixture_gid <= 0
+    ):
+        _fail("staged_artifact_identity_invalid")
     raw_key = session_key_factory()
     if (
         not isinstance(raw_key, str)
@@ -813,22 +804,15 @@ def prepare_session_bound_plan(
         _fail("session_key_invalid")
     session_digest = _sha256_bytes(raw_key.encode("utf-8", errors="strict"))
     config = copy.deepcopy(dict(writer_config))
-    scope = config.get("canary_scope_preapproval")
-    if not isinstance(scope, Mapping):
-        _fail("writer_scope_missing")
-    clean_scope = dict(scope)
-    clean_scope["session_key_sha256"] = session_digest
-    clean_scope["expires_at"] = _fixture_expiry_iso(fixture)
-    config["canary_scope_preapproval"] = clean_scope
-    clean_scope["provisioning_receipt_sha256"] = (
-        canonical_canary_bootstrap_authorization_sha256(
-            config,
-            bootstrap_sql_sha256=bootstrap_sql_sha256,
-            bootstrap_retire_sql_sha256=bootstrap_retire_sql_sha256,
-        )
-    )
     payload = _canonical_bytes(config)
-    if raw_key.encode("utf-8") in payload:
+    base_fixture = copy.deepcopy(dict(fixture))
+    if "api_session_key_sha256" in base_fixture:
+        _fail("fixture_session_binding_already_present")
+    bound_fixture = copy.deepcopy(base_fixture)
+    bound_fixture["api_session_key_sha256"] = session_digest
+    base_fixture_payload = _canonical_bytes(base_fixture)
+    fixture_payload = _canonical_bytes(bound_fixture)
+    if raw_key.encode("utf-8") in payload or raw_key.encode("utf-8") in fixture_payload:
         _fail("raw_session_key_persistence_forbidden")
     expected_existing_sha256 = _reconcile_existing_staged_writer_config(
         staged_writer_config,
@@ -847,11 +831,36 @@ def prepare_session_bound_plan(
         expected_existing_sha256=expected_existing_sha256,
     )
     writer_digest = _sha256_bytes(payload)
+    expected_fixture_sha256: str | None = None
+    if os.path.lexists(staged_fixture):
+        existing_fixture_raw, _existing_fixture = _read_staged_writer_config(
+            staged_fixture,
+            mode=0o440,
+            uid=0,
+            gid=fixture_gid,
+        )
+        if existing_fixture_raw == fixture_payload:
+            expected_fixture_sha256 = None
+        elif existing_fixture_raw == base_fixture_payload:
+            expected_fixture_sha256 = _sha256_bytes(existing_fixture_raw)
+        else:
+            _fail("staged_fixture_unreconciled")
+    fixture_writer(
+        staged_fixture,
+        fixture_payload,
+        mode=0o440,
+        uid=0,
+        gid=fixture_gid,
+        expected_existing_sha256=expected_fixture_sha256,
+    )
+    fixture_digest = _sha256_bytes(fixture_payload)
     plan = plan_builder()
     if (
         not isinstance(plan, FullCanaryPlan)
         or plan.artifacts["writer_config"].source_path != staged_writer_config
         or plan.artifacts["writer_config"].sha256 != writer_digest
+        or plan.artifacts["e2e_fixture"].source_path != staged_fixture
+        or plan.artifacts["e2e_fixture"].sha256 != fixture_digest
     ):
         _fail("session_bound_plan_drifted")
     approval = approval_provider(plan)
@@ -861,6 +870,7 @@ def prepare_session_bound_plan(
     return SessionBoundPlan(
         session_key=raw_key,
         session_key_sha256=session_digest,
+        fixture_sha256=fixture_digest,
         writer_config_sha256=writer_digest,
         plan=plan,
         approval=approval,
@@ -2061,7 +2071,7 @@ def _validate_live_readback(
     payload: Mapping[str, Any],
     projection_events: Sequence[Mapping[str, Any]],
 ) -> tuple[bool, list[str]]:
-    """Validate the real pre-revocation resume bundle against projection."""
+    """Validate the real resume bundle against the exact exported projection."""
 
     if set(readback) != _READBACK_FIELDS:
         _fail("canonical_live_readback_invalid")
@@ -2110,73 +2120,9 @@ def _validate_live_readback(
         projected = projection_by_id.get(event_id)
         if projected is None or _sha256_json(projected) != _sha256_json(item):
             _fail("canonical_live_readback_projection_drift")
-    post_readback = [
-        item
-        for event_id, item in projection_by_id.items()
-        if event_id not in readback_by_id
-    ]
-    if (
-        len(post_readback) != 1
-        or post_readback[0].get("event_type") != "canary.scope.revoked"
-    ):
+    if set(readback_by_id) != set(projection_by_id):
         _fail("canonical_live_readback_projection_drift")
     return support_incomplete, list(missing)
-
-
-def _normalize_scope_events(
-    events: Sequence[Mapping[str, Any]],
-) -> tuple[list[Mapping[str, Any]], Mapping[str, Any]]:
-    expected = (
-        ("canary.scope.preapproved", "canary_scope_preapproval"),
-        ("canary.scope.claimed", "canary_scope_claim"),
-        ("canary.scope.revoked", "canary_scope_revocation"),
-    )
-    normalized: list[Mapping[str, Any]] = []
-    for event_type, payload_key in expected:
-        matches = [value for value in events if value.get("event_type") == event_type]
-        if len(matches) != 1:
-            _fail("canonical_scope_event_cardinality_invalid")
-        raw = matches[0]
-        scope = dict(_event_payload(raw, payload_key))
-        if event_type in {"canary.scope.preapproved", "canary.scope.claimed"}:
-            expires_at = scope.pop("expires_at", None)
-            scope["expires_at_unix_ms"] = _utc_ms(
-                expires_at,
-                "canonical_scope_expiry_invalid",
-            )
-        if event_type == "canary.scope.revoked":
-            safety = raw.get("safety")
-            if not isinstance(safety, Mapping):
-                _fail("canonical_scope_tombstone_receipt_missing")
-            scope["session_tombstone_recorded"] = safety.get(
-                "session_tombstone_recorded"
-            )
-        normalized.append({
-            "event_id": raw.get("event_id"),
-            "event_type": event_type,
-            "case_id": raw.get("case_id"),
-            "occurred_at_unix_ms": _utc_ms(
-                raw.get("occurred_at"),
-                "canonical_scope_time_invalid",
-            ),
-            "readback_verified": True,
-            "canonical_content_sha256": _event_digest(raw),
-            "scope": scope,
-        })
-    revoked = normalized[-1]
-    revoked_scope = revoked["scope"]
-    retirement = {
-        "grant_id": revoked_scope["grant_id"],
-        "session_key_sha256": revoked_scope["session_key_sha256"],
-        "capability_epoch_sha256": revoked_scope["capability_epoch_sha256"],
-        "authority_active": False,
-        "revocation_event_id": revoked["event_id"],
-        "session_tombstone_commit_receipt_verified": (
-            revoked_scope.get("session_tombstone_recorded") is True
-        ),
-        "observed_at_unix_ms": revoked["occurred_at_unix_ms"],
-    }
-    return normalized, retirement
 
 
 def _normalize_plan_events(
@@ -2433,7 +2379,7 @@ def _normalize_reasoning_directive(
     frame = matches[0]
     payload = frame["payload"]
     directive = payload["reasoning_directive"]
-    if directive.get("effort") != "xhigh":
+    if directive.get("effort") != "max":
         _fail("model_reasoning_directive_invalid")
     return {
         "schema": REASONING_RECEIPT_SCHEMA,
@@ -2495,19 +2441,27 @@ def assemble_live_evidence(
     startup = [item.value.get("event") for item in frames[:4]]
     if startup != [
         "plugin_ready",
-        "canonical_scope_claim",
+        "api_session_bound",
         "private_target_probe_ready",
         "private_target_probe_result",
     ]:
         _fail("collector_startup_sequence_invalid")
-    claim_frame = frames[1].value
-    claim = claim_frame.get("payload")
-    if not isinstance(claim, Mapping) or claim.get("success") is not True:
-        _fail("canonical_scope_claim_failed")
+    session_binding_frame = frames[1].value
+    session_binding = session_binding_frame.get("payload")
+    if (
+        not isinstance(session_binding, Mapping)
+        or session_binding.get("success") is not True
+        or session_binding.get("session_key_sha256")
+        != fixture.get("api_session_key_sha256")
+        or session_binding.get("fixture_sha256") != fixture_sha256
+    ):
+        _fail("api_session_binding_failed")
     first_pre = _frame_values(frames, "pre_api_request")
     if not first_pre:
         _fail("model_call_evidence_incomplete")
-    session_id = _safe_id(claim_frame.get("session_id"), "session_binding_invalid")
+    session_id = _safe_id(
+        session_binding_frame.get("session_id"), "session_binding_invalid"
+    )
     turn_id = _safe_id(first_pre[0].get("turn_id"), "turn_binding_invalid")
     if conversation.session_id != session_id:
         _fail("api_plugin_session_mismatch")
@@ -2541,7 +2495,6 @@ def assemble_live_evidence(
         payload=readback_payload,
         projection_events=case_events,
     )
-    scope_events, retirement = _normalize_scope_events(case_events)
     plan_events, completion_receipts = _normalize_plan_events(case_events)
     final_plan = plan_events[-1]["plan"]
     verification_events = _normalize_verification_events(
@@ -2568,6 +2521,44 @@ def assemble_live_evidence(
     ):
         _fail("canonical_live_readback_incomplete")
     routeback_event = _normalize_routeback_event(case_events, fixture)
+    event_receipts = [
+        {
+            "event_id": value.get("event_id"),
+            "event_type": value.get("event_type"),
+            "canonical_content_sha256": _event_digest(value),
+        }
+        for value in case_events
+    ]
+    event_log_receipt = {
+        "schema": CANONICAL_EVENT_LOG_RECEIPT_SCHEMA,
+        "case_id": fixture["case_id"],
+        "fixture_sha256": fixture_sha256,
+        "event_count": len(event_receipts),
+        "event_receipts": event_receipts,
+        "event_receipts_sha256": _sha256_json({"events": event_receipts}),
+        "canonical_projection_sha256": _sha256_json(case_events),
+        "live_readback_sha256": readback_payload.get("readback_sha256"),
+        "readback_verified": True,
+    }
+    task_workspace_receipt = {
+        "schema": CANONICAL_TASK_WORKSPACE_RECEIPT_SCHEMA,
+        "case_id": fixture["case_id"],
+        "plan_id": final_plan["plan_id"],
+        "final_plan_revision": final_plan["revision"],
+        "final_state": final_plan["state"],
+        "plan_event_ids": [item["event_id"] for item in plan_events],
+        "verification_event_ids": [
+            item["event_id"] for item in verification_events
+        ],
+        "routeback_event_id": routeback_event["event_id"],
+        "completion_receipts_satisfied": completion_receipts_satisfied,
+        "readback_verified": True,
+        "workspace_sha256": _sha256_json({
+            "plan_events": plan_events,
+            "verification_events": verification_events,
+            "routeback_event": routeback_event,
+        }),
+    }
     model_calls = _normalize_model_calls(
         frames,
         fixture=fixture,
@@ -2606,7 +2597,6 @@ def assemble_live_evidence(
     )
     if not fixture["valid_from_unix_ms"] <= now_ms <= fixture["valid_until_unix_ms"]:
         _fail("evidence_collection_outside_fixture_window")
-    retirement = {**dict(retirement), "observed_at_unix_ms": now_ms}
     tool_frames = _frame_values(frames, "post_tool_call")
     final_content = conversation.assistant_completed.get("content")
     if not isinstance(final_content, str) or not final_content:
@@ -2647,8 +2637,7 @@ def assemble_live_evidence(
             "api_message_id": conversation.api_message_id,
             "loopback_peer_verified": True,
             "credential_provenance_receipt_sha256": (credential_provenance_sha256),
-            "session_key_sha256": claim.get("session_key_sha256"),
-            "capability_epoch_sha256": claim.get("capability_epoch_sha256"),
+            "session_key_sha256": session_binding.get("session_key_sha256"),
             "message_content_sha256": fixture["task_policy"]["prompt_sha256"],
             "observed_at_unix_ms": conversation.observed_at_unix_ms,
         },
@@ -2668,8 +2657,8 @@ def assemble_live_evidence(
             "plan_projection_complete": plan_projection_complete,
             "completion_receipts_satisfied": completion_receipts_satisfied,
             "missing_verification_event_ids": missing_verification_ids,
-            "scope_events": scope_events,
-            "scope_retirement": retirement,
+            "event_log_receipt": event_log_receipt,
+            "task_workspace_receipt": task_workspace_receipt,
             "plan_events": plan_events,
             "verification_events": verification_events,
             "routeback_event": routeback_event,
@@ -2774,7 +2763,6 @@ class HonestFullCanaryDriver:
         prepared: SessionBoundPlan,
         *,
         lifecycle_factory: LifecycleFactory | None = None,
-        bootstrap_provisioner: BootstrapProvisioner | None = None,
         collector_factory: CollectorFactory = RootEvidenceCollector,
         client_factory: ClientFactory = lambda control, session: LoopbackCanaryClient(
             control_key=control,
@@ -2794,19 +2782,8 @@ class HonestFullCanaryDriver:
     ) -> None:
         if not isinstance(prepared, SessionBoundPlan):
             raise TypeError("session-bound full-canary plan is required")
-        if lifecycle_factory is not None and bootstrap_provisioner is not None:
-            raise TypeError(
-                "full-canary lifecycle factory and bootstrap provisioner "
-                "are mutually exclusive"
-            )
-        if bootstrap_provisioner is not None and any(
-            not callable(getattr(bootstrap_provisioner, name, None))
-            for name in ("provision", "reconcile", "abort")
-        ):
-            raise TypeError("full-canary bootstrap provisioner contract is invalid")
         self.prepared = prepared
         self._lifecycle_factory = lifecycle_factory
-        self._bootstrap_provisioner = bootstrap_provisioner
         self._collector_factory = collector_factory
         self._client_factory = client_factory
         self._control_key_reader = control_key_reader
@@ -2816,76 +2793,25 @@ class HonestFullCanaryDriver:
         self._root_guard = root_guard
 
     def run(self) -> Mapping[str, Any]:
-        result: Mapping[str, Any] | None = None
-        primary: BaseException | None = None
         try:
-            try:
-                self._root_guard()
-            except BaseException:
-                # Process hardening must precede local secret use.  If that
-                # gate itself fails, retire the caller-owned key without
-                # reading it so even the earliest failure cannot leave
-                # reusable authority.
-                self.prepared.discard_session_key()
-                raise
-            session_key = self.prepared.consume_session_key()
-            try:
-                result = self._run_consumed(session_key)
-            finally:
-                # The caller-owned holder was already cleared atomically; drop
-                # the driver's last wrapper reference regardless of
-                # validation/start.
-                session_key = None
-        except BaseException as exc:
-            primary = exc
-        provisioner = self._bootstrap_provisioner
-        # The driver must never retain the owner-operated admin boundary after
-        # this one attempt, including root-guard and fixture failures before a
-        # lifecycle exists.  The concrete provisioner makes abort idempotent,
-        # so this also safely closes sessions already retired by lifecycle.
-        self._bootstrap_provisioner = None
-        abort_error: BaseException | None = None
-        if provisioner is not None:
-            try:
-                provisioner.abort()
-            except BaseException as first_abort_error:
-                # The provisioner contract is idempotent and the concrete
-                # session marks itself closed only after close succeeds.  One
-                # bounded retry covers a transient close failure even when the
-                # driver failed before lifecycle.start() could perform its own
-                # cleanup.
-                try:
-                    provisioner.abort()
-                except BaseException as second_abort_error:
-                    abort_error = ExceptionGroup(
-                        "bootstrap admin-session abort retries failed",
-                        [first_abort_error, second_abort_error],
-                    )
-        if primary is not None and abort_error is not None:
-            raise ExceptionGroup(
-                "full-canary live run and bootstrap admin-session abort failed",
-                [primary, abort_error],
-            ) from None
-        if primary is not None:
-            raise primary
-        if abort_error is not None:
-            raise abort_error
-        if result is None:
-            raise RuntimeError("full-canary live run produced no result")
-        return result
+            self._root_guard()
+        except BaseException:
+            # Process hardening must precede local secret use.  If that gate
+            # itself fails, retire the caller-owned key without reading it.
+            self.prepared.discard_session_key()
+            raise
+        session_key = self.prepared.consume_session_key()
+        try:
+            return self._run_consumed(session_key)
+        finally:
+            # The holder was cleared atomically; drop the last wrapper
+            # reference regardless of validation/start.
+            session_key = None
 
     def _lifecycle(self, plan: FullCanaryPlan) -> FullCanaryLifecycle:
         if self._lifecycle_factory is not None:
             return self._lifecycle_factory(plan)
-        if self._bootstrap_provisioner is None:
-            # FullCanaryLifecycle's own default is deliberately blocked.  A
-            # live database bootstrap is impossible unless the owner passes an
-            # already-open provisioner explicitly.
-            return FullCanaryLifecycle(plan)
-        return FullCanaryLifecycle(
-            plan,
-            bootstrap_provisioner=self._bootstrap_provisioner,
-        )
+        return FullCanaryLifecycle(plan)
 
     def _run_consumed(self, session_key: str) -> Mapping[str, Any]:
         plan = self.prepared.plan
@@ -2893,6 +2819,10 @@ class HonestFullCanaryDriver:
         if (
             self.prepared.session_key_sha256
             != _sha256_bytes(session_key.encode("utf-8"))
+            or fixture.get("api_session_key_sha256")
+            != self.prepared.session_key_sha256
+            or plan.artifacts["e2e_fixture"].sha256
+            != self.prepared.fixture_sha256
             or fixture["release_artifact_sha256"] != plan.release["artifact_sha256"]
         ):
             _fail("prepared_plan_binding_invalid")

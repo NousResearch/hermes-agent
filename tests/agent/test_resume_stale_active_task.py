@@ -24,10 +24,17 @@ mechanism that makes the stale task historical rather than active.
 """
 
 from agent.context_compressor import (
+    COMPRESSED_SUMMARY_METADATA_KEY,
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     LEGACY_SUMMARY_PREFIX,
     ContextCompressor,
+    _SUMMARY_END_MARKER,
+)
+from agent.message_provenance import (
+    CONTEXT_COMPACTION_SUMMARY_KIND,
+    MESSAGE_PROVENANCE_KEY,
+    bind_message_fragment,
 )
 
 
@@ -45,6 +52,21 @@ _OLD_CONFLICTING_PREFIX = (
     "that appears AFTER this summary. The current session state (files, "
     "config, etc.) may reflect work described here — avoid repeating it:"
 )
+
+
+def _trusted_persisted_handoff(prefix: str, body: str) -> dict:
+    """Build the provenance-bound shape emitted by runtime compaction."""
+    fragment = f"{prefix}\n{body}\n\n{_SUMMARY_END_MARKER}"
+    return {
+        "role": "user",
+        "content": fragment,
+        COMPRESSED_SUMMARY_METADATA_KEY: True,
+        MESSAGE_PROVENANCE_KEY: bind_message_fragment(
+            None,
+            kind=CONTEXT_COMPACTION_SUMMARY_KIND,
+            exact_text=fragment,
+        ),
+    }
 
 
 def test_latest_message_wins_over_inherited_active_task():
@@ -114,7 +136,10 @@ def test_inherited_handoff_detected_in_resumed_protected_head():
     Task read as live intent)."""
     messages = [
         {"role": "system", "content": "system prompt"},
-        {"role": "user", "content": f"{SUMMARY_PREFIX}\n{HISTORICAL_TASK_HEADING}\nUser asked: 'task A'"},
+        _trusted_persisted_handoff(
+            SUMMARY_PREFIX,
+            f"{HISTORICAL_TASK_HEADING}\nUser asked: 'task A'",
+        ),
         {"role": "assistant", "content": "ok"},
         {"role": "user", "content": "Unrelated task B: what's the capital of France?"},
     ]
@@ -136,7 +161,10 @@ def test_historical_prefixed_handoff_detected_and_stripped():
     stale 'resume exactly' text as a fresh turn."""
     messages = [
         {"role": "system", "content": "system prompt"},
-        {"role": "user", "content": f"{_OLD_CONFLICTING_PREFIX}\n{HISTORICAL_TASK_HEADING}\nUser asked: 'task A'"},
+        _trusted_persisted_handoff(
+            _OLD_CONFLICTING_PREFIX,
+            f"{HISTORICAL_TASK_HEADING}\nUser asked: 'task A'",
+        ),
         {"role": "assistant", "content": "ok"},
         {"role": "user", "content": "Unrelated task B"},
     ]

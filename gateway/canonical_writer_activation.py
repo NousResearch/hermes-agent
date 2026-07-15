@@ -59,11 +59,11 @@ from gateway.canonical_writer_host_authority import (
 )
 
 
-ACTIVATION_PLAN_SCHEMA = "muncho-writer-only-activation-plan.v3"
+ACTIVATION_PLAN_SCHEMA = "muncho-writer-only-activation-plan.v4"
 ACTIVATION_RECEIPT_SCHEMA = "muncho-writer-only-activation-receipt.v1"
 ACTIVATION_FAILURE_SCHEMA = "muncho-writer-only-activation-failure.v1"
 OWNER_APPROVAL_SCHEMA = OWNER_APPROVAL_RECEIPT_SCHEMA
-SYSTEMD_BUNDLE_SCHEMA = "muncho-writer-only-systemd-bundle.v2"
+SYSTEMD_BUNDLE_SCHEMA = "muncho-writer-only-systemd-bundle.v3"
 RELEASE_SCHEMA = "muncho-writer-only-release.v1"
 NATIVE_OBSERVATION_SCHEMA = "muncho-writer-native-observation.v1"
 NATIVE_READ_ONLY_PREFLIGHT_SCHEMA = (
@@ -71,6 +71,7 @@ NATIVE_READ_ONLY_PREFLIGHT_SCHEMA = (
 )
 
 WRITER_UNIT = "muncho-canonical-writer.service"
+PHASE_B_READINESS_UNIT = "muncho-canonical-writer-phase-b-readiness.service"
 GATEWAY_UNIT = "hermes-cloud-gateway.service"
 EXPORTER_UNIT = "muncho-canonical-writer-export.service"
 DISCORD_UNIT = "muncho-discord-egress.service"
@@ -116,12 +117,19 @@ DEFAULT_STAGED_EXTERNAL_IAM_PATH = Path(
 DEFAULT_STAGED_WRITER_UNIT_PATH = Path(
     "/etc/muncho/writer-activation/staged/muncho-canonical-writer.service"
 )
+DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH = Path(
+    "/etc/muncho/writer-activation/staged/"
+    "muncho-canonical-writer-phase-b-readiness.service"
+)
 DEFAULT_STAGED_GATEWAY_UNIT_PATH = Path(
     "/etc/muncho/writer-activation/staged/hermes-cloud-gateway.service"
 )
 DEFAULT_MANIFEST_PATH = Path("/etc/muncho/writer-activation/deployment-manifest.json")
 DEFAULT_ROOT_RECEIPT_PATH = Path("/run/muncho-canonical-preflight/root-preflight.json")
 DEFAULT_WRITER_UNIT_PATH = Path("/etc/systemd/system") / WRITER_UNIT
+DEFAULT_PHASE_B_READINESS_UNIT_PATH = (
+    Path("/etc/systemd/system") / PHASE_B_READINESS_UNIT
+)
 DEFAULT_GATEWAY_UNIT_PATH = Path("/etc/systemd/system") / GATEWAY_UNIT
 DEFAULT_EXPORTER_UNIT_PATH = Path("/etc/systemd/system") / EXPORTER_UNIT
 DEFAULT_TMPFILES_PATH = Path("/etc/tmpfiles.d/muncho-canonical-writer.conf")
@@ -562,6 +570,7 @@ class ActivationPaths:
     manifest_path: Path = DEFAULT_MANIFEST_PATH
     root_receipt_path: Path = DEFAULT_ROOT_RECEIPT_PATH
     writer_unit_path: Path = DEFAULT_WRITER_UNIT_PATH
+    phase_b_readiness_unit_path: Path = DEFAULT_PHASE_B_READINESS_UNIT_PATH
     gateway_unit_path: Path = DEFAULT_GATEWAY_UNIT_PATH
     exporter_unit_path: Path = DEFAULT_EXPORTER_UNIT_PATH
     tmpfiles_path: Path = DEFAULT_TMPFILES_PATH
@@ -582,6 +591,7 @@ class ActivationPaths:
             "manifest_path",
             "root_receipt_path",
             "writer_unit_path",
+            "phase_b_readiness_unit_path",
             "gateway_unit_path",
             "exporter_unit_path",
             "tmpfiles_path",
@@ -604,6 +614,7 @@ class ActivationPaths:
             "manifest_path": DEFAULT_MANIFEST_PATH,
             "root_receipt_path": DEFAULT_ROOT_RECEIPT_PATH,
             "writer_unit_path": DEFAULT_WRITER_UNIT_PATH,
+            "phase_b_readiness_unit_path": DEFAULT_PHASE_B_READINESS_UNIT_PATH,
             "gateway_unit_path": DEFAULT_GATEWAY_UNIT_PATH,
             "exporter_unit_path": DEFAULT_EXPORTER_UNIT_PATH,
             "tmpfiles_path": DEFAULT_TMPFILES_PATH,
@@ -638,6 +649,7 @@ class ActivationDigests:
     external_iam_policy_sha256: str
     deployment_manifest_sha256: str
     writer_unit_sha256: str
+    phase_b_readiness_unit_sha256: str
     gateway_unit_sha256: str
     exporter_unit_sha256: str
     tmpfiles_sha256: str
@@ -790,6 +802,7 @@ class InstallArtifact:
 @dataclass(frozen=True)
 class SystemdBundle:
     writer_service: str
+    phase_b_readiness_service: str
     gateway_service: str
     exporter_service: str
     tmpfiles: str
@@ -804,6 +817,7 @@ class SystemdBundle:
             fields=frozenset({
                 "schema",
                 "writer_service",
+                "phase_b_readiness_service",
                 "gateway_service",
                 "exporter_service",
                 "tmpfiles",
@@ -816,6 +830,7 @@ class SystemdBundle:
             raise ValueError("systemd bundle schema is invalid")
         for name in (
             "writer_service",
+            "phase_b_readiness_service",
             "gateway_service",
             "exporter_service",
             "tmpfiles",
@@ -849,6 +864,7 @@ class SystemdBundle:
             forbidden.search(raw[name])
             for name in (
                 "writer_service",
+                "phase_b_readiness_service",
                 "gateway_service",
                 "exporter_service",
             )
@@ -861,6 +877,7 @@ class SystemdBundle:
             raise ValueError("temporary exporter cannot be installable or scheduled")
         return cls(
             writer_service=raw["writer_service"],
+            phase_b_readiness_service=raw["phase_b_readiness_service"],
             gateway_service=raw["gateway_service"],
             exporter_service=raw["exporter_service"],
             tmpfiles=raw["tmpfiles"],
@@ -872,6 +889,7 @@ class SystemdBundle:
         return {
             "schema": self.schema,
             "writer_service": self.writer_service,
+            "phase_b_readiness_service": self.phase_b_readiness_service,
             "gateway_service": self.gateway_service,
             "exporter_service": self.exporter_service,
             "tmpfiles": self.tmpfiles,
@@ -938,6 +956,7 @@ class ActivationPlan:
             fields=frozenset({
                 "manifest",
                 "writer_unit",
+                "phase_b_readiness_unit",
                 "gateway_unit",
                 "tmpfiles",
                 "writer_config",
@@ -1012,6 +1031,13 @@ class ActivationPlan:
                 0,
                 0o644,
             ),
+            "phase_b_readiness_unit": (
+                self.paths.phase_b_readiness_unit_path,
+                self.digests.phase_b_readiness_unit_sha256,
+                0,
+                0,
+                0o644,
+            ),
             "gateway_unit": (
                 self.paths.gateway_unit_path,
                 self.digests.gateway_unit_sha256,
@@ -1062,13 +1088,21 @@ class ActivationPlan:
         for name, source in source_bindings.items():
             if self.install_artifacts[name].source_path != source:
                 raise ValueError(f"activation {name} staging path drifted")
-        for name in ("writer_unit", "gateway_unit", "tmpfiles"):
+        for name in (
+            "writer_unit",
+            "phase_b_readiness_unit",
+            "gateway_unit",
+            "tmpfiles",
+        ):
             if self.install_artifacts[name].source_path is not None:
                 raise ValueError(
                     f"activation {name} must come from the digest-bound approved plan"
                 )
         bundle_values = {
             "writer_unit": self.unit_bundle.writer_service.encode("utf-8"),
+            "phase_b_readiness_unit": (
+                self.unit_bundle.phase_b_readiness_service.encode("utf-8")
+            ),
             "gateway_unit": self.unit_bundle.gateway_service.encode("utf-8"),
             "tmpfiles": self.unit_bundle.tmpfiles.encode("utf-8"),
         }
@@ -1578,9 +1612,14 @@ def _off_state_is_exact(
     absent: bool,
 ) -> bool:
     expected_load = "not-found" if absent else "loaded"
-    expected_file = "" if absent else "disabled"
+    expected_file = (
+        ""
+        if absent
+        else "static" if unit == PHASE_B_READINESS_UNIT else "disabled"
+    )
     unit_paths = {
         WRITER_UNIT: str(DEFAULT_WRITER_UNIT_PATH),
+        PHASE_B_READINESS_UNIT: str(DEFAULT_PHASE_B_READINESS_UNIT_PATH),
         GATEWAY_UNIT: str(DEFAULT_GATEWAY_UNIT_PATH),
         EXPORTER_UNIT: str(DEFAULT_EXPORTER_UNIT_PATH),
     }
@@ -2310,6 +2349,8 @@ def _artifact_payload(plan: ActivationPlan, name: str) -> bytes:
         return _canonical_bytes(plan.deployment_manifest)
     if name == "writer_unit":
         return plan.unit_bundle.writer_service.encode("utf-8")
+    if name == "phase_b_readiness_unit":
+        return plan.unit_bundle.phase_b_readiness_service.encode("utf-8")
     if name == "gateway_unit":
         return plan.unit_bundle.gateway_service.encode("utf-8")
     if name == "tmpfiles":
@@ -2337,6 +2378,7 @@ def _install_plan_artifacts(plan: ActivationPlan) -> tuple[Path, ...]:
             "writer_config",
             "gateway_config",
             "writer_unit",
+            "phase_b_readiness_unit",
             "gateway_unit",
             "tmpfiles",
         ):
@@ -3580,6 +3622,7 @@ def _load_existing_success_receipt(
     _validate_archived_root_preflight(plan, archived_root)
     _require_off_disabled(GATEWAY_UNIT, runner=runner)
     _require_off_disabled(WRITER_UNIT, runner=runner)
+    _require_off_disabled(PHASE_B_READINESS_UNIT, runner=runner)
     _require_off_disabled(EXPORTER_UNIT, runner=runner, absent=True)
     _require_off_disabled(DISCORD_UNIT, runner=runner, absent=True)
     return value
@@ -4024,6 +4067,7 @@ class NativeObservationExecutor:
                 self._command((SYSTEMCTL, "daemon-reload"), "native daemon reload")
                 daemon_reloaded = True
                 _require_off_disabled(WRITER_UNIT, runner=self.runner)
+                _require_off_disabled(PHASE_B_READINESS_UNIT, runner=self.runner)
                 _require_off_disabled(GATEWAY_UNIT, runner=self.runner)
                 _require_off_disabled(EXPORTER_UNIT, runner=self.runner, absent=True)
                 _require_off_disabled(DISCORD_UNIT, runner=self.runner, absent=True)
@@ -4350,6 +4394,7 @@ def _verify_final_artifacts(plan: ActivationPlan) -> None:
     _verify_release_tree(plan)
     required_installed = {
         "writer_unit",
+        "phase_b_readiness_unit",
         "gateway_unit",
         "writer_config",
         "gateway_config",
@@ -4399,6 +4444,7 @@ def _verify_final_stopped_boundary(plan: ActivationPlan, *, runner: Runner) -> N
     if not _host_identities_are_exact(_host_identity_snapshot()):
         raise RuntimeError("final activation host identities drifted")
     _require_off_disabled(WRITER_UNIT, runner=runner)
+    _require_off_disabled(PHASE_B_READINESS_UNIT, runner=runner)
     _require_off_disabled(GATEWAY_UNIT, runner=runner)
     _require_off_disabled(EXPORTER_UNIT, runner=runner, absent=True)
     _require_off_disabled(DISCORD_UNIT, runner=runner, absent=True)
@@ -4506,12 +4552,14 @@ class ActivationExecutor:
                 SYSTEMD_ANALYZE,
                 "verify",
                 str(self.plan.paths.writer_unit_path),
+                str(self.plan.paths.phase_b_readiness_unit_path),
                 str(self.plan.paths.gateway_unit_path),
             ),
             "systemd permanent unit verification",
         )
         self._daemon_reload()
         _require_off_disabled(WRITER_UNIT, runner=self.runner)
+        _require_off_disabled(PHASE_B_READINESS_UNIT, runner=self.runner)
         _require_off_disabled(GATEWAY_UNIT, runner=self.runner)
         _require_off_disabled(EXPORTER_UNIT, runner=self.runner, absent=True)
         self._command(
@@ -4827,6 +4875,7 @@ class ActivationExecutor:
             try:
                 _require_off_disabled(GATEWAY_UNIT, runner=self.runner)
                 _require_off_disabled(WRITER_UNIT, runner=self.runner)
+                _require_off_disabled(PHASE_B_READINESS_UNIT, runner=self.runner)
                 _require_off_disabled(EXPORTER_UNIT, runner=self.runner, absent=True)
             except BaseException as exc:
                 cleanup.append(exc)

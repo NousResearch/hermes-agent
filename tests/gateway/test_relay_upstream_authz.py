@@ -245,6 +245,42 @@ def test_event_from_wire_sets_relay_delivery_marker():
     assert event.source.delivered_via_upstream_relay is True
 
 
+def test_relay_delivered_underlying_platform_resolves_relay_adapter():
+    """A Discord relay event replies through Relay, never the direct adapter."""
+
+    runner, relay_adapter = _make_runner(
+        platform=Platform.RELAY,
+        authorization_is_upstream=True,
+    )
+    direct_adapter = object()
+    runner.adapters[Platform.DISCORD] = direct_adapter
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="1504852355588423801",
+        chat_type="channel",
+        delivered_via_upstream_relay=True,
+    )
+
+    assert runner._adapter_for_source(source) is relay_adapter
+
+
+def test_direct_underlying_platform_does_not_cross_into_relay_adapter():
+    runner, relay_adapter = _make_runner(
+        platform=Platform.RELAY,
+        authorization_is_upstream=True,
+    )
+    direct_adapter = object()
+    runner.adapters[Platform.DISCORD] = direct_adapter
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="1504852355588423801",
+        chat_type="channel",
+    )
+
+    assert runner._adapter_for_source(source) is direct_adapter
+    assert runner._adapter_for_source(source) is not relay_adapter
+
+
 def test_event_from_wire_stamps_routed_profile():
     """A connector-routed profile on the wire source lands on SessionSource.
 

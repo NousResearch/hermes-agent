@@ -6,9 +6,7 @@ ready-to-run ``cron.jobs.create_job`` spec wrapped as a suggestion; the user
 accepts via ``/suggestions``. Nothing here auto-schedules.
 
 The important-mail entry deliberately leaves semantic importance decisions to
-the scheduled primary AIAgent. The legacy ``classify_items.py`` helper remains
-available only for explicit backwards-compatible use; catalog suggestions do
-not invoke it.
+the scheduled primary AIAgent. No auxiliary classifier is shipped or invoked.
 
 Adding a catalog entry: append a CatalogEntry. Keep prompts self-contained
 (cron jobs run with no chat context) and schedules sensible. The ``job_spec``
@@ -18,7 +16,6 @@ is passed verbatim to ``create_job`` on accept.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
 __all__ = [
@@ -29,17 +26,11 @@ __all__ = [
     "canonical_important_mail_job_spec",
     "reconcile_pending_important_mail_suggestion",
     "seed_catalog_suggestions",
-    "classify_items_script_path",
 ]
 
 
 IMPORTANT_MAIL_CATALOG_KEY = "catalog:important-mail-monitor"
 IMPORTANT_MAIL_CATALOG_REVISION = 2
-
-
-def classify_items_script_path() -> str:
-    """Return the deprecated compatibility helper path for existing callers."""
-    return str((Path(__file__).resolve().parent / "scripts" / "classify_items.py"))
 
 
 @dataclass(frozen=True)
@@ -85,9 +76,10 @@ CATALOG: List[CatalogEntry] = [
                 "only mail that needs a reply today, is from a manager/family "
                 "member, or mentions a deadline. Do not delegate importance or "
                 "delivery decisions to an auxiliary classifier. Deliver only "
-                "the messages you determine match. If nothing matches, respond "
-                "with exactly [SILENT] so the user is not "
-                "pinged. Requires a connected mail source; if none is "
+                "the messages you determine match. If nothing matches, call "
+                "the todo tool with delivery_outcome action=suppress and a "
+                "concrete reason so the user is not pinged. Requires a "
+                "connected mail source; if none is "
                 "configured, explain how to connect one and then stop."
             ),
             "schedule": "every 30m",

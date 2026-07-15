@@ -5,6 +5,8 @@ from __future__ import annotations
 import hashlib
 import os
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 import pytest
 import yaml
@@ -327,3 +329,131 @@ def test_substituted_open_fd_inode_is_rejected(
         match="path changed before open",
     ):
         config_module.attest_pinned_effective_config_projection()
+
+
+def test_all_config_writer_chokepoints_refuse_an_active_pin(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A sealed process cannot invalidate itself through a legacy writer."""
+    import cli
+    from hermes_cli import auth
+
+    config_path = tmp_path / "config.yaml"
+    exact = {
+        "model": {"default": "sealed-model", "provider": "openai-codex"},
+        "agent": {"system_prompt": "sealed"},
+    }
+    raw = yaml.safe_dump(exact, sort_keys=True).encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    config_path.write_bytes(raw)
+
+    monkeypatch.setattr(config_module, "_PINNED_EFFECTIVE_CONFIG", None)
+    monkeypatch.setattr(config_module, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(config_module, "ensure_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(managed_scope, "get_managed_dir", lambda: None)
+    monkeypatch.setattr(cli, "_hermes_home", tmp_path)
+    monkeypatch.setattr(auth, "get_config_path", lambda: config_path)
+
+    config_module.pin_effective_config_projection(
+        config_path=config_path,
+        raw_bytes=raw,
+        raw_sha256=digest,
+        exact_mapping=exact,
+    )
+
+    blocked = config_module.PINNED_EFFECTIVE_CONFIG_WRITE_BLOCKED
+    with pytest.raises(config_module.PinnedEffectiveConfigError, match="sealed"):
+        config_module.atomic_config_write(config_path, {"changed": True})
+    with pytest.raises(config_module.PinnedEffectiveConfigError, match="sealed"):
+        config_module.save_config({"changed": True})
+    with pytest.raises(config_module.PinnedEffectiveConfigError, match="sealed"):
+        config_module.set_config_value("agent.system_prompt", "changed")
+    with pytest.raises(config_module.PinnedEffectiveConfigError, match="sealed"):
+        auth._update_config_for_provider(
+            "openrouter",
+            "https://example.invalid/v1",
+        )
+
+    assert cli.save_config_value("agent.system_prompt", "changed") is False
+    assert blocked.startswith("Configuration changes are disabled")
+    assert config_path.read_bytes() == raw
+    assert config_module.attest_pinned_effective_config_projection() == digest
+
+
+def test_sealed_auth_and_model_flows_refuse_before_credential_side_effects(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Interactive route changes cannot half-apply auth state under a pin."""
+    from hermes_cli import auth
+    from hermes_cli import main as cli_main
+    from hermes_cli import model_setup_flows
+
+    config_path = tmp_path / "config.yaml"
+    exact = {
+        "model": {"default": "gpt-5.6-sol", "provider": "openai-codex"}
+    }
+    raw = yaml.safe_dump(exact, sort_keys=True).encode("utf-8")
+    digest = hashlib.sha256(raw).hexdigest()
+    config_path.write_bytes(raw)
+    monkeypatch.setattr(config_module, "_PINNED_EFFECTIVE_CONFIG", None)
+    monkeypatch.setattr(config_module, "get_config_path", lambda: config_path)
+    monkeypatch.setattr(managed_scope, "get_managed_dir", lambda: None)
+    monkeypatch.setattr(auth, "get_config_path", lambda: config_path)
+    config_module.pin_effective_config_projection(
+        config_path=config_path,
+        raw_bytes=raw,
+        raw_sha256=digest,
+        exact_mapping=exact,
+    )
+
+    clear_auth = MagicMock(return_value=True)
+    monkeypatch.setattr(auth, "get_active_provider", lambda: "openai-codex")
+    monkeypatch.setattr(
+        auth,
+        "_should_reset_config_provider_on_logout",
+        lambda _provider: True,
+    )
+    monkeypatch.setattr(auth, "clear_provider_auth", clear_auth)
+    with pytest.raises(config_module.PinnedEffectiveConfigError, match="sealed"):
+        auth.logout_command(SimpleNamespace(provider="openai-codex"))
+    clear_auth.assert_not_called()
+
+    codex_device_flow = MagicMock()
+    save_codex_tokens = MagicMock()
+    monkeypatch.setattr(auth, "_codex_device_code_login", codex_device_flow)
+    monkeypatch.setattr(auth, "_save_codex_tokens", save_codex_tokens)
+    with pytest.raises(config_module.PinnedEffectiveConfigError, match="sealed"):
+        auth._login_openai_codex(None, None, force_new_login=True)
+    codex_device_flow.assert_not_called()
+    save_codex_tokens.assert_not_called()
+
+    xai_device_flow = MagicMock()
+    save_xai_tokens = MagicMock()
+    monkeypatch.setattr(auth, "_xai_oauth_device_code_login", xai_device_flow)
+    monkeypatch.setattr(auth, "_save_xai_oauth_tokens", save_xai_tokens)
+    with pytest.raises(config_module.PinnedEffectiveConfigError, match="sealed"):
+        auth._login_xai_oauth(
+            SimpleNamespace(timeout=None, no_browser=True),
+            None,
+            force_new_login=True,
+        )
+    xai_device_flow.assert_not_called()
+    save_xai_tokens.assert_not_called()
+
+    nous_device_flow = MagicMock()
+    monkeypatch.setattr(auth, "_nous_device_code_login", nous_device_flow)
+    with pytest.raises(config_module.PinnedEffectiveConfigError, match="sealed"):
+        auth._login_nous(SimpleNamespace(), None)
+    nous_device_flow.assert_not_called()
+
+    with pytest.raises(config_module.PinnedEffectiveConfigError, match="sealed"):
+        model_setup_flows._model_flow_nous(exact)
+    with pytest.raises(config_module.PinnedEffectiveConfigError, match="sealed"):
+        model_setup_flows._model_flow_minimax_oauth(exact)
+    with pytest.raises(config_module.PinnedEffectiveConfigError, match="sealed"):
+        cli_main.select_provider_and_model()
+
+    assert config_path.read_bytes() == raw
+    assert config_module.attest_pinned_effective_config_projection() == digest

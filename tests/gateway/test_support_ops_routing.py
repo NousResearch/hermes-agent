@@ -6,7 +6,9 @@ from gateway.support_ops_routing import (
     lint_discord_thread_create_target,
 )
 import gateway.support_ops_team_registry as registry
-from gateway.support_ops_team_registry import SKYVISION_BACKEND_CHANNEL_ID
+from gateway.support_ops_team_registry import (
+    SKYVISION_BACKEND_CHANNEL_ID,
+)
 
 
 def test_free_text_is_opaque_and_unchanged():
@@ -49,6 +51,8 @@ def test_explicit_unknown_target_requires_model_clarification():
     )
     assert result.ok is False
     assert result.blocked_reason == "blocked_unknown_target_person_requires_clarification"
+    assert "person.alias.learned" in result.guidance
+    assert "immediate_retry_target_person" in result.guidance
 
 
 def test_explicit_resolved_target_is_validated_mechanically():

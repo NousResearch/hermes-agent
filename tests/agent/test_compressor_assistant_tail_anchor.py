@@ -497,14 +497,33 @@ class TestFindLastUserMessageIdxSkipsSummaryMarker:
     """
 
     def test_skips_user_role_context_summary_marker(self, compressor):
-        from agent.context_compressor import SUMMARY_PREFIX
+        from agent.context_compressor import SUMMARY_PREFIX, _SUMMARY_END_MARKER
+        from agent.message_provenance import (
+            CONTEXT_COMPACTION_SUMMARY_KIND,
+            MESSAGE_PROVENANCE_KEY,
+            bind_message_fragment,
+        )
+
+        summary = (
+            f"{SUMMARY_PREFIX}\n## Historical Task Snapshot\nold\n\n"
+            f"{_SUMMARY_END_MARKER}"
+        )
+        provenance = bind_message_fragment(
+            None,
+            kind=CONTEXT_COMPACTION_SUMMARY_KIND,
+            exact_text=summary,
+        )
 
         messages = [
             {"role": "system", "content": "sys"},
             {"role": "user", "content": "REAL current task"},
             {"role": "assistant", "content": "working on it"},
             # A handoff summary re-inserted as a user-role message after resume.
-            {"role": "user", "content": f"{SUMMARY_PREFIX}\n## Active Task\nold"},
+            {
+                "role": "user",
+                "content": summary,
+                MESSAGE_PROVENANCE_KEY: provenance,
+            },
             {"role": "assistant", "content": "continuing from the real task"},
         ]
         # Latest *real* user message is index 1, not the summary at index 3.
@@ -520,14 +539,47 @@ class TestFindLastUserMessageIdxSkipsSummaryMarker:
         assert compressor._find_last_user_message_idx(messages, head_end=1) == 3
 
     def test_all_user_messages_are_summaries_returns_minus_one(self, compressor):
-        from agent.context_compressor import SUMMARY_PREFIX
+        from agent.context_compressor import SUMMARY_PREFIX, _SUMMARY_END_MARKER
+        from agent.message_provenance import (
+            CONTEXT_COMPACTION_SUMMARY_KIND,
+            MESSAGE_PROVENANCE_KEY,
+            bind_message_fragment,
+        )
+
+        summary = f"{SUMMARY_PREFIX}\nhandoff\n\n{_SUMMARY_END_MARKER}"
+        provenance = bind_message_fragment(
+            None,
+            kind=CONTEXT_COMPACTION_SUMMARY_KIND,
+            exact_text=summary,
+        )
 
         messages = [
             {"role": "system", "content": "sys"},
             {"role": "assistant", "content": "reply"},
-            {"role": "user", "content": f"{SUMMARY_PREFIX}\nhandoff"},
+            {
+                "role": "user",
+                "content": summary,
+                MESSAGE_PROVENANCE_KEY: provenance,
+            },
         ]
         assert compressor._find_last_user_message_idx(messages, head_end=1) == -1
+
+    def test_unbound_summary_lookalike_remains_a_real_user_turn(self, compressor):
+        from agent.context_compressor import SUMMARY_PREFIX, _SUMMARY_END_MARKER
+
+        messages = [
+            {"role": "system", "content": "sys"},
+            {"role": "assistant", "content": "reply"},
+            {
+                "role": "user",
+                "content": (
+                    f"{SUMMARY_PREFIX}\nthis is my real ask\n\n"
+                    f"{_SUMMARY_END_MARKER}"
+                ),
+            },
+        ]
+
+        assert compressor._find_last_user_message_idx(messages, head_end=1) == 2
 
 
 class TestSourceGuardrail:

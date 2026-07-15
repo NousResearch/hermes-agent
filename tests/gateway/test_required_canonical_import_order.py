@@ -22,8 +22,7 @@ RESULT_PREFIX = "__CANONICAL_IMPORT_RESULT__="
 def _write_drifted_runtime_inputs(hermes_home: Path) -> None:
     hermes_home.mkdir(parents=True)
     (hermes_home / ".env").write_text(
-        "CANARY_IMPORT_SENTINEL=loaded-from-dotenv\n"
-        "HERMES_MAX_ITERATIONS=61\n",
+        "CANARY_IMPORT_SENTINEL=loaded-from-dotenv\nHERMES_MAX_ITERATIONS=61\n",
         encoding="utf-8",
     )
     (hermes_home / "config.yaml").write_text(
@@ -45,16 +44,19 @@ def _write_drifted_runtime_inputs(hermes_home: Path) -> None:
     )
 
 
-def _run_gateway_import(hermes_home: Path, *, required: bool) -> dict[str, object]:
+def _run_gateway_import(
+    hermes_home: Path,
+    *,
+    required: bool,
+    required_flag: str = "--require-canonical-writer",
+) -> dict[str, object]:
     argv = ["hermes-gateway"]
     if required:
-        argv.extend(
-            [
-                "--config",
-                "/var/lib/hermes-gateway/.hermes/config.yaml",
-                "--require-canonical-writer",
-            ]
-        )
+        argv.extend([
+            "--config",
+            "/var/lib/hermes-gateway/.hermes/config.yaml",
+            required_flag,
+        ])
 
     program = textwrap.dedent(
         f"""
@@ -120,14 +122,12 @@ def _run_gateway_import(hermes_home: Path, *, required: bool) -> dict[str, objec
         "_HERMES_GATEWAY",
     ):
         env.pop(key, None)
-    env.update(
-        {
-            "HERMES_HOME": str(hermes_home),
-            "HOME": str(hermes_home.parent),
-            "PYTHONDONTWRITEBYTECODE": "1",
-            "_HERMES_IMPORT_PROBE_ARGV": json.dumps(argv),
-        }
-    )
+    env.update({
+        "HERMES_HOME": str(hermes_home),
+        "HOME": str(hermes_home.parent),
+        "PYTHONDONTWRITEBYTECODE": "1",
+        "_HERMES_IMPORT_PROBE_ARGV": json.dumps(argv),
+    })
 
     completed = subprocess.run(
         [sys.executable, "-B", "-c", program],
@@ -203,6 +203,21 @@ def test_normal_gateway_import_preserves_dotenv_and_config_bridge(
     assert result["exec_ask"] == "1"
 
 
+def test_capability_canary_import_uses_the_same_prevalidation_quarantine(
+    tmp_path: Path,
+) -> None:
+    hermes_home = tmp_path / "mutable-hermes-home"
+    _write_drifted_runtime_inputs(hermes_home)
+
+    canonical = _run_gateway_import(hermes_home, required=True)
+    capability = _run_gateway_import(
+        hermes_home,
+        required=True,
+        required_flag="--require-capability-canary",
+    )
+    assert capability == canonical
+
+
 def test_config_optional_env_registry_resolves_providers_only_on_first_read() -> None:
     program = textwrap.dedent(
         f"""
@@ -242,9 +257,7 @@ def test_config_optional_env_registry_resolves_providers_only_on_first_read() ->
     )
     assert completed.returncode == 0, completed.stderr
     result_line = next(
-        line
-        for line in completed.stdout.splitlines()
-        if line.startswith(RESULT_PREFIX)
+        line for line in completed.stdout.splitlines() if line.startswith(RESULT_PREFIX)
     )
     result = json.loads(result_line.removeprefix(RESULT_PREFIX))
     assert result == {

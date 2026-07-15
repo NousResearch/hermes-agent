@@ -335,7 +335,9 @@ async def test_session_hygiene_messages_stay_in_originating_topic(monkeypatch, t
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner._session_model_overrides = {}
     runner.session_store = MagicMock()
+    runner.session_store.get_model_override.return_value = None
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:group:-1001:17585",
         session_id="sess-1",
@@ -438,7 +440,9 @@ async def test_session_hygiene_preserves_transcript_when_no_rotation(monkeypatch
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner._session_model_overrides = {}
     runner.session_store = MagicMock()
+    runner.session_store.get_model_override.return_value = None
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:group:-1001:17585",
         session_id="sess-1",
@@ -536,7 +540,9 @@ async def test_session_hygiene_preserves_transcript_when_in_place_configured_but
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner._session_model_overrides = {}
     runner.session_store = MagicMock()
+    runner.session_store.get_model_override.return_value = None
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:group:-1001:17585",
         session_id="sess-1",
@@ -642,7 +648,9 @@ async def test_session_hygiene_warns_user_when_compression_aborts(monkeypatch, t
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner._session_model_overrides = {}
     runner.session_store = MagicMock()
+    runner.session_store.get_model_override.return_value = None
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:group:-1001:17585",
         session_id="sess-1",
@@ -762,7 +770,9 @@ async def test_session_hygiene_informs_user_when_aux_model_fails_but_recovers(mo
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner._session_model_overrides = {}
     runner.session_store = MagicMock()
+    runner.session_store.get_model_override.return_value = None
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:group:-1001:17585",
         session_id="sess-1",
@@ -895,7 +905,9 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner._session_model_overrides = {}
     runner.session_store = MagicMock()
+    runner.session_store.get_model_override.return_value = None
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:private:12345",
         session_id="sess-1",
@@ -1010,7 +1022,9 @@ async def test_session_hygiene_honors_configurable_hard_message_limit(
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner._session_model_overrides = {}
     runner.session_store = MagicMock()
+    runner.session_store.get_model_override.return_value = None
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:private:12345",
         session_id="sess-1",
@@ -1115,7 +1129,9 @@ async def test_session_hygiene_default_hard_message_limit_does_not_fire_at_12_me
     runner.adapters = {Platform.TELEGRAM: adapter}
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
+    runner._session_model_overrides = {}
     runner.session_store = MagicMock()
+    runner.session_store.get_model_override.return_value = None
     runner.session_store.get_or_create_session.return_value = SessionEntry(
         session_key="agent:main:telegram:private:12345",
         session_id="sess-1",

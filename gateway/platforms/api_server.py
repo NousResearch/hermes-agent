@@ -35,6 +35,7 @@ import asyncio
 import contextvars
 import hashlib
 import hmac
+import ipaddress
 import json
 import logging
 import os
@@ -42,9 +43,10 @@ import re
 import secrets
 import socket as _socket
 import sqlite3
-import stat
+import threading
 import time
 import uuid
+from collections import OrderedDict
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -66,6 +68,25 @@ from gateway.platforms.base import (
 )
 from agent.redact import redact_sensitive_text
 from gateway.readiness import collect_runtime_readiness
+from gateway import systemd_credentials as systemd_credentials_module
+from gateway.systemd_credentials import (
+    GATEWAY_API_APPROVAL_CREDENTIAL,
+    GATEWAY_API_APPROVAL_VERIFIER_CREDENTIAL,
+    GATEWAY_API_BEARER_CREDENTIAL,
+    GATEWAY_API_BEARER_VERIFIER_CREDENTIAL,
+    GATEWAY_API_UNIT,
+    SystemdCredentialError,
+    read_systemd_credential,
+)
+from gateway.api_verifier_credentials import (
+    APIApprovalScryptVerifier,
+    APIBearerVerifier,
+    APIVerifierCredentialError,
+    api_approval_passkey_matches,
+    api_bearer_matches,
+    parse_api_approval_scrypt_verifier,
+    parse_api_bearer_verifier,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -101,10 +122,20 @@ CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 API_CLEANUP_SHIELD_TIMEOUT_SECONDS = 5.0
 API_CLEANUP_RETRY_BASE_SECONDS = 0.25
 API_CLEANUP_RETRY_MAX_SECONDS = 30.0
+API_AGENT_CACHE_MAX_SIZE = 128
+API_AGENT_CACHE_IDLE_TTL_SECONDS = 3600.0
+API_AGENT_SESSION_LOCK_STRIPES = 64
+API_CLARIFY_RESPONSE_MAX_LENGTH = 65_536
+API_APPROVAL_CHOICES = ("once", "session", "always", "deny")
+API_APPROVAL_AUTHORITY_SCHEMA = "hermes.api.approval-owner-authority.v1"
+API_APPROVAL_PASSKEY_AUTHORITY_SCHEMA = (
+    "hermes.api.approval-owner-passkey.v1"
+)
+API_APPROVAL_AUTHORITY_MAX_TTL_SECONDS = 300
+API_APPROVAL_AUTHORITY_CLOCK_SKEW_SECONDS = 30
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 MAX_SYSTEMD_CREDENTIAL_BYTES = 8_192
-_SYSTEMD_CREDENTIAL_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
 def _effective_uid_for_systemd_credential() -> int:
@@ -233,69 +264,39 @@ class _APIServerRunReservation:
             )
 
 
-def _load_systemd_api_key_credential(name: Any) -> str:
-    """Read one API bearer key from a systemd credential exactly once.
+def _load_systemd_api_credential(name: Any, *, reviewed_name: str) -> str:
+    """Read one purpose-bound gateway credential through the shared boundary."""
 
-    The config value is a credential *basename*, never a path.  The secret is
-    bounded, read through ``O_NOFOLLOW``, and is neither logged nor hashed.
-    This deliberately narrow seam lets a service use ``LoadCredential=``
-    without exposing the bearer key in config or process environment.
-    """
-    if (
-        not isinstance(name, str)
-        or _SYSTEMD_CREDENTIAL_NAME_RE.fullmatch(name) is None
-        or name in {".", ".."}
-    ):
-        raise ValueError("api_server key_credential must be a safe basename")
-
-    raw_directory = os.environ.get("CREDENTIALS_DIRECTORY", "")
-    if not raw_directory:
+    if name != reviewed_name:
         raise ValueError(
-            "api_server key_credential requires systemd CREDENTIALS_DIRECTORY"
+            "api_server credential name does not match its reviewed purpose"
         )
-    directory = Path(raw_directory)
-    if (
-        not directory.is_absolute()
-        or str(directory) != raw_directory
-        or ".." in directory.parts
-        or os.path.realpath(raw_directory) != raw_directory
-    ):
-        raise ValueError("CREDENTIALS_DIRECTORY must be an absolute real path")
-
-    credential_path = directory / name
+    directory = (
+        Path(systemd_credentials_module.SYSTEMD_CREDENTIAL_ROOT)
+        / GATEWAY_API_UNIT
+    )
+    raw_directory = os.environ.get("CREDENTIALS_DIRECTORY", "")
+    if raw_directory != str(directory):
+        raise ValueError(
+            "api_server credential requires the exact gateway "
+            "CREDENTIALS_DIRECTORY binding"
+        )
+    credential_path = directory / reviewed_name
     effective_uid = _effective_uid_for_systemd_credential()
     try:
-        before = credential_path.lstat()
-    except OSError as exc:
-        raise ValueError("api_server systemd credential is unavailable") from exc
-    if (
-        not stat.S_ISREG(before.st_mode)
-        or before.st_nlink != 1
-        or before.st_uid not in {0, effective_uid}
-        or stat.S_IMODE(before.st_mode) & 0o077
-        or not 0 < before.st_size <= MAX_SYSTEMD_CREDENTIAL_BYTES
-    ):
-        raise ValueError("api_server systemd credential metadata is unsafe")
+        raw = read_systemd_credential(
+            credential_path,
+            unit=GATEWAY_API_UNIT,
+            name=reviewed_name,
+            service_uid=effective_uid,
+            maximum=MAX_SYSTEMD_CREDENTIAL_BYTES,
+            credentials_directory=directory,
+        )
+    except SystemdCredentialError as exc:
+        raise ValueError(
+            f"api_server systemd credential rejected: {exc.code}"
+        ) from exc
 
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
-    try:
-        fd = os.open(credential_path, flags)
-    except OSError as exc:
-        raise ValueError("api_server systemd credential could not be opened") from exc
-    try:
-        opened = os.fstat(fd)
-        stable_fields = ("st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_size")
-        if any(getattr(before, field) != getattr(opened, field) for field in stable_fields):
-            raise ValueError("api_server systemd credential changed before read")
-        raw = os.read(fd, MAX_SYSTEMD_CREDENTIAL_BYTES + 1)
-        after = os.fstat(fd)
-        if any(getattr(opened, field) != getattr(after, field) for field in stable_fields):
-            raise ValueError("api_server systemd credential changed during read")
-    finally:
-        os.close(fd)
-
-    if len(raw) != before.st_size or len(raw) > MAX_SYSTEMD_CREDENTIAL_BYTES:
-        raise ValueError("api_server systemd credential read was not exact")
     if raw.endswith(b"\r\n"):
         raw = raw[:-2]
     elif raw.endswith(b"\n"):
@@ -313,9 +314,51 @@ def _load_systemd_api_key_credential(name: Any) -> str:
     return value
 
 
+def _load_systemd_api_key_credential(name: Any) -> str:
+    """Load only the reviewed API control bearer credential."""
+
+    return _load_systemd_api_credential(
+        name,
+        reviewed_name=GATEWAY_API_BEARER_CREDENTIAL,
+    )
+
+
+def _load_systemd_api_approval_credential(name: Any) -> str:
+    """Load only the reviewed owner-approval passkey credential."""
+
+    return _load_systemd_api_credential(
+        name,
+        reviewed_name=GATEWAY_API_APPROVAL_CREDENTIAL,
+    )
+
+
+def _load_systemd_api_bearer_verifier_credential(name: Any) -> str:
+    """Load only the reviewed non-secret API bearer verifier."""
+
+    return _load_systemd_api_credential(
+        name,
+        reviewed_name=GATEWAY_API_BEARER_VERIFIER_CREDENTIAL,
+    )
+
+
+def _load_systemd_api_approval_verifier_credential(name: Any) -> str:
+    """Load only the reviewed non-secret owner-passkey verifier."""
+
+    return _load_systemd_api_credential(
+        name,
+        reviewed_name=GATEWAY_API_APPROVAL_VERIFIER_CREDENTIAL,
+    )
+
+
 def _resolve_api_server_key(extra: Dict[str, Any]) -> str:
     """Resolve legacy inline/env auth or the mutually-exclusive credential seam."""
     credential_name = extra.get("key_credential")
+    if extra.get("key_verifier_credential") is not None:
+        if credential_name is not None or "key" in extra or os.getenv("API_SERVER_KEY"):
+            raise ValueError(
+                "api_server key verifier cannot be combined with secret-bearing auth"
+            )
+        return ""
     if credential_name is None:
         return extra.get("key", os.getenv("API_SERVER_KEY", ""))
     if "key" in extra or os.getenv("API_SERVER_KEY"):
@@ -323,6 +366,83 @@ def _resolve_api_server_key(extra: Dict[str, Any]) -> str:
             "api_server key_credential cannot be combined with inline or env key"
         )
     return _load_systemd_api_key_credential(credential_name)
+
+
+def _resolve_api_bearer_verifier(extra: Dict[str, Any]) -> APIBearerVerifier | None:
+    credential_name = extra.get("key_verifier_credential")
+    if credential_name is None:
+        return None
+    if credential_name != GATEWAY_API_BEARER_VERIFIER_CREDENTIAL:
+        raise ValueError("api_server bearer verifier credential is not reviewed")
+    try:
+        return parse_api_bearer_verifier(
+            _load_systemd_api_bearer_verifier_credential(credential_name)
+        )
+    except APIVerifierCredentialError as exc:
+        raise ValueError("api_server bearer verifier is malformed") from exc
+
+
+def _resolve_api_approval_passkey(extra: Dict[str, Any]) -> str:
+    """Resolve the distinct secret used to sign positive approval authority.
+
+    The normal API bearer authenticates a control-plane client but is not
+    owner consent.  A separate passkey signs a short-lived, exact approval
+    nonce.  As with the API bearer, production may load the secret from a
+    systemd credential without placing it in config or process arguments.
+    """
+
+    credential_name = extra.get("approval_passkey_credential")
+    if extra.get("approval_verifier_credential") is not None:
+        if (
+            credential_name is not None
+            or "approval_passkey" in extra
+            or os.getenv("API_SERVER_APPROVAL_PASSKEY")
+        ):
+            raise ValueError(
+                "api_server approval verifier cannot be combined with a passkey secret"
+            )
+        return ""
+    env_value = os.getenv("API_SERVER_APPROVAL_PASSKEY", "")
+    inline_present = "approval_passkey" in extra
+    if credential_name is not None:
+        if inline_present or env_value:
+            raise ValueError(
+                "api_server approval_passkey_credential cannot be combined "
+                "with inline or env approval passkey"
+            )
+        value = _load_systemd_api_approval_credential(credential_name)
+    else:
+        value = extra.get("approval_passkey", env_value)
+
+    if value is None or value == "":
+        return ""
+    if (
+        not isinstance(value, str)
+        or value != value.strip()
+        or len(value.encode("utf-8")) < 32
+        or len(value.encode("utf-8")) > MAX_SYSTEMD_CREDENTIAL_BYTES
+        or any(ord(char) < 0x20 or ord(char) == 0x7F for char in value)
+    ):
+        raise ValueError(
+            "api_server approval passkey must be a bounded 32+ byte secret"
+        )
+    return value
+
+
+def _resolve_api_approval_verifier(
+    extra: Dict[str, Any],
+) -> APIApprovalScryptVerifier | None:
+    credential_name = extra.get("approval_verifier_credential")
+    if credential_name is None:
+        return None
+    if credential_name != GATEWAY_API_APPROVAL_VERIFIER_CREDENTIAL:
+        raise ValueError("api_server approval verifier credential is not reviewed")
+    try:
+        return parse_api_approval_scrypt_verifier(
+            _load_systemd_api_approval_verifier_credential(credential_name)
+        )
+    except APIVerifierCredentialError as exc:
+        raise ValueError("api_server approval verifier is malformed") from exc
 
 
 def _session_stream_outcome(result: Any) -> Dict[str, Any]:
@@ -1136,20 +1256,6 @@ def _notify_cron_provider_jobs_changed() -> None:
     except Exception:
         pass
 
-# Defense-in-depth: mirror the agent-facing cronjob tool, which scans the
-# user-supplied prompt for exfiltration/injection payloads at create/update
-# time (tools/cronjob_tools.py).  The REST cron endpoints are authenticated
-# (every handler runs _check_auth, and connect() refuses to start without
-# API_SERVER_KEY), so this is not the trust boundary — it's parity with the
-# tool path so a malicious prompt is rejected the same way regardless of
-# which surface created the job.  Imported defensively: a missing scanner
-# must not disable the cron REST API.
-try:
-    from tools.cronjob_tools import _scan_cron_prompt as _scan_cron_prompt
-except Exception:  # pragma: no cover - scanner is optional hardening
-    _scan_cron_prompt = None
-
-
 class APIServerAdapter(BasePlatformAdapter):
     """
     OpenAI-compatible HTTP API server adapter.
@@ -1177,6 +1283,21 @@ class APIServerAdapter(BasePlatformAdapter):
             raw_port = os.getenv("API_SERVER_PORT", str(DEFAULT_PORT))
         self._port: int = _coerce_port(raw_port, DEFAULT_PORT)
         self._api_key: str = _resolve_api_server_key(extra)
+        self._api_bearer_verifier: APIBearerVerifier | None = (
+            _resolve_api_bearer_verifier(extra)
+        )
+        self._approval_passkey: str = _resolve_api_approval_passkey(extra)
+        self._approval_passkey_verifier: APIApprovalScryptVerifier | None = (
+            _resolve_api_approval_verifier(extra)
+        )
+        if (
+            self._api_key
+            and self._approval_passkey
+            and hmac.compare_digest(self._api_key, self._approval_passkey)
+        ):
+            raise ValueError(
+                "api_server control bearer and approval passkey must be distinct"
+            )
         self._cors_origins: tuple[str, ...] = self._parse_cors_origins(
             extra.get("cors_origins", os.getenv("API_SERVER_CORS_ORIGINS", "")),
         )
@@ -1234,6 +1355,27 @@ class APIServerAdapter(BasePlatformAdapter):
         self._api_cleanup_tasks: set["asyncio.Task"] = set()
         self._api_cleanup_retry_tasks: Dict[str, "asyncio.Task"] = {}
         self._api_active_agents: Dict[int, Any] = {}
+        # AIAgent freezes its system prompt, memory snapshot, and tool schemas
+        # at construction time.  Keep one agent per exact API conversation so
+        # consecutive turns retain that byte-stable prefix.  Cache access is
+        # protected because agent work runs on executor threads; fixed striped
+        # run locks serialize turns for one session without an unbounded lock
+        # registry.
+        self._api_agent_cache: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+        self._api_agent_cache_lock = threading.RLock()
+        self._api_deferred_agent_releases: set[int] = set()
+        self._api_agent_run_locks = tuple(
+            threading.RLock() for _ in range(API_AGENT_SESSION_LOCK_STRIPES)
+        )
+        # Public API projection of pending clarify_gateway entries.  The
+        # blocking primitive and resolution truth remain in
+        # tools.clarify_gateway; this map contains only authenticated,
+        # client-safe question metadata for polling/event delivery.
+        self._api_pending_clarifications: Dict[str, Dict[str, Any]] = {}
+        self._api_clarifications_lock = threading.RLock()
+        self._api_pending_approvals: Dict[str, Dict[str, Any]] = {}
+        self._api_consumed_approval_nonces: Dict[str, float] = {}
+        self._api_approvals_lock = threading.RLock()
 
     def _readiness_work_counts(self) -> tuple[int, int, int]:
         """Return bounded work counts from each subsystem's public state."""
@@ -1419,6 +1561,20 @@ class APIServerAdapter(BasePlatformAdapter):
     # Auth helper
     # ------------------------------------------------------------------
 
+    def _api_auth_configured(self) -> bool:
+        return bool(self._api_key) or self._api_bearer_verifier is not None
+
+    def _approval_authority_configured(self) -> bool:
+        return (
+            bool(self._approval_passkey)
+            or self._approval_passkey_verifier is not None
+        )
+
+    def _approval_authority_schema(self) -> str:
+        if self._approval_passkey_verifier is not None:
+            return API_APPROVAL_PASSKEY_AUTHORITY_SCHEMA
+        return API_APPROVAL_AUTHORITY_SCHEMA
+
     def _check_auth(self, request: "web.Request") -> Optional["web.Response"]:
         """
         Validate Bearer token from Authorization header.
@@ -1427,13 +1583,19 @@ class APIServerAdapter(BasePlatformAdapter):
         connect() refuses to start the API server without API_SERVER_KEY, so
         the no-key branch only exists for tests or unsupported manual wiring.
         """
-        if not self._api_key:
+        if not self._api_auth_configured():
             return None
 
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
             token = auth_header[7:].strip()
-            if hmac.compare_digest(token, self._api_key):
+            if (
+                self._api_bearer_verifier is not None
+                and api_bearer_matches(self._api_bearer_verifier, token)
+            ) or (
+                bool(self._api_key)
+                and hmac.compare_digest(token, self._api_key)
+            ):
                 return None  # Auth OK
 
         logger.warning(
@@ -1481,7 +1643,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if not raw:
             return None, None
 
-        if not self._api_key:
+        if not self._api_auth_configured():
             logger.warning(
                 "X-Hermes-Session-Key rejected: no API key configured. "
                 "Set API_SERVER_KEY to enable long-term memory scoping."
@@ -1604,6 +1766,720 @@ class APIServerAdapter(BasePlatformAdapter):
         except Exception:
             return None
 
+    def _api_agent_run_lock_for(self, session_id: Optional[str]) -> threading.RLock:
+        """Return a bounded lock that serializes one conversation's turns.
+
+        A cached AIAgent has mutable per-turn callbacks and transcript state, so
+        two requests must never drive the same instance concurrently.  Striped
+        locks keep the lock set bounded; an unrelated hash collision merely
+        serializes two requests and cannot merge their cache entries.
+        """
+
+        cache_key = str(session_id or "")
+        digest = hashlib.sha256(cache_key.encode()).digest()
+        index = int.from_bytes(digest[:2], "big") % len(self._api_agent_run_locks)
+        return self._api_agent_run_locks[index]
+
+    def _api_session_message_count(self, session_id: Optional[str]) -> Optional[int]:
+        """Read the persisted live message count used for cache coherence."""
+
+        if not session_id:
+            return None
+        try:
+            db = self._ensure_session_db()
+            row = db.get_session(session_id) if db is not None else None
+            if row is None:
+                return None
+            return int(row.get("message_count", 0) or 0)
+        except Exception:
+            # A failed coherence probe must never create a false mismatch.  The
+            # agent still receives the caller/DB history and the next successful
+            # probe can re-establish a baseline.
+            return None
+
+    @staticmethod
+    def _api_credential_pool_identity(pool: Any) -> str:
+        """Return a secret-safe fingerprint of the resolved auth route."""
+
+        if pool is None:
+            return ""
+        try:
+            entries = pool.entries() if callable(getattr(pool, "entries", None)) else []
+            normalized = []
+            for entry in entries:
+                access_token = str(getattr(entry, "access_token", "") or "")
+                refresh_token = str(getattr(entry, "refresh_token", "") or "")
+                agent_key = str(getattr(entry, "agent_key", "") or "")
+                normalized.append({
+                    "id": str(getattr(entry, "id", "") or ""),
+                    "provider": str(getattr(entry, "provider", "") or ""),
+                    "auth_type": str(getattr(entry, "auth_type", "") or ""),
+                    "priority": getattr(entry, "priority", None),
+                    "source": str(getattr(entry, "source", "") or ""),
+                    "access_sha256": (
+                        hashlib.sha256(access_token.encode()).hexdigest()
+                        if access_token
+                        else ""
+                    ),
+                    "refresh_sha256": (
+                        hashlib.sha256(refresh_token.encode()).hexdigest()
+                        if refresh_token
+                        else ""
+                    ),
+                    "agent_key_sha256": (
+                        hashlib.sha256(agent_key.encode()).hexdigest()
+                        if agent_key
+                        else ""
+                    ),
+                    "base_url": str(getattr(entry, "base_url", "") or ""),
+                    "inference_base_url": str(
+                        getattr(entry, "inference_base_url", "") or ""
+                    ),
+                    "last_status": str(getattr(entry, "last_status", "") or ""),
+                })
+            payload = {
+                "provider": str(getattr(pool, "provider", "") or ""),
+                "current_id": str(getattr(pool, "_current_id", "") or ""),
+                "entries": normalized,
+            }
+            return hashlib.sha256(
+                json.dumps(payload, sort_keys=True, default=str).encode()
+            ).hexdigest()
+        except Exception:
+            # Unknown third-party pool implementations still receive a stable
+            # class/provider identity.  Their actual selected API key/base URL
+            # remains covered by the primary runtime signature.
+            fallback = (
+                type(pool).__module__,
+                type(pool).__qualname__,
+                str(getattr(pool, "provider", "") or ""),
+            )
+            return hashlib.sha256(repr(fallback).encode()).hexdigest()
+
+    def _parse_api_control_session_id(
+        self,
+        request: "web.Request",
+        *,
+        required: bool,
+    ) -> tuple[str, Optional["web.Response"]]:
+        """Resolve one exact API conversation ID from header/query input."""
+
+        header_value = str(
+            request.headers.get("X-Hermes-Session-Id", "") or ""
+        ).strip()
+        query_value = str(request.query.get("session_id", "") or "").strip()
+        if header_value and query_value and header_value != query_value:
+            return "", web.json_response(
+                _openai_error(
+                    "Session ID header and query parameter do not match",
+                    code="session_id_mismatch",
+                ),
+                status=400,
+            )
+        session_id = header_value or query_value
+        if not session_id:
+            if required:
+                return "", web.json_response(
+                    _openai_error(
+                        "X-Hermes-Session-Id or session_id is required",
+                        code="session_id_required",
+                    ),
+                    status=400,
+                )
+            return "", None
+
+        from gateway.session import _is_path_unsafe
+
+        if (
+            len(session_id) > self._MAX_SESSION_HEADER_LEN
+            or re.search(r"[\r\n\x00]", session_id)
+            or _is_path_unsafe(session_id)
+        ):
+            return "", web.json_response(
+                _openai_error("Invalid API session ID", code="invalid_session_id"),
+                status=400,
+            )
+        return session_id, None
+
+    @staticmethod
+    def _public_api_approval(state: Mapping[str, Any]) -> Dict[str, Any]:
+        """Return the client-safe projection of an API approval request."""
+
+        return {
+            key: value
+            for key, value in state.items()
+            if not str(key).startswith("_")
+        }
+
+    @staticmethod
+    def _api_approval_authority_payload(
+        *,
+        session_id: str,
+        approval_id: str,
+        choice: str,
+        nonce: str,
+        issued_at_unix: int,
+        expires_at_unix: int,
+        capability_epoch_sha256: str,
+        run_id: str = "",
+        schema: str = API_APPROVAL_AUTHORITY_SCHEMA,
+    ) -> Dict[str, Any]:
+        """Return the canonical fields signed by the distinct owner passkey."""
+
+        return {
+            "schema": schema,
+            "session_id": session_id,
+            "run_id": run_id,
+            "approval_id": approval_id,
+            "choice": choice,
+            "nonce": nonce,
+            "issued_at_unix": issued_at_unix,
+            "expires_at_unix": expires_at_unix,
+            "capability_epoch_sha256": capability_epoch_sha256,
+        }
+
+    def _verify_and_consume_api_approval_authority(
+        self,
+        authority: Any,
+        *,
+        session_id: str,
+        approval_id: str,
+        choice: str,
+        capability_epoch_sha256: str,
+        run_id: str = "",
+        request: Any = None,
+    ) -> Optional["web.Response"]:
+        """Validate and atomically consume one exact positive-approval proof."""
+
+        if not self._approval_authority_configured():
+            return web.json_response(
+                _openai_error(
+                    "Positive approval requires configured owner authority",
+                    code="approval_owner_authority_unavailable",
+                ),
+                status=403,
+            )
+        verifier_mode = self._approval_passkey_verifier is not None
+        expected_fields = {
+            "schema",
+            "nonce",
+            "issued_at_unix",
+            "expires_at_unix",
+            "capability_epoch_sha256",
+            "passkey" if verifier_mode else "signature",
+        }
+        if not isinstance(authority, Mapping) or set(authority) != expected_fields:
+            return web.json_response(
+                _openai_error(
+                    "Owner approval authority is malformed",
+                    code="approval_owner_authority_invalid",
+                ),
+                status=403,
+            )
+
+        nonce = authority.get("nonce")
+        issued_at = authority.get("issued_at_unix")
+        expires_at = authority.get("expires_at_unix")
+        authority_epoch = authority.get("capability_epoch_sha256")
+        proof = authority.get("passkey" if verifier_mode else "signature")
+        expected_schema = (
+            API_APPROVAL_PASSKEY_AUTHORITY_SCHEMA
+            if verifier_mode
+            else API_APPROVAL_AUTHORITY_SCHEMA
+        )
+        if (
+            authority.get("schema") != expected_schema
+            or not isinstance(nonce, str)
+            or re.fullmatch(r"[0-9a-f]{32}", nonce) is None
+            or type(issued_at) is not int
+            or type(expires_at) is not int
+            or not isinstance(authority_epoch, str)
+            or re.fullmatch(r"[0-9a-f]{64}", authority_epoch) is None
+            or authority_epoch != capability_epoch_sha256
+            or not isinstance(proof, str)
+            or (
+                not verifier_mode
+                and re.fullmatch(r"[0-9a-f]{64}", proof) is None
+            )
+        ):
+            return web.json_response(
+                _openai_error(
+                    "Owner approval authority is not bound to this request",
+                    code="approval_owner_authority_invalid",
+                ),
+                status=403,
+            )
+
+        now = int(time.time())
+        if (
+            expires_at <= issued_at
+            or expires_at - issued_at > API_APPROVAL_AUTHORITY_MAX_TTL_SECONDS
+            or issued_at > now + API_APPROVAL_AUTHORITY_CLOCK_SKEW_SECONDS
+            or expires_at < now
+        ):
+            return web.json_response(
+                _openai_error(
+                    "Owner approval authority expired or has an invalid TTL",
+                    code="approval_owner_authority_expired",
+                ),
+                status=409,
+            )
+
+        payload = self._api_approval_authority_payload(
+            session_id=session_id,
+            approval_id=approval_id,
+            choice=choice,
+            nonce=nonce,
+            issued_at_unix=issued_at,
+            expires_at_unix=expires_at,
+            capability_epoch_sha256=authority_epoch,
+            run_id=run_id,
+            schema=expected_schema,
+        )
+        if verifier_mode:
+            if not self._approval_verifier_transport_allowed(request):
+                return web.json_response(
+                    _openai_error(
+                        "Owner passkey requires an authenticated loopback or TLS request",
+                        code="approval_owner_transport_invalid",
+                    ),
+                    status=403,
+                )
+            verifier = self._approval_passkey_verifier
+            assert verifier is not None
+            proof_valid = api_approval_passkey_matches(verifier, proof)
+        else:
+            canonical = json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            ).encode("utf-8")
+            expected_signature = hmac.new(
+                self._approval_passkey.encode("utf-8"),
+                canonical,
+                hashlib.sha256,
+            ).hexdigest()
+            proof_valid = hmac.compare_digest(proof, expected_signature)
+        if not proof_valid:
+            return web.json_response(
+                _openai_error(
+                    "Owner approval authority signature is invalid",
+                    code="approval_owner_authority_invalid",
+                ),
+                status=403,
+            )
+
+        replay_key = hashlib.sha256(
+            f"{expected_schema}:{nonce}".encode("utf-8")
+        ).hexdigest()
+        with self._api_approvals_lock:
+            self._api_consumed_approval_nonces = {
+                key: expiry
+                for key, expiry in self._api_consumed_approval_nonces.items()
+                if expiry >= now
+            }
+            if replay_key in self._api_consumed_approval_nonces:
+                return web.json_response(
+                    _openai_error(
+                        "Owner approval authority nonce was already consumed",
+                        code="approval_owner_authority_replayed",
+                    ),
+                    status=409,
+                )
+            self._api_consumed_approval_nonces[replay_key] = float(expires_at)
+        return None
+
+    def _approval_verifier_transport_allowed(self, request: Any) -> bool:
+        """Require TLS or a real loopback peer for plaintext passkey proof."""
+
+        if request is None:
+            return False
+        try:
+            if bool(request.secure):
+                return True
+        except Exception:
+            pass
+        if self._host not in {"127.0.0.1", "::1", "localhost"}:
+            return False
+        peer = ""
+        try:
+            transport = request.transport
+            raw_peer = (
+                transport.get_extra_info("peername")
+                if transport is not None
+                else None
+            )
+            if isinstance(raw_peer, (tuple, list)) and raw_peer:
+                peer = str(raw_peer[0])
+        except Exception:
+            peer = ""
+        if not peer:
+            try:
+                peer = str(request.remote or "")
+            except Exception:
+                peer = ""
+        try:
+            return ipaddress.ip_address(peer).is_loopback
+        except ValueError:
+            return False
+
+    def _clear_api_approval_scope(
+        self,
+        session_id: Optional[str],
+        *,
+        approval_session_key: str = "",
+        cancel_core: bool = False,
+    ) -> None:
+        """Drop one conversation's public approvals and optionally deny waits."""
+
+        normalized_session = str(session_id or "")
+        normalized_key = str(approval_session_key or "")
+        approvals_lock = getattr(self, "_api_approvals_lock", None)
+        pending = getattr(self, "_api_pending_approvals", None)
+        if approvals_lock is not None and pending is not None:
+            with approvals_lock:
+                stale_ids = [
+                    approval_id
+                    for approval_id, state in pending.items()
+                    if (
+                        state.get("session_id") == normalized_session
+                        or (
+                            normalized_key
+                            and state.get("_approval_session_key")
+                            == normalized_key
+                        )
+                    )
+                ]
+                for approval_id in stale_ids:
+                    pending.pop(approval_id, None)
+        if cancel_core and normalized_key:
+            try:
+                from tools.approval import unregister_gateway_notify
+
+                unregister_gateway_notify(normalized_key)
+            except Exception:
+                logger.debug("Failed to cancel API approvals", exc_info=True)
+
+    def _make_api_approval_notify(
+        self,
+        *,
+        session_id: str,
+        approval_session_key: str,
+        event_callback=None,
+    ):
+        """Build the exact-ID approval bridge used by ordinary API turns."""
+
+        def _notify(approval_data: Dict[str, Any]) -> None:
+            from agent.redact import redact_sensitive_text
+            from gateway.run import _redact_approval_command
+
+            approval_id = str(approval_data.get("approval_id", "") or "")
+            if re.fullmatch(r"[0-9a-f]{32}", approval_id) is None:
+                raise RuntimeError("approval core returned an invalid request ID")
+            from tools.approval import get_pending_gateway_approvals
+
+            core_state = next(
+                (
+                    item
+                    for item in get_pending_gateway_approvals(
+                        approval_session_key,
+                        include_authority_binding=True,
+                    )
+                    if item.get("approval_id") == approval_id
+                ),
+                {},
+            )
+            capability_epoch_sha256 = str(
+                core_state.get("_capability_epoch_sha256", "") or ""
+            )
+            if re.fullmatch(r"[0-9a-f]{64}", capability_epoch_sha256) is None:
+                raise RuntimeError("approval core returned an invalid authority epoch")
+
+            allow_permanent = bool(approval_data.get("allow_permanent", False))
+            choices = list(API_APPROVAL_CHOICES)
+            if not allow_permanent:
+                choices.remove("always")
+            pattern_keys = [
+                redact_sensitive_text(str(value))
+                for value in (approval_data.get("pattern_keys") or [])
+            ]
+            redacted_command = _redact_approval_command(
+                str(approval_data.get("command", "") or "")
+            )
+            state = {
+                "id": approval_id,
+                "object": "hermes.approval",
+                "status": "pending",
+                "session_id": session_id,
+                "command": redacted_command,
+                "description": redact_sensitive_text(
+                    str(approval_data.get("description", "") or "")
+                ),
+                "pattern_keys": pattern_keys,
+                "allow_permanent": allow_permanent,
+                "choices": choices,
+                "owner_authority_required_for": [
+                    value for value in choices if value != "deny"
+                ],
+                "owner_authority_schema": self._approval_authority_schema(),
+                "capability_epoch_sha256": capability_epoch_sha256,
+                "created_at": time.time(),
+                "response_endpoint": f"/v1/approvals/{approval_id}/response",
+                "_approval_session_key": approval_session_key,
+                "_authority_generation": core_state.get(
+                    "_authority_generation"
+                ),
+                "_event_callback": event_callback,
+            }
+            with self._api_approvals_lock:
+                self._api_pending_approvals[approval_id] = state
+            if event_callback is not None:
+                try:
+                    event_callback(
+                        "approval.request",
+                        self._public_api_approval(state),
+                    )
+                except Exception:
+                    # Polling remains authoritative when an SSE subscriber has
+                    # gone away.  The pending exact core entry is still live.
+                    logger.debug(
+                        "API approval event delivery failed", exc_info=True
+                    )
+
+        return _notify
+
+    @staticmethod
+    def _api_clarify_scope(session_id: Optional[str]) -> str:
+        """Namespace API clarify entries away from native gateway sessions."""
+
+        return "api_server:" + str(session_id or "")
+
+    def _clear_api_clarify_scope(self, scope: str) -> None:
+        """Cancel one API conversation's pending clarify requests."""
+
+        if not scope:
+            return
+        clarifications_lock = getattr(self, "_api_clarifications_lock", None)
+        pending = getattr(self, "_api_pending_clarifications", None)
+        if clarifications_lock is not None and pending is not None:
+            with clarifications_lock:
+                stale_ids = [
+                    clarify_id
+                    for clarify_id, state in pending.items()
+                    if state.get("_scope") == scope
+                ]
+                for clarify_id in stale_ids:
+                    pending.pop(clarify_id, None)
+        try:
+            from tools.clarify_gateway import clear_session
+
+            clear_session(scope)
+        except Exception:
+            logger.debug("Failed to clear API clarify scope", exc_info=True)
+
+    def _release_api_cached_agent(self, agent: Any) -> None:
+        """Soft-release a cache-evicted agent without tearing down task state."""
+
+        if agent is None:
+            return
+        self._clear_api_clarify_scope(
+            str(getattr(agent, "_api_clarify_scope", "") or "")
+        )
+        cache_lock = getattr(self, "_api_agent_cache_lock", None)
+        active_agents = getattr(self, "_api_active_agents", {})
+        deferred_releases = getattr(self, "_api_deferred_agent_releases", None)
+        if cache_lock is not None and deferred_releases is not None:
+            with cache_lock:
+                is_active = id(agent) in active_agents
+                if is_active:
+                    deferred_releases.add(id(agent))
+        else:
+            is_active = False
+        if is_active:
+            # Session deletion/config invalidation may race a live turn.
+            # Fence it from future lookup now, but let the exact execution
+            # owner release provider clients after the worker exits.
+            return
+        try:
+            release = getattr(agent, "release_clients", None)
+            if callable(release):
+                release()
+        except Exception:
+            logger.debug("Failed to release evicted API agent", exc_info=True)
+        finally:
+            # A resumed agent reconstructs its transcript from SessionDB.
+            # Drop potentially large tool outputs after soft eviction while
+            # preserving terminal/browser task state, matching native gateway
+            # cache eviction semantics.
+            if hasattr(agent, "_session_messages"):
+                agent._session_messages = []
+
+    def _pop_cached_api_agent(
+        self,
+        session_id: Optional[str],
+        *,
+        expected_agent: Any = None,
+    ) -> Any:
+        """Atomically remove and return one exact cached agent."""
+
+        cache_key = str(session_id or "")
+        if not cache_key:
+            return None
+        with self._api_agent_cache_lock:
+            entry = self._api_agent_cache.get(cache_key)
+            if entry is None:
+                return None
+            agent = entry.get("agent")
+            if expected_agent is not None and agent is not expected_agent:
+                return None
+            self._api_agent_cache.pop(cache_key, None)
+            return agent
+
+    def _prune_api_agent_cache_locked(self, now: float) -> List[Any]:
+        """Prune idle/LRU agents while holding ``_api_agent_cache_lock``."""
+
+        active_ids = set(self._api_active_agents)
+        evicted: List[Any] = []
+        for cache_key, entry in list(self._api_agent_cache.items()):
+            agent = entry.get("agent")
+            if id(agent) in active_ids:
+                continue
+            last_used = float(entry.get("last_used", 0.0) or 0.0)
+            if now - last_used > API_AGENT_CACHE_IDLE_TTL_SECONDS:
+                self._api_agent_cache.pop(cache_key, None)
+                evicted.append(agent)
+
+        while len(self._api_agent_cache) > API_AGENT_CACHE_MAX_SIZE:
+            removable_key = None
+            for cache_key, entry in self._api_agent_cache.items():
+                if id(entry.get("agent")) not in active_ids:
+                    removable_key = cache_key
+                    break
+            if removable_key is None:
+                break
+            entry = self._api_agent_cache.pop(removable_key)
+            evicted.append(entry.get("agent"))
+        return evicted
+
+    def _make_api_clarify_callback(
+        self,
+        session_id: Optional[str],
+        notify_callback=None,
+    ):
+        """Bridge the synchronous clarify tool to authenticated API control.
+
+        The existing ``tools.clarify_gateway`` event primitive remains the
+        single resolution mechanism.  API clients discover the public pending
+        record through ``GET /v1/clarifications`` (and streaming clients also
+        receive a structured event), then resolve it through the response
+        endpoint.  No prompt text is classified or routed here.
+        """
+
+        scope = self._api_clarify_scope(session_id)
+
+        def _clarify(question: str, choices) -> str:
+            from tools import clarify_gateway
+
+            clarify_id = uuid.uuid4().hex
+            normalized_choices = list(choices) if choices else None
+            clarify_gateway.register(
+                clarify_id=clarify_id,
+                session_key=scope,
+                question=question,
+                choices=normalized_choices,
+            )
+            public_state = {
+                "id": clarify_id,
+                "object": "hermes.clarification",
+                "status": "pending",
+                "session_id": str(session_id or ""),
+                "question": question,
+                "choices": normalized_choices,
+                "created_at": time.time(),
+                "response_endpoint": (
+                    f"/v1/clarifications/{clarify_id}/response"
+                ),
+                "_scope": scope,
+            }
+            with self._api_clarifications_lock:
+                self._api_pending_clarifications[clarify_id] = public_state
+
+            if notify_callback is not None:
+                try:
+                    notify_callback(self._public_api_clarification(public_state))
+                except Exception:
+                    # Polling remains a complete delivery path even if an SSE
+                    # subscriber disappeared between registration and notify.
+                    logger.debug("API clarify event delivery failed", exc_info=True)
+
+            timeout = clarify_gateway.get_clarify_timeout()
+            try:
+                response = clarify_gateway.wait_for_response(
+                    clarify_id,
+                    timeout=float(timeout),
+                )
+                if response is None or response == "":
+                    return f"[user did not respond within {int(timeout / 60)}m]"
+                return response
+            finally:
+                with self._api_clarifications_lock:
+                    self._api_pending_clarifications.pop(clarify_id, None)
+
+        return _clarify
+
+    @staticmethod
+    def _public_api_clarification(state: Mapping[str, Any]) -> Dict[str, Any]:
+        """Return the client-safe projection of an internal pending entry."""
+
+        return {
+            key: value
+            for key, value in state.items()
+            if not str(key).startswith("_")
+        }
+
+    def _finalize_api_agent_cache_after_turn(
+        self,
+        *,
+        requested_session_id: Optional[str],
+        agent: Any,
+        result: Any,
+        execution_error: Optional[Exception],
+    ) -> Any:
+        """Refresh a successful cache entry or fence a terminally failed one.
+
+        Returns an evicted agent for release after it is removed from the
+        active-agent registry.  The cache pop happens while the per-session run
+        lock is still held, so a queued next turn can never acquire the failed
+        instance in the gap.
+        """
+
+        if agent is None or not requested_session_id:
+            return None
+        effective_session_id = getattr(agent, "session_id", requested_session_id)
+        outcome = _session_stream_outcome(result)
+        reusable = bool(
+            execution_error is None
+            and outcome.get("completed") is True
+            and isinstance(effective_session_id, str)
+            and effective_session_id == requested_session_id
+            and not getattr(agent, "_interrupt_requested", False)
+        )
+        if not reusable:
+            return self._pop_cached_api_agent(
+                requested_session_id,
+                expected_agent=agent,
+            )
+
+        message_count = self._api_session_message_count(requested_session_id)
+        with self._api_agent_cache_lock:
+            entry = self._api_agent_cache.get(requested_session_id)
+            if entry is not None and entry.get("agent") is agent:
+                entry["message_count"] = message_count
+                entry["last_used"] = time.monotonic()
+                self._api_agent_cache.move_to_end(requested_session_id)
+        return None
+
     def _create_agent(
         self,
         ephemeral_system_prompt: Optional[str] = None,
@@ -1614,6 +2490,8 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_complete_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        clarify_notify_callback=None,
+        reuse_cached_agent: bool = True,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -1717,6 +2595,100 @@ class APIServerAdapter(BasePlatformAdapter):
         fallback_model = GatewayRunner._load_fallback_model()
         isolated_runtime = _isolated_gateway_runtime_active()
 
+        cache_keys = GatewayRunner._extract_cache_busting_config(user_config)
+        cache_keys["api.isolated_runtime"] = isolated_runtime
+        from hermes_constants import get_hermes_home
+
+        hermes_home = str(get_hermes_home().expanduser().resolve())
+        cache_keys["api.profile_home_sha256"] = hashlib.sha256(
+            hermes_home.encode()
+        ).hexdigest()
+        cache_keys["api.session_id_sha256"] = (
+            hashlib.sha256(str(session_id).encode()).hexdigest()
+            if session_id
+            else ""
+        )
+        cache_keys["api.gateway_session_key_sha256"] = (
+            hashlib.sha256(gateway_session_key.encode()).hexdigest()
+            if gateway_session_key
+            else ""
+        )
+        cache_keys["api.runtime_command"] = str(
+            runtime_kwargs.get("command", "") or ""
+        )
+        cache_keys["api.runtime_args"] = list(runtime_kwargs.get("args") or [])
+        cache_keys["api.credential_pool_sha256"] = (
+            self._api_credential_pool_identity(
+                runtime_kwargs.get("credential_pool")
+            )
+        )
+        cache_signature = GatewayRunner._agent_config_signature(
+            model,
+            runtime_kwargs,
+            enabled_toolsets,
+            ephemeral_system_prompt or "",
+            cache_keys=cache_keys,
+        )
+        clarify_callback = self._make_api_clarify_callback(
+            session_id,
+            notify_callback=clarify_notify_callback,
+        )
+
+        cache_key = str(session_id or "")
+        current_message_count = self._api_session_message_count(session_id)
+        stale_agent = None
+        cached_agent = None
+        if reuse_cached_agent and cache_key:
+            now = time.monotonic()
+            with self._api_agent_cache_lock:
+                entry = self._api_agent_cache.get(cache_key)
+                if entry is not None:
+                    cached_count = entry.get("message_count")
+                    coherent = bool(
+                        entry.get("signature") == cache_signature
+                        and entry.get("session_id") == session_id
+                        and not (
+                            cached_count is not None
+                            and current_message_count is not None
+                            and cached_count != current_message_count
+                        )
+                        and now - float(entry.get("last_used", 0.0) or 0.0)
+                        <= API_AGENT_CACHE_IDLE_TTL_SECONDS
+                    )
+                    if coherent:
+                        cached_agent = entry.get("agent")
+                        entry["last_used"] = now
+                        self._api_agent_cache.move_to_end(cache_key)
+                    else:
+                        stale_agent = entry.get("agent")
+                        self._api_agent_cache.pop(cache_key, None)
+
+        if stale_agent is not None:
+            self._release_api_cached_agent(stale_agent)
+
+        if cached_agent is not None:
+            # Mirror the native gateway's per-turn reset while preserving the
+            # construction-frozen prompt, memory snapshot, and tool schemas.
+            GatewayRunner._init_cached_agent_for_turn(cached_agent, 0)
+            cached_agent.stream_delta_callback = stream_delta_callback
+            cached_agent.tool_progress_callback = tool_progress_callback
+            cached_agent.tool_start_callback = tool_start_callback
+            cached_agent.tool_complete_callback = tool_complete_callback
+            cached_agent.clarify_callback = clarify_callback
+            cached_agent.reasoning_config = reasoning_config
+            cached_agent.max_iterations = max_iterations
+            GatewayRunner._apply_fallback_chain_to_agent(
+                cached_agent,
+                fallback_model,
+            )
+            cached_agent._api_clarify_scope = self._api_clarify_scope(session_id)
+            logger.debug(
+                "Reusing API agent for session %s (sig=%s)",
+                cache_key,
+                cache_signature,
+            )
+            return cached_agent
+
         agent = AIAgent(
             model=model,
             **runtime_kwargs,
@@ -1731,6 +2703,7 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
+            clarify_callback=clarify_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
             reasoning_config=reasoning_config,
@@ -1738,6 +2711,28 @@ class APIServerAdapter(BasePlatformAdapter):
             skip_memory=isolated_runtime,
             skip_context_files=isolated_runtime,
         )
+        agent._api_clarify_scope = self._api_clarify_scope(session_id)
+        agent._api_cache_signature = cache_signature
+        agent._api_cache_session_id = session_id
+
+        evicted_agents: List[Any] = []
+        if reuse_cached_agent and cache_key:
+            now = time.monotonic()
+            with self._api_agent_cache_lock:
+                replaced = self._api_agent_cache.pop(cache_key, None)
+                if replaced is not None and replaced.get("agent") is not agent:
+                    evicted_agents.append(replaced.get("agent"))
+                self._api_agent_cache[cache_key] = {
+                    "agent": agent,
+                    "signature": cache_signature,
+                    "session_id": session_id,
+                    "message_count": current_message_count,
+                    "last_used": now,
+                }
+                evicted_agents.extend(self._prune_api_agent_cache_locked(now))
+        for evicted_agent in evicted_agents:
+            if evicted_agent is not agent:
+                self._release_api_cached_agent(evicted_agent)
         return agent
 
     # ------------------------------------------------------------------
@@ -1859,7 +2854,17 @@ class APIServerAdapter(BasePlatformAdapter):
             "model": self._model_name,
             "auth": {
                 "type": "bearer",
-                "required": bool(self._api_key),
+                "required": self._api_auth_configured(),
+                "approval_owner_authority": {
+                    "schema": self._approval_authority_schema(),
+                    "configured": self._approval_authority_configured(),
+                    "positive_choices": ["once", "session", "always"],
+                    "generic_bearer_choices": ["deny"],
+                    "max_ttl_seconds": (
+                        API_APPROVAL_AUTHORITY_MAX_TTL_SECONDS
+                    ),
+                    "nonce_replay_protected": True,
+                },
             },
             "runtime": {
                 "mode": "server_agent",
@@ -1881,8 +2886,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events_sse": True,
                 "run_stop": True,
                 "run_approval_response": True,
+                "approval_response": True,
+                "clarification_response": True,
                 "tool_progress_events": True,
                 "approval_events": True,
+                "clarification_events": True,
                 "session_resources": True,
                 "session_chat": True,
                 "session_chat_streaming": True,
@@ -1908,6 +2916,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
                 "run_approval": {"method": "POST", "path": "/v1/runs/{run_id}/approval"},
                 "run_stop": {"method": "POST", "path": "/v1/runs/{run_id}/stop"},
+                "approvals": {"method": "GET", "path": "/v1/approvals"},
+                "approval_response": {
+                    "method": "POST",
+                    "path": "/v1/approvals/{approval_id}/response",
+                },
+                "clarifications": {"method": "GET", "path": "/v1/clarifications"},
+                "clarification_response": {
+                    "method": "POST",
+                    "path": "/v1/clarifications/{clarify_id}/response",
+                },
                 "skills": {"method": "GET", "path": "/v1/skills"},
                 "toolsets": {"method": "GET", "path": "/v1/toolsets"},
                 "sessions": {"method": "GET", "path": "/api/sessions"},
@@ -1920,6 +2938,448 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_chat": {"method": "POST", "path": "/api/sessions/{session_id}/chat"},
                 "session_chat_stream": {"method": "POST", "path": "/api/sessions/{session_id}/chat/stream"},
             },
+        })
+
+    async def _handle_list_approvals(
+        self,
+        request: "web.Request",
+    ) -> "web.Response":
+        """GET /v1/approvals — poll one exact conversation's live approvals."""
+
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        if not self._api_auth_configured():
+            return web.json_response(
+                _openai_error(
+                    "Approval control requires API key authentication",
+                    code="approval_auth_required",
+                ),
+                status=403,
+            )
+        session_id, session_err = self._parse_api_control_session_id(
+            request,
+            required=True,
+        )
+        if session_err is not None:
+            return session_err
+
+        with self._api_approvals_lock:
+            candidates = [
+                dict(state)
+                for state in self._api_pending_approvals.values()
+                if state.get("session_id") == session_id
+                and state.get("status") == "pending"
+            ]
+
+        # Cross-check the adapter projection against the approval core.  A
+        # timeout/boundary may detach the core entry immediately before this
+        # poll; stale projection state must never be advertised as actionable.
+        from tools.approval import get_pending_gateway_approvals
+
+        live_ids_by_key: Dict[str, set[str]] = {}
+        for state in candidates:
+            approval_key = str(state.get("_approval_session_key", "") or "")
+            if approval_key not in live_ids_by_key:
+                live_ids_by_key[approval_key] = {
+                    str(item.get("approval_id", "") or "")
+                    for item in get_pending_gateway_approvals(approval_key)
+                }
+
+        pending: List[Dict[str, Any]] = []
+        with self._api_approvals_lock:
+            for state in candidates:
+                approval_id = str(state.get("id", "") or "")
+                approval_key = str(
+                    state.get("_approval_session_key", "") or ""
+                )
+                current = self._api_pending_approvals.get(approval_id)
+                if (
+                    current is None
+                    or current.get("session_id") != session_id
+                    or approval_id not in live_ids_by_key.get(approval_key, set())
+                ):
+                    self._api_pending_approvals.pop(approval_id, None)
+                    continue
+                pending.append(self._public_api_approval(current))
+
+        pending.sort(key=lambda item: float(item.get("created_at", 0.0) or 0.0))
+        return web.json_response({"object": "list", "data": pending})
+
+    async def _handle_resolve_approval(
+        self,
+        request: "web.Request",
+    ) -> "web.Response":
+        """POST one exact enum decision for one exact pending approval ID."""
+
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        if not self._api_auth_configured():
+            return web.json_response(
+                _openai_error(
+                    "Approval control requires API key authentication",
+                    code="approval_auth_required",
+                ),
+                status=403,
+            )
+        session_id, session_err = self._parse_api_control_session_id(
+            request,
+            required=True,
+        )
+        if session_err is not None:
+            return session_err
+
+        approval_id = str(request.match_info.get("approval_id", "") or "")
+        if re.fullmatch(r"[0-9a-f]{32}", approval_id) is None:
+            return web.json_response(
+                _openai_error("Invalid approval ID", code="invalid_approval_id"),
+                status=400,
+            )
+        body, body_err = await self._read_json_body(request)
+        if body_err is not None:
+            return body_err
+        choice = body.get("choice")
+        if not isinstance(choice, str) or choice not in API_APPROVAL_CHOICES:
+            return web.json_response(
+                _openai_error(
+                    "Invalid approval choice; expected once, session, always, or deny",
+                    code="invalid_approval_choice",
+                ),
+                status=400,
+            )
+        with self._api_approvals_lock:
+            state = self._api_pending_approvals.get(approval_id)
+            if state is None or state.get("session_id") != session_id:
+                # Do not reveal whether the opaque ID exists in another session.
+                return web.json_response(
+                    _openai_error(
+                        f"Approval not found: {approval_id}",
+                        code="approval_not_found",
+                    ),
+                    status=404,
+                )
+            if state.get("status") != "pending":
+                return web.json_response(
+                    _openai_error(
+                        "Approval is no longer pending",
+                        code="approval_not_pending",
+                    ),
+                    status=409,
+                )
+            if choice == "always" and not state.get("allow_permanent"):
+                return web.json_response(
+                    _openai_error(
+                        "Permanent approval is not offered for this action",
+                        code="permanent_approval_not_allowed",
+                    ),
+                    status=400,
+                )
+            approval_session_key = str(
+                state.get("_approval_session_key", "") or ""
+            )
+            event_callback = state.get("_event_callback")
+            capability_epoch_sha256 = str(
+                state.get("capability_epoch_sha256", "") or ""
+            )
+            authority_generation = state.get("_authority_generation")
+
+        from tools.approval import (
+            get_pending_gateway_approvals,
+            session_authority_fence_is_current,
+        )
+
+        core_state = next(
+            (
+                item
+                for item in get_pending_gateway_approvals(
+                    approval_session_key,
+                    include_authority_binding=True,
+                )
+                if item.get("approval_id") == approval_id
+            ),
+            None,
+        )
+        if (
+            core_state is None
+            or type(authority_generation) is not int
+            or core_state.get("_authority_generation") != authority_generation
+            or core_state.get("_capability_epoch_sha256")
+            != capability_epoch_sha256
+            or not session_authority_fence_is_current(
+                approval_session_key,
+                authority_generation,
+                capability_epoch_sha256,
+            )
+        ):
+            with self._api_approvals_lock:
+                self._api_pending_approvals.pop(approval_id, None)
+            return web.json_response(
+                _openai_error(
+                    "Approval authority epoch is stale",
+                    code="approval_authority_stale",
+                ),
+                status=409,
+            )
+
+        if (
+            choice == "deny"
+            and set(body) != {"choice"}
+        ) or (
+            choice != "deny"
+            and bool(set(body) - {"choice", "owner_authority"})
+        ):
+            return web.json_response(
+                _openai_error(
+                    "Positive approval accepts only owner_authority; deny "
+                    "accepts no authority fields",
+                    code="invalid_approval_response",
+                ),
+                status=400,
+            )
+
+        if choice != "deny":
+            authority_err = self._verify_and_consume_api_approval_authority(
+                body.get("owner_authority"),
+                session_id=session_id,
+                approval_id=approval_id,
+                choice=choice,
+                capability_epoch_sha256=capability_epoch_sha256,
+                request=request,
+            )
+            if authority_err is not None:
+                return authority_err
+
+        with self._api_approvals_lock:
+            current = self._api_pending_approvals.get(approval_id)
+            if (
+                current is not state
+                or current.get("session_id") != session_id
+                or current.get("status") != "pending"
+            ):
+                return web.json_response(
+                    _openai_error(
+                        "Approval is no longer pending",
+                        code="approval_not_pending",
+                    ),
+                    status=409,
+                )
+            current["status"] = "resolving"
+
+        from tools.approval import resolve_gateway_approval_by_id
+
+        resolved = resolve_gateway_approval_by_id(
+            approval_session_key,
+            approval_id,
+            choice,
+        )
+        with self._api_approvals_lock:
+            self._api_pending_approvals.pop(approval_id, None)
+        if resolved != 1:
+            return web.json_response(
+                _openai_error(
+                    "Approval expired before the response was accepted",
+                    code="approval_expired",
+                ),
+                status=409,
+            )
+
+        responded = {
+            "id": approval_id,
+            "object": "hermes.approval.response",
+            "status": "resolved",
+            "session_id": session_id,
+            "choice": choice,
+        }
+        if event_callback is not None:
+            try:
+                event_callback("approval.responded", dict(responded))
+            except Exception:
+                logger.debug(
+                    "API approval response event delivery failed", exc_info=True
+                )
+        return web.json_response(responded)
+
+    async def _handle_list_clarifications(
+        self,
+        request: "web.Request",
+    ) -> "web.Response":
+        """GET /v1/clarifications — poll pending structured questions."""
+
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        if not self._api_auth_configured():
+            return web.json_response(
+                _openai_error(
+                    "Clarification control requires API key authentication",
+                    code="clarification_auth_required",
+                ),
+                status=403,
+            )
+        session_id, session_err = self._parse_api_control_session_id(
+            request,
+            required=True,
+        )
+        if session_err is not None:
+            return session_err
+
+        with self._api_clarifications_lock:
+            pending = [
+                self._public_api_clarification(state)
+                for state in self._api_pending_clarifications.values()
+                if state.get("status") == "pending"
+                and state.get("session_id") == session_id
+            ]
+        pending.sort(key=lambda item: float(item.get("created_at", 0.0) or 0.0))
+        return web.json_response({"object": "list", "data": pending})
+
+    async def _handle_resolve_clarification(
+        self,
+        request: "web.Request",
+    ) -> "web.Response":
+        """POST a free-text or indexed answer to one pending clarification."""
+
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        if not self._api_auth_configured():
+            return web.json_response(
+                _openai_error(
+                    "Clarification control requires API key authentication",
+                    code="clarification_auth_required",
+                ),
+                status=403,
+            )
+        session_id, session_err = self._parse_api_control_session_id(
+            request,
+            required=True,
+        )
+        if session_err is not None:
+            return session_err
+
+        clarify_id = str(request.match_info.get("clarify_id", "") or "")
+        if re.fullmatch(r"[0-9a-f]{32}", clarify_id) is None:
+            return web.json_response(
+                _openai_error("Invalid clarification ID"),
+                status=400,
+            )
+        body, body_err = await self._read_json_body(request)
+        if body_err is not None:
+            return body_err
+
+        with self._api_clarifications_lock:
+            state = self._api_pending_clarifications.get(clarify_id)
+            if state is None or state.get("session_id") != session_id:
+                return web.json_response(
+                    _openai_error(
+                        f"Clarification not found: {clarify_id}",
+                        code="clarification_not_found",
+                    ),
+                    status=404,
+                )
+            if state.get("status") != "pending":
+                return web.json_response(
+                    _openai_error(
+                        "Clarification has already been resolved",
+                        code="clarification_already_resolved",
+                    ),
+                    status=409,
+                )
+
+            has_response = "response" in body
+            has_choice_index = "choice_index" in body
+            if has_response == has_choice_index:
+                return web.json_response(
+                    _openai_error(
+                        "Provide exactly one of 'response' or 'choice_index'",
+                        code="invalid_clarification_response",
+                    ),
+                    status=400,
+                )
+
+            if has_choice_index:
+                choice_index = body.get("choice_index")
+                choices = state.get("choices")
+                if (
+                    type(choice_index) is not int
+                    or not isinstance(choices, list)
+                    or choice_index < 0
+                    or choice_index >= len(choices)
+                ):
+                    return web.json_response(
+                        _openai_error(
+                            "choice_index is outside the offered choices",
+                            code="invalid_clarification_choice",
+                        ),
+                        status=400,
+                    )
+                response_text = str(choices[choice_index])
+            else:
+                raw_response = body.get("response")
+                if not isinstance(raw_response, str):
+                    return web.json_response(
+                        _openai_error(
+                            "response must be a string",
+                            code="invalid_clarification_response",
+                        ),
+                        status=400,
+                    )
+                response_text = raw_response.strip()
+                if not response_text or len(response_text) > API_CLARIFY_RESPONSE_MAX_LENGTH:
+                    return web.json_response(
+                        _openai_error(
+                            "response must be non-empty and at most 65536 characters",
+                            code="invalid_clarification_response",
+                        ),
+                        status=400,
+                    )
+            state["status"] = "resolving"
+
+        try:
+            from tools.clarify_gateway import resolve_gateway_clarify
+
+            resolved = resolve_gateway_clarify(clarify_id, response_text)
+        except Exception:
+            resolved = False
+            logger.exception("Failed to resolve API clarification")
+
+        if not resolved:
+            with self._api_clarifications_lock:
+                current = self._api_pending_clarifications.get(clarify_id)
+                if current is state:
+                    self._api_pending_clarifications.pop(clarify_id, None)
+            return web.json_response(
+                _openai_error(
+                    "Clarification expired before the response was accepted",
+                    code="clarification_expired",
+                ),
+                status=409,
+            )
+
+        run_id = str(state.get("_run_id", "") or "")
+        if run_id:
+            self._set_run_status(
+                run_id,
+                "running",
+                last_event="clarify.responded",
+            )
+            run_queue = self._run_streams.get(run_id)
+            if run_queue is not None:
+                try:
+                    run_queue.put_nowait({
+                        "event": "clarify.responded",
+                        "run_id": run_id,
+                        "clarify_id": clarify_id,
+                        "timestamp": time.time(),
+                    })
+                except Exception:
+                    pass
+
+        return web.json_response({
+            "object": "hermes.clarification.response",
+            "clarify_id": clarify_id,
+            "status": "resolved",
         })
 
     async def _handle_skills(self, request: "web.Request") -> "web.Response":
@@ -1954,13 +3414,11 @@ class APIServerAdapter(BasePlatformAdapter):
         })
 
     async def _handle_toolsets(self, request: "web.Request") -> "web.Response":
-        """GET /v1/toolsets — list toolsets and their resolved tools.
+        """GET /v1/toolsets — project the model's currently exposable schemas.
 
-        Returns the toolset surface the api_server platform actually exposes
-        to its agent: each toolset's enabled/configured state plus the
-        concrete tool names it expands to. This is the deterministic
-        equivalent of what a client would otherwise have to recover by
-        asking the model what tools it can call.
+        The projection is computed through the same registry/check_fn/dynamic
+        schema path as AIAgent construction.  Configured candidates that fail
+        a service gate never appear in ``tools`` or ``tool_schemas``.
         """
         auth_err = self._check_auth(request)
         if auth_err:
@@ -1973,28 +3431,63 @@ class APIServerAdapter(BasePlatformAdapter):
                 _get_platform_tools,
                 _toolset_has_keys,
             )
-            from toolsets import resolve_toolset
+            from model_tools import _compute_tool_definitions
+            from tools.registry import registry
 
             config = load_config()
-            enabled_toolsets = _get_platform_tools(
-                config,
-                "api_server",
-                include_default_mcp_servers=False,
+            enabled_toolsets = sorted(_get_platform_tools(
+                config, "api_server", include_default_mcp_servers=False
+            ))
+            definitions = _compute_tool_definitions(
+                enabled_toolsets=enabled_toolsets,
+                disabled_toolsets=None,
+                quiet_mode=True,
+                skip_tool_search_assembly=False,
             )
+            metadata = {
+                name: {"label": label, "description": desc}
+                for name, label, desc in _get_effective_configurable_toolsets()
+            }
+            grouped: Dict[str, List[Dict[str, Any]]] = {}
+            for definition in definitions:
+                function = definition.get("function")
+                if not isinstance(function, Mapping):
+                    continue
+                tool_name = str(function.get("name", "") or "")
+                if not tool_name:
+                    continue
+                toolset_name = registry.get_toolset_for_tool(tool_name)
+                if not toolset_name:
+                    # Dynamic schemas without a registered owner cannot be
+                    # projected as a fabricated toolset.
+                    continue
+                grouped.setdefault(toolset_name, []).append(dict(definition))
+
+            group_names = set(metadata) | set(enabled_toolsets) | set(grouped)
             data: List[Dict[str, Any]] = []
-            for name, label, desc in _get_effective_configurable_toolsets():
+            for name in sorted(group_names):
+                schemas = sorted(
+                    grouped.get(name, []),
+                    key=lambda item: str(
+                        item.get("function", {}).get("name", "")
+                    ),
+                )
                 try:
-                    tools = sorted(set(resolve_toolset(name)))
+                    configured = _toolset_has_keys(name, config)
                 except Exception:
-                    tools = []
-                is_enabled = name in enabled_toolsets
+                    configured = False
+                meta = metadata.get(name, {})
                 data.append({
                     "name": name,
-                    "label": label,
-                    "description": desc,
-                    "enabled": is_enabled,
-                    "configured": _toolset_has_keys(name, config),
-                    "tools": tools,
+                    "label": meta.get("label", name),
+                    "description": meta.get("description", ""),
+                    "enabled": name in enabled_toolsets,
+                    "configured": configured,
+                    "available": bool(schemas),
+                    "tools": [
+                        str(item["function"]["name"]) for item in schemas
+                    ],
+                    "tool_schemas": schemas,
                 })
         except Exception:
             logger.exception("GET /v1/toolsets failed")
@@ -2180,6 +3673,25 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(_openai_error(str(exc), code="invalid_title"), status=400)
         if body.get("end_reason"):
             db.end_session(session_id, str(body["end_reason"]))
+            evicted = self._pop_cached_api_agent(session_id)
+            if evicted is not None:
+                with self._api_agent_cache_lock:
+                    active = id(evicted) in self._api_active_agents
+                if active:
+                    try:
+                        evicted.interrupt("API session ended")
+                    except Exception:
+                        pass
+            self._release_api_cached_agent(evicted)
+            self._clear_api_clarify_scope(self._api_clarify_scope(session_id))
+            self._clear_api_approval_scope(
+                session_id,
+                approval_session_key=str(
+                    getattr(evicted, "_api_approval_session_key", session_id)
+                    or session_id
+                ),
+                cancel_core=True,
+            )
         session = db.get_session(session_id) or session
         return web.json_response({"object": "hermes.session", "session": self._session_response(session)})
 
@@ -2194,6 +3706,25 @@ class APIServerAdapter(BasePlatformAdapter):
             return err
         db = self._ensure_session_db()
         deleted = db.delete_session(session_id)
+        evicted = self._pop_cached_api_agent(session_id)
+        if evicted is not None:
+            with self._api_agent_cache_lock:
+                active = id(evicted) in self._api_active_agents
+            if active:
+                try:
+                    evicted.interrupt("API session deleted")
+                except Exception:
+                    pass
+        self._release_api_cached_agent(evicted)
+        self._clear_api_clarify_scope(self._api_clarify_scope(session_id))
+        self._clear_api_approval_scope(
+            session_id,
+            approval_session_key=str(
+                getattr(evicted, "_api_approval_session_key", session_id)
+                or session_id
+            ),
+            cancel_core=True,
+        )
         return web.json_response({"object": "hermes.session.deleted", "id": session_id, "deleted": bool(deleted)})
 
     async def _handle_session_messages(self, request: "web.Request") -> "web.Response":
@@ -2409,6 +3940,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 event_name = event_type.replace("tool.", "tool.")
                 _enqueue(event_name, {"message_id": message_id, "tool_name": tool_name, "preview": preview, "args": args})
 
+        def _clarify_notify(payload: Dict[str, Any]) -> None:
+            _enqueue("clarify.request", {"message_id": message_id, **payload})
+
+        def _approval_event(name: str, payload: Dict[str, Any]) -> None:
+            _enqueue(name, {"message_id": message_id, **payload})
+
         def _cleanup_state(state: Dict[str, Any]) -> None:
             if state.get("status") in {"cleanup_blocked", "cleanup_degraded"}:
                 _enqueue(
@@ -2440,6 +3977,8 @@ class APIServerAdapter(BasePlatformAdapter):
                     cleanup_ref=cleanup_ref,
                     cleanup_state_callback=_cleanup_state,
                     gateway_session_key=gateway_session_key,
+                    clarify_notify_callback=_clarify_notify,
+                    approval_event_callback=_approval_event,
                 )
                 if not self._api_cleanup_allows_terminal(cleanup_ref):
                     state = cleanup_ref[0] if cleanup_ref else None
@@ -2670,7 +4209,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # read arbitrary session history by guessing/enumerating session IDs.
         provided_session_id = request.headers.get("X-Hermes-Session-Id", "").strip()
         if provided_session_id:
-            if not self._api_key:
+            if not self._api_auth_configured():
                 logger.warning(
                     "Session continuation via X-Hermes-Session-Id rejected: "
                     "no API key configured.  Set API_SERVER_KEY to enable "
@@ -2795,6 +4334,17 @@ class APIServerAdapter(BasePlatformAdapter):
                     "status": "completed",
                 }))
 
+            def _on_clarify(payload: Dict[str, Any]) -> None:
+                _stream_q.put(("__clarify_request__", payload))
+
+            def _on_approval(name: str, payload: Dict[str, Any]) -> None:
+                tag = (
+                    "__approval_request__"
+                    if name == "approval.request"
+                    else "__approval_responded__"
+                )
+                _stream_q.put((tag, payload))
+
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             #
@@ -2821,6 +4371,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         cleanup_ref=cleanup_ref,
                         gateway_session_key=gateway_session_key,
                         route=route,
+                        clarify_notify_callback=_on_clarify,
+                        approval_event_callback=_on_approval,
                     )
                 )
             except Exception:
@@ -3012,11 +4564,27 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation history.  See #6972 for the original event,
                 #16588 for the ``toolCallId``/``status`` lifecycle fields.
                 """
-                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
-                    event_data = json.dumps(item[1])
-                    await response.write(
-                        f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
-                    )
+                if isinstance(item, tuple) and len(item) == 2:
+                    if item[0] == "__tool_progress__":
+                        event_data = json.dumps(item[1])
+                        await response.write(
+                            f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
+                        )
+                    elif item[0] == "__clarify_request__":
+                        event_data = json.dumps(item[1])
+                        await response.write(
+                            f"event: hermes.clarify.request\ndata: {event_data}\n\n".encode()
+                        )
+                    elif item[0] == "__approval_request__":
+                        event_data = json.dumps(item[1])
+                        await response.write(
+                            f"event: hermes.approval.request\ndata: {event_data}\n\n".encode()
+                        )
+                    elif item[0] == "__approval_responded__":
+                        event_data = json.dumps(item[1])
+                        await response.write(
+                            f"event: hermes.approval.responded\ndata: {event_data}\n\n".encode()
+                        )
                 else:
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
@@ -3624,6 +5192,30 @@ class APIServerAdapter(BasePlatformAdapter):
                         await _emit_tool_started(payload)
                     elif tag == "__tool_completed__":
                         await _emit_tool_completed(payload)
+                    elif tag == "__clarify_request__":
+                        await _write_event(
+                            "response.hermes.clarify.request",
+                            {
+                                "type": "response.hermes.clarify.request",
+                                **payload,
+                            },
+                        )
+                    elif tag == "__approval_request__":
+                        await _write_event(
+                            "response.hermes.approval.request",
+                            {
+                                "type": "response.hermes.approval.request",
+                                **payload,
+                            },
+                        )
+                    elif tag == "__approval_responded__":
+                        await _write_event(
+                            "response.hermes.approval.responded",
+                            {
+                                "type": "response.hermes.approval.responded",
+                                **payload,
+                            },
+                        )
                 elif isinstance(it, str):
                     # Batch text deltas — append to buffer, flush on timer
                     _batch_buf.append(it)
@@ -3962,6 +5554,19 @@ class APIServerAdapter(BasePlatformAdapter):
         gateway_session_key, key_err = self._parse_session_key_header(request)
         if key_err is not None:
             return key_err
+        provided_session_id, provided_session_err = (
+            self._parse_api_control_session_id(request, required=False)
+        )
+        if provided_session_err is not None:
+            return provided_session_err
+        if provided_session_id and not self._api_auth_configured():
+            return web.json_response(
+                _openai_error(
+                    "Responses session continuity requires API key authentication",
+                    code="session_auth_required",
+                ),
+                status=403,
+            )
 
         # Parse request body
         try:
@@ -4045,6 +5650,35 @@ class APIServerAdapter(BasePlatformAdapter):
             if instructions is None:
                 instructions = stored.get("instructions")
 
+        if (
+            provided_session_id
+            and stored_session_id
+            and provided_session_id != stored_session_id
+        ):
+            return web.json_response(
+                _openai_error(
+                    "X-Hermes-Session-Id does not match previous_response_id",
+                    code="response_session_mismatch",
+                ),
+                status=409,
+            )
+        if (
+            provided_session_id
+            and not conversation_history
+            and not previous_response_id
+        ):
+            try:
+                db = self._ensure_session_db()
+                if db is not None:
+                    conversation_history = db.get_messages_as_conversation(
+                        provided_session_id
+                    )
+            except Exception:
+                logger.debug(
+                    "Failed to load Responses API session history",
+                    exc_info=True,
+                )
+
         # Append new input messages to history (all but the last become history)
         for msg in input_messages[:-1]:
             conversation_history.append(msg)
@@ -4060,7 +5694,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
         # Reuse session from previous_response_id chain so the dashboard
         # groups the entire conversation under one session entry.
-        session_id = stored_session_id or str(uuid.uuid4())
+        session_id = provided_session_id or stored_session_id or str(uuid.uuid4())
 
         # Per-client model routing for /v1/responses (see model_routes).
         route = self._resolve_route(body.get("model"))
@@ -4109,6 +5743,17 @@ class APIServerAdapter(BasePlatformAdapter):
                     "result": function_result,
                 }))
 
+            def _on_clarify(payload: Dict[str, Any]) -> None:
+                _stream_q.put(("__clarify_request__", payload))
+
+            def _on_approval(name: str, payload: Dict[str, Any]) -> None:
+                tag = (
+                    "__approval_request__"
+                    if name == "approval.request"
+                    else "__approval_responded__"
+                )
+                _stream_q.put((tag, payload))
+
             agent_ref = [None]
             cleanup_ref = [None]
             self._publish_api_authority_not_created(cleanup_ref, None)
@@ -4128,6 +5773,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         cleanup_ref=cleanup_ref,
                         gateway_session_key=gateway_session_key,
                         route=route,
+                        clarify_notify_callback=_on_clarify,
+                        approval_event_callback=_on_approval,
                     )
                 )
             except Exception:
@@ -4403,10 +6050,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
-            if prompt and _scan_cron_prompt is not None:
-                scan_error = _scan_cron_prompt(prompt)
-                if scan_error:
-                    return web.json_response({"error": scan_error}, status=400)
             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
                 return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
 
@@ -4417,6 +6060,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 "deliver": deliver,
                 "origin": self._cron_origin_from_request(request),
             }
+            # These are ordinary create-time routing axes supported by the
+            # cron store. In sealed production, create_job mechanically fills
+            # omitted values with the attested route and rejects explicit
+            # alternatives; forwarding supplied values prevents a caller's
+            # alternate route from being silently ignored.
+            if "provider" in body:
+                kwargs["provider"] = body["provider"]
+            if "model" in body:
+                kwargs["model"] = body["model"]
             if skills:
                 kwargs["skills"] = skills
             if repeat is not None:
@@ -4473,10 +6125,6 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
-            if sanitized.get("prompt") and _scan_cron_prompt is not None:
-                scan_error = _scan_cron_prompt(sanitized["prompt"])
-                if scan_error:
-                    return web.json_response({"error": scan_error}, status=400)
             job = _cron_update(job_id, sanitized)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
@@ -5216,6 +6864,19 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent.interrupt(reason)
             except Exception:
                 pass
+            # interrupt() cannot wake a thread blocked in Event.wait().  Cancel
+            # the exact API clarify scope so the worker can unwind and perform
+            # its mandatory capability cleanup.
+            self._clear_api_clarify_scope(
+                str(getattr(agent, "_api_clarify_scope", "") or "")
+            )
+            self._clear_api_approval_scope(
+                str(getattr(agent, "session_id", "") or ""),
+                approval_session_key=str(
+                    getattr(agent, "_api_approval_session_key", "") or ""
+                ),
+                cancel_core=True,
+            )
 
         try:
             await asyncio.wait_for(
@@ -5257,6 +6918,8 @@ class APIServerAdapter(BasePlatformAdapter):
         cleanup_state_callback=None,
         gateway_session_key: Optional[str] = None,
         route: Optional[Dict[str, Any]] = None,
+        clarify_notify_callback=None,
+        approval_event_callback=None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -5291,103 +6954,204 @@ class APIServerAdapter(BasePlatformAdapter):
 
         def _run():
             from gateway.session_context import clear_session_vars
+            from tools.approval import (
+                clear_session_local,
+                register_gateway_notify,
+                reset_current_session_key,
+                set_current_session_key,
+                unregister_gateway_notify,
+            )
 
-            bound_session_key = gateway_session_key or session_id or ""
-            try:
-                tokens = self._bind_api_server_session(
-                    chat_id=session_id or "",
-                    session_key=bound_session_key,
-                    session_id=session_id or "",
-                )
-            except Exception:
-                self._publish_api_authority_not_created(
-                    cleanup_ref,
-                    cleanup_state_callback,
-                )
-                raise
-            bound_capability_epoch_sha256 = tokens.capability_epoch_sha256
-            cleanup_handle = _APIServerCleanupHandle(
-                bound_session_key,
-                bound_capability_epoch_sha256,
-                contextvars.copy_context(),
-            )
-            self._publish_api_cleanup_state(
-                cleanup_handle,
-                cleanup_ref,
-                cleanup_state_callback,
-            )
-            result: Any = None
-            usage = {
-                "input_tokens": 0,
-                "output_tokens": 0,
-                "total_tokens": 0,
-            }
-            execution_error: Optional[Exception] = None
-            try:
+            # Cached agents carry mutable callbacks/transcript state.  Serialize
+            # exact-session turns from cache lookup through final cache fencing.
+            with self._api_agent_run_lock_for(session_id):
                 try:
-                    agent = self._create_agent(
-                        ephemeral_system_prompt=ephemeral_system_prompt,
-                        session_id=session_id,
-                        stream_delta_callback=stream_delta_callback,
-                        tool_progress_callback=tool_progress_callback,
-                        tool_start_callback=tool_start_callback,
-                        tool_complete_callback=tool_complete_callback,
-                        gateway_session_key=gateway_session_key,
-                        route=route,
-                    )
-                    owned_agent_ref[0] = agent
-                    self._api_active_agents[id(agent)] = agent
-                    if agent_ref is not None:
-                        agent_ref[0] = agent
-                    effective_task_id = session_id or str(uuid.uuid4())
-                    result = agent.run_conversation(
-                        user_message=user_message,
-                        conversation_history=conversation_history,
-                        task_id=effective_task_id,
-                    )
-                    if isinstance(result, Mapping) and not isinstance(result, dict):
-                        result = dict(result)
-                    usage = {
-                        "input_tokens": getattr(agent, "session_prompt_tokens", 0)
-                        or 0,
-                        "output_tokens": getattr(
-                            agent, "session_completion_tokens", 0
-                        )
-                        or 0,
-                        "total_tokens": getattr(agent, "session_total_tokens", 0)
-                        or 0,
-                    }
-                    # Include the effective session ID in the result so callers
-                    # (e.g. X-Hermes-Session-Id header) can track compression-
-                    # triggered session rotations. (#16938)
-                    _eff_sid = getattr(agent, "session_id", session_id)
+                    # The long-term-memory key may span conversation rotations;
+                    # dangerous-action authority must be exact-conversation
+                    # scoped instead.
+                    bound_session_key = session_id or gateway_session_key or ""
+                    stable_memory_key = str(gateway_session_key or "")
                     if (
-                        isinstance(result, dict)
-                        and isinstance(_eff_sid, str)
-                        and _eff_sid
+                        stable_memory_key
+                        and stable_memory_key != bound_session_key
                     ):
-                        result["session_id"] = _eff_sid
-                except Exception as exc:
-                    execution_error = exc
-            finally:
-                try:
-                    self._attempt_api_server_cleanup_once(
-                        cleanup_handle,
-                        use_copied_context=False,
-                        cleanup_ref=cleanup_ref,
-                        cleanup_state_callback=cleanup_state_callback,
+                        # Older API versions used the long-lived memory key as
+                        # their local approval namespace.  Fence any residual
+                        # process-local authority before the exact conversation
+                        # starts.  No durable authority envelope is issued for
+                        # this memory-only key in the new runtime.
+                        clear_session_local(stable_memory_key)
+                    approval_token = None
+                    approval_notify_registered = False
+                    try:
+                        tokens = self._bind_api_server_session(
+                            chat_id=session_id or "",
+                            session_key=bound_session_key,
+                            session_id=session_id or "",
+                        )
+                    except Exception:
+                        self._publish_api_authority_not_created(
+                            cleanup_ref,
+                            cleanup_state_callback,
+                        )
+                        raise
+                    bound_capability_epoch_sha256 = tokens.capability_epoch_sha256
+                    cleanup_handle = _APIServerCleanupHandle(
+                        bound_session_key,
+                        bound_capability_epoch_sha256,
+                        contextvars.copy_context(),
                     )
-                finally:
-                    clear_session_vars(tokens)
-            return result, usage, execution_error, cleanup_handle
+                    self._publish_api_cleanup_state(
+                        cleanup_handle,
+                        cleanup_ref,
+                        cleanup_state_callback,
+                    )
+                    result: Any = None
+                    usage = {
+                        "input_tokens": 0,
+                        "output_tokens": 0,
+                        "total_tokens": 0,
+                    }
+                    execution_error: Optional[Exception] = None
+                    agent = None
+                    try:
+                        try:
+                            approval_token = set_current_session_key(
+                                bound_session_key
+                            )
+                            approval_notify = self._make_api_approval_notify(
+                                session_id=str(session_id or ""),
+                                approval_session_key=bound_session_key,
+                                event_callback=approval_event_callback,
+                            )
+                            register_gateway_notify(
+                                bound_session_key,
+                                approval_notify,
+                            )
+                            approval_notify_registered = True
+                            agent = self._create_agent(
+                                ephemeral_system_prompt=ephemeral_system_prompt,
+                                session_id=session_id,
+                                stream_delta_callback=stream_delta_callback,
+                                tool_progress_callback=tool_progress_callback,
+                                tool_start_callback=tool_start_callback,
+                                tool_complete_callback=tool_complete_callback,
+                                gateway_session_key=gateway_session_key,
+                                route=route,
+                                clarify_notify_callback=clarify_notify_callback,
+                            )
+                            owned_agent_ref[0] = agent
+                            agent._api_approval_session_key = bound_session_key
+                            with self._api_agent_cache_lock:
+                                self._api_active_agents[id(agent)] = agent
+                            if agent_ref is not None:
+                                agent_ref[0] = agent
+                            effective_task_id = session_id or str(uuid.uuid4())
+                            result = agent.run_conversation(
+                                user_message=user_message,
+                                conversation_history=conversation_history,
+                                task_id=effective_task_id,
+                            )
+                            if isinstance(result, Mapping) and not isinstance(result, dict):
+                                result = dict(result)
+                            usage = {
+                                "input_tokens": getattr(
+                                    agent, "session_prompt_tokens", 0
+                                )
+                                or 0,
+                                "output_tokens": getattr(
+                                    agent, "session_completion_tokens", 0
+                                )
+                                or 0,
+                                "total_tokens": getattr(
+                                    agent, "session_total_tokens", 0
+                                )
+                                or 0,
+                            }
+                            # Include the effective session ID in the result so
+                            # callers can track compression-triggered rotations.
+                            _eff_sid = getattr(agent, "session_id", session_id)
+                            if (
+                                isinstance(result, dict)
+                                and isinstance(_eff_sid, str)
+                                and _eff_sid
+                            ):
+                                result["session_id"] = _eff_sid
+                        except Exception as exc:
+                            execution_error = exc
+                    finally:
+                        try:
+                            self._attempt_api_server_cleanup_once(
+                                cleanup_handle,
+                                use_copied_context=False,
+                                cleanup_ref=cleanup_ref,
+                                cleanup_state_callback=cleanup_state_callback,
+                            )
+                        finally:
+                            try:
+                                if approval_notify_registered:
+                                    unregister_gateway_notify(bound_session_key)
+                            finally:
+                                try:
+                                    if approval_token is not None:
+                                        reset_current_session_key(approval_token)
+                                finally:
+                                    self._clear_api_approval_scope(
+                                        session_id,
+                                        approval_session_key=bound_session_key,
+                                    )
+                                    try:
+                                        if (
+                                            stable_memory_key
+                                            and stable_memory_key
+                                            != bound_session_key
+                                        ):
+                                            # A legacy/internal caller must not
+                                            # be able to leave fresh authority
+                                            # under the memory scope during this
+                                            # exact-conversation turn.
+                                            clear_session_local(
+                                                stable_memory_key,
+                                                retire_capability_epoch_sha256=(
+                                                    bound_capability_epoch_sha256
+                                                ),
+                                            )
+                                    finally:
+                                        clear_session_vars(tokens)
+
+                    evicted_agent = self._finalize_api_agent_cache_after_turn(
+                        requested_session_id=session_id,
+                        agent=agent,
+                        result=result,
+                        execution_error=execution_error,
+                    )
+                    return (
+                        result,
+                        usage,
+                        execution_error,
+                        cleanup_handle,
+                        evicted_agent,
+                    )
+                except Exception:
+                    # Binding/cleanup failures are terminal for cache purposes.
+                    # Fence the exact instance before the serialized lock opens.
+                    evicted = self._pop_cached_api_agent(
+                        session_id,
+                        expected_agent=owned_agent_ref[0],
+                    )
+                    if evicted is not None:
+                        self._release_api_cached_agent(evicted)
+                    raise
 
         async def _own_execution_and_cleanup(executor_future):
+            evicted_agent = None
             try:
                 (
                     result,
                     usage,
                     execution_error,
                     cleanup_handle,
+                    evicted_agent,
                 ) = await asyncio.shield(executor_future)
                 if cleanup_handle.status != "confirmed":
                     retry_task = self._ensure_api_cleanup_retry(
@@ -5399,8 +7163,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 return result, usage, execution_error
             finally:
                 agent = owned_agent_ref[0]
+                release_deferred = False
                 if agent is not None:
-                    self._api_active_agents.pop(id(agent), None)
+                    with self._api_agent_cache_lock:
+                        self._api_active_agents.pop(id(agent), None)
+                        if id(agent) in self._api_deferred_agent_releases:
+                            self._api_deferred_agent_releases.discard(id(agent))
+                            release_deferred = True
+                if evicted_agent is not None:
+                    self._release_api_cached_agent(evicted_agent)
+                elif release_deferred:
+                    self._release_api_cached_agent(agent)
                 self._inflight_agent_runs -= 1
 
         self._inflight_agent_runs += 1
@@ -5589,6 +7362,35 @@ class APIServerAdapter(BasePlatformAdapter):
             except Exception:
                 pass
 
+        def _clarify_notify(payload: Dict[str, Any]) -> None:
+            clarify_id = str(payload.get("id", "") or "")
+            if clarify_id:
+                with self._api_clarifications_lock:
+                    state = self._api_pending_clarifications.get(clarify_id)
+                    if state is not None:
+                        state["_run_id"] = run_id
+
+            def _publish() -> None:
+                self._set_run_status(
+                    run_id,
+                    "waiting_for_clarification",
+                    last_event="clarify.request",
+                )
+                try:
+                    q.put_nowait({
+                        "event": "clarify.request",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        **payload,
+                    })
+                except Exception:
+                    pass
+
+            try:
+                loop.call_soon_threadsafe(_publish)
+            except RuntimeError:
+                pass
+
         self._set_run_status(
             run_id,
             "queued",
@@ -5603,6 +7405,7 @@ class APIServerAdapter(BasePlatformAdapter):
         async def _run_and_close():
             reservation.release()
             terminalized = False
+            agent = None
             try:
                 self._set_run_status(run_id, "running")
                 agent = self._create_agent(
@@ -5612,29 +7415,98 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=event_cb,
                     gateway_session_key=gateway_session_key,
                     route=route,
+                    clarify_notify_callback=_clarify_notify,
+                    reuse_cached_agent=False,
                 )
                 self._active_run_agents[run_id] = agent
 
                 def _approval_notify(approval_data: Dict[str, Any]) -> None:
-                    event = dict(approval_data or {})
+                    approval_id = str(
+                        (approval_data or {}).get("approval_id", "") or ""
+                    )
+                    from tools.approval import get_pending_gateway_approvals
+
+                    core_state = next(
+                        (
+                            item
+                            for item in get_pending_gateway_approvals(
+                                approval_session_key,
+                                include_authority_binding=True,
+                            )
+                            if item.get("approval_id") == approval_id
+                        ),
+                        {},
+                    )
+                    capability_epoch_sha256 = str(
+                        core_state.get(
+                            "_capability_epoch_sha256", ""
+                        )
+                        or ""
+                    )
+                    if (
+                        re.fullmatch(r"[0-9a-f]{32}", approval_id) is None
+                        or re.fullmatch(
+                            r"[0-9a-f]{64}", capability_epoch_sha256
+                        )
+                        is None
+                    ):
+                        raise RuntimeError(
+                            "run approval core returned invalid binding metadata"
+                        )
                     # Redact credentials from the command before it enters the
                     # SSE/API event stream — same egress bug as #48456, second
                     # transport: API/desktop clients would otherwise receive the
                     # raw command Tirith flagged. Reuse the gateway seam.
-                    if "command" in event:
-                        from gateway.run import _redact_approval_command
+                    from gateway.run import _redact_approval_command
 
-                        event["command"] = _redact_approval_command(event.get("command"))
-                    event.update({
+                    redacted_command = _redact_approval_command(
+                        (approval_data or {}).get("command", "")
+                    )
+
+                    allow_permanent = bool(
+                        (approval_data or {}).get("allow_permanent", False)
+                    )
+                    choices = list(API_APPROVAL_CHOICES)
+                    if not allow_permanent:
+                        choices.remove("always")
+                    event = {
                         "event": "approval.request",
                         "run_id": run_id,
+                        "session_id": session_id,
+                        "approval_id": approval_id,
                         "timestamp": time.time(),
-                        "choices": ["once", "session", "always", "deny"],
-                    })
+                        "command": redacted_command,
+                        "description": redact_sensitive_text(
+                            str(
+                                (approval_data or {}).get(
+                                    "description", ""
+                                )
+                                or ""
+                            )
+                        ),
+                        "pattern_keys": [
+                            redact_sensitive_text(str(value))
+                            for value in (
+                                (approval_data or {}).get("pattern_keys") or []
+                            )
+                        ],
+                        "allow_permanent": allow_permanent,
+                        "choices": choices,
+                        "owner_authority_required_for": [
+                            value for value in choices if value != "deny"
+                        ],
+                        "owner_authority_schema": (
+                            self._approval_authority_schema()
+                        ),
+                        "capability_epoch_sha256": (
+                            capability_epoch_sha256
+                        ),
+                    }
                     self._set_run_status(
                         run_id,
                         "waiting_for_approval",
                         last_event="approval.request",
+                        pending_approval_id=approval_id,
                     )
                     try:
                         loop.call_soon_threadsafe(q.put_nowait, event)
@@ -5905,6 +7777,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     self._active_run_agents.pop(run_id, None)
                     self._active_run_tasks.pop(run_id, None)
                     self._run_approval_sessions.pop(run_id, None)
+                    self._release_api_cached_agent(agent)
 
         try:
             task = asyncio.create_task(_run_and_close())
@@ -5995,29 +7868,51 @@ class APIServerAdapter(BasePlatformAdapter):
 
 
     async def _handle_run_approval(self, request: "web.Request") -> "web.Response":
-        """POST /v1/runs/{run_id}/approval — resolve a pending run approval."""
+        """Resolve one exact run approval without FIFO or blanket authority."""
         auth_err = self._check_auth(request)
         if auth_err:
             return auth_err
+        if not self._api_auth_configured():
+            return web.json_response(
+                _openai_error(
+                    "Run approval control requires API key authentication",
+                    code="approval_auth_required",
+                ),
+                status=403,
+            )
+
+        session_id, session_err = self._parse_api_control_session_id(
+            request,
+            required=True,
+        )
+        if session_err is not None:
+            return session_err
 
         run_id = request.match_info["run_id"]
         status = self._run_statuses.get(run_id)
-        if status is None:
+        if status is None or str(status.get("session_id", "") or "") != session_id:
             return web.json_response(
                 _openai_error(f"Run not found: {run_id}", code="run_not_found"),
                 status=404,
             )
 
-        try:
-            body = await request.json()
-        except Exception:
-            return web.json_response(_openai_error("Invalid JSON"), status=400)
-
-        raw_choice = str(body.get("choice", "")).strip().lower()
-        aliases = {"approve": "once", "approved": "once", "allow": "once"}
-        choice = aliases.get(raw_choice, raw_choice)
-        allowed = {"once", "session", "always", "deny"}
-        if choice not in allowed:
+        body, body_err = await self._read_json_body(request)
+        if body_err is not None:
+            return body_err
+        approval_id = body.get("approval_id")
+        if (
+            not isinstance(approval_id, str)
+            or re.fullmatch(r"[0-9a-f]{32}", approval_id) is None
+        ):
+            return web.json_response(
+                _openai_error(
+                    "Run approval requires one exact opaque approval_id",
+                    code="invalid_approval_id",
+                ),
+                status=400,
+            )
+        choice = body.get("choice")
+        if not isinstance(choice, str) or choice not in API_APPROVAL_CHOICES:
             return web.json_response(
                 _openai_error(
                     "Invalid approval choice; expected one of: once, session, always, deny",
@@ -6025,9 +7920,27 @@ class APIServerAdapter(BasePlatformAdapter):
                 ),
                 status=400,
             )
+        if (
+            choice == "deny"
+            and set(body) != {"approval_id", "choice"}
+        ) or (
+            choice != "deny"
+            and bool(
+                set(body)
+                - {"approval_id", "choice", "owner_authority"}
+            )
+        ):
+            return web.json_response(
+                _openai_error(
+                    "Positive run approval accepts only owner_authority; deny "
+                    "accepts no authority fields",
+                    code="invalid_approval_response",
+                ),
+                status=400,
+            )
 
         approval_session_key = self._run_approval_sessions.get(run_id)
-        if not approval_session_key:
+        if approval_session_key != run_id:
             return web.json_response(
                 _openai_error(
                     f"Run has no active approval session: {run_id}",
@@ -6036,38 +7949,101 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=409,
             )
 
-        resolve_all = (
-            _coerce_request_bool(body.get("all"), default=False)
-            or _coerce_request_bool(body.get("resolve_all"), default=False)
+        from tools.approval import (
+            get_pending_gateway_approvals,
+            resolve_gateway_approval_by_id,
+            session_authority_fence_is_current,
         )
-        try:
-            from tools.approval import resolve_gateway_approval
-
-            resolved = resolve_gateway_approval(
-                approval_session_key,
-                choice,
-                resolve_all=resolve_all,
-            )
-        except Exception as exc:
-            logger.exception("[api_server] approval resolution failed for run %s", run_id)
-            return web.json_response(_openai_error(str(exc)), status=500)
-
-        if resolved <= 0:
+        pending = next(
+            (
+                item
+                for item in get_pending_gateway_approvals(
+                    approval_session_key,
+                    include_authority_binding=True,
+                )
+                if item.get("approval_id") == approval_id
+            ),
+            None,
+        )
+        if pending is None:
             return web.json_response(
                 _openai_error(
-                    f"Run has no pending approval: {run_id}",
+                    "Run approval is not pending or has expired",
                     code="approval_not_pending",
                 ),
                 status=409,
             )
 
-        self._set_run_status(run_id, "running", last_event="approval.responded")
+        capability_epoch_sha256 = str(
+            pending.get("_capability_epoch_sha256", "") or ""
+        )
+        authority_generation = pending.get("_authority_generation")
+        if (
+            re.fullmatch(r"[0-9a-f]{64}", capability_epoch_sha256) is None
+            or type(authority_generation) is not int
+            or not session_authority_fence_is_current(
+                approval_session_key,
+                authority_generation,
+                capability_epoch_sha256,
+            )
+        ):
+            return web.json_response(
+                _openai_error(
+                    "Run approval authority epoch is stale",
+                    code="approval_authority_stale",
+                ),
+                status=409,
+            )
+        if choice == "always" and not pending.get("allow_permanent", False):
+            return web.json_response(
+                _openai_error(
+                    "Permanent approval is not offered for this action",
+                    code="permanent_approval_not_allowed",
+                ),
+                status=400,
+            )
+        if choice != "deny":
+            authority_err = self._verify_and_consume_api_approval_authority(
+                body.get("owner_authority"),
+                session_id=session_id,
+                run_id=run_id,
+                approval_id=approval_id,
+                choice=choice,
+                capability_epoch_sha256=capability_epoch_sha256,
+                request=request,
+            )
+            if authority_err is not None:
+                return authority_err
+
+        resolved = resolve_gateway_approval_by_id(
+            approval_session_key,
+            approval_id,
+            choice,
+        )
+
+        if resolved != 1:
+            return web.json_response(
+                _openai_error(
+                    "Run approval expired before the response was accepted",
+                    code="approval_not_pending",
+                ),
+                status=409,
+            )
+
+        self._set_run_status(
+            run_id,
+            "running",
+            last_event="approval.responded",
+            pending_approval_id=None,
+        )
         q = self._run_streams.get(run_id)
         if q is not None:
             try:
                 q.put_nowait({
                     "event": "approval.responded",
                     "run_id": run_id,
+                    "session_id": session_id,
+                    "approval_id": approval_id,
                     "timestamp": time.time(),
                     "choice": choice,
                     "resolved": resolved,
@@ -6078,6 +8054,8 @@ class APIServerAdapter(BasePlatformAdapter):
         return web.json_response({
             "object": "hermes.run.approval_response",
             "run_id": run_id,
+            "session_id": session_id,
+            "approval_id": approval_id,
             "choice": choice,
             "resolved": resolved,
         })
@@ -6109,6 +8087,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent.interrupt("Stop requested via API")
             except Exception:
                 pass
+            self._clear_api_clarify_scope(
+                str(getattr(agent, "_api_clarify_scope", "") or "")
+            )
 
         if task is not None and not task.done():
             # Bounded wait: run_conversation() executes in the default
@@ -6177,7 +8158,7 @@ class APIServerAdapter(BasePlatformAdapter):
 
     def _api_key_passes_startup_guard(self) -> bool:
         """Return True when API_SERVER_KEY is present and strong enough to start."""
-        if not self._api_key:
+        if not self._api_auth_configured():
             logger.error(
                 "[%s] Refusing to start: API_SERVER_KEY is required for the API server, "
                 "including loopback-only binds on %s.",
@@ -6185,6 +8166,8 @@ class APIServerAdapter(BasePlatformAdapter):
             )
             return False
 
+        if self._api_bearer_verifier is not None:
+            return True
         try:
             from hermes_cli.auth import has_usable_secret
             if not has_usable_secret(self._api_key, min_length=16):
@@ -6238,6 +8221,18 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_get("/v1/approvals", self._handle_list_approvals)
+            self._app.router.add_post(
+                "/v1/approvals/{approval_id}/response",
+                self._handle_resolve_approval,
+            )
+            self._app.router.add_get(
+                "/v1/clarifications", self._handle_list_clarifications
+            )
+            self._app.router.add_post(
+                "/v1/clarifications/{clarify_id}/response",
+                self._handle_resolve_clarification,
+            )
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)
@@ -6373,6 +8368,16 @@ class APIServerAdapter(BasePlatformAdapter):
                 agent.interrupt("API server shutting down")
             except Exception:
                 pass
+            self._clear_api_clarify_scope(
+                str(getattr(agent, "_api_clarify_scope", "") or "")
+            )
+            self._clear_api_approval_scope(
+                str(getattr(agent, "session_id", "") or ""),
+                approval_session_key=str(
+                    getattr(agent, "_api_approval_session_key", "") or ""
+                ),
+                cancel_core=True,
+            )
 
         # Graceful shutdown is itself an authority boundary.  Keep retrying
         # every retained exact binding and do not report a clean disconnect
@@ -6422,6 +8427,47 @@ class APIServerAdapter(BasePlatformAdapter):
                 current = asyncio.current_task()
                 if current is not None and hasattr(current, "uncancel"):
                     current.uncancel()
+
+        # No worker owns these conversation agents now.  Release every cached
+        # provider client and cancel any clarification that raced shutdown.
+        api_agent_cache = getattr(self, "_api_agent_cache", {})
+        cache_lock = getattr(self, "_api_agent_cache_lock", threading.RLock())
+        deferred_releases = getattr(self, "_api_deferred_agent_releases", set())
+        with cache_lock:
+            cached_agents = {
+                id(entry.get("agent")): entry.get("agent")
+                for entry in api_agent_cache.values()
+                if entry.get("agent") is not None
+            }
+            api_agent_cache.clear()
+            deferred_releases.clear()
+        for agent in cached_agents.values():
+            self._release_api_cached_agent(agent)
+        clarifications_lock = getattr(self, "_api_clarifications_lock", threading.RLock())
+        pending_clarifications = getattr(self, "_api_pending_clarifications", {})
+        with clarifications_lock:
+            clarify_scopes = {
+                str(state.get("_scope", "") or "")
+                for state in pending_clarifications.values()
+            }
+        for scope in clarify_scopes:
+            self._clear_api_clarify_scope(scope)
+        approvals_lock = getattr(self, "_api_approvals_lock", threading.RLock())
+        pending_approvals = getattr(self, "_api_pending_approvals", {})
+        with approvals_lock:
+            approval_scopes = {
+                (
+                    str(state.get("session_id", "") or ""),
+                    str(state.get("_approval_session_key", "") or ""),
+                )
+                for state in pending_approvals.values()
+            }
+        for session_id, approval_session_key in approval_scopes:
+            self._clear_api_approval_scope(
+                session_id,
+                approval_session_key=approval_session_key,
+                cancel_core=True,
+            )
 
         if self._runner:
             await self._runner.cleanup()

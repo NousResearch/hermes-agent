@@ -398,8 +398,8 @@ class TestAutoVoiceReply:
 
     # -- Edge cases --------------------------------------------------------
 
-    def test_error_response_skipped(self, runner):
-        assert self._call(runner, "all", MessageType.TEXT, response="Error: boom") is False
+    def test_response_prefix_does_not_classify_voice_delivery(self, runner):
+        assert self._call(runner, "all", MessageType.TEXT, response="Error: boom") is True
 
     def test_empty_response_skipped(self, runner):
         assert self._call(runner, "all", MessageType.TEXT, response="") is False
@@ -3005,11 +3005,11 @@ class TestVoiceTTSPlayback:
         runner = self._make_runner()
         assert self._call_should_reply(runner, "voice_only", MessageType.TEXT) is False
 
-    def test_error_response_no_tts(self):
-        """Error response: no TTS regardless of voice_mode."""
+    def test_response_prefix_does_not_classify_tts(self):
+        """Model-authored wording cannot suppress an otherwise enabled reply."""
         from gateway.platforms.base import MessageType
         runner = self._make_runner()
-        assert self._call_should_reply(runner, "all", MessageType.TEXT, response="Error: boom") is False
+        assert self._call_should_reply(runner, "all", MessageType.TEXT, response="Error: boom") is True
 
     def test_empty_response_no_tts(self):
         """Empty response: no TTS."""

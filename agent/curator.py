@@ -593,144 +593,58 @@ def _reports_root() -> Path:
     return root
 
 
-def _needle_in_path_component(needle: str, path: str) -> bool:
-    """Check if *needle* is a complete filename stem or directory name in *path*.
-
-    Unlike simple substring matching, this avoids false positives where short
-    skill names are embedded in longer filenames (e.g. "api" matching
-    "references/api-design.md").  Hyphens and underscores are normalised so
-    "open-webui-setup" matches "open_webui_setup.md".
-    """
-    norm_needle = needle.replace("-", "_")
-    for part in path.replace("\\", "/").split("/"):
-        if not part:
-            continue
-        stem = part.rsplit(".", 1)[0] if "." in part else part
-        if stem.replace("-", "_") == norm_needle:
-            return True
-    return False
-
-
 def _classify_removed_skills(
     removed: List[str],
     added: List[str],
     after_names: Set[str],
     tool_calls: List[Dict[str, Any]],
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """Split ``removed`` into consolidated vs pruned.
+    """Project explicit model-authored delete declarations for reporting.
 
-    A removed skill is "consolidated" when the curator absorbed its content
-    into another skill (an umbrella) during this run — the content still
-    lives, just under a different name. A removed skill is "pruned" when the
-    curator archived it for staleness/irrelevance without preserving its
-    content elsewhere.
-
-    Heuristic: scan this run's ``skill_manage`` tool calls and look for
-    ``write_file``/``patch``/``create``/``edit`` actions whose target skill
-    (the ``name`` argument) is NOT the removed skill and whose
-    ``file_path`` / ``file_content`` / ``content`` arguments reference the
-    removed skill's name. That's the textbook "absorbed into umbrella"
-    signal. Ties are broken by first-match (earliest tool call wins).
-
-    Returns ``{"consolidated": [{"name", "into", "evidence"}, ...],
-               "pruned":       [{"name"}, ...]}``.
+    Skill names, paths, and authored content are opaque.  The curator model
+    declares intent in the structured ``absorbed_into`` argument on its
+    ``skill_manage(action="delete")`` call.  This helper validates only that
+    declaration and whether a named destination exists after the run.
     """
+    del added
     consolidated: List[Dict[str, Any]] = []
     pruned: List[Dict[str, Any]] = []
-
-    # Pre-parse tool calls: we only care about skill_manage.
-    parsed_calls: List[Dict[str, Any]] = []
-    for tc in tool_calls or []:
-        if not isinstance(tc, dict):
-            continue
-        if tc.get("name") != "skill_manage":
-            continue
-        raw = tc.get("arguments") or ""
-        # Arguments can be a JSON string (standard) or a dict (defensive).
-        args: Dict[str, Any] = {}
-        if isinstance(raw, dict):
-            args = raw
-        elif isinstance(raw, str):
-            try:
-                args = json.loads(raw)
-            except Exception:
-                # Truncated or malformed — fall back to substring match on
-                # the raw string so we still catch the common case.
-                args = {"_raw": raw}
-        if not isinstance(args, dict):
-            continue
-        parsed_calls.append(args)
-
-    # Build a set of "destination" skill names: anything still present after
-    # the run plus anything newly added this run. A removed skill being
-    # referenced from one of these is the consolidation signal.
-    destinations = set(after_names) | set(added or [])
-
+    unclassified: List[Dict[str, Any]] = []
+    declarations = _extract_absorbed_into_declarations(tool_calls)
     for name in removed:
         if not name:
             continue
-        into: Optional[str] = None
-        evidence: Optional[str] = None
-
-        # Normalise name variants we'll search for in path/content strings.
-        needles = {name, name.replace("-", "_"), name.replace("_", "-")}
-
-        for args in parsed_calls:
-            target = args.get("name")
-            if not isinstance(target, str) or not target:
-                continue
-            # A call that operates on the removed skill itself isn't
-            # consolidation evidence.
-            if target == name:
-                continue
-            # The target must be a surviving or newly-created skill —
-            # otherwise we're pointing to a skill that doesn't exist.
-            if target not in destinations:
-                continue
-
-            # Look for the removed skill's name in file_path / content / raw.
-            # Matching strategy differs by field type:
-            #   file_path — needle must be a complete path component
-            #     (filename stem or directory name), so "api" does NOT
-            #     falsely match "references/api-design.md".
-            #   content fields — word-boundary regex so "test" does NOT
-            #     falsely match "latest" or "testing".
-            haystacks: List[tuple[str, str]] = []
-            for key in ("file_path", "file_content", "content", "new_string", "_raw"):
-                v = args.get(key)
-                if isinstance(v, str):
-                    haystacks.append((key, v))
-            hit = False
-            for key, hay in haystacks:
-                for needle in needles:
-                    if not needle:
-                        continue
-                    if key == "file_path":
-                        matched = _needle_in_path_component(needle, hay)
-                    else:
-                        matched = bool(
-                            re.search(rf'\b{re.escape(needle)}\b', hay)
-                        )
-                    if matched:
-                        hit = True
-                        evidence = (
-                            f"skill_manage action={args.get('action', '?')} "
-                            f"on '{target}' referenced '{name}' "
-                            f"in {hay[:80]}"
-                        )
-                        break
-                if hit:
-                    break
-            if hit:
-                into = target
-                break
-
-        if into:
-            consolidated.append({"name": name, "into": into, "evidence": evidence})
+        declaration = declarations.get(name)
+        if declaration is None:
+            unclassified.append({
+                "name": name,
+                "source": "missing_model_delete_declaration",
+            })
+            continue
+        into = str(declaration.get("into") or "")
+        if into and into in after_names:
+            consolidated.append({
+                "name": name,
+                "into": into,
+                "source": "absorbed_into (model-declared at delete)",
+            })
+        elif into:
+            unclassified.append({
+                "name": name,
+                "source": "invalid_model_delete_destination",
+                "model_claimed_into": into,
+            })
         else:
-            pruned.append({"name": name})
+            pruned.append({
+                "name": name,
+                "source": 'absorbed_into="" (model-declared prune)',
+            })
 
-    return {"consolidated": consolidated, "pruned": pruned}
+    return {
+        "consolidated": consolidated,
+        "pruned": pruned,
+        "unclassified": unclassified,
+    }
 
 
 def _parse_structured_summary(
@@ -742,8 +656,8 @@ def _parse_structured_summary(
     ``## Structured summary (required)`` with ``consolidations:`` and
     ``prunings:`` lists. This parses it tolerantly:
 
-    - Missing block → returns empty lists (we'll fall back to heuristic).
-    - Malformed YAML → returns empty lists and we rely on heuristic.
+    - Missing block → returns empty lists; no meaning is inferred.
+    - Malformed YAML → returns empty lists; no meaning is inferred.
     - Partial block (e.g. only consolidations) → returns what we could parse.
 
     Returns ``{"consolidations": [{"from", "into", "reason"}, ...],
@@ -823,15 +737,15 @@ def _extract_absorbed_into_declarations(
     to pass ``absorbed_into=<umbrella>`` when consolidating, or
     ``absorbed_into=""`` when truly pruning. This is the single authoritative
     signal for classification — the model's own declaration at the moment of
-    deletion, which beats both post-hoc YAML summary parsing and substring
-    heuristics on other tool calls.
+    deletion. A structured model-authored YAML summary can provide a compatible
+    record when the declaration is unavailable.
 
     Returns ``{skill_name: {"into": "<umbrella>" | "", "declared": True}}``.
     Entries with ``into == ""`` are explicit prunings.
     Skills without a ``skill_manage(delete)`` call, or with one that omitted
-    ``absorbed_into``, are not in the returned dict — caller falls back to
-    the existing heuristic/YAML logic for those (backward compat with older
-    curator runs and any callers that don't populate the arg).
+    ``absorbed_into``, are not in the returned dict. Callers may consume an
+    explicit structured model summary, but must never infer meaning from names,
+    paths, content, or prose.
     """
     out: Dict[str, Dict[str, Any]] = {}
     for tc in tool_calls or []:
@@ -870,133 +784,85 @@ def _extract_absorbed_into_declarations(
 
 def _reconcile_classification(
     removed: List[str],
-    heuristic: Dict[str, List[Dict[str, Any]]],
     model_block: Dict[str, List[Dict[str, str]]],
     destinations: Set[str],
     absorbed_declarations: Optional[Dict[str, Dict[str, Any]]] = None,
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """Merge heuristic (tool-call evidence) with the model's structured block.
+    """Validate model-authored structured intent without inferring meaning.
 
-    Rules (evaluated in order; first match wins):
-    - **Model-declared `absorbed_into` at delete time is authoritative.** Any
-      entry in ``absorbed_declarations`` beats every other signal. This is
-      the model telling us directly, at the moment of deletion, what it did.
-      ``into != ""`` and target exists → consolidated. ``into == ""`` →
-      pruned. ``into != ""`` but target doesn't exist → hallucination; fall
-      through to the usual signals.
-    - Model-declared consolidation wins when its ``into`` target exists
-      in ``destinations`` (survived or newly-created). This gives the
-      model authority over intent + rationale.
-    - Model-declared consolidation whose ``into`` target does NOT exist is
-      downgraded: the model hallucinated an umbrella. We prefer the
-      heuristic's finding for that skill, or fall back to pruned.
-    - Heuristic-only finding (model didn't mention it, tool calls confirm)
-      is preserved as a consolidation, marked ``source="tool-call audit"``.
-    - Model-declared pruning is accepted unless the heuristic has
-      tool-call evidence that contradicts it (rare — the heuristic would
-      have flagged consolidation). In that case we log both.
-
-    Every removed skill is placed in exactly one bucket.
+    Arbitrary skill names, paths and file contents cannot decide whether a
+    deletion was consolidation or pruning. Missing or mechanically invalid
+    declarations are reported as unclassified and never cause cron references
+    to be rewritten or dropped.
     """
-    heur_cons = {e["name"]: e for e in heuristic.get("consolidated", [])}
-    heur_pruned = {e["name"] for e in heuristic.get("pruned", [])}
-
     model_cons = {e["from"]: e for e in model_block.get("consolidations", [])}
     model_pruned = {e["name"]: e for e in model_block.get("prunings", [])}
-
     declared = absorbed_declarations or {}
-
     consolidated: List[Dict[str, Any]] = []
     pruned: List[Dict[str, Any]] = []
+    unclassified: List[Dict[str, Any]] = []
 
     for name in removed:
         mc = model_cons.get(name)
         mp = model_pruned.get(name)
-        hc = heur_cons.get(name)
         dec = declared.get(name)
 
-        # Authoritative: model declared `absorbed_into` at the delete call.
         if dec is not None:
-            into_claim = dec.get("into", "")
+            into_claim = str(dec.get("into") or "")
             if into_claim and into_claim in destinations:
-                entry: Dict[str, Any] = {
+                consolidated.append({
                     "name": name,
                     "into": into_claim,
                     "source": "absorbed_into (model-declared at delete)",
                     "reason": (mc.get("reason") or "") if mc else "",
-                }
-                if hc and hc.get("evidence"):
-                    entry["evidence"] = hc["evidence"]
-                consolidated.append(entry)
+                })
                 continue
             if into_claim == "":
-                # Explicit prune declaration
                 pruned.append({
                     "name": name,
                     "source": "absorbed_into=\"\" (model-declared prune)",
                     "reason": (mp.get("reason") or "") if mp else "",
                 })
                 continue
-            # into_claim is non-empty but target doesn't exist: the model
-            # named a nonexistent umbrella at delete time. The tool already
-            # rejects this at the skill_manage layer, so we shouldn't see it
-            # in practice — but if it slips through (e.g. the umbrella was
-            # deleted LATER in the same run), fall through to the usual
-            # signals rather than trusting a broken reference.
-
-        # Model says consolidated — trust it if the destination is real.
-        if mc and mc.get("into") in destinations:
-            entry: Dict[str, Any] = {
+            unclassified.append({
                 "name": name,
-                "into": mc["into"],
-                "source": "model" + ("+audit" if hc else ""),
-                "reason": mc.get("reason") or "",
-            }
-            if hc and hc.get("evidence"):
-                entry["evidence"] = hc["evidence"]
-            consolidated.append(entry)
-            continue
-
-        # Model says consolidated but the umbrella doesn't exist —
-        # hallucination. Fall back to heuristic or prune.
-        if mc and mc.get("into") not in destinations:
-            if hc:
-                consolidated.append({
-                    "name": name,
-                    "into": hc["into"],
-                    "source": "tool-call audit (model named missing umbrella)",
-                    "reason": "",
-                    "evidence": hc.get("evidence", ""),
-                    "model_claimed_into": mc["into"],
-                })
-            else:
-                pruned.append({
-                    "name": name,
-                    "source": "fallback (model named missing umbrella, no tool-call evidence)",
-                    "reason": "",
-                })
-            continue
-
-        # Heuristic found consolidation the model didn't mention.
-        if hc:
-            consolidated.append({
-                "name": name,
-                "into": hc["into"],
-                "source": "tool-call audit (model omitted from structured block)",
-                "reason": "",
-                "evidence": hc.get("evidence", ""),
+                "source": "invalid_model_delete_destination",
+                "model_claimed_into": into_claim,
             })
             continue
 
-        # Model says pruned (or no mention + no heuristic evidence).
-        reason = mp.get("reason", "") if mp else ""
-        pruned.append({
+        if mc and mc.get("into") in destinations:
+            consolidated.append({
+                "name": name,
+                "into": mc["into"],
+                "source": "model_structured_summary",
+                "reason": mc.get("reason") or "",
+            })
+            continue
+        if mp:
+            pruned.append({
+                "name": name,
+                "source": "model_structured_summary",
+                "reason": mp.get("reason", ""),
+            })
+            continue
+        if mc:
+            unclassified.append({
+                "name": name,
+                "source": "invalid_model_summary_destination",
+                "model_claimed_into": mc.get("into", ""),
+            })
+            continue
+        unclassified.append({
             "name": name,
-            "source": "model" if mp else "no-evidence fallback",
-            "reason": reason,
+            "source": "missing_model_authored_classification",
         })
 
-    return {"consolidated": consolidated, "pruned": pruned}
+    return {
+        "consolidated": consolidated,
+        "pruned": pruned,
+        "unclassified": unclassified,
+    }
 
 
 def _build_rename_summary(
@@ -1035,28 +901,22 @@ def _build_rename_summary(
     if not removed:
         return ""
 
-    heuristic = _classify_removed_skills(
-        removed=removed,
-        added=added,
-        after_names=after_names,
-        tool_calls=tool_calls,
-    )
     model_block = _parse_structured_summary(model_final)
     destinations = set(after_names) | set(added)
     absorbed_declarations = _extract_absorbed_into_declarations(tool_calls)
     classification = _reconcile_classification(
         removed=removed,
-        heuristic=heuristic,
         model_block=model_block,
         destinations=destinations,
         absorbed_declarations=absorbed_declarations,
     )
     consolidated = classification["consolidated"]
     pruned = classification["pruned"]
+    unclassified = classification["unclassified"]
 
     SHOW = 10
     lines: List[str] = []
-    total = len(consolidated) + len(pruned)
+    total = len(consolidated) + len(pruned) + len(unclassified)
     lines.append(f"archived {total} skill(s):")
     shown = 0
     for entry in consolidated:
@@ -1071,6 +931,12 @@ def _build_rename_summary(
             break
         name = entry.get("name", "?") if isinstance(entry, dict) else str(entry)
         lines.append(f"  • {name} — pruned (stale)")
+        shown += 1
+    for entry in unclassified:
+        if shown >= SHOW:
+            break
+        name = entry.get("name", "?") if isinstance(entry, dict) else str(entry)
+        lines.append(f"  • {name} — archived (model classification unavailable)")
         shown += 1
     if total > SHOW:
         lines.append(f"  … and {total - SHOW} more")
@@ -1146,45 +1012,25 @@ def _write_run_report(
         name = tc.get("name", "unknown")
         tc_counts[name] = tc_counts.get(name, 0) + 1
 
-    # Split "removed" into consolidated (absorbed into umbrella) vs pruned
-    # (archived for staleness, content not preserved elsewhere). The old
-    # "Skills archived" section lumped both together, which misled users
-    # into thinking consolidated skills had been pruned.
-    #
-    # Classification strategy:
-    # 1. Parse the curator's structured YAML block from its final response.
-    #    The curator is now prompted to emit consolidations/prunings lists
-    #    with short rationale. The model has intent visibility the tool
-    #    calls don't.
-    # 2. Run the tool-call heuristic as a ground-truth audit.
-    # 3. Reconcile: model gets authority over intent + rationale, heuristic
-    #    catches hallucination (umbrella doesn't exist) and omission
-    #    (model forgot to list an actual consolidation).
-    heuristic = _classify_removed_skills(
-        removed=removed,
-        added=added,
-        after_names=after_names,
-        tool_calls=llm_meta.get("tool_calls", []) or [],
-    )
+    # Split removals using only model-authored structured declarations.
+    # Arbitrary skill names, paths and content never become classification
+    # authority. Missing/invalid intent remains visibly unclassified.
     model_block = _parse_structured_summary(llm_meta.get("final", "") or "")
     destinations = set(after_names) | set(added or [])
     # Authoritative signal: extract per-delete `absorbed_into` declarations
-    # from this run's tool calls. These beat both the YAML summary block and
-    # the substring heuristic — the model is telling us directly, at the
-    # moment of deletion, whether each archived skill was consolidated
-    # (into=<umbrella>) or pruned (into="").
+    # from this run's tool calls.
     absorbed_declarations = _extract_absorbed_into_declarations(
         llm_meta.get("tool_calls", []) or []
     )
     classification = _reconcile_classification(
         removed=removed,
-        heuristic=heuristic,
         model_block=model_block,
         destinations=destinations,
         absorbed_declarations=absorbed_declarations,
     )
     consolidated = classification["consolidated"]
     pruned = classification["pruned"]
+    unclassified = classification["unclassified"]
 
     # Rewrite cron job skill references. When the curator consolidates
     # skill X into umbrella Y, any cron job that lists X fails to load
@@ -1233,6 +1079,7 @@ def _write_run_report(
             "added_this_run": len(added),
             "consolidated_this_run": len(consolidated),
             "pruned_this_run": len(pruned),
+            "unclassified_this_run": len(unclassified),
             "state_transitions": len(transitions),
             "cron_jobs_rewritten": int(cron_rewrites.get("jobs_updated", 0)),
             "tool_calls_total": sum(tc_counts.values()),
@@ -1242,6 +1089,7 @@ def _write_run_report(
         "consolidated": consolidated,
         "pruned": pruned,
         "pruned_names": [p["name"] for p in pruned],
+        "unclassified": unclassified,
         "added": added,
         "state_transitions": transitions,
         "cron_rewrites": cron_rewrites,
@@ -1319,6 +1167,10 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
                  f"(by name: {', '.join(f'{k}={v}' for k, v in sorted(tc_counts.items())) or 'none'})")
     lines.append(f"- consolidated into umbrellas: **{counts.get('consolidated_this_run', 0)}**")
     lines.append(f"- pruned (archived for staleness): **{counts.get('pruned_this_run', 0)}**")
+    lines.append(
+        f"- archived with model classification unavailable: "
+        f"**{counts.get('unclassified_this_run', 0)}**"
+    )
     lines.append(f"- new skills this run: **{counts.get('added_this_run', 0)}**")
     lines.append(f"- state transitions (active ↔ stale ↔ archived): "
                  f"**{counts.get('state_transitions', 0)}**")
@@ -1343,21 +1195,10 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
             name = entry.get("name", "?")
             into = entry.get("into", "?")
             reason = (entry.get("reason") or "").strip()
-            source = entry.get("source", "")
             line = f"- `{name}` → merged into `{into}`"
             if reason:
                 line += f" — {reason}"
-            if source and source.startswith("tool-call audit"):
-                # The model didn't enumerate this one — surface that to the
-                # user so they know why the row has no rationale.
-                line += f"  _(detected via {source})_"
             lines.append(line)
-            if entry.get("model_claimed_into"):
-                lines.append(
-                    f"  ⚠ The curator's summary named `{entry['model_claimed_into']}` "
-                    "as the umbrella but that skill doesn't exist post-run; "
-                    "showing the tool-call audit's finding instead."
-                )
         if len(consolidated) > SHOW:
             lines.append(f"- … and {len(consolidated) - SHOW} more (see `run.json`)")
         lines.append("")
@@ -1389,6 +1230,26 @@ def _render_report_markdown(p: Dict[str, Any]) -> str:
                 lines.append(f"- `{entry}`")
         if len(pruned) > SHOW:
             lines.append(f"- … and {len(pruned) - SHOW} more (see `run.json`)")
+        lines.append("")
+
+    unclassified = p.get("unclassified") or []
+    if unclassified:
+        lines.append(
+            f"### Archived — model classification unavailable ({len(unclassified)})\n"
+        )
+        lines.append(
+            "_No keyword or content heuristic was used. These archived skills "
+            "had no valid model-authored `absorbed_into` declaration or structured "
+            "summary entry, so Hermes did not guess consolidation/pruning intent "
+            "and did not rewrite dependent cron references._\n"
+        )
+        for entry in unclassified[:50]:
+            name = entry.get("name", "?") if isinstance(entry, dict) else str(entry)
+            lines.append(f"- `{name}`")
+        if len(unclassified) > 50:
+            lines.append(
+                f"- … and {len(unclassified) - 50} more (see `run.json`)"
+            )
         lines.append("")
 
     # Added list

@@ -42,6 +42,23 @@ def _load_channel_aliases() -> Dict[str, Dict[str, Any]]:
         return {}
 
 
+def _load_canonical_discord_channel_aliases() -> Dict[str, Dict[str, str]]:
+    """Load the narrow privileged projection used by production Discord.
+
+    The projection can label only an already live-discovered exact target; it
+    never creates a directory entry or grants send authority by itself.
+    """
+
+    try:
+        from gateway.support_ops_team_registry import (
+            _canonical_channel_aliases,
+        )
+
+        return _canonical_channel_aliases()
+    except Exception:
+        return {}
+
+
 def _alias_entry_parts(raw: Any) -> tuple[Optional[str], list[str]]:
     """Return ``(friendly_name, aliases)`` for a channel_aliases entry."""
     if isinstance(raw, str):
@@ -105,8 +122,15 @@ def _apply_channel_aliases(platforms: Dict[str, Any]) -> None:
     aliased id that hasn't been discovered yet (so a freshly-created group is
     addressable by name before its first message). Mutates *platforms*.
     """
-    aliases = _load_channel_aliases()
-    for plat_name, id_map in aliases.items():
+    local_aliases = _load_channel_aliases()
+    production_boundary = _discord_public_directory_policy_required()
+    for plat_name, id_map in local_aliases.items():
+        # In production the mutable user overlay is presentation state, not a
+        # Discord routing authority.  Only the privileged Canonical projection
+        # may add production Discord aliases. Other platforms and non-writer
+        # development installs preserve upstream Hermes behavior.
+        if production_boundary and plat_name == "discord":
+            continue
         if not isinstance(id_map, dict):
             continue
         entries = platforms.setdefault(plat_name, [])
@@ -132,6 +156,33 @@ def _apply_channel_aliases(platforms: Dict[str, Any]) -> None:
                     "thread_id": None,
                     "aliases": aliases,
                 })
+
+    discord_entries = platforms.get("discord", [])
+    if not isinstance(discord_entries, list):
+        return
+    for alias, target in _load_canonical_discord_channel_aliases().items():
+        target_id = str(target.get("channel_id") or "")
+        target_type = str(target.get("target_type") or "")
+        parent_id = str(target.get("parent_channel_id") or "")
+        for entry in discord_entries:
+            if not isinstance(entry, dict):
+                continue
+            entry_target_id = str(
+                entry.get("thread_id") or entry.get("id") or ""
+            )
+            if ":" in entry_target_id:
+                entry_target_id = entry_target_id.rsplit(":", 1)[-1]
+            if (
+                entry_target_id != target_id
+                or str(entry.get("guild_id") or "") != str(target.get("guild_id") or "")
+                or str(entry.get("target_type") or "") != target_type
+            ):
+                continue
+            if target_type == "guild_thread" and str(
+                entry.get("parent_channel_id") or ""
+            ) != parent_id:
+                continue
+            _merge_entry_aliases(entry, [alias])
 
 
 def _normalize_channel_query(value: str) -> str:
@@ -269,6 +320,14 @@ _DISCORD_PUBLIC_DIRECTORY_TYPE_NAMES = frozenset({
     "forum",
     "media",
 })
+_DISCORD_APPROVED_GUILD_TYPE_VALUES = frozenset({0, 5, 10, 11})
+_DISCORD_APPROVED_GUILD_TYPE_NAMES = frozenset({
+    "text",
+    "news",
+    "news_thread",
+    "announcement_thread",
+    "public_thread",
+})
 
 
 def _discord_public_directory_policy_required() -> bool:
@@ -319,6 +378,69 @@ def _discord_cached_public_directory_target(channel: Any) -> bool:
     return getattr(permissions, "view_channel", None) is True
 
 
+def _discord_cached_bot_operational_permissions(channel: Any) -> bool:
+    """Prove the connected bot can view, read and write this guild surface."""
+
+    guild = getattr(channel, "guild", None)
+    member = getattr(guild, "me", None)
+    permissions_for = getattr(channel, "permissions_for", None)
+    if guild is None or member is None or not callable(permissions_for):
+        return False
+    try:
+        permissions = permissions_for(member)
+    except Exception:
+        return False
+    if (
+        getattr(permissions, "view_channel", None) is not True
+        or getattr(permissions, "read_message_history", None) is not True
+    ):
+        return False
+    channel_type = getattr(channel, "type", None)
+    type_value = getattr(channel_type, "value", channel_type)
+    type_name = str(getattr(channel_type, "name", "") or "").strip().casefold()
+    is_thread = type_value in {10, 11} or type_name in {
+        "news_thread",
+        "announcement_thread",
+        "public_thread",
+    }
+    permission_name = "send_messages_in_threads" if is_thread else "send_messages"
+    return getattr(permissions, permission_name, None) is True
+
+
+def _discord_cached_approved_guild_directory_target(channel: Any) -> bool:
+    """Prove one exact owner-approved guild lane/thread from live cache.
+
+    Private guild channels are valid here: Discord's existing human ACLs are
+    preserved.  Permission to use the lane comes only from the exact registry,
+    while the cache independently proves guild type and the bot's effective
+    view/read/write permissions.  DMs, group DMs, type-12 private threads and
+    forum/media channels are never admitted.  Production forum dispatch is
+    intentionally absent until the connector and privileged REST edge can
+    prove one end-to-end contract; public-only canary discovery remains
+    unchanged.
+    """
+
+    if channel is None:
+        return False
+    from gateway.support_ops_team_registry import SKYVISION_GUILD_ID
+
+    guild = getattr(channel, "guild", None)
+    guild_id = str(getattr(guild, "id", "") or "")
+    if guild_id != SKYVISION_GUILD_ID:
+        return False
+    channel_type = getattr(channel, "type", None)
+    type_value = getattr(channel_type, "value", channel_type)
+    type_name = str(getattr(channel_type, "name", "") or "").strip().casefold()
+    value_allowed = (
+        isinstance(type_value, int)
+        and not isinstance(type_value, bool)
+        and type_value in _DISCORD_APPROVED_GUILD_TYPE_VALUES
+    )
+    if not value_allowed and type_name not in _DISCORD_APPROVED_GUILD_TYPE_NAMES:
+        return False
+    return _discord_cached_bot_operational_permissions(channel)
+
+
 def _discord_session_target_id(entry: Dict[str, Any]) -> Optional[int]:
     """Return the exact cached target id for a Discord session entry."""
 
@@ -340,7 +462,7 @@ def _discord_verified_session_entry(
     client: Any,
     entry: Dict[str, Any],
 ) -> Optional[Dict[str, Any]]:
-    """Return a live-cache-proven public Discord session target or ``None``."""
+    """Return a live-cache-proven eligible Discord guild target or ``None``."""
 
     get_channel = getattr(client, "get_channel", None)
     target_id = _discord_session_target_id(entry)
@@ -350,7 +472,9 @@ def _discord_verified_session_entry(
         target = get_channel(target_id)
     except Exception:
         return None
-    if not _discord_cached_public_directory_target(target):
+    approved = _discord_cached_approved_guild_directory_target(target)
+    public = _discord_cached_public_directory_target(target)
+    if not approved and not public:
         return None
 
     channel_type = getattr(target, "type", None)
@@ -387,16 +511,22 @@ def _discord_verified_session_entry(
         if not parent_id:
             return None
         verified["parent_channel_id"] = str(parent_id)
-        verified["target_type"] = "public_guild_thread"
+        verified["target_type"] = (
+            "guild_thread" if approved else "public_guild_thread"
+        )
     elif public_type == "forum":
-        verified["target_type"] = "public_guild_forum"
+        verified["target_type"] = (
+            "guild_forum" if approved else "public_guild_forum"
+        )
     else:
-        verified["target_type"] = "public_guild_channel"
+        verified["target_type"] = (
+            "guild_channel" if approved else "public_guild_channel"
+        )
     return verified
 
 
 def _build_discord(adapter) -> List[Dict[str, str]]:
-    """Enumerate Discord send targets, public-only under writer policy."""
+    """Enumerate public targets plus exact approved production guild lanes."""
     channels = []
     client = getattr(adapter, "_client", None)
     if not client:
@@ -411,7 +541,9 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
 
     for guild in getattr(client, "guilds", None) or []:
         for ch in getattr(guild, "text_channels", None) or []:
-            if public_only and not _discord_cached_public_directory_target(ch):
+            approved = _discord_cached_approved_guild_directory_target(ch)
+            public = _discord_cached_public_directory_target(ch)
+            if public_only and not approved and not public:
                 continue
             guild_id = str(getattr(guild, "id", "") or "")
             if public_only and not guild_id:
@@ -422,12 +554,16 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
                 "guild": guild.name,
                 "guild_id": guild_id,
                 "type": "channel",
-                "target_type": "public_guild_channel",
+                "target_type": (
+                    "guild_channel" if approved else "public_guild_channel"
+                ),
             })
         # Forum channels (type 15) — creating a message auto-spawns a thread post.
         forums = getattr(guild, "forum_channels", None) or []
         for ch in forums:
-            if public_only and not _discord_cached_public_directory_target(ch):
+            approved = _discord_cached_approved_guild_directory_target(ch)
+            public = _discord_cached_public_directory_target(ch)
+            if public_only and not approved and not public:
                 continue
             guild_id = str(getattr(guild, "id", "") or "")
             if public_only and not guild_id:
@@ -438,7 +574,9 @@ def _build_discord(adapter) -> List[Dict[str, str]]:
                 "guild": guild.name,
                 "guild_id": guild_id,
                 "type": "forum",
-                "target_type": "public_guild_forum",
+                "target_type": (
+                    "guild_forum" if approved else "public_guild_forum"
+                ),
             })
         # Also include DM-capable users we've interacted with is not
         # feasible via guild enumeration; those come from sessions.
@@ -708,6 +846,66 @@ def lookup_discord_public_target(chat_id: str) -> Optional[Dict[str, str]]:
         matches.append(result)
     unique = {json.dumps(item, sort_keys=True): item for item in matches}
     return next(iter(unique.values())) if len(unique) == 1 else None
+
+
+def lookup_discord_approved_guild_target(
+    chat_id: str,
+) -> Optional[Dict[str, str]]:
+    """Return one exact live-directory-proven approved guild target.
+
+    Root channels and type-11 threads are admitted only after live bot ACL
+    proof in the fixed production guild. Type-12 private threads, forums,
+    media channels, DMs, group DMs and unknown guilds fail closed. This tuple is
+    request-construction evidence only; the privileged edge re-fetches the
+    current target, guild and effective bot permissions before dispatch.
+    """
+
+    from gateway.support_ops_team_registry import SKYVISION_GUILD_ID
+
+    target_id = str(chat_id or "").strip()
+    if not target_id:
+        return None
+    matches: list[Dict[str, str]] = []
+    directory = load_directory()
+    for channel in directory.get("platforms", {}).get("discord", []):
+        if not isinstance(channel, dict):
+            continue
+        channel_id = str(channel.get("thread_id") or channel.get("id") or "").strip()
+        if channel_id != target_id:
+            continue
+        guild_id = str(channel.get("guild_id") or "").strip()
+        target_type = str(channel.get("target_type") or "").strip()
+        if guild_id != SKYVISION_GUILD_ID:
+            continue
+        if target_type in {"guild_channel", "approved_guild_channel"}:
+            matches.append(
+                {
+                    "target_type": target_type,
+                    "guild_id": guild_id,
+                    "channel_id": channel_id,
+                }
+            )
+            continue
+        if target_type in {"guild_thread", "approved_guild_thread"}:
+            parent_id = str(channel.get("parent_channel_id") or "").strip()
+            if not parent_id or parent_id == channel_id:
+                continue
+            matches.append(
+                {
+                    "target_type": target_type,
+                    "guild_id": guild_id,
+                    "channel_id": channel_id,
+                    "parent_channel_id": parent_id,
+                }
+            )
+    unique = {json.dumps(item, sort_keys=True): item for item in matches}
+    return next(iter(unique.values())) if len(unique) == 1 else None
+
+
+def is_discord_approved_guild_target(chat_id: str) -> bool:
+    """Return whether one exact target has approved-guild directory proof."""
+
+    return lookup_discord_approved_guild_target(chat_id) is not None
 
 
 def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:

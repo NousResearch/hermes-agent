@@ -50,6 +50,106 @@ logger = logging.getLogger(__name__)
 _MAX_AUTH_REFRESH_ATTEMPTS = 2
 
 
+def _pool_runtime_identity(pool: Any) -> tuple[tuple[str, str], ...]:
+    """Return an in-memory-only identity snapshot for pool reload detection."""
+
+    try:
+        entries = pool.entries()
+    except Exception:
+        return ()
+    return tuple(
+        sorted(
+            (
+                str(getattr(entry, "id", "") or ""),
+                str(getattr(entry, "runtime_api_key", "") or ""),
+            )
+            for entry in entries
+        )
+    )
+
+
+def _adopt_external_auth_pool_alternative(
+    agent: Any,
+    pool: Any,
+    *,
+    status_code: Optional[int],
+    error_context: Optional[Dict[str, Any]],
+) -> bool:
+    """Adopt a newly added credential after an authoritative auth failure.
+
+    A long-lived ``AIAgent`` owns the ``CredentialPool`` object that existed at
+    construction time.  Another process can add a credential to ``auth.json``
+    while that agent remains cached, leaving reactive recovery blind to the new
+    entry.  Reload only after the provider has returned an auth failure, and
+    rotate only when the disk snapshot actually changed and contains an exact
+    usable alternative to the token that just failed.
+
+    The decision is fully mechanical: provider id, pool entry ids, and exact
+    token equality.  No message text or task intent participates.
+    """
+
+    provider = str(getattr(pool, "provider", "") or "").strip().lower()
+    failed_api_key = str(getattr(agent, "api_key", "") or "")
+    if status_code not in {401, 403} or not provider or not failed_api_key:
+        return False
+
+    try:
+        from agent.credential_pool import load_pool
+
+        reloaded_pool = load_pool(provider)
+    except Exception:
+        _ra().logger.debug(
+            "Credential pool live reload failed for provider=%s",
+            provider,
+            exc_info=True,
+        )
+        return False
+
+    old_identity = _pool_runtime_identity(pool)
+    new_identity = _pool_runtime_identity(reloaded_pool)
+    if not new_identity or new_identity == old_identity:
+        return False
+
+    matching_failed_entry = any(
+        runtime_key == failed_api_key for _entry_id, runtime_key in new_identity
+    )
+    next_entry = None
+    if matching_failed_entry:
+        if not reloaded_pool.has_available_alternative(failed_api_key):
+            return False
+        next_entry = reloaded_pool.mark_exhausted_and_rotate(
+            status_code=status_code,
+            error_context=error_context,
+            api_key_hint=failed_api_key,
+        )
+    else:
+        # The failed credential was removed or replaced in-place.  Select the
+        # current disk-authoritative entry without marking that fresh entry as
+        # failed.
+        next_entry = reloaded_pool.select()
+
+    next_key = str(
+        getattr(next_entry, "runtime_api_key", None)
+        or getattr(next_entry, "access_token", "")
+        or ""
+    )
+    if next_entry is None or not next_key or next_key == failed_api_key:
+        return False
+
+    # Install the disk-authoritative pool before rebuilding the client so all
+    # later recovery in this agent sees the same entry set.  As with the
+    # existing rotation path below, client-rebuild errors propagate to the
+    # conversation loop instead of being hidden behind a second stale retry.
+    agent._credential_pool = reloaded_pool
+    agent._swap_credential(next_entry)
+    _ra().logger.info(
+        "Credential auth failure — adopted updated pool entry %s for provider=%s",
+        getattr(next_entry, "id", "?"),
+        provider,
+    )
+    return True
+
+
 def _ra():
     """Lazy ``run_agent`` reference for test-patch routing."""
     import run_agent
@@ -911,6 +1011,13 @@ def recover_with_credential_pool(
                 agent.provider or "provider",
             )
             return False, has_retried_429
+        if _adopt_external_auth_pool_alternative(
+            agent,
+            pool,
+            status_code=status_code,
+            error_context=error_context,
+        ):
+            return True, has_retried_429
         refreshed = pool.try_refresh_current()
         if refreshed is not None:
             # ``try_refresh_current()`` re-mints a fresh OAuth token and reports
@@ -2168,10 +2275,36 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
         function_args = {}
     if originating_turn_id is None:
         originating_turn_id = str(getattr(agent, "_current_turn_id", "") or "")
+    # Goal authority is never read from the model payload.  Capture it only
+    # when this invocation still belongs to the agent's exact active turn. A
+    # worker that starts after a later turn replaced the agent attributes gets
+    # an empty generation and is rejected by the durable writer boundary.
+    _agent_turn_id = str(getattr(agent, "_current_turn_id", "") or "")
+    _originating_goal_generation_id = (
+        str(getattr(agent, "_current_goal_generation_id", "") or "")
+        if str(originating_turn_id or "") == _agent_turn_id
+        else ""
+    )
+    from agent.model_authored_tool_args import (
+        capture_model_authored_tool_args,
+        restore_model_authored_tool_args,
+    )
+
+    _model_authored_args = capture_model_authored_tool_args(
+        function_name, function_args
+    )
     _model_reasoning_present = function_name == "todo" and "reasoning" in function_args
     _model_reasoning_directive = (
         copy.deepcopy(function_args.get("reasoning"))
         if _model_reasoning_present
+        else None
+    )
+    _model_delivery_outcome_present = (
+        function_name == "todo" and "delivery_outcome" in function_args
+    )
+    _model_delivery_outcome_directive = (
+        copy.deepcopy(function_args.get("delivery_outcome"))
+        if _model_delivery_outcome_present
         else None
     )
 
@@ -2193,11 +2326,9 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
             _tool_middleware_trace = _tool_request_mw.trace
     except Exception as _mw_err:
         logger.debug("tool_request middleware error: %s", _mw_err)
-    if function_name == "todo":
-        if _model_reasoning_present:
-            function_args["reasoning"] = copy.deepcopy(_model_reasoning_directive)
-        else:
-            function_args.pop("reasoning", None)
+    function_args = restore_model_authored_tool_args(
+        function_name, function_args, _model_authored_args
+    )
 
     # Check plugin hooks for a block or approval directive before executing.
     block_message: Optional[str] = None
@@ -2262,7 +2393,11 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
 
     if function_name == "todo":
         def _execute(next_args: dict) -> Any:
+            next_args = restore_model_authored_tool_args(
+                function_name, next_args, _model_authored_args
+            )
             from agent.adaptive_reasoning import attach_reasoning_receipt
+            from agent.delivery_outcome import record_delivery_outcome
             from tools.todo_tool import todo_tool as _todo_tool
             result = _todo_tool(
                 todos=next_args.get("todos"),
@@ -2270,11 +2405,28 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
                 store=agent._todo_store,
                 plan_approval=next_args.get("plan_approval"),
                 goal_outcome=next_args.get("goal_outcome"),
+                goal_contract=next_args.get("goal_contract"),
+                canonical_checkpoint=next_args.get("canonical_checkpoint"),
+                delivery_outcome=(
+                    _model_delivery_outcome_directive
+                    if _model_delivery_outcome_present
+                    else None
+                ),
+                delivery_outcome_recorder=(
+                    lambda directive: record_delivery_outcome(
+                        agent,
+                        directive,
+                        originating_turn_id=originating_turn_id or "",
+                    )
+                ),
                 session_key=str(
                     getattr(agent, "_gateway_session_key", None)
                     or agent.session_id
                     or ""
                 ),
+                goal_session_id=str(agent.session_id or ""),
+                originating_turn_id=originating_turn_id or "",
+                goal_generation_id=_originating_goal_generation_id,
                 user_id=str(getattr(agent, "user_id", None) or ""),
             )
             return _finish_agent_tool(
@@ -2394,98 +2546,17 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
 
 
 def repair_tool_call(agent, tool_name: str) -> str | None:
-    """Attempt to repair a mismatched tool name before aborting.
+    """Compatibility shim for the exact tool-name contract.
 
-    Models sometimes emit variants of a tool name that differ only
-    in casing, separators, or class-like suffixes. Normalize
-    aggressively before falling back to fuzzy match:
-
-    1. Lowercase direct match.
-    2. Lowercase + hyphens/spaces -> underscores.
-    3. CamelCase -> snake_case (TodoTool -> todo_tool).
-    4. Strip trailing ``_tool`` / ``-tool`` / ``tool`` suffix that
-       Claude-style models sometimes tack on (TodoTool_tool ->
-       TodoTool -> Todo -> todo). Applied twice so double-tacked
-       suffixes like ``TodoTool_tool`` reduce all the way.
-    5. Fuzzy match (difflib, cutoff=0.7).
-
-    See #14784 for the original reports (TodoTool_tool, Patch_tool,
-    BrowserClick_tool were all returning "Unknown tool" before).
-
-    Returns the repaired name if found in valid_tool_names, else None.
+    Tool selection is model-authored authority. The runtime therefore accepts
+    only an exact registered name and never normalizes, strips suffixes, parses
+    leaked markup, or fuzzy-matches an unknown name onto an executable tool.
+    The conversation loop rejects unknown names with paired non-execution
+    receipts so the same model can correct its own call.
     """
-    import re
-    from difflib import get_close_matches
-
-    if not tool_name:
+    if type(tool_name) is not str:
         return None
-
-    # VolcEngine api/plan workaround (issue #33007): the endpoint's
-    # protocol-translation layer occasionally leaks raw XML attribute
-    # fragments into tool_use.name, e.g.
-    #   `terminal" parameter="command" string="true`
-    #   `execute_code" parameter="code" string="true`
-    #   `session_search" parameter="session_id" string="true`
-    # We trim at the first unambiguous XML/quote character so the rest
-    # of the repair pipeline (lowercase / snake_case / fuzzy match)
-    # can resolve the cleaned name to a real tool.
-    #
-    # Crucially we DO NOT split on whitespace: legitimate inputs like
-    # "write file" must keep flowing through ``_norm`` -> ``write_file``
-    # (covered by test_space_to_underscore in
-    # tests/run_agent/test_repair_tool_call_name.py).
-    for _xml_sep in ('"', "'", "<", ">"):
-        _idx = tool_name.find(_xml_sep)
-        if _idx > 0:
-            tool_name = tool_name[:_idx]
-    if not tool_name:
-        return None
-
-    def _norm(s: str) -> str:
-        return s.lower().replace("-", "_").replace(" ", "_")
-
-    def _camel_snake(s: str) -> str:
-        return re.sub(r"(?<!^)(?=[A-Z])", "_", s).lower()
-
-    def _strip_tool_suffix(s: str) -> str | None:
-        lc = s.lower()
-        for suffix in ("_tool", "-tool", "tool"):
-            if lc.endswith(suffix):
-                return s[: -len(suffix)].rstrip("_-")
-        return None
-
-    # Cheap fast-paths first — these cover the common case.
-    lowered = tool_name.lower()
-    if lowered in agent.valid_tool_names:
-        return lowered
-    normalized = _norm(tool_name)
-    if normalized in agent.valid_tool_names:
-        return normalized
-
-    # Build the full candidate set for class-like emissions.
-    cands: set[str] = {tool_name, lowered, normalized, _camel_snake(tool_name)}
-    # Strip trailing tool-suffix up to twice — TodoTool_tool needs it.
-    for _ in range(2):
-        extra: set[str] = set()
-        for c in cands:
-            stripped = _strip_tool_suffix(c)
-            if stripped:
-                extra.add(stripped)
-                extra.add(_norm(stripped))
-                extra.add(_camel_snake(stripped))
-        cands |= extra
-
-    for c in cands:
-        if c and c in agent.valid_tool_names:
-            return c
-
-    # Fuzzy match as last resort.
-    matches = get_close_matches(lowered, agent.valid_tool_names, n=1, cutoff=0.7)
-    if matches:
-        return matches[0]
-
-    return None
-
+    return tool_name if tool_name in agent.valid_tool_names else None
 
 
 def sanitize_api_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -3154,7 +3225,6 @@ __all__ = [
     "invoke_tool",
     "repair_tool_call",
     "sanitize_api_messages",
-    "looks_like_codex_intermediate_ack",
     "copy_reasoning_content_for_api",
     "cleanup_dead_connections",
     "extract_api_error_context",

@@ -870,9 +870,9 @@ Hermes has terminal access. Security matters.
 |-------|---------------|
 | **Sudo password piping** | Uses `shlex.quote()` to prevent shell injection |
 | **Dangerous command detection** | Regex patterns in `tools/approval.py` with user approval flow |
-| **Cron prompt injection** | Scanner in `tools/cronjob_tools.py` blocks instruction-override patterns |
+| **Cron execution safety** | Authenticated job writes, bounded schemas, secret-scoped subprocesses, provider/base-URL validation, and mutation approvals constrain execution without classifying prompt text |
 | **Write deny list** | Protected paths (`~/.ssh/authorized_keys`, `/etc/shadow`) resolved via `os.path.realpath()` to prevent symlink bypass |
-| **Skills guard** | Security scanner for hub-installed skills (`tools/skills_guard.py`) |
+| **Skills guard** | Mechanical package preflight for hub-installed skills (`tools/skills_guard.py`) |
 | **Code execution sandbox** | `execute_code` child process runs with API keys stripped from environment |
 | **Container hardening** | Docker: all capabilities dropped, no privilege escalation, PID limits, size-limited tmpfs |
 

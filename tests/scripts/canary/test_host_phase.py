@@ -56,10 +56,7 @@ def _evidence():
 
 
 def _exact_vm():
-    target = (
-        "muncho-canary-v2-runtime@"
-        "adventico-ai-platform.iam.gserviceaccount.com"
-    )
+    target = "muncho-canary-v2-runtime@adventico-ai-platform.iam.gserviceaccount.com"
     return {
         "name": "muncho-canary-v2-01",
         "status": "RUNNING",
@@ -78,16 +75,13 @@ def _exact_vm():
             {
                 "email": target,
                 "scopes": [
-                    "https://www.googleapis.com/auth/logging.write",
-                    "https://www.googleapis.com/auth/monitoring.write",
+                    "https://www.googleapis.com/auth/cloud-platform",
                 ],
             }
         ],
         "networkInterfaces": [
             {
-                "network": (
-                    "projects/p/global/networks/muncho-canary-vpc"
-                ),
+                "network": ("projects/p/global/networks/muncho-canary-vpc"),
                 "subnetwork": (
                     "projects/p/regions/europe-west3/subnetworks/"
                     "muncho-canary-europe-west3"
@@ -121,7 +115,7 @@ def _exact_vm():
 def _exact_disk():
     return {
         "name": "muncho-canary-v2-01",
-        "sizeGb": "20",
+        "sizeGb": "40",
         "type": "projects/p/zones/europe-west3-a/diskTypes/pd-balanced",
         "sourceImage": (
             "https://www.googleapis.com/compute/v1/projects/debian-cloud/"
@@ -163,7 +157,8 @@ def test_vm_create_exists_only_in_the_single_phase_three_step():
     assert "--network=muncho-canary-vpc" in rendered
     assert "--subnet=muncho-canary-europe-west3" in rendered
     assert "--service-account=muncho-canary-v2-runtime@" in rendered
-    assert "--scopes=logging-write,monitoring-write" in rendered
+    assert "--scopes=cloud-platform" in rendered
+    assert "--boot-disk-size=40GB" in rendered
 
 
 def test_absent_vm_is_provisionable_only_after_complete_network_attestation():
@@ -207,6 +202,43 @@ def test_exact_existing_vm_is_verified_and_satisfied():
 
     assert report["ok"] is True
     assert report["satisfied_steps"] == ["create_isolated_canary_vm"]
+
+
+def test_deprecated_image_remains_valid_only_for_exact_existing_vm():
+    evidence = _evidence()
+    evidence["image"]["deprecated"] = {
+        "state": "DEPRECATED",
+        "replacement": "projects/debian-cloud/global/images/newer",
+    }
+
+    absent_report = evaluate(evidence)
+    assert absent_report["ok"] is False
+    assert {
+        check["name"] for check in absent_report["checks"] if not check["passed"]
+    } == {"image.exact_ready"}
+
+    evidence["instances"] = [{"name": "muncho-canary-v2-01"}]
+    evidence["planned_vm"] = _exact_vm()
+    evidence["planned_vm_disk"] = _exact_disk()
+
+    existing_report = evaluate(evidence)
+    assert existing_report["ok"] is True
+    assert existing_report["satisfied_steps"] == ["create_isolated_canary_vm"]
+
+
+def test_normal_host_preflight_rejects_legacy_20gb_disk():
+    evidence = _evidence()
+    evidence["instances"] = [{"name": "muncho-canary-v2-01"}]
+    evidence["planned_vm"] = _exact_vm()
+    evidence["planned_vm_disk"] = _exact_disk()
+    evidence["planned_vm_disk"]["sizeGb"] = "20"
+
+    report = evaluate(evidence)
+
+    assert report["ok"] is False
+    assert report["satisfied_steps"] == []
+    failed = {check["name"] for check in report["checks"] if not check["passed"]}
+    assert failed == {"resource.vm_absent_or_exact_running"}
 
 
 def test_vm_on_production_network_fails_closed():

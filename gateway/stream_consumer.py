@@ -32,11 +32,6 @@ from gateway.config import (
     DEFAULT_STREAMING_BUFFER_THRESHOLD as _DEFAULT_STREAMING_BUFFER_THRESHOLD,
     DEFAULT_STREAMING_CURSOR as _DEFAULT_STREAMING_CURSOR,
 )
-from gateway.response_filters import (
-    is_intentional_silence_response as _is_intentional_silence_response,
-    is_partial_silence_marker as _is_partial_silence_marker,
-)
-
 logger = logging.getLogger("gateway.stream_consumer")
 
 # Sentinel to signal the stream is complete
@@ -188,6 +183,9 @@ class GatewayStreamConsumer:
         # streaming, even if the final edit (cursor removal etc.)
         # subsequently failed.
         self._final_content_delivered = False
+        # Set only from the completed agent result. Streaming never inspects
+        # partial or final response text for delivery control words.
+        self._suppress_final_delivery = False
         self._delivered_commentary_texts: list[str] = []
         # Cache adapter lifecycle capability: only platforms that need an
         # explicit finalize call (e.g. DingTalk AI Cards) force us to make
@@ -379,8 +377,9 @@ class GatewayStreamConsumer:
         elif text is None:
             self.on_segment_break()
 
-    def finish(self) -> None:
-        """Signal that the stream is complete."""
+    def finish(self, *, suppress_delivery: bool = False) -> None:
+        """Signal completion with the validated structured delivery choice."""
+        self._suppress_final_delivery = suppress_delivery is True
         self._queue.put(_DONE)
 
     # ── Think-block filtering ────────────────────────────────────────
@@ -603,20 +602,11 @@ class GatewayStreamConsumer:
                 if got_done:
                     self._flush_think_buffer()
 
-                    # Intentional-silence suppression.  When the agent chose
-                    # not to reply it emits a bare control marker (NO_REPLY /
-                    # [SILENT] / …).  The gateway's whole-response filter
-                    # (gateway/run.py) suppresses this on the non-streaming
-                    # path, but by the time it runs the stream consumer has
-                    # already edited the raw marker onto the screen.  Detect
-                    # the exact-marker final buffer here and retract any
-                    # preview instead of finalizing it, so the marker never
-                    # reaches the chat.  Substantive prose that merely mentions
-                    # a marker is NOT suppressed (see is_intentional_silence_response).
-                    if _is_intentional_silence_response(
-                        self._clean_for_display(self._accumulated)
-                    ):
-                        await self._suppress_silence_marker()
+                    # Delivery suppression is authored by the model through a
+                    # turn-bound structured tool result and validated by the
+                    # gateway before finish(). Response text is never parsed.
+                    if self._suppress_final_delivery:
+                        await self._suppress_structured_delivery()
                         return
 
                 # Decide whether to flush an edit
@@ -639,24 +629,6 @@ class GatewayStreamConsumer:
                     )
 
                 current_update_visible = False
-                # Hold back mid-stream edits while the buffer so far could
-                # still resolve to an intentional-silence marker.  Without
-                # this, a partial marker (e.g. "NO_REPLY" streamed as
-                # "NO"→"NO_REPLY") would flash onto the screen on an interval
-                # tick before got_done can suppress it.  Only defers display —
-                # got_done above always resolves the buffer (suppress if it's
-                # an exact marker, otherwise fall through and flush normally),
-                # so genuine prose that merely starts marker-like is never lost.
-                if (
-                    should_edit
-                    and not got_done
-                    and not got_segment_break
-                    and commentary_text is None
-                    and _is_partial_silence_marker(
-                        self._clean_for_display(self._accumulated)
-                    )
-                ):
-                    should_edit = False
                 if should_edit and self._accumulated:
                     # Split overflow: if accumulated text exceeds the platform
                     # limit, split into properly sized chunks.
@@ -1586,21 +1558,18 @@ class GatewayStreamConsumer:
             self._final_response_sent = True
         return True
 
-    async def _suppress_silence_marker(self) -> None:
-        """Retract any streamed preview when the final reply is a silence marker.
+    async def _suppress_structured_delivery(self) -> None:
+        """Retract previews after a validated structured suppress outcome.
 
-        The agent chose not to respond and emitted a bare control marker.  Any
-        preview message the consumer already put on screen (a partial marker
-        flushed on an interval tick, or a preamble before a tool boundary) must
-        be removed so the raw marker is never left visible.  Deletion reuses the
-        same best-effort ``delete_message`` path as :meth:`_try_fresh_final`.
+        Any preview the consumer put on screen before the completed turn
+        receipt arrived is removed best-effort.  No response content is
+        inspected here.
 
         Crucially, the delivery flags (``_final_response_sent`` /
         ``_final_content_delivered``) are left **False**: nothing was delivered.
-        The gateway then does not mistake the marker for a delivered reply, and
-        its own whole-response filter turns the marker into "" so no fallback
-        send happens either.  ``_already_sent`` is likewise cleared so the
-        gateway's ``already_sent`` short-circuits do not fire.
+        The gateway therefore cannot mistake a preview for a delivered final
+        reply. ``_already_sent`` is likewise cleared so duplicate-delivery
+        short-circuits do not fire before the structured outcome is applied.
         """
         stale_ids = set(self._preview_message_ids)
         if self._message_id and self._message_id != "__no_edit__":
@@ -1614,7 +1583,7 @@ class GatewayStreamConsumer:
                     await delete_fn(self.chat_id, stale_id)
                 except Exception as e:
                     logger.debug(
-                        "Silence-marker preview cleanup failed (%s): %s",
+                        "Structured-suppression preview cleanup failed (%s): %s",
                         stale_id, e,
                     )
         self._preview_message_ids = set()
@@ -1625,7 +1594,7 @@ class GatewayStreamConsumer:
         self._final_response_sent = False
         self._final_content_delivered = False
         logger.info(
-            "Suppressed streamed intentional-silence marker (chat=%s)",
+            "Suppressed streamed final delivery from structured outcome (chat=%s)",
             self.chat_id,
         )
 

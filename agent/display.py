@@ -17,7 +17,7 @@ from typing import Any
 
 from utils import safe_json_loads
 from agent.redact import redact_sensitive_text
-from agent.tool_result_classification import file_mutation_result_landed
+from agent.tool_result_classification import classify_registered_tool_result_failure
 
 # ANSI escape codes for coloring tool failure indicators
 _RED = "\033[31m"
@@ -760,22 +760,6 @@ def capture_local_edit_snapshot(tool_name: str, function_args: dict | None) -> L
     return snapshot
 
 
-def _result_succeeded(result: str | None) -> bool:
-    """Conservatively detect whether a tool result represents success."""
-    if not result:
-        return False
-    data = safe_json_loads(result)
-    if data is None:
-        return False
-    if not isinstance(data, dict):
-        return False
-    if data.get("error"):
-        return False
-    if "success" in data:
-        return bool(data.get("success"))
-    return True
-
-
 def _diff_from_snapshot(snapshot: LocalEditSnapshot | None) -> str | None:
     """Generate unified diff text from a stored before-state and current files."""
     if not snapshot:
@@ -813,18 +797,24 @@ def extract_edit_diff(
     snapshot: LocalEditSnapshot | None = None,
 ) -> str | None:
     """Extract a unified diff from a file-edit tool result."""
+    if tool_name not in {"write_file", "patch", "skill_manage"}:
+        return None
+
+    # A captured local snapshot is ground truth.  If it is present, render
+    # only what actually changed on disk, regardless of arbitrary result
+    # fields such as ``success`` or a claimed embedded diff.
+    if snapshot is not None:
+        return _diff_from_snapshot(snapshot)
+
+    # Backward-compatible fallback for callers that cannot capture local
+    # state.  The normal CLI/TUI edit path always supplies a snapshot.
     if tool_name == "patch" and result:
         data = safe_json_loads(result)
         if isinstance(data, dict):
             diff = data.get("diff")
             if isinstance(diff, str) and diff.strip():
                 return diff
-
-    if tool_name not in {"write_file", "patch", "skill_manage"}:
-        return None
-    if not _result_succeeded(result):
-        return None
-    return _diff_from_snapshot(snapshot)
+    return None
 
 
 def _emit_inline_diff(diff_text: str, print_fn) -> bool:
@@ -1218,53 +1208,15 @@ def _trim_error(msg: str) -> str:
 
 
 def _detect_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str]:
-    """Inspect a tool result string for signs of failure.
+    """Classify failure only through the exact registered implementation.
 
     Returns ``(is_failure, suffix)`` where *suffix* is a short informational
-    tag like ``" [exit 1]"`` for terminal failures, ``" [full]"`` for memory
-    overflow, or a trimmed error message (``" [File not found: foo.py]"``).
-    On success returns ``(False, "")``.
+    tag supplied by that tool's mechanical result adapter.  Arbitrary JSON
+    fields and opaque prose remain model-visible data, not UI/runtime status
+    authority.  On success or an unregistered envelope, returns
+    ``(False, "")``.
     """
-    if result is None:
-        return False, ""
-    if file_mutation_result_landed(tool_name, result):
-        return False, ""
-
-    data = safe_json_loads(result)
-
-    # Terminal: non-zero exit code is the canonical failure signal.
-    if tool_name == "terminal":
-        if isinstance(data, dict):
-            exit_code = data.get("exit_code")
-            if exit_code is not None and exit_code != 0:
-                err_msg = data.get("error")
-                if err_msg:
-                    return True, f" [{_trim_error(str(err_msg))}]"
-                return True, f" [exit {exit_code}]"
-        return False, ""
-
-    # Memory: distinguish "store full" from real errors.
-    if tool_name == "memory":
-        if isinstance(data, dict):
-            if data.get("success") is False and "exceed the limit" in data.get("error", ""):
-                return True, " [full]"
-
-    # Structured error in JSON result (any tool that surfaces {"error": ...}).
-    if isinstance(data, dict):
-        err = data.get("error") or data.get("message")
-        if err and (data.get("success") is False or "error" in data):
-            return True, f" [{_trim_error(str(err))}]"
-
-    # Generic heuristic for non-terminal tools
-    # Multimodal tool results (dicts with _multimodal=True) are not strings —
-    # treat them as successes since failures would be JSON-encoded strings.
-    if not isinstance(result, str):
-        return False, ""
-    lower = result[:500].lower()
-    if '"error"' in lower or '"failed"' in lower or result.startswith("Error"):
-        return True, " [error]"
-
-    return False, ""
+    return classify_registered_tool_result_failure(tool_name, result)
 
 
 def _get_cute_tool_message(
@@ -1459,5 +1411,3 @@ def get_cute_tool_message(
 # =========================================================================
 # Honcho session line (one-liner with clickable OSC 8 hyperlink)
 # =========================================================================
-
-

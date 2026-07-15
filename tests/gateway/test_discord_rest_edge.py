@@ -207,6 +207,23 @@ def thread_target(*, parent_id: str = PARENT_ID) -> DiscordPublicTarget:
     )
 
 
+def guild_acl_target() -> DiscordPublicTarget:
+    return DiscordPublicTarget(
+        DiscordPublicTargetType.GUILD_CHANNEL,
+        GUILD_ID,
+        CHANNEL_ID,
+    )
+
+
+def guild_acl_thread_target(*, parent_id: str = PARENT_ID) -> DiscordPublicTarget:
+    return DiscordPublicTarget(
+        DiscordPublicTargetType.GUILD_THREAD,
+        GUILD_ID,
+        CHANNEL_ID,
+        parent_id,
+    )
+
+
 def forum_target() -> DiscordPublicTarget:
     return DiscordPublicTarget(
         DiscordPublicTargetType.PUBLIC_GUILD_FORUM,
@@ -220,6 +237,7 @@ def make_adapter(
     opener: FakeOpener,
     *,
     token: str = TOKEN,
+    target_policy: str = "public_only",
 ) -> DiscordRestEdgeAdapter:
     credentials = tmp_path / "credentials"
     credentials.mkdir(mode=0o700, parents=True)
@@ -235,6 +253,7 @@ def make_adapter(
         _opener=opener,
         _sleeper=lambda _seconds: None,
         _clock_ms=lambda: 1_000,
+        target_policy=target_policy,
     )
 
 
@@ -273,6 +292,18 @@ def test_live_proof_rejects_dm_and_private_thread_types(tmp_path: Path) -> None:
             now_unix_ms=1_000,
         )
     assert dm_error.value.code is DiscordRestEdgeErrorCode.TARGET_NOT_PUBLIC
+
+    group_adapter = make_adapter(
+        tmp_path / "group",
+        FakeOpener(proof_handler(channel(channel_type=3))),
+    )
+    with pytest.raises(DiscordRestEdgeError) as group_error:
+        group_adapter.prove_public_message_send(
+            target(),
+            deadline_unix_ms=30_000,
+            now_unix_ms=1_000,
+        )
+    assert group_error.value.code is DiscordRestEdgeErrorCode.TARGET_NOT_PUBLIC
 
     private_adapter = make_adapter(
         tmp_path / "private",
@@ -345,6 +376,160 @@ def test_live_proof_computes_everyone_visibility_and_bot_overwrites(
     assert proof.bot_user_id == BOT_ID
 
 
+def test_guild_acl_private_channel_is_accepted_without_everyone_visibility(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import gateway.support_ops_team_registry as registry
+
+    monkeypatch.setattr(registry, "SKYVISION_GUILD_ID", GUILD_ID)
+    adapter = make_adapter(
+        tmp_path,
+        FakeOpener(
+            proof_handler(
+                channel(),
+                guild_value=guild(everyone_permissions=0),
+            )
+        ),
+        target_policy="guild_acl",
+    )
+    proof = adapter.prove_public_message_send(
+        guild_acl_target(),
+        deadline_unix_ms=30_000,
+        now_unix_ms=1_000,
+    )
+    assert proof.publicly_viewable is False
+    assert proof.bot_can_view is True
+    assert proof.bot_has_required_permission is True
+
+
+def test_guild_acl_public_thread_under_private_parent_is_accepted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import gateway.support_ops_team_registry as registry
+
+    monkeypatch.setattr(registry, "SKYVISION_GUILD_ID", GUILD_ID)
+    adapter = make_adapter(
+        tmp_path,
+        FakeOpener(
+            proof_handler(
+                channel(channel_type=11, parent_id=PARENT_ID),
+                guild_value=guild(everyone_permissions=0),
+                parent_channel=channel(channel_id=PARENT_ID),
+            )
+        ),
+        target_policy="guild_acl",
+    )
+    proof = adapter.prove_public_message_send(
+        guild_acl_thread_target(),
+        deadline_unix_ms=30_000,
+        now_unix_ms=1_000,
+    )
+    assert proof.publicly_viewable is False
+    assert proof.bot_has_required_permission is True
+
+
+def test_guild_acl_wrong_guild_rejects_before_network(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import gateway.support_ops_team_registry as registry
+
+    monkeypatch.setattr(registry, "SKYVISION_GUILD_ID", GUILD_ID)
+    opener = FakeOpener(lambda *_args: pytest.fail("wrong guild must be pre-network"))
+    adapter = make_adapter(tmp_path, opener, target_policy="guild_acl")
+    wrong = DiscordPublicTarget(
+        DiscordPublicTargetType.GUILD_CHANNEL,
+        "999999999999999999",
+        CHANNEL_ID,
+    )
+    with pytest.raises(DiscordRestEdgeError) as caught:
+        adapter.prove_public_message_send(
+            wrong,
+            deadline_unix_ms=30_000,
+            now_unix_ms=1_000,
+        )
+    assert caught.value.code is DiscordRestEdgeErrorCode.TARGET_MISMATCH
+    assert opener.requests == []
+
+
+def test_public_only_canary_rejects_guild_acl_target_before_network(
+    tmp_path: Path,
+) -> None:
+    opener = FakeOpener(lambda *_args: pytest.fail("policy mismatch must be pre-network"))
+    adapter = make_adapter(tmp_path, opener, target_policy="public_only")
+    with pytest.raises(DiscordRestEdgeError) as caught:
+        adapter.prove_public_message_send(
+            guild_acl_target(),
+            deadline_unix_ms=30_000,
+            now_unix_ms=1_000,
+        )
+    assert caught.value.code is DiscordRestEdgeErrorCode.TARGET_MISMATCH
+    assert opener.requests == []
+
+
+def test_guild_acl_private_thread_remains_forbidden(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import gateway.support_ops_team_registry as registry
+
+    monkeypatch.setattr(registry, "SKYVISION_GUILD_ID", GUILD_ID)
+    adapter = make_adapter(
+        tmp_path,
+        FakeOpener(
+            proof_handler(
+                channel(channel_type=12, parent_id=PARENT_ID),
+                parent_channel=channel(channel_id=PARENT_ID),
+            )
+        ),
+        target_policy="guild_acl",
+    )
+    with pytest.raises(DiscordRestEdgeError) as caught:
+        adapter.prove_public_message_send(
+            guild_acl_thread_target(),
+            deadline_unix_ms=30_000,
+            now_unix_ms=1_000,
+        )
+    assert caught.value.code is DiscordRestEdgeErrorCode.TARGET_NOT_PUBLIC
+
+
+@pytest.mark.parametrize(
+    "removed_permission",
+    [VIEW_CHANNEL, SEND_MESSAGES, READ_MESSAGE_HISTORY],
+)
+def test_guild_acl_missing_required_bot_permission_blocks(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    removed_permission: int,
+) -> None:
+    import gateway.support_ops_team_registry as registry
+
+    monkeypatch.setattr(registry, "SKYVISION_GUILD_ID", GUILD_ID)
+    adapter = make_adapter(
+        tmp_path,
+        FakeOpener(
+            proof_handler(
+                channel(),
+                guild_value=guild(
+                    everyone_permissions=0,
+                    bot_permissions=BOT_PERMISSIONS & ~removed_permission,
+                ),
+            )
+        ),
+        target_policy="guild_acl",
+    )
+    proof = adapter.prove_public_message_send(
+        guild_acl_target(),
+        deadline_unix_ms=30_000,
+        now_unix_ms=1_000,
+    )
+    if removed_permission == VIEW_CHANNEL:
+        assert proof.bot_can_view is False
+    assert proof.bot_has_required_permission is False
+
+
 def test_live_proof_detects_bot_permission_revoke(tmp_path: Path) -> None:
     revoked = BOT_PERMISSIONS & ~SEND_MESSAGES
     adapter = make_adapter(
@@ -366,8 +551,8 @@ def test_live_proof_detects_bot_permission_revoke(tmp_path: Path) -> None:
     assert proof.bot_has_required_permission is False
 
 
-@pytest.mark.parametrize("channel_type", [2, 13])
-def test_public_voice_surfaces_remain_messageable(
+@pytest.mark.parametrize("channel_type", [2, 13, 15])
+def test_root_message_send_rejects_voice_stage_and_forum_types(
     tmp_path: Path,
     channel_type: int,
 ) -> None:
@@ -375,13 +560,13 @@ def test_public_voice_surfaces_remain_messageable(
         tmp_path,
         FakeOpener(proof_handler(channel(channel_type=channel_type))),
     )
-    proof = adapter.prove_public_message_send(
-        target(),
-        deadline_unix_ms=30_000,
-        now_unix_ms=1_000,
-    )
-    assert proof.publicly_viewable is True
-    assert proof.bot_has_required_permission is True
+    with pytest.raises(DiscordRestEdgeError) as error:
+        adapter.prove_public_message_send(
+            target(),
+            deadline_unix_ms=30_000,
+            now_unix_ms=1_000,
+        )
+    assert error.value.code is DiscordRestEdgeErrorCode.TARGET_MISMATCH
 
 
 def test_proof_fetches_permission_channel_last_and_stamps_completion_time(

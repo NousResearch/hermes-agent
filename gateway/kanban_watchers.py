@@ -158,7 +158,7 @@ class GatewayKanbanWatchersMixin:
             logger.warning("kanban notifier: cannot load config (%s); disabled", exc)
             return
         kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-        if not kanban_cfg.get("dispatch_in_gateway", True):
+        if not kanban_cfg.get("dispatch_in_gateway", False):
             logger.info(
                 "kanban notifier: disabled via config kanban.dispatch_in_gateway=false"
             )
@@ -752,7 +752,7 @@ class GatewayKanbanWatchersMixin:
     async def _kanban_dispatcher_watcher(self) -> None:
         """Embedded kanban dispatcher — one tick every `dispatch_interval_seconds`.
 
-        Gated by `kanban.dispatch_in_gateway` in config.yaml (default True).
+        Gated by `kanban.dispatch_in_gateway` in config.yaml (opt-in; default False).
         When true, the gateway hosts the single dispatcher for this profile:
         no separate `hermes kanban daemon` process needed. When false, the
         loop exits immediately and an external daemon is expected.
@@ -787,7 +787,7 @@ class GatewayKanbanWatchersMixin:
             logger.warning("kanban dispatcher: cannot load config (%s); disabled", exc)
             return
         kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-        if not kanban_cfg.get("dispatch_in_gateway", True):
+        if not kanban_cfg.get("dispatch_in_gateway", False):
             logger.info(
                 "kanban dispatcher: disabled via config kanban.dispatch_in_gateway=false"
             )
@@ -799,7 +799,7 @@ class GatewayKanbanWatchersMixin:
             logger.warning("kanban dispatcher: kanban_db not importable; dispatcher disabled")
             return
 
-        # Single-dispatcher backstop. dispatch_in_gateway defaults to true, so a
+        # Single-dispatcher backstop. dispatch_in_gateway is explicit opt-in, but a
         # new profile gateway (or a same-profile restart race) can silently
         # start a second dispatcher; concurrent dispatchers double reclaim
         # frequency, double claim-attempt events, and — with

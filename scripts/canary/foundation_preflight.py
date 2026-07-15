@@ -12,6 +12,12 @@ from dataclasses import asdict, dataclass
 from typing import Callable, Mapping, Sequence
 
 from scripts.canary.foundation import (
+    CLOUDSQL_READINESS_CONDITION_DESCRIPTION,
+    CLOUDSQL_READINESS_CONDITION_TITLE,
+    CLOUDSQL_READINESS_PERMISSION,
+    CLOUDSQL_READINESS_ROLE_DESCRIPTION,
+    CLOUDSQL_READINESS_ROLE_ID,
+    CLOUDSQL_READINESS_ROLE_TITLE,
     FORBIDDEN_CANARY_SECRET_NAMES,
     FoundationSpec,
     build_plan,
@@ -206,14 +212,15 @@ def _routes_safe(
 
 
 def _service_account_roles(
-    evidence: Mapping[str, object], service_account_email: str
+    evidence: Mapping[str, object], spec: FoundationSpec
 ) -> tuple[set[str], bool]:
     policy = evidence.get("project_iam_policy")
     if not isinstance(policy, Mapping) or not isinstance(policy.get("bindings"), list):
         return set(), False
-    member = f"serviceAccount:{service_account_email}"
+    member = f"serviceAccount:{spec.service_account_email}"
     roles: set[str] = set()
     exact = True
+    counts: dict[str, int] = {}
     for binding in policy["bindings"]:
         if not isinstance(binding, Mapping):
             exact = False
@@ -226,9 +233,35 @@ def _service_account_roles(
             exact = False
             continue
         roles.add(role)
-        if binding.get("condition"):
+        counts[role] = counts.get(role, 0) + 1
+        condition = binding.get("condition")
+        if role == spec.cloudsql_readiness_role:
+            expected_condition = {
+                "title": CLOUDSQL_READINESS_CONDITION_TITLE,
+                "description": CLOUDSQL_READINESS_CONDITION_DESCRIPTION,
+                "expression": spec.cloudsql_readiness_condition_expression,
+            }
+            if condition != expected_condition:
+                exact = False
+        elif condition:
             exact = False
+    if any(count != 1 for count in counts.values()):
+        exact = False
     return roles, exact
+
+
+def _cloudsql_readiness_role_exact(
+    raw: object, spec: FoundationSpec
+) -> bool:
+    return bool(
+        isinstance(raw, Mapping)
+        and raw.get("name") == spec.cloudsql_readiness_role
+        and raw.get("title") == CLOUDSQL_READINESS_ROLE_TITLE
+        and raw.get("description") == CLOUDSQL_READINESS_ROLE_DESCRIPTION
+        and raw.get("stage") == "GA"
+        and raw.get("deleted") in {None, False}
+        and raw.get("includedPermissions") == [CLOUDSQL_READINESS_PERMISSION]
+    )
 
 
 def _sql_exact(evidence: Mapping[str, object], spec: FoundationSpec) -> bool:
@@ -374,8 +407,20 @@ def evaluate(
     )
 
     service_account_present = spec.service_account_email in service_accounts
-    allowed_roles = {"roles/logging.logWriter", "roles/monitoring.metricWriter"}
-    roles, bindings_exact = _service_account_roles(evidence, spec.service_account_email)
+    allowed_roles = {
+        "roles/logging.logWriter",
+        "roles/monitoring.metricWriter",
+        spec.cloudsql_readiness_role,
+    }
+    roles, bindings_exact = _service_account_roles(evidence, spec)
+    custom_roles = _names(evidence.get("custom_roles"))
+    cloudsql_readiness_role_present = spec.cloudsql_readiness_role in custom_roles
+    cloudsql_readiness_role_exact = bool(
+        cloudsql_readiness_role_present
+        and _cloudsql_readiness_role_exact(
+            evidence.get("planned_cloudsql_readiness_role"), spec
+        )
+    )
     raw_accounts = evidence.get("service_accounts")
     account_items = raw_accounts if isinstance(raw_accounts, list) else []
     records = [
@@ -413,6 +458,10 @@ def evaluate(
         and (not sql_present or service_connection_exact)
         and (not database_present or sql_exact)
         and (service_account_present or not roles)
+        and (
+            spec.cloudsql_readiness_role not in roles
+            or cloudsql_readiness_role_exact
+        )
     )
 
     checks = [
@@ -462,6 +511,11 @@ def evaluate(
             "partial resources must preserve the exact phase dependency order",
         ),
         Check(
+            "resource.cloudsql_readiness_role_absent_or_exact",
+            not cloudsql_readiness_role_present or cloudsql_readiness_role_exact,
+            "custom readiness role must be absent or grant only instances.get",
+        ),
+        Check(
             "resource.service_account_absent_or_exact",
             (not service_account_present and not roles) or service_account_exact,
             "runtime identity must be absent or exact with no user-managed keys",
@@ -469,7 +523,7 @@ def evaluate(
         Check(
             "resource.service_account_roles_allowed",
             roles <= allowed_roles,
-            "runtime identity may hold only logging and monitoring writer roles",
+            "runtime identity may hold only logging, monitoring, and exact conditional readiness roles",
         ),
         Check(
             "resource.sql_absent_or_exact_ready",
@@ -497,18 +551,22 @@ def evaluate(
         satisfied_steps.append("reserve_private_service_range")
     if service_connection_exact:
         satisfied_steps.append("connect_private_service_networking")
+    if cloudsql_readiness_role_exact:
+        satisfied_steps.append("create_cloudsql_readiness_role")
     if service_account_exact:
         satisfied_steps.append("create_runtime_service_account")
     if service_account_exact and "roles/logging.logWriter" in roles:
         satisfied_steps.append("grant_logging_writer")
     if service_account_exact and "roles/monitoring.metricWriter" in roles:
         satisfied_steps.append("grant_monitoring_writer")
+    if service_account_exact and spec.cloudsql_readiness_role in roles:
+        satisfied_steps.append("grant_cloudsql_readiness")
     if sql_exact:
         satisfied_steps.append("create_isolated_postgres")
     if database_exact:
         satisfied_steps.append("create_canonical_database")
     return {
-        "schema": "muncho-isolated-canary-foundation-preflight.v2",
+        "schema": "muncho-isolated-canary-foundation-preflight.v3",
         "ok": all(check.passed for check in checks),
         "collected_at_unix": evidence.get("collected_at_unix"),
         "plan_sha256": plan.sha256,
@@ -520,6 +578,7 @@ def evaluate(
             "project": evidence.get("project"),
             "sql_instance_count": len(sql_instances),
             "service_account_count": len(service_accounts),
+            "cloudsql_readiness_role_present": cloudsql_readiness_role_present,
             "dedicated_network_present": network_present,
             "dedicated_subnet_present": subnet_present,
             "private_service_range_present": private_range_present,
@@ -558,6 +617,9 @@ def collect(
     service_accounts = run_json(
         ("gcloud", "iam", "service-accounts", "list", project_flag, "--format=json")
     )
+    custom_roles = run_json(
+        ("gcloud", "iam", "roles", "list", project_flag, "--format=json")
+    )
     sql_instances = run_json(
         ("gcloud", "sql", "instances", "list", project_flag, "--format=json")
     )
@@ -591,6 +653,7 @@ def collect(
     network_names = _names(networks)
     subnet_names = _names(subnets)
     address_names = _names(addresses)
+    custom_role_names = _names(custom_roles)
     evidence: dict[str, object] = {
         "collected_at_unix": int(time.time()),
         "active_account": sorted(_names(active, "account"))[0] if active else "",
@@ -599,6 +662,7 @@ def collect(
             ("gcloud", "services", "list", "--enabled", project_flag, "--format=json")
         ),
         "service_accounts": service_accounts,
+        "custom_roles": custom_roles,
         "sql_instances": sql_instances,
         # This is an absence audit only. The plan never creates or consumes a
         # canary Secret Manager resource.
@@ -613,6 +677,18 @@ def collect(
             ("gcloud", "projects", "get-iam-policy", spec.project, "--format=json")
         ),
     }
+    if spec.cloudsql_readiness_role in custom_role_names:
+        evidence["planned_cloudsql_readiness_role"] = run_json(
+            (
+                "gcloud",
+                "iam",
+                "roles",
+                "describe",
+                CLOUDSQL_READINESS_ROLE_ID,
+                project_flag,
+                "--format=json",
+            )
+        )
     if spec.network in network_names:
         evidence["planned_network"] = run_json(
             (

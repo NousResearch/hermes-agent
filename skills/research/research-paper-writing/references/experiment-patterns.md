@@ -436,7 +436,7 @@ Check the status of the [EXPERIMENT_NAME] experiment:
    - Report final summary
 6. Key question: [SPECIFIC ANALYTICAL QUESTION]
 
-If nothing has changed since the last check, respond with [SILENT].
+If nothing has changed since the last check, call todo with delivery_outcome action=suppress and a concrete reason.
 ```
 
 ### Monitoring Best Practices
@@ -446,7 +446,7 @@ If nothing has changed since the last check, respond with [SILENT].
 3. **Count completed vs expected** — "45/150 problems done" is more useful than "some results exist"
 4. **Report in structured tables** — always include key metrics in a table
 5. **Answer the key question** — each experiment should have a specific analytical question to answer when done
-6. **[SILENT] for no-news** — suppress notifications when nothing has changed
+6. **Structured no-news outcome** — use `todo.delivery_outcome` to suppress notifications when nothing has changed
 7. **Commit on completion** — every completed batch gets committed with a descriptive message
 
 ### Example Monitoring Report

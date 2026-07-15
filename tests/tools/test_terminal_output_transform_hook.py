@@ -66,6 +66,32 @@ def test_terminal_output_unchanged_when_transform_hook_not_registered(monkeypatc
     assert result["error"] is None
 
 
+def test_disabled_verification_ledger_does_not_enrich_model_result(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setattr(
+        "agent.verification_evidence.verification_ledger_enabled",
+        lambda: False,
+    )
+
+    def _must_not_classify(**_kwargs):
+        raise AssertionError("disabled production ledger parsed a terminal command")
+
+    monkeypatch.setattr(
+        "agent.verification_evidence.record_terminal_result",
+        _must_not_classify,
+    )
+
+    result, _mock_env = _run_terminal(
+        monkeypatch,
+        tmp_path,
+        output="green",
+        command="pnpm test",
+    )
+
+    assert "verification_evidence" not in result
+
+
 def test_terminal_output_unchanged_for_none_hook_result(monkeypatch, tmp_path):
     result, _mock_env = _run_terminal(
         monkeypatch,

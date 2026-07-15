@@ -33,7 +33,7 @@ VM_NAME = "muncho-canary-v2-01"
 IMAGE_PROJECT = "debian-cloud"
 IMAGE = "debian-12-bookworm-v20260609"
 MACHINE_TYPE = "e2-medium"
-BOOT_DISK_SIZE_GB = 20
+BOOT_DISK_SIZE_GB = 40
 BOOT_DISK_TYPE = "pd-balanced"
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -154,7 +154,7 @@ def build_plan(spec: HostSpec) -> HostPlan:
                     f"--boot-disk-size={spec.boot_disk_size_gb}GB",
                     f"--boot-disk-type={spec.boot_disk_type}",
                     f"--service-account={spec.service_account_email}",
-                    "--scopes=logging-write,monitoring-write",
+                    "--scopes=cloud-platform",
                     "--tags=iap-ssh",
                     "--metadata=disable-legacy-endpoints=TRUE,enable-oslogin=TRUE",
                     "--shielded-secure-boot",

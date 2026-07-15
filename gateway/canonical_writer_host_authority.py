@@ -183,14 +183,15 @@ _CANARY_SERVICE_ACCOUNT = (
     "muncho-canary-v2-runtime@adventico-ai-platform.iam.gserviceaccount.com"
 )
 _CANARY_SCOPES = (
-    "https://www.googleapis.com/auth/logging.write",
-    "https://www.googleapis.com/auth/monitoring.write",
+    "https://www.googleapis.com/auth/cloud-platform",
 )
 _CANARY_ROLES = (
     "roles/logging.logWriter",
     "roles/monitoring.metricWriter",
+    "projects/adventico-ai-platform/roles/munchoCanaryCloudSqlReadinessV1",
 )
 _CANARY_PERMISSIONS = (
+    "cloudsql.instances.get",
     "logging.logEntries.create",
     "logging.logEntries.route",
     "monitoring.metricDescriptors.create",
@@ -693,6 +694,7 @@ _FOUNDATION_REQUIRED_CHECKS = frozenset(
         "resource.service_networking_absent_or_exact",
         "resource.network_routes_exact",
         "resource.foundation_dependency_order_exact",
+        "resource.cloudsql_readiness_role_absent_or_exact",
         "resource.service_account_absent_or_exact",
         "resource.service_account_roles_allowed",
         "resource.sql_absent_or_exact_ready",
@@ -705,9 +707,11 @@ _FOUNDATION_REQUIRED_STEPS = (
     "create_isolated_subnet",
     "reserve_private_service_range",
     "connect_private_service_networking",
+    "create_cloudsql_readiness_role",
     "create_runtime_service_account",
     "grant_logging_writer",
     "grant_monitoring_writer",
+    "grant_cloudsql_readiness",
     "create_isolated_postgres",
     "create_canonical_database",
 )
@@ -763,7 +767,7 @@ def build_external_iam_receipt(
     _nonnegative_integer(current, "external IAM projection time")
     if (
         foundation_report.get("schema")
-        != "muncho-isolated-canary-foundation-preflight.v2"
+        != "muncho-isolated-canary-foundation-preflight.v3"
         or foundation_report.get("ok") is not True
         or host_report.get("schema") != "muncho-isolated-canary-host-preflight.v1"
         or host_report.get("ok") is not True

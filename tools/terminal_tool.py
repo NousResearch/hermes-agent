@@ -1151,6 +1151,11 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     session to spin up its own container.  Only overrides containing
     backend-specific image keys or ``env_type`` trigger isolation.
     """
+    if (os.getenv("TERMINAL_ENV", "local").strip().lower() or "local") == "isolated_worker":
+        if not isinstance(task_id, str) or not task_id or task_id == "default":
+            raise ValueError("isolated_worker_requires_exact_session_id")
+        return task_id
+
     _ISOLATION_KEYS = frozenset({
         "docker_image", "modal_image", "singularity_image",
         "daytona_image", "env_type",
@@ -1220,7 +1225,9 @@ def _safe_getcwd() -> str:
 # cwd looks when it leaks toward a Linux container's ``-w`` flag.
 _HOST_CWD_PREFIXES = ("/Users/", "/home/", "C:\\", "C:/")
 
-_CONTAINER_BACKENDS = frozenset({"docker", "singularity", "modal", "daytona"})
+_CONTAINER_BACKENDS = frozenset(
+    {"docker", "singularity", "modal", "daytona", "isolated_worker"}
+)
 
 
 def _is_ssh_remote_tilde_cwd(backend: str, cwd: str) -> bool:
@@ -1264,11 +1271,12 @@ def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
-    env_type = os.getenv("TERMINAL_ENV", "local")
+    env_type = os.getenv("TERMINAL_ENV", "local").strip().lower() or "local"
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in {"true", "1", "yes"}
     container_backend = env_type in {"docker", "singularity", "modal", "daytona"}
     docker_backend = env_type == "docker"
+    isolated_worker_backend = env_type == "isolated_worker"
 
     # Docker/container-only env vars may be bridged from config.yaml even when
     # the active backend is local/ssh.  Do not parse their JSON/numeric payloads
@@ -1294,6 +1302,25 @@ def _get_env_config() -> Dict[str, Any]:
         docker_env = {}
         docker_extra_args = []
 
+    if isolated_worker_backend:
+        isolated_worker_server_uid = _parse_env_var(
+            "TERMINAL_ISOLATED_WORKER_SERVER_UID", "0"
+        )
+        isolated_worker_server_gid = _parse_env_var(
+            "TERMINAL_ISOLATED_WORKER_SERVER_GID", "0"
+        )
+        isolated_worker_socket_uid = _parse_env_var(
+            "TERMINAL_ISOLATED_WORKER_SOCKET_UID", "0"
+        )
+        isolated_worker_socket_gid = _parse_env_var(
+            "TERMINAL_ISOLATED_WORKER_SOCKET_GID", "0"
+        )
+    else:
+        isolated_worker_server_uid = 0
+        isolated_worker_server_gid = 0
+        isolated_worker_socket_uid = 0
+        isolated_worker_socket_gid = 0
+
     # Default cwd: local uses the host's current directory, ssh uses the
     # remote home, and everything else starts in the backend's default
     # root-like cwd.
@@ -1301,6 +1328,8 @@ def _get_env_config() -> Dict[str, Any]:
         default_cwd = _safe_getcwd()
     elif env_type == "ssh":
         default_cwd = "~"
+    elif env_type == "isolated_worker":
+        default_cwd = "/workspace"
     else:
         default_cwd = "/root"
 
@@ -1337,6 +1366,14 @@ def _get_env_config() -> Dict[str, Any]:
         "singularity_image": os.getenv("TERMINAL_SINGULARITY_IMAGE", f"docker://{default_image}"),
         "modal_image": os.getenv("TERMINAL_MODAL_IMAGE", default_image),
         "daytona_image": os.getenv("TERMINAL_DAYTONA_IMAGE", default_image),
+        "isolated_worker_socket": os.getenv(
+            "TERMINAL_ISOLATED_WORKER_SOCKET",
+            "/run/muncho-isolated-worker/worker.sock",
+        ),
+        "isolated_worker_server_uid": isolated_worker_server_uid,
+        "isolated_worker_server_gid": isolated_worker_server_gid,
+        "isolated_worker_socket_uid": isolated_worker_socket_uid,
+        "isolated_worker_socket_gid": isolated_worker_socket_gid,
         "cwd": cwd,
         "host_cwd": host_cwd,
         "docker_mount_cwd_to_workspace": mount_docker_cwd,
@@ -1429,6 +1466,20 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
 
     if env_type == "local":
         return _LocalEnvironment(cwd=cwd, timeout=timeout)
+
+    elif env_type == "isolated_worker":
+        from tools.environments.isolated_worker import IsolatedWorkerEnvironment
+
+        return IsolatedWorkerEnvironment(
+            socket_path=Path(cc.get("isolated_worker_socket", "")),
+            expected_server_uid=cc.get("isolated_worker_server_uid", 0),
+            expected_server_gid=cc.get("isolated_worker_server_gid", 0),
+            expected_socket_uid=cc.get("isolated_worker_socket_uid", 0),
+            expected_socket_gid=cc.get("isolated_worker_socket_gid", 0),
+            task_id=task_id,
+            cwd=cwd,
+            timeout=timeout,
+        )
     
     elif env_type == "docker":
         # One-shot orphan reaper: clean up labeled containers left behind by
@@ -1542,7 +1593,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     else:
         raise ValueError(
             f"Unknown environment type: {env_type}. Use 'local', 'docker', "
-            f"'singularity', 'modal', 'daytona', or 'ssh'"
+            f"'singularity', 'modal', 'daytona', 'isolated_worker', or 'ssh'"
         )
 
 
@@ -1880,89 +1931,6 @@ def _command_requires_pipe_stdin(command: str) -> bool:
     )
 
 
-_SHELL_LEVEL_BACKGROUND_RE = re.compile(
-    r"(?:^|[;&|]\s*|&&\s*|\|\|\s*|\$\(\s*)(?:nohup|disown|setsid)\b", re.IGNORECASE | re.MULTILINE
-)
-_INLINE_BACKGROUND_AMP_RE = re.compile(r"\s&\s")
-_TRAILING_BACKGROUND_AMP_RE = re.compile(r"\s&\s*(?:#.*)?$")
-
-
-def _strip_quotes(command: str) -> str:
-    """Remove single- and double-quoted content so regex checks don't match inside strings.
-
-    This prevents false positives when keywords like 'nohup' or 'setsid' appear
-    in commit messages, Python -c code, echo arguments, or PR body text.
-    Also strips backtick-quoted content and heredoc-style inline text.
-    """
-    # Remove single-quoted strings (no escaping inside single quotes in shell)
-    result = re.sub(r"'[^']*'", "''", command)
-    # Remove double-quoted strings (handle escaped quotes)
-    result = re.sub(r'"(?:[^"\\]|\\.)*"', '""', result)
-    # Remove backtick-quoted strings
-    result = re.sub(r"`[^`]*`", "``", result)
-    return result
-
-
-_LONG_LIVED_FOREGROUND_PATTERNS = (
-    re.compile(r"\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|watch)\b", re.IGNORECASE),
-    re.compile(r"\bdocker\s+compose\s+up\b", re.IGNORECASE),
-    re.compile(r"\bnext\s+dev\b", re.IGNORECASE),
-    re.compile(r"\bvite(?:\s|$)", re.IGNORECASE),
-    re.compile(r"\bnodemon\b", re.IGNORECASE),
-    re.compile(r"\buvicorn\b", re.IGNORECASE),
-    re.compile(r"\bgunicorn\b", re.IGNORECASE),
-    re.compile(r"\bpython(?:3)?\s+-m\s+http\.server\b", re.IGNORECASE),
-)
-
-
-def _looks_like_help_or_version_command(command: str) -> bool:
-    """Return True for informational invocations that should never be blocked."""
-    normalized = " ".join(command.lower().split())
-    return (
-        " --help" in normalized
-        or normalized.endswith(" -h")
-        or " --version" in normalized
-        or normalized.endswith(" -v")
-    )
-
-
-def _foreground_background_guidance(command: str) -> str | None:
-    """Suggest background mode when a foreground command looks long-lived.
-
-    Prevents workflows that start a server/watch process and then stall before
-    follow-up checks or test commands run.
-    """
-    if _looks_like_help_or_version_command(command):
-        return None
-
-    # Strip quoted content so keywords inside strings/arguments don't trigger
-    # false positives (e.g., git commit -m "... setsid ...", python3 -c "os.setsid").
-    unquoted = _strip_quotes(command)
-
-    if _SHELL_LEVEL_BACKGROUND_RE.search(unquoted):
-        return (
-            "Foreground command uses shell-level background wrappers (nohup/disown/setsid). "
-            "Use terminal(background=true) so Hermes can track the process, then run "
-            "readiness checks and tests in separate commands."
-        )
-
-    if _INLINE_BACKGROUND_AMP_RE.search(unquoted) or _TRAILING_BACKGROUND_AMP_RE.search(unquoted):
-        return (
-            "Foreground command uses '&' backgrounding. Use terminal(background=true) for long-lived "
-            "processes, then run health checks and tests in follow-up terminal calls."
-        )
-
-    for pattern in _LONG_LIVED_FOREGROUND_PATTERNS:
-        if pattern.search(unquoted):
-            return (
-                "This foreground command appears to start a long-lived server/watch process. "
-                "Run it with background=true, verify readiness (health endpoint/log signal), "
-                "then execute tests in a separate command."
-            )
-
-    return None
-
-
 def _resolve_notification_flag_conflict(
     *,
     notify_on_complete: bool,
@@ -2078,7 +2046,12 @@ def terminal_tool(
         # task_ids collapse back to "default" so the top-level agent and
         # every delegate_task child share one container; only task_ids with
         # a registered env override (RL benchmarks) get isolated sandboxes.
-        effective_task_id = _resolve_container_task_id(task_id)
+        isolation_task_id = (
+            (session_id or task_id)
+            if env_type == "isolated_worker"
+            else task_id
+        )
+        effective_task_id = _resolve_container_task_id(isolation_task_id)
 
         # Check per-task overrides (set by environments like TerminalBench2Env)
         # before falling back to global env var config. ``resolve_task_overrides``
@@ -2086,7 +2059,7 @@ def terminal_tool(
         # CWD-only override (which collapses ``effective_task_id`` to
         # ``"default"``) is still found under its originating session id while
         # isolation-keyed RL/benchmark overrides keep resolving as before.
-        overrides = resolve_task_overrides(task_id)
+        overrides = resolve_task_overrides(isolation_task_id)
         
         # Select image based on env type, with per-task override support
         if env_type == "docker":
@@ -2133,18 +2106,6 @@ def terminal_tool(
                     f"notify_on_complete=true for long-running commands."
                 ),
             }, ensure_ascii=False)
-
-        # Guardrail: long-lived server/watch commands should run as managed
-        # background sessions, not foreground shell hacks.
-        if not background:
-            guidance = _foreground_background_guidance(command)
-            if guidance:
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": guidance,
-                    "status": "error",
-                }, ensure_ascii=False)
 
         # Start cleanup thread
         _start_cleanup_thread()
@@ -2205,7 +2166,13 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in {"docker", "singularity", "modal", "daytona"}:
+                        if env_type in {
+                            "docker",
+                            "singularity",
+                            "modal",
+                            "daytona",
+                            "isolated_worker",
+                        }:
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
@@ -2221,6 +2188,11 @@ def terminal_tool(
                                 "docker_network": config.get("docker_network", True),
                                 "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
                                 "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+                                "isolated_worker_socket": config.get("isolated_worker_socket", ""),
+                                "isolated_worker_server_uid": config.get("isolated_worker_server_uid", 0),
+                                "isolated_worker_server_gid": config.get("isolated_worker_server_gid", 0),
+                                "isolated_worker_socket_uid": config.get("isolated_worker_socket_uid", 0),
+                                "isolated_worker_socket_gid": config.get("isolated_worker_socket_gid", 0),
                             }
 
                         local_config = None
@@ -2753,15 +2725,22 @@ def terminal_tool(
                 "error": None,
             }
             try:
-                from agent.verification_evidence import record_terminal_result
-
-                evidence = record_terminal_result(
-                    command=command,
-                    cwd=command_cwd,
-                    session_id=session_id or task_id or effective_task_id or "default",
-                    exit_code=returncode,
-                    output=output,
+                from agent.verification_evidence import (
+                    record_terminal_result,
+                    verification_ledger_enabled,
                 )
+
+                evidence = None
+                if verification_ledger_enabled():
+                    evidence = record_terminal_result(
+                        command=command,
+                        cwd=command_cwd,
+                        session_id=(
+                            session_id or task_id or effective_task_id or "default"
+                        ),
+                        exit_code=returncode,
+                        output=output,
+                    )
                 if evidence:
                     result_dict["verification_evidence"] = {
                         "status": evidence.get("status"),
@@ -2905,10 +2884,31 @@ def check_terminal_requirements() -> bool:
             from daytona import Daytona  # noqa: F401 — SDK presence check
             return os.getenv("DAYTONA_API_KEY") is not None
 
+        elif env_type == "isolated_worker":
+            # A static path check is not enough: the worker boundary also
+            # depends on the exact socket owner/mode and peer credentials.
+            # Connect without sending an operation so this remains a
+            # side-effect-free readiness probe (no lease is created).
+            from gateway.isolated_worker import IsolatedWorkerClient
+
+            client = IsolatedWorkerClient(
+                Path(config["isolated_worker_socket"]),
+                lease_id="lease-readiness-probe",
+                expected_server_uid=config["isolated_worker_server_uid"],
+                expected_server_gid=config["isolated_worker_server_gid"],
+                expected_socket_uid=config["isolated_worker_socket_uid"],
+                expected_socket_gid=config["isolated_worker_socket_gid"],
+            )
+            try:
+                client.connect()
+            finally:
+                client.close()
+            return True
+
         else:
             logger.error(
                 "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, ssh.",
+                "modal, daytona, isolated_worker, ssh.",
                 env_type,
             )
             return False
@@ -2951,7 +2951,7 @@ if __name__ == "__main__":
     print(
         "  TERMINAL_ENV: "
         f"{os.getenv('TERMINAL_ENV', 'local')} "
-        "(local/docker/singularity/modal/daytona/ssh)"
+        "(local/docker/singularity/modal/daytona/isolated_worker/ssh)"
     )
     print(f"  TERMINAL_DOCKER_IMAGE: {os.getenv('TERMINAL_DOCKER_IMAGE', default_img)}")
     print(f"  TERMINAL_SINGULARITY_IMAGE: {os.getenv('TERMINAL_SINGULARITY_IMAGE', f'docker://{default_img}')}")
@@ -2967,6 +2967,7 @@ if __name__ == "__main__":
 # ---------------------------------------------------------------------------
 # Registry
 # ---------------------------------------------------------------------------
+from agent.tool_result_classification import terminal_exit_code_failure_adapter
 from tools.registry import registry
 
 TERMINAL_SCHEMA = {
@@ -3036,4 +3037,5 @@ registry.register(
     check_fn=check_terminal_requirements,
     emoji="💻",
     max_result_size_chars=100_000,
+    result_failure_adapter=terminal_exit_code_failure_adapter,
 )

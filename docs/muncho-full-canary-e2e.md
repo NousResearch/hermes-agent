@@ -74,7 +74,7 @@ policy and nonsemantic correlation:
 - a bounded one-hour execution window;
 - the exact verified route: `openai-codex`, `codex_responses`,
   `https://chatgpt.com/backend-api/codex`, `gpt-5.6-sol`;
-- initial `high` and model-requested `xhigh` effort;
+- initial `high` and model-requested `max` effort;
 - a bounded exact prompt plus its digest and a minimum of three completed
   steps, without supplying their meaning or IDs. The reviewed live prompt must
   describe a genuinely difficult multi-step objective, but must not tell the
@@ -109,8 +109,8 @@ contains these externally produced receipts:
   sealed SQL contract and real PostgreSQL 18 test prove that this tombstone
   denies the exact retired session generation;
 - ordered sealed-collector model-call receipts proving the first live request
-  used `high`, an assistant-authored `todo` call requested `xhigh` in the same
-  turn, and all later requests in that turn used `xhigh`. Every receipt binds
+  used `high`, an assistant-authored `todo` call requested `max` in the same
+  turn, and all later requests in that turn used `max`. Every receipt binds
   the actual sanitized `post_api` response payload digest, response model,
   tool-call IDs, and observation time; it never invents a provider response ID
   that the hook does not expose. Nonterminal calls must contain tool calls and

@@ -24,9 +24,18 @@ except Exception:  # pragma: no cover - import-safe for tool discovery
 from tools.registry import registry, tool_error
 
 from gateway.support_ops_team_registry import (
-    SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+    ALIAS_ENTRIES,
+    APPROVED_LANE_ALIAS_ENTRIES,
+    APPROVED_OPERATIONAL_GUILD_LANES_BY_CHANNEL_ID,
     SKYVISION_GUILD_ID,
+    SKYVISION_SYNTHETIC_CANARY_PUBLIC_CHANNEL_ID,
+    STATIC_ALIAS_CHANNEL_IDS,
+    STATIC_ALIAS_MEMBER_KEYS,
+    TEAM_MEMBERS_BY_KEY,
     TeamMember,
+    approved_guild_lane_for_channel_id,
+    normalize_team_member_alias,
+    resolve_approved_guild_lane,
     resolve_team_member,
 )
 
@@ -63,6 +72,7 @@ ALLOWED_EVENT_TYPES = {
     "semantic_interpreter.skipped",
     "semantic_event.drafted",
     "person.alias.learned",
+    "channel.alias.learned",
 } | TASK_MODEL_EVENT_TYPES
 RECEIPT_REQUIRED_EVENT_TYPES = {"route_back.sent"} | PROCESS_RECEIPT_EVENT_TYPES
 TASK_STEP_STATUSES = {"pending", "in_progress", "completed", "cancelled", "blocked"}
@@ -524,10 +534,11 @@ def _validate_task_plan_payload(payload: Dict[str, Any]) -> None:
         if key in plan:
             _bounded_object_list(plan.get(key), f"payload.plan.{key}")
 
-    if state == "completed":
+    if state in {"completed", "cancelled"}:
         if current_step_id or next_step_id:
             raise ValueError(
-                "completed plan must clear current_step_id and resume_cursor.next_step_id"
+                f"{state} plan must clear current_step_id and "
+                "resume_cursor.next_step_id"
             )
         non_terminal = [
             str(step.get("id"))
@@ -535,7 +546,9 @@ def _validate_task_plan_payload(payload: Dict[str, Any]) -> None:
             if step.get("status") not in {"completed", "cancelled"}
         ]
         if non_terminal:
-            raise ValueError(f"completed plan has non-terminal steps:{non_terminal}")
+            raise ValueError(f"{state} plan has non-terminal steps:{non_terminal}")
+
+    if state == "completed":
         verification_ids = _bounded_string_list(
             plan.get("verification_event_ids"),
             "payload.plan.verification_event_ids",
@@ -608,6 +621,149 @@ def _validate_task_verification_payload(payload: Dict[str, Any]) -> None:
         raise ValueError(
             "payload.verification contains reserved runtime projection fields"
         )
+
+
+def _validate_person_alias_payload(payload: Dict[str, Any]) -> None:
+    """Validate one exact model-authored alias mapping before durable append.
+
+    The isolated projector intentionally accepts a narrow envelope.  Enforcing
+    that envelope here prevents an already-committed malformed event from
+    poisoning every later projection run.  This validates only the structured
+    choice made by Hermes after clarification; it never interprets prose.
+    """
+
+    if set(payload) != {"alias", "member_key"}:
+        raise ValueError(
+            "person.alias.learned payload must contain exactly alias and member_key"
+        )
+    alias = payload.get("alias")
+    member_key = payload.get("member_key")
+    if not isinstance(alias, str) or not isinstance(member_key, str):
+        raise ValueError(
+            "person.alias.learned requires string payload.alias and payload.member_key"
+        )
+    normalized = normalize_team_member_alias(alias)
+    if (
+        not normalized
+        or len(normalized) > 200
+        or len(normalized.encode("utf-8")) > 512
+    ):
+        raise ValueError("person.alias.learned payload.alias is invalid")
+    if member_key not in TEAM_MEMBERS_BY_KEY:
+        raise ValueError("person.alias.learned payload.member_key is unknown")
+    static_matches = {
+        member.key
+        for static_alias, member in ALIAS_ENTRIES
+        if static_alias == normalized
+    }
+    if static_matches and static_matches != {member_key}:
+        raise ValueError(
+            "person.alias.learned payload.alias conflicts with the static registry"
+        )
+    if normalized in STATIC_ALIAS_CHANNEL_IDS:
+        raise ValueError(
+            "person.alias.learned payload.alias conflicts with a channel alias"
+        )
+    learned_resolution = resolve_team_member(normalized)
+    if (
+        learned_resolution.status == "resolved"
+        and learned_resolution.member is not None
+        and learned_resolution.member.key != member_key
+    ):
+        raise ValueError(
+            "person.alias.learned payload.alias conflicts with the Canonical projection"
+        )
+    if resolve_approved_guild_lane(normalized).status != "unknown":
+        raise ValueError(
+            "person.alias.learned payload.alias conflicts with a guild lane alias"
+        )
+
+
+def _validate_channel_alias_payload(payload: Dict[str, Any]) -> None:
+    """Validate one exact model-authored guild channel/thread alias."""
+
+    target_type = payload.get("target_type")
+    expected = {"alias", "guild_id", "target_type", "channel_id"}
+    if target_type == "guild_thread":
+        expected.add("parent_channel_id")
+    if set(payload) != expected:
+        raise ValueError(
+            "channel.alias.learned payload shape does not match target_type"
+        )
+    alias = payload.get("alias")
+    guild_id = payload.get("guild_id")
+    channel_id = payload.get("channel_id")
+    parent_channel_id = payload.get("parent_channel_id")
+    if (
+        not isinstance(alias, str)
+        or not isinstance(guild_id, str)
+        or not isinstance(target_type, str)
+        or not isinstance(channel_id, str)
+    ):
+        raise ValueError("channel.alias.learned requires exact string fields")
+    normalized = normalize_team_member_alias(alias)
+    if (
+        not normalized
+        or len(normalized) > 200
+        or len(normalized.encode("utf-8")) > 512
+    ):
+        raise ValueError("channel.alias.learned payload.alias is invalid")
+    if guild_id != SKYVISION_GUILD_ID:
+        raise ValueError("channel.alias.learned guild_id is not the production guild")
+    if re.fullmatch(r"[1-9][0-9]{16,19}", channel_id) is None:
+        raise ValueError("channel.alias.learned channel_id is invalid")
+    if target_type == "guild_channel":
+        if parent_channel_id is not None:
+            raise ValueError(
+                "channel.alias.learned root channel forbids parent_channel_id"
+            )
+    elif target_type == "guild_thread":
+        if (
+            not isinstance(parent_channel_id, str)
+            or re.fullmatch(r"[1-9][0-9]{16,19}", parent_channel_id) is None
+            or parent_channel_id == channel_id
+        ):
+            raise ValueError(
+                "channel.alias.learned guild thread requires a distinct exact parent_channel_id"
+            )
+    else:
+        raise ValueError(
+            "channel.alias.learned target_type must be guild_channel or guild_thread"
+        )
+    if normalized in STATIC_ALIAS_MEMBER_KEYS:
+        raise ValueError(
+            "channel.alias.learned payload.alias conflicts with a person alias"
+        )
+    static_targets = {
+        lane.channel_id
+        for static_alias, lane in APPROVED_LANE_ALIAS_ENTRIES
+        if static_alias == normalized
+    }
+    if static_targets and (
+        static_targets != {channel_id} or target_type != "guild_channel"
+    ):
+        raise ValueError(
+            "channel.alias.learned payload.alias conflicts with the static registry"
+        )
+    if resolve_team_member(normalized).status != "unknown":
+        raise ValueError(
+            "channel.alias.learned payload.alias conflicts with a person alias"
+        )
+    projected = resolve_approved_guild_lane(normalized)
+    if projected.status == "ambiguous":
+        raise ValueError(
+            "channel.alias.learned payload.alias conflicts with the Canonical projection"
+        )
+    if projected.status == "resolved" and projected.lane is not None:
+        lane = projected.lane
+        if (
+            lane.channel_id != channel_id
+            or lane.target_type != target_type
+            or (lane.parent_channel_id or None) != (parent_channel_id or None)
+        ):
+            raise ValueError(
+                "channel.alias.learned payload.alias conflicts with the Canonical projection"
+            )
 
 
 def _validate_runtime_receipt(event_type: str, payload: Dict[str, Any]) -> None:
@@ -769,8 +925,9 @@ def _validate_append_request(
         else:
             _validate_runtime_receipt(event_type, payload)
     if event_type == "person.alias.learned":
-        if not str(payload.get("alias") or "").strip() or not str(payload.get("member_key") or "").strip():
-            raise ValueError("person.alias.learned requires payload.alias and payload.member_key")
+        _validate_person_alias_payload(payload)
+    elif event_type == "channel.alias.learned":
+        _validate_channel_alias_payload(payload)
     elif event_type == "task.plan.updated":
         _validate_task_plan_payload(payload)
     elif event_type == "task.verification.recorded":
@@ -780,10 +937,10 @@ def _validate_append_request(
 def _contains_forbidden_dm_route_ref(value: Any) -> bool:
     """Return True when route-back target/receipt metadata points at a DM.
 
-    Muncho's SkyVision policy allows public approved channels/threads only for
-    team route-backs. A Discord user mention can still be used inside a public
-    channel message, but DM channel ids or recipient-id delivery metadata must
-    not be recorded as valid route_back.sent evidence.
+    Muncho's SkyVision policy allows only exact owner-approved guild
+    channels/threads for team route-backs. A Discord user mention can still be
+    used inside a guild message, but DM/group-DM channel IDs or recipient-ID
+    delivery metadata must not be valid route_back.sent evidence.
     """
     if isinstance(value, dict):
         for key, nested in value.items():
@@ -811,7 +968,7 @@ def _validate_no_route_back_dm_refs(payload: Dict[str, Any]) -> None:
         route_back.get("receipt") if isinstance(route_back, dict) else None,
     ]
     if any(_contains_forbidden_dm_route_ref(surface) for surface in surfaces if surface):
-        raise ValueError("route_back.sent forbids direct-message/DM delivery receipts; use public approved channel/thread target or record_blocked")
+        raise ValueError("route_back.sent forbids direct-message/DM delivery receipts; use an approved guild channel/thread target or record_blocked")
 
 
 def _observed_session_refs() -> Dict[str, str]:
@@ -922,17 +1079,38 @@ def _materialize_verified_alias_event(
     payload: Dict[str, Any],
     response: Dict[str, Any],
 ) -> Dict[str, Any]:
-    """Apply the local alias projection only after durable writer success."""
+    """Return the exact retry target only after durable writer success."""
 
-    if event_type != "person.alias.learned" or response.get("success") is not True:
+    if (
+        event_type not in {"person.alias.learned", "channel.alias.learned"}
+        or response.get("success") is not True
+    ):
         return response
-    from gateway.support_ops_team_registry import learn_team_member_alias
 
     rendered = dict(response)
-    rendered["alias"] = learn_team_member_alias(
-        str(payload.get("alias")),
-        str(payload.get("member_key")),
-    )
+    alias = str(payload.get("alias"))
+    normalized = normalize_team_member_alias(alias)
+    if event_type == "person.alias.learned":
+        member_key = str(payload.get("member_key"))
+        rendered["alias"] = {"alias": normalized, "member_key": member_key}
+        rendered["immediate_retry_target_person"] = member_key
+    else:
+        target = {
+            key: payload[key]
+            for key in (
+                "guild_id",
+                "target_type",
+                "channel_id",
+                "parent_channel_id",
+            )
+            if key in payload
+        }
+        rendered["alias"] = {"alias": normalized, **target}
+        rendered["immediate_retry_target_channel"] = target
+    # Canonical append is authoritative. Never create a mutable local alias
+    # authority as a side effect; the isolated projector publishes the safe
+    # read model, while the exact returned target enables this immediate retry.
+    rendered["alias_projection_status"] = "canonical_event_committed_projector_pending"
     return rendered
 
 
@@ -1390,6 +1568,11 @@ def _canonical_event_append_impl(
     The caller (Hermes) decides meaning. This function validates mechanics and
     writes a deterministic/idempotent event row.
     """
+    # Tri-state dispatch certainty. ``False`` is proven pre-dispatch, ``None``
+    # means a privileged proxy call is in flight/unknown, and ``True`` means
+    # the direct writer reached its INSERT dispatch boundary. The exception
+    # path must never infer "no write" merely from a missing receipt.
+    write_may_have_occurred: bool | None = False
     try:
         source_refs = _normalize_dict(source_refs, "source_refs")
         source_refs = _augment_source_refs_from_session_context(source_refs)
@@ -1441,6 +1624,7 @@ def _canonical_event_append_impl(
         elif event_type == "task.verification.recorded":
             operation = CanonicalWriterOperation.VERIFICATION_APPEND
             writer_payload.pop("event_type", None)
+        write_may_have_occurred = None
         proxy = _writer_proxy_result(
             operation.value,
             writer_payload,
@@ -1456,6 +1640,10 @@ def _canonical_event_append_impl(
                 ensure_ascii=False,
                 sort_keys=True,
             )
+        # ``None`` proves this invocation is already inside the authenticated
+        # writer (or an isolated direct-database test); no event INSERT has yet
+        # been dispatched in this local call.
+        write_may_have_occurred = False
         canonical_content_sha256 = _hash({
             "event_type": event_type,
             "case_id": case_id,
@@ -1631,7 +1819,12 @@ INSERT INTO {EVENT_TABLE} (
 )
 ON CONFLICT (event_id) DO NOTHING;
 """
+            write_may_have_occurred = True
             tag = helper.query(sock, sql)["command_tag"]
+            if tag not in {"INSERT 0 0", "INSERT 0 1"}:
+                raise RuntimeError(
+                    "canonical_event_insert_command_tag_invalid"
+                )
             readback = helper.query(sock, f"""
 SELECT event_id::text, event_type, case_id, occurred_at::text,
        payload->>'idempotency_key' AS idempotency_key,
@@ -1705,7 +1898,24 @@ LIMIT 1;
         )
         return json.dumps(response, ensure_ascii=False, sort_keys=True)
     except Exception as exc:
-        return tool_error(f"CANONICAL_EVENT_APPEND_FAIL: {exc}")
+        exception_hint = getattr(exc, "write_may_have_occurred", None)
+        if type(exception_hint) is bool:
+            may_have_occurred = exception_hint
+        else:
+            may_have_occurred = write_may_have_occurred is not False
+        raw_code = getattr(exc, "code", None)
+        error_code = str(getattr(raw_code, "value", raw_code) or "")
+        return tool_error(
+            f"CANONICAL_EVENT_APPEND_FAIL: {exc}",
+            status="CANONICAL_EVENT_APPEND_FAIL",
+            canonical_error_code=error_code,
+            canonical_dispatch_certainty=(
+                "may_have_occurred"
+                if may_have_occurred
+                else "proven_pre_dispatch"
+            ),
+            write_may_have_occurred=may_have_occurred,
+        )
 
 
 def canonical_event_append_tool(
@@ -1828,7 +2038,7 @@ def _route_back_state_impl(
         if not target_ref.get("id") and not target_ref.get("mention") and not target_ref.get("lane"):
             raise ValueError("target_ref requires id, mention, or lane")
         if _contains_forbidden_dm_route_ref(target_ref) or _contains_forbidden_dm_route_ref(receipt):
-            raise ValueError("route_back_state forbids direct-message/DM targets; use public approved channel/thread target or record_blocked")
+            raise ValueError("route_back_state forbids direct-message/DM targets; use an approved guild channel/thread target or record_blocked")
         base_payload = {
             "route_back": {
                 "target_ref": target_ref,
@@ -2122,141 +2332,260 @@ def _record_route_back_sent_receipt(
     return _record_route_back_edge_terminal(outcome="sent", **kwargs)
 
 
-def _resolve_route_back_public_target(target_ref: Dict[str, Any]) -> Dict[str, Any]:
-    """Resolve an exact approved public route-back target.
+def _resolve_route_back_approved_guild_target(
+    target_ref: Dict[str, Any],
+) -> Dict[str, Any]:
+    """Resolve an exact model-authored person/lane into an approved guild target.
 
-    This intentionally uses the team/channel registry, not business-keyword
-    routing. References to Emil/owner resolve to the public control-tower
-    channel, never a DM. Multiple identity fields must resolve consistently;
-    contradictory or partly unresolved identities are clarification blockers.
+    This is a mechanical registry projection, never a prose router.  Static
+    registry membership is sufficient to construct a root-channel request;
+    the tokenless gateway cache is not an authority.  The privileged edge
+    independently re-fetches Discord and proves target type, guild/parent
+    binding and effective bot permissions immediately before dispatch.
     """
-    candidate_values = []
-    for key in ("id", "mention", "lane", "person", "target_person", "key"):
-        value = str(target_ref.get(key) or "").strip()
-        if value:
-            candidate_values.append(value)
-
-    channel_surfaces = {
-        key: str(target_ref.get(key) or "").strip()
-        for key in ("channel_id", "thread_id", "chat_id")
-        if str(target_ref.get(key) or "").strip()
-    }
-    distinct_channel_ids = set(channel_surfaces.values())
-    if len(distinct_channel_ids) > 1:
-        raise ValueError(
-            "route_back_execute target_ref contains conflicting public channel/thread fields; "
-            "ask requester to clarify the public target"
-        )
-    channel_id = next(iter(distinct_channel_ids), "")
-    raw_id = str(target_ref.get("id") or "").strip()
-    if raw_id == SKYVISION_CONTROL_TOWER_CHANNEL_ID:
-        if channel_id and channel_id != raw_id:
-            raise ValueError(
-                "route_back_execute target_ref contains conflicting public channel/thread fields; "
-                "ask requester to clarify the public target"
-            )
-        channel_id = SKYVISION_CONTROL_TOWER_CHANNEL_ID
 
     resolved_members: dict[str, TeamMember] = {}
-    unresolved_values: list[str] = []
-    for value in candidate_values:
+    resolved_lanes: dict[str, Any] = {}
+
+    def add_member(value: str, *, label: str) -> None:
         resolution = resolve_team_member(value)
-        if resolution.status == "resolved":
-            member = resolution.member
-            if member is None:
-                raise ValueError(
-                    "route_back_execute target resolution is incomplete; ask requester to clarify the public target"
-                )
-            resolved_members[member.key] = member
-            continue
         if resolution.status == "ambiguous":
-            raise ValueError("route_back_execute target_ref ambiguous; ask requester to clarify the public target")
-        unresolved_values.append(value)
+            raise ValueError(
+                f"route_back_execute {label} is ambiguous; ask requester to clarify the teammate"
+            )
+        if resolution.status != "resolved" or resolution.member is None:
+            raise ValueError(
+                f"route_back_execute {label} is unknown; ask requester to clarify the teammate"
+            )
+        resolved_members[resolution.member.key] = resolution.member
+
+    def add_lane(value: str, *, label: str) -> None:
+        resolution = resolve_approved_guild_lane(value)
+        if resolution.status == "ambiguous":
+            raise ValueError(
+                f"route_back_execute {label} is ambiguous; ask requester to clarify the guild lane"
+            )
+        if resolution.status != "resolved" or resolution.lane is None:
+            raise ValueError(
+                f"route_back_execute {label} is unknown; ask requester to clarify the guild lane"
+            )
+        resolved_lanes[resolution.lane.key] = resolution.lane
+
+    for key in ("person", "target_person", "mention"):
+        value = str(target_ref.get(key) or "").strip()
+        if value:
+            add_member(value, label=key)
+    lane_value = str(target_ref.get("lane") or "").strip()
+    if lane_value:
+        add_lane(lane_value, label="lane")
+
+    for key in ("key", "id"):
+        value = str(target_ref.get(key) or "").strip()
+        if not value:
+            continue
+        member_resolution = resolve_team_member(value)
+        lane_resolution = resolve_approved_guild_lane(value)
+        member = (
+            member_resolution.member
+            if member_resolution.status == "resolved"
+            else None
+        )
+        lane = (
+            lane_resolution.lane
+            if lane_resolution.status == "resolved"
+            else None
+        )
+        if member_resolution.status == "ambiguous" or lane_resolution.status == "ambiguous":
+            raise ValueError(
+                f"route_back_execute {key} is ambiguous; ask requester to clarify the person/lane"
+            )
+        if member is not None:
+            resolved_members[member.key] = member
+        if lane is not None:
+            resolved_lanes[lane.key] = lane
+        if member is None and lane is None and not value.isdigit():
+            raise ValueError(
+                f"route_back_execute {key} is unknown; ask requester to clarify the person/lane"
+            )
 
     if len(resolved_members) > 1:
         raise ValueError(
-            "route_back_execute target_ref contains conflicting people; ask requester to clarify the public target"
+            "route_back_execute target_ref contains conflicting people; ask requester to clarify"
         )
+    if len(resolved_lanes) > 1:
+        raise ValueError(
+            "route_back_execute target_ref contains conflicting guild lanes; ask requester to clarify"
+        )
+    member = next(iter(resolved_members.values()), None)
+    lane = next(iter(resolved_lanes.values()), None)
+    if member is not None:
+        member_lane = approved_guild_lane_for_channel_id(member.default_channel_id)
+        if member_lane is None:
+            raise ValueError("route_back_execute teammate lane is not owner-approved")
+        if lane is not None and lane.channel_id != member_lane.channel_id:
+            raise ValueError(
+                "route_back_execute target_ref person and lane conflict; ask requester to clarify"
+            )
+        lane = member_lane
 
-    resolved_member = next(iter(resolved_members.values()), None)
+    channel_id = str(target_ref.get("channel_id") or "").strip()
+    chat_id = str(target_ref.get("chat_id") or "").strip()
+    thread_id = str(target_ref.get("thread_id") or "").strip()
+    parent_channel_id = str(target_ref.get("parent_channel_id") or "").strip()
+    requested_guild_id = str(target_ref.get("guild_id") or "").strip()
+    if requested_guild_id and requested_guild_id != SKYVISION_GUILD_ID:
+        raise ValueError(
+            "route_back_execute target_ref names a non-approved Discord guild"
+        )
+    raw_id = str(target_ref.get("id") or "").strip()
+    if channel_id and chat_id and channel_id != chat_id:
+        raise ValueError(
+            "route_back_execute target_ref contains conflicting channel fields; ask requester to clarify"
+        )
+    root_or_target_id = channel_id or chat_id
+    if raw_id.isdigit() and member is None:
+        if root_or_target_id and root_or_target_id != raw_id:
+            raise ValueError(
+                "route_back_execute target_ref contains conflicting channel fields; ask requester to clarify"
+            )
+        root_or_target_id = raw_id
 
-    if resolved_member is not None:
-        unresolved_conflicts = [
-            value
-            for value in unresolved_values
-            if value not in {
-                resolved_member.key,
-                resolved_member.discord_user_id,
-                resolved_member.mention,
-                resolved_member.default_channel_id,
-            }
-        ]
-        if unresolved_conflicts or (
-            channel_id and channel_id != resolved_member.default_channel_id
+    requested_target_type = str(target_ref.get("target_type") or "").strip()
+    requested_channel_type = str(target_ref.get("channel_type") or "").strip()
+    if requested_target_type == "public_guild_channel":
+        if (
+            requested_guild_id != SKYVISION_GUILD_ID
+            or root_or_target_id != SKYVISION_SYNTHETIC_CANARY_PUBLIC_CHANNEL_ID
+            or thread_id
+            or parent_channel_id
+            or member is not None
+            or lane is not None
+            or requested_channel_type
+            not in {"", "public_channel", "public_guild_channel"}
         ):
             raise ValueError(
-                "route_back_execute target_ref contains conflicting or unresolved identity fields; ask requester to clarify the public target"
+                "route_back_execute public target is not the exact isolated canary channel"
             )
         return {
-            "channel_id": resolved_member.default_channel_id,
-            "channel_type": "public_channel",
             "target_type": "public_guild_channel",
             "guild_id": SKYVISION_GUILD_ID,
-            "target_kind": "member_default_public_channel",
-            "target_member_key": resolved_member.key,
-            "target_member_id": resolved_member.discord_user_id,
-            "target_mention": resolved_member.mention,
-        }
-
-    if channel_id == SKYVISION_CONTROL_TOWER_CHANNEL_ID:
-        if any(
-            value != SKYVISION_CONTROL_TOWER_CHANNEL_ID
-            for value in unresolved_values
-        ):
-            raise ValueError(
-                "route_back_execute target_ref contains conflicting or unresolved identity fields; ask requester to clarify the public target"
-            )
-        return {
-            "channel_id": SKYVISION_CONTROL_TOWER_CHANNEL_ID,
-            "channel_type": "public_channel",
-            "target_type": "public_guild_channel",
-            "guild_id": SKYVISION_GUILD_ID,
-            "target_kind": "owner_public_channel",
-            "target_member_key": "emil_lomliev",
-            "target_member_id": "1279454038731264061",
-            "target_mention": "<@1279454038731264061>",
-        }
-
-    if channel_id:
-        if any(value != channel_id for value in unresolved_values):
-            raise ValueError(
-                "route_back_execute target_ref contains unresolved identity fields; ask requester to clarify the public target"
-            )
-        from gateway.channel_directory import lookup_discord_public_target
-
-        exact_target = lookup_discord_public_target(channel_id)
-        if exact_target is None or exact_target.get("target_type") not in {
-            "public_guild_channel",
-            "public_guild_thread",
-        }:
-            raise ValueError(
-                "route_back_execute requires a directory-confirmed public Discord channel/thread"
-            )
-        channel_type = (
-            "public_thread"
-            if exact_target["target_type"] == "public_guild_thread"
-            else "public_channel"
-        )
-        return {
-            **exact_target,
-            "channel_type": channel_type,
-            "target_kind": "exact_public_directory_target",
+            "channel_id": SKYVISION_SYNTHETIC_CANARY_PUBLIC_CHANNEL_ID,
+            "channel_type": "public_guild_channel",
+            "target_kind": "isolated_synthetic_canary_public_channel",
             "target_member_key": None,
             "target_member_id": None,
             "target_mention": None,
+            "target_lane_key": None,
+        }
+    if requested_target_type in {
+        "public_channel",
+        "public_thread",
+        "public_guild_thread",
+        "public_guild_forum",
+    } or requested_channel_type in {
+        "public_channel",
+        "public_thread",
+        "public_guild_channel",
+        "public_guild_thread",
+        "public_guild_forum",
+    }:
+        raise ValueError(
+            "route_back_execute public target is outside the isolated canary boundary"
+        )
+
+    if lane is not None and lane.target_type == "guild_thread":
+        learned_parent = str(lane.parent_channel_id or "").strip()
+        if not learned_parent or learned_parent == lane.channel_id:
+            raise ValueError(
+                "route_back_execute Canonical guild thread alias has no exact parent"
+            )
+        if thread_id and thread_id != lane.channel_id:
+            raise ValueError(
+                "route_back_execute target_ref thread conflicts with the Canonical lane alias"
+            )
+        if parent_channel_id and parent_channel_id != learned_parent:
+            raise ValueError(
+                "route_back_execute target_ref parent conflicts with the Canonical lane alias"
+            )
+        if root_or_target_id and root_or_target_id != lane.channel_id:
+            raise ValueError(
+                "route_back_execute target_ref channel conflicts with the Canonical lane alias"
+            )
+        return {
+            "target_type": "guild_thread",
+            "guild_id": SKYVISION_GUILD_ID,
+            "channel_id": lane.channel_id,
+            "parent_channel_id": learned_parent,
+            "channel_type": "guild_thread",
+            "target_kind": "canonical_guild_lane_thread",
+            "target_member_key": None,
+            "target_member_id": None,
+            "target_mention": None,
+            "target_lane_key": lane.key,
         }
 
-    raise ValueError("route_back_execute target is unresolved; ask the requester to clarify the public channel/thread")
+    if thread_id:
+        parent = parent_channel_id or root_or_target_id or (lane.channel_id if lane else "")
+        if not parent or not parent.isdigit():
+            raise ValueError(
+                "route_back_execute guild thread requires its exact numeric parent channel; ask requester to clarify"
+            )
+        if lane is not None and lane.channel_id != parent:
+            raise ValueError(
+                "route_back_execute target_ref thread parent conflicts with person/lane"
+            )
+        if thread_id == parent:
+            raise ValueError("route_back_execute thread and parent IDs must differ")
+        return {
+            "target_type": "guild_thread",
+            "guild_id": SKYVISION_GUILD_ID,
+            "channel_id": thread_id,
+            "parent_channel_id": parent,
+            "channel_type": "guild_thread",
+            "target_kind": (
+                "registered_guild_lane_thread" if lane else "exact_guild_acl_thread"
+            ),
+            "target_member_key": member.key if member else None,
+            "target_member_id": member.discord_user_id if member else None,
+            "target_mention": member.mention if member else None,
+            "target_lane_key": lane.key if lane else None,
+        }
+
+    target_channel_id = root_or_target_id or (lane.channel_id if lane else "")
+    approved_lane = approved_guild_lane_for_channel_id(target_channel_id)
+    if not target_channel_id.isdigit():
+        raise ValueError(
+            "route_back_execute target is not an exact numeric Discord guild channel; ask requester to clarify"
+        )
+    if lane is not None and lane.channel_id != target_channel_id:
+        raise ValueError(
+            "route_back_execute target_ref channel conflicts with person/lane; ask requester to clarify"
+        )
+    return {
+        "target_type": "guild_channel",
+        "guild_id": SKYVISION_GUILD_ID,
+        "channel_id": target_channel_id,
+        "channel_type": "guild_channel",
+        "target_kind": (
+            "member_default_approved_guild_channel"
+            if member is not None
+            else (
+                "approved_guild_lane"
+                if approved_lane is not None
+                else "exact_guild_acl_channel"
+            )
+        ),
+        "target_member_key": member.key if member else None,
+        "target_member_id": member.discord_user_id if member else None,
+        "target_mention": member.mention if member else None,
+        "target_lane_key": approved_lane.key if approved_lane else None,
+    }
+
+
+def _resolve_route_back_public_target(target_ref: Dict[str, Any]) -> Dict[str, Any]:
+    """Backward-compatible internal alias for approved-guild resolution."""
+
+    return _resolve_route_back_approved_guild_target(target_ref)
 
 
 def _configured_discord_channel_allowed(channel_id: str) -> bool:
@@ -2272,7 +2601,7 @@ def _authorize_route_back_execution(
     case_id: str,
     public_target: Dict[str, Any],
 ) -> None:
-    """Authorize caller/case and exact public target before any outbound send."""
+    """Authorize caller/case and exact approved guild target before send."""
     from gateway.canonical_writer_boundary import (
         in_writer_service,
         writer_boundary_configured,
@@ -2292,8 +2621,11 @@ def _authorize_route_back_execution(
         _authorize_existing_case_scope(helper, sock, case_id=case_id)
         target_kind = str(public_target.get("target_kind") or "")
         if target_kind in {
-            "member_default_public_channel",
-            "owner_public_channel",
+            "member_default_approved_guild_channel",
+            "approved_guild_lane",
+            "registered_guild_lane_thread",
+            "exact_guild_acl_channel",
+            "exact_guild_acl_thread",
         }:
             return
         channel_id = str(public_target.get("channel_id") or "").strip()
@@ -2529,7 +2861,7 @@ def _route_back_record_blocked(
 
 
 def _sanitized_blocked_target_ref(target_ref: Dict[str, Any]) -> Dict[str, Any]:
-    """Keep only public-safe metadata when persisting a blocked target."""
+    """Keep only non-secret guild-safe metadata for a blocked target."""
     if _contains_forbidden_dm_route_ref(target_ref):
         return {
             "id": f"blocked-target:{_hash(target_ref)[:16]}",
@@ -2572,7 +2904,7 @@ def _blocked_execution_result(
         data["final_answer_guard"] = (
             "The route-back target fields are contradictory, ambiguous, or "
             "incomplete. Explain the exact conflict to the requester and ask "
-            "which approved public Discord channel/thread or teammate lane they "
+            "which approved Discord guild channel/thread or teammate lane they "
             "intend. Do not guess or send until clarified."
         )
     if delivery_outcome_uncertain:
@@ -2595,7 +2927,7 @@ def _blocked_execution_result(
             )
         else:
             data["final_answer_guard"] = (
-                "No public delivery was attempted, but durable route_back.blocked "
+                "No Discord guild delivery was attempted, but durable route_back.blocked "
                 "recording failed. Report the original blocker and the Canonical "
                 "recording failure; do not claim a terminal outcome."
             )
@@ -2610,7 +2942,7 @@ def route_back_execute_tool(
     source_refs: Dict[str, Any],
     idempotency_key: Optional[str] = None,
 ) -> str:
-    """Deliver an exact public route-back and record the terminal outcome.
+    """Deliver an exact approved-guild route-back and record the outcome.
 
     This is the send+receipt executor counterpart to ``route_back_state``. The
     gateway owns no Discord credential: it preconnects to the privileged edge,
@@ -2990,7 +3322,7 @@ def route_back_execute_tool(
                 "status": "ROUTE_BACK_EXECUTE_INTENT_FAILED",
                 "route_back_record": intent,
                 "final_answer_guard": (
-                    "No public message was sent because the durable execution intent "
+                    "No guild message was sent because the durable execution intent "
                     "could not be verified. Report the blocker and do not claim delivery."
                 ),
             }, ensure_ascii=False, sort_keys=True)
@@ -3826,6 +4158,44 @@ LIMIT {max_cases + 1};
     return case_ids[:max_cases], len(case_ids) > max_cases
 
 
+def _query_thread_workspace_case_ids(
+    helper: Any,
+    sock: Any,
+    *,
+    thread_id: str,
+    max_cases: int,
+) -> tuple[list[str], bool]:
+    """Return exact unfinished plan cases without inspecting task prose."""
+
+    where = _query_where_sql(helper, case_id="", thread_id=thread_id)
+    result = helper.query(sock, f"""
+WITH latest_plan AS (
+    SELECT DISTINCT ON (e.case_id)
+           e.case_id,
+           e.occurred_at,
+           e.event_id,
+           e.payload->'plan' AS plan
+      FROM {EVENT_TABLE} AS e
+     WHERE ({where})
+       AND e.event_type = 'task.plan.updated'
+     ORDER BY e.case_id, e.occurred_at DESC, e.event_id DESC
+)
+SELECT case_id, occurred_at::text AS latest_event_at
+  FROM latest_plan
+ WHERE plan->>'state' IN ('active', 'blocked')
+ ORDER BY occurred_at DESC, event_id DESC
+ LIMIT {max_cases + 1};
+""")
+    rows = result.get("rows", []) if isinstance(result, dict) else []
+    case_ids: list[str] = []
+    for row in rows if isinstance(rows, list) else []:
+        value = row.get("case_id") if isinstance(row, dict) else (row[0] if row else None)
+        case_id = str(value or "").strip()
+        if case_id and case_id not in case_ids:
+            case_ids.append(case_id)
+    return case_ids[:max_cases], len(case_ids) > max_cases
+
+
 def canonical_brain_query_tool(
     *,
     case_id: str = "",
@@ -3853,10 +4223,16 @@ def canonical_brain_query_tool(
             raise ValueError("provide exactly one of case_id or thread_id")
         if case_id and not _CASE_ID_RE.fullmatch(case_id):
             raise ValueError("case_id must be a bounded safe identifier starting with case:")
-        if view not in {"summary", "resume_bundle"}:
-            raise ValueError("view must be summary or resume_bundle")
+        if view not in {"summary", "workspace_candidates", "resume_bundle"}:
+            raise ValueError(
+                "view must be summary, workspace_candidates, or resume_bundle"
+            )
         if view == "resume_bundle" and not case_id:
             raise ValueError("resume_bundle requires an exact case_id; use thread summary to discover candidates")
+        if view == "workspace_candidates" and not thread_id:
+            raise ValueError(
+                "workspace_candidates requires an exact thread_id"
+            )
         limit = int(limit)
         if limit < 1 or limit > 200:
             raise ValueError("limit must be between 1 and 200")
@@ -3882,7 +4258,12 @@ def canonical_brain_query_tool(
             try:
                 candidate_cases_truncated = False
                 if thread_id:
-                    case_ids, candidate_cases_truncated = _query_thread_case_ids(
+                    query_case_ids = (
+                        _query_thread_workspace_case_ids
+                        if view == "workspace_candidates"
+                        else _query_thread_case_ids
+                    )
+                    case_ids, candidate_cases_truncated = query_case_ids(
                         helper,
                         sock,
                         thread_id=thread_id,
@@ -3902,6 +4283,11 @@ def canonical_brain_query_tool(
                                 sock,
                                 _query_select_sql(
                                     linked_where,
+                                    extra_where=(
+                                        "e.event_type = 'task.plan.updated'"
+                                        if view == "workspace_candidates"
+                                        else ""
+                                    ),
                                     limit=per_case_limit + 1,
                                 ),
                             )
@@ -4190,7 +4576,16 @@ CANONICAL_EVENT_APPEND_SCHEMA = {
         "supersedes_plan_id and supersedes_plan_revision. This tool "
         "does NOT decide meaning; Hermes decides. Do not use keyword matching as authority. "
         "Verified route_back.sent and process-generated approval/capability receipt events are "
-        "deliberately unavailable in the model schema."
+        "deliberately unavailable in the model schema. After a requester clarifies an unknown "
+        "person alias, append person.alias.learned with payload containing exactly alias (the "
+        "clarified phrase) and member_key (an existing canonical team-member key), then retry "
+        "the operation using the returned immediate_retry_target_person. After clarification "
+        "of an unknown Discord lane, append channel.alias.learned. For a guild text/news root, "
+        "payload contains exactly alias, guild_id, target_type='guild_channel', and channel_id. "
+        "For a type-10/11 guild thread it contains exactly alias, guild_id, "
+        "target_type='guild_thread', channel_id, and distinct parent_channel_id. Discord DMs, "
+        "group DMs, type-12 private threads, other guilds, and inferred targets are forbidden. "
+        "Then retry with the exact returned immediate_retry_target_channel."
     ),
     "parameters": {
         "type": "object",
@@ -4212,7 +4607,7 @@ ROUTE_BACK_SCHEMA = {
     "name": "route_back_state",
     "description": (
         "Record route-back required or blocked state in private/runtime Canonical Brain. "
-        "This tool never records sent state. Use route_back_execute for idempotent public send, "
+        "This tool never records sent state. Use route_back_execute for idempotent approved-guild send, "
         "content-bound durable claim, live Discord readback, and a receipt-coupled terminal event."
     ),
     "parameters": {
@@ -4233,9 +4628,9 @@ ROUTE_BACK_SCHEMA = {
 ROUTE_BACK_EXECUTE_SCHEMA = {
     "name": "route_back_execute",
     "description": (
-        "Execute an exact approved public route-back for private/runtime Canonical Brain cases. "
-        "Use this when the route-back target is already known and is a directory-confirmed public "
-        "Discord channel/thread or an exact registered teammate public lane. The tool first creates "
+        "Execute an exact owner-approved Discord guild route-back for private/runtime Canonical Brain cases. "
+        "Use this when the model has selected an exact registered teammate/lane or an approved "
+        "guild thread with its exact approved parent. Discord DMs and group DMs are forbidden. The tool first creates "
         "an atomic durable execution claim, reconciles the privileged Discord edge before any "
         "retry, verifies live readback, then finalizes route_back.sent with the real Discord "
         "receipt/message_id. Signed pre-dispatch failure or dispatch-uncertain evidence may "
@@ -4247,8 +4642,8 @@ ROUTE_BACK_EXECUTE_SCHEMA = {
         "type": "object",
         "properties": {
             "case_id": {"type": "string"},
-            "target_ref": {"type": "object", "description": "Exact public target/member/lane/channel refs; no DM refs"},
-            "message": {"type": "string", "description": "The public route-back message to send"},
+            "target_ref": {"type": "object", "description": "Exact approved guild target/member/lane/channel refs; no DM/group-DM refs"},
+            "message": {"type": "string", "description": "The guild route-back message to send"},
             "message_summary": {"type": "string", "description": "Short durable summary of the route-back"},
             "source_refs": {"type": "object", "description": "Exact source refs: platform + message/thread/event/manual ref"},
             "idempotency_key": {"type": "string", "description": "Required stable lifecycle execution key; retries never duplicate delivery"},
@@ -4261,7 +4656,8 @@ CANONICAL_BRAIN_QUERY_SCHEMA = {
     "name": "canonical_brain_query",
     "description": (
         "Read exact Canonical Brain events and return a mechanical bounded state fold. Use thread_id "
-        "with view=summary to discover exact case candidates; GPT chooses among multiple candidates. "
+        "with view=workspace_candidates to discover only exact active/blocked task-plan cases, or "
+        "view=summary for general linked cases; GPT chooses among multiple candidates. "
         "Then use exact case_id with view=resume_bundle to recover the latest model-authored plan, "
         "verification and runtime approval/capability receipts, next action, and bounded timeline. "
         "No keyword search, classification, prioritization, or routing is performed."
@@ -4274,7 +4670,7 @@ CANONICAL_BRAIN_QUERY_SCHEMA = {
             "limit": {"type": "integer", "minimum": 1, "maximum": 200, "default": 80},
             "view": {
                 "type": "string",
-                "enum": ["summary", "resume_bundle"],
+                "enum": ["summary", "workspace_candidates", "resume_bundle"],
                 "default": "summary",
             },
         },

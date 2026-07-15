@@ -151,7 +151,7 @@ async def test_start_gateway_verbosity_imports_redacting_formatter(monkeypatch, 
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     class _CleanExitRunner:
-        def __init__(self, config):
+        def __init__(self, config, **_kwargs):
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = None
@@ -190,7 +190,7 @@ async def test_writer_readiness_failure_blocks_mcp_and_runner_start(
     released = False
 
     class _RunnerMustRemainOffline:
-        def __init__(self, config):
+        def __init__(self, config, **_kwargs):
             self.config = config
             self.should_exit_cleanly = False
             self.exit_reason = None
@@ -268,7 +268,7 @@ async def test_required_writer_cannot_fail_open_from_missing_managed_config(
     )
 
     class _RunnerMustNotExist:
-        def __init__(self, _config):
+        def __init__(self, _config, **_kwargs):
             raise AssertionError("writerless required gateway must remain offline")
 
     monkeypatch.setattr("gateway.run.GatewayRunner", _RunnerMustNotExist)
@@ -293,7 +293,7 @@ async def test_start_gateway_replace_force_uses_terminate_pid(monkeypatch, tmp_p
     calls = []
 
     class _CleanExitRunner:
-        def __init__(self, config):
+        def __init__(self, config, **_kwargs):
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = None
@@ -363,7 +363,7 @@ async def test_start_gateway_replace_aborts_when_force_killed_pid_still_alive(
     released_locks = False
 
     class _RunnerShouldNotStart:
-        def __init__(self, config):
+        def __init__(self, config, **_kwargs):
             raise AssertionError("replacement must not start while old PID is alive")
 
     def _mock_remove_pid_file():
@@ -442,7 +442,7 @@ async def test_start_gateway_replace_writes_takeover_marker_before_sigterm(
         events.append(f"terminate_pid(pid={pid}, force={force})")
 
     class _CleanExitRunner:
-        def __init__(self, config):
+        def __init__(self, config, **_kwargs):
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = None
@@ -633,7 +633,7 @@ async def test_start_gateway_propagates_fatal_config_exit_code(monkeypatch, tmp_
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
     class _FatalConfigRunner:
-        def __init__(self, config):
+        def __init__(self, config, **_kwargs):
             self.config = config
             self.should_exit_cleanly = True
             self.exit_reason = "discord: Discord bot token already in use"

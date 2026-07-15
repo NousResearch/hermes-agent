@@ -146,6 +146,17 @@ _BLOCKED_DEVICE_PATHS = frozenset({
     # fd aliases
     "/dev/fd/0", "/dev/fd/1", "/dev/fd/2",
 })
+_CONTAINER_BLOCKED_READ_BASENAMES = frozenset(
+    {
+        ".env",
+        ".env.development",
+        ".env.local",
+        ".env.production",
+        ".env.staging",
+        ".env.test",
+        ".envrc",
+    }
+)
 
 
 def _resolve_path(filepath: str, task_id: str = "default") -> Path | PurePosixPath:
@@ -164,7 +175,9 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path | PurePosixPa
 # (gateway/run.py); the file/terminal-tool layer must do likewise so CLI
 # sessions get the same protection. See references/worktree-cwd-discipline.md.
 _TERMINAL_CWD_SENTINELS = frozenset({"", ".", "./", "auto", "cwd"})
-_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset({"docker", "singularity", "modal", "daytona"})
+_CONTAINER_PATH_BACKENDS_FALLBACK = frozenset(
+    {"docker", "singularity", "modal", "daytona", "isolated_worker"}
+)
 
 
 def _terminal_env_type_for_task(task_id: str = "default") -> str:
@@ -197,6 +210,8 @@ def _terminal_env_type_for_task(task_id: str = "default") -> str:
                 return "modal"
             if "daytona" in name:
                 return "daytona"
+            if "isolatedworker" in name:
+                return "isolated_worker"
         cfg = _get_env_config()
         return str(cfg.get("env_type") or os.getenv("TERMINAL_ENV") or "local").lower()
     except Exception:
@@ -589,11 +604,30 @@ def _search_result_read_block_error(path: str, task_id: str = "default") -> str 
     can differ from the Python process cwd. Mirror ``read_file_tool``'s path
     resolution before applying the shared read guard.
     """
+    if _terminal_env_type_for_task(task_id) == "isolated_worker":
+        return _isolated_worker_read_block_error(path, task_id)
     try:
         resolved = _resolve_path_for_task(path, task_id)
     except (OSError, ValueError, RuntimeError):
         return get_read_block_error(path)
     return get_read_block_error(str(resolved))
+
+
+def _isolated_worker_read_block_error(
+    path: str,
+    task_id: str = "default",
+) -> str | None:
+    """Lexical secret guard that performs no host filesystem access."""
+
+    try:
+        resolved = PurePosixPath(_resolve_path_for_task(path, task_id))
+    except (OSError, ValueError, RuntimeError):
+        resolved = PurePosixPath(posixpath.normpath(path))
+    if resolved.name in _CONTAINER_BLOCKED_READ_BASENAMES:
+        return f"Reading environment credential files is blocked: {path}"
+    if ".hermes-runtime" in resolved.parts:
+        return f"Reading isolated worker session metadata is blocked: {path}"
+    return None
 
 
 def _filter_read_blocked_search_results(result, task_id: str = "default") -> int:
@@ -679,7 +713,11 @@ def _check_sensitive_path(filepath: str, task_id: str = "default") -> str | None
     # approvals.mode and other security settings live here; a malicious or
     # prompt-injected agent could silently disable exec approval by writing to
     # this file.
-    hermes_config = _get_hermes_config_resolved()
+    hermes_config = (
+        None
+        if _terminal_env_type_for_task(task_id) == "isolated_worker"
+        else _get_hermes_config_resolved()
+    )
     if hermes_config and (resolved == hermes_config or normalized == hermes_config):
         return (
             f"Refusing to write to Hermes config file: {filepath}\n"
@@ -750,6 +788,8 @@ def _check_cross_profile_path(filepath: str, task_id: str = "default") -> str | 
     ``classify_sandbox_mirror_target`` and ``classify_container_mirror_target``
     for the detection rules.
     """
+    if _terminal_env_type_for_task(task_id) == "isolated_worker":
+        return None
     try:
         from agent.file_safety import (
             get_container_mirror_warning,
@@ -1137,7 +1177,13 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
-            if env_type in {"docker", "singularity", "modal", "daytona"}:
+            if env_type in {
+                "docker",
+                "singularity",
+                "modal",
+                "daytona",
+                "isolated_worker",
+            }:
                 container_config = {
                     "container_cpu": config.get("container_cpu", 1),
                     "container_memory": config.get("container_memory", 5120),
@@ -1148,6 +1194,11 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "docker_forward_env": config.get("docker_forward_env", []),
                     "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                     "docker_network": config.get("docker_network", True),
+                    "isolated_worker_socket": config.get("isolated_worker_socket", ""),
+                    "isolated_worker_server_uid": config.get("isolated_worker_server_uid", 0),
+                    "isolated_worker_server_gid": config.get("isolated_worker_server_gid", 0),
+                    "isolated_worker_socket_uid": config.get("isolated_worker_socket_uid", 0),
+                    "isolated_worker_socket_gid": config.get("isolated_worker_socket_gid", 0),
                 }
 
             ssh_config = None
@@ -1205,12 +1256,19 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
     """Read a file with pagination and line numbers."""
     try:
         offset, limit = normalize_read_pagination(offset, limit)
+        container_paths = _uses_container_paths(task_id)
+        _resolved = _resolve_path_for_task(path, task_id)
 
         # ── Device path guard ─────────────────────────────────────────
         # Block paths that would hang the process (infinite output,
         # blocking on input).  Pure path check — no I/O.
         device_base = None if Path(path).expanduser().is_absolute() else _resolve_base_dir(task_id)
-        if _is_blocked_device(path, base_dir=device_base):
+        blocked_device = (
+            _is_blocked_device_path(str(_resolved))
+            if container_paths
+            else _is_blocked_device(path, base_dir=device_base)
+        )
+        if blocked_device:
             return json.dumps({
                 "error": (
                     f"Cannot read '{path}': this is a device file that would "
@@ -1218,14 +1276,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 ),
             })
 
-        _resolved = _resolve_path_for_task(path, task_id)
-
         # ── Structured-document extraction ────────────────────────────
         # Try before the binary-extension guard so .docx/.xlsx can render as text.
         # Malformed documents fall through to the normal path/binary guard.
         from tools.read_extract import ExtractionError, extract_document_text, is_extractable_document
 
-        if is_extractable_document(str(_resolved)):
+        if not container_paths and is_extractable_document(str(_resolved)):
             try:
                 extracted_text = extract_document_text(str(_resolved))
             except ExtractionError:
@@ -1297,7 +1353,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # TERMINAL_CWD == HERMES_HOME (e.g. "auth.json") still hits the
         # denylist — get_read_block_error's own resolve() runs against
         # the Python process cwd, which can differ.
-        block_error = get_read_block_error(str(_resolved))
+        block_error = (
+            _isolated_worker_read_block_error(path, task_id)
+            if _terminal_env_type_for_task(task_id) == "isolated_worker"
+            else get_read_block_error(str(_resolved))
+        )
         if block_error:
             return json.dumps({"error": block_error})
 
@@ -1322,7 +1382,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 task_data["read_timestamps"] = {}
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
-        if cached_mtime is not None:
+        if cached_mtime is not None and not container_paths:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
@@ -1449,12 +1509,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             # 1. Dedup: skip identical re-reads of unchanged files.
             # 2. Staleness: warn on write/patch if the file changed since
             #    the agent last read it (external edit, concurrent agent, etc.).
-            try:
-                _mtime_now = os.path.getmtime(resolved_str)
-                task_data["dedup"][dedup_key] = _mtime_now
-                task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
-            except OSError:
-                pass  # Can't stat — skip tracking for this entry
+            if not container_paths:
+                try:
+                    _mtime_now = os.path.getmtime(resolved_str)
+                    task_data["dedup"][dedup_key] = _mtime_now
+                    task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+                except OSError:
+                    pass  # Can't stat — skip tracking for this entry
 
             # Bound the per-task containers so a long CLI session doesn't
             # accumulate megabytes of dict/set state.  See _cap_read_tracker_data.
@@ -1467,11 +1528,12 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # truncated (large file with more content than limit covered).
         # Outside the _read_tracker_lock so the registry's own locking
         # isn't nested under ours.
-        try:
-            _partial = (offset > 1) or bool(result_dict.get("truncated"))
-            file_state.record_read(task_id, resolved_str, partial=_partial)
-        except Exception:
-            logger.debug("file_state.record_read failed", exc_info=True)
+        if not container_paths:
+            try:
+                _partial = (offset > 1) or bool(result_dict.get("truncated"))
+                file_state.record_read(task_id, resolved_str, partial=_partial)
+            except Exception:
+                logger.debug("file_state.record_read failed", exc_info=True)
 
         if count >= 4:
             # Hard block: stop returning content to break the loop
@@ -1587,6 +1649,8 @@ def _update_read_timestamp(filepath: str, task_id: str) -> None:
     """
     # Invalidate dedup first (before acquiring lock for timestamp update).
     _invalidate_dedup_for_path(filepath, task_id)
+    if _uses_container_paths(task_id):
+        return
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
         current_mtime = os.path.getmtime(resolved)
@@ -1606,6 +1670,8 @@ def _check_file_staleness(filepath: str, task_id: str) -> str | None:
     the last read_file call for this task), or None if the file is fresh
     or was never read.  Does not block — the write still proceeds.
     """
+    if _uses_container_paths(task_id):
+        return None
     try:
         resolved = str(_resolve_path_for_task(filepath, task_id))
     except (OSError, ValueError):
@@ -1639,9 +1705,17 @@ def _mark_verification_stale(
     paths = [p for p in resolved_paths if p]
     if not paths:
         return
+    if _terminal_env_type_for_task(task_id) == "isolated_worker":
+        return
     try:
         from agent.coding_context import project_facts_for
-        from agent.verification_evidence import mark_workspace_edited
+        from agent.verification_evidence import (
+            mark_workspace_edited,
+            verification_ledger_enabled,
+        )
+
+        if not verification_ledger_enabled():
+            return
 
         cwd = None
         for path in paths:
@@ -1715,7 +1789,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
         with file_state.lock_path(_resolved):
             # Cross-agent staleness wins over per-task warning when both
             # fire — its message names the sibling subagent.
-            cross_warning = file_state.check_stale(task_id, _resolved)
+            cross_warning = (
+                None
+                if _uses_container_paths(task_id)
+                else file_state.check_stale(task_id, _resolved)
+            )
             stale_warning = _check_file_staleness(path, task_id)
             # Workspace-divergence warning: relative path resolving outside the
             # terminal's cwd (the worktree-cwd bug). Lowest priority of the three.
@@ -1736,7 +1814,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
             # Refresh stamps after the successful write so consecutive
             # writes by this task don't trigger false staleness warnings.
             _update_read_timestamp(path, task_id)
-            if not result_dict.get("error"):
+            if not result_dict.get("error") and not _uses_container_paths(task_id):
                 file_state.note_write(task_id, _resolved)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
@@ -1844,7 +1922,11 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 except Exception:
                     _r = None
                 _path_to_resolved[_p] = _r
-                _cross = file_state.check_stale(task_id, _r) if _r else None
+                _cross = (
+                    file_state.check_stale(task_id, _r)
+                    if _r and not _uses_container_paths(task_id)
+                    else None
+                )
                 _sw = _cross or _check_file_staleness(_p, task_id)
                 if not _sw and _r:
                     # Workspace-divergence warning (worktree-cwd bug): relative
@@ -1893,7 +1975,7 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
                 for _p in _paths_to_check:
                     _update_read_timestamp(_p, task_id)
                     _r = _path_to_resolved.get(_p)
-                    if _r:
+                    if _r and not _uses_container_paths(task_id):
                         file_state.note_write(task_id, _r)
                 # Successful patch: clear any prior consecutive-failure
                 # counters for the touched paths so a future failure on
@@ -2142,13 +2224,22 @@ SEARCH_FILES_SCHEMA = {
 }
 
 
+def _handler_task_id(kwargs: dict) -> str:
+    """Use the exact conversation identity for the isolated worker only."""
+
+    backend = (os.getenv("TERMINAL_ENV", "local").strip().lower() or "local")
+    if backend == "isolated_worker":
+        return kwargs.get("session_id") or kwargs.get("task_id") or "default"
+    return kwargs.get("task_id") or "default"
+
+
 def _handle_read_file(args, **kw):
-    tid = kw.get("task_id") or "default"
+    tid = _handler_task_id(kw)
     return read_file_tool(path=args.get("path", ""), offset=args.get("offset", 1), limit=args.get("limit", 500), task_id=tid)
 
 
 def _handle_write_file(args, **kw):
-    tid = kw.get("task_id") or "default"
+    tid = _handler_task_id(kw)
     if not args.get("path") or not isinstance(args.get("path"), str):
         return tool_error(
             "write_file: missing required field 'path'. Re-emit the tool call with "
@@ -2175,7 +2266,7 @@ def _handle_write_file(args, **kw):
 
 
 def _handle_patch(args, **kw):
-    tid = kw.get("task_id") or "default"
+    tid = _handler_task_id(kw)
     return patch_tool(
         mode=args.get("mode", "replace"), path=args.get("path"),
         old_string=args.get("old_string"), new_string=args.get("new_string"),
@@ -2186,7 +2277,7 @@ def _handle_patch(args, **kw):
 
 
 def _handle_search_files(args, **kw):
-    tid = kw.get("task_id") or "default"
+    tid = _handler_task_id(kw)
     target_map = {"grep": "content", "find": "files"}
     raw_target = args.get("target", "content")
     target = target_map.get(raw_target, raw_target)
@@ -2196,7 +2287,46 @@ def _handle_search_files(args, **kw):
         output_mode=args.get("output_mode", "content"), context=args.get("context", 0), task_id=tid)
 
 
-registry.register(name="read_file", toolset="file", schema=READ_FILE_SCHEMA, handler=_handle_read_file, check_fn=_check_file_reqs, emoji="📖", max_result_size_chars=100_000)
-registry.register(name="write_file", toolset="file", schema=WRITE_FILE_SCHEMA, handler=_handle_write_file, check_fn=_check_file_reqs, emoji="✍️", max_result_size_chars=100_000)
-registry.register(name="patch", toolset="file", schema=PATCH_SCHEMA, handler=_handle_patch, check_fn=_check_file_reqs, emoji="🔧", max_result_size_chars=100_000)
-registry.register(name="search_files", toolset="file", schema=SEARCH_FILES_SCHEMA, handler=_handle_search_files, check_fn=_check_file_reqs, emoji="🔎", max_result_size_chars=100_000)
+from agent.tool_result_classification import file_operation_failure_adapter
+
+
+registry.register(
+    name="read_file",
+    toolset="file",
+    schema=READ_FILE_SCHEMA,
+    handler=_handle_read_file,
+    check_fn=_check_file_reqs,
+    emoji="📖",
+    max_result_size_chars=100_000,
+    result_failure_adapter=file_operation_failure_adapter,
+)
+registry.register(
+    name="write_file",
+    toolset="file",
+    schema=WRITE_FILE_SCHEMA,
+    handler=_handle_write_file,
+    check_fn=_check_file_reqs,
+    emoji="✍️",
+    max_result_size_chars=100_000,
+    result_failure_adapter=file_operation_failure_adapter,
+)
+registry.register(
+    name="patch",
+    toolset="file",
+    schema=PATCH_SCHEMA,
+    handler=_handle_patch,
+    check_fn=_check_file_reqs,
+    emoji="🔧",
+    max_result_size_chars=100_000,
+    result_failure_adapter=file_operation_failure_adapter,
+)
+registry.register(
+    name="search_files",
+    toolset="file",
+    schema=SEARCH_FILES_SCHEMA,
+    handler=_handle_search_files,
+    check_fn=_check_file_reqs,
+    emoji="🔎",
+    max_result_size_chars=100_000,
+    result_failure_adapter=file_operation_failure_adapter,
+)

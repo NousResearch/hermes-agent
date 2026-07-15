@@ -1,9 +1,10 @@
 """Installed-wheel regression for the privileged Canonical Writer runtime.
 
-The service runs with ``python -B -I`` and therefore cannot import the repository's
-unpackaged ``scripts`` namespace.  This test builds the real wheel, installs it
-without the source tree, and reaches the first typed PING dispatch so lazy
-runtime imports are covered as well as bootstrap imports.
+The service runs with ``python -B -I`` and therefore cannot import anything
+from the repository source tree.  This test builds the real wheel, installs it
+without that tree, proves every declared production launcher is packaged, and
+reaches the first typed PING dispatch so lazy runtime imports are covered as
+well as bootstrap imports.
 """
 
 from __future__ import annotations
@@ -22,20 +23,27 @@ from pathlib import Path
 
 import pytest
 
+from gateway.production_owner_runtime import REQUIRED_MODULES
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 _PACKAGED_MODULES = {
-    "gateway/canonical_canary_bootstrap.py",
     "gateway/canonical_canary_host_identity.py",
+    "gateway/canonical_capability_canary_e2e.py",
+    "gateway/canonical_capability_canary_runtime.py",
     "gateway/canonical_full_canary_coordinator.py",
     "gateway/canonical_full_canary_e2e.py",
+    "gateway/canonical_full_canary_fixture_publisher.py",
     "gateway/canonical_full_canary_live_driver.py",
     "gateway/canonical_full_canary_runtime.py",
     "gateway/canonical_writer_activation.py",
+    "gateway/canonical_writer_activation_bridge.py",
     "gateway/canonical_writer_bootstrap.py",
     "gateway/canonical_writer_config_collector.py",
     "gateway/canonical_writer_deployment_preflight.py",
     "gateway/canonical_writer_foundation.py",
+    "gateway/canonical_writer_foundation_phase_b.py",
+    "gateway/canonical_writer_phase_b_runtime.py",
     "gateway/canonical_writer_gateway_bootstrap.py",
     "gateway/canonical_writer_host_authority.py",
     "gateway/canonical_writer_planner.py",
@@ -45,6 +53,12 @@ _PACKAGED_MODULES = {
     "gateway/canonical_writer_root_collector.py",
     "gateway/canonical_writer_service.py",
     "gateway/full_canary_discord_edge_bootstrap.py",
+    "gateway/production_discord_edge_bootstrap.py",
+    "gateway/production_discord_journal_bootstrap.py",
+    "gateway/production_secret_stager.py",
+    "gateway/mac_ops_edge_client.py",
+    "gateway/mac_ops_edge_protocol.py",
+    "gateway/mac_ops_edge_service.py",
     "plugins/muncho_canary_evidence/__init__.py",
     "plugins/muncho_canary_evidence/plugin.yaml",
 }
@@ -118,8 +132,13 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
     with zipfile.ZipFile(wheel) as archive:
         packaged = set(archive.namelist())
     assert _PACKAGED_MODULES <= packaged
+    required_script_modules = {
+        f"{name.replace('.', '/')}.py"
+        for name in REQUIRED_MODULES
+        if name.startswith("scripts.")
+    }
+    assert required_script_modules <= packaged
     assert not (_FORBIDDEN_SCRIPT_MODULES & packaged)
-    assert not any(name.startswith("scripts/") for name in packaged)
 
     venv_dir = tmp_path / "venv"
     venv.create(venv_dir, with_pip=True)
@@ -167,6 +186,7 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
 
     probe = textwrap.dedent(
         """
+        import hashlib
         import json
         import os
         import io
@@ -176,14 +196,21 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
 
         import gateway.canonical_writer_bootstrap as bootstrap_module
         import gateway.canonical_writer_activation as activation_module
+        import gateway.canonical_writer_activation_bridge as activation_bridge_module
+        from gateway import canonical_full_canary_fixture_publisher as fixture_publisher
         import gateway.canonical_writer_config_collector as config_collector_module
         import gateway.canonical_writer_foundation as foundation_module
+        import gateway.canonical_writer_foundation_phase_b as phase_b_module
+        import gateway.canonical_writer_phase_b_runtime as phase_b_runtime_module
         import gateway.canonical_writer_gateway_bootstrap as gateway_bootstrap_module
         import gateway.canonical_writer_host_authority as host_authority_module
         import gateway.canonical_writer_planner as planner_module
         import gateway.canonical_writer_preflight_publisher as publisher_module
         import gateway.canonical_writer_release_contract as release_contract_module
         import gateway.canonical_writer_service as service_module
+        import gateway.production_discord_edge_bootstrap as production_edge_module
+        import gateway.production_discord_journal_bootstrap as journal_bootstrap_module
+        import gateway.production_secret_stager as secret_stager_module
         from gateway.canonical_writer_db import QueryResult
         from gateway.canonical_writer_postgres_backend import (
             PRODUCTION_CATALOG_SHA256,
@@ -195,6 +222,21 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
         assert foundation_module._ARTIFACT_FILENAMES["phase_b_preflight"] == (
             "canonical_writer_foundation_phase_b_preflight_v1.sql"
         )
+        assert phase_b_module.PHASE_B_DURABLE_FOUNDATION_SCHEMA == (
+            "muncho-canonical-writer-foundation-phase-b-durable.v1"
+        )
+        assert phase_b_runtime_module.PHASE_B_PLAN_PATH == Path(
+            "/etc/muncho/canonical-writer-phase-b/plan.json"
+        )
+        assert phase_b_runtime_module._parser().parse_args([]) is not None
+        assert fixture_publisher.COMPLEX_CANARY_PROMPT_SHA256 == hashlib.sha256(
+            fixture_publisher.COMPLEX_CANARY_PROMPT.encode("utf-8")
+        ).hexdigest()
+        assert callable(fixture_publisher.build_fixture_publication_plan)
+        assert callable(fixture_publisher.apply_fixture_publication)
+        assert callable(production_edge_module.main)
+        assert callable(journal_bootstrap_module.ensure_clean_journal)
+        assert callable(secret_stager_module.stage_production_secret_foundation)
 
 
         class FakeDatabase:
@@ -382,11 +424,17 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
         assert "/site-packages/gateway/canonical_writer_activation.py" in (
             activation_module.__file__.replace("\\\\", "/")
         )
+        assert "/site-packages/gateway/canonical_writer_activation_bridge.py" in (
+            activation_bridge_module.__file__.replace("\\\\", "/")
+        )
         assert "/site-packages/gateway/canonical_writer_config_collector.py" in (
             config_collector_module.__file__.replace("\\\\", "/")
         )
         assert "/site-packages/gateway/canonical_writer_foundation.py" in (
             foundation_module.__file__.replace("\\\\", "/")
+        )
+        assert "/site-packages/gateway/canonical_writer_foundation_phase_b.py" in (
+            phase_b_module.__file__.replace("\\\\", "/")
         )
         assert "/site-packages/gateway/canonical_writer_host_authority.py" in (
             host_authority_module.__file__.replace("\\\\", "/")
@@ -399,6 +447,15 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
         )
         assert "/site-packages/gateway/canonical_writer_release_contract.py" in (
             release_contract_module.__file__.replace("\\\\", "/")
+        )
+        assert "/site-packages/gateway/production_discord_edge_bootstrap.py" in (
+            production_edge_module.__file__.replace("\\\\", "/")
+        )
+        assert "/site-packages/gateway/production_discord_journal_bootstrap.py" in (
+            journal_bootstrap_module.__file__.replace("\\\\", "/")
+        )
+        assert "/site-packages/gateway/production_secret_stager.py" in (
+            secret_stager_module.__file__.replace("\\\\", "/")
         )
         forbidden = (
             "agent",
@@ -459,6 +516,24 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
     assert "install-external-iam" in help_run.stdout
     assert "observe-native" in help_run.stdout
     assert "validate-plan" in help_run.stdout
+    bridge_help_run = subprocess.run(
+        [
+            str(interpreter),
+            "-B",
+            "-I",
+            "-m",
+            "gateway.canonical_writer_activation_bridge",
+            "--help",
+        ],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        env=environment,
+        timeout=30,
+    )
+    assert bridge_help_run.returncode == 0, bridge_help_run.stderr
+    assert "stage-native-authority" in bridge_help_run.stdout
+    assert "replace-final-authority" in bridge_help_run.stdout
     config_help_run = subprocess.run(
         [
             str(interpreter),
@@ -530,11 +605,14 @@ def test_installed_wheel_runs_first_canonical_writer_ping(tmp_path):
     )
     assert coordinator_help_run.returncode == 0, coordinator_help_run.stderr
     assert "publish-coordinator-input" in coordinator_help_run.stdout
-    assert "preflight-owner-launch" in coordinator_help_run.stdout
-    assert "preflight-recovery" in coordinator_help_run.stdout
-    assert "recover" in coordinator_help_run.stdout
-    assert "finalize-recovery" in coordinator_help_run.stdout
+    assert "preflight-phase-b-apply" in coordinator_help_run.stdout
+    assert "preflight-phase-b-live-run" in coordinator_help_run.stdout
+    assert "phase-b-apply" in coordinator_help_run.stdout
     assert "install-discord-token" in coordinator_help_run.stdout
-    assert "install-final-approval" in coordinator_help_run.stdout
+    assert "run" in coordinator_help_run.stdout
     assert "stop-and-retire-discord-token" in coordinator_help_run.stdout
+    assert "preflight-owner-launch" not in coordinator_help_run.stdout
+    assert "preflight-recovery" not in coordinator_help_run.stdout
+    assert "finalize-recovery" not in coordinator_help_run.stdout
+    assert "install-final-approval" not in coordinator_help_run.stdout
     assert _bytecode_snapshot(site_packages_roots[0]) == bytecode_before

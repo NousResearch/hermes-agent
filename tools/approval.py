@@ -31,6 +31,42 @@ from utils import env_var_enabled, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
+
+class ApprovalNotifyBoundaryError(RuntimeError):
+    """Typed, non-secret failure raised by a gateway approval boundary.
+
+    Approval notification may be more than a direct chat send (Cloud Muncho,
+    for example, durably escalates a team request to the owner).  A typed
+    exception lets that boundary return bounded model guidance without
+    exposing transport errors, commands, descriptions, or credentials and
+    without classifying exception text.
+    """
+
+    def __init__(self, code: str, model_message: str) -> None:
+        normalized_code = str(code or "approval_notify_boundary_failed").strip()
+        normalized_message = str(model_message or "").strip()
+        if not re.fullmatch(r"[a-z0-9_]{1,96}", normalized_code):
+            normalized_code = "approval_notify_boundary_failed"
+        if not normalized_message or len(normalized_message) > 1_000:
+            normalized_message = (
+                "BLOCKED: The approval boundary failed before verified owner "
+                "notification. Do not execute or bypass the protected action."
+            )
+        self.code = normalized_code
+        self.model_message = normalized_message
+        super().__init__(normalized_code)
+
+
+def _exact_command_sha256(value: object) -> str:
+    """Return the digest used by exact plan capabilities.
+
+    The raw value never crosses the approval-notification boundary.  Keeping
+    this normalization identical to :func:`consume_plan_capability` lets an
+    owner escalation name the exact protected command without publishing it.
+    """
+
+    return hashlib.sha256(str(value or "").strip().encode("utf-8")).hexdigest()
+
 # Freeze YOLO mode at module import time. Reading os.environ on every call
 # would allow any skill running inside the process to set this variable and
 # instantly bypass all approval checks — a prompt-injection escalation path.
@@ -51,6 +87,19 @@ _approval_turn_id: contextvars.ContextVar[str] = contextvars.ContextVar(
 _approval_tool_call_id: contextvars.ContextVar[str] = contextvars.ContextVar(
     "approval_tool_call_id",
     default="",
+)
+# Delegated children may spend authority that the authenticated owner already
+# granted to an exact command, but they must never mint or broaden authority.
+# This context-local execution mode is bound by ``delegate_task`` before the
+# child conversation starts and is copied through every tool-worker boundary.
+# It is deliberately not a model/tool argument and carries no command or
+# identity data; the existing session/epoch/owner/TTL/use-count checks remain
+# the sole authorization source in ``consume_plan_capability``.
+_delegated_exact_plan_consumer: contextvars.ContextVar[bool] = (
+    contextvars.ContextVar(
+        "delegated_exact_plan_consumer",
+        default=False,
+    )
 )
 
 # Interactive-CLI flag. Concurrent ACP sessions run on a shared
@@ -152,6 +201,32 @@ def reset_current_observability_context(
     turn_token, tool_token = tokens
     _approval_tool_call_id.reset(tool_token)
     _approval_turn_id.reset(turn_token)
+
+
+def bind_delegated_exact_plan_consumer() -> contextvars.Token[bool]:
+    """Bind a delegated child to consume-only exact-plan authority.
+
+    The returned token must be reset by the caller after it has copied the
+    child execution context.  Nested delegation is naturally monotonic: a
+    child can copy this restriction into grandchildren but cannot turn it off
+    in an independently running context.
+    """
+
+    return _delegated_exact_plan_consumer.set(True)
+
+
+def reset_delegated_exact_plan_consumer(
+    token: contextvars.Token[bool],
+) -> None:
+    """Restore the previous delegated-authority execution mode."""
+
+    _delegated_exact_plan_consumer.reset(token)
+
+
+def is_delegated_exact_plan_consumer() -> bool:
+    """Return whether the active execution context is a delegated child."""
+
+    return _delegated_exact_plan_consumer.get() is True
 
 
 def get_current_session_key(default: str = "default") -> str:
@@ -1440,6 +1515,7 @@ _permanent_approved: set = set()
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
     __slots__ = (
+        "approval_id",
         "event",
         "data",
         "result",
@@ -1455,11 +1531,15 @@ class _ApprovalEntry:
         authority_generation: int = 0,
         capability_epoch_sha256: str = "",
     ):
+        self.approval_id = uuid.uuid4().hex
         self.event = threading.Event()
-        self.data = data          # command, description, pattern_keys, …
+        self.data = dict(data)    # command, description, pattern_keys, …
+        self.data["approval_id"] = self.approval_id
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
         self.authority_generation = int(authority_generation)
         self.capability_epoch_sha256 = str(capability_epoch_sha256 or "")
+        self.data["_authority_generation"] = self.authority_generation
+        self.data["_capability_epoch_sha256"] = self.capability_epoch_sha256
         # Optional free-text reason supplied with an explicit deny
         # (``/deny <reason>``) so the agent can adapt instead of only
         # hearing "denied". Ported from qwibitai/nanoclaw#2832.
@@ -1529,6 +1609,308 @@ def resolve_gateway_approval(session_key: str, choice: str,
             entry.reason = reason
         entry.event.set()
     return len(targets)
+
+
+def resolve_gateway_approval_by_id(
+    session_key: str,
+    approval_id: str,
+    choice: str,
+    *,
+    reason: Optional[str] = None,
+) -> int:
+    """Resolve exactly one opaque pending approval in one exact session.
+
+    Unlike :func:`resolve_gateway_approval`, this function never falls back to
+    FIFO and cannot resolve a sibling entry when the supplied ID is stale or
+    belongs to another session.  It is the control-plane primitive for API
+    clients that may have several concurrent approval prompts.
+
+    Returns ``1`` only after the exact live entry has been detached and
+    signalled, otherwise ``0``.  Choice validation is duplicated at this
+    boundary so non-HTTP callers cannot inject an unrecognized decision.
+    """
+
+    normalized_session = str(session_key or "")
+    normalized_id = str(approval_id or "")
+    normalized_choice = str(choice or "")
+    if (
+        not normalized_session
+        or re.fullmatch(r"[0-9a-f]{32}", normalized_id) is None
+        or normalized_choice not in {"once", "session", "always", "deny"}
+    ):
+        return 0
+
+    with _lock:
+        queue = _gateway_queues.get(normalized_session)
+        if not queue:
+            return 0
+        target = next(
+            (
+                entry
+                for entry in queue
+                if getattr(entry, "approval_id", "") == normalized_id
+            ),
+            None,
+        )
+        if target is None:
+            return 0
+        queue.remove(target)
+        if not queue:
+            _gateway_queues.pop(normalized_session, None)
+
+    target.result = normalized_choice
+    if reason:
+        target.reason = str(reason)
+    target.event.set()
+    return 1
+
+
+def prepare_gateway_owner_escalation_binding(
+    session_key: str,
+    approval_id: str,
+    *,
+    owner_user_id: str,
+    owner_guild_id: str,
+    source_lane_id: str,
+    case_id: str,
+    plan_id: str,
+    plan_revision: int,
+    command_sha256: str,
+) -> bool:
+    """Prepare an exact cross-session owner response binding.
+
+    Production Discord threads intentionally isolate sessions per user.  The
+    owner therefore cannot resolve a team member's waiting entry through the
+    ordinary per-session queue.  This private binding is the narrow bridge: it
+    contains only immutable IDs/hashes, remains inactive until the public
+    route-back has a verified receipt, and never grants session/permanent
+    authority.
+    """
+
+    normalized = {
+        "session_key": str(session_key or ""),
+        "approval_id": str(approval_id or "").lower(),
+        "owner_user_id": str(owner_user_id or ""),
+        "owner_guild_id": str(owner_guild_id or ""),
+        "source_lane_id": str(source_lane_id or ""),
+        "case_id": str(case_id or ""),
+        "plan_id": str(plan_id or ""),
+        "command_sha256": str(command_sha256 or "").lower(),
+    }
+    if (
+        not normalized["session_key"]
+        or re.fullmatch(r"[0-9a-f]{32}", normalized["approval_id"]) is None
+        or re.fullmatch(r"[0-9]{17,20}", normalized["owner_user_id"]) is None
+        or re.fullmatch(r"[0-9]{17,20}", normalized["owner_guild_id"]) is None
+        or re.fullmatch(r"[0-9]{17,20}", normalized["source_lane_id"]) is None
+        or re.fullmatch(
+            r"case:[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}",
+            normalized["case_id"],
+        )
+        is None
+        or re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,159}",
+            normalized["plan_id"],
+        )
+        is None
+        or type(plan_revision) is not int
+        or not 1 <= plan_revision <= 999_999_999
+        or re.fullmatch(r"[0-9a-f]{64}", normalized["command_sha256"]) is None
+    ):
+        return False
+
+    binding = {
+        "status": "prepared",
+        "owner_user_id": normalized["owner_user_id"],
+        "owner_guild_id": normalized["owner_guild_id"],
+        "source_lane_id": normalized["source_lane_id"],
+        "case_id": normalized["case_id"],
+        "plan_id": normalized["plan_id"],
+        "plan_revision": plan_revision,
+        "command_sha256": normalized["command_sha256"],
+    }
+    with _lock:
+        queue = _gateway_queues.get(normalized["session_key"])
+        if not queue:
+            return False
+        target = next(
+            (
+                entry
+                for entry in queue
+                if getattr(entry, "approval_id", "") == normalized["approval_id"]
+            ),
+            None,
+        )
+        if target is None:
+            return False
+        if target.data.get("command_sha256") != normalized["command_sha256"]:
+            return False
+        existing = target.data.get("_owner_escalation_binding")
+        if isinstance(existing, dict):
+            return existing == binding
+        target.data["_owner_escalation_binding"] = binding
+    return True
+
+
+def activate_gateway_owner_escalation_binding(
+    session_key: str,
+    approval_id: str,
+) -> bool:
+    """Activate a prepared owner binding after verified public delivery."""
+
+    normalized_session = str(session_key or "")
+    normalized_id = str(approval_id or "").lower()
+    if (
+        not normalized_session
+        or re.fullmatch(r"[0-9a-f]{32}", normalized_id) is None
+    ):
+        return False
+    with _lock:
+        queue = _gateway_queues.get(normalized_session)
+        target = next(
+            (
+                entry
+                for entry in queue or ()
+                if getattr(entry, "approval_id", "") == normalized_id
+            ),
+            None,
+        )
+        if target is None:
+            return False
+        binding = target.data.get("_owner_escalation_binding")
+        if not isinstance(binding, dict) or binding.get("status") != "prepared":
+            return False
+        target.data["_owner_escalation_binding"] = {
+            **binding,
+            "status": "active",
+        }
+    return True
+
+
+def clear_gateway_owner_escalation_binding(
+    session_key: str,
+    approval_id: str,
+) -> None:
+    """Remove an undelivered owner binding without resolving the command."""
+
+    normalized_session = str(session_key or "")
+    normalized_id = str(approval_id or "").lower()
+    with _lock:
+        for entry in _gateway_queues.get(normalized_session, ()):
+            if getattr(entry, "approval_id", "") == normalized_id:
+                binding = entry.data.get("_owner_escalation_binding")
+                if isinstance(binding, dict) and binding.get("status") == "prepared":
+                    entry.data.pop("_owner_escalation_binding", None)
+                return
+
+
+def resolve_gateway_owner_escalation_by_id(
+    approval_id: str,
+    choice: str,
+    *,
+    owner_user_id: str,
+    owner_guild_id: str,
+    response_lane_id: str,
+    reason: Optional[str] = None,
+) -> int:
+    """Resolve one active, receipt-bound owner escalation across sessions.
+
+    This is deliberately not a general global approval lookup.  The opaque ID
+    must name an entry carrying an *active* owner-escalation binding, and the
+    authenticated caller IDs and exact public source lane must all match.  An
+    escalated approval can authorize only this one command (``once``) or deny
+    it; broader authority remains an explicit model-authored plan capability.
+    """
+
+    normalized_id = str(approval_id or "").lower()
+    normalized_choice = str(choice or "")
+    expected = {
+        "owner_user_id": str(owner_user_id or ""),
+        "owner_guild_id": str(owner_guild_id or ""),
+        "source_lane_id": str(response_lane_id or ""),
+    }
+    if (
+        re.fullmatch(r"[0-9a-f]{32}", normalized_id) is None
+        or normalized_choice not in {"once", "deny"}
+        or any(
+            re.fullmatch(r"[0-9]{17,20}", value) is None
+            for value in expected.values()
+        )
+    ):
+        return 0
+
+    with _lock:
+        matches = []
+        for session_key, queue in _gateway_queues.items():
+            for entry in queue:
+                if getattr(entry, "approval_id", "") != normalized_id:
+                    continue
+                binding = entry.data.get("_owner_escalation_binding")
+                if not isinstance(binding, dict) or binding.get("status") != "active":
+                    continue
+                if any(binding.get(key) != value for key, value in expected.items()):
+                    continue
+                if binding.get("command_sha256") != entry.data.get("command_sha256"):
+                    continue
+                matches.append((session_key, entry, dict(binding)))
+        if len(matches) != 1:
+            return 0
+        session_key, target, binding = matches[0]
+
+    if normalized_choice == "once":
+        if not _canonical_active_plan_matches(
+            case_id=str(binding.get("case_id") or ""),
+            plan_id=str(binding.get("plan_id") or ""),
+            plan_revision=binding.get("plan_revision"),
+        ):
+            return 0
+
+    with _lock:
+        queue = _gateway_queues.get(session_key)
+        if not queue or target not in queue:
+            return 0
+        current_binding = target.data.get("_owner_escalation_binding")
+        if current_binding != binding or current_binding.get("status") != "active":
+            return 0
+        queue.remove(target)
+        if not queue:
+            _gateway_queues.pop(session_key, None)
+
+    target.result = normalized_choice
+    if normalized_choice == "deny" and reason:
+        target.reason = str(reason)
+    target.event.set()
+    return 1
+
+
+def get_pending_gateway_approvals(
+    session_key: str,
+    *,
+    include_authority_binding: bool = False,
+) -> list[dict]:
+    """Return snapshots of pending approvals for one exact session.
+
+    Private generation/epoch bindings are excluded by default so a transport
+    cannot leak authority metadata merely by serializing this helper's result.
+    The API adapter opts in only while validating an exact approval ID; its
+    public projections independently strip every underscore-prefixed field.
+    """
+
+    with _lock:
+        snapshots = [
+            dict(entry.data)
+            for entry in _gateway_queues.get(str(session_key or ""), ())
+        ]
+    if include_authority_binding:
+        return snapshots
+    return [
+        {
+            key: value
+            for key, value in snapshot.items()
+            if not str(key).startswith("_")
+        }
+        for snapshot in snapshots
+    ]
 
 
 def has_blocking_approval(session_key: str) -> bool:
@@ -1607,6 +1989,11 @@ def persist_session_approval_decision(
     generation check and a surviving authority write.
     """
 
+    if is_delegated_exact_plan_consumer():
+        logger.warning(
+            "Delegated execution cannot persist session or permanent approval"
+        )
+        return False
     session_key = str(session_key or "")
     clean_patterns = tuple(str(value) for value in pattern_keys if str(value))
     clean_permanent = tuple(
@@ -1658,6 +2045,9 @@ def enable_session_yolo(
 ) -> bool:
     """Enable YOLO only for the captured boundary generation."""
 
+    if is_delegated_exact_plan_consumer():
+        logger.warning("Delegated execution cannot enable session YOLO")
+        return False
     if not session_key:
         return False
     epoch_sha256 = _observed_capability_epoch_sha256()
@@ -1849,6 +2239,11 @@ def clear_session(session_key: str) -> None:
 
 def is_session_yolo_enabled(session_key: str) -> bool:
     """Return True when YOLO bypass is enabled for a specific session."""
+    # A parent's broad session bypass is not a delegable capability. Children
+    # can consume an exact owner-approved command use, but cannot inherit YOLO
+    # merely because they run under the same routing session.
+    if is_delegated_exact_plan_consumer():
+        return False
     if not session_key:
         return False
     observed_epoch = _observed_capability_epoch_sha256()
@@ -2062,6 +2457,40 @@ def _canonical_active_plan_matches(
         return False
 
 
+def _canonical_active_plan_continues_approved_revision(
+    *,
+    case_id: str,
+    plan_id: str,
+    approved_plan_revision: int,
+) -> bool:
+    """Verify that the same plan remains active at or after approval.
+
+    The owner approves an exact revision and an immutable set of command
+    hashes.  Model-authored progress checkpoints may advance that same plan's
+    revision without expanding those command hashes.  Supersession and
+    terminal states stop matching because the active-plan lookup is exact on
+    case and plan id.  Any malformed value or read failure remains fail-closed.
+    """
+    try:
+        from tools.canonical_brain_tool import canonical_active_plan_revision
+
+        active_revision = canonical_active_plan_revision(
+            case_id=case_id,
+            plan_id=plan_id,
+        )
+    except Exception as exc:
+        logger.warning("Canonical Brain active-plan validation failed: %s", exc)
+        return False
+    return bool(
+        isinstance(active_revision, int)
+        and not isinstance(active_revision, bool)
+        and isinstance(approved_plan_revision, int)
+        and not isinstance(approved_plan_revision, bool)
+        and approved_plan_revision >= 1
+        and active_revision >= approved_plan_revision
+    )
+
+
 def _canonical_receipt_committed(result: object) -> bool:
     """Require a newly inserted row and verified readback for authority."""
     return bool(
@@ -2123,6 +2552,10 @@ def grant_plan_capability(
     the plan. This function only verifies identity/config and hashes exact
     commands; it performs no semantic approval classification.
     """
+    if is_delegated_exact_plan_consumer():
+        raise PermissionError(
+            "delegated execution cannot grant or broaden plan authority"
+        )
     from hermes_cli.config import load_config
 
     cfg = load_config() or {}
@@ -2133,9 +2566,7 @@ def grant_plan_capability(
         for value in (approvals.get("plan_owner_user_ids") or [])
         if str(value).strip()
     }
-    approved_by_user_id = str(approved_by_user_id or "").strip()
-    if not owners or approved_by_user_id not in owners:
-        raise PermissionError("plan capability requires an authenticated configured owner")
+    requested_approved_by_user_id = str(approved_by_user_id or "").strip()
     session_key = str(session_key or "").strip()
     plan_id = str(plan_id or "").strip()
     canonical_case_id = str(canonical_case_id or "").strip()
@@ -2174,13 +2605,17 @@ def grant_plan_capability(
         or bool(canonical_case_id)
         or bool(observed_platform)
     )
-    if observed_user_id and observed_user_id != approved_by_user_id:
-        raise PermissionError(
-            "plan capability owner does not match the runtime-observed user"
-        )
     if runtime_scoped and not observed_user_id:
         raise PermissionError(
             "plan capability requires a runtime-observed owner identity"
+        )
+    if (
+        runtime_scoped
+        and requested_approved_by_user_id
+        and observed_user_id != requested_approved_by_user_id
+    ):
+        raise PermissionError(
+            "plan capability owner does not match the runtime-observed user"
         )
     if runtime_scoped and observed_platform != "discord":
         raise PermissionError(
@@ -2189,6 +2624,17 @@ def grant_plan_capability(
     if runtime_scoped and not observed_message_id:
         raise PermissionError(
             "plan capability requires the current runtime-observed owner message_id"
+        )
+    # Runtime identity is authoritative.  The model-tool dispatcher does not
+    # pass user identity as a handler kwarg, and accepting a caller-supplied id
+    # as a substitute would make the boundary forgeable.  Local non-gateway
+    # callers retain the explicit argument for compatibility.
+    approved_by_user_id = (
+        observed_user_id if runtime_scoped else requested_approved_by_user_id
+    )
+    if not owners or approved_by_user_id not in owners:
+        raise PermissionError(
+            "plan capability requires an authenticated configured owner"
         )
     if canonical_required and not canonical_case_id:
         raise PermissionError(
@@ -2565,6 +3011,10 @@ def consume_plan_capability(session_key: str, command: str) -> str | None:
             or isinstance(result.get("plan_revision"), bool)
             or not isinstance(result.get("plan_revision"), int)
             or int(result["plan_revision"]) < 1
+            or isinstance(result.get("active_plan_revision"), bool)
+            or not isinstance(result.get("active_plan_revision"), int)
+            or int(result["active_plan_revision"])
+                < int(result["plan_revision"])
         ):
             logger.warning(
                 "Privileged plan capability was not authorized: %s",
@@ -2644,10 +3094,12 @@ def consume_plan_capability(session_key: str, command: str) -> str | None:
                 )
                 continue
             if canonical_required:
-                if not canonical_case_id or not _canonical_active_plan_matches(
-                    case_id=canonical_case_id,
-                    plan_id=plan_id,
-                    plan_revision=plan_revision,
+                if not canonical_case_id or not (
+                    _canonical_active_plan_continues_approved_revision(
+                        case_id=canonical_case_id,
+                        plan_id=plan_id,
+                        approved_plan_revision=plan_revision,
+                    )
                 ):
                     logger.warning(
                         "Plan capability %s rejected: no exact active Canonical Brain plan",
@@ -2802,6 +3254,10 @@ def revoke_plan_capability(session_key: str, plan_id: str) -> bool:
 
 def approve_permanent(pattern_key: str):
     """Add a pattern to the permanent allowlist."""
+    if is_delegated_exact_plan_consumer():
+        raise PermissionError(
+            "delegated execution cannot persist broad command authority"
+        )
     with _lock:
         _permanent_approved.add(pattern_key)
 
@@ -3274,6 +3730,7 @@ def _run_approval_gate(
             from agent.redact import redact_sensitive_text
             approval_data = {
                 "command": redact_sensitive_text(display_target),
+                "command_sha256": _exact_command_sha256(display_target),
                 "pattern_key": pattern_key,
                 "pattern_keys": [pattern_key],
                 "description": redact_sensitive_text(description),
@@ -3289,9 +3746,13 @@ def _run_approval_gate(
             if decision.get("notify_failed"):
                 return {
                     "approved": False,
-                    "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+                    "message": decision.get("notify_model_message") or (
+                        "BLOCKED: Failed to send approval request to user. "
+                        "Do NOT retry."
+                    ),
                     "pattern_key": pattern_key,
                     "description": description,
+                    "outcome": decision.get("notify_error_code") or "notify_failed",
                 }
             resolved = decision["resolved"]
             choice = decision["choice"]
@@ -3677,7 +4138,27 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict,
 
     # Notify the user (bridges sync agent thread → async gateway)
     try:
-        notify_cb(approval_data)
+        notify_cb({
+            key: value
+            for key, value in entry.data.items()
+            if not str(key).startswith("_")
+        })
+    except ApprovalNotifyBoundaryError as exc:
+        logger.warning("Gateway approval boundary blocked notification: %s", exc.code)
+        _drop_entry()
+        notify_failure = {
+            "resolved": False,
+            "choice": None,
+            "notify_failed": True,
+            "notify_error_code": exc.code,
+            "notify_model_message": exc.model_message,
+        }
+        if include_authority_fence:
+            notify_failure.update({
+                "authority_generation": entry.authority_generation,
+                "capability_epoch_sha256": entry.capability_epoch_sha256,
+            })
+        return notify_failure
     except Exception as exc:
         logger.warning("Gateway approval notify failed: %s", exc)
         _drop_entry()
@@ -4020,6 +4501,7 @@ def check_all_command_guards(command: str, env_type: str,
             from agent.redact import redact_sensitive_text
             approval_data = {
                 "command": redact_sensitive_text(command),
+                "command_sha256": _exact_command_sha256(command),
                 "pattern_key": primary_key,
                 "pattern_keys": all_keys,
                 "description": redact_sensitive_text(combined_desc),
@@ -4037,9 +4519,13 @@ def check_all_command_guards(command: str, env_type: str,
             if decision.get("notify_failed"):
                 return {
                     "approved": False,
-                    "message": "BLOCKED: Failed to send approval request to user. Do NOT retry.",
+                    "message": decision.get("notify_model_message") or (
+                        "BLOCKED: Failed to send approval request to user. "
+                        "Do NOT retry."
+                    ),
                     "pattern_key": primary_key,
                     "description": combined_desc,
+                    "outcome": decision.get("notify_error_code") or "notify_failed",
                 }
             resolved = decision["resolved"]
             choice = decision["choice"]
@@ -4340,6 +4826,7 @@ def check_execute_code_guard(code: str, env_type: str,
 
     approval_data = {
         "command": display_command,
+        "command_sha256": _exact_command_sha256(command),
         "pattern_key": pattern_key,
         "pattern_keys": [pattern_key],
         "description": display_description,
@@ -4354,11 +4841,13 @@ def check_execute_code_guard(code: str, env_type: str,
     if decision.get("notify_failed"):
         return {
             "approved": False,
-            "message": ("BLOCKED: Failed to send execute_code approval request "
-                        "to user. Do NOT retry."),
+            "message": decision.get("notify_model_message") or (
+                "BLOCKED: Failed to send execute_code approval request "
+                "to user. Do NOT retry."
+            ),
             "pattern_key": pattern_key,
             "description": description,
-            "outcome": "notify_failed",
+            "outcome": decision.get("notify_error_code") or "notify_failed",
             "user_consent": False,
         }
 
@@ -4478,6 +4967,7 @@ def request_elicitation_consent(
 
         approval_data = {
             "command": message,
+            "command_sha256": _exact_command_sha256(message),
             "description": description,
             "pattern_key": "mcp_elicitation",
             "pattern_keys": ["mcp_elicitation"],

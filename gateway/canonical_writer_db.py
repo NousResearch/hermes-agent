@@ -89,9 +89,6 @@ CANONICAL_EVENT_LOG_COLUMNS = (
     "payload:jsonb:t::",
 )
 CANONICAL_PRIVATE_WRITER_TABLES = (
-    "writer_canary_scope_claims",
-    "writer_canary_scope_preapproval_retirements",
-    "writer_canary_scope_preapprovals",
     "writer_capability_consumptions",
     "writer_capability_grants",
     "writer_capability_revocation_scopes",
@@ -2544,9 +2541,21 @@ def _authenticate(
 
 
 class _PostgresWireSession:
-    def __init__(self, connection: socket.socket) -> None:
+    def __init__(
+        self,
+        connection: socket.socket,
+        *,
+        username: str = "",
+        tls_peer_certificate_sha256: str = "",
+    ) -> None:
         self._connection = connection
         self._closed = False
+        # These values are transport observations, not caller-selected routing
+        # inputs.  Keeping them on the concrete session lets privileged
+        # adapters bind higher-level receipts to the exact authenticated TLS
+        # connection without opening a second probe.
+        self.username = username
+        self.tls_peer_certificate_sha256 = tls_peer_certificate_sha256
 
     def query(self, sql: str, *, maximum_rows: int) -> QueryResult:
         if self._closed:
@@ -2912,12 +2921,16 @@ def _open_postgres_session(config: WriterDBConfig) -> _PostgresWireSession:
     protected: ssl.SSLSocket | None = None
     ownership_transferred = False
     try:
-        protected, _certificate_sha256 = _open_verified_tls_connection(config)
+        protected, certificate_sha256 = _open_verified_tls_connection(config)
 
         _send_startup_message(protected, config=config, database=config.database)
         _authenticate(protected, user=config.user, password=password)
         ownership_transferred = True
-        return _PostgresWireSession(protected)
+        return _PostgresWireSession(
+            protected,
+            username=config.user,
+            tls_peer_certificate_sha256=certificate_sha256,
+        )
     except (CanonicalWriterDBError, OSError, ssl.SSLError, UnicodeError) as exc:
         if isinstance(exc, CanonicalWriterDBError):
             raise

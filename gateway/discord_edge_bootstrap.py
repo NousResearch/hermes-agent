@@ -46,6 +46,13 @@ from gateway.discord_edge_service import (
     SystemctlDiscordEdgeMainPidProvider,
 )
 from gateway.discord_rest_edge import DiscordRestEdgeAdapter
+from gateway.systemd_credentials import (
+    DISCORD_EDGE_UNIT as SYSTEMD_DISCORD_EDGE_UNIT,
+    DISCORD_PRIVATE_KEY_CREDENTIAL,
+    SystemdCredentialError,
+    is_expected_systemd_credential,
+    read_systemd_credential,
+)
 
 
 DEFAULT_JOURNAL_PATH = Path(
@@ -82,6 +89,7 @@ _DISCORD_KEYS = frozenset(
         "token_file",
         "credentials_directory",
         "api_timeout_seconds",
+        "target_policy",
     }
 )
 _JOURNAL_KEYS = frozenset({"path", "busy_timeout_ms"})
@@ -118,6 +126,7 @@ class DiscordEdgeServiceConfig:
     token_file: Path
     credentials_directory: Path
     api_timeout_seconds: float
+    target_policy: str
     journal_path: Path
     journal_busy_timeout_ms: int
     max_proof_age_ms: int
@@ -493,15 +502,6 @@ def _load_keys(
         trusted_parent_owner_uid=trusted_config_owner_uid,
         require_trusted_parents=require_trusted_parents,
     )
-    edge_stat = _validate_key_path(
-        edge_path,
-        label="edge receipt private key",
-        expected_owner_uid=edge_uid,
-        expected_gid=edge_gid,
-        expected_mode=0o400,
-        trusted_parent_owner_uid=trusted_config_owner_uid,
-        require_trusted_parents=require_trusted_parents,
-    )
     writer_bytes = _read_key(
         writer_path,
         writer_stat,
@@ -510,14 +510,43 @@ def _load_keys(
         expected_gid=edge_gid,
         expected_mode=0o440,
     )
-    edge_bytes = _read_key(
-        edge_path,
-        edge_stat,
-        label="edge receipt private key",
-        expected_owner_uid=edge_uid,
-        expected_gid=edge_gid,
-        expected_mode=0o400,
-    )
+    try:
+        systemd_bound = is_expected_systemd_credential(
+            edge_path,
+            unit=SYSTEMD_DISCORD_EDGE_UNIT,
+            name=DISCORD_PRIVATE_KEY_CREDENTIAL,
+        )
+        if systemd_bound:
+            edge_bytes = read_systemd_credential(
+                edge_path,
+                unit=SYSTEMD_DISCORD_EDGE_UNIT,
+                name=DISCORD_PRIVATE_KEY_CREDENTIAL,
+                service_uid=edge_uid,
+                maximum=_MAX_KEY_BYTES,
+                credentials_directory=edge_path.parent,
+            )
+        else:
+            edge_stat = _validate_key_path(
+                edge_path,
+                label="edge receipt private key",
+                expected_owner_uid=edge_uid,
+                expected_gid=edge_gid,
+                expected_mode=0o400,
+                trusted_parent_owner_uid=trusted_config_owner_uid,
+                require_trusted_parents=require_trusted_parents,
+            )
+            edge_bytes = _read_key(
+                edge_path,
+                edge_stat,
+                label="edge receipt private key",
+                expected_owner_uid=edge_uid,
+                expected_gid=edge_gid,
+                expected_mode=0o400,
+            )
+    except SystemdCredentialError as exc:
+        raise ValueError(
+            "edge receipt private systemd credential provenance is invalid"
+        ) from exc
     try:
         writer_key = serialization.load_pem_public_key(writer_bytes)
     except (TypeError, ValueError, UnsupportedAlgorithm) as exc:
@@ -581,8 +610,12 @@ def load_service_config(
         allowed=_SERVICE_KEYS,
     )
     keys = _strict_mapping(root["keys"], label="keys", allowed=_KEY_KEYS)
+    discord_value = dict(root["discord"])
+    # Older sealed canary configs predate the explicit dual-mode field.  Their
+    # safe behavior is the strict public-only policy.
+    discord_value.setdefault("target_policy", "public_only")
     discord = _strict_mapping(
-        root["discord"],
+        discord_value,
         label="discord",
         allowed=_DISCORD_KEYS,
     )
@@ -715,6 +748,9 @@ def load_service_config(
             minimum=0.1,
             maximum=15,
         ),
+        target_policy=(
+            _required_text(discord["target_policy"], "discord.target_policy")
+        ),
         journal_path=journal_path,
         journal_busy_timeout_ms=_integer(
             journal["busy_timeout_ms"],
@@ -785,6 +821,7 @@ def build_service(
             credentials_directory=config.credentials_directory,
             expected_owner_uid=config.edge_uid,
             timeout_seconds=config.api_timeout_seconds,
+            target_policy=config.target_policy,
         )
         runtime = _runtime_factory(
             writer_public_key=config.writer_public_key,

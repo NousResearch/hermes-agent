@@ -8,7 +8,7 @@ canary prompt enters through the authenticated loopback API server.
 The driver deliberately contains no semantic task router, keyword guard,
 classifier, dispatcher, or external effort chooser. GPT-5.6-sol authors the
 task plan, success criteria, plan transitions, tool calls, verification
-receipts, and the adaptive `high` to `xhigh` reasoning directive. Deterministic
+receipts, and the adaptive `high` to `max` reasoning directive. Deterministic
 code checks only identities, bounded protocols, lifecycle order, canonical
 state, and receipts.
 
@@ -25,49 +25,31 @@ instead runs this exact same-process callback flow as root:
    session-key factory then creates the raw key in memory. Only its SHA-256 is
    written into the staged writer configuration.
 4. Its plan-builder callback builds and atomically publishes the exact plan
-   after the staged writer-config digest is final.
-   If a different staged writer config already exists, the driver does not
-   overwrite it. The coordinator must supply a bounded pre-stage reconciler;
-   the driver captures the prior receipt generation, invokes reconciliation,
-   then requires a fresh writer-owned terminal `retired` or `claimed` receipt
-   with `authority_active=false`, bound to the old source bytes, database
-   identity, and exact scope. It re-reads the old inode and digest immediately
-   before replacement. `not_preapproved`, a stale receipt, active authority,
-   or a replacement race remains blocked owner cleanup.
-5. Its approval-provider callback calls
-   `wait_for_fresh_owner_approval(plan)`. The generic helper has a 900-second
-   upper bound, but the packaged coordinator always supplies the shorter
-   request-bound remainder: at most 240 seconds, with owner input closing 30
-   seconds before the request deadline. It accepts only a newly published
-   root-owned `0400` approval at the fixed path for that exact plan digest.
-6. Only after that approval, the owner-operated coordinator opens one
-   short-lived managed-administrator PostgreSQL connection, independently
-   verifies its TLS peer, and wraps the already-open connection in
-   `PreopenedSessionBootstrapProvisioner`. No password or connection factory
-   is passed to Hermes.
-7. The returned `SessionBoundPlan` and that provisioner are passed directly to
-   `HonestFullCanaryDriver(..., bootstrap_provisioner=...).run()` in the same
-   process. Supplying both a provisioner and a custom lifecycle factory is
-   rejected. Omitting both leaves the runtime's default database gate blocked.
-   The raw key has
-   never been serialized. `run()` atomically consumes and removes it from the
-   caller-owned holder before any live work; the holder cannot be run twice.
-   Both raw API keys are also cleared from the loopback client and driver
-   locals on every success or failure path. The driver aborts the provisioner
-   on every path, including process-hardening or fixture failures before the
-   lifecycle exists, retries one transient close failure, and removes its own
-   reference afterward.
+   after the unchanged writer-config digest and session-bound fixture digest
+   are final. A different staged writer config is replaced only after the
+   coordinator proves services are stopped and re-reads the same inode and
+   digest immediately before replacement.
+5. The same sealed coordinator process emits the exact plan-bound owner request
+   over its existing session. The owner-input cutoff and hard deadline are
+   carried in that request; no remote approval file or second remote process is
+   involved. The local launcher consumes the separate one-shot owner-only
+   approval file and sends its bounded frame over this session.
+6. The returned `SessionBoundPlan` is passed directly to
+   `HonestFullCanaryDriver(prepared).run()`. The driver accepts no database
+   administrator, login, password, provisioning object, or connection factory.
+   The raw API key has never been serialized. `run()` atomically consumes and
+   removes it from the caller-owned holder before any live work; the holder
+   cannot be run twice. The key is dropped from loopback-client and driver
+   locals on every success or failure path.
 
 The plan-builder remains deployment-owned because it binds release artifacts,
 service identities, and root paths. The approval is owner-authored and remains
 a separate gate; neither callback infers approval from historical state.
 
 The live Cloud run therefore has one deliberate external prerequisite: the
-owner-operated coordinator must be able to hand over that already-open
-ephemeral administrator session. The implementation does not reuse or invent
-a persistent administrator secret to bypass this gate. Without the pre-opened
-session, packaging and read-only validation can complete, but service
-activation fails closed before mutation.
+reviewed stopped-only Phase-B foundation must already have a terminal,
+in-process readiness descendant bound to this release. The live run can read
+that proof but cannot create or recover foundation authority.
 
 ## Live evidence barriers
 
@@ -103,13 +85,11 @@ verifier. Services are always stopped in reverse order on success or failure.
 Collector cleanup unlinks only the exact runtime inodes it created and refuses
 to remove a replacement.
 
-Stopping the processes is not itself treated as cleanup proof. The writer's
-sealed `ExecStopPost` reconciliation must publish a fresh exact receipt for
-the plan-bound preapproval, and lifecycle accepts the stop only when durable
-Canonical state proves that no authority remains active. The matching
-`ExecStartPre` call performs the same reconciliation before a restart, covering
-SIGKILL and power-loss recovery as long as the interrupted plan's staged source
-has not been replaced. Missing proof is reported as blocked owner cleanup, not
+Stopping the processes is not itself treated as completion proof. The driver
+requires the plan-bound Canonical task, append-only event chain, verification
+records, session/capability revocation, and public route-back receipt before it
+accepts the run. It then proves all live services and the Phase-B readiness
+unit are stopped. Missing durable truth is reported as blocked cleanup, never
 as a successful canary result.
 
 ## Deliberate safety boundaries

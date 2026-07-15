@@ -181,7 +181,6 @@ class TestRunOneJobHonoursInterruptedFlag:
                  return_value=(True, "full output", "final response", None),
              ), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._is_cron_silence_response", return_value=False), \
              patch("cron.scheduler._deliver_result", return_value=None), \
              patch("cron.scheduler.mark_job_run") as mock_mark:
             result = sched.run_one_job(job)
@@ -220,7 +219,6 @@ class TestRunOneJobHonoursInterruptedFlag:
                  "cron.scheduler._summarize_cron_failure_for_delivery",
                  return_value="This run was interrupted.",
              ) as mock_summarize, \
-             patch("cron.scheduler._is_cron_silence_response", return_value=False), \
              patch("cron.scheduler._deliver_result", return_value=None) as mock_deliver, \
              patch("cron.scheduler.mark_job_run"):
             result = sched.run_one_job(job)
@@ -250,7 +248,6 @@ class TestRunOneJobHonoursInterruptedFlag:
                  return_value=(True, "full output", "final response", None),
              ), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._is_cron_silence_response", return_value=False), \
              patch("cron.scheduler._deliver_result", return_value=None), \
              patch("cron.scheduler.mark_job_run") as mock_mark:
             result = sched.run_one_job(job)

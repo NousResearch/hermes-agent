@@ -16,6 +16,7 @@ The parent's context only sees the delegation call and the summary result,
 never the child's intermediate tool calls or reasoning.
 """
 
+import contextvars
 import enum
 import json
 import logging
@@ -31,6 +32,7 @@ from concurrent.futures import (
 from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
+from agent.tool_guardrails import classify_tool_failure
 
 # Sentinel value used by the runtime provider system for providers that are
 # not natively known (named custom providers, third-party aggregators, etc.).
@@ -257,9 +259,9 @@ def _extract_output_tail(
         # output (not a "[{'type': 'text'...}]" blob) and error detection can
         # see markers buried inside content blocks. Crude str() here would
         # mislabel a block-wrapped "Error: ..." result as is_error=False.
-        content = _stringify_tool_content(msg.get("content") or "")
-        is_error = _looks_like_error_output(content)
         tool_name = pending_call_by_id.get(msg.get("tool_call_id") or "", "tool")
+        content = _stringify_tool_content(msg.get("content") or "")
+        is_error = _looks_like_error_output(tool_name, content)
         # Preserve line structure so the overlay's wrapped scroll region can
         # show real output rather than a whitespace-collapsed blob. We still
         # cap the payload size to keep events bounded.
@@ -298,40 +300,12 @@ def _stringify_tool_content(content: Any) -> str:
     return str(content)
 
 
-def _looks_like_error_output(content: Any) -> bool:
-    """Conservative stderr/error detector for tool-result previews.
-
-    The old heuristic flagged any preview containing the substring "error",
-    which painted perfectly normal terminal/json output red.  We now only
-    mark output as an error when there is stronger evidence:
-      - structured JSON with an ``error`` key
-      - structured JSON with ``status`` of error/failed
-      - first line starts with a classic error marker
-    """
+def _looks_like_error_output(tool_name: str, content: Any) -> bool:
+    """Read only structured/mechanical failure evidence for trace display."""
     content = _stringify_tool_content(content)
     if not content:
         return False
-
-    head = content.lstrip()
-    if head.startswith("{") or head.startswith("["):
-        try:
-            parsed = json.loads(content)
-            if isinstance(parsed, dict):
-                if parsed.get("error"):
-                    return True
-                status = str(parsed.get("status") or "").strip().lower()
-                if status in {"error", "failed", "failure", "timeout"}:
-                    return True
-        except Exception:
-            pass
-
-    first = content.splitlines()[0].strip().lower() if content.splitlines() else ""
-    return (
-        first.startswith("error:")
-        or first.startswith("failed:")
-        or first.startswith("traceback ")
-        or first.startswith("exception:")
-    )
+    return classify_tool_failure(tool_name, content)[0]
 
 
 def _normalize_role(r: Optional[str]) -> str:
@@ -1355,6 +1329,10 @@ def _build_child_agent(
         openrouter_min_coding_score=child_openrouter_min_coding_score,
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
+        # Provider-call authority is aggregate across the whole delegation
+        # tree. A nested child receives this exact object again; neither child
+        # construction nor renewable slices can mint fresh authority.
+        execution_lease=getattr(parent_agent, "execution_lease", None),
         **child_optional_kwargs,
     )
     child._print_fn = getattr(parent_agent, "_print_fn", None)
@@ -1951,7 +1929,28 @@ def _run_single_child(
                 stream_callback=_relay_child_text,
             )
 
-        _child_future = _timeout_executor.submit(_run_with_thread_capture)
+        # Preserve the authenticated parent turn's session/user/platform and
+        # capability epoch across this final executor boundary.  Bind a
+        # consume-only delegation fence before taking the snapshot: the child
+        # may spend an already granted exact-command use, but grant/session-
+        # approval/YOLO paths fail closed.  The executor initializer still
+        # installs the explicit subagent approval callback, so copying
+        # ContextVars cannot resurrect the parent's interactive prompt.
+        from tools.approval import (
+            bind_delegated_exact_plan_consumer,
+            reset_delegated_exact_plan_consumer,
+        )
+
+        _delegated_authority_token = bind_delegated_exact_plan_consumer()
+        try:
+            _child_execution_context = contextvars.copy_context()
+        finally:
+            reset_delegated_exact_plan_consumer(_delegated_authority_token)
+
+        _child_future = _timeout_executor.submit(
+            _child_execution_context.run,
+            _run_with_thread_capture,
+        )
         try:
             result = _child_future.result(timeout=child_timeout)
         except Exception as _timeout_exc:
@@ -2063,6 +2062,7 @@ def _run_single_child(
 
         summary = result.get("final_response") or ""
         completed = result.get("completed", False)
+        partial = bool(result.get("partial", False))
         interrupted = result.get("interrupted", False)
         api_calls = result.get("api_calls", 0)
 
@@ -2075,6 +2075,11 @@ def _run_single_child(
 
         if interrupted:
             status = "interrupted"
+        elif partial:
+            # A runtime-boundary receipt is useful evidence, not task
+            # completion. Preserve it for the parent while keeping the child
+            # explicitly resumable.
+            status = "partial"
         elif summary and not _empty_sentinel:
             # A summary means the subagent produced usable output.
             # exit_reason ("completed" vs "max_iterations") already
@@ -2105,7 +2110,11 @@ def _run_single_child(
                             trace_by_id[tc_id] = entry_t
                 elif msg.get("role") == "tool":
                     content = _stringify_tool_content(msg.get("content", ""))
-                    is_error = _looks_like_error_output(content)
+                    tool_name = str(
+                        (trace_by_id.get(msg.get("tool_call_id")) or {}).get("tool")
+                        or (tool_trace[-1].get("tool") if tool_trace else "tool")
+                    )
+                    is_error = _looks_like_error_output(tool_name, content)
                     result_meta = {
                         "result_bytes": len(content),
                         "status": "error" if is_error else "ok",
@@ -2122,6 +2131,8 @@ def _run_single_child(
         # Determine exit reason
         if interrupted:
             exit_reason = "interrupted"
+        elif partial:
+            exit_reason = str(result.get("turn_exit_reason") or "partial")
         elif completed:
             exit_reason = "completed"
         else:
@@ -2392,6 +2403,14 @@ def delegate_task(
     if parent_agent is None:
         return tool_error("delegate_task requires a parent agent context.")
 
+    # Snapshot the authenticated commissioning turn before constructing child
+    # AIAgent objects. Agent construction assigns each child a fresh durable
+    # session id and may update session-related ContextVars; none of that may
+    # replace the parent's routing key, owner identity, or capability epoch for
+    # exact-plan consumption. Context.copy() below gives every parallel child
+    # an independent, concurrently enterable copy of this same authority.
+    _commissioning_turn_context = contextvars.copy_context()
+
     # Operator-controlled kill switch — lets the TUI freeze new fan-out
     # when a runaway tree is detected, without interrupting already-running
     # children.  Cleared via the matching `delegation.pause` RPC.
@@ -2540,6 +2559,23 @@ def delegate_task(
         # Authoritative restore: reset global to parent's tool names after all children built
         _model_tools._last_resolved_tool_names = _parent_tool_names
 
+    def _run_child_with_commissioning_context(
+        *,
+        task_index: int,
+        task_goal: str,
+        child_agent,
+    ) -> Dict[str, Any]:
+        """Run one child under the exact parent-turn context snapshot."""
+
+        child_context = _commissioning_turn_context.copy()
+        return child_context.run(
+            _run_single_child,
+            task_index=task_index,
+            goal=task_goal,
+            child=child_agent,
+            parent_agent=parent_agent,
+        )
+
     def _execute_and_aggregate() -> dict:
         """Run all built children (1 or N), join on them, aggregate results,
         fire subagent_stop hooks + cost rollup, and return the combined result
@@ -2553,7 +2589,11 @@ def delegate_task(
         if n_tasks == 1:
             # Single task -- run directly (no thread pool overhead)
             _i, _t, child = children[0]
-            result = _run_single_child(_i, _t["goal"], child, parent_agent)
+            result = _run_child_with_commissioning_context(
+                task_index=_i,
+                task_goal=_t["goal"],
+                child_agent=child,
+            )
             results.append(result)
         else:
             # Batch -- run in parallel with per-task progress lines
@@ -2568,11 +2608,10 @@ def delegate_task(
                 futures = {}
                 for i, t, child in children:
                     future = executor.submit(
-                        _run_single_child,
+                        _run_child_with_commissioning_context,
                         task_index=i,
-                        goal=t["goal"],
-                        child=child,
-                        parent_agent=parent_agent,
+                        task_goal=t["goal"],
+                        child_agent=child,
                     )
                     futures[future] = i
 

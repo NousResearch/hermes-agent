@@ -79,10 +79,10 @@ def _synthetic_worker_script() -> str:
 
 
 def _is_alive_like_dispatcher(pid: int) -> bool:
-    """Mirrors hermes_cli/kanban_db.py:_pid_alive on Linux.
+    """Mirrors hermes_cli/kanban_db.py:_pid_alive on Linux and macOS.
 
     A zombie is treated as dead — the dispatcher's _pid_alive checks
-    /proc/<pid>/status for State: Z. We replicate that here so a clean
+    the platform process-state surface. We replicate that here so a clean
     os._exit followed by zombie-state is correctly counted as dead.
     """
     if pid <= 0:
@@ -102,6 +102,23 @@ def _is_alive_like_dispatcher(pid: int) -> bool:
                             return False
                         break
         except (FileNotFoundError, PermissionError, OSError):
+            pass
+    elif sys.platform == "darwin":
+        # os.kill(pid, 0) also succeeds for an exited-but-unreaped child on
+        # macOS. Mirror kanban_db._pid_alive's BSD process-state probe so the
+        # retained Popen handle's zombie is classified as dead.
+        try:
+            result = subprocess.run(
+                ["ps", "-o", "stat=", "-p", str(pid)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                text=True,
+                timeout=1,
+                check=False,
+            )
+            if result.returncode != 0 or "Z" in (result.stdout or "").strip():
+                return False
+        except (OSError, subprocess.SubprocessError, TimeoutError):
             pass
     return True
 

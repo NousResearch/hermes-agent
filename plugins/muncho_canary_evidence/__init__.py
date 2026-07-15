@@ -13,21 +13,19 @@ collector PID/UID/GID from a root-owned runtime materialization.
 ``on_session_start`` also performs two mechanical boundary actions before the
 first model request:
 
-* claim the one-shot, owner-preapproved Canonical canary scope for the exact
-  API-server session generation; and
+* bind the exact API-server session-key digest to the owner-published fixture;
+  and
 * send one deliberately invalid private-target frame to the privileged Discord
   edge.  A pre-probe collector ACK is a barrier for the collector-owned journal
   snapshot.  The plugin never opens or reads the edge journal.
 
 Hook exceptions are observationally isolated by Hermes.  The Canonical Writer
-is therefore the actual fail-closed mutation boundary: without a valid claim,
-subsequent Canonical mutations remain unauthorized and the live E2E verifier
-must reject the run.
+remains the privileged mechanical mutation boundary, while the model authors
+all task meaning in the Canonical Task Workspace.
 """
 
 from __future__ import annotations
 
-import datetime as dt
 import hashlib
 import json
 import math
@@ -90,20 +88,8 @@ _CONFIG_FIELDS = frozenset(
         "case_id",
         "fixture_path",
         "fixture_sha256",
-        "canonical_scope",
         "collector",
         "discord_edge",
-    }
-)
-_SCOPE_FIELDS = frozenset(
-    {
-        "grant_id",
-        "case_id",
-        "release_sha256",
-        "fixture_sha256",
-        "run_id",
-        "approval_source_sha256",
-        "idempotency_key",
     }
 )
 _COLLECTOR_FIELDS = frozenset(
@@ -140,6 +126,7 @@ _FIXTURE_FIELDS = frozenset(
         "canary_run_id",
         "release_sha",
         "release_artifact_sha256",
+        "api_session_key_sha256",
         "valid_from_unix_ms",
         "valid_until_unix_ms",
         "case_id",
@@ -155,7 +142,7 @@ _FIXTURE_FIELDS = frozenset(
 _READY_EVENTS = frozenset({"plugin_ready"})
 _START_EVENTS = frozenset(
     {
-        "canonical_scope_claim",
+        "api_session_bound",
         "private_target_probe_ready",
         "private_target_probe_result",
     }
@@ -222,13 +209,6 @@ class EdgeEndpoint:
 
 
 @dataclass(frozen=True)
-class CanonicalScope:
-    grant_id: str
-    approval_source_sha256: str
-    idempotency_key: str
-
-
-@dataclass(frozen=True)
 class CanaryFixture:
     value: Mapping[str, Any]
     sha256: str
@@ -258,7 +238,6 @@ class CanaryEvidenceConfig:
     canary_run_id: str
     case_id: str
     fixture: CanaryFixture
-    canonical_scope: CanonicalScope
     collector: CollectorEndpoint
     discord_edge: EdgeEndpoint
 
@@ -556,6 +535,7 @@ def _validate_fixture(value: Mapping[str, Any], digest: str) -> CanaryFixture:
     ):
         raise CanaryEvidenceError("fixture_invalid")
     _digest(fixture["release_artifact_sha256"], code="fixture_invalid")
+    _digest(fixture["api_session_key_sha256"], code="fixture_invalid")
     valid_from = _positive_int(fixture["valid_from_unix_ms"], code="fixture_invalid")
     valid_until = _positive_int(fixture["valid_until_unix_ms"], code="fixture_invalid")
     if valid_until <= valid_from or valid_until - valid_from > 3_600_000:
@@ -595,7 +575,7 @@ def _validate_fixture(value: Mapping[str, Any], digest: str) -> CanaryFixture:
     for name in ("provider", "api_mode", "base_url", "model"):
         if not isinstance(route[name], str) or not route[name]:
             raise CanaryEvidenceError("fixture_invalid")
-    if route["initial_effort"] != "high" or route["elevated_effort"] != "xhigh":
+    if route["initial_effort"] != "high" or route["elevated_effort"] != "max":
         raise CanaryEvidenceError("fixture_invalid")
 
     task = _strict_mapping(
@@ -693,32 +673,6 @@ def load_config(
     ):
         raise CanaryEvidenceError("config_fixture_binding_invalid")
 
-    scope_raw = _strict_mapping(
-        root["canonical_scope"], fields=_SCOPE_FIELDS, code="config_invalid"
-    )
-    if (
-        scope_raw["case_id"] != case_id
-        or scope_raw["release_sha256"] != release_sha256
-        or scope_raw["fixture_sha256"] != fixture_sha256
-        or scope_raw["run_id"] != canary_run_id
-    ):
-        raise CanaryEvidenceError("config_scope_binding_invalid")
-    scope = CanonicalScope(
-        grant_id=_safe_id(scope_raw["grant_id"], code="config_invalid"),
-        approval_source_sha256=_digest(
-            scope_raw["approval_source_sha256"], code="config_invalid"
-        ),
-        idempotency_key=_safe_id(
-            scope_raw["idempotency_key"], code="config_invalid"
-        ),
-    )
-    expected_idempotency_key = "canary-scope-claim:" + scope.grant_id
-    if (
-        scope.idempotency_key != expected_idempotency_key
-        or len(scope.idempotency_key.encode("utf-8", errors="strict")) > 256
-    ):
-        raise CanaryEvidenceError("config_scope_binding_invalid")
-
     collector_raw = _strict_mapping(
         root["collector"], fields=_COLLECTOR_FIELDS, code="config_invalid"
     )
@@ -802,7 +756,6 @@ def load_config(
         canary_run_id=canary_run_id,
         case_id=case_id,
         fixture=fixture,
-        canonical_scope=scope,
         collector=collector,
         discord_edge=edge,
     )
@@ -1023,33 +976,6 @@ def _default_runtime_envelope() -> Mapping[str, Any]:
     return trusted_runtime_envelope()
 
 
-def _utc_timestamp_ms(value: Any, *, code: str) -> int:
-    if (
-        not isinstance(value, str)
-        or value != value.strip()
-        or not value.endswith(("Z", "+00:00"))
-    ):
-        raise CanaryEvidenceError(code)
-    candidate = value[:-1] + "+00:00" if value.endswith("Z") else value
-    try:
-        parsed = dt.datetime.fromisoformat(candidate)
-    except ValueError as exc:
-        raise CanaryEvidenceError(code) from exc
-    if parsed.tzinfo is None or parsed.utcoffset() != dt.timedelta(0):
-        raise CanaryEvidenceError(code)
-    utc = parsed.astimezone(dt.timezone.utc)
-    epoch = dt.datetime(1970, 1, 1, tzinfo=dt.timezone.utc)
-    delta = utc - epoch
-    milliseconds = (
-        delta.days * 86_400_000
-        + delta.seconds * 1_000
-        + delta.microseconds // 1_000
-    )
-    if milliseconds <= 0:
-        raise CanaryEvidenceError(code)
-    return milliseconds
-
-
 def _finite_timestamp_ms(value: Any, *, code: str) -> int:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise CanaryEvidenceError(code)
@@ -1065,7 +991,7 @@ def _reasoning_effort(request: Mapping[str, Any]) -> str:
         raise CanaryEvidenceError("api_request_projection_invalid")
     reasoning = body.get("reasoning")
     effort = reasoning.get("effort") if isinstance(reasoning, Mapping) else None
-    if effort not in {"high", "xhigh"}:
+    if effort not in {"high", "max"}:
         raise CanaryEvidenceError("api_request_effort_invalid")
     return str(effort)
 
@@ -1133,7 +1059,7 @@ class CanaryEvidencePlugin:
         self._session_ended = False
         self._session_id: str | None = None
         self._turn_id: str | None = None
-        self._claim_succeeded = False
+        self._session_bound = False
         self._model_calls = 0
         self._tool_calls = 0
         self._api_ordinals: dict[str, int] = {}
@@ -1170,19 +1096,6 @@ class CanaryEvidencePlugin:
         elif self._turn_id != observed:
             raise CanaryEvidenceError("second_turn_forbidden")
         return observed
-
-    def _scope_mapping(self) -> Mapping[str, Any]:
-        return {
-            "grant_id": self.config.canonical_scope.grant_id,
-            "case_id": self.config.case_id,
-            "release_sha256": self.config.release_sha256,
-            "fixture_sha256": self.config.fixture.sha256,
-            "run_id": self.config.canary_run_id,
-            "approval_source_sha256": (
-                self.config.canonical_scope.approval_source_sha256
-            ),
-            "idempotency_key": self.config.canonical_scope.idempotency_key,
-        }
 
     def _emit(
         self,
@@ -1272,8 +1185,8 @@ class CanaryEvidencePlugin:
                     "fixture_sha256": self.config.fixture.sha256,
                     "release_sha": self.config.release_sha,
                     "release_sha256": self.config.release_sha256,
-                    "canonical_scope_sha256": _sha256_json(
-                        self._scope_mapping()
+                    "api_session_key_sha256": (
+                        self.config.fixture.value["api_session_key_sha256"]
                     ),
                     "collector_service_identity_sha256": (
                         self.config.collector.service_identity_sha256
@@ -1289,125 +1202,41 @@ class CanaryEvidencePlugin:
             )
             self._ready = True
 
-    def _scope_claim(self, session_id: str) -> bool:
-        from gateway.canonical_writer_protocol import CanonicalWriterOperation
+    def _bind_api_session(self, session_id: str) -> bool:
+        """Prove only the mechanical API-session/fixture digest binding."""
 
-        scope = dict(self._scope_mapping())
-        request = {
-            name: value for name, value in scope.items() if name != "idempotency_key"
-        }
         try:
             runtime = self._runtime_envelope()
             if not isinstance(runtime, Mapping):
-                raise CanaryEvidenceError("canonical_scope_claim_invalid")
-            expected_session_digest = _digest(
+                raise CanaryEvidenceError("api_session_binding_invalid")
+            observed_session_digest = _digest(
                 runtime.get("session_key_sha256"),
-                code="canonical_scope_claim_invalid",
-            )
-            expected_epoch_digest = _digest(
-                runtime.get("capability_epoch_sha256"),
-                code="canonical_scope_claim_invalid",
+                code="api_session_binding_invalid",
             )
             if (
                 runtime.get("platform") != "api_server"
                 or runtime.get("session_id") != session_id
+                or observed_session_digest
+                != self.config.fixture.value["api_session_key_sha256"]
             ):
-                raise CanaryEvidenceError("canonical_scope_claim_invalid")
-            raw = self._writer_call(
-                CanonicalWriterOperation.CANARY_SCOPE_CLAIM,
-                request,
-                idempotency_key=self.config.canonical_scope.idempotency_key,
-            )
-            result = dict(raw) if isinstance(raw, Mapping) else {}
-            exact = dict(request)
-            expected_fields = {
-                "request_id",
-                "status",
-                "success",
-                *exact,
-                "session_key_sha256",
-                "capability_epoch_sha256",
-                "expires_at",
-                "claimed_at",
-                "event_id",
-                "claim_event_id",
-                "authority_active",
-                "inserted",
-                "deduped",
-            }
-            if (
-                set(result) != expected_fields
-                or result.get("success") is not True
-                or result.get("authority_active") is not True
-                or any(result.get(name) != value for name, value in exact.items())
-                or type(result.get("inserted")) is not bool
-                or type(result.get("deduped")) is not bool
-                or result.get("inserted") == result.get("deduped")
-            ):
-                raise CanaryEvidenceError("canonical_scope_claim_invalid")
-            event_id = _uuid(result.get("event_id"), code="canonical_scope_claim_invalid")
-            if result.get("claim_event_id") != event_id:
-                raise CanaryEvidenceError("canonical_scope_claim_invalid")
-            session_digest = _digest(
-                result.get("session_key_sha256"), code="canonical_scope_claim_invalid"
-            )
-            epoch_digest = _digest(
-                result.get("capability_epoch_sha256"),
-                code="canonical_scope_claim_invalid",
-            )
-            if (
-                session_digest != expected_session_digest
-                or epoch_digest != expected_epoch_digest
-            ):
-                raise CanaryEvidenceError("canonical_scope_claim_invalid")
-            now = self._now()
-            claimed_at = result["claimed_at"]
-            expires_at = result["expires_at"]
-            claimed_ms = _utc_timestamp_ms(
-                claimed_at, code="canonical_scope_claim_invalid"
-            )
-            expires_ms = _utc_timestamp_ms(
-                expires_at, code="canonical_scope_claim_invalid"
-            )
-            if not (
-                self.config.fixture.valid_from_unix_ms
-                <= claimed_ms
-                <= now
-                < expires_ms
-                <= self.config.fixture.valid_until_unix_ms
-            ):
-                raise CanaryEvidenceError("canonical_scope_claim_invalid")
-            writer_status = result.get("status")
-            if writer_status != (
-                "inserted" if result["inserted"] else "deduplicated"
-            ):
-                raise CanaryEvidenceError("canonical_scope_claim_invalid")
+                raise CanaryEvidenceError("api_session_binding_invalid")
             payload = {
                 "success": True,
-                "writer_request_id": _uuid(
-                    result.get("request_id"), code="canonical_scope_claim_invalid"
-                ),
-                "writer_status": writer_status,
-                **exact,
-                "event_id": event_id,
-                "session_key_sha256": session_digest,
-                "capability_epoch_sha256": epoch_digest,
-                "expires_at": expires_at,
-                "claimed_at": claimed_at,
-                "inserted": result["inserted"],
-                "deduped": result["deduped"],
-                "authority_active": True,
+                "runtime_platform": "api_server",
+                "runtime_session_id": session_id,
+                "session_key_sha256": observed_session_digest,
+                "fixture_sha256": self.config.fixture.sha256,
             }
         except Exception:
             self._emit(
-                "canonical_scope_claim",
+                "api_session_bound",
                 session_id=session_id,
                 turn_id=None,
-                payload={"success": False, "failure_code": "writer_claim_failed"},
+                payload={"success": False, "failure_code": "session_binding_failed"},
             )
             return False
         self._emit(
-            "canonical_scope_claim",
+            "api_session_bound",
             session_id=session_id,
             turn_id=None,
             payload=payload,
@@ -1430,8 +1259,8 @@ class CanaryEvidencePlugin:
             if platform != "api_server" or model != self.config.fixture.model_route["model"]:
                 raise CanaryEvidenceError("session_route_invalid")
             self._session_started = True
-            self._claim_succeeded = self._scope_claim(session)
-            if not self._claim_succeeded:
+            self._session_bound = self._bind_api_session(session)
+            if not self._session_bound:
                 return
             edge_identity = self._socket_inspector(
                 self.config.discord_edge.socket_path,
@@ -1516,7 +1345,7 @@ class CanaryEvidencePlugin:
             turn = self._bind_turn(turn_id)
             _safe_id(task_id, code="api_request_projection_invalid")
             api_id = _safe_id(api_request_id, code="api_request_projection_invalid")
-            if not self._claim_succeeded or api_id in self._api_ordinals:
+            if not self._session_bound or api_id in self._api_ordinals:
                 raise CanaryEvidenceError("api_request_projection_invalid")
             if self._model_calls >= MAX_MODEL_CALLS:
                 raise CanaryEvidenceError("model_call_limit_exceeded")
@@ -1738,7 +1567,7 @@ class CanaryEvidencePlugin:
             turn = self._bind_turn(turn_id)
             _safe_id(task_id, code="session_end_invalid")
             if (
-                not self._claim_succeeded
+                not self._session_bound
                 or platform != "api_server"
                 or model != self.config.fixture.model_route["model"]
                 or type(completed) is not bool
@@ -1829,7 +1658,6 @@ __all__ = [
     "CanaryEvidenceError",
     "CanaryEvidencePlugin",
     "CanaryFixture",
-    "CanonicalScope",
     "CollectorEndpoint",
     "EdgeEndpoint",
     "PeerIdentity",

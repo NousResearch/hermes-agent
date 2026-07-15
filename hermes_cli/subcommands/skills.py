@@ -99,7 +99,7 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
         help="Override the skill name (useful when installing from a URL whose SKILL.md has no `name:` frontmatter)",
     )
     skills_install.add_argument(
-        "--force", action="store_true", help="Install despite blocked scan verdict"
+        "--force", action="store_true", help="Override eligible package-preflight findings"
     )
     skills_install.add_argument(
         "--yes",
@@ -141,7 +141,7 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     )
 
     skills_audit = skills_subparsers.add_parser(
-        "audit", help="Re-scan installed hub skills"
+        "audit", help="Re-run package preflight for installed hub skills"
     )
     skills_audit.add_argument(
         "name", nargs="?", help="Specific skill to audit (default: all)"

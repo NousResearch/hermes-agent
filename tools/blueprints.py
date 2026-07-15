@@ -13,7 +13,7 @@ frontmatter:
           no_agent: false            # optional
 
 Because a blueprint is just a skill, it flows through the ENTIRE existing
-skills-hub pipeline for free — search, inspect, quarantine, security scan,
+skills-hub pipeline for free — search, inspect, quarantine, package preflight,
 install, lock-file provenance, audit log, taps, the centralized index, and
 `hermes skills publish` for sharing. No new source type, no new store, no new
 transport. This module is the thin bridge between that skill metadata and the

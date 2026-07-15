@@ -319,6 +319,45 @@ class TestAdapterInit:
         assert adapter._api_key == "sk-test"
         assert adapter._cors_origins == ("http://localhost:3000",)
 
+    def test_control_bearer_cannot_also_be_owner_approval_passkey(self):
+        shared_secret = "s" * 32
+        with pytest.raises(ValueError, match="must be distinct"):
+            APIServerAdapter(
+                PlatformConfig(
+                    enabled=True,
+                    extra={
+                        "key": shared_secret,
+                        "approval_passkey": shared_secret,
+                    },
+                )
+            )
+
+    def test_distinct_systemd_control_and_owner_credentials_are_wired(
+        self,
+        monkeypatch,
+    ):
+        monkeypatch.setattr(
+            "gateway.platforms.api_server._load_systemd_api_key_credential",
+            lambda name: "c" * 32 if name == "api-server.key" else "",
+        )
+        monkeypatch.setattr(
+            "gateway.platforms.api_server._load_systemd_api_approval_credential",
+            lambda name: "p" * 32 if name == "api-approval-passkey" else "",
+        )
+
+        adapter = APIServerAdapter(
+            PlatformConfig(
+                enabled=True,
+                extra={
+                    "key_credential": "api-server.key",
+                    "approval_passkey_credential": "api-approval-passkey",
+                },
+            )
+        )
+
+        assert adapter._api_key == "c" * 32
+        assert adapter._approval_passkey == "p" * 32
+
     def test_config_from_env(self, monkeypatch):
         monkeypatch.setenv("API_SERVER_HOST", "10.0.0.1")
         monkeypatch.setenv("API_SERVER_PORT", "7777")
@@ -1039,11 +1078,17 @@ class TestToolsetsEndpoint:
             "hermes_cli.tools_config._toolset_has_keys",
             return_value=True,
         ), patch(
-            "toolsets.resolve_toolset",
+            "model_tools._compute_tool_definitions",
+            return_value=[
+                {"type": "function", "function": {"name": "terminal"}},
+                {"type": "function", "function": {"name": "read_file"}},
+            ],
+        ), patch(
+            "tools.registry.registry.get_toolset_for_tool",
             side_effect=lambda name: {
-                "default": ["terminal", "read_file"],
-                "web": ["web_search"],
-            }[name],
+                "terminal": "default",
+                "read_file": "default",
+            }.get(name),
         ):
             app = _create_app(adapter)
             async with TestClient(TestServer(app)) as cli:
@@ -1056,34 +1101,39 @@ class TestToolsetsEndpoint:
                 assert by_name["default"]["enabled"] is True
                 assert by_name["default"]["tools"] == ["read_file", "terminal"]
                 assert by_name["web"]["enabled"] is False
-                assert by_name["web"]["tools"] == ["web_search"]
+                assert by_name["web"]["tools"] == []
+                assert by_name["web"]["available"] is False
                 assert by_name["default"]["configured"] is True
+                assert [
+                    schema["function"]["name"]
+                    for schema in by_name["default"]["tool_schemas"]
+                ] == ["read_file", "terminal"]
 
     @pytest.mark.asyncio
-    async def test_toolsets_handles_resolution_failure_per_toolset(self, adapter):
-        """If one toolset fails to resolve, others still appear with empty tools."""
+    async def test_toolsets_keeps_unavailable_metadata_groups_empty(self, adapter):
+        """Configured metadata is visible without fabricating unavailable tools."""
         fake_toolsets = [
             ("broken", "Broken", "fails"),
             ("ok", "OK", "works"),
         ]
-
-        def _resolve(name):
-            if name == "broken":
-                raise RuntimeError("nope")
-            return ["some_tool"]
 
         with patch(
             "hermes_cli.tools_config._get_effective_configurable_toolsets",
             return_value=fake_toolsets,
         ), patch(
             "hermes_cli.tools_config._get_platform_tools",
-            return_value=set(),
+            return_value={"ok"},
         ), patch(
             "hermes_cli.tools_config._toolset_has_keys",
             return_value=False,
         ), patch(
-            "toolsets.resolve_toolset",
-            side_effect=_resolve,
+            "model_tools._compute_tool_definitions",
+            return_value=[
+                {"type": "function", "function": {"name": "some_tool"}},
+            ],
+        ), patch(
+            "tools.registry.registry.get_toolset_for_tool",
+            return_value="ok",
         ):
             app = _create_app(adapter)
             async with TestClient(TestServer(app)) as cli:
@@ -1093,6 +1143,59 @@ class TestToolsetsEndpoint:
                 by_name = {ts["name"]: ts for ts in data["data"]}
                 assert by_name["broken"]["tools"] == []
                 assert by_name["ok"]["tools"] == ["some_tool"]
+
+    @pytest.mark.asyncio
+    async def test_toolsets_projects_real_per_tool_check_fn_results(self, adapter):
+        from tools.registry import invalidate_check_fn_cache, registry
+
+        toolset = "api-check-fn-test"
+        visible = "api_check_visible"
+        hidden = "api_check_hidden"
+        schema = {
+            "description": "test",
+            "parameters": {"type": "object", "properties": {}},
+        }
+        registry.register(
+            visible,
+            toolset,
+            schema,
+            lambda **_kwargs: "ok",
+            check_fn=lambda: True,
+        )
+        registry.register(
+            hidden,
+            toolset,
+            schema,
+            lambda **_kwargs: "hidden",
+            check_fn=lambda: False,
+        )
+        invalidate_check_fn_cache()
+        try:
+            with patch(
+                "hermes_cli.tools_config._get_effective_configurable_toolsets",
+                return_value=[(toolset, "Check fn", "availability")],
+            ), patch(
+                "hermes_cli.tools_config._get_platform_tools",
+                return_value={toolset},
+            ), patch(
+                "hermes_cli.tools_config._toolset_has_keys",
+                return_value=True,
+            ):
+                app = _create_app(adapter)
+                async with TestClient(TestServer(app)) as cli:
+                    resp = await cli.get("/v1/toolsets")
+                    assert resp.status == 200
+                    data = await resp.json()
+                    by_name = {ts["name"]: ts for ts in data["data"]}
+                    assert by_name[toolset]["tools"] == [visible]
+                    assert hidden not in {
+                        schema["function"]["name"]
+                        for schema in by_name[toolset]["tool_schemas"]
+                    }
+        finally:
+            registry.deregister(visible)
+            registry.deregister(hidden)
+            invalidate_check_fn_cache()
 
     @pytest.mark.asyncio
     async def test_toolsets_requires_auth_when_key_configured(self, auth_adapter):

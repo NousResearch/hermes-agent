@@ -447,13 +447,229 @@ def test_route_back_blocked_returns_terminal_outcome(monkeypatch):
     [
         {"id": "alex", "mention": "<@1282940574533423125>"},
         {"id": "alex", "mention": "unknown-person-alias"},
-        {"id": "alex", "channel_id": "1504852553031221391"},
         {"channel_id": "public-channel-a", "thread_id": "public-thread-b"},
     ],
 )
 def test_route_back_target_contradictions_require_clarification(target_ref):
     with pytest.raises(ValueError, match="clarify"):
         cbt._resolve_route_back_public_target(target_ref)
+
+
+def test_support_ops_people_resolve_to_their_registered_guild_lanes():
+    from gateway.support_ops_team_registry import TEAM_MEMBERS
+
+    for member in TEAM_MEMBERS:
+        target = cbt._resolve_route_back_public_target(
+            {"target_person": member.key}
+        )
+        assert target["channel_id"] == member.default_channel_id
+        assert target["target_type"] == "guild_channel"
+        assert target["target_kind"] == "member_default_approved_guild_channel"
+        assert target["target_member_key"] == member.key
+        assert target["target_mention"] == member.mention
+
+
+def test_support_ops_member_request_construction_does_not_require_gateway_cache():
+    target = cbt._resolve_route_back_public_target({"target_person": "emil"})
+    assert target["channel_id"] == "1504852355588423801"
+    assert target["guild_id"] == cbt.SKYVISION_GUILD_ID
+
+
+@pytest.mark.parametrize(
+    "channel_id",
+    [
+        "1504852355588423801",
+        "1504852408227069993",
+        "1504852444407140402",
+        "1504852485083496561",
+        "1504852553031221391",
+    ],
+)
+def test_known_private_support_channels_are_approved_guild_targets(channel_id):
+    target = cbt._resolve_route_back_public_target({"channel_id": channel_id})
+    assert target["channel_id"] == channel_id
+    assert target["target_type"] == "guild_channel"
+
+
+def test_exact_future_guild_channel_is_live_edge_authorized_not_registry_denied():
+    target = cbt._resolve_route_back_public_target(
+        {"channel_id": "1599999999999999999"}
+    )
+    assert target["target_kind"] == "exact_guild_acl_channel"
+    assert target["guild_id"] == cbt.SKYVISION_GUILD_ID
+
+
+def test_exact_synthetic_canary_target_preserves_public_edge_type():
+    target = cbt._resolve_route_back_public_target(
+        {
+            "target_type": "public_guild_channel",
+            "guild_id": cbt.SKYVISION_GUILD_ID,
+            "channel_id": cbt.SKYVISION_SYNTHETIC_CANARY_PUBLIC_CHANNEL_ID,
+        }
+    )
+    assert target == {
+        "target_type": "public_guild_channel",
+        "guild_id": cbt.SKYVISION_GUILD_ID,
+        "channel_id": cbt.SKYVISION_SYNTHETIC_CANARY_PUBLIC_CHANNEL_ID,
+        "channel_type": "public_guild_channel",
+        "target_kind": "isolated_synthetic_canary_public_channel",
+        "target_member_key": None,
+        "target_member_id": None,
+        "target_mention": None,
+        "target_lane_key": None,
+    }
+
+
+def test_route_back_execute_carries_exact_canary_public_type_to_writer_and_edge(
+    monkeypatch,
+):
+    captured = []
+    monkeypatch.setattr(cbt, "_existing_route_back_terminal", lambda **_kwargs: {})
+    monkeypatch.setattr(cbt, "_authorize_route_back_execution", lambda **_kwargs: None)
+    monkeypatch.setattr(cbt, "_discord_edge_preconnect", lambda: object())
+
+    def capture_claim(**kwargs):
+        captured.append(kwargs)
+        return json.dumps({"success": False, "error_code": "test_stop"})
+
+    monkeypatch.setattr(cbt, "_record_route_back_execution_intent", capture_claim)
+
+    result = json.loads(cbt.route_back_execute_tool(
+        case_id="case:synthetic-canary-target",
+        target_ref={
+            "target_type": "public_guild_channel",
+            "guild_id": cbt.SKYVISION_GUILD_ID,
+            "channel_id": cbt.SKYVISION_SYNTHETIC_CANARY_PUBLIC_CHANNEL_ID,
+        },
+        message="Synthetic canary outcome",
+        message_summary="synthetic canary route-back",
+        source_refs={"platform": "api_server", "message_id": "canary-source"},
+        idempotency_key="full-canary-routeback:target-shape",
+    ))
+
+    assert result["status"] == "ROUTE_BACK_EXECUTE_INTENT_FAILED"
+    assert len(captured) == 1
+    assert captured[0]["target_ref"]["target_type"] == "public_guild_channel"
+    assert captured[0]["target_ref"]["channel_type"] == "public_guild_channel"
+    assert captured[0]["discord_edge_intent"]["target"] == {
+        "target_type": "public_guild_channel",
+        "guild_id": cbt.SKYVISION_GUILD_ID,
+        "channel_id": cbt.SKYVISION_SYNTHETIC_CANARY_PUBLIC_CHANNEL_ID,
+    }
+
+
+@pytest.mark.parametrize(
+    "target_ref",
+    [
+        {
+            "target_type": "public_guild_channel",
+            "guild_id": cbt.SKYVISION_GUILD_ID,
+            "channel_id": "1599999999999999999",
+        },
+        {
+            "target_type": "public_guild_channel",
+            "guild_id": "1282725267068157973",
+            "channel_id": cbt.SKYVISION_SYNTHETIC_CANARY_PUBLIC_CHANNEL_ID,
+        },
+        {
+            "target_type": "public_guild_thread",
+            "guild_id": cbt.SKYVISION_GUILD_ID,
+            "channel_id": cbt.SKYVISION_SYNTHETIC_CANARY_PUBLIC_CHANNEL_ID,
+            "parent_channel_id": "1504852355588423801",
+        },
+    ],
+)
+def test_public_routeback_shape_is_reserved_for_exact_synthetic_canary(target_ref):
+    with pytest.raises(
+        ValueError,
+        match="isolated canary|non-approved Discord guild",
+    ):
+        cbt._resolve_route_back_public_target(target_ref)
+
+
+def test_call_center_lane_alias_is_booking_ops_not_a_new_channel():
+    target = cbt._resolve_route_back_public_target({"lane": "call-center"})
+    assert target["channel_id"] == "1504852553031221391"
+    assert target["target_lane_key"] == "booking_ops"
+
+
+def test_guild_thread_requires_exact_parent_and_preserves_binding():
+    target = cbt._resolve_route_back_public_target(
+        {
+            "thread_id": "1599999999999999998",
+            "parent_channel_id": "1504852408227069993",
+        }
+    )
+    assert target["target_type"] == "guild_thread"
+    assert target["parent_channel_id"] == "1504852408227069993"
+
+
+def test_canonical_lane_alias_preserves_exact_thread_target(monkeypatch):
+    from gateway.support_ops_team_registry import (
+        ApprovedGuildLane,
+        ApprovedGuildLaneResolution,
+    )
+
+    lane = ApprovedGuildLane(
+        key="canonical:1527000000000000002",
+        channel_id="1527000000000000002",
+        channel_name="july incidents",
+        aliases=("july incidents",),
+        target_type="guild_thread",
+        parent_channel_id="1527000000000000001",
+    )
+    monkeypatch.setattr(
+        cbt,
+        "resolve_approved_guild_lane",
+        lambda value: (
+            ApprovedGuildLaneResolution("resolved", lane=lane)
+            if value == "july incidents"
+            else ApprovedGuildLaneResolution("unknown")
+        ),
+    )
+
+    target = cbt._resolve_route_back_public_target({"lane": "july incidents"})
+
+    assert target == {
+        "target_type": "guild_thread",
+        "guild_id": cbt.SKYVISION_GUILD_ID,
+        "channel_id": "1527000000000000002",
+        "parent_channel_id": "1527000000000000001",
+        "channel_type": "guild_thread",
+        "target_kind": "canonical_guild_lane_thread",
+        "target_member_key": None,
+        "target_member_id": None,
+        "target_mention": None,
+        "target_lane_key": "canonical:1527000000000000002",
+    }
+
+
+def test_canonical_lane_alias_rejects_conflicting_thread_override(monkeypatch):
+    from gateway.support_ops_team_registry import (
+        ApprovedGuildLane,
+        ApprovedGuildLaneResolution,
+    )
+
+    lane = ApprovedGuildLane(
+        key="canonical:1527000000000000002",
+        channel_id="1527000000000000002",
+        channel_name="july incidents",
+        target_type="guild_thread",
+        parent_channel_id="1527000000000000001",
+    )
+    monkeypatch.setattr(
+        cbt,
+        "resolve_approved_guild_lane",
+        lambda _value: ApprovedGuildLaneResolution("resolved", lane=lane),
+    )
+
+    with pytest.raises(ValueError, match="conflicts with the Canonical lane alias"):
+        cbt._resolve_route_back_public_target(
+            {
+                "lane": "july incidents",
+                "thread_id": "1527000000000000009",
+            }
+        )
 
 
 def test_route_back_target_conflict_uses_typed_preclaim_blocker(monkeypatch):
@@ -2262,12 +2478,17 @@ def test_check_requirements_requires_explicit_writer_boundary(monkeypatch, reque
 
 
 def _plan_payload(*, state="active", revision=1, verification_event_ids=None):
+    terminal = state in {"completed", "cancelled"}
     steps = [
         {"id": "orient", "content": "Inspect exact current state", "status": "completed", "depends_on": []},
         {
             "id": "implement",
             "content": "Implement the approved change",
-            "status": "completed" if state == "completed" else "in_progress",
+            "status": (
+                "cancelled"
+                if state == "cancelled"
+                else ("completed" if state == "completed" else "in_progress")
+            ),
             "depends_on": ["orient"],
         },
     ]
@@ -2280,10 +2501,10 @@ def _plan_payload(*, state="active", revision=1, verification_event_ids=None):
             {"id": "tests", "content": "Receipt-backed tests pass"},
         ],
         "steps": steps,
-        "current_step_id": None if state == "completed" else "implement",
+        "current_step_id": None if terminal else "implement",
         "resume_cursor": {
-            "next_step_id": None if state == "completed" else "implement",
-            "summary": "Resume from implementation" if state != "completed" else "No remaining work",
+            "next_step_id": None if terminal else "implement",
+            "summary": "No remaining work" if terminal else "Resume from implementation",
         },
         "attempts": [],
         "decisions": [],
@@ -2292,6 +2513,52 @@ def _plan_payload(*, state="active", revision=1, verification_event_ids=None):
     if verification_event_ids is not None:
         plan["verification_event_ids"] = verification_event_ids
     return {"plan": plan}
+
+
+def test_cancelled_plan_rejects_unfinished_steps_and_live_cursors_predispatch(
+    monkeypatch,
+):
+    called = {"helper": False}
+
+    def boom():
+        called["helper"] = True
+        raise AssertionError("invalid cancelled plan must fail before helper load")
+
+    monkeypatch.setattr(cbt, "_load_helper", boom)
+
+    unfinished = _plan_payload(state="cancelled")
+    unfinished["plan"]["steps"][1]["status"] = "pending"
+    unfinished_result = json.loads(
+        cbt.canonical_event_append_tool(
+            event_type="task.plan.updated",
+            case_id="case:p0",
+            summary="invalid cancelled unfinished plan",
+            source_refs={"platform": "discord", "message_id": "m-cancelled-1"},
+            payload=unfinished,
+        )
+    )
+
+    assert "cancelled plan has non-terminal steps" in unfinished_result["error"]
+    assert unfinished_result["write_may_have_occurred"] is False
+    assert unfinished_result["canonical_dispatch_certainty"] == "proven_pre_dispatch"
+
+    live_cursor = _plan_payload(state="cancelled")
+    live_cursor["plan"]["current_step_id"] = "implement"
+    live_cursor["plan"]["resume_cursor"]["next_step_id"] = "implement"
+    cursor_result = json.loads(
+        cbt.canonical_event_append_tool(
+            event_type="task.plan.updated",
+            case_id="case:p0",
+            summary="invalid cancelled live cursor",
+            source_refs={"platform": "discord", "message_id": "m-cancelled-2"},
+            payload=live_cursor,
+        )
+    )
+
+    assert "cancelled plan must clear" in cursor_result["error"]
+    assert cursor_result["write_may_have_occurred"] is False
+    assert cursor_result["canonical_dispatch_certainty"] == "proven_pre_dispatch"
+    assert called["helper"] is False
 
 
 def test_task_plan_append_is_bounded_model_authored_workspace(monkeypatch):
@@ -3001,7 +3268,69 @@ def test_generic_model_append_excludes_writer_owned_events_before_database(
         ["event_type"]["enum"]
     )
     assert f"event_type_not_allowed:{event_type}" in data["error"]
+    assert data["write_may_have_occurred"] is False
+    assert data["canonical_dispatch_certainty"] == "proven_pre_dispatch"
     assert called["helper"] is False
+
+
+def test_writer_proxy_timeout_after_send_is_explicitly_uncertain(monkeypatch):
+    from gateway.canonical_writer_client import CanonicalWriterClientError
+    from gateway.canonical_writer_protocol import ErrorCode
+
+    def _timeout(*_args, **_kwargs):
+        raise CanonicalWriterClientError(
+            ErrorCode.TIMEOUT,
+            "Canonical writer request timed out.",
+            retryable=True,
+            write_may_have_occurred=True,
+        )
+
+    monkeypatch.setattr(cbt, "_writer_proxy_result", _timeout)
+
+    data = json.loads(
+        cbt.canonical_event_append_tool(
+            event_type="case.note",
+            case_id="case:p0",
+            summary="timeout certainty",
+            source_refs={"platform": "discord", "message_id": "m-timeout"},
+            idempotency_key="timeout:certainty",
+        )
+    )
+
+    assert data["status"] == "CANONICAL_EVENT_APPEND_FAIL"
+    assert data["canonical_error_code"] == "timeout"
+    assert data["write_may_have_occurred"] is True
+    assert data["canonical_dispatch_certainty"] == "may_have_occurred"
+
+
+def test_writer_proxy_rejection_before_send_is_explicitly_pre_dispatch(
+    monkeypatch,
+):
+    from gateway.canonical_writer_client import CanonicalWriterClientError
+    from gateway.canonical_writer_protocol import ErrorCode
+
+    def _reject(*_args, **_kwargs):
+        raise CanonicalWriterClientError(
+            ErrorCode.UNAUTHORIZED_PEER,
+            "Canonical writer server is not authorized.",
+            write_may_have_occurred=False,
+        )
+
+    monkeypatch.setattr(cbt, "_writer_proxy_result", _reject)
+
+    data = json.loads(
+        cbt.canonical_event_append_tool(
+            event_type="case.note",
+            case_id="case:p0",
+            summary="pre-dispatch certainty",
+            source_refs={"platform": "discord", "message_id": "m-reject"},
+            idempotency_key="reject:certainty",
+        )
+    )
+
+    assert data["canonical_error_code"] == "unauthorized_peer"
+    assert data["write_may_have_occurred"] is False
+    assert data["canonical_dispatch_certainty"] == "proven_pre_dispatch"
 
 
 def test_model_supplied_verified_evidence_is_downgraded_to_assertion(monkeypatch):
@@ -3041,6 +3370,61 @@ def test_append_returns_failure_when_readback_is_empty(monkeypatch):
     assert data["success"] is False
     assert data["status"] == "CANONICAL_EVENT_APPEND_READBACK_FAILED"
     assert data["write_may_have_occurred"] is True
+
+
+def test_append_exception_after_insert_dispatch_is_explicitly_uncertain(
+    monkeypatch,
+):
+    class _ReadbackRaises(_FakeHelper):
+        def query(self, sock, sql):
+            result = super().query(sock, sql)
+            if "WHERE event_id =" in sql:
+                raise TimeoutError("readback timeout")
+            return result
+
+    fake = _ReadbackRaises()
+    monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
+
+    data = json.loads(
+        cbt.canonical_event_append_tool(
+            event_type="case.note",
+            case_id="case:p0",
+            summary="readback exception",
+            source_refs={"platform": "discord", "message_id": "m-readback"},
+            idempotency_key="readback:exception",
+        )
+    )
+
+    assert data["status"] == "CANONICAL_EVENT_APPEND_FAIL"
+    assert data["write_may_have_occurred"] is True
+    assert data["canonical_dispatch_certainty"] == "may_have_occurred"
+
+
+def test_unexpected_insert_command_tag_never_proves_no_write(monkeypatch):
+    class _MalformedInsertTag(_FakeHelper):
+        def query(self, sock, sql):
+            result = super().query(sock, sql)
+            if sql.lstrip().upper().startswith("INSERT"):
+                return {"rows": [], "command_tag": "MALFORMED TAG"}
+            return result
+
+    fake = _MalformedInsertTag()
+    monkeypatch.setattr(cbt, "_load_helper", lambda: fake)
+
+    data = json.loads(
+        cbt.canonical_event_append_tool(
+            event_type="case.note",
+            case_id="case:p0",
+            summary="malformed insert tag",
+            source_refs={"platform": "discord", "message_id": "m-tag"},
+            idempotency_key="insert-tag:invalid",
+        )
+    )
+
+    assert data["status"] == "CANONICAL_EVENT_APPEND_FAIL"
+    assert "canonical_event_insert_command_tag_invalid" in data["error"]
+    assert data["write_may_have_occurred"] is True
+    assert data["canonical_dispatch_certainty"] == "may_have_occurred"
 
 
 def test_deduped_append_requires_and_accepts_matching_readback(monkeypatch):

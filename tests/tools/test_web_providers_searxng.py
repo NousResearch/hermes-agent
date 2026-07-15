@@ -313,8 +313,9 @@ class TestCheckWebApiKey:
         )
         assert web_tools.check_web_api_key() is True
 
-    def test_no_credentials_fails(self, monkeypatch):
+    def test_no_credentials_fails(self, monkeypatch, tmp_path):
         from tools import web_tools
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setattr(web_tools, "_load_web_config", lambda: {})
         monkeypatch.delenv("FIRECRAWL_API_KEY", raising=False)
         monkeypatch.delenv("FIRECRAWL_API_URL", raising=False)
@@ -322,9 +323,15 @@ class TestCheckWebApiKey:
         monkeypatch.delenv("TAVILY_API_KEY", raising=False)
         monkeypatch.delenv("EXA_API_KEY", raising=False)
         monkeypatch.delenv("SEARXNG_URL", raising=False)
+        monkeypatch.delenv("BRAVE_SEARCH_API_KEY", raising=False)
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
         monkeypatch.setattr(web_tools, "_is_tool_gateway_ready", lambda: False)
         monkeypatch.setattr(web_tools, "check_firecrawl_api_key", lambda: False)
         monkeypatch.setattr(web_tools, "_ddgs_package_importable", lambda: False)
+        monkeypatch.setattr(
+            "plugins.web.ddgs.provider.DDGSWebSearchProvider.is_available",
+            lambda _self: False,
+        )
         assert web_tools.check_web_api_key() is False
 
 

@@ -2780,11 +2780,18 @@ def select_provider_and_model(args=None):
     )
     from hermes_cli.config import (
         get_compatible_custom_providers,
+        get_config_path,
         load_config,
         get_env_value,
+        refuse_pinned_effective_config_write,
     )
     from hermes_cli.providers import resolve_provider_full
 
+    # Provider selection is a configuration mutation flow and may prompt for
+    # or persist credentials before its final save.  A sealed process must stop
+    # before any of those side effects; reviewed deployment runs out of process
+    # and therefore has no active in-memory pin.
+    refuse_pinned_effective_config_write(get_config_path())
     config = load_config()
     current_model = config.get("model")
     if isinstance(current_model, dict):

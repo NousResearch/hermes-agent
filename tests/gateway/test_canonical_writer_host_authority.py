@@ -239,7 +239,7 @@ def _checks(names):
 
 def _iam_reports():
     foundation = {
-        "schema": "muncho-isolated-canary-foundation-preflight.v2",
+        "schema": "muncho-isolated-canary-foundation-preflight.v3",
         "ok": True,
         "collected_at_unix": NOW - 1,
         "plan_sha256": "1" * 64,
@@ -318,7 +318,12 @@ def test_external_iam_is_exact_fresh_projection_without_gcloud():
     assert receipt.value["roles"] == [
         "roles/logging.logWriter",
         "roles/monitoring.metricWriter",
+        "projects/adventico-ai-platform/roles/munchoCanaryCloudSqlReadinessV1",
     ]
+    assert receipt.value["scopes"] == [
+        "https://www.googleapis.com/auth/cloud-platform"
+    ]
+    assert receipt.value["permissions"][0] == "cloudsql.instances.get"
     receipt.require_fresh(NOW + 300)
     receipt.require_fresh(NOW + 480, minimum_remaining_seconds=720)
     with pytest.raises(ValueError, match="stale"):

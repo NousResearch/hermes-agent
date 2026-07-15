@@ -34,8 +34,6 @@ from typing import Any, Dict, List, Optional
 from agent.tool_result_classification import (
     FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS,
 )
-from tools.threat_patterns import scan_for_threats
-
 logger = logging.getLogger(__name__)
 
 # Tools that must never run concurrently (interactive / user-facing).
@@ -370,7 +368,7 @@ def make_tool_result_message(
     field (required by the wire format and provider adapters) and the internal
     ``tool_name`` field (written to the session DB messages table).
 
-    Content from high-risk tools (``web_extract``, ``web_search``, ``browser_*``,
+    Content from external-source tools (``web_extract``, ``web_search``, ``browser_*``,
     ``mcp_*``) gets wrapped in semantic delimiters telling the model the content
     is untrusted data, not instructions.  This is the architectural defense
     against indirect prompt injection from poisoned web pages, GitHub issues,
@@ -393,13 +391,6 @@ def make_tool_result_message(
         "content": wrapped,
         "tool_call_id": tool_call_id,
     }
-    try:
-        risk_metadata = _tool_output_risk_metadata(name, content)
-    except Exception as exc:
-        logger.debug("Tool output risk scan failed for %s: %s", name, exc)
-    else:
-        if risk_metadata is not None:
-            message["_tool_output_risk"] = risk_metadata
     if effect_disposition is not None:
         message["effect_disposition"] = effect_disposition
     return message
@@ -408,8 +399,8 @@ def make_tool_result_message(
 # Tools whose results carry attacker-controllable content.  Wrapping their
 # string output in ``<untrusted_tool_result>`` delimiters tells the model the
 # payload is data, not instructions — the architectural piece of the
-# promptware defense.  Skipped for short outputs (under 32 chars) where the
-# overhead of the wrapper outweighs any indirect-injection risk.
+# promptware defense. Every textual result from these sources uses the same
+# framing, independent of its wording or length.
 _UNTRUSTED_TOOL_NAMES = frozenset({
     "web_extract",
     "web_search",
@@ -419,8 +410,6 @@ _UNTRUSTED_TOOL_PREFIXES = (
     "browser_",
     "mcp_",
 )
-
-_UNTRUSTED_WRAP_MIN_CHARS = 32
 
 # Matches the delimiter token in any case so attacker content can't forge or
 # prematurely close the boundary with a differently-cased variant the model
@@ -434,42 +423,6 @@ def _is_untrusted_tool(name: Optional[str]) -> bool:
     if name in _UNTRUSTED_TOOL_NAMES:
         return True
     return any(name.startswith(p) for p in _UNTRUSTED_TOOL_PREFIXES)
-
-
-def _tool_output_risk_metadata(name: str, content: Any) -> Optional[Dict[str, Any]]:
-    """Classify textual attacker-controlled output without retaining a copy.
-
-    The advisory metadata is internal-only. It records deterministic finding
-    identifiers, never blocks or redacts the normal result, and deliberately
-    omits raw scanned text.
-    """
-    if not _is_untrusted_tool(name):
-        return None
-    if isinstance(content, str):
-        text_parts = [content]
-    elif isinstance(content, list):
-        text_parts = [
-            item["text"]
-            for item in content
-            if isinstance(item, dict)
-            and item.get("type") == "text"
-            and isinstance(item.get("text"), str)
-        ]
-        if not text_parts:
-            return None
-    else:
-        return None
-
-    findings: List[str] = []
-    for text in text_parts:
-        for finding in scan_for_threats(text, scope="context"):
-            if finding not in findings:
-                findings.append(finding)
-    return {
-        "risk": "high" if findings else "low",
-        "findings": findings,
-        "redacted": False,
-    }
 
 
 def _neutralize_delimiters(content: str) -> str:
@@ -486,7 +439,7 @@ def _neutralize_delimiters(content: str) -> str:
 
 
 def _maybe_wrap_untrusted(name: str, content: Any) -> Any:
-    """Wrap content from high-risk tools in untrusted-data delimiters.
+    """Wrap content from external-source tools in untrusted-data delimiters.
 
     Handles plain string content and multimodal content lists
     (``[{"type": "text", "text": "..."}, {"type": "image_url", ...}]``).
@@ -498,10 +451,8 @@ def _maybe_wrap_untrusted(name: str, content: Any) -> Any:
     identity, so callers must compare by value, not by ``is``.
 
     Returns ``content`` unchanged when:
-    - the tool is not in the high-risk set
+    - the tool is not in the external-source set
     - the content is neither a string nor a list (dict, None, …)
-    - (string) the content is too short to be worth wrapping
-
     Wrapped string content is always neutralized (any embedded delimiter token
     is defanged) and wrapped in exactly one well-formed block. There is no
     "already wrapped" fast-path: such a check is attacker-forgeable — content
@@ -511,8 +462,6 @@ def _maybe_wrap_untrusted(name: str, content: Any) -> Any:
     if not _is_untrusted_tool(name):
         return content
     if isinstance(content, str):
-        if len(content) < _UNTRUSTED_WRAP_MIN_CHARS:
-            return content
         safe_content = _neutralize_delimiters(content)
         return (
             f'<untrusted_tool_result source="{name}">\n'

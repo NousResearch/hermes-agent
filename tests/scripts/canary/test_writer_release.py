@@ -37,8 +37,10 @@ from scripts.canary.writer_release import (
 REVISION = "a" * 40
 UNIT_SPEC = WriterOnlyUnitSpec(database_ip_allow=("10.20.30.40/32",))
 EXPECTED_TRACKED_RELEASE_ARTIFACTS = (
-    "scripts/sql/canonical_writer_canary_bootstrap_v1.sql",
-    "scripts/sql/canonical_writer_canary_bootstrap_retire_v1.sql",
+    "pyproject.toml",
+    "uv.lock",
+    "package.json",
+    "package-lock.json",
     "scripts/sql/canonical_writer_v1.sql",
     "scripts/sql/canonical_writer_foundation_observe_v1.sql",
     "scripts/sql/canonical_writer_foundation_phase_b_preflight_v1.sql",
@@ -80,9 +82,35 @@ def _source(spec: ReleaseBuildSpec) -> None:
     (spec.source_root / "uv.lock").write_text("version = 1\n", encoding="utf-8")
 
 
+def _write_runtime_dependency_entries(spec: ReleaseBuildSpec) -> None:
+    spec.runtime_dependency_module_origin.parent.mkdir(parents=True, exist_ok=True)
+    spec.runtime_dependency_module_origin.write_text(
+        "PACKAGED_RUNTIME_DEPENDENCIES = True\n",
+        encoding="utf-8",
+    )
+    spec.runtime_dependency_module_origin.chmod(0o644)
+    marker = spec.release_root / writer_release.SOURCE_COMMIT_MARKER_RELATIVE_PATH
+    marker.write_text(spec.revision + "\n", encoding="ascii")
+    marker.chmod(0o444)
+    manifest = (
+        spec.release_root
+        / writer_release.RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH
+    )
+    manifest.parent.mkdir(parents=True, exist_ok=True)
+    manifest.write_text("{}\n", encoding="ascii")
+    manifest.chmod(0o444)
+
+
 def _write_required_release_entries(spec: ReleaseBuildSpec) -> None:
     spec.foundation_module_origin.parent.mkdir(parents=True, exist_ok=True)
     spec.foundation_module_origin.write_text("FOUNDATION = True\n", encoding="utf-8")
+    spec.phase_b_foundation_module_origin.write_text(
+        "PHASE_B_FOUNDATION = True\n", encoding="utf-8"
+    )
+    spec.phase_b_runtime_module_origin.write_text(
+        "PHASE_B_RUNTIME = True\n", encoding="utf-8"
+    )
+    _write_runtime_dependency_entries(spec)
     for relative_path in writer_release._TRACKED_RELEASE_ARTIFACTS:
         path = spec.release_root / relative_path
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -176,6 +204,32 @@ def test_release_commands_pin_managed_copied_frozen_noneditable_install(tmp_path
     assert sync_command.argv[sync_command.argv.index("--python") + 1] == str(
         spec.interpreter
     )
+    runtime_install, runtime_verify = writer_release.runtime_dependency_commands(spec)
+    expected_prefix = (
+        str(spec.interpreter),
+        "-B",
+        "-I",
+        "-m",
+        "gateway.production_runtime_dependencies",
+    )
+    assert runtime_install.argv == (
+        *expected_prefix,
+        "install",
+        "--release-root",
+        str(spec.release_root),
+        "--revision",
+        REVISION,
+    )
+    assert runtime_verify.argv == (
+        *expected_prefix,
+        "verify",
+        "--release-root",
+        str(spec.release_root),
+        "--revision",
+        REVISION,
+    )
+    assert runtime_install.cwd == spec.release_root
+    assert runtime_verify.cwd == spec.release_root
     assert sync_command.environment()["UV_PROJECT_ENVIRONMENT"] == str(spec.venv_root)
     assert sync_command.argv[sync_command.argv.index("--project") + 1] == str(
         spec.build_project_root
@@ -976,10 +1030,29 @@ def test_tree_manifest_is_canonical_and_binds_installed_module_origins(tmp_path)
     assert foundation_entry.sha256 == hashlib.sha256(
         spec.foundation_module_origin.read_bytes()
     ).hexdigest()
+    phase_b_runtime_entry = next(
+        entry
+        for entry in first.entries
+        if entry.path
+        == spec.phase_b_runtime_module_origin.relative_to(
+            spec.release_root
+        ).as_posix()
+    )
+    assert phase_b_runtime_entry.sha256 == hashlib.sha256(
+        spec.phase_b_runtime_module_origin.read_bytes()
+    ).hexdigest()
     assert len(first.artifact_sha256) == 64
     assert [entry.path for entry in first.entries] == sorted(
         entry.path for entry in first.entries
     )
+    assert {
+        writer_release.SOURCE_COMMIT_MARKER_RELATIVE_PATH.as_posix(),
+        writer_release.RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH.as_posix(),
+        spec.runtime_dependency_module_origin.relative_to(
+            spec.release_root
+        ).as_posix(),
+        *(path.as_posix() for path in writer_release.RUNTIME_DEPENDENCY_LOCK_RELATIVE_PATHS),
+    } <= {entry.path for entry in first.entries}
     assert writer_release.INCOMPLETE_MARKER_NAME not in {
         entry.path for entry in first.entries
     }
@@ -1035,6 +1108,13 @@ def test_sealed_release_carries_every_exact_manifest_bound_writer_sql_artifact(
     spec.writer_module_origin.write_text("WRITER = True\n", encoding="utf-8")
     spec.gateway_module_origin.write_text("GATEWAY = True\n", encoding="utf-8")
     spec.foundation_module_origin.write_text("FOUNDATION = True\n", encoding="utf-8")
+    spec.phase_b_foundation_module_origin.write_text(
+        "PHASE_B_FOUNDATION = True\n", encoding="utf-8"
+    )
+    spec.phase_b_runtime_module_origin.write_text(
+        "PHASE_B_RUNTIME = True\n", encoding="utf-8"
+    )
+    _write_runtime_dependency_entries(spec)
     writer_release._seal_release_tree(spec.release_root)
     manifest = create_release_manifest(spec)
 
@@ -1059,6 +1139,48 @@ def test_sealed_release_carries_every_exact_manifest_bound_writer_sql_artifact(
         assert expected_path.read_bytes() == raw
         assert stat.S_IMODE(os.lstat(expected_path).st_mode) == 0o444
     assert installed_manifest["artifact_sha256"] == manifest.artifact_sha256
+
+
+def test_source_marker_and_runtime_manifest_are_exact_and_cache_free(
+    tmp_path,
+    monkeypatch,
+):
+    spec = _spec(tmp_path)
+    spec.release_root.mkdir(parents=True)
+    _allow_local_materialization_owner(monkeypatch)
+    monkeypatch.setattr(writer_release.os, "fchown", lambda *_args: None)
+
+    marker = writer_release._write_source_commit_marker(spec)
+    runtime_manifest = (
+        spec.release_root
+        / writer_release.RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH
+    )
+    runtime_manifest.parent.mkdir(parents=True)
+    runtime_manifest.write_text("{}\n", encoding="ascii")
+    runtime_manifest.chmod(0o444)
+
+    writer_release._validate_runtime_dependency_outputs(spec)
+    assert marker.read_bytes() == (REVISION + "\n").encode("ascii")
+    assert stat.S_IMODE(marker.stat().st_mode) == 0o444
+
+    cache = (
+        spec.release_root
+        / writer_release.RUNTIME_DEPENDENCY_NPM_CACHE_RELATIVE_PATH
+    )
+    cache.mkdir()
+    with pytest.raises(RuntimeError, match="disposable dependency cache"):
+        writer_release._validate_runtime_dependency_outputs(spec)
+
+
+def test_source_commit_marker_is_create_only(tmp_path, monkeypatch):
+    spec = _spec(tmp_path)
+    spec.release_root.mkdir(parents=True)
+    _allow_local_materialization_owner(monkeypatch)
+    monkeypatch.setattr(writer_release.os, "fchown", lambda *_args: None)
+
+    writer_release._write_source_commit_marker(spec)
+    with pytest.raises(FileExistsError):
+        writer_release._write_source_commit_marker(spec)
 
 
 def test_tracked_sql_copy_fails_on_missing_and_does_not_discover_untracked_files(
@@ -1151,8 +1273,13 @@ def test_installed_runtime_requires_copied_venv_and_no_dynamic_site_path(tmp_pat
         module_path.parent.mkdir(parents=True, exist_ok=True)
         module_path.write_text("PACKAGED = True\n", encoding="utf-8")
         module_path.chmod(0o644)
+    _write_runtime_dependency_entries(spec)
     spec.foundation_module_origin.write_text("PACKAGED = True\n", encoding="utf-8")
     spec.foundation_module_origin.chmod(0o644)
+    spec.phase_b_runtime_module_origin.write_text(
+        "PACKAGED = True\n", encoding="utf-8"
+    )
+    spec.phase_b_runtime_module_origin.chmod(0o644)
     (spec.venv_root / "pyvenv.cfg").write_text(
         "home = " + str(managed.parent) + "\n"
         "include-system-site-packages = false\n"
@@ -1197,8 +1324,13 @@ def test_installed_runtime_requires_exact_packaged_discord_edge_modules(
         module_path.write_text("PACKAGED = True\n", encoding="utf-8")
         module_path.chmod(0o644)
         module_paths.append(module_path)
+    _write_runtime_dependency_entries(spec)
     spec.foundation_module_origin.write_text("PACKAGED = True\n", encoding="utf-8")
     spec.foundation_module_origin.chmod(0o644)
+    spec.phase_b_runtime_module_origin.write_text(
+        "PACKAGED = True\n", encoding="utf-8"
+    )
+    spec.phase_b_runtime_module_origin.chmod(0o644)
     target = module_paths[0]
     if mutation == "missing":
         target.unlink()
@@ -1239,6 +1371,7 @@ def test_installed_runtime_requires_packaged_canonical_writer_foundation(
         module_path.parent.mkdir(parents=True, exist_ok=True)
         module_path.write_text("PACKAGED = True\n", encoding="utf-8")
         module_path.chmod(0o644)
+    _write_runtime_dependency_entries(spec)
     foundation = spec.foundation_module_origin
     foundation.write_text("PACKAGED = True\n", encoding="utf-8")
     foundation.chmod(0o644)
@@ -1382,6 +1515,9 @@ def test_hardened_writer_only_units_pin_identity_config_and_readiness():
         "socket_client_group": "muncho-writer-client",
         "writer_runtime": "/run/muncho-canonical-writer",
         "writer_runtime_mode": "2750",
+        "phase_b_readiness_unit": (
+            "muncho-canonical-writer-phase-b-readiness.service"
+        ),
         "database_ip_allow": "10.20.30.40/32",
         "exporter_unit": "muncho-canonical-writer-export.service",
         "projection_export_path": (
@@ -1389,7 +1525,17 @@ def test_hardened_writer_only_units_pin_identity_config_and_readiness():
         ),
         "projection_export_limit": "200000",
     }
-    assert bundle.schema == "muncho-writer-only-systemd-bundle.v2"
+    assert bundle.schema == "muncho-writer-only-systemd-bundle.v3"
+    assert "Type=oneshot" in bundle.phase_b_readiness_service
+    assert "User=root" in bundle.phase_b_readiness_service
+    assert "RemainAfterExit=yes" in bundle.phase_b_readiness_service
+    assert "CapabilityBoundingSet=CAP_DAC_READ_SEARCH" in (
+        bundle.phase_b_readiness_service
+    )
+    assert (
+        "Requires=muncho-canonical-writer-phase-b-readiness.service"
+        in bundle.writer_service
+    )
     assert "Type=oneshot" in bundle.exporter_service
     assert "[Install]" not in bundle.exporter_service
     assert ".timer" not in bundle.exporter_service

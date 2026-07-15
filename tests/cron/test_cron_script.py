@@ -171,6 +171,91 @@ class TestRunJobScript:
         assert success is True
         assert output == "ABSENT"
 
+    @pytest.mark.parametrize(
+        (
+            "last_run_at",
+            "last_delivery_status",
+            "last_delivery_confirmed_at",
+            "last_delivery_error",
+            "expected_status",
+        ),
+        [
+            (None, "none", None, None, "none"),
+            (
+                "2026-07-14T03:00:00+00:00",
+                "confirmed",
+                "2026-07-14T03:00:00+00:00",
+                None,
+                "confirmed",
+            ),
+            (
+                "2026-07-14T03:00:00+00:00",
+                "unconfirmed",
+                None,
+                None,
+                "failed",
+            ),
+            (
+                "2026-07-14T03:00:00+00:00",
+                "failed",
+                None,
+                "adapter failed",
+                "failed",
+            ),
+            # Absence of an error and an unbound/legacy status are not a receipt.
+            (
+                "2026-07-14T03:00:00+00:00",
+                None,
+                None,
+                None,
+                "none",
+            ),
+            (
+                "2026-07-14T03:00:00+00:00",
+                "confirmed",
+                "2026-07-14T00:00:00+00:00",
+                None,
+                "none",
+            ),
+        ],
+    )
+    def test_script_receives_only_mechanical_previous_delivery_observation(
+        self,
+        cron_env,
+        monkeypatch,
+        last_run_at,
+        last_delivery_status,
+        last_delivery_confirmed_at,
+        last_delivery_error,
+        expected_status,
+    ):
+        from cron.scheduler import _run_job_script
+
+        monkeypatch.setenv("HERMES_CRON_PREVIOUS_RUN_AT", "forged")
+        monkeypatch.setenv("HERMES_CRON_PREVIOUS_DELIVERY", "forged")
+        script = cron_env / "scripts" / "receipt_probe.py"
+        script.write_text(
+            "import json, os\n"
+            "print(json.dumps({\n"
+            "  'run_at': os.environ.get('HERMES_CRON_PREVIOUS_RUN_AT'),\n"
+            "  'delivery': os.environ.get('HERMES_CRON_PREVIOUS_DELIVERY'),\n"
+            "}))\n"
+        )
+        job = {
+            "last_run_at": last_run_at,
+            "last_delivery_status": last_delivery_status,
+            "last_delivery_confirmed_at": last_delivery_confirmed_at,
+            "last_delivery_error": last_delivery_error,
+        }
+
+        success, output = _run_job_script("receipt_probe.py", job=job)
+
+        assert success is True
+        observed = json.loads(output)
+        assert observed["run_at"] == last_run_at
+        assert observed["delivery"] == expected_status
+        assert "adapter failed" not in output
+
     def test_script_empty_output(self, cron_env):
         from cron.scheduler import _run_job_script
 

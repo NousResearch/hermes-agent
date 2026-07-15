@@ -1,10 +1,14 @@
-"""Cache-safe Canonical Task Workspace recovery for interrupted gateway runs.
+"""Cache-safe Canonical Task Workspace recovery at session boundaries.
 
-This module runs only at a restart/resume boundary and only inside the gateway
-worker thread.  It never mutates the system prompt, classifies user text, or
-chooses among ambiguous cases.  Exact structured state is prepended to the
-current replayable user-turn snapshot and, for one unambiguous active plan, mechanically
-hydrates an empty TodoStore.
+This module runs only inside the gateway worker thread.  It never mutates the
+system prompt, classifies user text, or chooses among ambiguous cases.  Exact
+structured state is prepended to the current replayable user-turn snapshot.
+At involuntary/fresh boundaries, one unambiguous execution-active plan may
+mechanically hydrate an empty TodoStore.  A blocked plan is surfaced without
+reactivation so GPT can evaluate new evidence.  An explicit ``/new`` is
+different: it always preserves the user's fresh-conversation choice and
+merely presents exact linked unfinished-plan candidates for GPT/the user to
+continue, supersede, or leave behind.
 """
 
 from __future__ import annotations
@@ -23,6 +27,19 @@ MAX_ACTIVE_CANDIDATES = 3
 MAX_RESUME_NOTE_CHARS = 14_000
 MAX_RECOVERY_SECONDS = 15.0
 
+BOUNDARY_RESTART_RESUME = "restart_resume"
+BOUNDARY_INVOLUNTARY_RESET = "involuntary_reset"
+BOUNDARY_FRESH_SESSION = "fresh_session"
+BOUNDARY_EXPLICIT_NEW = "explicit_new"
+_BOUNDARIES = frozenset(
+    {
+        BOUNDARY_RESTART_RESUME,
+        BOUNDARY_INVOLUNTARY_RESET,
+        BOUNDARY_FRESH_SESSION,
+        BOUNDARY_EXPLICIT_NEW,
+    }
+)
+
 _EXACT_NOTE_PREFIX = (
     "[Canonical Task Workspace — exact restart resume]\n"
     "The durable model-authored plan below is linked exactly to this Discord thread. "
@@ -32,6 +49,131 @@ _EXACT_NOTE_PREFIX = (
     "message follows, GPT decides whether it changes or supersedes this plan. Historical "
     "approval receipts are audit evidence only and do not restore dangerous authority.\n"
 )
+
+_INVOLUNTARY_EXACT_NOTE_PREFIX = (
+    "[Canonical Task Workspace — exact involuntary-session recovery]\n"
+    "The local conversation was reset by an involuntary runtime boundary, but the "
+    "durable model-authored plan below remains linked exactly to this Discord thread. "
+    "Continue from its resume_cursor/next unverified step. Do not blindly replay old "
+    "tool calls; re-check live external state when needed, do not repeat completed "
+    "steps, and persist a new task.plan.updated snapshot after meaningful progress. "
+    "If a new user message follows, GPT decides whether it changes or supersedes this "
+    "plan. Historical approval receipts are audit evidence only and do not restore "
+    "dangerous authority.\n"
+)
+
+_FRESH_EXACT_NOTE_PREFIX = (
+    "[Canonical Task Workspace — exact fresh-session recovery]\n"
+    "The durable model-authored plan below remains active and is linked exactly to this "
+    "Discord thread, while the local conversation session is fresh. Continue from its "
+    "resume_cursor/next unverified step. Do not blindly replay old tool calls; re-check "
+    "live external state when needed, do not repeat completed steps, and persist a new "
+    "task.plan.updated snapshot after meaningful progress. GPT decides whether the "
+    "current user message changes or supersedes this plan. Historical approval receipts "
+    "are audit evidence only and do not restore dangerous authority.\n"
+)
+
+_EXPLICIT_NEW_CHOICE_PREFIX = (
+    "[Canonical Task Workspace — explicit-new unfinished-plan choices]\n"
+    "The user explicitly opened a new conversation. Runtime has not selected or "
+    "hydrated any prior plan. The exact active or blocked plan candidates below "
+    "remain linked "
+    "to this Discord thread only as choices. Treat the current user turn as fresh: "
+    "GPT must surface the applicable continue, supersede, or keep-new choice to the "
+    "user, unless the current user turn itself already makes that choice explicit. "
+    "Never continue a candidate merely because it is the only one, never select by "
+    "keywords, and never treat historical approval receipts as current authority.\n"
+)
+
+_BLOCKED_PLAN_NOTE_PREFIX = (
+    "[Canonical Task Workspace — exact blocked-plan recovery]\n"
+    "The durable model-authored plan below is linked exactly to this Discord thread "
+    "and records a blocker contract. Runtime has not assumed that the blocker cleared, "
+    "selected a workaround, hydrated executable local state, or restored historical "
+    "approval authority. GPT must inspect the exact blocker/resume_when contract and the "
+    "current user turn, re-check live read-only evidence when useful, and decide whether "
+    "to author a new active plan revision and continue. If the blocker still applies, "
+    "exhaust safe alternatives and ask only for the exact missing input or authority.\n"
+)
+
+
+def _exact_note_prefix(boundary: str) -> str:
+    if boundary == BOUNDARY_INVOLUNTARY_RESET:
+        return _INVOLUNTARY_EXACT_NOTE_PREFIX
+    if boundary == BOUNDARY_FRESH_SESSION:
+        return _FRESH_EXACT_NOTE_PREFIX
+    return _EXACT_NOTE_PREFIX
+
+
+def resolve_task_workspace_boundary(
+    *,
+    is_new_session: bool,
+    was_auto_reset: bool,
+    was_fresh_reset: bool,
+    fresh_reset_reason: str | None,
+) -> str | None:
+    """Resolve one exact session-lifecycle boundary without reading user text.
+
+    Unknown manual-reset reasons fail safe to ``explicit_new``: they may expose
+    candidates but can never silently resume a plan.  Compression exhaustion is
+    the sole ``reset_session`` reason that mechanically proves an involuntary
+    boundary today.
+    """
+
+    if was_auto_reset:
+        return BOUNDARY_INVOLUNTARY_RESET
+    if was_fresh_reset:
+        if str(fresh_reset_reason or "") == "compression_exhaustion":
+            return BOUNDARY_INVOLUNTARY_RESET
+        return BOUNDARY_EXPLICIT_NEW
+    if is_new_session:
+        return BOUNDARY_FRESH_SESSION
+    return None
+
+
+def attach_task_workspace_snapshot_to_user_turn(
+    message: str,
+    note: str,
+    *,
+    existing_provenance: Any = None,
+) -> tuple[str, str, bool]:
+    """Attach one exact snapshot and return API/persistence-identical text.
+
+    Idempotency requires an exact internal provenance binding; authored text
+    alone can never prove that a runtime snapshot is already attached.
+    Persisting precisely what the API sees keeps the next turn's cached history
+    prefix byte-stable.
+    """
+
+    message = str(message or "")
+    note = str(note or "")
+    if not note:
+        return message, message, False
+    from agent.message_provenance import (
+        CANONICAL_WORKSPACE_NOTE_KIND,
+        MESSAGE_PROVENANCE_KEY,
+        message_fragment_is_bound,
+        neutralize_untrusted_canonical_workspace_markers,
+    )
+
+    already_bound = message_fragment_is_bound(
+        {MESSAGE_PROVENANCE_KEY: existing_provenance},
+        kind=CANONICAL_WORKSPACE_NOTE_KIND,
+        exact_text=note,
+    )
+    if already_bound and (
+        message == note or message.startswith(note + "\n\n")
+    ):
+        return message, message, False
+    message = str(
+        neutralize_untrusted_canonical_workspace_markers(
+            message,
+            existing_provenance,
+        )
+        or ""
+    )
+    combined = note + ("\n\n" + message if message else "")
+    return combined, combined, True
 
 
 def _dict(value: Any) -> dict[str, Any]:
@@ -132,7 +274,8 @@ def _bounded_json_note(
         "truncated": True,
         "query_instruction": (
             "Use canonical_brain_query with the exact current Discord thread and "
-            "view=summary; then inspect an exact case_id with view=resume_bundle."
+            "view=workspace_candidates; then inspect an exact case_id with "
+            "view=resume_bundle."
         ),
     }
     note = prefix + json.dumps(emergency, ensure_ascii=False, sort_keys=True)
@@ -200,7 +343,7 @@ def _candidate_case_ids(
     result, error = _query(
         deadline=deadline,
         thread_id=thread_id,
-        view="summary",
+        view="workspace_candidates",
         limit=80,
     )
     if error:
@@ -210,9 +353,11 @@ def _candidate_case_ids(
         case_id = str(_dict(case).get("case_id") or "").strip()
         if case_id and case_id not in case_ids:
             case_ids.append(case_id)
-        if len(case_ids) >= MAX_DISCOVERY_CASES:
-            break
-    return case_ids, bool(result.get("candidate_cases_truncated")), None
+    truncated = bool(
+        result.get("candidate_cases_truncated")
+        or len(case_ids) > MAX_DISCOVERY_CASES
+    )
+    return case_ids[:MAX_DISCOVERY_CASES], truncated, None
 
 
 def _resume_case(
@@ -244,10 +389,23 @@ def _resume_case(
     return case, None
 
 
-def _active_plan(case: Mapping[str, Any]) -> dict[str, Any]:
+def _recoverable_plan(case: Mapping[str, Any]) -> dict[str, Any]:
+    """Return exact non-terminal plan state without interpreting task prose.
+
+    ``blocked`` is intentionally recoverable but never executable: its exact
+    blocker contract must remain visible on the next user turn so GPT can
+    decide whether new evidence clears it.  Runtime must not silently hydrate
+    or reactivate it.
+    """
     workspace = _dict(case.get("workspace"))
     plan = _dict(workspace.get("plan"))
-    if plan.get("state") != "active":
+    state = plan.get("state")
+    if state == "blocked":
+        blocker = _dict(plan.get("blocker"))
+        if blocker.get("reason") and blocker.get("resume_when"):
+            return plan
+        return {}
+    if state != "active":
         return {}
     steps = plan.get("steps")
     if not isinstance(steps, list) or not any(
@@ -306,6 +464,72 @@ def _local_todo_summary(items: list[Mapping[str, Any]]) -> dict[str, Any]:
         "truncated": len(items) > len(compact),
         "sha256": _sha256(items),
     }
+
+
+def _recovered_todo_binding(
+    case: Mapping[str, Any],
+    plan: Mapping[str, Any],
+    canonical_items: list[dict[str, str]],
+) -> dict[str, Any]:
+    """Build one exact binding without mutating the live TodoStore.
+
+    Recovery is a Canonical readback, so the same public TodoStore validator
+    used by normal checkpoints can prove that the recovered item snapshot is
+    already normalized and checksum-bind it to the exact case/plan/event.  A
+    throwaway store keeps malformed recovery metadata from creating a window
+    in which executable local todos exist without their Canonical binding.
+    """
+
+    from tools.todo_tool import TodoStore
+
+    verifier = TodoStore()
+    normalized = verifier.write(canonical_items)
+    if normalized != canonical_items:
+        raise ValueError("recovered canonical todos are not normalized")
+    return verifier.bind_canonical_workspace(
+        case_id=str(case.get("case_id") or ""),
+        plan_id=str(plan.get("plan_id") or ""),
+        plan_revision=plan.get("revision"),
+        plan_state=str(plan.get("state") or ""),
+        plan_event_id=str(
+            _dict(case.get("workspace")).get("plan_event_id") or ""
+        ),
+        # Historical query projections expose the exact event and plan body,
+        # but not the append response's content digest. Empty is an explicit
+        # supported value for this recovery-only field; the event id and exact
+        # workspace Todo digest remain mandatory.
+        canonical_content_sha256="",
+        workspace_todos_sha256=_sha256(plan.get("steps") or []),
+        items=canonical_items,
+    )
+
+
+def _discard_local_todos_after_binding_failure(todo_store: Any) -> bool:
+    """Remove any executable local copy after a failed Canonical bind.
+
+    ``install_verified_canonical_snapshot`` clears items and all binding/sync
+    metadata atomically on the real runtime store.  The write fallback keeps
+    small test/adaptor stores fail-closed as well.  The caller reports whether
+    the empty state was read back exactly instead of assuming cleanup worked.
+    """
+
+    try:
+        installer = getattr(
+            todo_store,
+            "install_verified_canonical_snapshot",
+            None,
+        )
+        if callable(installer):
+            installer([], binding=None)
+        else:
+            todo_store.write([])
+        items, error = _local_todo_items(todo_store)
+        if error or items:
+            return False
+        binding_reader = getattr(todo_store, "canonical_binding_state", None)
+        return not callable(binding_reader) or binding_reader() is None
+    except Exception:
+        return False
 
 
 def _compact_step(step: Mapping[str, Any], *, content_chars: int) -> tuple[dict[str, Any], bool]:
@@ -381,6 +605,7 @@ def _minimal_plan_steps(plan: Mapping[str, Any]) -> tuple[list[dict[str, Any]], 
 def _bounded_exact_note(
     case: Mapping[str, Any],
     *,
+    boundary: str,
     todo_hydrated: bool,
     local_todo_state: str,
 ) -> str:
@@ -426,7 +651,18 @@ def _bounded_exact_note(
         max_items=12,
         max_text=700,
     )
-    truncated = truncated or cursor_truncated or action_truncated
+    plan_blocker, plan_blocker_truncated = _compact_value(
+        _dict(plan.get("blocker")),
+        depth=2,
+        max_items=12,
+        max_text=900,
+    )
+    truncated = (
+        truncated
+        or cursor_truncated
+        or action_truncated
+        or plan_blocker_truncated
+    )
     case_id, case_id_truncated = _bounded_text(case.get("case_id"), 240)
     plan_id, plan_id_truncated = _bounded_text(plan.get("plan_id"), 180)
     objective, objective_truncated = _bounded_text(plan.get("objective"), 1800)
@@ -470,6 +706,7 @@ def _bounded_exact_note(
             "state": plan.get("state"),
             "current_step_id": current_step_id,
             "resume_cursor": resume_cursor,
+            "blocker": plan_blocker,
             "success_criteria": compact_criteria,
             "steps": compact_steps,
         },
@@ -502,6 +739,12 @@ def _bounded_exact_note(
             "state": plan.get("state"),
             "current_step_id": current_step_id,
             "resume_cursor": minimal_cursor,
+            "blocker": _compact_value(
+                _dict(plan.get("blocker")),
+                depth=1,
+                max_items=8,
+                max_text=350,
+            )[0],
             "success_criterion_ids": [
                 _bounded_text(item.get("id"), 160)[0]
                 for item in raw_criteria[:12]
@@ -528,8 +771,13 @@ def _bounded_exact_note(
         ),
         "omitted_remaining_steps": minimal_steps_truncated,
     }
+    prefix = (
+        _BLOCKED_PLAN_NOTE_PREFIX
+        if plan.get("state") == "blocked"
+        else _exact_note_prefix(boundary)
+    )
     return _bounded_json_note(
-        _EXACT_NOTE_PREFIX,
+        prefix,
         [detailed, minimal],
         emergency_reason="exact_resume_payload_exceeded_safe_bound",
     )
@@ -543,18 +791,26 @@ def _compact_candidate(case: Mapping[str, Any]) -> dict[str, Any]:
         "case_id_sha256": _sha256(case.get("case_id")),
         "plan_id": _bounded_text(plan.get("plan_id"), 180)[0],
         "revision": plan.get("revision"),
+        "state": plan.get("state"),
         "objective": _bounded_text(plan.get("objective"), 500)[0],
         "current_step_id": _bounded_text(plan.get("current_step_id"), 180)[0],
         "resume_cursor": {
             "next_step_id": _bounded_text(cursor.get("next_step_id"), 180)[0],
             "summary": _bounded_text(cursor.get("summary"), 500)[0],
         },
+        "blocker": _compact_value(
+            _dict(plan.get("blocker")),
+            depth=1,
+            max_items=8,
+            max_text=350,
+        )[0],
     }
 
 
 def _bounded_ambiguous_note(
     cases: list[Mapping[str, Any]],
     *,
+    boundary: str,
     reasons: list[str] | None = None,
     unresolved_case_ids: list[str] | None = None,
     local_todo: list[Mapping[str, Any]] | None = None,
@@ -563,20 +819,40 @@ def _bounded_ambiguous_note(
     unresolved_case_ids = list(dict.fromkeys(
         str(case_id) for case_id in (unresolved_case_ids or []) if case_id
     ))
-    state = "incomplete" if reasons or unresolved_case_ids else "ambiguous"
+    state = (
+        "incomplete"
+        if reasons or unresolved_case_ids
+        else "choice"
+        if boundary == BOUNDARY_EXPLICIT_NEW
+        else "ambiguous"
+    )
     if state == "incomplete":
-        prefix = (
-            "[Canonical Task Workspace — incomplete restart resume]\n"
-            "The exact thread lookup could not prove one complete, unambiguous active plan. "
-            "Runtime has not selected or hydrated a plan. GPT must inspect the structured "
-            "state, retry exact Canonical Brain reads when appropriate, and report a focused "
-            "blocker or ask only if the intended case remains genuinely ambiguous. Do not "
-            "select by keywords or replay old tool calls blindly.\n"
-        )
+        if boundary == BOUNDARY_EXPLICIT_NEW:
+            prefix = (
+                "[Canonical Task Workspace — incomplete explicit-new choices]\n"
+                "The user explicitly opened a new conversation, but the exact thread "
+                "lookup could not fully enumerate its unfinished-plan choices. Runtime has "
+                "not selected, continued, or hydrated any plan. GPT must surface the "
+                "loaded exact candidates as provisional choices, retry exact Canonical "
+                "Brain reads when appropriate, and report the focused discovery blocker. "
+                "Never select by keywords or treat a lone loaded candidate as complete.\n"
+            )
+        else:
+            boundary_name = boundary.replace("_", "-")
+            prefix = (
+                f"[Canonical Task Workspace — incomplete {boundary_name} recovery]\n"
+                "The exact thread lookup could not prove one complete, unambiguous unfinished "
+                "plan. Runtime has not selected or hydrated a plan. GPT must inspect the "
+                "structured state, retry exact Canonical Brain reads when appropriate, and "
+                "report a focused blocker or ask only if the intended case remains genuinely "
+                "ambiguous. Do not select by keywords or replay old tool calls blindly.\n"
+            )
+    elif state == "choice":
+        prefix = _EXPLICIT_NEW_CHOICE_PREFIX
     else:
         prefix = (
-            "[Canonical Task Workspace — ambiguous restart resume]\n"
-            "Several active plans are exactly linked to this thread. Runtime has not selected "
+            f"[Canonical Task Workspace — ambiguous {boundary.replace('_', '-')} recovery]\n"
+            "Several active or blocked plans are exactly linked to this thread. Runtime has not selected "
             "or hydrated one. GPT must inspect the structured candidates, use "
             "canonical_brain_query with an exact case_id when needed, and ask only if the "
             "intended case remains genuinely ambiguous. Do not select by keywords or replay "
@@ -622,8 +898,8 @@ def _bounded_ambiguous_note(
         "todo_hydrated": False,
         "truncated": True,
         "query_instruction": (
-            "Retry canonical_brain_query for the exact current Discord thread before "
-            "selecting or hydrating a task plan."
+            "Retry canonical_brain_query with view=workspace_candidates for the exact "
+            "current Discord thread before selecting or hydrating a task plan."
         ),
     }
     return _bounded_json_note(
@@ -639,9 +915,12 @@ def prepare_task_workspace_resume(
     session_key: str,
     todo_store: Any,
     hydrate_local_state: bool = True,
+    boundary: str = BOUNDARY_RESTART_RESUME,
 ) -> dict[str, Any]:
-    """Return a replayable user-turn snapshot and mechanically restored local state."""
+    """Return a replayable user-turn snapshot and any permitted local restoration."""
     del session_key  # authority comes from contextvars, never this caller string
+    if boundary not in _BOUNDARIES:
+        raise ValueError(f"unsupported Canonical Task Workspace boundary: {boundary!r}")
     thread_id = str(thread_id or "").strip()
     if not thread_id:
         return {"status": "none", "note": ""}
@@ -655,7 +934,11 @@ def prepare_task_workspace_resume(
         return {
             "status": "incomplete",
             "reason": discovery_error,
-            "note": _bounded_ambiguous_note([], reasons=[discovery_error]),
+            "note": _bounded_ambiguous_note(
+                [],
+                boundary=boundary,
+                reasons=[discovery_error],
+            ),
             "candidate_case_ids": [],
             "unresolved_case_ids": [],
             "todo_hydrated": False,
@@ -682,7 +965,7 @@ def prepare_task_workspace_resume(
                 )
                 break
             continue
-        if _active_plan(case):
+        if _recoverable_plan(case):
             candidates.append(case)
 
     if len(candidate_case_ids) > MAX_DISCOVERY_CASES:
@@ -697,6 +980,7 @@ def prepare_task_workspace_resume(
             "reason": reasons[0] if reasons else "candidate_resume_unresolved",
             "note": _bounded_ambiguous_note(
                 candidates,
+                boundary=boundary,
                 reasons=reasons,
                 unresolved_case_ids=unresolved_case_ids,
             ),
@@ -706,9 +990,41 @@ def prepare_task_workspace_resume(
             "todo_hydrated": False,
         }
 
+    # ``/new`` is an explicit conversation boundary, not a recovery command.
+    # Even one exact unfinished plan is only a choice. Return before touching the
+    # local TodoStore so stale local state can neither select nor hydrate it.
+    if boundary == BOUNDARY_EXPLICIT_NEW:
+        if candidates:
+            return {
+                "status": "choice",
+                "note": _bounded_ambiguous_note(
+                    candidates,
+                    boundary=boundary,
+                ),
+                "candidate_case_ids": [case.get("case_id") for case in candidates],
+                "todo_hydrated": False,
+            }
+        return {"status": "none", "note": ""}
+
     if len(candidates) == 1:
         case = candidates[0]
-        plan = _active_plan(case)
+        plan = _recoverable_plan(case)
+        if plan.get("state") == "blocked":
+            return {
+                "status": "blocked",
+                "case_id": case.get("case_id"),
+                "plan_id": plan.get("plan_id"),
+                "plan_revision": plan.get("revision"),
+                "plan_event_id": _dict(case.get("workspace")).get("plan_event_id"),
+                "note": _bounded_exact_note(
+                    case,
+                    boundary=boundary,
+                    todo_hydrated=False,
+                    local_todo_state="preserved_blocked_plan",
+                ),
+                "todo_hydrated": False,
+                "local_todo_state": "preserved_blocked_plan",
+            }
         canonical_items = _canonical_todo_items(plan)
         local_items, local_error = _local_todo_items(todo_store)
         if local_error:
@@ -718,6 +1034,7 @@ def prepare_task_workspace_resume(
                 "case_id": case.get("case_id"),
                 "note": _bounded_ambiguous_note(
                     [case],
+                    boundary=boundary,
                     reasons=[local_error],
                 ),
                 "candidate_case_ids": [case.get("case_id")],
@@ -730,6 +1047,7 @@ def prepare_task_workspace_resume(
                 "case_id": case.get("case_id"),
                 "note": _bounded_ambiguous_note(
                     [case],
+                    boundary=boundary,
                     reasons=["local_state_conflict"],
                     local_todo=local_items,
                 ),
@@ -740,31 +1058,68 @@ def prepare_task_workspace_resume(
 
         todo_hydrated = False
         local_todo_state = "exact_match" if local_items else "empty"
-        if not local_items and hydrate_local_state:
+        if not local_items and not hydrate_local_state:
+            local_todo_state = "empty_not_hydrated"
+        else:
             try:
-                todo_store.write(canonical_items)
-                todo_hydrated = True
-                local_todo_state = "hydrated_from_canonical"
+                binding = _recovered_todo_binding(
+                    case,
+                    plan,
+                    canonical_items,
+                )
+                installer = getattr(
+                    todo_store,
+                    "install_verified_canonical_snapshot",
+                    None,
+                )
+                if not callable(installer):
+                    raise TypeError(
+                        "TodoStore cannot atomically install a Canonical binding"
+                    )
+                installer(canonical_items, binding=binding)
+                if not local_items:
+                    todo_hydrated = True
+                    local_todo_state = "hydrated_from_canonical"
             except Exception:
+                fail_closed = _discard_local_todos_after_binding_failure(
+                    todo_store
+                )
+                reason = (
+                    "canonical_todo_binding_failed"
+                    if fail_closed
+                    else "canonical_todo_binding_failed_state_unknown"
+                )
                 return {
                     "status": "incomplete",
-                    "reason": "local_todo_hydration_failed",
+                    "reason": reason,
                     "case_id": case.get("case_id"),
                     "note": _bounded_ambiguous_note(
                         [case],
-                        reasons=["local_todo_hydration_failed"],
+                        boundary=boundary,
+                        reasons=[reason],
                     ),
                     "candidate_case_ids": [case.get("case_id")],
                     "todo_hydrated": False,
+                    "local_todo_state": (
+                        "cleared_after_binding_failure"
+                        if fail_closed
+                        else "binding_failure_state_unknown"
+                    ),
                 }
-        elif not local_items:
-            local_todo_state = "empty_not_hydrated"
 
         return {
             "status": "exact",
             "case_id": case.get("case_id"),
+            # Expose only the exact structural plan binding.  Runtime safety
+            # boundaries (for example owner-approval escalation) may need to
+            # bind a receipt to the same model-authored plan without parsing
+            # the human-facing recovery note or inspecting task prose.
+            "plan_id": plan.get("plan_id"),
+            "plan_revision": plan.get("revision"),
+            "plan_event_id": _dict(case.get("workspace")).get("plan_event_id"),
             "note": _bounded_exact_note(
                 case,
+                boundary=boundary,
                 todo_hydrated=todo_hydrated,
                 local_todo_state=local_todo_state,
             ),
@@ -774,11 +1129,19 @@ def prepare_task_workspace_resume(
     if len(candidates) > 1:
         return {
             "status": "ambiguous",
-            "note": _bounded_ambiguous_note(candidates),
+            "note": _bounded_ambiguous_note(candidates, boundary=boundary),
             "candidate_case_ids": [case.get("case_id") for case in candidates],
             "todo_hydrated": False,
         }
     return {"status": "none", "note": ""}
 
 
-__all__ = ["prepare_task_workspace_resume"]
+__all__ = [
+    "BOUNDARY_EXPLICIT_NEW",
+    "BOUNDARY_FRESH_SESSION",
+    "BOUNDARY_INVOLUNTARY_RESET",
+    "BOUNDARY_RESTART_RESUME",
+    "attach_task_workspace_snapshot_to_user_turn",
+    "prepare_task_workspace_resume",
+    "resolve_task_workspace_boundary",
+]

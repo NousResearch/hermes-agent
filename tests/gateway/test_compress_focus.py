@@ -49,12 +49,14 @@ def _make_runner(history: list[dict[str, str]]):
         chat_type="dm",
     )
     runner.session_store = MagicMock()
+    runner.session_store.get_model_override.return_value = None
     runner.session_store.get_or_create_session.return_value = session_entry
     runner.session_store.load_transcript.return_value = history
     runner.session_store.rewrite_transcript = MagicMock()
     runner.session_store.update_session = MagicMock()
     runner.session_store._save = MagicMock()
     runner._session_db = None
+    runner._session_model_overrides = {}
     return runner
 
 

@@ -1,17 +1,26 @@
 from __future__ import annotations
 
 import copy
+import base64
+import hashlib
 import json
 import os
 import sys
+import threading
+import time
+import struct
+import tempfile
 from dataclasses import replace
 from pathlib import Path
 from typing import Any, Mapping
 
 import pytest
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 from gateway import canonical_writer_foundation as foundation
 from gateway import canonical_writer_foundation_phase_b as phase_b
+from gateway import canonical_writer_phase_b_runtime as phase_b_runtime
 
 
 pytestmark = pytest.mark.skipif(
@@ -25,10 +34,73 @@ OWNER = "b" * 64
 TLS_PEER = "c" * 64
 NOW = 2_000_000_000
 ROLE_PAYLOAD = b"-- sealed phase-b role fixture\n"
+OWNER_SIGNING_KEY = Ed25519PrivateKey.from_private_bytes(b"\x19" * 32)
+OWNER_PUBLIC_RAW = OWNER_SIGNING_KEY.public_key().public_bytes(
+    serialization.Encoding.Raw,
+    serialization.PublicFormat.Raw,
+)
+OWNER_PUBLIC_FILE_SHA256 = "9" * 64
+
+
+def _ssh_string(value: bytes) -> bytes:
+    return struct.pack(">I", len(value)) + value
+
+
+def _sshsig(message: bytes, namespace: str) -> str:
+    algorithm = b"ssh-ed25519"
+    namespace_bytes = namespace.encode("ascii")
+    signed = (
+        b"SSHSIG"
+        + _ssh_string(namespace_bytes)
+        + _ssh_string(b"")
+        + _ssh_string(b"sha512")
+        + _ssh_string(hashlib.sha512(message).digest())
+    )
+    signature = OWNER_SIGNING_KEY.sign(signed)
+    public_blob = _ssh_string(algorithm) + _ssh_string(OWNER_PUBLIC_RAW)
+    signature_blob = _ssh_string(algorithm) + _ssh_string(signature)
+    envelope = (
+        b"SSHSIG"
+        + struct.pack(">I", 1)
+        + _ssh_string(public_blob)
+        + _ssh_string(namespace_bytes)
+        + _ssh_string(b"")
+        + _ssh_string(b"sha512")
+        + _ssh_string(signature_blob)
+    )
+    body = base64.b64encode(envelope).decode("ascii")
+    lines = [body[index : index + 70] for index in range(0, len(body), 70)]
+    return (
+        "-----BEGIN SSH SIGNATURE-----\n"
+        + "\n".join(lines)
+        + "\n-----END SSH SIGNATURE-----\n"
+    )
 
 
 def _hashed(value: Mapping[str, Any], field: str) -> dict[str, Any]:
     return {**value, field: phase_b._sha256_json(value)}
+
+
+def _rewrite_journal_entries(
+    journal: phase_b.AppendOnlyPhaseBJournal,
+    plan: phase_b.PhaseBPlan,
+    values: list[dict[str, Any]],
+) -> None:
+    entries_root = journal._entries_root(plan)
+    for path in entries_root.iterdir():
+        path.unlink()
+    previous: str | None = None
+    for sequence, value in enumerate(values):
+        value["sequence"] = sequence
+        value["previous_entry_sha256"] = previous
+        unsigned = {
+            name: item for name, item in value.items() if name != "entry_sha256"
+        }
+        value["entry_sha256"] = phase_b._sha256_json(unsigned)
+        previous = value["entry_sha256"]
+        path = entries_root / f"{sequence:08d}.json"
+        path.write_bytes(phase_b._canonical_bytes(value))
+        path.chmod(0o600)
 
 
 def _pg_hashed(value: Mapping[str, Any]) -> dict[str, Any]:
@@ -64,6 +136,15 @@ def _pg_hashed(value: Mapping[str, Any]) -> dict[str, Any]:
         **unsigned,
         "unsigned_receipt_jsonb_text": unsigned_text,
         "receipt_sha256": phase_b._sha256_bytes(unsigned_text.encode("utf-8")),
+    }
+
+
+def _pg_role_envelope(value: Mapping[str, Any]) -> dict[str, Any]:
+    normalized = _pg_hashed(value)
+    unsigned_text = normalized.pop("unsigned_receipt_jsonb_text")
+    return {
+        "unsigned_receipt_jsonb_text": unsigned_text,
+        "receipt": normalized,
     }
 
 
@@ -737,7 +818,10 @@ def _credential() -> dict[str, Any]:
     }
 
 
-def _services(observed_at: int = NOW) -> dict[str, Any]:
+def _services(
+    observed_at: int = NOW,
+    release_revision: str = REVISION,
+) -> dict[str, Any]:
     rows = []
     for name in phase_b.SERVICE_UNITS:
         rows.append(
@@ -757,7 +841,7 @@ def _services(observed_at: int = NOW) -> dict[str, Any]:
         )
     unsigned = {
         "schema": "muncho-canonical-writer-phase-b-services-stopped.v1",
-        "release_revision": REVISION,
+        "release_revision": release_revision,
         "services": rows,
         "services_stopped_and_disabled": True,
         "observed_at_unix": observed_at,
@@ -779,6 +863,71 @@ def _database(session_sha: str) -> dict[str, Any]:
         "session_user": foundation.SQL_USER,
         "current_user": foundation.SQL_USER,
         "session_identity_sha256": session_sha,
+    }
+
+
+def _cloud_user_resource(
+    name: str,
+    *,
+    database_roles: list[str],
+    etag: str,
+) -> dict[str, Any]:
+    return {
+        "databaseRoles": database_roles,
+        "etag": etag,
+        "host": "",
+        "instance": foundation.SQL_INSTANCE,
+        "name": name,
+        "project": foundation.PROJECT,
+        "type": "BUILT_IN",
+    }
+
+
+def _terminal_user_inventory(
+    bootstrap_resource: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    resources = [
+        copy.deepcopy(dict(bootstrap_resource)),
+        _cloud_user_resource(
+            foundation.SQL_USER,
+            database_roles=[],
+            etag="etag-writer",
+        ),
+        _cloud_user_resource(
+            "postgres",
+            database_roles=[],
+            etag="etag-postgres",
+        ),
+    ]
+    return sorted(resources, key=lambda item: item["name"])
+
+
+def _readiness_host_identity(observed_at_unix: int) -> dict[str, Any]:
+    gce = {
+        "project_id": phase_b.DEDICATED_CANARY_PROJECT_ID,
+        "project_number": phase_b.DEDICATED_CANARY_PROJECT_NUMBER,
+        "zone": phase_b.DEDICATED_CANARY_ZONE,
+        "instance_name": phase_b.DEDICATED_CANARY_INSTANCE_NAME,
+        "instance_id": phase_b.DEDICATED_CANARY_INSTANCE_ID,
+        "service_account_email": phase_b.DEDICATED_CANARY_SERVICE_ACCOUNT,
+    }
+    unsigned = {
+        "schema": phase_b.FULL_CANARY_HOST_IDENTITY_SCHEMA,
+        "collector_authority": "trusted_root_read_only_host_collector",
+        **gce,
+        "gce_identity_sha256": phase_b._sha256_json(gce),
+        "machine_id_sha256": "1" * 64,
+        "hostname_sha256": "2" * 64,
+        "host_identity_sha256": "3" * 64,
+        "boot_id_sha256": "4" * 64,
+        "observed_at_unix": observed_at_unix,
+    }
+    scopes = list(phase_b.PHASE_B_VM_OAUTH_SCOPES)
+    return {
+        **unsigned,
+        "receipt_sha256": phase_b._sha256_json(unsigned),
+        "oauth_scopes": scopes,
+        "oauth_scopes_sha256": phase_b._sha256_json(scopes),
     }
 
 
@@ -815,21 +964,130 @@ def _preflight(session_sha: str = "e" * 64) -> phase_b.PhaseBPreflight:
 
 
 def _plan() -> phase_b.PhaseBPlan:
-    return phase_b.build_phase_b_plan(_preflight(), owner_subject_sha256=OWNER)
+    return phase_b.build_phase_b_plan(
+        _preflight(),
+        owner_subject_sha256=OWNER,
+        owner_resume_public_key_ed25519_hex=OWNER_PUBLIC_RAW.hex(),
+        owner_resume_public_key_file_sha256=OWNER_PUBLIC_FILE_SHA256,
+    )
+
+
+def _signed_approval(
+    plan: phase_b.PhaseBPlan,
+    *,
+    sequence: int,
+    previous_approval_sha256: str | None,
+    issued_at_unix: int,
+    expires_at_unix: int,
+    source_authentication_sha256: str,
+) -> dict[str, Any]:
+    unsigned = {
+        "schema": phase_b.PHASE_B_APPROVAL_SCHEMA,
+        "purpose": "initial_apply" if sequence == 0 else "resume_incomplete",
+        "sequence": sequence,
+        "previous_approval_sha256": previous_approval_sha256,
+        "plan_sha256": plan.sha256,
+        "intent_sha256": plan.value["intent_sha256"],
+        "owner_subject_sha256": OWNER,
+        "approval_source_sha256": "5" * 64,
+        "owner_public_key_ed25519_hex": OWNER_PUBLIC_RAW.hex(),
+        "owner_key_id": hashlib.sha256(OWNER_PUBLIC_RAW).hexdigest(),
+        "owner_public_key_file_sha256": OWNER_PUBLIC_FILE_SHA256,
+        "source_authentication_sha256": source_authentication_sha256,
+        "approved": True,
+        "issued_at_unix": issued_at_unix,
+        "expires_at_unix": expires_at_unix,
+        "secret_material_recorded": False,
+    }
+    signed = {
+        **unsigned,
+        "signature_sshsig": _sshsig(
+            phase_b._canonical_bytes(unsigned),
+            phase_b.PHASE_B_APPROVAL_SSHSIG_NAMESPACE,
+        ),
+    }
+    return _hashed(signed, "approval_sha256")
+
+
+def _signed_source_authentication(
+    plan: phase_b.PhaseBPlan,
+    *,
+    sequence: int,
+    previous_approval_sha256: str | None,
+    issued_at_unix: int,
+    expires_at_unix: int,
+    nonce_sha256: str,
+) -> dict[str, Any]:
+    unsigned = {
+        "schema": phase_b.PHASE_B_SOURCE_AUTH_SCHEMA,
+        "authority_kind": "skyvision_mac_ops_ed25519",
+        "purpose": "initial_apply" if sequence == 0 else "resume_incomplete",
+        "sequence": sequence,
+        "previous_approval_sha256": previous_approval_sha256,
+        "plan_sha256": plan.sha256,
+        "intent_sha256": plan.value["intent_sha256"],
+        "owner_subject_sha256": plan.owner_subject_sha256,
+        "approval_source_sha256": "5" * 64,
+        "owner_key_id": hashlib.sha256(OWNER_PUBLIC_RAW).hexdigest(),
+        "requested_at_unix": issued_at_unix,
+        "expires_at_unix": expires_at_unix,
+        "nonce_sha256": nonce_sha256,
+    }
+    signed = {
+        **unsigned,
+        "signature_sshsig": _sshsig(
+            phase_b._canonical_bytes(unsigned),
+            phase_b.PHASE_B_SOURCE_AUTH_SSHSIG_NAMESPACE,
+        ),
+    }
+    return _hashed(signed, "receipt_sha256")
+
+
+def _signed_approval_pair(
+    plan: phase_b.PhaseBPlan,
+    *,
+    sequence: int,
+    previous_approval_sha256: str | None,
+    issued_at_unix: int,
+    expires_at_unix: int,
+    nonce_sha256: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    source = _signed_source_authentication(
+        plan,
+        sequence=sequence,
+        previous_approval_sha256=previous_approval_sha256,
+        issued_at_unix=issued_at_unix,
+        expires_at_unix=expires_at_unix,
+        nonce_sha256=nonce_sha256,
+    )
+    approval = _signed_approval(
+        plan,
+        sequence=sequence,
+        previous_approval_sha256=previous_approval_sha256,
+        issued_at_unix=issued_at_unix,
+        expires_at_unix=expires_at_unix,
+        source_authentication_sha256=source["receipt_sha256"],
+    )
+    return source, approval
 
 
 def _approval(plan: phase_b.PhaseBPlan) -> dict[str, Any]:
-    unsigned = {
-        "schema": phase_b.PHASE_B_APPROVAL_SCHEMA,
-        "plan_sha256": plan.sha256,
-        "owner_subject_sha256": OWNER,
-        "approval_source_sha256": "5" * 64,
-        "approved": True,
-        "issued_at_unix": NOW - 1,
-        "expires_at_unix": NOW + 300,
-        "secret_material_recorded": False,
-    }
-    return _hashed(unsigned, "approval_sha256")
+    return _signed_approval(
+        plan,
+        sequence=0,
+        previous_approval_sha256=None,
+        issued_at_unix=NOW - 1,
+        expires_at_unix=NOW + 300,
+        source_authentication_sha256="6" * 64,
+    )
+
+
+def _approved(plan: phase_b.PhaseBPlan) -> phase_b.PhaseBApproval:
+    return phase_b.PhaseBApproval.from_mapping(
+        _approval(plan),
+        plan=plan,
+        now_unix=NOW,
+    )
 
 
 def test_plan_is_deterministic_and_derives_fixed_admin() -> None:
@@ -889,6 +1147,7 @@ def test_journal_requires_lock_and_never_allows_early_terminal(tmp_path: Path) -
     with pytest.raises(phase_b.PhaseBError, match="lock_required"):
         journal.append(
             plan,
+            approval=_approved(plan),
             event="intent",
             idempotency_key="intent",
             evidence={"safe_to_start": False},
@@ -897,6 +1156,7 @@ def test_journal_requires_lock_and_never_allows_early_terminal(tmp_path: Path) -
     with journal.lock(plan):
         journal.append(
             plan,
+            approval=_approved(plan),
             event="intent",
             idempotency_key="intent",
             evidence={"safe_to_start": False},
@@ -905,6 +1165,7 @@ def test_journal_requires_lock_and_never_allows_early_terminal(tmp_path: Path) -
         with pytest.raises(phase_b.PhaseBError, match="prerequisite"):
             journal.append(
                 plan,
+                approval=_approved(plan),
                 event="terminal",
                 idempotency_key="terminal",
                 evidence={"safe_to_start": True},
@@ -922,6 +1183,7 @@ def test_journal_rejects_secret_fields_symlink_lock_and_wrong_owner(
         with pytest.raises(phase_b.PhaseBError, match="secret_free"):
             journal.append(
                 plan,
+                approval=_approved(plan),
                 event="intent",
                 idempotency_key="intent",
                 evidence={"password": "not-allowed"},
@@ -929,8 +1191,10 @@ def test_journal_rejects_secret_fields_symlink_lock_and_wrong_owner(
             )
 
     other = phase_b.AppendOnlyPhaseBJournal(tmp_path / "other")
-    other._ensure_directory(other.root)
-    other._ensure_directory(other._plan_root(plan))
+    other.root.mkdir(mode=0o700)
+    other._plan_root(plan).mkdir(mode=0o700)
+    os.chown(other.root, -1, os.getegid())
+    os.chown(other._plan_root(plan), -1, os.getegid())
     target = tmp_path / "target"
     target.write_text("", encoding="utf-8")
     os.chmod(target, 0o600)
@@ -943,6 +1207,154 @@ def test_journal_rejects_secret_fields_symlink_lock_and_wrong_owner(
     monkeypatch.setattr(phase_b, "_effective_uid", lambda: current_uid + 1)
     with pytest.raises(phase_b.PhaseBError, match="directory_untrusted"):
         journal.load(plan)
+
+
+def test_main_journal_recovers_partial_stage_after_write_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _plan()
+    journal = phase_b.AppendOnlyPhaseBJournal(tmp_path / "journal")
+    evidence = {"safe_to_start": False}
+    original_write = phase_b.os.write
+    writes = 0
+
+    def partial_then_crash(descriptor: int, payload: bytes) -> int:
+        nonlocal writes
+        writes += 1
+        if writes == 1:
+            return original_write(
+                descriptor,
+                payload[: max(1, len(payload) // 2)],
+            )
+        raise OSError("injected partial stage crash")
+
+    monkeypatch.setattr(phase_b.os, "write", partial_then_crash)
+    with pytest.raises(phase_b.PhaseBError, match="journal_write_failed"):
+        with journal.lock(plan):
+            journal.append(
+                plan,
+                approval=_approved(plan),
+                event="intent",
+                idempotency_key="intent",
+                evidence=evidence,
+                now_unix=NOW,
+            )
+    stages = list(journal._staging_root(plan).iterdir())
+    assert len(stages) == 1
+    assert stages[0].stat().st_nlink == 1
+    assert list(journal._entries_root(plan).iterdir()) == []
+
+    monkeypatch.setattr(phase_b.os, "write", original_write)
+    with journal.lock(plan):
+        recovered = journal.append(
+            plan,
+            approval=_approved(plan),
+            event="intent",
+            idempotency_key="intent",
+            evidence=evidence,
+            now_unix=NOW,
+        )
+    assert recovered.value["sequence"] == 0
+    assert list(journal._staging_root(plan).iterdir()) == []
+    assert [entry.event for entry in journal.load(plan)] == ["intent"]
+
+
+def test_main_journal_recovers_linked_stage_after_publish_fsync_crash(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _plan()
+    journal = phase_b.AppendOnlyPhaseBJournal(tmp_path / "journal")
+    evidence = {"safe_to_start": False}
+    original_link = phase_b.os.link
+    original_fsync = phase_b.os.fsync
+    linked = False
+    failed = False
+
+    def recording_link(*args: Any, **kwargs: Any) -> None:
+        nonlocal linked
+        original_link(*args, **kwargs)
+        linked = True
+
+    def fail_first_post_link_fsync(descriptor: int) -> None:
+        nonlocal failed
+        if linked and not failed:
+            failed = True
+            raise OSError("injected linked publication crash")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(phase_b.os, "link", recording_link)
+    monkeypatch.setattr(phase_b.os, "fsync", fail_first_post_link_fsync)
+    with pytest.raises(phase_b.PhaseBError, match="publish_failed"):
+        with journal.lock(plan):
+            journal.append(
+                plan,
+                approval=_approved(plan),
+                event="intent",
+                idempotency_key="intent",
+                evidence=evidence,
+                now_unix=NOW,
+            )
+    stage = next(journal._staging_root(plan).iterdir())
+    final = next(journal._entries_root(plan).iterdir())
+    assert stage.stat().st_nlink == final.stat().st_nlink == 2
+
+    monkeypatch.setattr(phase_b.os, "link", original_link)
+    monkeypatch.setattr(phase_b.os, "fsync", original_fsync)
+    with journal.lock(plan):
+        recovered = journal.append(
+            plan,
+            approval=_approved(plan),
+            event="intent",
+            idempotency_key="intent",
+            evidence=evidence,
+            now_unix=NOW,
+        )
+    assert recovered.value["sequence"] == 0
+    assert list(journal._staging_root(plan).iterdir()) == []
+    assert final.stat().st_nlink == 1
+
+
+def test_main_journal_retries_parent_fsync_after_created_directory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _plan()
+    journal = phase_b.AppendOnlyPhaseBJournal(tmp_path / "journal")
+    original_fsync = phase_b.os.fsync
+    parent_status = journal.root.parent.stat()
+    failed = False
+
+    def fail_parent_once(descriptor: int) -> None:
+        nonlocal failed
+        status = os.fstat(descriptor)
+        if (
+            not failed
+            and (status.st_dev, status.st_ino)
+            == (parent_status.st_dev, parent_status.st_ino)
+        ):
+            failed = True
+            raise OSError("injected parent fsync failure")
+        original_fsync(descriptor)
+
+    monkeypatch.setattr(phase_b.os, "fsync", fail_parent_once)
+    with pytest.raises(phase_b.PhaseBError, match="journal_unavailable"):
+        with journal.lock(plan):
+            pass
+    assert journal.root.is_dir()
+
+    with journal.lock(plan):
+        journal.append(
+            plan,
+            approval=_approved(plan),
+            event="intent",
+            idempotency_key="intent",
+            evidence={"safe_to_start": False},
+            now_unix=NOW,
+        )
+    assert failed is True
+    assert [entry.event for entry in journal.load(plan)] == ["intent"]
 
 
 def _foundation_observation(
@@ -1046,6 +1458,7 @@ class _State:
         self.bootstrap_resource: dict[str, Any] | None = None
         self.temp_operation = 0
         self.bootstrap_operation = 0
+        self.bootstrap_operation_row: list[Any] | None = None
         self.writer_session = 0
         self.pristine_collections = 0
         self.recovery_collections = 0
@@ -1110,7 +1523,7 @@ class _AdminSession:
                 "inherit_option": False,
                 "set_option": False,
             }
-        return {
+        return _pg_role_envelope({
             "schema": phase_b.PHASE_B_ROLE_RECEIPT_SCHEMA,
             "phase": "phase_b_role_and_connect",
             "preterminal": True,
@@ -1145,8 +1558,7 @@ class _AdminSession:
             "initial_observation_sha256": self.plan.preflight.sha256,
             "approved_plan_sha256": self.plan.sha256,
             "secret_material_recorded": False,
-            "receipt_sha256": "6" * 64,
-        }
+        })
 
 
 class _TemporaryAdmin:
@@ -1168,9 +1580,8 @@ class _TemporaryAdmin:
         self.owner = expected_owner_subject_sha256
         self.context = expected_mutation_context_sha256
 
-    def create_or_rotate_recovery(self, username: str, password: str) -> None:
+    def create_or_rotate_recovery(self, username: str) -> bytearray:
         assert username == self.plan.temporary_admin_username
-        assert password == "S" * 64
         operation_type = "UPDATE_USER" if self.state.temp_admin else "CREATE_USER"
         self.state.temp_admin = True
         self.state.temp_operation += 1
@@ -1187,6 +1598,9 @@ class _TemporaryAdmin:
             self.ambiguous = True
             raise RuntimeError("ambiguous_admin")
         self.ambiguous = False
+        secret = bytearray(b"S" * 64)
+        self.state.secrets.append(secret)
+        return secret
 
     def mutation_reconciliation_required(self) -> bool:
         return self.ambiguous
@@ -1266,13 +1680,19 @@ class _BootstrapLogin:
     def describe(self) -> Mapping[str, Any] | None:
         return copy.deepcopy(self.state.bootstrap_resource)
 
-    def create_or_rotate_recovery(self, provisional_password: str) -> None:
-        assert provisional_password == "S" * 64
+    def create_or_rotate_recovery(self) -> bytearray:
         self.operation_type = "UPDATE_USER" if self.state.bootstrap else "CREATE_USER"
         self.state.bootstrap = True
         self.state.bootstrap_disabled = False
         self.state.bootstrap_operation += 1
         self.operation_name = f"bootstrap-{self.state.bootstrap_operation}"
+        self.state.bootstrap_operation_row = [
+            self.operation_name,
+            self.operation_type,
+            "DONE",
+            OWNER,
+            True,
+        ]
         self.state.bootstrap_resource = {
             "databaseRoles": [foundation.CANARY_BOOTSTRAP_ROLE],
             "etag": "etag-stable",
@@ -1288,6 +1708,9 @@ class _BootstrapLogin:
             self.ambiguous = True
             raise RuntimeError("ambiguous_bootstrap")
         self.ambiguous = False
+        secret = bytearray(b"S" * 64)
+        self.state.secrets.append(secret)
+        return secret
 
     def mutation_reconciliation_required(self) -> bool:
         return self.ambiguous
@@ -1495,6 +1918,15 @@ def _dependencies(state: _State, plan: phase_b.PhaseBPlan) -> phase_b.PhaseBDepe
         state.trip("terminal_observation")
         raw = _database_preflight(bootstrap_role=True, bootstrap_login=True)
         projection = phase_b._database_preflight_projection(raw)
+        assert state.bootstrap_operation_row is not None
+        inventory = _terminal_user_inventory(resource)
+        operations = sorted(
+            [
+                *copy.deepcopy(absence["terminal_user_operations"]),
+                copy.deepcopy(state.bootstrap_operation_row),
+            ],
+            key=lambda row: row[0],
+        )
         unsigned = {
             "schema": phase_b.PHASE_B_TERMINAL_OBSERVATION_SCHEMA,
             "plan_sha256": plan.sha256,
@@ -1523,29 +1955,28 @@ def _dependencies(state: _State, plan: phase_b.PhaseBPlan) -> phase_b.PhaseBDepe
                 "temporary_admin_username_sha256": phase_b._sha256_bytes(
                     plan.temporary_admin_username.encode("ascii")
                 ),
+                "user_inventory": inventory,
+                "user_inventory_sha256": phase_b._sha256_json(inventory),
                 "user_operations_quiescent": True,
-                "operation_ledger_sha256": absence["evidence_sha256"],
+                "relevant_user_operations": operations,
+                "operation_ledger_sha256": phase_b._sha256_json(operations),
+                "observed_at_unix": NOW,
             },
-            "services": _services(NOW + state.writer_session),
-            "observed_at_unix": NOW + state.writer_session,
+            "services": _services(NOW),
+            "observed_at_unix": NOW,
         }
         return _hashed(unsigned, "observation_sha256")
 
     def services(_plan_value: phase_b.PhaseBPlan, transition: str) -> Mapping[str, Any]:
         state.services += 1
         state.calls.append("services:" + transition)
-        return _services(NOW + state.services)
+        return _services(NOW)
 
     def temporary_admin_factory(
         _plan_value: phase_b.PhaseBPlan,
     ) -> _TemporaryAdmin:
         state.trip("temporary_admin_factory")
         return _TemporaryAdmin(state, plan)
-
-    def secret() -> bytearray:
-        value = bytearray(b"S" * 64)
-        state.secrets.append(value)
-        return value
 
     return phase_b.PhaseBDependencies(
         writer_session_factory=writer_factory,
@@ -1559,7 +1990,6 @@ def _dependencies(state: _State, plan: phase_b.PhaseBPlan) -> phase_b.PhaseBDepe
         predelete_collector=predelete,
         terminal_collector=terminal,
         services_collector=services,
-        secret_factory=secret,
     )
 
 
@@ -1607,7 +2037,8 @@ def test_bootstrap_authority_rejects_forged_resource_and_cloud_identity(
     state = _State()
     plan = _plan()
     login = _BootstrapLogin(state, plan)
-    login.create_or_rotate_recovery("S" * 64)
+    secret = login.create_or_rotate_recovery()
+    phase_b._zeroize(secret)
     forged = copy.deepcopy(dict(login.authority_receipt()))
     forged[field] = value
     if field == "etag":
@@ -1710,6 +2141,8 @@ def test_executor_reaches_terminal_only_after_two_admin_authorities(
         "role_mutation",
         "services:bootstrap_login_authority",
         "bootstrap_create_user",
+        "services:bootstrap_login_rotation_authority",
+        "bootstrap_update_user",
         "hba_read",
         "services:bootstrap_password_self_disable",
         "bootstrap_self_disable",
@@ -1758,6 +2191,320 @@ def test_executor_crash_replay_is_fail_closed_and_eventually_terminal(
     )
     assert receipt["safe_to_start"] is True
     assert journal.load(plan)[-1].event == "terminal"
+
+
+def test_expired_incomplete_generation_resumes_only_with_next_signed_head(
+    tmp_path: Path,
+) -> None:
+    state = _State("role")
+    plan = _plan()
+    journal = phase_b.AppendOnlyPhaseBJournal(tmp_path / "journal")
+    initial = _signed_approval(
+        plan,
+        sequence=0,
+        previous_approval_sha256=None,
+        issued_at_unix=NOW - 1,
+        expires_at_unix=NOW + 1,
+        source_authentication_sha256="1" * 64,
+    )
+    with pytest.raises(RuntimeError, match="injected_role"):
+        phase_b.execute_approved_phase_b(
+            plan,
+            approval=[initial],
+            role_artifact=_artifact(plan, tmp_path),
+            journal=journal,
+            dependencies=_dependencies(state, plan),
+            _clock=lambda: NOW,
+        )
+    before = [entry.sha256 for entry in journal.load(plan)]
+    calls_before = list(state.calls)
+    with pytest.raises(phase_b.PhaseBError, match="approval_invalid"):
+        phase_b.execute_approved_phase_b(
+            plan,
+            approval=[initial],
+            role_artifact=_artifact(plan, tmp_path),
+            journal=journal,
+            dependencies=_dependencies(state, plan),
+            _clock=lambda: NOW + 2,
+        )
+    assert [entry.sha256 for entry in journal.load(plan)] == before
+    assert state.calls == calls_before
+
+    resumed = _signed_approval(
+        plan,
+        sequence=1,
+        previous_approval_sha256=initial["approval_sha256"],
+        issued_at_unix=NOW + 2,
+        expires_at_unix=NOW + 250,
+        source_authentication_sha256="2" * 64,
+    )
+    receipt = phase_b.execute_approved_phase_b(
+        plan,
+        approval=[initial, resumed],
+        role_artifact=_artifact(plan, tmp_path),
+        journal=journal,
+        dependencies=_dependencies(state, plan),
+        _clock=lambda: NOW + 2,
+    )
+    entries = journal.load(plan)
+    assert receipt["approval_sha256"] == resumed["approval_sha256"]
+    assert all(
+        entry.value["approval_sha256"] == initial["approval_sha256"]
+        for entry in entries[: len(before)]
+    )
+    assert all(
+        entry.value["approval_sha256"] == resumed["approval_sha256"]
+        for entry in entries[len(before) :]
+    )
+    durable = phase_b.load_durable_phase_b_foundation(
+        plan,
+        approval=[initial, resumed],
+        journal=journal,
+    )
+    assert durable.generation["approval_sequence"] == 1
+    assert durable.generation["approval_chain_sha256"] == phase_b._sha256_json(
+        [initial, resumed]
+    )
+
+
+@pytest.mark.parametrize("mutation", ["old_head", "missing_link", "fork", "source"])
+def test_resume_approval_chain_rejects_rollback_fork_and_divergence(
+    mutation: str,
+) -> None:
+    plan = _plan()
+    initial = _approval(plan)
+    resumed = _signed_approval(
+        plan,
+        sequence=1,
+        previous_approval_sha256=initial["approval_sha256"],
+        issued_at_unix=NOW + 301,
+        expires_at_unix=NOW + 500,
+        source_authentication_sha256="2" * 64,
+    )
+    candidate = copy.deepcopy(resumed)
+    if mutation == "old_head":
+        values = [resumed]
+    else:
+        if mutation == "missing_link":
+            candidate["sequence"] = 2
+        elif mutation == "fork":
+            candidate["previous_approval_sha256"] = "f" * 64
+        else:
+            candidate["approval_source_sha256"] = "e" * 64
+        unsigned = {
+            name: item
+            for name, item in candidate.items()
+            if name not in {"signature_sshsig", "approval_sha256"}
+        }
+        candidate["signature_sshsig"] = _sshsig(
+            phase_b._canonical_bytes(unsigned),
+            phase_b.PHASE_B_APPROVAL_SSHSIG_NAMESPACE,
+        )
+        candidate["approval_sha256"] = phase_b._sha256_json(
+            {
+                name: item
+                for name, item in candidate.items()
+                if name != "approval_sha256"
+            }
+        )
+        values = [initial, candidate]
+    with pytest.raises(phase_b.PhaseBError, match="approval_chain_invalid"):
+        phase_b.validate_phase_b_approval_chain(values, plan=plan)
+
+
+def _stage_runtime_approval_authority(
+    monkeypatch: pytest.MonkeyPatch,
+    root: Path,
+) -> tuple[phase_b.PhaseBPlan, dict[str, Any], dict[str, Any]]:
+    plan = _plan()
+    initial_source, initial = _signed_approval_pair(
+        plan,
+        sequence=0,
+        previous_approval_sha256=None,
+        issued_at_unix=NOW - 300,
+        expires_at_unix=NOW - 1,
+        nonce_sha256="7" * 64,
+    )
+    authority = root / "authority"
+    resumes = authority / "resume-approvals"
+    authority.mkdir(mode=0o700)
+    resumes.mkdir(mode=0o700)
+    lock = resumes / ".lock"
+    lock.write_bytes(b"")
+    lock.chmod(0o600)
+    values = {
+        authority / "plan.json": plan.to_mapping(),
+        authority / "owner-approval.json": initial,
+        authority / "owner-approval-source.json": initial_source,
+    }
+    for path, value in values.items():
+        path.write_bytes(phase_b._canonical_bytes(value) + b"\n")
+        path.chmod(0o400)
+    monkeypatch.setattr(phase_b_runtime, "PHASE_B_AUTHORITY_ROOT", authority)
+    monkeypatch.setattr(phase_b_runtime, "PHASE_B_PLAN_PATH", authority / "plan.json")
+    monkeypatch.setattr(
+        phase_b_runtime,
+        "PHASE_B_APPROVAL_PATH",
+        authority / "owner-approval.json",
+    )
+    monkeypatch.setattr(
+        phase_b_runtime,
+        "PHASE_B_APPROVAL_SOURCE_PATH",
+        authority / "owner-approval-source.json",
+    )
+    monkeypatch.setattr(phase_b_runtime, "PHASE_B_RESUME_APPROVAL_ROOT", resumes)
+    monkeypatch.setattr(
+        phase_b_runtime,
+        "PHASE_B_RESUME_APPROVAL_LOCK_PATH",
+        resumes / ".lock",
+    )
+    monkeypatch.setattr(
+        phase_b_runtime,
+        "PHASE_B_JOURNAL_ROOT",
+        root / "journal",
+    )
+    monkeypatch.setattr(phase_b_runtime, "_ROOT_UID", os.geteuid())
+    monkeypatch.setattr(phase_b_runtime, "_ROOT_GID", os.getegid())
+    monkeypatch.setattr(phase_b_runtime, "_require_root_linux", lambda: None)
+    monkeypatch.setattr(phase_b_runtime, "_harden_phase_b_process", lambda: None)
+    monkeypatch.setattr(phase_b_runtime.time, "time", lambda: NOW)
+    return plan, initial_source, initial
+
+
+@pytest.mark.parametrize("crash_stage", ["none", "after_source", "after_approval"])
+def test_runtime_resume_install_recovers_every_o_excl_crash_boundary(
+    monkeypatch: pytest.MonkeyPatch,
+    crash_stage: str,
+) -> None:
+    repository = Path(__file__).resolve().parents[2]
+    with tempfile.TemporaryDirectory(prefix="phase-b-resume-", dir=repository) as temp:
+        root = Path(temp)
+        plan, _initial_source, initial = _stage_runtime_approval_authority(
+            monkeypatch,
+            root,
+        )
+        source, candidate = _signed_approval_pair(
+            plan,
+            sequence=1,
+            previous_approval_sha256=initial["approval_sha256"],
+            issued_at_unix=NOW - 1,
+            expires_at_unix=NOW + 120,
+            nonce_sha256="8" * 64,
+        )
+        resumes = root / "authority" / "resume-approvals"
+        if crash_stage in {"after_source", "after_approval"}:
+            source_path = resumes / "00000001.source.json"
+            source_path.write_bytes(phase_b._canonical_bytes(source) + b"\n")
+            source_path.chmod(0o400)
+        if crash_stage == "after_approval":
+            approval_path = resumes / "00000001.approval.json"
+            approval_path.write_bytes(
+                phase_b._canonical_bytes(candidate) + b"\n"
+            )
+            approval_path.chmod(0o400)
+
+        receipt = phase_b_runtime.install_fixed_phase_b_resume_approval(
+            candidate,
+            source,
+            expected_previous_approval_sha256=initial["approval_sha256"],
+        )
+        assert receipt["approval_sha256"] == candidate["approval_sha256"]
+        assert receipt["already_installed"] is (crash_stage == "after_approval")
+        loaded = phase_b_runtime.load_fixed_phase_b_approval_chain(
+            require_fresh_head=True
+        )
+        assert loaded == (initial, candidate)
+        retry = phase_b_runtime.install_fixed_phase_b_resume_approval(
+            candidate,
+            source,
+            expected_previous_approval_sha256=initial["approval_sha256"],
+        )
+        assert retry["already_installed"] is True
+
+
+def test_runtime_resume_loader_rejects_bounded_overlong_chain(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = Path(__file__).resolve().parents[2]
+    with tempfile.TemporaryDirectory(prefix="phase-b-resume-max-", dir=repository) as temp:
+        root = Path(temp)
+        plan, _source, _initial = _stage_runtime_approval_authority(
+            monkeypatch,
+            root,
+        )
+        resumes = root / "authority" / "resume-approvals"
+        for sequence in range(1, phase_b_runtime.PHASE_B_MAX_RESUME_APPROVALS + 2):
+            for kind in ("source", "approval"):
+                path = resumes / f"{sequence:08d}.{kind}.json"
+                path.write_bytes(b"{}\n")
+                path.chmod(0o400)
+        with pytest.raises(phase_b_runtime.PhaseBRuntimeError, match="too_long"):
+            phase_b_runtime._load_fixed_approval_chain_for_plan(plan)
+
+
+def test_runtime_expired_trailing_source_is_completed_only_as_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = Path(__file__).resolve().parents[2]
+    with tempfile.TemporaryDirectory(
+        prefix="phase-b-resume-expired-source-", dir=repository
+    ) as temp:
+        root = Path(temp)
+        plan, _initial_source, initial = _stage_runtime_approval_authority(
+            monkeypatch,
+            root,
+        )
+        stale_source, stale = _signed_approval_pair(
+            plan,
+            sequence=1,
+            previous_approval_sha256=initial["approval_sha256"],
+            issued_at_unix=NOW - 100,
+            expires_at_unix=NOW - 1,
+            nonce_sha256="8" * 64,
+        )
+        resumes = root / "authority" / "resume-approvals"
+        source_path = resumes / "00000001.source.json"
+        source_path.write_bytes(phase_b._canonical_bytes(stale_source) + b"\n")
+        source_path.chmod(0o400)
+
+        repaired = phase_b_runtime.install_fixed_phase_b_resume_approval(
+            stale,
+            stale_source,
+            expected_previous_approval_sha256=initial["approval_sha256"],
+        )
+        assert repaired["completed_trailing_source_only_residue"] is True
+        assert repaired["approval_fresh"] is False
+        assert repaired["mutation_authorized"] is False
+        assert repaired["requires_fresh_successor"] is True
+        assert phase_b_runtime.load_fixed_phase_b_approval_chain() == (
+            initial,
+            stale,
+        )
+        with pytest.raises(phase_b.PhaseBError, match="approval_invalid"):
+            phase_b_runtime.load_fixed_phase_b_approval_chain(
+                require_fresh_head=True
+            )
+
+        fresh_source, fresh = _signed_approval_pair(
+            plan,
+            sequence=2,
+            previous_approval_sha256=stale["approval_sha256"],
+            issued_at_unix=NOW - 1,
+            expires_at_unix=NOW + 120,
+            nonce_sha256="9" * 64,
+        )
+        installed = phase_b_runtime.install_fixed_phase_b_resume_approval(
+            fresh,
+            fresh_source,
+            expected_previous_approval_sha256=stale["approval_sha256"],
+        )
+        assert installed["completed_trailing_source_only_residue"] is False
+        assert installed["approval_fresh"] is True
+        assert installed["mutation_authorized"] is True
+        assert installed["requires_fresh_successor"] is False
+        assert phase_b_runtime.load_fixed_phase_b_approval_chain(
+            require_fresh_head=True
+        ) == (initial, stale, fresh)
 
 
 def test_executor_retries_ambiguous_api_and_terminal_replay_is_idempotent(
@@ -2026,6 +2773,1429 @@ def test_forged_deletion_ledger_blocks_terminal(tmp_path: Path) -> None:
         )
     assert "temporary_admin_absent" not in journal.events(plan)
     assert "terminal" not in journal.events(plan)
+
+
+def _trusted_readiness_observation(
+    durable: phase_b.PhaseBDurableFoundation,
+    state: _State,
+    *,
+    release_revision: str,
+    observed_at_unix: int,
+) -> tuple[phase_b._PhaseBReadinessObservation, _WriterSession]:
+    historical = durable.terminal_observation
+    historical_cloud = historical["cloud_sql"]
+    cloud = {
+        "project": foundation.PROJECT,
+        "instance": foundation.SQL_INSTANCE,
+        "instance_projection": copy.deepcopy(
+            phase_b._READINESS_INSTANCE_PROJECTION
+        ),
+        "instance_projection_sha256": (
+            phase_b._READINESS_INSTANCE_PROJECTION_SHA256
+        ),
+        "user_state_authority": "postgres_pg_roles",
+        "bootstrap_role_present": True,
+        "bootstrap_login_present": True,
+        "temporary_admin_absent": True,
+        "temporary_admin_username_sha256": phase_b._sha256_bytes(
+            durable.plan.temporary_admin_username.encode("ascii")
+        ),
+        "temporary_admin_users": [],
+        "user_operations_quiescent": True,
+        "relevant_user_operations": copy.deepcopy(
+            historical_cloud["relevant_user_operations"]
+        ),
+        "operation_ledger_sha256": historical_cloud[
+            "operation_ledger_sha256"
+        ],
+        "observed_at_unix": observed_at_unix,
+    }
+    services = _services(observed_at_unix, release_revision)
+    writer = _WriterSession(state)
+    try:
+        terminal = copy.deepcopy(dict(historical))
+        terminal["session_identity_sha256"] = writer.identity
+        terminal["cloud_sql"] = copy.deepcopy(cloud)
+        terminal["services"] = copy.deepcopy(services)
+        terminal["observed_at_unix"] = observed_at_unix
+        unsigned = {
+            name: item
+            for name, item in terminal.items()
+            if name != "observation_sha256"
+        }
+        terminal["observation_sha256"] = phase_b._sha256_json(unsigned)
+    finally:
+        writer.close()
+    continuity = phase_b.build_phase_b_terminal_bootstrap_continuity(
+        durable,
+        bootstrap_resource=historical_cloud["bootstrap_resource"],
+        operation_ledger_sha256=cloud["operation_ledger_sha256"],
+        observed_at_unix=observed_at_unix,
+    )
+    readiness = {
+        "schema": phase_b.PHASE_B_READINESS_OBSERVATION_SCHEMA,
+        "current_release_revision": release_revision,
+        "foundation_generation_sha256": durable.generation_sha256,
+        "foundation_terminal_receipt_sha256": durable.terminal_receipt[
+            "receipt_sha256"
+        ],
+        "terminal_observation": terminal,
+        "host_identity": _readiness_host_identity(observed_at_unix),
+        "cloud_sql": {
+            "observation": cloud,
+            "observed_at_unix": observed_at_unix,
+        },
+        "credential": {
+            "identity": _credential(),
+            "observed_at_unix": observed_at_unix,
+        },
+        "services": services,
+        "bootstrap_runtime_continuity": continuity.to_mapping(),
+        "observed_at_unix": observed_at_unix,
+    }
+    return (
+        phase_b._PhaseBReadinessObservation.from_mapping(
+            _hashed(readiness, "observation_sha256"),
+            foundation=durable,
+            current_release_revision=release_revision,
+            now_unix=observed_at_unix,
+        ),
+        writer,
+    )
+
+
+def _readiness_boundaries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    allow_parsed_for_mechanics: bool = True,
+) -> tuple[
+    phase_b.AppendOnlyPhaseBReadinessJournal,
+    phase_b._PhaseBReadinessWriterBoundary,
+]:
+    monkeypatch.setattr(
+        phase_b,
+        "_PHASE_B_READINESS_ROOT",
+        tmp_path / "readiness",
+    )
+    monkeypatch.setattr(phase_b, "_READINESS_AUTHORITY_UID", os.geteuid())
+    monkeypatch.setattr(
+        phase_b,
+        "_READINESS_AUTHORITY_GID",
+        tmp_path.stat().st_gid,
+    )
+    if allow_parsed_for_mechanics:
+        # Journal durability is tested independently of the not-yet-packaged
+        # live collector.  Production deliberately has no mapping-to-authority
+        # issuer; this test-local consumer override cannot escape pytest.
+        monkeypatch.setattr(
+            phase_b,
+            "_require_trusted_readiness_observation",
+            lambda value: (
+                None
+                if type(value) is phase_b._PhaseBReadinessObservation
+                else (_ for _ in ()).throw(
+                    phase_b.PhaseBError(
+                        "phase_b_readiness_observation_untrusted"
+                    )
+                )
+            ),
+        )
+    return (
+        phase_b.AppendOnlyPhaseBReadinessJournal(),
+        phase_b._PhaseBReadinessWriterBoundary(),
+    )
+
+
+def test_durable_loader_accepts_expired_approval_without_writes_and_defends_copies(
+    tmp_path: Path,
+) -> None:
+    state = _State()
+    receipt, journal, plan = _run(state, tmp_path)
+    before = {
+        path: (path.stat().st_size, path.stat().st_mtime_ns, path.stat().st_ctime_ns)
+        for path in journal.root.rglob("*")
+    }
+
+    durable = phase_b.load_durable_phase_b_foundation(
+        plan,
+        approval=_approval(plan),
+        journal=journal,
+    )
+    replay = phase_b.execute_approved_phase_b(
+        plan,
+        approval=_approval(plan),
+        role_artifact=_artifact(plan, tmp_path),
+        journal=journal,
+        dependencies=_dependencies(state, plan),
+        _clock=lambda: NOW + 301,
+    )
+    after = {
+        path: (path.stat().st_size, path.stat().st_mtime_ns, path.stat().st_ctime_ns)
+        for path in journal.root.rglob("*")
+    }
+
+    assert replay == receipt == durable.terminal_receipt
+    assert before == after
+    assert durable.generation["foundation_release_revision"] == REVISION
+    forged = durable.terminal_receipt
+    forged["safe_to_start"] = False
+    assert durable.terminal_receipt["safe_to_start"] is True
+    forged_generation = durable.generation
+    forged_generation["generation_sha256"] = "0" * 64
+    assert durable.generation_sha256 != "0" * 64
+
+
+def test_forged_durable_foundation_cannot_reach_any_authority_consumer(
+    tmp_path: Path,
+) -> None:
+    state = _State()
+    _receipt_value, journal, plan = _run(state, tmp_path)
+    durable = phase_b.load_durable_phase_b_foundation(
+        plan,
+        approval=_approval(plan),
+        journal=journal,
+    )
+    with pytest.raises(TypeError):
+        phase_b.PhaseBDurableFoundation()
+    with pytest.raises(AttributeError):
+        durable._generation_bytes = b"{}"
+
+    forged = object.__new__(phase_b.PhaseBDurableFoundation)
+    for attribute in (
+        "_plan_bytes",
+        "_approval_bytes",
+        "_generation_bytes",
+        "_terminal_receipt_bytes",
+        "_terminal_observation_bytes",
+    ):
+        object.__setattr__(forged, attribute, getattr(durable, attribute))
+    forged_generation = durable.generation
+    forged_generation["generation_sha256"] = "f" * 64
+    object.__setattr__(
+        forged,
+        "_generation_bytes",
+        phase_b._canonical_bytes(forged_generation),
+    )
+    object.__setattr__(
+        forged,
+        "_authority_seal",
+        durable._authority_seal,
+    )
+    object.__setattr__(
+        forged,
+        "_authority_tag",
+        durable._authority_tag,
+    )
+    historical_cloud = durable.terminal_observation["cloud_sql"]
+    with pytest.raises(
+        phase_b.PhaseBError,
+        match="durable_foundation_untrusted",
+    ):
+        phase_b.build_phase_b_terminal_bootstrap_continuity(
+            forged,
+            bootstrap_resource=historical_cloud["bootstrap_resource"],
+            operation_ledger_sha256=historical_cloud[
+                "operation_ledger_sha256"
+            ],
+            observed_at_unix=NOW,
+        )
+
+
+def test_durable_loader_semantically_replays_intermediate_chain(
+    tmp_path: Path,
+) -> None:
+    state = _State()
+    _receipt_value, journal, plan = _run(state, tmp_path)
+    paths = sorted(journal._entries_root(plan).iterdir())
+    values = [json.loads(path.read_text(encoding="utf-8")) for path in paths]
+    service = next(value for value in values if value["event"] == "services_stopped")
+    service["evidence"]["transition"] = "forged_transition"
+    previous: str | None = None
+    for path, value in zip(paths, values, strict=True):
+        value["previous_entry_sha256"] = previous
+        unsigned = {
+            name: item for name, item in value.items() if name != "entry_sha256"
+        }
+        value["entry_sha256"] = phase_b._sha256_json(unsigned)
+        previous = value["entry_sha256"]
+        path.write_bytes(phase_b._canonical_bytes(value))
+
+    with pytest.raises(phase_b.PhaseBError, match="journal_services_invalid"):
+        phase_b.load_durable_phase_b_foundation(
+            plan,
+            approval=_approval(plan),
+            journal=journal,
+        )
+
+
+def test_durable_loader_rejects_future_terminal_evidence_after_full_rehash(
+    tmp_path: Path,
+) -> None:
+    state = _State()
+    _receipt_value, journal, plan = _run(state, tmp_path)
+    values = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(journal._entries_root(plan).iterdir())
+    ]
+    terminal_observed = next(
+        value for value in values if value["event"] == "terminal_observed"
+    )
+    observation = terminal_observed["evidence"]["terminal_observation"]
+    observation["observed_at_unix"] = NOW + 1
+    observation["cloud_sql"]["observed_at_unix"] = NOW + 1
+    services_unsigned = {
+        name: item
+        for name, item in observation["services"].items()
+        if name != "attestation_sha256"
+    }
+    services_unsigned["observed_at_unix"] = NOW + 1
+    observation["services"] = _hashed(
+        services_unsigned,
+        "attestation_sha256",
+    )
+    observation["observation_sha256"] = phase_b._sha256_json(
+        {
+            name: item
+            for name, item in observation.items()
+            if name != "observation_sha256"
+        }
+    )
+    terminal = values[-1]["evidence"]["terminal_receipt"]
+    terminal["terminal_observation_sha256"] = observation[
+        "observation_sha256"
+    ]
+    terminal["receipt_sha256"] = phase_b._sha256_json(
+        {
+            name: item
+            for name, item in terminal.items()
+            if name != "receipt_sha256"
+        }
+    )
+    _rewrite_journal_entries(journal, plan, values)
+
+    with pytest.raises(phase_b.PhaseBError, match="terminal_observation_invalid"):
+        phase_b.load_durable_phase_b_foundation(
+            plan,
+            approval=_approval(plan),
+            journal=journal,
+        )
+
+
+def test_durable_loader_binds_approval_to_exact_terminal_append_time(
+    tmp_path: Path,
+) -> None:
+    state = _State()
+    _receipt_value, journal, plan = _run(state, tmp_path)
+    values = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(journal._entries_root(plan).iterdir())
+    ]
+    terminal_entry = values[-1]
+    terminal = terminal_entry["evidence"]["terminal_receipt"]
+    terminal["terminal_at_unix"] = NOW + 300
+    terminal["receipt_sha256"] = phase_b._sha256_json(
+        {
+            name: item
+            for name, item in terminal.items()
+            if name != "receipt_sha256"
+        }
+    )
+    terminal_entry["recorded_at_unix"] = NOW + 300
+    _rewrite_journal_entries(journal, plan, values)
+
+    with pytest.raises(phase_b.PhaseBError, match="approval_invalid"):
+        phase_b.load_durable_phase_b_foundation(
+            plan,
+            approval=_approval(plan),
+            journal=journal,
+        )
+
+
+def test_durable_loader_consumes_each_service_boundary_once(
+    tmp_path: Path,
+) -> None:
+    state = _State()
+    _receipt_value, journal, plan = _run(state, tmp_path)
+    values = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(journal._entries_root(plan).iterdir())
+    ]
+    values.remove(
+        next(
+            value
+            for value in values
+            if value["event"] == "services_stopped"
+            and value["evidence"]["transition"] == "temporary_admin_delete"
+        )
+    )
+    _rewrite_journal_entries(journal, plan, values)
+
+    with pytest.raises(phase_b.PhaseBError, match="service_boundary_missing"):
+        phase_b.load_durable_phase_b_foundation(
+            plan,
+            approval=_approval(plan),
+            journal=journal,
+        )
+
+
+def test_durable_loader_rejects_distinct_unconsumed_service_transition(
+    tmp_path: Path,
+) -> None:
+    state = _State()
+    _receipt_value, journal, plan = _run(state, tmp_path)
+    values = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(journal._entries_root(plan).iterdir())
+    ]
+    initial_index = next(
+        index
+        for index, value in enumerate(values)
+        if value["event"] == "services_stopped"
+        and value["evidence"]["transition"]
+        == "temporary_admin_initial_authority"
+    )
+    distinct = copy.deepcopy(
+        next(
+            value
+            for value in values
+            if value["event"] == "services_stopped"
+            and value["evidence"]["transition"] == "phase_b_role_artifact"
+        )
+    )
+    distinct["idempotency_key"] = "services:forged-distinct-unconsumed"
+    values.insert(initial_index + 1, distinct)
+    _rewrite_journal_entries(journal, plan, values)
+
+    with pytest.raises(phase_b.PhaseBError, match="service_boundary_stale"):
+        phase_b.load_durable_phase_b_foundation(
+            plan,
+            approval=_approval(plan),
+            journal=journal,
+        )
+
+
+def test_durable_loader_rejects_distinct_authority_after_self_disable(
+    tmp_path: Path,
+) -> None:
+    state = _State()
+    _receipt_value, journal, plan = _run(state, tmp_path)
+    values = [
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in sorted(journal._entries_root(plan).iterdir())
+    ]
+    disabled_index = next(
+        index
+        for index, value in enumerate(values)
+        if value["event"] == "bootstrap_password_disabled"
+    )
+    rotation_service = copy.deepcopy(
+        next(
+            value
+            for value in values
+            if value["event"] == "services_stopped"
+            and value["evidence"]["transition"]
+            == "bootstrap_login_rotation_authority"
+        )
+    )
+    rotation_service["idempotency_key"] = "services:forged-extra-authority"
+    authority_entry = copy.deepcopy(
+        [
+            value
+            for value in values
+            if value["event"] == "bootstrap_authority"
+        ][-1]
+    )
+    authority = authority_entry["evidence"]["authority_receipt"]
+    authority["operation_name"] = "bootstrap-forged-extra"
+    authority["receipt_sha256"] = phase_b._sha256_json(
+        {
+            name: item
+            for name, item in authority.items()
+            if name != "receipt_sha256"
+        }
+    )
+    authority_entry["idempotency_key"] = (
+        "bootstrap-authority:" + authority["receipt_sha256"]
+    )
+    values[disabled_index + 1 : disabled_index + 1] = [
+        rotation_service,
+        authority_entry,
+    ]
+    _rewrite_journal_entries(journal, plan, values)
+
+    with pytest.raises(phase_b.PhaseBError, match="authority_after_disable"):
+        phase_b.load_durable_phase_b_foundation(
+            plan,
+            approval=_approval(plan),
+            journal=journal,
+        )
+
+
+def test_expired_nonterminal_approval_cannot_create_journal_or_invoke_boundary(
+    tmp_path: Path,
+) -> None:
+    plan = _plan()
+    journal = phase_b.AppendOnlyPhaseBJournal(tmp_path / "journal")
+    state = _State()
+    with pytest.raises(phase_b.PhaseBError, match="approval_invalid"):
+        phase_b.execute_approved_phase_b(
+            plan,
+            approval=_approval(plan),
+            role_artifact=_artifact(plan, tmp_path),
+            journal=journal,
+            dependencies=_dependencies(state, plan),
+            _clock=lambda: NOW + 301,
+        )
+    assert not journal.root.exists()
+    assert state.calls == []
+
+
+def test_read_only_loader_fails_closed_on_directory_disappearance_without_mutation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    plan = _plan()
+    journal = phase_b.AppendOnlyPhaseBJournal(tmp_path / "journal")
+    journal.root.mkdir(mode=0o700)
+    plan_root = journal._plan_root(plan)
+    plan_root.mkdir(mode=0o700)
+    os.chown(journal.root, -1, os.getegid())
+    os.chown(plan_root, -1, os.getegid())
+    original_stat = phase_b.os.stat
+    mutations: list[str] = []
+    removed = False
+
+    def racing_stat(
+        path: os.PathLike[str] | str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> os.stat_result:
+        nonlocal removed
+        result = original_stat(path, *args, **kwargs)
+        if (
+            str(path) == plan.sha256
+            and kwargs.get("dir_fd") is not None
+            and not removed
+        ):
+            plan_root.rmdir()
+            removed = True
+        return result
+
+    def forbidden_mkdir(*_args: Any, **_kwargs: Any) -> None:
+        mutations.append("mkdir")
+        raise AssertionError("read-only loader attempted mkdir")
+
+    def forbidden_chown(*_args: Any, **_kwargs: Any) -> None:
+        mutations.append("chown")
+        raise AssertionError("read-only loader attempted chown")
+
+    monkeypatch.setattr(phase_b.os, "stat", racing_stat)
+    monkeypatch.setattr(phase_b.os, "mkdir", forbidden_mkdir)
+    monkeypatch.setattr(phase_b.os, "chown", forbidden_chown)
+    with pytest.raises(phase_b.PhaseBError, match="journal_unavailable"):
+        journal.load(plan)
+    assert removed is True
+    assert mutations == []
+
+
+def test_terminal_publication_revalidates_approval_at_terminal_time(
+    tmp_path: Path,
+) -> None:
+    state = _State()
+    plan = _plan()
+    journal = phase_b.AppendOnlyPhaseBJournal(tmp_path / "journal")
+
+    def clock() -> int:
+        return (
+            NOW + 301
+            if "services:terminal_observation" in state.calls
+            else NOW
+        )
+
+    with pytest.raises(phase_b.PhaseBError, match="approval_invalid"):
+        phase_b.execute_approved_phase_b(
+            plan,
+            approval=_approval(plan),
+            role_artifact=_artifact(plan, tmp_path),
+            journal=journal,
+            dependencies=_dependencies(state, plan),
+            _clock=clock,
+        )
+    assert "terminal" not in journal.events(plan)
+
+
+def test_readiness_publication_is_trusted_append_only_and_cross_release(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _State()
+    _terminal, foundation_journal, plan = _run(state, tmp_path)
+    durable = phase_b.load_durable_phase_b_foundation(
+        plan,
+        approval=_approval(plan),
+        journal=foundation_journal,
+    )
+    current_revision = "d" * 40
+    prior_revision = "c" * 40
+    observed_at = NOW + 100
+    first_observation, first_session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=prior_revision,
+        observed_at_unix=observed_at,
+    )
+    readiness_journal, readiness_writer = _readiness_boundaries(
+        tmp_path, monkeypatch
+    )
+
+    first = readiness_writer.publish(
+        durable,
+        observation=first_observation,
+        current_release_revision=prior_revision,
+        now_unix=observed_at,
+    )
+    with pytest.raises(phase_b.PhaseBError):
+        readiness_journal.latest_fresh(
+            durable,
+            expected_current_release_revision=current_revision,
+            now_unix=observed_at,
+        )
+    second_observation, second_session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=current_revision,
+        observed_at_unix=observed_at,
+    )
+    second = readiness_writer.publish(
+        durable,
+        observation=second_observation,
+        current_release_revision=current_revision,
+        now_unix=observed_at,
+    )
+    before_validation = {
+        path: (path.stat().st_size, path.stat().st_mtime_ns, path.stat().st_ctime_ns)
+        for path in readiness_journal.root.rglob("*")
+    }
+    validated = phase_b.validate_published_phase_b_readiness_receipt(
+        second.to_mapping(),
+        foundation=durable,
+        journal=readiness_journal,
+        expected_current_release_revision=current_revision,
+        now_unix=observed_at,
+    )
+    with pytest.raises(phase_b.PhaseBError, match="not_current_head"):
+        phase_b.validate_published_phase_b_readiness_receipt(
+            first.to_mapping(),
+            foundation=durable,
+            journal=readiness_journal,
+            expected_current_release_revision=current_revision,
+            now_unix=observed_at,
+        )
+    after_validation = {
+        path: (path.stat().st_size, path.stat().st_mtime_ns, path.stat().st_ctime_ns)
+        for path in readiness_journal.root.rglob("*")
+    }
+
+    assert first.sequence == 0
+    assert second.sequence == 1
+    assert second.to_mapping()["previous_receipt_sha256"] == first.sha256
+    assert validated.sha256 == second.sha256
+    assert durable.generation["foundation_release_revision"] == REVISION
+    assert second.to_mapping()["current_release_revision"] == current_revision
+    assert first_session.closed and second_session.closed
+    assert before_validation == after_validation
+    with pytest.raises(AttributeError):
+        second._value_bytes = b"{}"
+    forged_receipt = object.__new__(phase_b.PhaseBReadinessReceipt)
+    forged_value = second.to_mapping()
+    forged_value["safe_to_start"] = False
+    object.__setattr__(
+        forged_receipt,
+        "_value_bytes",
+        phase_b._canonical_bytes(forged_value),
+    )
+    object.__setattr__(
+        forged_receipt,
+        "_authority_seal",
+        second._authority_seal,
+    )
+    object.__setattr__(
+        forged_receipt,
+        "_authority_tag",
+        second._authority_tag,
+    )
+    with pytest.raises(phase_b.PhaseBError, match="receipt_untrusted"):
+        _ = forged_receipt.sha256
+    defensive = second.to_mapping()
+    defensive["safe_to_start"] = False
+    assert second.to_mapping()["safe_to_start"] is True
+
+
+def test_readiness_writer_fsyncs_every_new_directory_parent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _State()
+    _terminal, foundation_journal, plan = _run(state, tmp_path)
+    durable = phase_b.load_durable_phase_b_foundation(
+        plan,
+        approval=_approval(plan),
+        journal=foundation_journal,
+    )
+    observed_at = NOW + 100
+    observation, _session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=REVISION,
+        observed_at_unix=observed_at,
+    )
+    _reader, writer = _readiness_boundaries(tmp_path, monkeypatch)
+    fsynced: list[Path] = []
+    original_fsync = writer._journal._fsync_directory_handle
+
+    def recording_fsync(descriptor: int, path: Path) -> None:
+        fsynced.append(path)
+        original_fsync(descriptor, path)
+
+    monkeypatch.setattr(
+        phase_b._PhaseBReadinessJournalFoundation,
+        "_fsync_directory_handle",
+        staticmethod(recording_fsync),
+    )
+    writer.publish(
+        durable,
+        observation=observation,
+        current_release_revision=REVISION,
+        now_unix=observed_at,
+    )
+
+    generation_root = writer._journal._generation_root(durable)
+    assert writer.root.parent in fsynced
+    assert writer.root in fsynced
+    # lock, entries, and staging creation each durably update generation.
+    assert fsynced.count(generation_root) >= 3
+
+
+def test_readiness_writer_fails_closed_when_parent_fsync_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _State()
+    _terminal, foundation_journal, plan = _run(state, tmp_path)
+    durable = phase_b.load_durable_phase_b_foundation(
+        plan,
+        approval=_approval(plan),
+        journal=foundation_journal,
+    )
+    observed_at = NOW + 100
+    observation, _session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=REVISION,
+        observed_at_unix=observed_at,
+    )
+    _reader, writer = _readiness_boundaries(tmp_path, monkeypatch)
+    original_fsync = writer._journal._fsync_directory_handle
+    failed = False
+
+    def failing_fsync(descriptor: int, path: Path) -> None:
+        nonlocal failed
+        if path == writer.root.parent and not failed:
+            failed = True
+            raise OSError("injected parent fsync failure")
+        original_fsync(descriptor, path)
+
+    monkeypatch.setattr(
+        phase_b._PhaseBReadinessJournalFoundation,
+        "_fsync_directory_handle",
+        staticmethod(failing_fsync),
+    )
+    with pytest.raises(phase_b.PhaseBError, match="journal_unavailable"):
+        writer.publish(
+            durable,
+            observation=observation,
+            current_release_revision=REVISION,
+            now_unix=observed_at,
+        )
+    assert not any(writer.root.rglob("*.json"))
+    recovered = writer.publish(
+        durable,
+        observation=observation,
+        current_release_revision=REVISION,
+        now_unix=observed_at,
+    )
+    assert failed is True
+    assert recovered.sequence == 0
+
+
+def test_readiness_publish_fsync_fault_preserves_linked_stage_for_recovery(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _State()
+    _terminal, foundation_journal, plan = _run(state, tmp_path)
+    durable = phase_b.load_durable_phase_b_foundation(
+        plan,
+        approval=_approval(plan),
+        journal=foundation_journal,
+    )
+    observed_at = NOW + 100
+    observation, _session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=REVISION,
+        observed_at_unix=observed_at,
+    )
+    _reader, writer = _readiness_boundaries(tmp_path, monkeypatch)
+    entries_root = writer._journal._entries_root(durable)
+    staging_root = writer._journal._staging_root(durable)
+    original_fsync = writer._journal._fsync_directory_handle
+    entries_fsyncs = 0
+
+    def fail_entries_once(descriptor: int, path: Path) -> None:
+        nonlocal entries_fsyncs
+        if path == entries_root:
+            entries_fsyncs += 1
+            if entries_fsyncs == 2:
+                raise OSError("injected entries fsync failure")
+        original_fsync(descriptor, path)
+
+    monkeypatch.setattr(
+        phase_b._PhaseBReadinessJournalFoundation,
+        "_fsync_directory_handle",
+        staticmethod(fail_entries_once),
+    )
+    with pytest.raises(phase_b.PhaseBError, match="publish_failed"):
+        writer.publish(
+            durable,
+            observation=observation,
+            current_release_revision=REVISION,
+            now_unix=observed_at,
+        )
+    stage = next(staging_root.iterdir())
+    final = next(entries_root.iterdir())
+    assert stage.stat().st_nlink == final.stat().st_nlink == 2
+
+    monkeypatch.setattr(
+        phase_b._PhaseBReadinessJournalFoundation,
+        "_fsync_directory_handle",
+        staticmethod(original_fsync),
+    )
+    retry_observation, _session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=REVISION,
+        observed_at_unix=observed_at,
+    )
+    retry = writer.publish(
+        durable,
+        observation=retry_observation,
+        current_release_revision=REVISION,
+        now_unix=observed_at,
+    )
+    assert retry.sequence == 1
+    assert list(staging_root.iterdir()) == []
+
+
+def test_readiness_current_head_validation_holds_shared_lock_through_compare(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _State()
+    _terminal, foundation_journal, plan = _run(state, tmp_path)
+    durable = phase_b.load_durable_phase_b_foundation(
+        plan,
+        approval=_approval(plan),
+        journal=foundation_journal,
+    )
+    observed_at = NOW + 100
+    first_observation, _session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=REVISION,
+        observed_at_unix=observed_at,
+    )
+    reader, writer = _readiness_boundaries(tmp_path, monkeypatch)
+    first = writer.publish(
+        durable,
+        observation=first_observation,
+        current_release_revision=REVISION,
+        now_unix=observed_at,
+    )
+    second_observation, _session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=REVISION,
+        observed_at_unix=observed_at,
+    )
+    entered_compare = threading.Event()
+    release_compare = threading.Event()
+    writer_done = threading.Event()
+    failures: list[BaseException] = []
+    validated: list[phase_b.PhaseBReadinessReceipt] = []
+    original_latest = reader._journal._latest_fresh_unlocked
+
+    def paused_latest(
+        foundation_value: phase_b.PhaseBDurableFoundation,
+        *,
+        expected_current_release_revision: str,
+        now_unix: int | None = None,
+    ) -> phase_b.PhaseBReadinessReceipt:
+        result = original_latest(
+            foundation_value,
+            expected_current_release_revision=(
+                expected_current_release_revision
+            ),
+            now_unix=now_unix,
+        )
+        entered_compare.set()
+        if not release_compare.wait(2):
+            raise AssertionError("comparison release timed out")
+        return result
+
+    monkeypatch.setattr(
+        reader._journal,
+        "_latest_fresh_unlocked",
+        paused_latest,
+    )
+
+    def validate_head() -> None:
+        try:
+            validated.append(
+                phase_b.validate_published_phase_b_readiness_receipt(
+                    first.to_mapping(),
+                    foundation=durable,
+                    journal=reader,
+                    expected_current_release_revision=REVISION,
+                    now_unix=observed_at,
+                )
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below.
+            failures.append(exc)
+
+    def append_next() -> None:
+        try:
+            writer.publish(
+                durable,
+                observation=second_observation,
+                current_release_revision=REVISION,
+                now_unix=observed_at,
+            )
+        except BaseException as exc:  # pragma: no cover - asserted below.
+            failures.append(exc)
+        finally:
+            writer_done.set()
+
+    validator_thread = threading.Thread(target=validate_head)
+    writer_thread = threading.Thread(target=append_next)
+    validator_thread.start()
+    assert entered_compare.wait(2)
+    writer_thread.start()
+    time.sleep(0.05)
+    assert not writer_done.is_set()
+    release_compare.set()
+    validator_thread.join(2)
+    writer_thread.join(2)
+
+    assert not validator_thread.is_alive()
+    assert not writer_thread.is_alive()
+    assert failures == []
+    assert [receipt.sha256 for receipt in validated] == [first.sha256]
+    assert writer_done.is_set()
+
+
+def test_readiness_shared_lock_uses_held_dirfd_after_path_swap(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _State()
+    _terminal, foundation_journal, plan = _run(state, tmp_path)
+    durable = phase_b.load_durable_phase_b_foundation(
+        plan,
+        approval=_approval(plan),
+        journal=foundation_journal,
+    )
+    observed_at = NOW + 100
+    observation, _session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=REVISION,
+        observed_at_unix=observed_at,
+    )
+    reader, writer = _readiness_boundaries(tmp_path, monkeypatch)
+    receipt = writer.publish(
+        durable,
+        observation=observation,
+        current_release_revision=REVISION,
+        now_unix=observed_at,
+    )
+    generation_root = writer._journal._generation_root(durable)
+    displaced = generation_root.with_name(generation_root.name + ".displaced")
+    original_load = (
+        phase_b._PhaseBReadinessJournalFoundation._load_receipt_bytes_from_fd
+    )
+    swapped = False
+
+    def swap_then_load(
+        journal: phase_b._PhaseBReadinessJournalFoundation,
+        foundation_value: phase_b.PhaseBDurableFoundation,
+        entries_fd: int,
+        *,
+        linked_sequence: int | None = None,
+    ) -> list[bytes]:
+        nonlocal swapped
+        if not swapped:
+            generation_root.rename(displaced)
+            generation_root.mkdir(mode=0o700)
+            swapped = True
+        return original_load(
+            journal,
+            foundation_value,
+            entries_fd,
+            linked_sequence=linked_sequence,
+        )
+
+    monkeypatch.setattr(
+        phase_b._PhaseBReadinessJournalFoundation,
+        "_load_receipt_bytes_from_fd",
+        swap_then_load,
+    )
+    validated = reader.latest_fresh(
+        durable,
+        expected_current_release_revision=REVISION,
+        now_unix=observed_at,
+    )
+    assert swapped is True
+    assert validated.sha256 == receipt.sha256
+    assert list(generation_root.iterdir()) == []
+    assert any(displaced.iterdir())
+
+
+def test_untrusted_shape_cannot_mint_or_publish_readiness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    assert "PhaseBReadinessCollectors" not in phase_b.__all__
+    assert "publish_phase_b_readiness" not in phase_b.__all__
+    assert not hasattr(phase_b, "PhaseBReadinessCollectors")
+    assert not hasattr(phase_b, "publish_phase_b_readiness")
+    assert not hasattr(phase_b.PhaseBReadinessReceipt, "from_mapping")
+    assert "PhaseBReadinessObservation" not in phase_b.__all__
+    assert not hasattr(
+        phase_b._PhaseBReadinessObservation,
+        "_from_trusted_mapping",
+    )
+    assert not hasattr(phase_b, "_READINESS_OBSERVATION_CAPABILITY")
+    with pytest.raises(TypeError):
+        phase_b._PhaseBReadinessObservation({})
+    state = _State()
+    _terminal, foundation_journal, plan = _run(state, tmp_path)
+    durable = phase_b.load_durable_phase_b_foundation(
+        plan,
+        approval=_approval(plan),
+        journal=foundation_journal,
+    )
+    observed_at = NOW + 100
+    trusted, _session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=REVISION,
+        observed_at_unix=observed_at,
+    )
+    parsed_only = phase_b._PhaseBReadinessObservation.from_mapping(
+        trusted.to_mapping(),
+        foundation=durable,
+        current_release_revision=REVISION,
+        now_unix=observed_at,
+    )
+    with pytest.raises(AttributeError):
+        parsed_only._value_bytes = b"{}"
+    journal, writer = _readiness_boundaries(
+        tmp_path,
+        monkeypatch,
+        allow_parsed_for_mechanics=False,
+    )
+    assert not hasattr(journal, "append")
+    assert not hasattr(journal, "lock")
+    assert not hasattr(journal, "load")
+    with pytest.raises(phase_b.PhaseBError, match="observation_untrusted"):
+        writer.publish(
+            durable,
+            observation=parsed_only,
+            current_release_revision=REVISION,
+            now_unix=observed_at,
+        )
+    assert not journal.root.exists() or not any(journal.root.rglob("*.json"))
+
+
+def test_fixed_collector_closure_issues_publishable_readiness_without_mapping_input(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _State()
+    _terminal, foundation_journal, plan = _run(state, tmp_path)
+    durable = phase_b.load_durable_phase_b_foundation(
+        plan,
+        approval=_approval(plan),
+        journal=foundation_journal,
+    )
+    observed_at = NOW + 100
+    parsed, _session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=REVISION,
+        observed_at_unix=observed_at,
+    )
+    calls: list[tuple[str, int]] = []
+
+    def collect_fixed(
+        received: phase_b.PhaseBDurableFoundation,
+        *,
+        current_release_revision: str,
+        observed_at_unix: int,
+    ) -> Mapping[str, Any]:
+        assert received is durable
+        calls.append((current_release_revision, observed_at_unix))
+        return parsed.to_mapping()
+
+    monkeypatch.setattr(
+        phase_b_runtime,
+        "_collect_fixed_phase_b_readiness_mapping",
+        collect_fixed,
+    )
+    issued = phase_b._collect_trusted_readiness_observation(
+        durable,
+        current_release_revision=REVISION,
+        now_unix=observed_at,
+    )
+    journal, writer = _readiness_boundaries(
+        tmp_path,
+        monkeypatch,
+        allow_parsed_for_mechanics=False,
+    )
+    receipt = writer.publish(
+        durable,
+        observation=issued,
+        current_release_revision=REVISION,
+        now_unix=observed_at,
+    )
+    assert receipt.to_mapping()["safe_to_start"] is True
+    assert calls == [(REVISION, observed_at)]
+
+
+def test_ordinary_caller_cannot_choose_readiness_root_or_mint_authority(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    with pytest.raises(TypeError):
+        phase_b.AppendOnlyPhaseBReadinessJournal(tmp_path / "caller-root")
+    assert not hasattr(phase_b, "PhaseBReadinessObservation")
+
+    state = _State()
+    _terminal, foundation_journal, plan = _run(state, tmp_path)
+    durable = phase_b.load_durable_phase_b_foundation(
+        plan,
+        approval=_approval(plan),
+        journal=foundation_journal,
+    )
+    observed_at = NOW + 100
+    trusted, _session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=REVISION,
+        observed_at_unix=observed_at,
+    )
+    fixed_root = tmp_path / "fixed-root"
+    monkeypatch.setattr(phase_b, "_PHASE_B_READINESS_ROOT", fixed_root)
+    monkeypatch.setattr(
+        phase_b,
+        "_READINESS_AUTHORITY_UID",
+        os.geteuid() + 1,
+    )
+    monkeypatch.setattr(phase_b, "_READINESS_AUTHORITY_GID", os.getegid())
+    writer = phase_b._PhaseBReadinessWriterBoundary()
+    with pytest.raises(phase_b.PhaseBError, match="writer_authority_required"):
+        writer.publish(
+            durable,
+            observation=trusted,
+            current_release_revision=REVISION,
+            now_unix=observed_at,
+        )
+    assert not fixed_root.exists()
+
+
+@pytest.mark.parametrize(
+    "drift",
+    [
+        "stale",
+        "stale_cloud",
+        "database_session",
+        "cloud_admin",
+        "cloud_resource",
+        "cloud_ledger",
+        "credential",
+        "services",
+        "runtime_transition",
+        "missing",
+    ],
+)
+def test_readiness_rejects_stale_tampered_missing_or_conflicting_evidence(
+    tmp_path: Path,
+    drift: str,
+) -> None:
+    state = _State()
+    _terminal, foundation_journal, plan = _run(state, tmp_path)
+    durable = phase_b.load_durable_phase_b_foundation(
+        plan,
+        approval=_approval(plan),
+        journal=foundation_journal,
+    )
+    observed_at = NOW + 100
+    trusted, _session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=REVISION,
+        observed_at_unix=observed_at,
+    )
+    value = trusted.to_mapping()
+    terminal = value["terminal_observation"]
+    if drift == "database_session":
+        terminal["session_identity_sha256"] = durable.terminal_observation[
+            "session_identity_sha256"
+        ]
+    elif drift == "cloud_admin":
+        value["cloud_sql"]["observation"]["temporary_admin_users"] = [
+            plan.temporary_admin_username
+        ]
+    elif drift == "cloud_resource":
+        value["cloud_sql"]["observation"]["instance_projection"][
+            "state"
+        ] = "SUSPENDED"
+    elif drift == "cloud_ledger":
+        value["cloud_sql"]["observation"]["operation_ledger_sha256"] = (
+            "7" * 64
+        )
+        terminal["cloud_sql"]["operation_ledger_sha256"] = "7" * 64
+    elif drift == "credential":
+        value["credential"]["identity"]["inode"] += 1
+    elif drift == "stale_cloud":
+        value["cloud_sql"]["observed_at_unix"] -= 1
+    elif drift == "services":
+        value["services"]["services"][0]["active_state"] = "active"
+        value["services"] = _hashed(
+            {
+                name: item
+                for name, item in value["services"].items()
+                if name != "attestation_sha256"
+            },
+            "attestation_sha256",
+        )
+        terminal["services"] = copy.deepcopy(value["services"])
+    elif drift == "runtime_transition":
+        continuity = value["bootstrap_runtime_continuity"]
+        continuity["source_kind"] = "runtime_transition"
+        continuity["continuity_sha256"] = phase_b._sha256_json(
+            {
+                name: item
+                for name, item in continuity.items()
+                if name != "continuity_sha256"
+            }
+        )
+    elif drift == "missing":
+        value.pop("credential")
+    if drift in {"database_session", "cloud_ledger", "services"}:
+        terminal["observation_sha256"] = phase_b._sha256_json(
+            {
+                name: item
+                for name, item in terminal.items()
+                if name != "observation_sha256"
+            }
+        )
+    if drift != "missing":
+        value["observation_sha256"] = phase_b._sha256_json(
+            {
+                name: item
+                for name, item in value.items()
+                if name != "observation_sha256"
+            }
+        )
+
+    with pytest.raises(phase_b.PhaseBError):
+        phase_b._PhaseBReadinessObservation.from_mapping(
+            value,
+            foundation=durable,
+            current_release_revision=REVISION,
+            now_unix=(
+                observed_at + phase_b.PHASE_B_READINESS_MAX_AGE_SECONDS + 1
+                if drift == "stale"
+                else observed_at
+            ),
+        )
+
+
+def test_readiness_journal_rejects_fork_stale_head_and_staging_residue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _State()
+    _terminal, foundation_journal, plan = _run(state, tmp_path)
+    durable = phase_b.load_durable_phase_b_foundation(
+        plan,
+        approval=_approval(plan),
+        journal=foundation_journal,
+    )
+    observed_at = NOW + 100
+    observation, _session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=REVISION,
+        observed_at_unix=observed_at,
+    )
+    journal, writer = _readiness_boundaries(tmp_path, monkeypatch)
+    receipt = writer.publish(
+        durable,
+        observation=observation,
+        current_release_revision=REVISION,
+        now_unix=observed_at,
+    )
+    with pytest.raises(phase_b.PhaseBError, match="receipt_invalid"):
+        journal.latest_fresh(
+            durable,
+            expected_current_release_revision=REVISION,
+            now_unix=(
+                observed_at + phase_b.PHASE_B_READINESS_MAX_AGE_SECONDS
+            ),
+        )
+
+    internal = writer._journal
+    path = next(internal._entries_root(durable).iterdir())
+    fork = path.with_name("00000001-" + receipt.sha256 + ".json")
+    os.link(path, fork)
+    with pytest.raises(phase_b.PhaseBError):
+        journal.latest_fresh(
+            durable,
+            expected_current_release_revision=REVISION,
+            now_unix=observed_at,
+        )
+    fork.unlink()
+    staging = internal._staging_root(durable)
+    residue = staging / "residue.stage"
+    residue.write_text("residue", encoding="utf-8")
+    before = (residue.stat().st_size, residue.stat().st_mtime_ns)
+    with pytest.raises(phase_b.PhaseBError, match="staging_residue"):
+        journal.latest_fresh(
+            durable,
+            expected_current_release_revision=REVISION,
+            now_unix=observed_at,
+        )
+    assert residue.exists()
+    assert (residue.stat().st_size, residue.stat().st_mtime_ns) == before
+
+
+def test_readiness_journal_recovers_linked_and_stage_only_crashes_under_lock(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    state = _State()
+    _terminal, foundation_journal, plan = _run(state, tmp_path)
+    durable = phase_b.load_durable_phase_b_foundation(
+        plan,
+        approval=_approval(plan),
+        journal=foundation_journal,
+    )
+    observed_at = NOW + 100
+    first_observation, _session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=REVISION,
+        observed_at_unix=observed_at,
+    )
+    journal, writer = _readiness_boundaries(tmp_path, monkeypatch)
+    internal = writer._journal
+    first = writer.publish(
+        durable,
+        observation=first_observation,
+        current_release_revision=REVISION,
+        now_unix=observed_at,
+    )
+
+    first_path = internal._entries_root(durable) / (
+        f"00000000-{first.sha256}.json"
+    )
+    linked_stage = internal._staging_root(durable) / (
+        "00000000." + "1" * 32 + ".stage"
+    )
+    os.link(first_path, linked_stage)
+    with pytest.raises(phase_b.PhaseBError, match="staging_residue"):
+        journal.latest_fresh(
+            durable,
+            expected_current_release_revision=REVISION,
+            now_unix=observed_at,
+        )
+    assert linked_stage.exists() and first_path.stat().st_nlink == 2
+
+    second_observation, _session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=REVISION,
+        observed_at_unix=observed_at,
+    )
+    second = writer.publish(
+        durable,
+        observation=second_observation,
+        current_release_revision=REVISION,
+        now_unix=observed_at,
+    )
+    assert second.sequence == 1
+    assert not linked_stage.exists()
+    assert first_path.stat().st_nlink == 1
+
+    third_observation, _session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=REVISION,
+        observed_at_unix=observed_at,
+    )
+    stage_only = internal._staging_root(durable) / (
+        "00000002." + "2" * 32 + ".stage"
+    )
+    stage_only.write_bytes(b'{"truncated":')
+    stage_only.chmod(0o600)
+    with pytest.raises(phase_b.PhaseBError, match="staging_residue"):
+        journal.latest_fresh(
+            durable,
+            expected_current_release_revision=REVISION,
+            now_unix=observed_at,
+        )
+    third = writer.publish(
+        durable,
+        observation=third_observation,
+        current_release_revision=REVISION,
+        now_unix=observed_at,
+    )
+    assert third.sequence == 2
+    assert not stage_only.exists()
+
+    conflicting_stage = internal._staging_root(durable) / (
+        "00000002." + "3" * 32 + ".stage"
+    )
+    conflicting_stage.write_bytes(b'{"conflicting":')
+    conflicting_stage.chmod(0o600)
+    fourth_observation, _session = _trusted_readiness_observation(
+        durable,
+        state,
+        release_revision=REVISION,
+        observed_at_unix=observed_at,
+    )
+    with pytest.raises(phase_b.PhaseBError, match="staging_conflict"):
+        writer.publish(
+            durable,
+            observation=fourth_observation,
+            current_release_revision=REVISION,
+            now_unix=observed_at,
+        )
+    assert conflicting_stage.exists()
 
 
 def test_windows_import_path_fails_only_when_posix_journal_is_invoked(

@@ -10,15 +10,13 @@ Muncho runtime. A successful result must be followed by the separate
 [production-shaped capability canary](./muncho-production-capability-canary.md);
 the clean-room configuration is never copied directly to production.
 
-The one-shot database bootstrap and compensating retirement SQL are not
-discovered from the checkout or from a mutable operator path. The
-sealed-release builder copies their exact tracked-index bytes to
-`scripts/sql/canonical_writer_canary_bootstrap_v1.sql` and
-`scripts/sql/canonical_writer_canary_bootstrap_retire_v1.sql` inside that
-release before any project build tooling runs. Each path, size, mode, and
-SHA-256 is therefore part of the release manifest and artifact digest.
-Runtime accepts only those manifest-declared files and rechecks their bytes
-before execution.
+The live canary has no one-shot database role, login, grant, or compensating
+SQL path. Writer foundation changes happen separately in the stopped-only
+Phase-B protocol. Its exact tracked migration artifacts, packaged Python
+runtime, terminal receipt, and in-process readiness handoff are bound into the
+sealed release before a live plan can be built. The live coordinator accepts
+only that terminal readiness descendant and never receives a database
+administrator credential.
 
 ## Dedicated-host gate
 
@@ -53,7 +51,7 @@ The same host gate protects explicit stop and verify-and-stop entry points so
 the canary command cannot target the production VM's similarly named units.
 No `gcloud` subprocess and no self-asserted `dedicated=true` field is trusted.
 
-The three runtime services remain:
+The three live runtime services remain:
 
 1. `muncho-discord-egress.service` — owns the Discord token and permits only
    public guild channel/forum/thread operations.
@@ -62,10 +60,14 @@ The three runtime services remain:
 3. `hermes-cloud-gateway.service` — runs GPT/Hermes and has no Discord token or
    writer private key.
 
-There is no timer and no unit is enabled. Every service is `Restart=no` with a
-900-second maximum runtime. Service start order is edge, writer, gateway, with
-the trusted collector/config gate between edge and writer. Every normal and
-failure stop path is gateway, writer, edge.
+The separate
+`muncho-canonical-writer-phase-b-readiness.service` attests the already
+completed writer foundation in process; it is not a model or routing service.
+There is no timer and no unit is enabled. Every live service is `Restart=no`
+with a 900-second maximum runtime. Service start order is edge, writer,
+gateway, with the trusted collector/config gate between edge and writer.
+Every normal and failure stop path is gateway, writer, edge, then the readiness
+unit.
 
 ## Model-sovereignty configuration
 
@@ -73,7 +75,7 @@ The full gateway preflight requires all of the following:
 
 - model `gpt-5.6-sol` through provider `openai-codex`;
 - initial reasoning effort `high`, with model-authored adaptive escalation
-  enabled only up to `xhigh`;
+  enabled only up to `max`;
 - an exact 90-turn ceiling for the sustained task;
 - Kanban auxiliary planning, auto-decomposition, notifier, and dispatcher
   disabled;
@@ -248,112 +250,34 @@ No operator-supplied evidence path is accepted. The verifier consumes only:
 and binds it to the exact start-receipt file SHA-256 and all three service
 identity receipt digests.
 
-## One-shot Canonical scope
+## Session-bound Canonical authority
 
 Normal API identity is intentionally not treated as Discord or owner identity.
-Before the full plan is built and approved, the trusted driver generates the
-raw API session key in memory and places only its SHA-256 in the exact writer
-config's `canary_scope_preapproval`. That immutable config is itself a digested
-plan artifact; lifecycle never edits it after plan approval.
+The trusted coordinator binds the generated API session digest, capability
+epoch, sealed release, fixture, run, plan, and exact owner approval before any
+live service starts. The raw session key remains in memory and never becomes
+database authorization material, a receipt field, or an operator-editable
+writer setting.
 
-The preapproval is bound to grant, case, sealed release artifact, fixture,
-canary run, session-key digest, owner, approval-source digest, and an expiry
-exactly equal to the fixture end time. The plugin claims it once through the
-writer with `canary-scope-claim:<grant_id>`. The trusted API runtime supplies
-the session and capability epoch; no Discord/user identity is spoofed. Before
-request context is cleared, the epoch is durably revoked. Missing claim,
-registration receipt, tombstone, or exact evidence fails the canary closed.
+The writer exposes only the fixed least-privilege operation catalog. Case
+access is derived mechanically from server-observed session, thread, owner,
+handoff, and capability state. Dangerous mutations require the applicable
+plan-addressed owner capability; ordinary reads do not. At terminal cleanup
+the exact session/capability epoch is durably revoked, so a replayed request
+cannot regain authority.
 
-### Private bootstrap and mandatory retirement
+There is no canary-specific database role, login, one-shot SQL grant, or
+administrator credential in the runtime. Stopped preflight verifies the
+packaged writer, fixed configuration, single writer credential, database
+identity, privilege attestation, and in-process readiness. The live lifecycle
+then starts edge, collector, writer, and gateway in the sealed plan order and
+stops them in reverse order on either success or failure.
 
-The normal writer role cannot grant itself the private preapproval function.
-That one-time authority is installed by the sealed
-`canonical_writer_canary_bootstrap_v1.sql` and is always reconciled by the
-separate sealed `canonical_writer_canary_bootstrap_retire_v1.sql`. The runtime
-does not expose a generic administrator SQL runner, accept an administrator
-password, invoke a shell, or put a secret in argv, logs, or receipts.
-
-The writer config names the fixed login
-`canonical_brain_canary_bootstrap_login` and the separate credential path
-`/etc/muncho/credentials/canonical-canary-bootstrap-db-password`. Stopped
-preflight requires that credential to be a single-link `0400` file owned by
-the exact writer UID/GID. It also requires a digest-bound managed-HBA rejection
-receipt for that same login, database host, TLS server name, and port. This is
-separate from the ordinary writer login and from the ephemeral administrator
-session used to apply the sealed SQL.
-
-Database mutation is blocked by default. The only live entry is an explicitly
-supplied `PreopenedSessionBootstrapProvisioner` wrapping an already-open,
-owner-operated managed-administrator PostgreSQL session plus its verified TLS
-peer-certificate digest. Connection establishment and authentication remain
-outside the runtime, so there is no persistent administrator credential or
-session factory in Hermes. The runtime independently rechecks database,
-session/current user, and backend PID. It rechecks the same identity after a
-`ROLLBACK` fence immediately before retirement SQL, rejecting a silently
-reconnected backend.
-
-The provisioning request sets exactly eleven digest-bound PostgreSQL settings:
-ten immutable scope/database values plus the non-circular provisioning
-authorization digest. After owner approval and a final dedicated-host recheck,
-the lifecycle applies the sealed provisioning SQL immediately before writer
-start. Writer readiness must then contain the exact Canonical consumption
-receipt. The staged writer config is atomically replaced with the same sealed
-config minus `canary_scope_preapproval`, and a plan-addressed append-only
-root-owned `0400` tombstone binds the original config, retired config, writer
-readiness, and consumption receipt.
-
-Retirement is mandatory after every provisioning attempt, including a failed
-or malformed provisioning response. It sets the original eleven values plus
-exact plan, owner-approval, and current-executor digests (fourteen total), then
-applies the second sealed SQL. Its thirteen-column result has only these
-terminal states:
-
-- `consumed`: authorization and consumption events exist; no retirement event
-  is written; reason is `bootstrap_consumed`;
-- `retired`: authorization exists but consumption does not; the fixed
-  `activation_failed_before_consumption` retirement event is appended once or
-  replayed idempotently;
-- `not_authorized`: provisioning never committed; no terminal event exists;
-  reason is `provisioning_not_committed`.
-
-All three prove the bootstrap role/login have no remaining schema/function ACL
-and that temporary migration-owner membership is absent. A recovery attempt
-may use a new pre-opened administrator backend after an uncertain commit. Its
-receipt binds the current executor session, while replay compares durable
-terminal truth without treating the previous backend PID as durable identity.
-Administrator close is idempotent, retried once after a transient failure, and
-the lifecycle/driver retains no administrator object after the attempt.
-
-Bootstrap consumption is not the final authority boundary. Once the writer
-has inserted the owner-bound preapproval, a later startup, gateway, or
-verification failure must not leave that still-claimable row behind. The full
-writer unit therefore invokes the same sealed writer executable with the
-private `--reconcile-canary-preclaim` mode at both boundaries:
-
-- `ExecStartPre` reconciles the preserved staged plan source before any writer
-  restart. On the first activation the exact scope is not yet preapproved, so
-  this is a bounded no-op. After a crash or power loss it retires prior durable
-  state before a writer or gateway can become live again.
-- `ExecStopPost` repeats the same fixed call after every writer stop attempt,
-  including a failed start. It uses a fresh writer-UID database connection;
-  no public writer operation, model tool, administrator credential, SQL text,
-  shell, or caller-selected scope is exposed.
-
-Both calls read only the preserved plan-bound staged writer configuration and
-atomically replace the fixed writer-owned mode `0600` receipt at
-`/run/muncho-canonical-writer/preclaim-reconciliation.json`. Claim and
-retirement serialize in PostgreSQL. An unclaimed preapproval receives one
-append-only retirement event. A committed claim receives a durable tombstone
-for its exact session/capability epoch before cleanup can be reported as
-complete. Replay returns the original durable event identities.
-
-Lifecycle accepts cleanup only when the receipt is exact for the sealed grant
-and proves `authority_active=false`. A claimed scope that is still active, a
-missing or stale receipt generation, a mismatched event identity, or an
-unproven preapproval state is `cleanup_blocked` and requires owner recovery;
-it is never converted into terminal success. The old staged source must remain
-unchanged until this next-start recovery has completed, so staging a newer plan
-cannot erase the only exact binding for an interrupted one.
+Readiness and final evidence must bind the same release, plan, owner approval,
+session digest, capability epoch, fixture, service identities, and append-only
+Canonical receipts. A missing binding, stale generation, unexpected authority,
+or incomplete session retirement fails the run closed and leaves an explicit
+owner-recoverable failure receipt.
 
 ## Operator entry points
 
@@ -368,87 +292,40 @@ python -B -I -m gateway.canonical_full_canary_runtime verify-and-stop \
 python -B -I -m gateway.canonical_full_canary_runtime stop
 ```
 
-`start` requires the canonical root-owned plan and a fresh root-owned owner
-approval at their fixed paths. The standalone entry point remains blocked
-unless its owner-operated process supplies the already-open provisioner; it
-never reads an administrator secret itself. It never enables a unit. Receipt
-output includes the exact on-disk receipt SHA-256 so the live evidence can bind
-the file rather than a self-declared internal field.
+These commands are mechanical runtime primitives. The target live path is the
+session-bound coordinator, which supplies the exact in-memory owner approval
+and one-shot API key to the driver. No runtime command accepts a database
+administrator or provisioning object, and no command enables a unit. Receipt
+output includes the exact on-disk receipt SHA-256 so live evidence binds the
+file rather than a self-declared internal field.
 
-## Owner coordinator and crash recovery
+## Session-bound owner coordinator
 
 The packaged `gateway.canonical_full_canary_coordinator` is the only remote
 owner-control entry point. The local owner launcher remains a separately
 attested, source-only program; neither component is imported by the normal
 gateway/model loop.
 
-Every owner invocation first runs the read-only `preflight-recovery` command.
-An active run or recovery-worker journal is recovered in two distinct stages:
+The owner launcher first validates the terminal Phase-B readiness gate. It then
+installs the Discord token through its dedicated framed boundary and opens one
+sealed coordinator process for the complete live run. That same process builds
+the final plan, emits the plan-bound approval request, receives the owner's
+`MFA1` frame, runs the driver, proves stopped terminal state, and retires the
+Discord credential. There is no remote approval file, second remote coordinator
+process, database administrator handoff, bootstrap credential, or external
+recovery worker. The local launcher consumes one owner-only, one-shot approval
+file bound to the just-emitted request.
 
-1. The coordinator emits a no-secret takeover gate. The owner returns only the
-   exact `MRA1` acknowledgement. After exact predecessor termination, the
-   exclusive process lock and a full journal CAS, the worker durably advances
-   through `claimed_awaiting_admin` and
-   `admin_authority_may_be_in_use`.
-2. Only then does the worker emit a fresh nonce-bound secret gate. The owner
-   may send the recovery-only `MRC2` frame, whose header binds that exact gate
-   and nonce before any username or password byte is read. The normal-run
-   `MCA2` frame is never accepted on this recovery path.
+On failure, the coordinator emits one self-digested terminal receipt containing
+only observable cleanup facts: exact command and release bindings, whether all
+services are stopped, whether the Discord token is gone, and whether an
+obsolete process journal is absent. It never fabricates successful cleanup.
+The owner closes the sealed session and, if token installation had completed,
+uses only the dedicated token-retirement boundary. A later attempt begins with
+fresh read-only Phase-B/live preflight rather than resuming hidden authority.
 
-Successful cleanup first publishes
-`muncho-full-canary-recovery-worker-completion.v1` with
-`recovery_worker_exit_proven=false` and
-`safe_to_delete_temporary_admin=false`. The worker cannot attest its own exit.
-A separate no-secret `finalize-recovery` process proves the exact worker has
-exited (or terminates that exact PID through pidfd), reacquires the lock, and
-CAS-publishes `muncho-full-canary-recovery-receipt.v2`. Only that terminal v2
-receipt authorizes deletion of an administrator credential that may have been
-disclosed. A valid legacy v1 receipt is recognized only to return the explicit
-`legacy_recovery_receipt_reconciliation_required` blocker; it is never
-silently consumed, upgraded, or used to request a secret.
-
-Final runtime approval uses an independent request capped at 240 seconds, with
-an owner-input cutoff 30 seconds before its deadline. EOF before the first
-`MFA1` byte produces the zero-secret cancellation receipt v2. That receipt
-reports the exact active, expired, retired, superseded, or drifted state of the
-request, staged plan, and prior approval artifacts. Mixed or conflicting
-artifact states are `cancelled_no_secret_state_conflict`, never a fabricated
-clean cancellation. Partial `MFA1` is a hard ambiguous failure.
-
-### Temporary Cloud SQL authority
-
-Cloud SQL user mutations are asynchronous. The owner launcher sends each
-`CREATE_USER`, `UPDATE_USER`, or `DELETE_USER` request at most once and never
-turns a timeout, redirect, rate limit, HTTP 499, or server response into an
-implicit retry. Only a narrow, reviewed set of definite client rejections can
-prove that a create was not committed. Every other uncertain response enters
-reconciliation, and no `MCA2` or `MRC2` credential byte is sent from that run.
-
-Positive credential authority requires the exact response-known operation,
-expected operation type, owner identity, successful terminal outcome, exact
-temporary user presence, and unchanged complete paginated operation/user
-snapshots. The same live proof is repeated inside the local first-byte write
-guard, followed by owner-identity and expiry checks with a 30-second delivery
-margin. Any intervening user operation or evidence drift sends zero credential
-bytes. The Discord-token `DCT1` path uses the same first-byte expiry boundary.
-
-This proof assumes the isolated canary SQL instance has no concurrent user
-mutator after the final read. The canary must be stopped if that operational
-assumption cannot be guaranteed; API reads cannot provide a transactional lock
-against a mutation accepted after their final snapshot.
-
-Negative cleanup truth is deliberately separate from positive authority. An
-unknown-response run may prove the exact temporary user absent without ever
-claiming that a candidate operation belonged to it. It must observe complete,
-warning-free paginated operation and user snapshots for one continuous
-180-second quiet window, polling no faster than every five seconds and resetting
-the window on any operation identity, type, status, actor, outcome, user
-presence, or delete change. A late change can extend observation to the bounded
-360-second hard horizon; insufficient quiet remains `cleanup_blocked`.
-
-Cloud SQL publishes no visibility-latency guarantee that turns this operational
-horizon into a mathematical proof. Accordingly, a no-candidate result may only
-record bounded absence, zero secret disclosure, and a blocked run; a fresh
-invocation must start from a new preflight. Receipts keep preflight, recovery,
-and fresh-run evidence phase-bound and expose the response-known-candidate flag,
-post-baseline operation count, quiet window, and a secret-free evidence digest.
+Phase-B foundation mutation remains a separate stopped-only owner protocol.
+Its bounded Cloud SQL operations may exist only while applying the reviewed
+writer foundation and must end in a terminal readiness receipt before the live
+gate opens. No Phase-B credential or mutation capability is accepted by the
+live coordinator, gateway, model, or Canonical Writer runtime.

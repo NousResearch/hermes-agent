@@ -754,6 +754,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_calls TEXT,
     tool_name TEXT,
     effect_disposition TEXT,
+    internal_provenance TEXT,
     timestamp REAL NOT NULL,
     token_count INTEGER,
     finish_reason TEXT,
@@ -3679,6 +3680,7 @@ class SessionDB:
         platform_message_id: str = None,
         observed: bool = False,
         effect_disposition: Optional[str] = None,
+        internal_provenance: Any = None,
         timestamp: Any = None,
     ) -> int:
         """
@@ -3707,6 +3709,9 @@ class SessionDB:
             if codex_message_items else None
         )
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+        from agent.message_provenance import encode_message_provenance
+
+        internal_provenance_json = encode_message_provenance(internal_provenance)
         # Multimodal content (list of parts) must be JSON-encoded: sqlite3
         # cannot bind list/dict parameters directly.
         stored_content = self._encode_content(content)
@@ -3729,10 +3734,11 @@ class SessionDB:
         def _do(conn):
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, effect_disposition, internal_provenance,
+                   timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3741,6 +3747,7 @@ class SessionDB:
                     tool_calls_json,
                     tool_name,
                     effect_disposition,
+                    internal_provenance_json,
                     message_timestamp,
                     token_count,
                     finish_reason,
@@ -3814,6 +3821,11 @@ class SessionDB:
                 json.dumps(codex_message_items) if codex_message_items else None
             )
             tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+            from agent.message_provenance import encode_message_provenance
+
+            internal_provenance_json = encode_message_provenance(
+                msg.get("_hermes_provenance")
+            )
             # Accept either `platform_message_id` (new explicit name) or
             # `message_id` (yuanbao's existing convention on message dicts).
             platform_msg_id = (
@@ -3822,10 +3834,11 @@ class SessionDB:
 
             conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, effect_disposition, internal_provenance,
+                   timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3834,6 +3847,7 @@ class SessionDB:
                     tool_calls_json,
                     msg.get("tool_name"),
                     msg.get("effect_disposition"),
+                    internal_provenance_json,
                     message_timestamp,
                     msg.get("token_count"),
                     msg.get("finish_reason"),
@@ -4330,6 +4344,7 @@ class SessionDB:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
+                "internal_provenance, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders})"
@@ -4359,6 +4374,15 @@ class SessionDB:
                 msg["tool_name"] = row["tool_name"]
             if row["effect_disposition"]:
                 msg["effect_disposition"] = row["effect_disposition"]
+            if row["internal_provenance"]:
+                from agent.message_provenance import (
+                    MESSAGE_PROVENANCE_KEY,
+                    decode_message_provenance,
+                )
+
+                provenance = decode_message_provenance(row["internal_provenance"])
+                if provenance is not None:
+                    msg[MESSAGE_PROVENANCE_KEY] = provenance
             if row["tool_calls"]:
                 try:
                     msg["tool_calls"] = json.loads(row["tool_calls"])

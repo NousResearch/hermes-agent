@@ -7,7 +7,7 @@ import json
 import subprocess
 import time
 from dataclasses import asdict, dataclass
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 from scripts.canary.foundation import PREFLIGHT_MAX_AGE_SECONDS, PROJECT, ZONE
 from scripts.canary.host import (
@@ -53,7 +53,13 @@ def _metadata_exact(raw: object) -> bool:
     }
 
 
-def _vm_exact(raw: object, disk: object, spec: HostSpec) -> bool:
+def _vm_exact_for_boot_disk_size(
+    raw: object,
+    disk: object,
+    spec: HostSpec,
+    *,
+    boot_disk_size_gb: int,
+) -> bool:
     if not isinstance(raw, Mapping) or not isinstance(disk, Mapping):
         return False
     service_accounts = raw.get("serviceAccounts")
@@ -76,10 +82,7 @@ def _vm_exact(raw: object, disk: object, spec: HostSpec) -> bool:
         return False
     if len(service_accounts) != 1 or not isinstance(service_accounts[0], Mapping):
         return False
-    expected_scopes = {
-        "https://www.googleapis.com/auth/logging.write",
-        "https://www.googleapis.com/auth/monitoring.write",
-    }
+    expected_scopes = {"https://www.googleapis.com/auth/cloud-platform"}
     account = service_accounts[0]
     if len(interfaces) != 1 or not isinstance(interfaces[0], Mapping):
         return False
@@ -124,12 +127,23 @@ def _vm_exact(raw: object, disk: object, spec: HostSpec) -> bool:
         and shielded.get("enableVtpm") is True
         and shielded.get("enableIntegrityMonitoring") is True
         and disk.get("name") == spec.vm_name
-        and str(disk.get("sizeGb")) == str(spec.boot_disk_size_gb)
+        and str(disk.get("sizeGb")) == str(boot_disk_size_gb)
         and _ends_with(disk.get("type"), f"/diskTypes/{spec.boot_disk_type}")
         and _ends_with(
             disk.get("sourceImage"),
             f"/projects/{spec.image_project}/global/images/{spec.image}",
         )
+    )
+
+
+def _vm_exact(raw: object, disk: object, spec: HostSpec) -> bool:
+    """Validate only the canonical host target, never a transition source."""
+
+    return _vm_exact_for_boot_disk_size(
+        raw,
+        disk,
+        spec,
+        boot_disk_size_gb=spec.boot_disk_size_gb,
     )
 
 
@@ -201,12 +215,17 @@ def evaluate(evidence: Mapping[str, object]) -> dict[str, object]:
         and _vm_exact(evidence.get("planned_vm"), evidence.get("planned_vm_disk"), spec)
     )
     image = evidence.get("image")
-    image_exact = bool(
+    image_ready = bool(
         isinstance(image, Mapping)
         and image.get("name") == IMAGE
         and image.get("status") == "READY"
-        and not image.get("deprecated")
     )
+    # The public image may be deprecated after this identity-pinned VM was
+    # created.  Keep deprecation fail-closed for provisioning, but do not let a
+    # later catalog lifecycle change invalidate an exact existing VM whose
+    # persistent disk still proves the pinned source image.
+    image_deprecated = image.get("deprecated") if isinstance(image, Mapping) else None
+    image_exact = image_ready and (not image_deprecated or vm_exact)
     checks = [
         Check(
             "network.complete_exact",
@@ -221,7 +240,7 @@ def evaluate(evidence: Mapping[str, object]) -> dict[str, object]:
         Check(
             "image.exact_ready",
             image_exact,
-            "the immutable Debian image must exist and be READY",
+            "the immutable Debian image must be READY; deprecation is allowed only for the exact existing VM",
         ),
         Check(
             "resource.vm_absent_or_exact_running",
@@ -251,19 +270,20 @@ def _run_json(argv: Sequence[str]) -> object:
     return json.loads(completed.stdout or "null")
 
 
-def collect() -> dict[str, object]:
+CommandRunner = Callable[[Sequence[str]], object]
+
+
+def collect(*, run_json: CommandRunner = _run_json) -> dict[str, object]:
     project_flag = f"--project={PROJECT}"
-    network_report = evaluate_network(collect_network())
-    instances = _run_json(
-        (
-            "gcloud",
-            "compute",
-            "instances",
-            "list",
-            project_flag,
-            "--format=json",
-        )
-    )
+    network_report = evaluate_network(collect_network(run_json=run_json))
+    instances = run_json((
+        "gcloud",
+        "compute",
+        "instances",
+        "list",
+        project_flag,
+        "--format=json",
+    ))
     instance_names = {
         str(item.get("name"))
         for item in (instances if isinstance(instances, list) else [])
@@ -273,43 +293,37 @@ def collect() -> dict[str, object]:
         "collected_at_unix": int(time.time()),
         "network_report": network_report,
         "instances": instances,
-        "image": _run_json(
-            (
-                "gcloud",
-                "compute",
-                "images",
-                "describe",
-                IMAGE,
-                f"--project={IMAGE_PROJECT}",
-                "--format=json",
-            )
-        ),
+        "image": run_json((
+            "gcloud",
+            "compute",
+            "images",
+            "describe",
+            IMAGE,
+            f"--project={IMAGE_PROJECT}",
+            "--format=json",
+        )),
     }
     if VM_NAME in instance_names:
-        evidence["planned_vm"] = _run_json(
-            (
-                "gcloud",
-                "compute",
-                "instances",
-                "describe",
-                VM_NAME,
-                f"--zone={ZONE}",
-                project_flag,
-                "--format=json",
-            )
-        )
-        evidence["planned_vm_disk"] = _run_json(
-            (
-                "gcloud",
-                "compute",
-                "disks",
-                "describe",
-                VM_NAME,
-                f"--zone={ZONE}",
-                project_flag,
-                "--format=json",
-            )
-        )
+        evidence["planned_vm"] = run_json((
+            "gcloud",
+            "compute",
+            "instances",
+            "describe",
+            VM_NAME,
+            f"--zone={ZONE}",
+            project_flag,
+            "--format=json",
+        ))
+        evidence["planned_vm_disk"] = run_json((
+            "gcloud",
+            "compute",
+            "disks",
+            "describe",
+            VM_NAME,
+            f"--zone={ZONE}",
+            project_flag,
+            "--format=json",
+        ))
     return evidence
 
 

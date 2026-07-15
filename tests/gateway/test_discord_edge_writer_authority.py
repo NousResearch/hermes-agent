@@ -29,7 +29,7 @@ NOW_MS = 1_800_000_000_000
 NOW = dt.datetime.fromtimestamp(NOW_MS / 1_000, tz=dt.timezone.utc)
 SESSION_SHA256 = "a" * 64
 EPOCH_SHA256 = "b" * 64
-GUILD_ID = "100000000000000001"
+GUILD_ID = "1282725267068157972"
 CHANNEL_ID = "100000000000000002"
 MESSAGE_ID = "100000000000000003"
 BOT_ID = "100000000000000004"
@@ -66,10 +66,9 @@ def _authority() -> CanonicalWriterDiscordAuthority:
     )
 
 
-def _handlers(*, authority=True, public_routeback_targets=None):
+def _handlers(*, authority=True):
     backend = InMemoryCanonicalWriterBackend(
         clock=lambda: NOW,
-        public_routeback_targets=public_routeback_targets,
     )
     handlers = CanonicalWriterHandlers(
         backend,
@@ -91,7 +90,8 @@ def _claim_payload(
     return {
         "case_id": "case:signed-routeback",
         "target_ref": {
-            "target_type": "public_guild_channel",
+            "target_type": "guild_channel",
+            "channel_type": "guild_channel",
             "guild_id": GUILD_ID,
             "channel_id": CHANNEL_ID,
         },
@@ -105,7 +105,7 @@ def _claim_payload(
         "discord_edge_intent": {
             "operation": "public.message.send",
             "target": {
-                "target_type": "public_guild_channel",
+                "target_type": "guild_channel",
                 "guild_id": GUILD_ID,
                 "channel_id": CHANNEL_ID,
             },
@@ -268,7 +268,7 @@ def test_nonterminal_deduped_claim_returns_fresh_writer_signed_request():
 
 
 def test_epoch_restart_recovers_verified_edge_truth_before_terminal_finalize():
-    handlers, backend = _handlers(public_routeback_targets=frozenset())
+    handlers, backend = _handlers()
     payload, claim = _claim(
         handlers,
         _claim_payload(key="routeback:restart:verified-before-terminal"),
@@ -311,9 +311,7 @@ def test_epoch_restart_recovers_verified_edge_truth_before_terminal_finalize():
 
 
 def test_epoch_restart_no_record_rebinds_only_exact_lane_and_live_acl():
-    handlers, backend = _handlers(
-        public_routeback_targets=frozenset({CHANNEL_ID})
-    )
+    handlers, backend = _handlers()
     payload, claim = _claim(
         handlers,
         _claim_payload(key="routeback:restart:claim-before-edge"),
@@ -351,9 +349,7 @@ def test_epoch_restart_no_record_rebinds_only_exact_lane_and_live_acl():
     ],
 )
 def test_epoch_restart_recovery_cannot_cross_session_or_source_lane(runtime):
-    handlers, backend = _handlers(
-        public_routeback_targets=frozenset({CHANNEL_ID})
-    )
+    handlers, backend = _handlers()
     payload, claim = _claim(
         handlers,
         _claim_payload(key="routeback:restart:wrong-lane"),
@@ -373,17 +369,14 @@ def test_epoch_restart_recovery_cannot_cross_session_or_source_lane(runtime):
     assert len(backend.store.routeback_authorizations) == 1
 
 
-def test_recovery_acl_change_blocks_fresh_send_but_not_signed_truth():
-    handlers, backend = _handlers(
-        public_routeback_targets=frozenset({CHANNEL_ID})
-    )
+def test_recovery_uses_edge_owned_live_acl_not_a_writer_static_target_set():
+    handlers, backend = _handlers()
     payload, claim = _claim(
         handlers,
         _claim_payload(key="routeback:restart:acl-rotated"),
     )
     edge_request = claim["discord_edge_request"]
     edge_receipt = _signed_receipt(edge_request)
-    backend._public_routeback_targets = frozenset()
     restarted = _runtime(epoch_sha256="c" * 64)
 
     fresh_send = handlers.dispatch(
@@ -402,7 +395,9 @@ def test_recovery_acl_change_blocks_fresh_send_but_not_signed_truth():
         runtime=restarted,
     )
 
-    assert fresh_send["error"]["code"] == "target_not_approved"
+    assert fresh_send["ok"] is True
+    assert fresh_send["result"]["recovered"] is True
+    assert "discord_edge_request" in fresh_send["result"]
     assert signed_truth["ok"] is True
     assert signed_truth["result"]["recovered"] is True
     assert len(backend.store.routeback_authorizations) == 1
@@ -441,13 +436,20 @@ def test_claimed_finalization_fails_closed_when_authority_becomes_unavailable():
     ] is None
 
 
-@pytest.mark.parametrize("mismatch", ["target", "content", "idempotency"])
+@pytest.mark.parametrize(
+    "mismatch",
+    ["target", "target_type", "content", "idempotency"],
+)
 def test_claim_rejects_edge_intent_binding_mismatch(mismatch):
     handlers, backend = _handlers()
     payload = _claim_payload()
     if mismatch == "target":
         payload["discord_edge_intent"]["target"]["channel_id"] = (
             "100000000000000099"
+        )
+    elif mismatch == "target_type":
+        payload["discord_edge_intent"]["target"]["target_type"] = (
+            "public_guild_channel"
         )
     elif mismatch == "content":
         payload["discord_edge_intent"]["payload"]["content"] = "Other content"

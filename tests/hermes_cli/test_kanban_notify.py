@@ -26,6 +26,16 @@ def kanban_home(tmp_path, monkeypatch):
     return home
 
 
+@pytest.fixture(autouse=True)
+def _enable_gateway_kanban_notifier(monkeypatch):
+    """Notifier behavior tests opt into the now-disabled generic dispatcher."""
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True}},
+    )
+
+
 @pytest.mark.asyncio
 async def test_notifier_unsubs_after_completed_event(kanban_home):
     """

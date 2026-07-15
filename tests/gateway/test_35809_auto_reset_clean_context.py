@@ -102,6 +102,26 @@ class TestAutoResetBlockReSyncsBinding:
             "resolves back to the bloated compressed child (#35809)."
         )
 
+    def test_reset_records_exact_compression_exhaustion_reason(self):
+        """The next turn must distinguish involuntary recovery from /new."""
+        block = _find_compression_exhausted_reset_block()
+        reset_calls = [
+            node
+            for node in ast.walk(block)
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "reset_session"
+        ]
+        assert len(reset_calls) == 1
+        reason_keywords = [
+            keyword.value
+            for keyword in reset_calls[0].keywords
+            if keyword.arg == "fresh_reset_reason"
+        ]
+        assert len(reason_keywords) == 1
+        assert isinstance(reason_keywords[0], ast.Constant)
+        assert reason_keywords[0].value == "compression_exhaustion"
+
     def test_topic_binding_is_resynced_after_reset(self):
         """The block must re-sync the topic binding so the next inbound message
         cannot ``switch_session`` back onto the bloated compressed child."""

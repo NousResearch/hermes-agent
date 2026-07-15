@@ -746,7 +746,7 @@ agent:
   # this static operator policy; it does not classify the task or pick effort.
   adaptive_reasoning:
     enabled: true
-    max_effort: "xhigh"  # Keep max closed until your backend is verified.
+    max_effort: "max"  # GPT-5.6 Sol may choose the full supported effort range.
   
   # Predefined personalities (use with /personality command)
   personalities:

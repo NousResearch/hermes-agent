@@ -31,7 +31,11 @@ from typing import Any, Callable, Dict, List, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
 
 from agent.context_compressor import ContextCompressor
-from agent.iteration_budget import IterationBudget
+from agent.iteration_budget import (
+    ExecutionLease,
+    IterationBudget,
+    default_execution_lease_calls,
+)
 from agent.memory_manager import StreamingContextScrubber
 from agent.model_metadata import (
     MINIMUM_CONTEXT_LENGTH,
@@ -268,7 +272,7 @@ def init_agent(
     command: str = None,
     args: list[str] | None = None,
     model: str = "",
-    max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+    max_iterations: int = 90,  # Default per-agent renewable slice size
     tool_delay: float = 1.0,
     enabled_toolsets: List[str] = None,
     disabled_toolsets: List[str] = None,
@@ -323,6 +327,7 @@ def init_agent(
     session_db=None,
     parent_session_id: str = None,
     iteration_budget: "IterationBudget" = None,
+    execution_lease: "ExecutionLease" = None,
     fallback_model: Dict[str, Any] = None,
     credential_pool=None,
     checkpoints_enabled: bool = False,
@@ -340,7 +345,10 @@ def init_agent(
         provider (str): Provider identifier (optional; used for telemetry/routing hints)
         api_mode (str): API mode override: "chat_completions" or "codex_responses"
         model (str): Model name to use (default: "anthropic/claude-opus-4.6")
-        max_iterations (int): Maximum number of tool calling iterations (default: 90)
+        max_iterations (int): Renewable per-agent tool-call slice size (default: 90)
+        execution_lease (ExecutionLease): Optional aggregate provider-call
+            authority shared by this agent and descendants. Injected objects
+            retain exact identity and state across turns.
         tool_delay (float): Delay between tool calls in seconds (default: 1.0)
         enabled_toolsets (List[str]): Only enable tools from these toolsets (optional)
         disabled_toolsets (List[str]): Disable tools from these toolsets (optional)
@@ -392,9 +400,15 @@ def init_agent(
 
     agent.model = model
     agent.max_iterations = max_iterations
-    # Shared iteration budget — parent creates, children inherit.
-    # Consumed by every LLM turn across parent + all subagents.
+    # Renewable per-agent execution slice. Descendants receive their own slice,
+    # while ``execution_lease`` below is the monotonic aggregate authority.
     agent.iteration_budget = iteration_budget or IterationBudget(max_iterations)
+    agent._owns_execution_lease = execution_lease is None
+    agent.execution_lease = (
+        execution_lease
+        if execution_lease is not None
+        else ExecutionLease(default_execution_lease_calls(max_iterations))
+    )
     agent.tool_delay = tool_delay
     agent.save_trajectories = save_trajectories
     agent.verbose_logging = verbose_logging
@@ -633,14 +647,17 @@ def init_agent(
     except Exception:
         pass
 
-    # Iteration budget: the LLM is only notified when it actually exhausts
-    # the iteration budget (api_call_count >= max_iterations).  At that
-    # point we inject ONE message, allow one final API call, and if the
-    # model doesn't produce a text response, force a user-message asking
-    # it to summarise.  No intermediate pressure warnings — they caused
-    # models to "give up" prematurely on complex tasks (#7915).
+    # Iteration-budget continuation state. An exact GPT-authored active todo
+    # plan renews bounded execution slices without changing model, tools,
+    # prompt, permissions, or task identity. Once no active item remains, the
+    # ordinary loop may grant one closing call. It never injects a runtime-
+    # authored user turn or swaps to a toolless summary request; those both
+    # break role alternation, prompt-cache stability, and model sovereignty.
+    # No intermediate pressure warnings — they caused models to give up
+    # prematurely on complex tasks (#7915).
     agent._budget_exhausted_injected = False
     agent._budget_grace_call = False
+    agent._budget_renewal_count = 0
 
     # Activity tracking — updated on each API call, tool execution, and
     # stream chunk.  Used by the gateway timeout handler to report what the
@@ -1467,10 +1484,13 @@ def init_agent(
 
     configure_adaptive_reasoning(agent, _agent_section)
 
-    # Intent-ack continuation config: "auto" (default — codex_responses only,
-    # the historical gate), true (all api_modes), false (never), or a list of
-    # model-name substrings.  Resolved against the active api_mode/model in the
-    # conversation loop's intent-ack block.
+    # A separate post-turn reviewer is useful on ordinary installations, but
+    # sealed model-sovereignty runtimes keep every semantic memory/skill choice
+    # in the primary conversation loop. This flag changes no tool schema or
+    # cached prompt bytes during a conversation.
+    agent._background_review_enabled = bool(
+        _agent_section.get("background_review_enabled", True)
+    )
 
     # Universal task-completion guidance toggle.  Default True.  Surfaced
     # as a separate flag from tool_use_enforcement because the guidance
@@ -1592,7 +1612,7 @@ def init_agent(
         0, int(_compression_cfg.get("protect_first_n", 3))
     )
     compression_abort_on_summary_failure = str(
-        _compression_cfg.get("abort_on_summary_failure", False)
+        _compression_cfg.get("abort_on_summary_failure", True)
     ).lower() in {"true", "1", "yes"}
     # In-place compaction: when True, compress_context() rewrites the message
     # list + rebuilds the system prompt WITHOUT rotating the session id (no

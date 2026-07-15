@@ -889,13 +889,11 @@ class Task:
     # Name matches the ``--max-retries`` CLI flag on ``kanban create``.
     max_retries: Optional[int] = None
     # When True, the dispatched worker runs in a Ralph-style goal loop
-    # (the same engine behind the ``/goal`` slash command): after each
-    # turn an auxiliary judge model evaluates the worker's response
-    # against this card's title/body (treated as the goal). If the judge
-    # says "not done" and budget remains, the worker is fed a
-    # continuation prompt IN THE SAME SESSION and keeps working until the
-    # judge agrees, the goal-turn budget is exhausted (→ kanban_block),
-    # or the worker explicitly blocks/completes. ``False`` (default) =
+    # (the same engine behind the ``/goal`` slash command). While the task
+    # remains open and budget remains, the worker receives a continuation
+    # prompt IN THE SAME SESSION and keeps working until it explicitly
+    # blocks/completes through lifecycle tools or the goal-turn budget is
+    # exhausted (→ kanban_block). ``False`` (default) =
     # the classic single-shot worker. ``goal_max_turns`` bounds the loop.
     goal_mode: bool = False
     # Goal-loop turn budget for ``goal_mode`` workers. ``None`` falls
@@ -1147,11 +1145,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- case) falls through to the dispatcher-level ``kanban.failure_limit``
     -- config and then ``DEFAULT_FAILURE_LIMIT``.
     max_retries          INTEGER,
-    -- When 1, the dispatched worker runs in a Ralph-style goal loop: an
-    -- auxiliary judge re-evaluates the worker's response against the
-    -- card title/body after each turn and feeds a continuation prompt
-    -- back into the SAME session until the judge agrees the work is done
-    -- or ``goal_max_turns`` is exhausted. NULL/0 = classic single-shot
+    -- When 1, the dispatched worker runs in a Ralph-style goal loop. While
+    -- the card remains open, a continuation prompt is fed back into the SAME
+    -- session until the primary worker records completion/blocking through
+    -- lifecycle tools or ``goal_max_turns`` is exhausted. NULL/0 = classic single-shot
     -- worker (the default).
     goal_mode            INTEGER NOT NULL DEFAULT 0,
     -- Goal-loop turn budget for ``goal_mode`` workers. NULL = use the
@@ -7749,7 +7746,7 @@ def _default_spawn(
     if task.claim_lock:
         env["HERMES_KANBAN_CLAIM_LOCK"] = task.claim_lock
     # Goal-loop mode: the worker reads these and wraps its run in the
-    # Ralph-style /goal judge loop (see cli.py quiet-mode path). Only set
+    # Ralph-style /goal continuation loop (see cli.py quiet-mode path). Only set
     # when enabled so non-goal tasks keep a clean env.
     if task.goal_mode:
         env["HERMES_KANBAN_GOAL_MODE"] = "1"

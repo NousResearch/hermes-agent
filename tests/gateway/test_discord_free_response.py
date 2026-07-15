@@ -855,8 +855,8 @@ async def test_fetch_channel_context_discards_history_if_target_turns_private(ad
 
 
 @pytest.mark.asyncio
-async def test_fetch_channel_context_skips_self_improvement_boundary_message(adapter, monkeypatch):
-    """Delayed harness status bumps must not hide messages after the real reply."""
+async def test_fetch_channel_context_uses_structured_nonconversational_ids(adapter, monkeypatch):
+    """Only explicitly marked message IDs are omitted from history."""
     monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
     adapter.config.extra["history_backfill_limit"] = 10
 
@@ -897,7 +897,7 @@ async def test_fetch_channel_context_skips_self_improvement_boundary_message(ada
         ],
         channel_id=123,
     )
-    adapter._nonconversational_messages.mark_many(["9"])
+    adapter._nonconversational_messages.mark_many(["9", "8", "4"])
 
     result = await adapter._fetch_channel_context(channel, before=make_message(channel=channel, content="trigger"))
 
@@ -905,7 +905,9 @@ async def test_fetch_channel_context_skips_self_improvement_boundary_message(ada
         "[Recent channel messages]\n"
         "[Alice] prompt before reply\n"
         "[Codex [bot]] Codex final answer\n"
-        "[Alice] question after reply"
+        "[Alice] question after reply\n"
+        "[Codex [bot]] 💾 Self-improvement review: Memory updated\n"
+        "[Codex [bot]] ♻ Gateway restarted successfully. Your session continues."
     )
 
 
@@ -987,13 +989,38 @@ async def test_fetch_channel_context_reply_target_in_primary_window_not_duplicat
     assert result.count("recent reply target") == 1
 
 
-def test_nonconversational_fallback_requires_self_improvement_emoji():
-    assert discord_platform._looks_like_nonconversational_history_message(
-        "💾 Self-improvement review: Memory updated"
+def test_nonconversational_history_requires_structured_metadata():
+    assert discord_platform._metadata_marks_nonconversational(
+        {"non_conversational": True}
     )
-    assert not discord_platform._looks_like_nonconversational_history_message(
-        "Self-improvement review: this is a normal assistant heading"
+    assert not discord_platform._metadata_marks_nonconversational(
+        {"content": "💾 Self-improvement review: Memory updated"}
     )
+
+
+@pytest.mark.asyncio
+async def test_fetch_channel_context_does_not_classify_status_like_text(adapter, monkeypatch):
+    monkeypatch.setenv("DISCORD_ALLOW_BOTS", "all")
+    adapter.config.extra["history_backfill_limit"] = 10
+
+    human = SimpleNamespace(id=56, display_name="Alice", name="Alice", bot=False)
+    channel = FakeHistoryChannel(
+        [
+            make_history_message(
+                author=human,
+                content="💾 Self-improvement review: Memory updated",
+                msg_id=3,
+            ),
+        ],
+        channel_id=123,
+    )
+
+    result = await adapter._fetch_channel_context(
+        channel,
+        before=make_message(channel=channel, content="trigger"),
+    )
+
+    assert "💾 Self-improvement review: Memory updated" in result
 
 
 @pytest.mark.asyncio
@@ -1353,6 +1380,30 @@ async def test_discord_send_does_not_cache_nonconversational_status_as_history_b
     assert result.success is True
     assert adapter._last_self_message_id["777"] == "111"
     assert "222" in adapter._nonconversational_messages
+
+
+@pytest.mark.asyncio
+async def test_discord_send_does_not_classify_authored_status_like_text(adapter):
+    class SendingChannel(FakeTextChannel):
+        async def send(self, content, reference=None):
+            return SimpleNamespace(id=333)
+
+    channel = SendingChannel(channel_id=777)
+    adapter._client = SimpleNamespace(
+        user=adapter._client.user,
+        get_channel=lambda channel_id: channel if channel_id == 777 else None,
+        fetch_channel=AsyncMock(return_value=channel),
+    )
+    adapter._last_self_message_id["777"] = "111"
+
+    result = await adapter.send(
+        "777",
+        "💾 Self-improvement review: this is model-authored prose",
+    )
+
+    assert result.success is True
+    assert adapter._last_self_message_id["777"] == "333"
+    assert "333" not in adapter._nonconversational_messages
 
 
 @pytest.mark.asyncio

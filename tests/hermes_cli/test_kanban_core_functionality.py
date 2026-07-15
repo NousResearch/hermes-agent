@@ -3418,14 +3418,16 @@ def test_legacy_migration_both_columns_already_present(tmp_path):
 # Gateway-embedded dispatcher: config, CLI warnings, daemon deprecation stub
 # ---------------------------------------------------------------------------
 
-def test_config_default_dispatch_in_gateway_is_true():
-    """Default config must enable gateway-embedded dispatch out of the box.
-    Flipping this default to false is a user-visible behaviour change and
-    should require a conscious migration."""
+def test_config_default_dispatch_in_gateway_is_opt_in():
+    """Generic Hermes must not start the embedded dispatcher implicitly.
+
+    Worker dispatch remains available as an explicit mechanical capability;
+    model-sovereign runtimes must opt into it deliberately.
+    """
     from hermes_cli.config import DEFAULT_CONFIG
     kanban = DEFAULT_CONFIG.get("kanban", {})
-    assert kanban.get("dispatch_in_gateway") is True, (
-        "kanban.dispatch_in_gateway default should be True; got "
+    assert kanban.get("dispatch_in_gateway") is False, (
+        "kanban.dispatch_in_gateway default should be False; got "
         f"{kanban.get('dispatch_in_gateway')!r}"
     )
     interval = kanban.get("dispatch_interval_seconds")

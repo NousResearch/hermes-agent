@@ -402,8 +402,22 @@ class TestBareTextNoLongerApproves:
         entry = _ApprovalEntry({"command": "test"})
         _gateway_queues[session_key] = [entry]
 
-        # "yes" is not /approve — entry should still be pending
+        # Exercise the real busy-session gateway path.  If it classifies
+        # plain vocabulary as approval, this would resolve the entry before
+        # normal queue handling gets a chance to preserve the user message.
+        runner._running_agents[session_key] = MagicMock()
+        runner._busy_input_mode = "queue"
+        runner._busy_text_mode = "queue"
+        event = _make_event("yes")
+
+        handled = await runner._handle_active_session_busy_message(
+            event, session_key,
+        )
+
+        assert handled is False
+        assert event.text == "yes"
         assert not entry.event.is_set()
+        assert entry.result is None
 
 
 # ------------------------------------------------------------------
@@ -928,3 +942,191 @@ class TestCrossSessionApprovalIsolation:
             os.environ.pop("HERMES_EXEC_ASK", None)
             unregister_gateway_notify("sess-A")
             unregister_gateway_notify("sess-B")
+
+
+class TestProductionOwnerEscalatedApproval:
+    """Owner can resolve a receipt-bound team entry across per-user sessions."""
+
+    OWNER_ID = "1279454038731264061"
+    TEAM_ID = "1504852355588423805"
+    GUILD_ID = "1282725267068157972"
+    CHANNEL_ID = "1504852355588423802"
+    THREAD_ID = "1504852355588423803"
+    COMMAND_SHA256 = "b" * 64
+
+    def setup_method(self):
+        _clear_approval_state()
+
+    @pytest.fixture(autouse=True)
+    def _active_canonical_plan(self, monkeypatch):
+        monkeypatch.setattr(
+            "tools.approval._canonical_active_plan_matches",
+            lambda **_: True,
+        )
+
+    def _source(self, user_id, *, relay=True, thread_id=None):
+        return SessionSource(
+            platform=Platform.DISCORD,
+            user_id=user_id,
+            chat_id=self.CHANNEL_ID,
+            chat_type="thread",
+            thread_id=thread_id or self.THREAD_ID,
+            parent_chat_id=self.CHANNEL_ID,
+            scope_id=self.GUILD_ID,
+            message_id="1504852355588423804",
+            delivered_via_upstream_relay=relay,
+        )
+
+    def _event(self, text, source):
+        return MessageEvent(
+            text=text,
+            source=source,
+            message_id="1504852355588423810",
+        )
+
+    def _runner_and_entry(self):
+        from tools.approval import (
+            _ApprovalEntry,
+            _gateway_queues,
+            activate_gateway_owner_escalation_binding,
+            prepare_gateway_owner_escalation_binding,
+        )
+
+        runner = _make_runner()
+        runner._require_production_model_sovereignty = True
+        runner.config.thread_sessions_per_user = True
+        team_source = self._source(self.TEAM_ID)
+        team_session = runner._session_key_for_source(team_source)
+        entry = _ApprovalEntry(
+            {
+                "command": "protected command",
+                "command_sha256": self.COMMAND_SHA256,
+            }
+        )
+        _gateway_queues[team_session] = [entry]
+        assert prepare_gateway_owner_escalation_binding(
+            team_session,
+            entry.approval_id,
+            owner_user_id=self.OWNER_ID,
+            owner_guild_id=self.GUILD_ID,
+            source_lane_id=self.THREAD_ID,
+            case_id="case:approval",
+            plan_id="plan:approval",
+            plan_revision=2,
+            command_sha256=self.COMMAND_SHA256,
+        )
+        assert activate_gateway_owner_escalation_binding(
+            team_session,
+            entry.approval_id,
+        )
+        owner_source = self._source(self.OWNER_ID)
+        assert runner._session_key_for_source(owner_source) != team_session
+        return runner, entry, owner_source
+
+    @pytest.mark.asyncio
+    async def test_exact_owner_id_resolves_team_entry_across_user_sessions(self):
+        runner, entry, owner_source = self._runner_and_entry()
+
+        result = await runner._handle_approve_command(
+            self._event(f"/approve {entry.approval_id}", owner_source)
+        )
+
+        assert "approved" in result.lower()
+        assert entry.result == "once"
+        assert entry.event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_exact_owner_deny_resolves_only_bound_entry_with_reason(self):
+        runner, entry, owner_source = self._runner_and_entry()
+
+        result = await runner._handle_deny_command(
+            self._event(
+                f"/deny {entry.approval_id} change window closed",
+                owner_source,
+            )
+        )
+
+        assert "denied" in result.lower()
+        assert entry.result == "deny"
+        assert entry.reason == "change window closed"
+        assert entry.event.is_set()
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "command",
+        (
+            "/approve session",
+            "/approve always",
+            "/approve all session",
+            "/approve typo",
+        ),
+    )
+    async def test_production_rejects_reusable_or_unknown_approval_selectors(
+        self,
+        command,
+    ):
+        runner, entry, owner_source = self._runner_and_entry()
+
+        result = await runner._handle_approve_command(
+            self._event(command, owner_source)
+        )
+
+        assert "Invalid production approval selector" in result
+        assert entry.result is None
+        assert not entry.event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_forged_owner_id_without_connector_trust_cannot_resolve(self):
+        runner, entry, _owner_source = self._runner_and_entry()
+        forged = self._source(self.OWNER_ID, relay=False)
+
+        result = await runner._handle_approve_command(
+            self._event(f"/approve {entry.approval_id}", forged)
+        )
+
+        assert "owner-only" in result
+        assert not entry.event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_wrong_public_lane_cannot_resolve_bound_entry(self):
+        runner, entry, _owner_source = self._runner_and_entry()
+        wrong_lane = self._source(
+            self.OWNER_ID,
+            thread_id="1504852355588423899",
+        )
+
+        result = await runner._handle_approve_command(
+            self._event(f"/approve {entry.approval_id}", wrong_lane)
+        )
+
+        assert "pending" in result.lower()
+        assert not entry.event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_escalated_id_cannot_mint_session_scope(self):
+        runner, entry, owner_source = self._runner_and_entry()
+
+        result = await runner._handle_approve_command(
+            self._event(f"/approve {entry.approval_id} session", owner_source)
+        )
+
+        assert "Invalid production approval selector" in result
+        assert not entry.event.is_set()
+
+    @pytest.mark.asyncio
+    async def test_changed_canonical_plan_cannot_consume_escalation(
+        self,
+        monkeypatch,
+    ):
+        runner, entry, owner_source = self._runner_and_entry()
+        monkeypatch.setattr(
+            "tools.approval._canonical_active_plan_matches",
+            lambda **_: False,
+        )
+
+        result = await runner._handle_approve_command(
+            self._event(f"/approve {entry.approval_id}", owner_source)
+        )
+
+        assert "pending" in result.lower()
+        assert not entry.event.is_set()

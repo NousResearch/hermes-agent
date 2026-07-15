@@ -702,13 +702,6 @@ class GatewayConfig:
     
     # Delivery settings
     always_log_local: bool = True  # Always save cron outputs to local files
-    # Drop outbound "silence narration" messages (e.g. *(silent)*, 🔇, a bare
-    # ".") pre-send. These are model hallucinations emitted when a persona has
-    # nothing actionable to say; in bot-to-bot channels they mirror back and
-    # forth, burning tokens and crashing models. Substrate-level guard that
-    # survives SOUL.md/prompt drift across providers. Opt out with False for
-    # raw passthrough.
-    filter_silence_narration: bool = True
 
     # STT settings
     stt_enabled: bool = True  # Whether to auto-transcribe inbound voice messages
@@ -850,7 +843,6 @@ class GatewayConfig:
             "sessions_dir": str(self.sessions_dir),
             "write_sessions_json": self.write_sessions_json,
             "always_log_local": self.always_log_local,
-            "filter_silence_narration": self.filter_silence_narration,
             "stt_enabled": self.stt_enabled,
             "stt_echo_transcripts": self.stt_echo_transcripts,
             "group_sessions_per_user": self.group_sessions_per_user,
@@ -977,9 +969,6 @@ class GatewayConfig:
             sessions_dir=sessions_dir,
             write_sessions_json=_coerce_bool(data.get("write_sessions_json"), True),
             always_log_local=_coerce_bool(data.get("always_log_local"), True),
-            filter_silence_narration=_coerce_bool(
-                data.get("filter_silence_narration"), True
-            ),
             stt_enabled=_coerce_bool(stt_enabled, True),
             stt_echo_transcripts=_coerce_bool(stt_echo_transcripts, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
@@ -1162,11 +1151,6 @@ def load_gateway_config() -> GatewayConfig:
                 gw_data["write_sessions_json"] = yaml_cfg["write_sessions_json"]
             elif isinstance(_gw_section, dict) and "write_sessions_json" in _gw_section:
                 gw_data["write_sessions_json"] = _gw_section["write_sessions_json"]
-
-            if "filter_silence_narration" in yaml_cfg:
-                gw_data["filter_silence_narration"] = yaml_cfg[
-                    "filter_silence_narration"
-                ]
 
             if "unauthorized_dm_behavior" in yaml_cfg:
                 gw_data["unauthorized_dm_behavior"] = _normalize_unauthorized_dm_behavior(

@@ -424,43 +424,6 @@ def test_tui_verbose_tool_events_omit_details_when_redaction_fails(monkeypatch):
     assert "result_text" not in events[1][2]
 
 
-def test_tui_tool_output_risk_event_exposes_metadata_without_raw_output(monkeypatch):
-    events: list[tuple[str, str, dict]] = []
-    monkeypatch.setattr(
-        server, "_emit", lambda event_type, sid, payload: events.append((event_type, sid, payload))
-    )
-    monkeypatch.setitem(
-        server._sessions,
-        "risk-test",
-        {"tool_progress_mode": "all"},
-    )
-
-    server._on_tool_progress(
-        "risk-test",
-        "tool.output_risk",
-        "web_extract",
-        tool_call_id="tool-1",
-        risk_metadata={
-            "risk": "high",
-            "findings": ["prompt_injection"],
-            "redacted": False,
-        },
-    )
-
-    assert events == [(
-        "tool.output_risk",
-        "risk-test",
-        {
-            "tool_id": "tool-1",
-            "name": "web_extract",
-            "risk": "high",
-            "findings": ["prompt_injection"],
-            "redacted": False,
-        },
-    )]
-    assert "result" not in events[0][2]
-
-
 def test_dispatch_rejects_non_object_request():
     resp = server.dispatch([])
 
@@ -6188,6 +6151,109 @@ class _ImmediateThread:
 
     def start(self):
         self._target()
+
+
+def test_prompt_submit_consumes_exact_durable_goal_outcome(monkeypatch):
+    from hermes_cli.goals import GoalManager
+
+    session_key = f"tui-goal-{time.time_ns()}"
+    GoalManager(session_key).set("ship it")
+
+    class _Agent:
+        session_id = session_key
+        _current_turn_id = ""
+        _current_goal_generation_id = ""
+
+        def run_conversation(self, prompt, **kwargs):
+            self._current_turn_id = "tui-model-turn"
+            writer = GoalManager(session_key)
+            self._current_goal_generation_id = writer.begin_model_turn(
+                self._current_turn_id
+            )
+            assert writer.record_model_outcome(
+                "complete",
+                "verified",
+                originating_turn_id=self._current_turn_id,
+                goal_generation_id=self._current_goal_generation_id,
+            )
+            return {
+                "turn_id": self._current_turn_id,
+                "final_response": "verified result",
+                "messages": [{"role": "assistant", "content": "verified result"}],
+            }
+
+    server._sessions["tui-goal"] = _session(agent=_Agent())
+    server._sessions["tui-goal"]["session_key"] = session_key
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    try:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "tui-goal", "text": "go"},
+            }
+        )
+        assert GoalManager(session_key).state.status == "done"
+    finally:
+        server._sessions.pop("tui-goal", None)
+
+
+def test_prompt_submit_abandons_empty_goal_turn_without_leaking_outcome(monkeypatch):
+    from hermes_cli.goals import GoalManager
+
+    session_key = f"tui-goal-empty-{time.time_ns()}"
+    GoalManager(session_key).set("ship it")
+
+    class _Agent:
+        session_id = session_key
+        _current_turn_id = ""
+        _current_goal_generation_id = ""
+
+        def run_conversation(self, prompt, **kwargs):
+            self._current_turn_id = "tui-empty-turn"
+            writer = GoalManager(session_key)
+            self._current_goal_generation_id = writer.begin_model_turn(
+                self._current_turn_id
+            )
+            assert writer.record_model_outcome(
+                "complete",
+                "must not leak",
+                originating_turn_id=self._current_turn_id,
+                goal_generation_id=self._current_goal_generation_id,
+            )
+            return {
+                "turn_id": self._current_turn_id,
+                "final_response": "",
+                "messages": [],
+            }
+
+    server._sessions["tui-goal-empty"] = _session(agent=_Agent())
+    server._sessions["tui-goal-empty"]["session_key"] = session_key
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    try:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "tui-goal-empty", "text": "go"},
+            }
+        )
+        durable = GoalManager(session_key).state
+        assert durable.status == "active"
+        assert durable.active_model_turn_id is None
+        assert durable.pending_model_outcome is None
+    finally:
+        server._sessions.pop("tui-goal-empty", None)
 
 
 def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):

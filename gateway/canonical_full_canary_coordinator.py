@@ -2,27 +2,24 @@
 """Root-only mechanical coordinator for one isolated full Muncho canary.
 
 This module deliberately owns no task semantics.  It binds an exact reviewed
-canary input, two fresh owner approvals, one inherited-stdin administrator
-credential, fixed PostgreSQL operations, and the existing honest live driver.
-It never accepts SQL, a host, a database, a path, or a secret through argv or
-the environment, and it never enables a service.
+canary input, terminal writer-foundation truth, one session-bound final owner
+approval, and the existing honest live driver.  It never accepts SQL, a host,
+a database, a path, or a secret through argv or the environment, and it never
+creates a database principal.
 """
 
 from __future__ import annotations
 
 import copy
 import base64
-import fcntl
 import grp
 import hashlib
 import json
 import os
 import pwd
 import re
-import select
 import secrets
 import signal
-import ssl
 import stat
 import struct
 import sys
@@ -35,10 +32,6 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
 from gateway.canonical_full_canary_runtime import (
-    DEFAULT_CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE,
-    DEFAULT_CANARY_BOOTSTRAP_SQL_RELATIVE,
-    DEFAULT_CANARY_BOOTSTRAP_CREDENTIAL,
-    DEFAULT_APPROVAL_PATH,
     DEFAULT_E2E_FIXTURE,
     DEFAULT_EDGE_CONFIG,
     DEFAULT_EDGE_CONFIG_SOURCE,
@@ -51,26 +44,19 @@ from gateway.canonical_full_canary_runtime import (
     DEFAULT_WRITER_CONFIG,
     DEFAULT_WRITER_CONFIG_SOURCE,
     EDGE_UNIT_NAME,
-    FULL_CANARY_RECEIPT_SCHEMA,
     GATEWAY_UNIT_NAME,
     WRITER_UNIT_NAME,
     ExactArtifact,
     FullCanaryIdentities,
-    FullCanaryLifecycle,
     FullCanaryOwnerApproval,
     FullCanaryPlan,
-    PreopenedSessionBootstrapProvisioner,
-    BootstrapEvidenceUnavailable,
-    BootstrapNeverAuthorizedEvidence,
-    BootstrapReconciliationEvidence,
-    _build_canary_bootstrap_provisioning_request,
-    _validate_canary_bootstrap_reconciliation_receipt,
     _validate_artifact_source,
     _validate_edge_config,
     _validate_gateway_config,
     _validate_writer_config,
     _validate_writer_only_receipt,
     _read_stable_file,
+    _release_binding,
     _validated_e2e_fixture,
     _validated_release_file,
     _MAX_HOST_IDENTITY_RECEIPT_BYTES,
@@ -80,25 +66,16 @@ from gateway.canonical_full_canary_runtime import (
     _lifecycle_lock,
     _require_root_linux,
     validate_dedicated_canary_host,
-    validated_bootstrap_reconciliation_evidence,
-    load_bootstrap_evidence_envelope,
-    load_bootstrap_evidence_from_receipt,
-    load_bootstrap_never_authorized_evidence,
-    load_full_canary_approval,
-    load_full_canary_plan,
-    mechanically_reconcile_never_authorized_preclaim,
     mechanically_stop_full_canary_services,
-    observe_canary_preclaim_reconciliation_generation,
-    persist_bootstrap_evidence_envelope,
-    persist_bootstrap_never_authorized_evidence,
-    validate_canary_preclaim_reconciliation_receipt,
 )
 from gateway.canonical_full_canary_live_driver import (
     HonestFullCanaryDriver,
     _atomic_stage_writer_config,
     _read_staged_writer_config,
     prepare_session_bound_plan,
-    wait_for_fresh_owner_approval,
+)
+from gateway.canonical_full_canary_e2e import (
+    _validate_fixture as _validate_e2e_fixture_mapping,
 )
 from gateway.canonical_writer_activation import (
     DEFAULT_PLAN_PATH as WRITER_ACTIVATION_PLAN_PATH,
@@ -110,18 +87,6 @@ from gateway.canonical_writer_activation import (
     ActivationPlan,
     _success_receipt_path,
     load_activation_plan,
-)
-from gateway.canonical_writer_db import (
-    CredentialSource,
-    ManagedCloudSQLAdminHBAReceipt,
-    managed_cloudsqladmin_hba_receipt_from_mapping,
-    PostgresProtocolError,
-    WriterDBConfig,
-    _PostgresWireSession,
-    _authenticate,
-    collect_managed_cloudsqladmin_hba_receipt,
-    _open_verified_tls_connection,
-    _send_startup_message,
 )
 from gateway.canonical_writer_boundary import (
     current_process_hardening_state,
@@ -138,7 +103,6 @@ COORDINATOR_INPUT_SCHEMA = "muncho-full-canary-coordinator-input.v1"
 COORDINATOR_INPUT_PUBLICATION_SCHEMA = (
     "muncho-full-canary-coordinator-input-publication.v1"
 )
-CREDENTIAL_PREPARE_APPROVAL_SCHEMA = "muncho-full-canary-credential-prepare-approval.v1"
 DISCORD_TOKEN_INSTALL_APPROVAL_SCHEMA = (
     "muncho-full-canary-discord-token-install-approval.v1"
 )
@@ -153,35 +117,84 @@ DISCORD_TOKEN_INSTALL_JOURNAL_SCHEMA = (
 DISCORD_TOKEN_RETIREMENT_RECEIPT_SCHEMA = (
     "muncho-full-canary-discord-token-retirement-receipt.v1"
 )
-SECRET_GATE_SCHEMA = "muncho-full-canary-coordinator-secret-gate.v1"
-OWNER_APPROVAL_REQUEST_SCHEMA = "muncho-full-canary-owner-approval-request.v1"
-COORDINATOR_RECEIPT_SCHEMA = "muncho-full-canary-coordinator-receipt.v1"
-COORDINATOR_FAILURE_SCHEMA = "muncho-full-canary-coordinator-failure.v1"
-LEGACY_RECOVERY_RECEIPT_SCHEMA = "muncho-full-canary-recovery-receipt.v1"
-RECOVERY_TAKEOVER_GATE_SCHEMA = "muncho-full-canary-recovery-takeover-gate.v1"
-RECOVERY_TAKEOVER_ACK_SCHEMA = "muncho-full-canary-owner-recovery-takeover-ack.v1"
-RECOVERY_WORKER_LEASE_SCHEMA = "muncho-full-canary-recovery-worker-lease.v1"
-RECOVERY_SECRET_GATE_SCHEMA = "muncho-full-canary-recovery-admin-secret-gate.v1"
-RECOVERY_CONCURRENT_LOSER_RECEIPT_SCHEMA = (
-    "muncho-full-canary-recovery-worker-claim-lost-receipt.v1"
+SESSION_BOUND_APPROVAL_REQUEST_SCHEMA = (
+    "muncho-full-canary-session-bound-owner-approval-request.v1"
 )
-RECOVERY_WORKER_COMPLETION_SCHEMA = "muncho-full-canary-recovery-worker-completion.v1"
-RECOVERY_FINALIZE_PENDING_RECEIPT_SCHEMA = (
-    "muncho-full-canary-recovery-finalize-pending-receipt.v1"
+SESSION_BOUND_COORDINATOR_RECEIPT_SCHEMA = (
+    "muncho-full-canary-session-bound-coordinator-receipt.v1"
 )
-RECOVERY_RECEIPT_SCHEMA = "muncho-full-canary-recovery-receipt.v2"
-# Public stage-one names remain concise while the legacy strings stay explicit.
-RECOVERY_GATE_SCHEMA = RECOVERY_TAKEOVER_GATE_SCHEMA
-RECOVERY_ACK_SCHEMA = RECOVERY_TAKEOVER_ACK_SCHEMA
-PREPLAN_STOPPED_REPORT_SCHEMA = "muncho-full-canary-preplan-stopped-report.v1"
+COORDINATOR_FAILURE_SCHEMA = (
+    "muncho-full-canary-session-bound-coordinator-failure.v1"
+)
 DISCORD_RETIREMENT_GATE_SCHEMA = "muncho-full-canary-discord-token-retirement-gate.v1"
 DISCORD_RETIREMENT_ACK_SCHEMA = "muncho-full-canary-owner-discord-retirement-ack.v1"
+
+# Fixed owner/VM transport for the separately approved writer-foundation
+# Phase-B.  This protocol runs while every live-canary service is stopped and
+# before any Discord credential or legacy full-canary administrator exists.
+# It is deliberately an enumerated, length-delimited state machine rather
+# than a general RPC surface.
+PHASE_B_OWNER_REQUEST_SCHEMA = "muncho-canonical-writer-phase-b-owner-request.v2"
+PHASE_B_OWNER_RESPONSE_SCHEMA = "muncho-canonical-writer-phase-b-owner-response.v2"
+PHASE_B_AUTHORITY_SCHEMA = "muncho-canonical-writer-phase-b-authority.v2"
+PHASE_B_LOCAL_PREFLIGHT_SCHEMA = (
+    "muncho-canonical-writer-phase-b-local-preflight.v1"
+)
+PHASE_B_APPLY_RECEIPT_SCHEMA = "muncho-canonical-writer-phase-b-apply-receipt.v1"
+PHASE_B_APPLY_GATE_SCHEMA = "muncho-canonical-writer-phase-b-owner-gate.v2"
+PHASE_B_LIVE_GATE_SCHEMA = "muncho-full-canary-phase-b-live-gate.v1"
+PHASE_B_OWNER_FRAME_MAGIC = b"MPB1"
+PHASE_B_OWNER_FRAME_SCHEMA = "MPB1-u32be-json-u32be-opaque.v1"
+# Fresh execution consumes ten rounds (two authority rounds plus eight Cloud
+# transitions).  The remaining six are the exact one-retry allowance for the
+# three mutation boundaries and recovery/terminal observations; no other
+# transition may consume them.
+PHASE_B_MAX_ROUNDS = 16
+PHASE_B_MAX_REQUEST_BYTES = 512 * 1024
+PHASE_B_MAX_RESPONSE_BYTES = 512 * 1024
+PHASE_B_CREDENTIAL_BYTES = 64
+PHASE_B_OWNER_PUBLIC_KEY_PATH = (
+    "/Users/emillomliev/.ssh/skyvision_mac_ops_ed25519.pub"
+)
+PHASE_B_OWNER_PUBLIC_KEY_FINGERPRINT = (
+    "SHA256:7Ea5WNys9ui7FL/p0FlOnL1ZLr6NPFuewekwqRw/rdw"
+)
+PHASE_B_PINNED_APPROVAL_SOURCE_SHA256 = hashlib.sha256(
+    PHASE_B_OWNER_PUBLIC_KEY_FINGERPRINT.encode("ascii")
+).hexdigest()
+PHASE_B_OWNER_PUBLIC_KEY_UID = 501
+PHASE_B_OWNER_PUBLIC_KEY_GID = 20
+PHASE_B_AUTHORITY_ROOT = Path("/etc/muncho/canonical-writer-phase-b")
+PHASE_B_AUTHORITY_STAGE = Path(
+    "/etc/muncho/.canonical-writer-phase-b.installing"
+)
+PHASE_B_PLAN_PATH = PHASE_B_AUTHORITY_ROOT / "plan.json"
+PHASE_B_APPROVAL_PATH = PHASE_B_AUTHORITY_ROOT / "owner-approval.json"
+PHASE_B_APPROVAL_SOURCE_PATH = (
+    PHASE_B_AUTHORITY_ROOT / "owner-approval-source.json"
+)
+PHASE_B_AUTHORITY_RECEIPT_PATH = PHASE_B_AUTHORITY_ROOT / "authority-receipt.json"
+PHASE_B_RESUME_APPROVAL_ROOT = PHASE_B_AUTHORITY_ROOT / "resume-approvals"
+
+_PHASE_B_OWNER_FRAME_HEADER = struct.Struct(">4sII")
+_PHASE_B_OWNER_OPERATIONS = frozenset({
+    "authority_observe_initial",
+    "authority_approve",
+    "authority_resume_approve",
+    "observe_initial",
+    "observe_recovery",
+    "temporary_create_or_rotate",
+    "temporary_delete",
+    "bootstrap_describe",
+    "bootstrap_create_or_rotate",
+    "observe_terminal",
+})
 
 COORDINATOR_INPUT_PATH = Path("/etc/muncho/full-canary/coordinator-input.json")
 COORDINATOR_INPUT_PUBLICATION_RECEIPT_PATH = Path(
     "/etc/muncho/full-canary/coordinator-input-publication.json"
 )
-CREDENTIAL_PREPARE_APPROVAL_PATH = Path(
+OBSOLETE_CREDENTIAL_PREPARE_APPROVAL_PATH = Path(
     "/etc/muncho/full-canary/credential-prepare-approval.json"
 )
 DISCORD_TOKEN_INSTALL_APPROVAL_PATH = Path(
@@ -193,30 +206,20 @@ DISCORD_TOKEN_INSTALL_RECEIPT_PATH = Path(
 DISCORD_TOKEN_RETIREMENT_RECEIPT_PATH = Path(
     "/etc/muncho/full-canary/discord-token-retirement-receipt.json"
 )
-OWNER_APPROVAL_REQUEST_PATH = Path("/etc/muncho/full-canary/approval-request.json")
-COORDINATOR_PROCESS_LEASE_PATH = Path(
+OBSOLETE_COORDINATOR_PROCESS_JOURNAL_PATH = Path(
     "/etc/muncho/full-canary/coordinator-process-lease.json"
-)
-COORDINATOR_PROCESS_LOCK_PATH = Path("/run/muncho-full-canary/coordinator-process.lock")
-PREPLAN_STOPPED_REPORT_PATH = Path(
-    "/etc/muncho/full-canary/preplan-stopped-report.json"
 )
 DISCORD_TOKEN_PATH = DEFAULT_EDGE_TOKEN_PATH
 DISCORD_TOKEN_STAGE_PATH = DISCORD_TOKEN_PATH.with_name(".discord-bot-token.installing")
-CANARY_BOOTSTRAP_CREDENTIAL_PATH = DEFAULT_CANARY_BOOTSTRAP_CREDENTIAL
+OBSOLETE_BOOTSTRAP_CREDENTIAL_PATH = Path(
+    "/etc/muncho/credentials/canonical-canary-bootstrap-db-password"
+)
 CANARY_DATABASE_CA_PATH = Path("/etc/muncho/trust/cloudsql-server-ca.pem")
 
 CANARY_DATABASE_HOST = "10.91.0.3"
 CANARY_DATABASE_PORT = 5432
 CANARY_DATABASE_NAME = "muncho_canary_brain"
-CANARY_BOOTSTRAP_LOGIN = "canonical_brain_canary_bootstrap_login"
-
-ADMIN_FRAME_SCHEMA = "MCA2-u16be-u32be-utf8-eof.v1"
-ADMIN_FRAME_MAGIC = b"MCA2"
 ADMIN_FRAME_FD = 0
-MAX_ADMIN_USERNAME_BYTES = 63
-MIN_ADMIN_PASSWORD_BYTES = 24
-MAX_ADMIN_PASSWORD_BYTES = 4096
 MAX_COORDINATOR_INPUT_BYTES = 8 * 1024 * 1024
 MAX_OWNER_APPROVAL_BYTES = 128 * 1024
 MAX_RELEASE_MANIFEST_BYTES = 16 * 1024 * 1024
@@ -228,135 +231,18 @@ FINAL_APPROVAL_FRAME_SCHEMA = "MFA1-u32be-canonical-json-eof.v1"
 FINAL_APPROVAL_FRAME_MAGIC = b"MFA1"
 MAX_FINAL_APPROVAL_FRAME_BYTES = 128 * 1024
 MAX_FIXED_CANARY_ARTIFACT_BYTES = 2 * 1024 * 1024
-FINAL_APPROVAL_INSTALL_RECEIPT_SCHEMA = (
-    "muncho-full-canary-final-approval-install-receipt.v1"
-)
-FINAL_APPROVAL_CANCEL_RECEIPT_SCHEMA = (
-    "muncho-full-canary-final-approval-cancel-receipt.v2"
-)
-FINAL_APPROVAL_MAX_WAIT_SECONDS = 240
-FINAL_APPROVAL_TRANSMIT_MARGIN_SECONDS = 30
-HBA_EXPIRY_SAFETY_MARGIN_SECONDS = 30
-RECOVERY_ACK_FRAME_MAGIC = b"MRA1"
-RECOVERY_ACK_FRAME_SCHEMA = "MRA1-u32be-canonical-json-no-secret.v1"
-RECOVERY_ADMIN_FRAME_MAGIC = b"MRC2"
-RECOVERY_ADMIN_FRAME_SCHEMA = "MRC2-gate-sha256-nonce-sha256-u16be-u32be-utf8-eof.v1"
 DISCORD_RETIREMENT_ACK_FRAME_MAGIC = b"DRA1"
 DISCORD_RETIREMENT_ACK_FRAME_SCHEMA = "DRA1-u32be-canonical-json-eof.v1"
-RECOVERY_GATE_MAX_SECONDS = 300
-RECOVERY_PROCESS_TERM_SECONDS = 10.0
-RECOVERY_PROCESS_KILL_SECONDS = 10.0
-RECOVERY_CONCURRENT_OBSERVE_SECONDS = 5.0
-RECOVERY_WORKER_LEASE_MAX_SECONDS = 300
+DISCORD_RETIREMENT_GATE_MAX_SECONDS = 300
 
-_FRAME_HEADER = struct.Struct("!4sHI")
 _TOKEN_FRAME_HEADER = struct.Struct("!4sI")
 _FINAL_APPROVAL_FRAME_HEADER = struct.Struct("!4sI")
 _ACK_FRAME_HEADER = struct.Struct("!4sI")
-_RECOVERY_ADMIN_FRAME_HEADER = struct.Struct("!4s32s32sHI")
-_RECOVERY_ADMIN_FRAME_TAIL = struct.Struct("!32s32sHI")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
-_ADMIN_USERNAME_RE = re.compile(r"^muncho_canary_admin_[0-9a-f]{16}$")
 _TLS_NAME_RE = re.compile(
     r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.europe-west3\.sql\.goog$"
 )
-
-_BOOTSTRAP_ROLE_PASSWORD_TEMPLATE = """DO $muncho_coordinator$
-DECLARE
-    password_value text := pg_catalog.convert_from(
-        pg_catalog.decode('{password_base64}','base64'),'UTF8'
-    );
-BEGIN
-    IF NOT EXISTS (
-        SELECT 1 FROM pg_catalog.pg_roles
-         WHERE rolname = 'canonical_brain_canary_bootstrap'
-           AND NOT rolcanlogin AND NOT rolinherit AND NOT rolsuper
-           AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication
-           AND NOT rolbypassrls
-    ) OR NOT EXISTS (
-        SELECT 1 FROM pg_catalog.pg_roles
-         WHERE rolname = 'canonical_brain_canary_bootstrap_login'
-           AND rolcanlogin AND rolinherit AND NOT rolsuper
-           AND NOT rolcreatedb AND NOT rolcreaterole AND NOT rolreplication
-           AND NOT rolbypassrls
-    ) OR (
-        SELECT pg_catalog.count(*)
-          FROM pg_catalog.pg_auth_members AS membership
-          JOIN pg_catalog.pg_roles AS granted_role
-            ON granted_role.oid = membership.roleid
-          JOIN pg_catalog.pg_roles AS member_role
-            ON member_role.oid = membership.member
-         WHERE granted_role.rolname = 'canonical_brain_canary_bootstrap'
-           AND member_role.rolname = 'canonical_brain_canary_bootstrap_login'
-           AND NOT membership.admin_option
-           AND membership.inherit_option
-           AND NOT membership.set_option
-    ) <> 1 OR EXISTS (
-        SELECT 1
-          FROM pg_catalog.pg_auth_members AS membership
-          JOIN pg_catalog.pg_roles AS granted_role
-            ON granted_role.oid = membership.roleid
-          JOIN pg_catalog.pg_roles AS member_role
-            ON member_role.oid = membership.member
-         WHERE (
-                granted_role.rolname = 'canonical_brain_canary_bootstrap'
-                OR member_role.rolname = 'canonical_brain_canary_bootstrap_login'
-                OR member_role.rolname = 'canonical_brain_canary_bootstrap'
-               )
-           AND NOT (
-                granted_role.rolname = 'canonical_brain_canary_bootstrap'
-                AND member_role.rolname = 'canonical_brain_canary_bootstrap_login'
-                AND NOT membership.admin_option
-                AND membership.inherit_option
-                AND NOT membership.set_option
-           )
-    ) THEN
-        RAISE EXCEPTION 'canonical canary bootstrap role shape is invalid';
-    END IF;
-    EXECUTE pg_catalog.format(
-        'ALTER ROLE canonical_brain_canary_bootstrap_login PASSWORD %L',
-        password_value
-    );
-END
-$muncho_coordinator$"""
-
-_BOOTSTRAP_ROLE_DISABLE_SQL = """DO $muncho_coordinator$
-DECLARE
-    admin_name text := SESSION_USER;
-BEGIN
-    IF admin_name !~ '^muncho_canary_admin_[0-9a-f]{16}$' THEN
-        RAISE EXCEPTION 'coordinator administrator identity is invalid';
-    END IF;
-    IF EXISTS (
-        SELECT 1
-          FROM pg_catalog.pg_auth_members AS membership
-          JOIN pg_catalog.pg_roles AS owner_role
-            ON owner_role.oid = membership.roleid
-          JOIN pg_catalog.pg_roles AS member_role
-            ON member_role.oid = membership.member
-         WHERE owner_role.rolname = 'canonical_brain_migration_owner'
-           AND member_role.rolname = admin_name
-    ) THEN
-        EXECUTE pg_catalog.format(
-            'REVOKE canonical_brain_migration_owner FROM %I', admin_name
-        );
-    END IF;
-    ALTER ROLE canonical_brain_canary_bootstrap_login PASSWORD NULL;
-    IF EXISTS (
-        SELECT 1
-          FROM pg_catalog.pg_auth_members AS membership
-          JOIN pg_catalog.pg_roles AS owner_role
-            ON owner_role.oid = membership.roleid
-          JOIN pg_catalog.pg_roles AS member_role
-            ON member_role.oid = membership.member
-         WHERE owner_role.rolname = 'canonical_brain_migration_owner'
-           AND member_role.rolname = admin_name
-    ) THEN
-        RAISE EXCEPTION 'coordinator administrator membership survived cleanup';
-    END IF;
-END
-$muncho_coordinator$"""
 
 _COORDINATOR_INPUT_FIELDS = frozenset({
     "schema",
@@ -367,11 +253,9 @@ _COORDINATOR_INPUT_FIELDS = frozenset({
     "identities",
     "writer_config",
     "artifacts",
-    "bootstrap_sql_sha256",
-    "bootstrap_retire_sql_sha256",
     "coordinator_input_sha256",
 })
-_CREDENTIAL_PREPARE_APPROVAL_FIELDS = frozenset({
+_DISCORD_TOKEN_INSTALL_APPROVAL_FIELDS = frozenset({
     "schema",
     "scope",
     "coordinator_input_sha256",
@@ -383,68 +267,6 @@ _CREDENTIAL_PREPARE_APPROVAL_FIELDS = frozenset({
     "nonce_sha256",
     "approved_at_unix",
     "expires_at_unix",
-})
-_DISCORD_TOKEN_INSTALL_APPROVAL_FIELDS = frozenset(_CREDENTIAL_PREPARE_APPROVAL_FIELDS)
-_OWNER_APPROVAL_REQUEST_FIELDS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "approval_source_sha256",
-    "ephemeral_admin_username",
-    "full_canary_plan_sha256",
-    "staged_plan_path",
-    "staged_plan_file_sha256",
-    "approval_request_path",
-    "approval_path",
-    "hba_receipt_sha256",
-    "hba_expires_at_unix",
-    "fixture_expires_at_unix",
-    "credential_approval_expires_at_unix",
-    "requested_at_unix",
-    "approval_deadline_unix",
-    "owner_input_cutoff_unix",
-    "final_approval_transmit_margin_seconds",
-    "max_wait_seconds",
-    "prior_approval_file_sha256",
-    "final_approval_frame_schema",
-    "request_sha256",
-})
-FINAL_APPROVAL_CANCEL_RECEIPT_FIELDS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "reason",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "full_canary_plan_sha256",
-    "approval_request_sha256",
-    "approval_request_path",
-    "expected_approval_request_file_sha256",
-    "observed_approval_request_file_sha256",
-    "approval_request_artifact_state",
-    "approval_request_present",
-    "approval_request_remains_active",
-    "staged_plan_path",
-    "expected_staged_plan_file_sha256",
-    "observed_staged_plan_file_sha256",
-    "staged_plan_artifact_state",
-    "staged_plan_present",
-    "approval_path",
-    "prior_approval_file_sha256",
-    "observed_approval_file_sha256",
-    "owner_approval_artifact_state",
-    "approval_path_matches_prior",
-    "new_owner_approval_installed",
-    "frame_bytes_received",
-    "owner_approval_mutation_performed_by_this_helper",
-    "cancelled_at_unix",
-    "receipt_sha256",
 })
 
 
@@ -648,12 +470,8 @@ _ROOT_PUBLICATION_PATHS = frozenset({
     COORDINATOR_INPUT_PUBLICATION_RECEIPT_PATH,
     DISCORD_TOKEN_INSTALL_RECEIPT_PATH,
     DISCORD_TOKEN_RETIREMENT_RECEIPT_PATH,
-    OWNER_APPROVAL_REQUEST_PATH,
     DEFAULT_STAGED_PLAN_PATH,
     DEFAULT_PLAN_PATH,
-    DEFAULT_APPROVAL_PATH,
-    COORDINATOR_PROCESS_LEASE_PATH,
-    PREPLAN_STOPPED_REPORT_PATH,
 })
 
 
@@ -1111,7 +929,7 @@ def _atomic_install_secret(
 ) -> os.stat_result:
     """Install one fixed credential without replace and return exact identity."""
 
-    if path not in {DISCORD_TOKEN_PATH, CANARY_BOOTSTRAP_CREDENTIAL_PATH}:
+    if path != DISCORD_TOKEN_PATH:
         _fail("secret_install_path_not_fixed")
     if not payload or len(payload) > MAX_DISCORD_TOKEN_BYTES:
         _fail("secret_install_payload_bound_invalid")
@@ -1260,7 +1078,7 @@ def _remove_exact_secret(
     *,
     state: _SecretRemovalState | None = None,
 ) -> None:
-    if path not in {DISCORD_TOKEN_PATH, CANARY_BOOTSTRAP_CREDENTIAL_PATH}:
+    if path != DISCORD_TOKEN_PATH:
         _fail("secret_cleanup_path_not_fixed")
     removal = state if state is not None else _SecretRemovalState()
     errors: list[BaseException] = []
@@ -1331,7 +1149,6 @@ class CoordinatorInput:
     writer_activation_plan: ActivationPlan
     identities: FullCanaryIdentities
     artifacts: Mapping[str, ExactArtifact]
-    base_plan: FullCanaryPlan
 
     @classmethod
     def from_mapping(cls, value: Any) -> "CoordinatorInput":
@@ -1415,11 +1232,6 @@ class CoordinatorInput:
             for name, expected in expected_targets.items()
         ):
             _fail("coordinator_input_artifact_target_not_fixed")
-        _digest(raw["bootstrap_sql_sha256"], "bootstrap_sql_digest_invalid")
-        _digest(
-            raw["bootstrap_retire_sql_sha256"],
-            "bootstrap_retire_sql_digest_invalid",
-        )
         database = raw["writer_config"].get("database")
         if (
             not isinstance(database, Mapping)
@@ -1430,64 +1242,10 @@ class CoordinatorInput:
             or _TLS_NAME_RE.fullmatch(database["tls_server_name"]) is None
         ):
             _fail("coordinator_input_database_not_fixed")
-        scope = raw["writer_config"].get("canary_scope_preapproval")
-        hba = (
-            scope.get("bootstrap_managed_cloudsqladmin_hba_rejection_receipt")
-            if isinstance(scope, Mapping)
-            else None
-        )
-        if (
-            not isinstance(hba, Mapping)
-            or hba.get("host") != CANARY_DATABASE_HOST
-            or hba.get("tls_server_name") != database["tls_server_name"]
-            or hba.get("port") != CANARY_DATABASE_PORT
-            or hba.get("user") != CANARY_BOOTSTRAP_LOGIN
-            or hba.get("database") != "cloudsqladmin"
-            or hba.get("tls_peer_verified") is not True
-        ):
-            _fail("coordinator_input_hba_binding_invalid")
-        _digest(
-            hba.get("server_certificate_sha256"),
-            "coordinator_input_hba_peer_digest_invalid",
-        )
-        try:
-            parsed_hba = managed_cloudsqladmin_hba_receipt_from_mapping(hba)
-        except (TypeError, ValueError) as exc:
-            raise CoordinatorError("coordinator_input_hba_receipt_invalid") from exc
-        configured_hba_sha256 = scope.get(
-            "bootstrap_managed_cloudsqladmin_hba_rejection_sha256"
-        )
-        if parsed_hba.sha256 != configured_hba_sha256:
-            _fail("coordinator_input_hba_self_digest_mismatch")
         writer_config_raw = _canonical_bytes(raw["writer_config"])
-        writer_artifact = ExactArtifact(
-            source_path=DEFAULT_WRITER_CONFIG_SOURCE,
-            target_path=DEFAULT_WRITER_CONFIG,
-            sha256=_sha256_bytes(writer_config_raw),
-            mode=0o440,
-            uid=0,
-            gid=identities.writer_gid,
-        )
         try:
-            base_plan = build_full_canary_plan(
-                writer_activation_plan=writer_plan,
-                writer_activation_receipt=writer_receipt,
-                writer_activation_receipt_file_sha256=raw[
-                    "writer_activation_receipt_file_sha256"
-                ],
-                identities=identities,
-                writer_config=writer_artifact,
-                gateway_config=artifacts["gateway_config"],
-                edge_config=artifacts["edge_config"],
-                e2e_fixture=artifacts["e2e_fixture"],
-                host_identity_receipt=artifacts["host_identity_receipt"],
-            )
-            _validate_writer_config(
-                writer_config_raw,
-                identities,
-                plan=base_plan,
-                expected_approval_source_sha256=str(scope["approval_source_sha256"]),
-            )
+            _validate_writer_config(writer_config_raw, identities)
+            _release_binding(writer_plan)
         except (KeyError, RuntimeError, TypeError, ValueError) as exc:
             raise CoordinatorError(
                 "coordinator_input_writer_config_semantics_invalid"
@@ -1497,7 +1255,6 @@ class CoordinatorInput:
             writer_activation_plan=writer_plan,
             identities=identities,
             artifacts=artifacts,
-            base_plan=base_plan,
         )
 
     @property
@@ -1512,73 +1269,2124 @@ class CoordinatorInput:
     def tls_server_name(self) -> str:
         return str(self.value["writer_config"]["database"]["tls_server_name"])
 
+
+def _validated_base_e2e_fixture(
+    coordinator_input: CoordinatorInput,
+) -> Mapping[str, Any]:
+    """Validate the published fixture before its in-memory session binding."""
+
+    artifact = coordinator_input.artifacts["e2e_fixture"]
+    raw = _read_exact_artifact(artifact, label="e2e_fixture")
+    value = _decode_mapping(raw, code="coordinator_base_fixture_invalid")
+    if "api_session_key_sha256" in value:
+        _fail("coordinator_base_fixture_already_session_bound")
+    candidate = copy.deepcopy(dict(value))
+    candidate["api_session_key_sha256"] = "0" * 64
+    try:
+        validated = _validate_e2e_fixture_mapping(candidate)
+    except BaseException as exc:
+        raise CoordinatorError("coordinator_base_fixture_invalid") from exc
+    validated.pop("api_session_key_sha256", None)
+    release = _release_binding(coordinator_input.writer_activation_plan)
+    if (
+        validated != value
+        or value.get("release_sha") != coordinator_input.revision
+        or value.get("release_artifact_sha256") != release["artifact_sha256"]
+    ):
+        _fail("coordinator_base_fixture_release_drifted")
+    return copy.deepcopy(dict(value))
+
+def _phase_b_authority_file_source(
+    path: Path,
+    *,
+    maximum: int,
+    expected_uid: int,
+    expected_gid: int,
+    allowed_modes: frozenset[int],
+) -> tuple[bytes, Mapping[str, Any]]:
+    """Capture one semantically prevalidated fixed source by bytes and inode."""
+
+    try:
+        raw, item = _read_stable_file(
+            path,
+            maximum=maximum,
+            expected_uid=expected_uid,
+            expected_gid=expected_gid,
+            allowed_modes=allowed_modes,
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        raise CoordinatorError(
+            "phase_b_authority_source_unavailable",
+            phase="phase_b_authority",
+        ) from exc
+    source = {
+        "path": str(path),
+        "file_sha256": _sha256_bytes(raw),
+        "device": item.st_dev,
+        "inode": item.st_ino,
+        "uid": item.st_uid,
+        "gid": item.st_gid,
+        "mode": f"{stat.S_IMODE(item.st_mode):04o}",
+        "size": item.st_size,
+    }
+    if any(type(source[name]) is not int or source[name] < 0 for name in (
+        "device", "inode", "uid", "gid", "size"
+    )):
+        _fail("phase_b_authority_source_identity_invalid", phase="phase_b_authority")
+    return raw, source
+
+
+def _phase_b_owner_lineage(
+    *,
+    activation_approval: Any,
+    native_approval: Any,
+) -> Mapping[str, str]:
+    """Bind Phase-B to the agreeing, already-validated owner receipts."""
+
+    try:
+        activation_owner_subject = _digest(
+            activation_approval.value.get("owner_subject_sha256"),
+            "phase_b_activation_owner_invalid",
+        )
+        native_owner_subject = _digest(
+            native_approval.value.get("owner_subject_sha256"),
+            "phase_b_native_owner_invalid",
+        )
+        activation_approval_source = _digest(
+            activation_approval.value.get("approval_source_sha256"),
+            "phase_b_activation_owner_invalid",
+        )
+        native_approval_source = _digest(
+            native_approval.value.get("approval_source_sha256"),
+            "phase_b_native_owner_invalid",
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        raise CoordinatorError(
+            "phase_b_owner_authority_invalid",
+            phase="phase_b_authority",
+        ) from exc
+    if (
+        activation_owner_subject != native_owner_subject
+        or activation_approval_source != native_approval_source
+        or activation_approval_source != PHASE_B_PINNED_APPROVAL_SOURCE_SHA256
+    ):
+        _fail("phase_b_owner_authority_drifted", phase="phase_b_authority")
+    return {
+        "owner_subject_sha256": activation_owner_subject,
+        "approval_source_sha256": activation_approval_source,
+    }
+
+
+def _phase_b_authority_provenance(
+    coordinator_input: CoordinatorInput,
+) -> Mapping[str, Any]:
+    """Re-attest every historical root source and current staged intent.
+
+    Historical owner approvals are evaluated at their authenticated receipt
+    times.  Fresh Phase-B mutation authority is separate and is never inferred
+    from an old TTL.  The durable source identities below make a byte-identical
+    replacement detectable even when a digest would otherwise stay equal.
+    """
+
+    if not isinstance(coordinator_input, CoordinatorInput):
+        raise TypeError("CoordinatorInput is required")
+    try:
+        from gateway import canonical_writer_activation as activation
+        from gateway import canonical_writer_host_authority as host_authority
+        from gateway.canonical_writer_config_collector import (
+            EVIDENCE_ROOT as CONFIG_COLLECTOR_EVIDENCE_ROOT,
+            load_config_collector_receipt,
+        )
+
+        _validate_coordinator_input_live(coordinator_input)
+        writer_plan = activation.load_activation_plan(
+            activation.DEFAULT_PLAN_PATH
+        )
+        if writer_plan.to_mapping() != coordinator_input.writer_activation_plan.to_mapping():
+            _fail("phase_b_activation_plan_drifted", phase="phase_b_authority")
+        writer_receipt = _validate_writer_only_receipt(
+            coordinator_input.value["writer_activation_receipt"],
+            plan=writer_plan,
+        )
+        activation_completed = int(writer_receipt["completed_at_unix"])
+        activation_approval = host_authority.OwnerApprovalReceipt.from_mapping(
+            writer_receipt["owner_approval_receipt"]
+        )
+        activation_approval.require(
+            scope="activation",
+            plan_sha256=writer_plan.sha256,
+            now_unix=activation_completed,
+        )
+        if activation_approval.sha256 != writer_receipt[
+            "owner_approval_receipt_sha256"
+        ]:
+            _fail("phase_b_activation_approval_drifted", phase="phase_b_authority")
+
+        native_plan = host_authority.load_native_observation_plan()
+        if native_plan.to_mapping() != writer_plan.native_observation_receipt["plan"]:
+            _fail("phase_b_native_plan_drifted", phase="phase_b_authority")
+        native_receipt = activation.load_durable_native_observation_receipt(
+            native_plan
+        )
+        if native_receipt.to_mapping() != writer_plan.native_observation_receipt:
+            _fail("phase_b_native_receipt_drifted", phase="phase_b_authority")
+        native_approval, external_iam, external_evidence = (
+            activation._load_durable_native_authority_chain(
+                native_plan,
+                native_receipt,
+            )
+        )
+        owner_lineage = _phase_b_owner_lineage(
+            activation_approval=activation_approval,
+            native_approval=native_approval,
+        )
+
+        collector_sha256 = str(native_plan.value["config_collector_receipt_sha256"])
+        collector = load_config_collector_receipt(
+            revision=writer_plan.revision,
+            receipt_sha256=collector_sha256,
+            require_fresh=False,
+        )
+        collector_path = (
+            CONFIG_COLLECTOR_EVIDENCE_ROOT
+            / writer_plan.revision
+            / f"{collector_sha256}.json"
+        )
+        collector_raw, collector_source = _phase_b_authority_file_source(
+            collector_path,
+            maximum=MAX_COORDINATOR_INPUT_BYTES,
+            expected_uid=0,
+            expected_gid=0,
+            allowed_modes=frozenset({0o400}),
+        )
+        if collector_raw not in {
+            _canonical_bytes(collector.to_mapping()),
+            _canonical_bytes(collector.to_mapping()) + b"\n",
+        }:
+            _fail("phase_b_config_collector_drifted", phase="phase_b_authority")
+
+        activation_receipt_path = _success_receipt_path(
+            writer_plan,
+            create_parent=False,
+        )
+        activation_approval_path = host_authority.owner_approval_receipt_path(
+            activation_approval
+        )
+        native_receipt_path = activation._native_receipt_path(native_plan)
+        native_approval_path = host_authority.owner_approval_receipt_path(
+            native_approval
+        )
+        external_iam_path = Path(str(external_evidence["path"]))
+
+        fixed_root_sources: dict[str, tuple[Path, int]] = {
+            "coordinator_input": (COORDINATOR_INPUT_PATH, MAX_COORDINATOR_INPUT_BYTES),
+            "activation_plan": (activation.DEFAULT_PLAN_PATH, MAX_COORDINATOR_INPUT_BYTES),
+            "activation_receipt": (activation_receipt_path, MAX_COORDINATOR_INPUT_BYTES),
+            "activation_owner_approval": (activation_approval_path, 64 * 1024),
+            "native_plan": (activation.DEFAULT_NATIVE_PLAN_PATH, MAX_COORDINATOR_INPUT_BYTES),
+            "native_receipt": (native_receipt_path, MAX_COORDINATOR_INPUT_BYTES),
+            "native_owner_approval": (native_approval_path, 64 * 1024),
+            "external_iam_receipt": (external_iam_path, 64 * 1024),
+            "host_identity_receipt": (DEFAULT_HOST_IDENTITY_RECEIPT, _MAX_HOST_IDENTITY_RECEIPT_BYTES),
+        }
+        sources: dict[str, Mapping[str, Any]] = {
+            "config_collector_receipt": collector_source,
+        }
+        source_raw: dict[str, bytes] = {
+            "config_collector_receipt": collector_raw,
+        }
+        for label, (path, maximum) in fixed_root_sources.items():
+            raw, source = _phase_b_authority_file_source(
+                path,
+                maximum=maximum,
+                expected_uid=0,
+                expected_gid=0,
+                allowed_modes=frozenset({0o400}),
+            )
+            sources[label] = source
+            source_raw[label] = raw
+
+        for label, artifact in (
+            ("gateway_config_intent", coordinator_input.artifacts["gateway_config"]),
+            ("edge_config_intent", coordinator_input.artifacts["edge_config"]),
+            ("fixture_intent", coordinator_input.artifacts["e2e_fixture"]),
+        ):
+            raw, source = _phase_b_authority_file_source(
+                artifact.source_path,
+                maximum=artifact.maximum_bytes,
+                expected_uid=artifact.uid,
+                expected_gid=artifact.gid,
+                allowed_modes=frozenset({artifact.mode}),
+            )
+            if _sha256_bytes(raw) != artifact.sha256:
+                _fail("phase_b_staged_intent_drifted", phase="phase_b_authority")
+            sources[label] = source
+            source_raw[label] = raw
+
+        if source_raw["coordinator_input"] not in {
+            _canonical_bytes(coordinator_input.value),
+            _canonical_bytes(coordinator_input.value) + b"\n",
+        }:
+            _fail("phase_b_coordinator_input_drifted", phase="phase_b_authority")
+        if source_raw["activation_plan"] not in {
+            _canonical_bytes(writer_plan.to_mapping()),
+            _canonical_bytes(writer_plan.to_mapping()) + b"\n",
+        }:
+            _fail("phase_b_activation_plan_drifted", phase="phase_b_authority")
+        if source_raw["activation_receipt"] not in {
+            _canonical_bytes(writer_receipt),
+            _canonical_bytes(writer_receipt) + b"\n",
+        }:
+            _fail("phase_b_activation_receipt_drifted", phase="phase_b_authority")
+        if source_raw["activation_owner_approval"] not in {
+            _canonical_bytes(activation_approval.to_mapping()),
+            _canonical_bytes(activation_approval.to_mapping()) + b"\n",
+        }:
+            _fail("phase_b_activation_approval_drifted", phase="phase_b_authority")
+        if source_raw["native_plan"] not in {
+            _canonical_bytes(native_plan.to_mapping()),
+            _canonical_bytes(native_plan.to_mapping()) + b"\n",
+        } or source_raw["native_receipt"] not in {
+            _canonical_bytes(native_receipt.to_mapping()),
+            _canonical_bytes(native_receipt.to_mapping()) + b"\n",
+        }:
+            _fail("phase_b_native_truth_drifted", phase="phase_b_authority")
+        if source_raw["native_owner_approval"] not in {
+            _canonical_bytes(native_approval.to_mapping()),
+            _canonical_bytes(native_approval.to_mapping()) + b"\n",
+        }:
+            _fail("phase_b_native_approval_drifted", phase="phase_b_authority")
+        if source_raw["external_iam_receipt"] not in {
+            _canonical_bytes(external_iam.to_mapping()),
+            _canonical_bytes(external_iam.to_mapping()) + b"\n",
+        }:
+            _fail("phase_b_external_iam_drifted", phase="phase_b_authority")
+
+        host_value = _decode_mapping(
+            source_raw["host_identity_receipt"].rstrip(b"\n"),
+            code="phase_b_host_identity_receipt_invalid",
+        )
+        host_receipt_sha256 = _digest(
+            host_value.get("receipt_sha256"),
+            "phase_b_host_identity_receipt_invalid",
+        )
+        if external_iam.policy_sha256 != writer_plan.digests.external_iam_policy_sha256:
+            _fail("phase_b_external_iam_drifted", phase="phase_b_authority")
+
+        fixture = _validated_base_e2e_fixture(coordinator_input)
+        authority_sources = {
+            **sources,
+            # This owner-local source is filled exactly once after the first
+            # MPB1 response.  Keeping the placeholder in the initial context
+            # makes the monotonic extension explicit and hash-visible.
+            "owner_resume_public_key": None,
+        }
+        result = {
+            "release_sha": writer_plan.revision,
+            "coordinator_input_sha256": coordinator_input.sha256,
+            **owner_lineage,
+            "activation_plan_sha256": writer_plan.sha256,
+            "writer_activation_receipt_sha256": writer_receipt["receipt_sha256"],
+            "activation_owner_approval_sha256": activation_approval.sha256,
+            "activation_approval_issued_at_unix": activation_approval.value[
+                "approved_at_unix"
+            ],
+            "activation_approval_expires_at_unix": activation_approval.value[
+                "expires_at_unix"
+            ],
+            "native_observation_plan_sha256": native_plan.sha256,
+            "native_observation_receipt_sha256": native_receipt.sha256,
+            "native_observation_approval_sha256": native_approval.sha256,
+            "native_approval_issued_at_unix": native_approval.value[
+                "approved_at_unix"
+            ],
+            "native_approval_expires_at_unix": native_approval.value[
+                "expires_at_unix"
+            ],
+            "external_iam_policy_sha256": external_iam.policy_sha256,
+            "external_iam_receipt_sha256": external_iam.sha256,
+            "config_collector_receipt_sha256": collector.sha256,
+            "gateway_config_intent_sha256": coordinator_input.artifacts[
+                "gateway_config"
+            ].sha256,
+            "edge_config_intent_sha256": coordinator_input.artifacts[
+                "edge_config"
+            ].sha256,
+            "fixture_intent_sha256": _sha256_json(fixture),
+            "host_identity_receipt_sha256": host_receipt_sha256,
+            "owner_resume_public_key_ed25519_hex": None,
+            "owner_resume_key_id": None,
+            "owner_resume_public_key_file_sha256": None,
+            "owner_resume_public_fingerprint": None,
+            "authority_sources": dict(sorted(authority_sources.items())),
+        }
+        return {
+            **result,
+            "authority_sources_sha256": _sha256_json(result["authority_sources"]),
+        }
+    except CoordinatorError:
+        raise
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise CoordinatorError(
+            "phase_b_authority_chain_invalid",
+            phase="phase_b_authority",
+        ) from exc
+
+
+class _PhaseBOwnerOperationError(CoordinatorError):
+    def __init__(self, code: str, *, reconciliation_required: bool) -> None:
+        self.reconciliation_required = reconciliation_required
+        super().__init__(code, phase="phase_b_owner_transport")
+
+
+def _read_phase_b_exact(size: int, *, maximum: int) -> bytearray:
+    if (
+        type(size) is not int
+        or type(maximum) is not int
+        or not 0 <= size <= maximum
+    ):
+        _fail("phase_b_owner_frame_bound_invalid", phase="phase_b_owner_transport")
+    value = bytearray()
+    while len(value) < size:
+        try:
+            chunk = os.read(ADMIN_FRAME_FD, size - len(value))
+        except OSError as exc:
+            _zeroize(value)
+            raise CoordinatorError(
+                "phase_b_owner_frame_read_failed",
+                phase="phase_b_owner_transport",
+            ) from exc
+        if not chunk:
+            _zeroize(value)
+            _fail("phase_b_owner_frame_truncated", phase="phase_b_owner_transport")
+        value.extend(chunk)
+    return value
+
+
+def _phase_b_no_secret_fields(value: Any) -> None:
+    """Reject secret-like receipt keys without trying to classify semantics."""
+
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            lowered = key.casefold() if isinstance(key, str) else ""
+            declarative_absence = lowered in {
+                "secret_material_recorded",
+                "password_or_digest_recorded",
+                "content_or_digest_recorded",
+            } and item is False
+            if not isinstance(key, str) or (
+                not declarative_absence
+                and any(
+                    marker in lowered
+                    for marker in (
+                        "password",
+                        "secret",
+                        "secret_digest",
+                        "credential_digest",
+                        "credential_value",
+                    )
+                )
+            ):
+                _fail(
+                    "phase_b_owner_receipt_secret_field_forbidden",
+                    phase="phase_b_owner_transport",
+                )
+            _phase_b_no_secret_fields(item)
+    elif isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray, memoryview)
+    ):
+        for item in value:
+            _phase_b_no_secret_fields(item)
+
+
+_PHASE_B_OWNER_RESUME_AUTHORITY_FIELDS = frozenset({
+    "public_key_ed25519_hex",
+    "key_id",
+    "public_key_file_sha256",
+    "public_fingerprint",
+    "public_key_source",
+})
+_PHASE_B_OWNER_PUBLIC_SOURCE_FIELDS = frozenset({
+    "path",
+    "file_sha256",
+    "device",
+    "inode",
+    "uid",
+    "gid",
+    "mode",
+    "size",
+})
+
+
+def _phase_b_ssh_string(value: bytes) -> bytes:
+    return struct.pack(">I", len(value)) + value
+
+
+def _validate_phase_b_owner_resume_authority(value: Any) -> Mapping[str, Any]:
+    """Validate and independently derive the fixed owner's public identity."""
+
+    if not isinstance(value, Mapping) or set(value) != (
+        _PHASE_B_OWNER_RESUME_AUTHORITY_FIELDS
+    ):
+        _fail("phase_b_owner_public_authority_invalid", phase="phase_b_authority")
+    raw = copy.deepcopy(dict(value))
+    source = raw["public_key_source"]
+    public_hex = raw["public_key_ed25519_hex"]
+    if (
+        not isinstance(source, Mapping)
+        or set(source) != _PHASE_B_OWNER_PUBLIC_SOURCE_FIELDS
+        or not isinstance(public_hex, str)
+        or re.fullmatch(r"[0-9a-f]{64}", public_hex) is None
+        or raw["key_id"] != _sha256_bytes(bytes.fromhex(public_hex))
+        or raw["public_key_file_sha256"] != source.get("file_sha256")
+        or source.get("path") != PHASE_B_OWNER_PUBLIC_KEY_PATH
+        or source.get("uid") != PHASE_B_OWNER_PUBLIC_KEY_UID
+        or source.get("gid") != PHASE_B_OWNER_PUBLIC_KEY_GID
+        or source.get("mode") != "0600"
+        or type(source.get("device")) is not int
+        or source["device"] < 0
+        or type(source.get("inode")) is not int
+        or source["inode"] <= 0
+        or type(source.get("size")) is not int
+        or not 1 <= source["size"] <= 4096
+    ):
+        _fail("phase_b_owner_public_authority_invalid", phase="phase_b_authority")
+    _digest(
+        raw["public_key_file_sha256"],
+        "phase_b_owner_public_authority_invalid",
+    )
+    public_bytes = bytes.fromhex(public_hex)
+    public_blob = _phase_b_ssh_string(b"ssh-ed25519") + _phase_b_ssh_string(
+        public_bytes
+    )
+    fingerprint = "SHA256:" + base64.b64encode(
+        hashlib.sha256(public_blob).digest()
+    ).decode("ascii").rstrip("=")
+    if (
+        raw["public_fingerprint"] != fingerprint
+        or fingerprint != PHASE_B_OWNER_PUBLIC_KEY_FINGERPRINT
+    ):
+        _fail("phase_b_owner_public_authority_invalid", phase="phase_b_authority")
+    _phase_b_no_secret_fields(raw)
+    return raw
+
+
+class _FixedPhaseBVMProtocol:
+    """One in-process, monotonic VM half of the fixed MPB1 exchange."""
+
+    _RESPONSE_FIELDS = frozenset({
+        "schema",
+        "frame_schema",
+        "ok",
+        "operation",
+        "sequence",
+        "request_sha256",
+        "idempotency_key",
+        "authority_context_sha256",
+        "phase_b_plan_sha256",
+        "phase_b_approval_sha256",
+        "credential_present",
+        "credential_length",
+        "result",
+        "error_code",
+        "completed_at_unix",
+        "response_sha256",
+    })
+
+    def __init__(
+        self,
+        *,
+        provenance: Mapping[str, Any],
+        phase_b_plan_sha256: str | None,
+        phase_b_approval_sha256: str | None,
+        approval_expires_at_unix: int,
+        sequence: int = 0,
+        previous_response_sha256: str | None = None,
+    ) -> None:
+        if (
+            not isinstance(provenance, Mapping)
+            or type(approval_expires_at_unix) is not int
+            or approval_expires_at_unix <= int(time.time())
+            or type(sequence) is not int
+            or not 0 <= sequence < PHASE_B_MAX_ROUNDS
+        ):
+            _fail("phase_b_owner_protocol_context_invalid", phase="phase_b_owner_transport")
+        if phase_b_plan_sha256 is not None:
+            _digest(phase_b_plan_sha256, "phase_b_owner_protocol_plan_invalid")
+        if phase_b_approval_sha256 is not None:
+            _digest(phase_b_approval_sha256, "phase_b_owner_protocol_approval_invalid")
+        if previous_response_sha256 is not None:
+            _digest(previous_response_sha256, "phase_b_owner_protocol_chain_invalid")
+        self._provenance = copy.deepcopy(dict(provenance))
+        self._authority_context_sha256 = _sha256_json(self._provenance)
+        self._plan_sha256 = phase_b_plan_sha256
+        self._approval_sha256 = phase_b_approval_sha256
+        self._expires = approval_expires_at_unix
+        self._sequence = sequence
+        self._previous_response_sha256 = previous_response_sha256
+        self._historical_resume_bound = False
+
     @property
-    def tls_peer_certificate_sha256(self) -> str:
-        return str(
-            self.value["writer_config"]["canary_scope_preapproval"][
-                "bootstrap_managed_cloudsqladmin_hba_rejection_receipt"
-            ]["server_certificate_sha256"]
+    def sequence(self) -> int:
+        return self._sequence
+
+    @property
+    def previous_response_sha256(self) -> str | None:
+        return self._previous_response_sha256
+
+    @property
+    def authority_context(self) -> Mapping[str, Any]:
+        return copy.deepcopy(self._provenance)
+
+    def bind_owner_resume_authority(self, value: Any) -> Mapping[str, Any]:
+        authority = _validate_phase_b_owner_resume_authority(value)
+        sources = self._provenance.get("authority_sources")
+        if (
+            self._sequence != 1
+            or self._plan_sha256 is not None
+            or self._approval_sha256 is not None
+            or not isinstance(sources, Mapping)
+            or sources.get("owner_resume_public_key") is not None
+            or any(
+                self._provenance.get(name) is not None
+                for name in (
+                    "owner_resume_public_key_ed25519_hex",
+                    "owner_resume_key_id",
+                    "owner_resume_public_key_file_sha256",
+                    "owner_resume_public_fingerprint",
+                )
+            )
+        ):
+            _fail(
+                "phase_b_owner_protocol_rebind_forbidden",
+                phase="phase_b_owner_transport",
+            )
+        updated_sources = copy.deepcopy(dict(sources))
+        updated_sources["owner_resume_public_key"] = copy.deepcopy(
+            dict(authority["public_key_source"])
+        )
+        self._provenance.update({
+            "owner_resume_public_key_ed25519_hex": authority[
+                "public_key_ed25519_hex"
+            ],
+            "owner_resume_key_id": authority["key_id"],
+            "owner_resume_public_key_file_sha256": authority[
+                "public_key_file_sha256"
+            ],
+            "owner_resume_public_fingerprint": authority[
+                "public_fingerprint"
+            ],
+            "authority_sources": dict(sorted(updated_sources.items())),
+        })
+        self._provenance["authority_sources_sha256"] = _sha256_json(
+            self._provenance["authority_sources"]
+        )
+        self._authority_context_sha256 = _sha256_json(self._provenance)
+        return authority
+
+    def bind_plan(self, plan_sha256: str) -> None:
+        if self._plan_sha256 is not None or self._approval_sha256 is not None:
+            _fail("phase_b_owner_protocol_rebind_forbidden", phase="phase_b_owner_transport")
+        self._plan_sha256 = _digest(
+            plan_sha256, "phase_b_owner_protocol_plan_invalid"
+        )
+
+    def bind_approval(
+        self,
+        *,
+        approval_sha256: str,
+        approval_expires_at_unix: int,
+    ) -> None:
+        if self._plan_sha256 is None or self._approval_sha256 is not None:
+            _fail("phase_b_owner_protocol_rebind_forbidden", phase="phase_b_owner_transport")
+        self._approval_sha256 = _digest(
+            approval_sha256, "phase_b_owner_protocol_approval_invalid"
+        )
+        if (
+            type(approval_expires_at_unix) is not int
+            or approval_expires_at_unix <= int(time.time())
+            or approval_expires_at_unix > self._expires
+        ):
+            _fail("phase_b_owner_protocol_expiry_invalid", phase="phase_b_owner_transport")
+        self._expires = approval_expires_at_unix
+
+    def bind_resume_approval(
+        self,
+        *,
+        expected_previous_approval_sha256: str,
+        approval_sha256: str,
+        approval_expires_at_unix: int,
+    ) -> None:
+        if (
+            self._plan_sha256 is None
+            or self._approval_sha256
+            != _digest(
+                expected_previous_approval_sha256,
+                "phase_b_owner_protocol_approval_invalid",
+            )
+            or self._sequence
+            != (2 if self._historical_resume_bound else 1)
+        ):
+            _fail(
+                "phase_b_owner_protocol_rebind_forbidden",
+                phase="phase_b_owner_transport",
+            )
+        replacement = _digest(
+            approval_sha256,
+            "phase_b_owner_protocol_approval_invalid",
+        )
+        if (
+            replacement == self._approval_sha256
+            or type(approval_expires_at_unix) is not int
+            or approval_expires_at_unix <= int(time.time())
+        ):
+            _fail(
+                "phase_b_owner_protocol_expiry_invalid",
+                phase="phase_b_owner_transport",
+            )
+        self._approval_sha256 = replacement
+        self._expires = approval_expires_at_unix
+
+    def bind_historical_resume_approval(
+        self,
+        *,
+        expected_previous_approval_sha256: str,
+        approval_sha256: str,
+        approval_expires_at_unix: int,
+    ) -> None:
+        """Advance protocol chaining without granting expired mutation authority."""
+
+        if (
+            self._plan_sha256 is None
+            or self._historical_resume_bound
+            or self._approval_sha256
+            != _digest(
+                expected_previous_approval_sha256,
+                "phase_b_owner_protocol_approval_invalid",
+            )
+            or self._sequence != 1
+        ):
+            _fail(
+                "phase_b_owner_protocol_rebind_forbidden",
+                phase="phase_b_owner_transport",
+            )
+        replacement = _digest(
+            approval_sha256,
+            "phase_b_owner_protocol_approval_invalid",
+        )
+        if (
+            replacement == self._approval_sha256
+            or type(approval_expires_at_unix) is not int
+            or approval_expires_at_unix > int(time.time())
+        ):
+            _fail(
+                "phase_b_owner_protocol_expiry_invalid",
+                phase="phase_b_owner_transport",
+            )
+        # Keep the still-fresh outer apply-gate expiry solely as the MPB
+        # transport deadline.  The historical approval itself never becomes
+        # mutation authority; the next exchange must append a fresh successor.
+        self._approval_sha256 = replacement
+        self._historical_resume_bound = True
+
+    def exchange(
+        self,
+        operation: str,
+        *,
+        payload: Mapping[str, Any],
+        boundary_kind: str | None = None,
+        boundary_ordinal: int | None = None,
+        credential_expected: bool = False,
+    ) -> tuple[Mapping[str, Any], bytearray | None]:
+        if (
+            operation not in _PHASE_B_OWNER_OPERATIONS
+            or not isinstance(payload, Mapping)
+            or boundary_kind not in {None, "temporary", "bootstrap"}
+            or (
+                boundary_kind is None
+                and boundary_ordinal is not None
+                or boundary_kind is not None
+                and (type(boundary_ordinal) is not int or not 0 <= boundary_ordinal <= 7)
+            )
+            or type(credential_expected) is not bool
+            or self._sequence >= PHASE_B_MAX_ROUNDS
+        ):
+            _fail("phase_b_owner_request_invalid", phase="phase_b_owner_transport")
+        now_unix = int(time.time())
+        if now_unix >= self._expires:
+            _fail("phase_b_owner_approval_expired", phase="phase_b_owner_transport")
+        unsigned = {
+            "schema": PHASE_B_OWNER_REQUEST_SCHEMA,
+            "frame_schema": PHASE_B_OWNER_FRAME_SCHEMA,
+            "operation": operation,
+            "sequence": self._sequence,
+            "previous_response_sha256": self._previous_response_sha256,
+            "authority_context_sha256": self._authority_context_sha256,
+            "authority_context": copy.deepcopy(self._provenance),
+            "phase_b_plan_sha256": self._plan_sha256,
+            "phase_b_approval_sha256": self._approval_sha256,
+            "boundary_kind": boundary_kind,
+            "boundary_ordinal": boundary_ordinal,
+            "credential_expected": credential_expected,
+            "payload": copy.deepcopy(dict(payload)),
+            "issued_at_unix": now_unix,
+            "expires_at_unix": self._expires,
+        }
+        idempotency_projection = {
+            "authority_context_sha256": self._authority_context_sha256,
+            "phase_b_plan_sha256": self._plan_sha256,
+            "phase_b_approval_sha256": self._approval_sha256,
+            "operation": operation,
+            "sequence": self._sequence,
+            "previous_response_sha256": self._previous_response_sha256,
+            "payload": unsigned["payload"],
+        }
+        unsigned["idempotency_key"] = _sha256_json(idempotency_projection)
+        request = {**unsigned, "request_sha256": _sha256_json(unsigned)}
+        _phase_b_no_secret_fields(request)
+        if len(_canonical_bytes(request)) > PHASE_B_MAX_REQUEST_BYTES:
+            _fail("phase_b_owner_request_oversized", phase="phase_b_owner_transport")
+        frame_emitter = _ACTIVE_PHASE_B_FRAME_EMITTER
+        if frame_emitter is None:
+            _fail("phase_b_owner_transport_inactive", phase="phase_b_owner_transport")
+        frame_emitter(request)
+
+        header = _read_phase_b_exact(
+            _PHASE_B_OWNER_FRAME_HEADER.size,
+            maximum=_PHASE_B_OWNER_FRAME_HEADER.size,
+        )
+        receipt_raw: bytearray | None = None
+        credential: bytearray | None = None
+        try:
+            magic, receipt_size, credential_size = _PHASE_B_OWNER_FRAME_HEADER.unpack(
+                header
+            )
+            if (
+                magic != PHASE_B_OWNER_FRAME_MAGIC
+                or not 2 <= receipt_size <= PHASE_B_MAX_RESPONSE_BYTES
+                or credential_size not in {0, PHASE_B_CREDENTIAL_BYTES}
+            ):
+                _fail("phase_b_owner_frame_invalid", phase="phase_b_owner_transport")
+            receipt_raw = _read_phase_b_exact(
+                receipt_size,
+                maximum=PHASE_B_MAX_RESPONSE_BYTES,
+            )
+            if credential_size:
+                credential = _read_phase_b_exact(
+                    credential_size,
+                    maximum=PHASE_B_CREDENTIAL_BYTES,
+                )
+            receipt = _decode_mapping(
+                bytes(receipt_raw),
+                code="phase_b_owner_response_invalid",
+            )
+            if set(receipt) != self._RESPONSE_FIELDS:
+                _fail("phase_b_owner_response_invalid", phase="phase_b_owner_transport")
+            response_sha = _digest(
+                receipt["response_sha256"], "phase_b_owner_response_invalid"
+            )
+            response_unsigned = {
+                key: copy.deepcopy(value)
+                for key, value in receipt.items()
+                if key != "response_sha256"
+            }
+            if (
+                receipt["schema"] != PHASE_B_OWNER_RESPONSE_SCHEMA
+                or receipt["frame_schema"] != PHASE_B_OWNER_FRAME_SCHEMA
+                or receipt["operation"] != operation
+                or receipt["sequence"] != self._sequence
+                or receipt["request_sha256"] != request["request_sha256"]
+                or receipt["idempotency_key"] != request["idempotency_key"]
+                or receipt["authority_context_sha256"]
+                != self._authority_context_sha256
+                or receipt["phase_b_plan_sha256"] != self._plan_sha256
+                or receipt["phase_b_approval_sha256"] != self._approval_sha256
+                or receipt["response_sha256"] != _sha256_json(response_unsigned)
+                or type(receipt["ok"]) is not bool
+                or type(receipt["completed_at_unix"]) is not int
+                or not now_unix <= receipt["completed_at_unix"] <= self._expires
+                or type(receipt["credential_present"]) is not bool
+                or type(receipt["credential_length"]) is not int
+                or receipt["credential_length"] != credential_size
+                or receipt["credential_present"] is not bool(credential_size)
+                or (
+                    receipt["ok"] is True
+                    and receipt["credential_present"] is not credential_expected
+                    or receipt["ok"] is False
+                    and receipt["credential_present"] is not False
+                )
+                or not isinstance(receipt["result"], Mapping)
+                or (
+                    receipt["ok"] is True
+                    and receipt["error_code"] is not None
+                    or receipt["ok"] is False
+                    and not isinstance(receipt["error_code"], str)
+                )
+            ):
+                _fail("phase_b_owner_response_invalid", phase="phase_b_owner_transport")
+            _phase_b_no_secret_fields(receipt)
+            if credential is not None:
+                if (
+                    len(credential) != PHASE_B_CREDENTIAL_BYTES
+                    or b"\x00" in credential
+                    or any(value < 0x20 or value == 0x7F for value in credential)
+                ):
+                    _fail("phase_b_owner_credential_invalid", phase="phase_b_owner_transport")
+            self._sequence += 1
+            self._previous_response_sha256 = response_sha
+            if receipt["ok"] is not True:
+                reconciliation = receipt["result"].get(
+                    "mutation_reconciliation_required"
+                )
+                if type(reconciliation) is not bool:
+                    _fail("phase_b_owner_response_invalid", phase="phase_b_owner_transport")
+                _zeroize(credential)
+                credential = None
+                raise _PhaseBOwnerOperationError(
+                    str(receipt["error_code"]),
+                    reconciliation_required=reconciliation,
+                )
+            result = copy.deepcopy(dict(receipt["result"]))
+            returned = credential
+            credential = None
+            return result, returned
+        finally:
+            _zeroize(header)
+            _zeroize(receipt_raw)
+            _zeroize(credential)
+
+
+class _FixedPhaseBTemporaryAdminBoundary:
+    def __init__(self, protocol: _FixedPhaseBVMProtocol, ordinal: int) -> None:
+        self._protocol = protocol
+        self._ordinal = ordinal
+        self._reconciliation_required = False
+        self._owner_subject_sha256: str | None = None
+        self._mutation_context_sha256: str | None = None
+        self._authority_receipt: Mapping[str, Any] | None = None
+        self._absence_receipt: Mapping[str, Any] | None = None
+
+    def _exchange(
+        self,
+        operation: str,
+        payload: Mapping[str, Any],
+        *,
+        credential_expected: bool = False,
+    ) -> tuple[Mapping[str, Any], bytearray | None]:
+        try:
+            result = self._protocol.exchange(
+                operation,
+                payload=payload,
+                boundary_kind="temporary",
+                boundary_ordinal=self._ordinal,
+                credential_expected=credential_expected,
+            )
+        except _PhaseBOwnerOperationError as exc:
+            self._reconciliation_required = exc.reconciliation_required
+            raise
+        self._reconciliation_required = False
+        return result
+
+    def begin_mutation_observation(
+        self,
+        *,
+        expected_owner_subject_sha256: str,
+        expected_mutation_context_sha256: str,
+    ) -> None:
+        if self._owner_subject_sha256 is not None:
+            _fail("phase_b_owner_boundary_replay_forbidden")
+        self._owner_subject_sha256 = _digest(
+            expected_owner_subject_sha256,
+            "phase_b_owner_boundary_subject_invalid",
+        )
+        self._mutation_context_sha256 = _digest(
+            expected_mutation_context_sha256,
+            "phase_b_owner_boundary_context_invalid",
+        )
+
+    def create_or_rotate_recovery(self, username: str) -> bytearray:
+        if self._owner_subject_sha256 is None or self._mutation_context_sha256 is None:
+            _fail("phase_b_owner_boundary_observation_missing")
+        result, credential = self._exchange(
+            "temporary_create_or_rotate",
+            {
+                "username": username,
+                "expected_owner_subject_sha256": self._owner_subject_sha256,
+                "expected_mutation_context_sha256": self._mutation_context_sha256,
+            },
+            credential_expected=True,
+        )
+        if credential is None:
+            _fail("phase_b_owner_credential_missing", phase="phase_b_owner_transport")
+        authority = result.get("authority_receipt")
+        if not isinstance(authority, Mapping):
+            _zeroize(credential)
+            _fail("phase_b_owner_response_invalid", phase="phase_b_owner_transport")
+        self._authority_receipt = copy.deepcopy(dict(authority))
+        return credential
+
+    def mutation_reconciliation_required(self) -> bool:
+        return self._reconciliation_required
+
+    def require_current_authority(self, username: str) -> None:
+        if self._authority_receipt is None:
+            _fail("phase_b_owner_authority_missing")
+        expected = hashlib.sha256(username.encode("ascii")).hexdigest()
+        if self._authority_receipt.get("username_sha256") != expected:
+            _fail("phase_b_owner_authority_drifted")
+
+    def temporary_admin_authority_receipt(
+        self, username: str
+    ) -> Mapping[str, Any]:
+        self.require_current_authority(username)
+        assert self._authority_receipt is not None
+        return copy.deepcopy(dict(self._authority_receipt))
+
+    def delete_and_confirm_absent(self, username: str) -> None:
+        result, _credential = self._exchange(
+            "temporary_delete",
+            {
+                "username": username,
+                "authority_receipt_sha256": (
+                    None
+                    if self._authority_receipt is None
+                    else self._authority_receipt.get("receipt_sha256")
+                ),
+            },
+        )
+        receipt = result.get("absence_receipt")
+        if not isinstance(receipt, Mapping):
+            _fail("phase_b_owner_response_invalid", phase="phase_b_owner_transport")
+        self._absence_receipt = copy.deepcopy(dict(receipt))
+
+    def reconciliation_receipt(self) -> Mapping[str, Any]:
+        if self._absence_receipt is None:
+            _fail("phase_b_owner_absence_receipt_missing")
+        return copy.deepcopy(dict(self._absence_receipt))
+
+
+class _FixedPhaseBBootstrapLoginBoundary:
+    def __init__(self, protocol: _FixedPhaseBVMProtocol, ordinal: int) -> None:
+        self._protocol = protocol
+        self._ordinal = ordinal
+        self._reconciliation_required = False
+        self._authority_receipt: Mapping[str, Any] | None = None
+
+    def _exchange(
+        self,
+        operation: str,
+        payload: Mapping[str, Any],
+        *,
+        credential_expected: bool = False,
+    ) -> tuple[Mapping[str, Any], bytearray | None]:
+        try:
+            result = self._protocol.exchange(
+                operation,
+                payload=payload,
+                boundary_kind="bootstrap",
+                boundary_ordinal=self._ordinal,
+                credential_expected=credential_expected,
+            )
+        except _PhaseBOwnerOperationError as exc:
+            self._reconciliation_required = exc.reconciliation_required
+            raise
+        self._reconciliation_required = False
+        return result
+
+    def describe(self) -> Mapping[str, Any] | None:
+        result, _credential = self._exchange("bootstrap_describe", {})
+        resource = result.get("resource")
+        if resource is not None and not isinstance(resource, Mapping):
+            _fail("phase_b_owner_response_invalid", phase="phase_b_owner_transport")
+        return None if resource is None else copy.deepcopy(dict(resource))
+
+    def create_or_rotate_recovery(self) -> bytearray:
+        result, credential = self._exchange(
+            "bootstrap_create_or_rotate",
+            {},
+            credential_expected=True,
+        )
+        if credential is None:
+            _fail("phase_b_owner_credential_missing", phase="phase_b_owner_transport")
+        authority = result.get("authority_receipt")
+        if not isinstance(authority, Mapping):
+            _zeroize(credential)
+            _fail("phase_b_owner_response_invalid", phase="phase_b_owner_transport")
+        self._authority_receipt = copy.deepcopy(dict(authority))
+        return credential
+
+    def mutation_reconciliation_required(self) -> bool:
+        return self._reconciliation_required
+
+    def require_current_authority(self) -> None:
+        if self._authority_receipt is None:
+            _fail("phase_b_owner_authority_missing")
+
+    def authority_receipt(self) -> Mapping[str, Any]:
+        self.require_current_authority()
+        assert self._authority_receipt is not None
+        return copy.deepcopy(dict(self._authority_receipt))
+
+
+class FixedPhaseBOwnerCloudSQLTransportBoundary:
+    """Exact VM-side Cloud edge; construction is sealed to the zero-arg factory."""
+
+    _CONSTRUCTION_TOKEN = object()
+
+    def __init__(
+        self,
+        token: object,
+        protocol: _FixedPhaseBVMProtocol,
+        plan: Any,
+        approval: Mapping[str, Any],
+    ) -> None:
+        if token is not self._CONSTRUCTION_TOKEN:
+            _fail("phase_b_owner_boundary_construction_forbidden")
+        self._protocol = protocol
+        self._plan = plan
+        self._approval = copy.deepcopy(dict(approval))
+        self._temporary_ordinal = 0
+        self._bootstrap_ordinal = 0
+
+    def _require_plan(self, plan: Any) -> None:
+        if (
+            not hasattr(plan, "to_mapping")
+            or plan.to_mapping() != self._plan.to_mapping()
+        ):
+            _fail("phase_b_owner_boundary_plan_changed")
+
+    def temporary_admin_factory(self, plan: Any) -> Any:
+        self._require_plan(plan)
+        ordinal = self._temporary_ordinal
+        if ordinal > 7:
+            _fail("phase_b_owner_boundary_count_exceeded")
+        self._temporary_ordinal += 1
+        return _FixedPhaseBTemporaryAdminBoundary(self._protocol, ordinal)
+
+    def bootstrap_login_factory(self, plan: Any) -> Any:
+        self._require_plan(plan)
+        ordinal = self._bootstrap_ordinal
+        if ordinal > 7:
+            _fail("phase_b_owner_boundary_count_exceeded")
+        self._bootstrap_ordinal += 1
+        return _FixedPhaseBBootstrapLoginBoundary(self._protocol, ordinal)
+
+    def observe_initial(self, plan: Any) -> Mapping[str, Any]:
+        self._require_plan(plan)
+        result, _credential = self._protocol.exchange(
+            "observe_initial",
+            payload={
+                "phase_b_plan": self._plan.to_mapping(),
+                "phase_b_approval": copy.deepcopy(self._approval),
+            },
+        )
+        observation = result.get("cloud_observation")
+        if not isinstance(observation, Mapping):
+            _fail("phase_b_owner_response_invalid")
+        return copy.deepcopy(dict(observation))
+
+    def observe_recovery(self, plan: Any) -> Mapping[str, Any]:
+        self._require_plan(plan)
+        result, _credential = self._protocol.exchange(
+            "observe_recovery",
+            payload={
+                "phase_b_plan": self._plan.to_mapping(),
+                "phase_b_approval": copy.deepcopy(self._approval),
+            },
+        )
+        observation = result.get("cloud_observation")
+        if not isinstance(observation, Mapping):
+            _fail("phase_b_owner_response_invalid")
+        return copy.deepcopy(dict(observation))
+
+    def observe_terminal(
+        self,
+        plan: Any,
+        *,
+        bootstrap_resource: Mapping[str, Any],
+        absence_receipt: Mapping[str, Any],
+    ) -> Mapping[str, Any]:
+        self._require_plan(plan)
+        result, _credential = self._protocol.exchange(
+            "observe_terminal",
+            payload={
+                "bootstrap_resource": copy.deepcopy(dict(bootstrap_resource)),
+                "absence_receipt": copy.deepcopy(dict(absence_receipt)),
+            },
+        )
+        observation = result.get("cloud_observation")
+        if not isinstance(observation, Mapping):
+            _fail("phase_b_owner_response_invalid")
+        return copy.deepcopy(dict(observation))
+
+
+_ACTIVE_PHASE_B_PROTOCOL: _FixedPhaseBVMProtocol | None = None
+_ACTIVE_PHASE_B_FRAME_EMITTER: Callable[[Mapping[str, Any]], None] | None = None
+
+
+def build_fixed_phase_b_owner_cloud_sql_boundary(
+) -> FixedPhaseBOwnerCloudSQLTransportBoundary:
+    """Return the only production Phase-B Cloud boundary (no caller inputs)."""
+
+    protocol = _ACTIVE_PHASE_B_PROTOCOL
+    if protocol is None:
+        _fail("phase_b_owner_transport_inactive", phase="phase_b_owner_transport")
+    from gateway import canonical_writer_phase_b_runtime as runtime
+
+    plan, approval_chain, _journal = runtime.load_fixed_phase_b_authority()
+    if not approval_chain:
+        _fail("phase_b_approval_chain_invalid", phase="phase_b_owner_transport")
+    return FixedPhaseBOwnerCloudSQLTransportBoundary(
+        FixedPhaseBOwnerCloudSQLTransportBoundary._CONSTRUCTION_TOKEN,
+        protocol,
+        plan,
+        approval_chain[-1],
+    )
+
+
+def _collect_fixed_phase_b_local_preflight(
+    coordinator_input: CoordinatorInput,
+) -> Mapping[str, Any]:
+    """Collect only the fixed VM half; Cloud truth arrives from the owner."""
+
+    from gateway import canonical_writer_foundation as foundation
+    from gateway import canonical_writer_foundation_phase_b as phase_b
+    from gateway import canonical_writer_phase_b_runtime as runtime
+    from gateway.canonical_writer_planner import load_release_manifest
+
+    if coordinator_input.revision != coordinator_input.writer_activation_plan.revision:
+        _fail("phase_b_local_preflight_release_drifted", phase="phase_b_preflight")
+    session: Any = None
+    try:
+        session = runtime._PhaseBAdminSession(runtime._writer_session())
+        artifacts = runtime._phase_b_artifacts(coordinator_input.revision)
+        _manifest, raw_manifest = load_release_manifest(coordinator_input.revision)
+        release_artifacts = dict(sorted({
+            phase_b.PREFLIGHT_ARTIFACT_PATH: artifacts["phase_b_preflight"].sha256,
+            phase_b.ROLE_ARTIFACT_PATH: artifacts["phase_b_role"].sha256,
+        }.items()))
+        observed_at = int(time.time())
+        unsigned = {
+            "schema": PHASE_B_LOCAL_PREFLIGHT_SCHEMA,
+            "release_revision": coordinator_input.revision,
+            "release_manifest_sha256": _sha256_bytes(raw_manifest),
+            "release_artifacts": release_artifacts,
+            "release_artifact_set_sha256": _sha256_json(release_artifacts),
+            "database": runtime._database_identity(session),
+            "foundation": runtime._database_preflight(session, artifacts),
+            "credential": foundation.PersistentWriterSecretStore().observe(None),
+            "services": runtime._collect_services(
+                coordinator_input.revision,
+                observed_at,
+            ),
+            "observed_at_unix": observed_at,
+        }
+        _phase_b_no_secret_fields(unsigned)
+        return {
+            **unsigned,
+            "local_preflight_sha256": _sha256_json(unsigned),
+        }
+    except CoordinatorError:
+        raise
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise CoordinatorError(
+            "phase_b_local_preflight_invalid",
+            phase="phase_b_preflight",
+        ) from exc
+    finally:
+        if session is not None:
+            try:
+                session.close()
+            except BaseException as exc:
+                raise CoordinatorError(
+                    "phase_b_local_preflight_session_close_failed",
+                    phase="phase_b_preflight",
+                ) from exc
+
+
+def _compose_fixed_phase_b_preflight(
+    local: Mapping[str, Any],
+    cloud: Mapping[str, Any],
+) -> Any:
+    from gateway import canonical_writer_foundation_phase_b as phase_b
+
+    expected = frozenset({
+        "schema",
+        "release_revision",
+        "release_manifest_sha256",
+        "release_artifacts",
+        "release_artifact_set_sha256",
+        "database",
+        "foundation",
+        "credential",
+        "services",
+        "observed_at_unix",
+        "local_preflight_sha256",
+    })
+    if not isinstance(local, Mapping) or set(local) != expected:
+        _fail("phase_b_local_preflight_invalid", phase="phase_b_preflight")
+    unsigned_local = {
+        key: copy.deepcopy(value)
+        for key, value in local.items()
+        if key != "local_preflight_sha256"
+    }
+    if (
+        local["schema"] != PHASE_B_LOCAL_PREFLIGHT_SCHEMA
+        or local["local_preflight_sha256"] != _sha256_json(unsigned_local)
+        or not isinstance(cloud, Mapping)
+    ):
+        _fail("phase_b_local_preflight_invalid", phase="phase_b_preflight")
+    unsigned = {
+        "schema": phase_b.PHASE_B_PREFLIGHT_SCHEMA,
+        **{
+            key: copy.deepcopy(value)
+            for key, value in unsigned_local.items()
+            if key != "schema"
+        },
+        "cloud_sql": copy.deepcopy(dict(cloud)),
+    }
+    try:
+        return phase_b.PhaseBPreflight.from_mapping({
+            **unsigned,
+            "observation_sha256": _sha256_json(unsigned),
+        })
+    except (TypeError, ValueError) as exc:
+        raise CoordinatorError(
+            "phase_b_initial_preflight_invalid",
+            phase="phase_b_preflight",
+        ) from exc
+
+
+def _phase_b_authority_sidecar(
+    *,
+    provenance: Mapping[str, Any],
+    plan: Any,
+    approval: Any,
+) -> Mapping[str, Any]:
+    if (
+        not isinstance(provenance, Mapping)
+        or not hasattr(plan, "sha256")
+        or not hasattr(approval, "sha256")
+    ):
+        _fail("phase_b_authority_invalid", phase="phase_b_authority")
+    approval_value = approval.to_mapping()
+    expected_source = provenance.get("approval_source_sha256")
+    if expected_source != PHASE_B_PINNED_APPROVAL_SOURCE_SHA256:
+        _fail("phase_b_authority_approval_source_missing", phase="phase_b_authority")
+    if (
+        approval_value.get("approval_source_sha256") != expected_source
+        or approval_value.get("owner_subject_sha256")
+        != provenance.get("owner_subject_sha256")
+    ):
+        _fail("phase_b_authority_approval_drifted", phase="phase_b_authority")
+    unsigned = {
+        "schema": PHASE_B_AUTHORITY_SCHEMA,
+        "phase_b_plan_sha256": plan.sha256,
+        "phase_b_approval_sha256": approval.sha256,
+        "approval_source_sha256": approval_value["approval_source_sha256"],
+        "owner_subject_sha256": approval_value["owner_subject_sha256"],
+        "approval_issued_at_unix": approval_value["issued_at_unix"],
+        "approval_expires_at_unix": approval_value["expires_at_unix"],
+        **{
+            key: copy.deepcopy(value)
+            for key, value in provenance.items()
+            if key not in {"approval_source_sha256", "owner_subject_sha256"}
+        },
+    }
+    return {**unsigned, "authority_sha256": _sha256_json(unsigned)}
+
+
+def _load_bound_phase_b_authority_context(
+    *,
+    plan: Any,
+    initial_approval: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    """Recover the exact immutable MPB1 context from a validated sidecar."""
+
+    raw = _stable_root_read(
+        PHASE_B_AUTHORITY_RECEIPT_PATH,
+        maximum=MAX_COORDINATOR_INPUT_BYTES,
+    )
+    sidecar = _decode_mapping(raw, code="phase_b_authority_receipt_invalid")
+    unsigned = {
+        key: copy.deepcopy(value)
+        for key, value in sidecar.items()
+        if key != "authority_sha256"
+    }
+    if (
+        sidecar.get("schema") != PHASE_B_AUTHORITY_SCHEMA
+        or sidecar.get("phase_b_plan_sha256") != getattr(plan, "sha256", None)
+        or sidecar.get("phase_b_approval_sha256")
+        != initial_approval.get("approval_sha256")
+        or sidecar.get("authority_sha256") != _sha256_json(unsigned)
+    ):
+        _fail("phase_b_authority_receipt_invalid", phase="phase_b_authority")
+    excluded = {
+        "schema",
+        "phase_b_plan_sha256",
+        "phase_b_approval_sha256",
+        "approval_issued_at_unix",
+        "approval_expires_at_unix",
+        "authority_sha256",
+    }
+    context = {
+        key: copy.deepcopy(value)
+        for key, value in sidecar.items()
+        if key not in excluded
+    }
+    if (
+        context.get("approval_source_sha256")
+        != initial_approval.get("approval_source_sha256")
+        or context.get("owner_subject_sha256")
+        != initial_approval.get("owner_subject_sha256")
+        or not isinstance(context.get("authority_sources"), Mapping)
+        or context.get("authority_sources_sha256")
+        != _sha256_json(context["authority_sources"])
+    ):
+        _fail("phase_b_authority_receipt_invalid", phase="phase_b_authority")
+    _phase_b_no_secret_fields(context)
+    return context
+
+
+def _write_phase_b_stage_file(
+    directory_fd: int,
+    name: str,
+    payload: bytes,
+) -> None:
+    if name not in {
+        "plan.json",
+        "owner-approval.json",
+        "owner-approval-source.json",
+        "authority-receipt.json",
+    }:
+        _fail("phase_b_authority_path_invalid", phase="phase_b_authority")
+    descriptor = os.open(
+        name,
+        os.O_WRONLY
+        | os.O_CREAT
+        | os.O_EXCL
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+        0o400,
+        dir_fd=directory_fd,
+    )
+    try:
+        offset = 0
+        while offset < len(payload):
+            written = os.write(descriptor, payload[offset:])
+            if written <= 0:
+                raise OSError("short Phase-B authority write")
+            offset += written
+        os.fchmod(descriptor, 0o400)
+        os.fchown(descriptor, 0, 0)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _persist_fixed_phase_b_authority(
+    *,
+    plan: Any,
+    approval: Any,
+    approval_source: Mapping[str, Any],
+    sidecar: Mapping[str, Any],
+) -> None:
+    """Atomically install the signed closure as one no-replace directory."""
+
+    _require_root_linux()
+    payloads = {
+        "plan.json": _canonical_bytes(plan.to_mapping()) + b"\n",
+        "owner-approval.json": _canonical_bytes(approval.to_mapping()) + b"\n",
+        "owner-approval-source.json": _canonical_bytes(approval_source) + b"\n",
+        "authority-receipt.json": _canonical_bytes(sidecar) + b"\n",
+    }
+    if any(len(payload) > MAX_COORDINATOR_INPUT_BYTES for payload in payloads.values()):
+        _fail("phase_b_authority_oversized", phase="phase_b_authority")
+    if PHASE_B_AUTHORITY_ROOT.exists():
+        from gateway import canonical_writer_phase_b_runtime as runtime
+
+        loaded_plan, loaded_approval, _journal = runtime.load_fixed_phase_b_authority()
+        if (
+            loaded_plan.to_mapping() != plan.to_mapping()
+            or loaded_approval != approval.to_mapping()
+        ):
+            _fail("phase_b_authority_generation_conflict", phase="phase_b_authority")
+        return
+    parent = PHASE_B_AUTHORITY_ROOT.parent
+    try:
+        parent_item = parent.lstat()
+        if (
+            not stat.S_ISDIR(parent_item.st_mode)
+            or stat.S_ISLNK(parent_item.st_mode)
+            or parent_item.st_uid != 0
+            or stat.S_IMODE(parent_item.st_mode) & 0o022
+        ):
+            _fail("phase_b_authority_parent_untrusted", phase="phase_b_authority")
+        if PHASE_B_AUTHORITY_STAGE.exists():
+            _fail("phase_b_authority_incomplete_install", phase="phase_b_authority")
+        os.mkdir(PHASE_B_AUTHORITY_STAGE, 0o700)
+        os.chown(PHASE_B_AUTHORITY_STAGE, 0, 0)
+        stage_fd = os.open(
+            PHASE_B_AUTHORITY_STAGE,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            for name, payload in payloads.items():
+                _write_phase_b_stage_file(stage_fd, name, payload)
+            os.mkdir("resume-approvals", 0o700, dir_fd=stage_fd)
+            resume_fd = os.open(
+                "resume-approvals",
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=stage_fd,
+            )
+            try:
+                os.fchmod(resume_fd, 0o700)
+                os.fchown(resume_fd, 0, 0)
+                lock_fd = os.open(
+                    ".lock",
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o600,
+                    dir_fd=resume_fd,
+                )
+                try:
+                    os.fchmod(lock_fd, 0o600)
+                    os.fchown(lock_fd, 0, 0)
+                    os.fsync(lock_fd)
+                finally:
+                    os.close(lock_fd)
+                os.fsync(resume_fd)
+            finally:
+                os.close(resume_fd)
+            os.fsync(stage_fd)
+        finally:
+            os.close(stage_fd)
+        os.chmod(PHASE_B_AUTHORITY_STAGE, 0o700)
+        os.rename(PHASE_B_AUTHORITY_STAGE, PHASE_B_AUTHORITY_ROOT)
+        parent_fd = os.open(
+            parent,
+            os.O_RDONLY | getattr(os, "O_DIRECTORY", 0) | getattr(os, "O_CLOEXEC", 0),
+        )
+        try:
+            os.fsync(parent_fd)
+        finally:
+            os.close(parent_fd)
+    except CoordinatorError:
+        raise
+    except OSError as exc:
+        raise CoordinatorError(
+            "phase_b_authority_publication_failed",
+            phase="phase_b_authority",
+        ) from exc
+
+
+def _require_phase_b_pristine_live_boundary() -> None:
+    if (
+        not _services_are_exactly_stopped_and_disabled()
+        or os.path.lexists(DISCORD_TOKEN_PATH)
+        or os.path.lexists(DISCORD_TOKEN_STAGE_PATH)
+        or os.path.lexists(DISCORD_TOKEN_INSTALL_RECEIPT_PATH)
+        or os.path.lexists(OBSOLETE_CREDENTIAL_PREPARE_APPROVAL_PATH)
+        or os.path.lexists(OBSOLETE_BOOTSTRAP_CREDENTIAL_PATH)
+        or os.path.lexists(OBSOLETE_COORDINATOR_PROCESS_JOURNAL_PATH)
+    ):
+        _fail(
+            "phase_b_requires_pristine_stopped_live_boundary",
+            phase="phase_b_preflight",
         )
 
 
-@dataclass(frozen=True)
-class CredentialPrepareApproval:
-    value: Mapping[str, Any]
+def preflight_phase_b_apply() -> Mapping[str, Any]:
+    """Issue a fresh no-secret gate for initial apply or same-plan resume."""
 
-    @classmethod
-    def from_mapping(cls, value: Any) -> "CredentialPrepareApproval":
+    _require_root_linux()
+    _harden_secret_process()
+    coordinator_input = load_coordinator_input()
+    _require_phase_b_pristine_live_boundary()
+    provenance = dict(_phase_b_authority_provenance(coordinator_input))
+    owner_subject_sha256 = _digest(
+        provenance.get("owner_subject_sha256"),
+        "phase_b_preflight_owner_invalid",
+    )
+    approval_source_sha256 = _digest(
+        provenance.get("approval_source_sha256"),
+        "phase_b_preflight_owner_invalid",
+    )
+    if approval_source_sha256 != PHASE_B_PINNED_APPROVAL_SOURCE_SHA256:
+        _fail("phase_b_preflight_owner_invalid", phase="phase_b_preflight")
+    now_unix = int(time.time())
+    authority_present = PHASE_B_AUTHORITY_ROOT.exists()
+    inspection: Mapping[str, Any] | None = None
+    if authority_present:
+        from gateway import canonical_writer_phase_b_runtime as runtime
+
+        try:
+            inspection = runtime.inspect_fixed_phase_b_incomplete_head()
+        except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+            raise CoordinatorError(
+                "phase_b_existing_authority_invalid",
+                phase="phase_b_preflight",
+            ) from exc
+        expected_inspection_sha = inspection.get("inspection_sha256")
+        unsigned_inspection = {
+            key: copy.deepcopy(value)
+            for key, value in inspection.items()
+            if key != "inspection_sha256"
+        }
         if (
-            not isinstance(value, Mapping)
-            or set(value) != _CREDENTIAL_PREPARE_APPROVAL_FIELDS
+            not isinstance(expected_inspection_sha, str)
+            or expected_inspection_sha != _sha256_json(unsigned_inspection)
+            or inspection.get("owner_subject_sha256")
+            != owner_subject_sha256
+            or inspection.get("approval_source_sha256")
+            != approval_source_sha256
         ):
-            _fail("credential_prepare_approval_fields_invalid")
-        raw = copy.deepcopy(dict(value))
-        if (
-            raw["schema"] != CREDENTIAL_PREPARE_APPROVAL_SCHEMA
-            or raw["scope"] != "full_canary_ephemeral_admin_prepare"
-            or raw["authority_kind"] != "trusted_root_bootstrap_out_of_band_owner"
-            or raw["cryptographic_owner_proof"] is not False
-        ):
-            _fail("credential_prepare_approval_semantics_invalid")
-        _digest(
-            raw["coordinator_input_sha256"], "credential_prepare_input_digest_invalid"
+            _fail("phase_b_existing_authority_invalid", phase="phase_b_preflight")
+        gate_state = "same_plan_resume_or_replay"
+        if inspection.get("terminal") is True:
+            expires_at = ((now_unix // 300) + 12) * 300
+        elif inspection.get("fresh_head") is True:
+            expires_at = min(
+                ((now_unix // 300) + 12) * 300,
+                int(inspection["approval_expires_at_unix"]),
+            )
+        else:
+            expires_at = ((now_unix // 300) + 12) * 300
+    else:
+        # This is readiness only.  Mutation authority is created later by the
+        # signed, session-bound MPB1 ``authority_approve`` exchange.
+        gate_state = "initial_apply_ready"
+        expires_at = now_unix + 900
+    if expires_at <= now_unix:
+        _fail("phase_b_apply_gate_expired", phase="phase_b_preflight")
+    unsigned = {
+        "schema": PHASE_B_APPLY_GATE_SCHEMA,
+        "ok": True,
+        "state": gate_state,
+        "release_sha": coordinator_input.revision,
+        "coordinator_input_sha256": coordinator_input.sha256,
+        "owner_subject_sha256": owner_subject_sha256,
+        "approval_source_sha256": approval_source_sha256,
+        "authority_present": authority_present,
+        "phase_b_plan_sha256": (
+            None if inspection is None else inspection["plan_sha256"]
+        ),
+        "phase_b_approval_sha256": (
+            None if inspection is None else inspection["approval_sha256"]
+        ),
+        "phase_b_approval_sequence": (
+            None if inspection is None else inspection["approval_sequence"]
+        ),
+        "phase_b_incomplete_state": (
+            None if inspection is None else inspection["incomplete_state"]
+        ),
+        "phase_b_inspection_sha256": (
+            None if inspection is None else inspection["inspection_sha256"]
+        ),
+        "phase_b_terminal": (
+            False if inspection is None else inspection["terminal"]
+        ),
+        "phase_b_requires_reapproval": (
+            False if inspection is None else inspection["requires_reapproval"]
+        ),
+        "issued_at_unix": now_unix,
+        "expires_at_unix": expires_at,
+    }
+    _phase_b_no_secret_fields(unsigned)
+    return {**unsigned, "gate_sha256": _sha256_json(unsigned)}
+
+
+def apply_fixed_phase_b_foundation(
+    *,
+    frame_emitter: Callable[[Mapping[str, Any]], None],
+) -> Mapping[str, Any]:
+    """Author, execute and publish one fixed stopped-service Phase-B generation."""
+
+    global _ACTIVE_PHASE_B_PROTOCOL, _ACTIVE_PHASE_B_FRAME_EMITTER
+    _harden_secret_process()
+    apply_gate = preflight_phase_b_apply()
+    coordinator_input = load_coordinator_input()
+    if apply_gate["coordinator_input_sha256"] != coordinator_input.sha256:
+        _fail("phase_b_apply_gate_drifted", phase="phase_b_preflight")
+    _require_phase_b_pristine_live_boundary()
+    provenance = dict(_phase_b_authority_provenance(coordinator_input))
+    if (
+        provenance.get("owner_subject_sha256")
+        != apply_gate.get("owner_subject_sha256")
+        or provenance.get("approval_source_sha256")
+        != apply_gate.get("approval_source_sha256")
+    ):
+        _fail("phase_b_apply_gate_drifted", phase="phase_b_preflight")
+
+    from gateway import canonical_writer_foundation_phase_b as phase_b
+    from gateway import canonical_writer_phase_b_runtime as runtime
+
+    protocol: _FixedPhaseBVMProtocol | None = None
+    _ACTIVE_PHASE_B_FRAME_EMITTER = frame_emitter
+    try:
+        terminal: Mapping[str, Any] | None = None
+        if not PHASE_B_AUTHORITY_ROOT.exists():
+            protocol = _FixedPhaseBVMProtocol(
+                provenance=provenance,
+                phase_b_plan_sha256=None,
+                phase_b_approval_sha256=None,
+                approval_expires_at_unix=int(apply_gate["expires_at_unix"]),
+            )
+            local = _collect_fixed_phase_b_local_preflight(coordinator_input)
+            observed, credential = protocol.exchange(
+                "authority_observe_initial",
+                payload={"local_preflight": local},
+            )
+            _zeroize(credential)
+            cloud = observed.get("cloud_observation")
+            owner_authority = protocol.bind_owner_resume_authority(
+                observed.get("owner_resume_authority")
+            )
+            provenance = dict(protocol.authority_context)
+            if not isinstance(cloud, Mapping):
+                _fail("phase_b_owner_response_invalid", phase="phase_b_authority")
+            preflight = _compose_fixed_phase_b_preflight(local, cloud)
+            plan = phase_b.build_phase_b_plan(
+                preflight,
+                owner_subject_sha256=provenance["owner_subject_sha256"],
+                owner_resume_public_key_ed25519_hex=owner_authority[
+                    "public_key_ed25519_hex"
+                ],
+                owner_resume_public_key_file_sha256=owner_authority[
+                    "public_key_file_sha256"
+                ],
+            )
+            protocol.bind_plan(plan.sha256)
+            approved_result, credential = protocol.exchange(
+                "authority_approve",
+                payload={"phase_b_plan": plan.to_mapping()},
+            )
+            _zeroize(credential)
+            approval_mapping = approved_result.get("phase_b_approval")
+            approval_source_mapping = approved_result.get(
+                "phase_b_approval_source"
+            )
+            if (
+                not isinstance(approval_mapping, Mapping)
+                or not isinstance(approval_source_mapping, Mapping)
+            ):
+                _fail("phase_b_owner_response_invalid", phase="phase_b_authority")
+            try:
+                approval = phase_b.PhaseBApproval.from_mapping(
+                    approval_mapping,
+                    plan=plan,
+                    now_unix=int(time.time()),
+                )
+                approval_source = phase_b.validate_phase_b_source_authentication(
+                    approval_source_mapping,
+                    plan=plan,
+                    approval=approval,
+                )
+            except (phase_b.PhaseBError, TypeError, ValueError) as exc:
+                raise CoordinatorError(
+                    "phase_b_owner_approval_invalid",
+                    phase="phase_b_authority",
+                ) from exc
+            if (
+                approval.value["approval_source_sha256"]
+                != provenance["approval_source_sha256"]
+                or approval.value["owner_subject_sha256"]
+                != provenance["owner_subject_sha256"]
+                or approval.value["expires_at_unix"]
+                > apply_gate["expires_at_unix"]
+            ):
+                _fail("phase_b_owner_approval_invalid", phase="phase_b_authority")
+            protocol.bind_approval(
+                approval_sha256=approval.sha256,
+                approval_expires_at_unix=approval.value["expires_at_unix"],
+            )
+            sidecar = _phase_b_authority_sidecar(
+                provenance=provenance,
+                plan=plan,
+                approval=approval,
+            )
+            _persist_fixed_phase_b_authority(
+                plan=plan,
+                approval=approval,
+                approval_source=approval_source,
+                sidecar=sidecar,
+            )
+        else:
+            plan, approval_values, _journal = (
+                runtime.load_fixed_phase_b_authority()
+            )
+            if not approval_values:
+                _fail("phase_b_approval_chain_invalid", phase="phase_b_authority")
+            provenance = dict(
+                _load_bound_phase_b_authority_context(
+                    plan=plan,
+                    initial_approval=approval_values[0],
+                )
+            )
+            inspection = runtime.inspect_fixed_phase_b_incomplete_head()
+            if (
+                inspection.get("plan_sha256") != plan.sha256
+                or inspection.get("plan_sha256")
+                != apply_gate.get("phase_b_plan_sha256")
+                or inspection.get("approval_sha256")
+                != apply_gate.get("phase_b_approval_sha256")
+                or inspection.get("approval_sequence")
+                != apply_gate.get("phase_b_approval_sequence")
+                or inspection.get("incomplete_state")
+                != apply_gate.get("phase_b_incomplete_state")
+                or inspection.get("terminal")
+                is not apply_gate.get("phase_b_terminal")
+                or inspection.get("requires_reapproval")
+                is not apply_gate.get("phase_b_requires_reapproval")
+            ):
+                _fail("phase_b_apply_gate_drifted", phase="phase_b_preflight")
+            if inspection["terminal"] is True:
+                foundation = runtime.load_fixed_completed_phase_b_foundation()
+                terminal = copy.deepcopy(dict(foundation["terminal_receipt"]))
+                approval = phase_b.PhaseBApproval.from_mapping(
+                    foundation["approval"],
+                    plan=plan,
+                    now_unix=int(terminal["terminal_at_unix"]),
+                )
+            else:
+                head_mapping = approval_values[-1]
+                head = phase_b.PhaseBApproval.from_mapping(
+                    head_mapping,
+                    plan=plan,
+                    now_unix=int(head_mapping["issued_at_unix"]),
+                )
+                protocol = _FixedPhaseBVMProtocol(
+                    provenance=provenance,
+                    phase_b_plan_sha256=plan.sha256,
+                    phase_b_approval_sha256=head.sha256,
+                    approval_expires_at_unix=(
+                        int(apply_gate["expires_at_unix"])
+                        if inspection["requires_reapproval"] is True
+                        else int(head.value["expires_at_unix"])
+                    ),
+                )
+                if inspection["requires_reapproval"] is True:
+                    current_chain = tuple(approval_values)
+                    current_inspection = copy.deepcopy(dict(inspection))
+                    approval = None
+                    # Exactly two owner frames are sufficient and permitted:
+                    # one may complete an expired source-only crash residue as
+                    # non-authorizing history; the next must be a fresh head.
+                    for resume_round in range(2):
+                        current_head_mapping = current_chain[-1]
+                        current_head = phase_b.PhaseBApproval.from_mapping(
+                            current_head_mapping,
+                            plan=plan,
+                            now_unix=int(
+                                current_head_mapping["issued_at_unix"]
+                            ),
+                        )
+                        resumed_result, credential = protocol.exchange(
+                            "authority_resume_approve",
+                            payload={
+                                "phase_b_plan": plan.to_mapping(),
+                                "phase_b_approval_chain": [
+                                    copy.deepcopy(dict(value))
+                                    for value in current_chain
+                                ],
+                                "phase_b_incomplete_head": copy.deepcopy(
+                                    current_inspection
+                                ),
+                            },
+                        )
+                        _zeroize(credential)
+                        resumed_approval = resumed_result.get(
+                            "phase_b_approval"
+                        )
+                        resumed_source = resumed_result.get(
+                            "phase_b_approval_source"
+                        )
+                        if (
+                            not isinstance(resumed_approval, Mapping)
+                            or not isinstance(resumed_source, Mapping)
+                        ):
+                            _fail(
+                                "phase_b_owner_response_invalid",
+                                phase="phase_b_authority",
+                            )
+                        install_receipt = (
+                            runtime.install_fixed_phase_b_resume_approval(
+                                resumed_approval,
+                                resumed_source,
+                                expected_previous_approval_sha256=(
+                                    current_head.sha256
+                                ),
+                            )
+                        )
+                        reloaded = runtime.load_fixed_phase_b_approval_chain(
+                            require_fresh_head=False
+                        )
+                        if (
+                            len(reloaded) != len(current_chain) + 1
+                            or reloaded[-1] != resumed_approval
+                            or not isinstance(install_receipt, Mapping)
+                            or install_receipt.get("schema")
+                            != (
+                                "muncho-canonical-writer-phase-b-"
+                                "resume-approval-install.v1"
+                            )
+                            or install_receipt.get("plan_sha256")
+                            != plan.sha256
+                            or install_receipt.get("previous_approval_sha256")
+                            != current_head.sha256
+                            or install_receipt.get("approval_sha256")
+                            != resumed_approval.get("approval_sha256")
+                        ):
+                            _fail(
+                                "phase_b_resume_approval_install_invalid",
+                                phase="phase_b_authority",
+                            )
+                        installed = phase_b.PhaseBApproval.from_mapping(
+                            reloaded[-1],
+                            plan=plan,
+                            now_unix=int(reloaded[-1]["issued_at_unix"]),
+                        )
+                        if install_receipt.get("mutation_authorized") is True:
+                            if (
+                                install_receipt.get("approval_fresh") is not True
+                                or install_receipt.get(
+                                    "requires_fresh_successor"
+                                )
+                                is not False
+                            ):
+                                _fail(
+                                    "phase_b_resume_approval_install_invalid",
+                                    phase="phase_b_authority",
+                                )
+                            approval = phase_b.PhaseBApproval.from_mapping(
+                                reloaded[-1],
+                                plan=plan,
+                                now_unix=int(time.time()),
+                            )
+                            protocol.bind_resume_approval(
+                                expected_previous_approval_sha256=(
+                                    current_head.sha256
+                                ),
+                                approval_sha256=approval.sha256,
+                                approval_expires_at_unix=approval.value[
+                                    "expires_at_unix"
+                                ],
+                            )
+                            break
+                        if (
+                            resume_round != 0
+                            or install_receipt.get("approval_fresh") is not False
+                            or install_receipt.get("mutation_authorized") is not False
+                            or install_receipt.get(
+                                "requires_fresh_successor"
+                            )
+                            is not True
+                            or install_receipt.get(
+                                "completed_trailing_source_only_residue"
+                            )
+                            is not True
+                        ):
+                            _fail(
+                                "phase_b_resume_approval_install_invalid",
+                                phase="phase_b_authority",
+                            )
+                        protocol.bind_historical_resume_approval(
+                            expected_previous_approval_sha256=(
+                                current_head.sha256
+                            ),
+                            approval_sha256=installed.sha256,
+                            approval_expires_at_unix=installed.value[
+                                "expires_at_unix"
+                            ],
+                        )
+                        current_chain = tuple(reloaded)
+                        current_inspection = copy.deepcopy(dict(
+                            runtime.inspect_fixed_phase_b_incomplete_head()
+                        ))
+                        if (
+                            current_inspection.get("plan_sha256")
+                            != plan.sha256
+                            or current_inspection.get("approval_sha256")
+                            != installed.sha256
+                            or current_inspection.get("approval_sequence")
+                            != installed.sequence
+                            or current_inspection.get(
+                                "pending_source_sequence"
+                            )
+                            is not None
+                            or current_inspection.get(
+                                "pending_source_authentication_sha256"
+                            )
+                            is not None
+                            or current_inspection.get("terminal") is not False
+                            or current_inspection.get("resume_eligible") is not True
+                            or current_inspection.get("requires_reapproval")
+                            is not True
+                            or current_inspection.get("mutation_authorized")
+                            is not False
+                        ):
+                            _fail(
+                                "phase_b_resume_inspection_invalid",
+                                phase="phase_b_authority",
+                            )
+                    if approval is None:
+                        _fail(
+                            "phase_b_fresh_resume_approval_missing",
+                            phase="phase_b_authority",
+                        )
+                else:
+                    approval = phase_b.PhaseBApproval.from_mapping(
+                        head_mapping,
+                        plan=plan,
+                        now_unix=int(time.time()),
+                    )
+                _ACTIVE_PHASE_B_PROTOCOL = protocol
+                terminal = runtime.execute_fixed_phase_b()
+        if terminal is None:
+            if protocol is None:
+                _fail(
+                    "phase_b_owner_protocol_missing",
+                    phase="phase_b_owner_transport",
+                )
+            _ACTIVE_PHASE_B_PROTOCOL = protocol
+            terminal = runtime.execute_fixed_phase_b()
+        readiness = runtime.publish_fixed_phase_b_readiness()
+        readiness_mapping = readiness.to_mapping()
+        unsigned = {
+            "schema": PHASE_B_APPLY_RECEIPT_SCHEMA,
+            "ok": True,
+            "state": "terminal_ready",
+            "release_sha": coordinator_input.revision,
+            "coordinator_input_sha256": coordinator_input.sha256,
+            "phase_b_plan_sha256": plan.sha256,
+            "phase_b_approval_sha256": approval.sha256,
+            "phase_b_terminal_receipt_sha256": terminal["receipt_sha256"],
+            "phase_b_readiness_receipt_sha256": readiness_mapping[
+                "receipt_sha256"
+            ],
+            "safe_to_start": True,
+            "completed_at_unix": int(time.time()),
+        }
+        return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
+    finally:
+        _ACTIVE_PHASE_B_PROTOCOL = None
+        _ACTIVE_PHASE_B_FRAME_EMITTER = None
+
+
+def _load_fixed_phase_b_live_authority(
+    coordinator_input: CoordinatorInput,
+) -> tuple[Mapping[str, Any], Mapping[str, Any]]:
+    """Load the exact terminal Phase-B generation and latest live anchor."""
+
+    if not isinstance(coordinator_input, CoordinatorInput):
+        raise TypeError("CoordinatorInput is required")
+    from gateway import canonical_writer_phase_b_runtime as runtime
+
+    try:
+        foundation = runtime.load_fixed_completed_phase_b_foundation()
+        anchor = runtime.load_fixed_phase_b_readiness_anchor()
+    except CoordinatorError:
+        raise
+    except (KeyError, RuntimeError, TypeError, ValueError) as exc:
+        raise CoordinatorError(
+            "phase_b_live_authority_invalid",
+            phase="phase_b_live_preflight",
+        ) from exc
+    if (
+        not isinstance(foundation, Mapping)
+        or set(foundation)
+        != {
+            "plan",
+            "approval",
+            "generation",
+            "terminal_receipt",
+            "terminal_observation",
+        }
+        or not isinstance(anchor, Mapping)
+    ):
+        _fail("phase_b_live_authority_invalid", phase="phase_b_live_preflight")
+    plan = foundation["plan"]
+    approval = foundation["approval"]
+    generation = foundation["generation"]
+    terminal = foundation["terminal_receipt"]
+    if not all(
+        isinstance(item, Mapping)
+        for item in (plan, approval, generation, terminal)
+    ):
+        _fail("phase_b_live_authority_invalid", phase="phase_b_live_preflight")
+    expected = {
+        "phase_b_release_revision": coordinator_input.revision,
+        "phase_b_plan_sha256": plan.get("plan_sha256"),
+        "phase_b_approval_sha256": approval.get("approval_sha256"),
+        "phase_b_terminal_receipt_sha256": terminal.get("receipt_sha256"),
+        "phase_b_foundation_generation_sha256": generation.get(
+            "generation_sha256"
+        ),
+    }
+    if (
+        plan.get("release_revision") != coordinator_input.revision
+        or approval.get("plan_sha256") != plan.get("plan_sha256")
+        or approval.get("approval_source_sha256")
+        != PHASE_B_PINNED_APPROVAL_SOURCE_SHA256
+        or terminal.get("plan_sha256") != plan.get("plan_sha256")
+        or any(anchor.get(name) != value for name, value in expected.items())
+    ):
+        _fail("phase_b_live_authority_invalid", phase="phase_b_live_preflight")
+    for name in (
+        "owner_subject_sha256",
+        "approval_source_sha256",
+        "approval_sha256",
+    ):
+        _digest(approval.get(name), "phase_b_live_authority_invalid")
+    runtime.validate_fixed_phase_b_readiness_descendant(anchor)
+    return copy.deepcopy(dict(foundation)), copy.deepcopy(dict(anchor))
+
+
+def preflight_phase_b_live_run() -> Mapping[str, Any]:
+    """Return the fresh read-only gate for Discord install and target run."""
+
+    _require_root_linux()
+    _harden_secret_process()
+    coordinator_input = load_coordinator_input()
+    if (
+        not _services_are_exactly_stopped_and_disabled()
+        or os.path.lexists(OBSOLETE_CREDENTIAL_PREPARE_APPROVAL_PATH)
+        or os.path.lexists(OBSOLETE_BOOTSTRAP_CREDENTIAL_PATH)
+        or os.path.lexists(OBSOLETE_COORDINATOR_PROCESS_JOURNAL_PATH)
+        or os.path.lexists(DISCORD_TOKEN_PATH)
+        or os.path.lexists(DISCORD_TOKEN_STAGE_PATH)
+        or os.path.lexists(DISCORD_TOKEN_INSTALL_RECEIPT_PATH)
+    ):
+        _fail(
+            "phase_b_live_boundary_not_pristine",
+            phase="phase_b_live_preflight",
         )
-        _revision(raw["release_sha"], "credential_prepare_release_invalid")
-        for name in (
-            "owner_subject_sha256",
-            "approval_source_sha256",
-            "nonce_sha256",
-        ):
-            _digest(raw[name], f"credential_prepare_{name}_invalid")
-        approved = raw["approved_at_unix"]
-        expires = raw["expires_at_unix"]
-        if (
-            type(approved) is not int
-            or type(expires) is not int
-            or approved < 0
-            or not 1 <= expires - approved <= 900
-        ):
-            _fail("credential_prepare_approval_window_invalid")
-        return cls(value=raw)
-
-    @property
-    def sha256(self) -> str:
-        return _sha256_json(self.value)
-
-    def require(self, *, coordinator_input: CoordinatorInput, now_unix: int) -> None:
-        scope = coordinator_input.value["writer_config"].get("canary_scope_preapproval")
-        if (
-            self.value["coordinator_input_sha256"] != coordinator_input.sha256
-            or self.value["release_sha"] != coordinator_input.revision
-            or not isinstance(scope, Mapping)
-            or self.value["approval_source_sha256"]
-            != scope.get("approval_source_sha256")
-            or type(now_unix) is not int
-            or not self.value["approved_at_unix"]
-            <= now_unix
-            <= self.value["expires_at_unix"]
-        ):
-            _fail("credential_prepare_approval_not_fresh_or_bound")
+    foundation, anchor = _load_fixed_phase_b_live_authority(coordinator_input)
+    approval = foundation["approval"]
+    now_unix = int(time.time())
+    unsigned = {
+        "schema": PHASE_B_LIVE_GATE_SCHEMA,
+        "ok": True,
+        "state": "phase_b_terminal_ready",
+        "release_sha": coordinator_input.revision,
+        "coordinator_input_sha256": coordinator_input.sha256,
+        "owner_subject_sha256": approval["owner_subject_sha256"],
+        "approval_source_sha256": approval["approval_source_sha256"],
+        "phase_b_readiness_anchor": anchor,
+        "phase_b_readiness_anchor_sha256": _sha256_json(anchor),
+        "issued_at_unix": now_unix,
+        "expires_at_unix": now_unix + 300,
+    }
+    return {**unsigned, "gate_sha256": _sha256_json(unsigned)}
 
 
 @dataclass(frozen=True)
@@ -1624,107 +3432,17 @@ class DiscordTokenInstallApproval:
         return _sha256_json(self.value)
 
     def require(self, *, coordinator_input: CoordinatorInput, now_unix: int) -> None:
-        scope = coordinator_input.value["writer_config"].get("canary_scope_preapproval")
         if (
             self.value["coordinator_input_sha256"] != coordinator_input.sha256
             or self.value["release_sha"] != coordinator_input.revision
-            or not isinstance(scope, Mapping)
             or self.value["approval_source_sha256"]
-            != scope.get("approval_source_sha256")
+            != PHASE_B_PINNED_APPROVAL_SOURCE_SHA256
             or type(now_unix) is not int
             or not self.value["approved_at_unix"]
             <= now_unix
             <= self.value["expires_at_unix"]
         ):
             _fail("discord_token_install_approval_not_fresh_or_bound")
-
-
-@dataclass(frozen=True)
-class OwnerApprovalRequest:
-    value: Mapping[str, Any]
-
-    @classmethod
-    def from_mapping(cls, value: Any) -> "OwnerApprovalRequest":
-        if (
-            not isinstance(value, Mapping)
-            or set(value) != _OWNER_APPROVAL_REQUEST_FIELDS
-        ):
-            _fail("owner_approval_request_fields_invalid")
-        raw = copy.deepcopy(dict(value))
-        if (
-            raw["schema"] != OWNER_APPROVAL_REQUEST_SCHEMA
-            or raw["ok"] is not True
-            or raw["state"] != "awaiting_final_owner_approval"
-            or raw["staged_plan_path"] != str(DEFAULT_STAGED_PLAN_PATH)
-            or raw["approval_request_path"] != str(OWNER_APPROVAL_REQUEST_PATH)
-            or raw["approval_path"] != str(DEFAULT_APPROVAL_PATH)
-            or raw["final_approval_frame_schema"] != FINAL_APPROVAL_FRAME_SCHEMA
-        ):
-            _fail("owner_approval_request_semantics_invalid")
-        _revision(raw["release_sha"], "owner_approval_request_release_invalid")
-        for name in (
-            "coordinator_input_sha256",
-            "credential_prepare_approval_sha256",
-            "owner_subject_sha256",
-            "approval_source_sha256",
-            "full_canary_plan_sha256",
-            "staged_plan_file_sha256",
-            "hba_receipt_sha256",
-        ):
-            _digest(raw[name], f"owner_approval_request_{name}_invalid")
-        prior = raw["prior_approval_file_sha256"]
-        if prior is not None:
-            _digest(prior, "owner_approval_request_prior_approval_invalid")
-        if (
-            not isinstance(raw["ephemeral_admin_username"], str)
-            or _ADMIN_USERNAME_RE.fullmatch(raw["ephemeral_admin_username"]) is None
-        ):
-            _fail("owner_approval_request_admin_username_invalid")
-        requested = raw["requested_at_unix"]
-        deadline = raw["approval_deadline_unix"]
-        input_cutoff = raw["owner_input_cutoff_unix"]
-        transmit_margin = raw["final_approval_transmit_margin_seconds"]
-        hba_expires = raw["hba_expires_at_unix"]
-        fixture_expires = raw["fixture_expires_at_unix"]
-        credential_expires = raw["credential_approval_expires_at_unix"]
-        wait = raw["max_wait_seconds"]
-        if (
-            any(
-                type(item) is not int
-                for item in (
-                    requested,
-                    deadline,
-                    input_cutoff,
-                    transmit_margin,
-                    hba_expires,
-                    fixture_expires,
-                    credential_expires,
-                    wait,
-                )
-            )
-            or requested < 0
-            or transmit_margin != FINAL_APPROVAL_TRANSMIT_MARGIN_SECONDS
-            or not FINAL_APPROVAL_TRANSMIT_MARGIN_SECONDS + 1
-            <= wait
-            <= FINAL_APPROVAL_MAX_WAIT_SECONDS
-            or deadline != requested + wait
-            or input_cutoff != deadline - transmit_margin
-            or not requested < input_cutoff < deadline
-            or deadline > hba_expires - HBA_EXPIRY_SAFETY_MARGIN_SECONDS
-            or deadline > fixture_expires
-            or deadline > credential_expires - FINAL_APPROVAL_TRANSMIT_MARGIN_SECONDS
-        ):
-            _fail("owner_approval_request_window_invalid")
-        expected = _sha256_json({
-            key: item for key, item in raw.items() if key != "request_sha256"
-        })
-        if raw["request_sha256"] != expected:
-            _fail("owner_approval_request_self_digest_mismatch")
-        return cls(value=raw)
-
-    @property
-    def sha256(self) -> str:
-        return str(self.value["request_sha256"])
 
 
 def _read_final_approval_bytes(
@@ -2001,7 +3719,7 @@ def collect_coordinator_input() -> CoordinatorInput:
     """Build the input solely from fixed, installed, root-controlled state."""
 
     _require_root_linux()
-    if os.path.lexists(COORDINATOR_PROCESS_LEASE_PATH):
+    if os.path.lexists(OBSOLETE_COORDINATOR_PROCESS_JOURNAL_PATH):
         _fail("coordinator_process_recovery_required", phase="input_bootstrap")
     if not _services_are_exactly_stopped_and_disabled():
         _fail("coordinator_input_bootstrap_services_not_stopped")
@@ -2064,27 +3782,6 @@ def collect_coordinator_input() -> CoordinatorInput:
         gid=0,
         maximum_bytes=_MAX_HOST_IDENTITY_RECEIPT_BYTES,
     )
-    preliminary_plan = build_full_canary_plan(
-        writer_activation_plan=writer_plan,
-        writer_activation_receipt=writer_receipt,
-        writer_activation_receipt_file_sha256=_sha256_bytes(receipt_raw),
-        identities=identities,
-        writer_config=writer_artifact,
-        gateway_config=gateway_artifact,
-        edge_config=edge_artifact,
-        e2e_fixture=fixture_artifact,
-        host_identity_receipt=host_artifact,
-    )
-    _bootstrap_path, _bootstrap_raw, bootstrap_sha256 = _validated_release_file(
-        preliminary_plan,
-        DEFAULT_CANARY_BOOTSTRAP_SQL_RELATIVE,
-        maximum_bytes=MAX_FIXED_CANARY_ARTIFACT_BYTES,
-    )
-    _retire_path, _retire_raw, retire_sha256 = _validated_release_file(
-        preliminary_plan,
-        DEFAULT_CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE,
-        maximum_bytes=MAX_FIXED_CANARY_ARTIFACT_BYTES,
-    )
     value = build_coordinator_input(
         writer_activation_plan=writer_plan,
         writer_activation_receipt=writer_receipt,
@@ -2095,8 +3792,6 @@ def collect_coordinator_input() -> CoordinatorInput:
         edge_config=edge_artifact,
         e2e_fixture=fixture_artifact,
         host_identity_receipt=host_artifact,
-        bootstrap_sql_sha256=bootstrap_sha256,
-        bootstrap_retire_sql_sha256=retire_sha256,
     )
     _validate_coordinator_input_live(value)
     return value
@@ -2113,8 +3808,6 @@ def build_coordinator_input(
     edge_config: ExactArtifact,
     e2e_fixture: ExactArtifact,
     host_identity_receipt: ExactArtifact,
-    bootstrap_sql_sha256: str,
-    bootstrap_retire_sql_sha256: str,
 ) -> CoordinatorInput:
     """Build the exact secret-free input after writer-only success."""
 
@@ -2132,8 +3825,6 @@ def build_coordinator_input(
             "e2e_fixture": e2e_fixture.to_mapping(),
             "host_identity_receipt": host_identity_receipt.to_mapping(),
         },
-        "bootstrap_sql_sha256": bootstrap_sql_sha256,
-        "bootstrap_retire_sql_sha256": bootstrap_retire_sql_sha256,
     }
     return CoordinatorInput.from_mapping({
         **unsigned,
@@ -2207,7 +3898,7 @@ def publish_coordinator_input(
         _fail("coordinator_input_publication_clock_invalid")
     payload = _canonical_bytes(value.value)
     with _lifecycle_lock():
-        if os.path.lexists(COORDINATOR_PROCESS_LEASE_PATH):
+        if os.path.lexists(OBSOLETE_COORDINATOR_PROCESS_JOURNAL_PATH):
             _fail("coordinator_process_recovery_required", phase="input_bootstrap")
         if not _services_are_exactly_stopped_and_disabled():
             _fail("coordinator_input_bootstrap_services_not_stopped")
@@ -2307,37 +3998,18 @@ def _validate_coordinator_input_live(value: CoordinatorInput) -> None:
             _validate_gateway_config(raw)
         elif name == "edge_config":
             _validate_edge_config(raw, value.identities)
-    _validated_e2e_fixture(value.base_plan)
-    validate_dedicated_canary_host(value.base_plan)
-    manifest_path = Path(value.base_plan.release["manifest_path"])
-    manifest_raw = _stable_root_read(
-        manifest_path,
-        maximum=MAX_RELEASE_MANIFEST_BYTES,
-    )
-    if _sha256_bytes(manifest_raw) != value.base_plan.release["manifest_file_sha256"]:
+    _validated_base_e2e_fixture(value)
+    from gateway.canonical_writer_planner import load_release_manifest
+
+    try:
+        _manifest, manifest_raw = load_release_manifest(value.revision)
+    except (OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise CoordinatorError("coordinator_release_manifest_invalid") from exc
+    if (
+        _sha256_bytes(manifest_raw)
+        != value.writer_activation_plan.digests.release_manifest_file_sha256
+    ):
         _fail("coordinator_release_manifest_digest_drifted")
-    manifest = _decode_mapping(
-        manifest_raw,
-        code="coordinator_release_manifest_invalid",
-    )
-    entries = manifest.get("entries")
-    if not isinstance(entries, list):
-        _fail("coordinator_release_manifest_entries_invalid")
-    expected = {
-        DEFAULT_CANARY_BOOTSTRAP_SQL_RELATIVE.as_posix(): value.value[
-            "bootstrap_sql_sha256"
-        ],
-        DEFAULT_CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE.as_posix(): value.value[
-            "bootstrap_retire_sql_sha256"
-        ],
-    }
-    observed = {
-        entry.get("path"): entry.get("sha256")
-        for entry in entries
-        if isinstance(entry, Mapping) and entry.get("path") in expected
-    }
-    if observed != expected:
-        _fail("coordinator_bootstrap_manifest_binding_invalid")
 
 
 def load_coordinator_input(
@@ -2352,59 +4024,6 @@ def load_coordinator_input(
     )
     _validate_coordinator_input_live(value)
     return value
-
-
-def load_credential_prepare_approval(
-    coordinator_input: CoordinatorInput,
-    *,
-    path: Path = CREDENTIAL_PREPARE_APPROVAL_PATH,
-    now_unix: int | None = None,
-) -> CredentialPrepareApproval:
-    _require_root_linux()
-    if path != CREDENTIAL_PREPARE_APPROVAL_PATH:
-        _fail("credential_prepare_approval_path_not_fixed")
-    raw = _stable_root_read(
-        CREDENTIAL_PREPARE_APPROVAL_PATH,
-        maximum=MAX_OWNER_APPROVAL_BYTES,
-    )
-    approval = CredentialPrepareApproval.from_mapping(
-        _decode_mapping(raw, code="credential_prepare_approval_json_invalid")
-    )
-    approval.require(
-        coordinator_input=coordinator_input,
-        now_unix=int(time.time()) if now_unix is None else now_unix,
-    )
-    return approval
-
-
-def _load_recovery_credential_approval(
-    coordinator_input: CoordinatorInput,
-) -> CredentialPrepareApproval:
-    """Load an exact historical approval without treating expiry as drift."""
-
-    raw = _stable_root_read(
-        CREDENTIAL_PREPARE_APPROVAL_PATH,
-        maximum=MAX_OWNER_APPROVAL_BYTES,
-    )
-    approval = CredentialPrepareApproval.from_mapping(
-        _decode_mapping(
-            raw,
-            code="credential_prepare_approval_json_invalid",
-        )
-    )
-    scope = coordinator_input.value["writer_config"].get("canary_scope_preapproval")
-    if (
-        approval.value["coordinator_input_sha256"] != coordinator_input.sha256
-        or approval.value["release_sha"] != coordinator_input.revision
-        or not isinstance(scope, Mapping)
-        or approval.value["approval_source_sha256"]
-        != scope.get("approval_source_sha256")
-    ):
-        _fail(
-            "recovery_credential_prepare_approval_not_bound",
-            phase="recovery_preflight",
-        )
-    return approval
 
 
 def load_discord_token_install_approval(
@@ -2443,13 +4062,11 @@ def _load_bound_discord_token_install_approval(
     approval = DiscordTokenInstallApproval.from_mapping(
         _decode_mapping(raw, code="discord_token_install_approval_json_invalid")
     )
-    scope = coordinator_input.value["writer_config"].get("canary_scope_preapproval")
     if (
         approval.value["coordinator_input_sha256"] != coordinator_input.sha256
         or approval.value["release_sha"] != coordinator_input.revision
-        or not isinstance(scope, Mapping)
         or approval.value["approval_source_sha256"]
-        != scope.get("approval_source_sha256")
+        != PHASE_B_PINNED_APPROVAL_SOURCE_SHA256
     ):
         _fail("discord_token_install_approval_not_bound")
     return approval
@@ -2785,666 +4402,6 @@ def _load_discord_install_state(
     )
 
 
-def _load_owner_approval_request_live(
-    *,
-    now_unix: int | None = None,
-) -> tuple[
-    OwnerApprovalRequest,
-    FullCanaryPlan,
-    CoordinatorInput,
-    CredentialPrepareApproval,
-]:
-    _require_root_linux()
-    current_time = int(time.time()) if now_unix is None else now_unix
-    raw = _stable_root_read(
-        OWNER_APPROVAL_REQUEST_PATH,
-        maximum=MAX_OWNER_APPROVAL_BYTES,
-    )
-    request = OwnerApprovalRequest.from_mapping(
-        _decode_mapping(raw, code="owner_approval_request_json_invalid")
-    )
-    coordinator_input = load_coordinator_input()
-    credential_approval = load_credential_prepare_approval(
-        coordinator_input,
-        now_unix=current_time,
-    )
-    if (
-        request.value["release_sha"] != coordinator_input.revision
-        or request.value["coordinator_input_sha256"] != coordinator_input.sha256
-        or request.value["credential_prepare_approval_sha256"]
-        != credential_approval.sha256
-        or request.value["owner_subject_sha256"]
-        != credential_approval.value["owner_subject_sha256"]
-        or request.value["ephemeral_admin_username"]
-        != derive_ephemeral_admin_username(credential_approval.sha256)
-        or not request.value["requested_at_unix"]
-        <= current_time
-        <= request.value["approval_deadline_unix"]
-    ):
-        _fail("owner_approval_request_not_active_or_bound")
-    plan_raw = _stable_root_read(
-        DEFAULT_STAGED_PLAN_PATH,
-        maximum=MAX_COORDINATOR_INPUT_BYTES,
-    )
-    if _sha256_bytes(plan_raw) != request.value["staged_plan_file_sha256"]:
-        _fail("owner_approval_request_staged_plan_drifted")
-    try:
-        plan = FullCanaryPlan.from_mapping(
-            _decode_mapping(plan_raw, code="staged_full_canary_plan_invalid")
-        )
-    except (TypeError, ValueError) as exc:
-        raise CoordinatorError("staged_full_canary_plan_invalid") from exc
-    if (
-        plan.sha256 != request.value["full_canary_plan_sha256"]
-        or plan.revision != coordinator_input.revision
-    ):
-        _fail("owner_approval_request_plan_binding_invalid")
-    validate_dedicated_canary_host(plan)
-    prior = _capture_root_snapshot(
-        DEFAULT_APPROVAL_PATH,
-        maximum=MAX_OWNER_APPROVAL_BYTES,
-    )
-    prior_sha256 = None if prior is None else prior.sha256
-    if prior_sha256 != request.value["prior_approval_file_sha256"]:
-        _fail("owner_approval_request_prior_approval_drifted")
-    return request, plan, coordinator_input, credential_approval
-
-
-def _final_approval_hard_deadline(
-    *,
-    hba_expires_at_unix: int,
-    fixture_expires_at_unix: int,
-    credential_approval_expires_at_unix: int,
-) -> int:
-    if any(
-        type(item) is not int or item < 0
-        for item in (
-            hba_expires_at_unix,
-            fixture_expires_at_unix,
-            credential_approval_expires_at_unix,
-        )
-    ):
-        _fail("owner_approval_request_authority_deadline_invalid")
-    return min(
-        hba_expires_at_unix - HBA_EXPIRY_SAFETY_MARGIN_SECONDS,
-        fixture_expires_at_unix,
-        credential_approval_expires_at_unix - FINAL_APPROVAL_TRANSMIT_MARGIN_SECONDS,
-    )
-
-
-def build_owner_approval_request(
-    *,
-    coordinator_input: CoordinatorInput,
-    credential_approval: CredentialPrepareApproval,
-    plan: FullCanaryPlan,
-    staged_plan_publication: _RootPublication,
-    hba_receipt: ManagedCloudSQLAdminHBAReceipt,
-    fixture: Mapping[str, Any],
-    approval_source_sha256: str,
-    now_unix: int | None = None,
-) -> tuple[OwnerApprovalRequest, _RootPublication]:
-    """Publish and return the exact active final-approval request."""
-
-    _require_root_linux()
-    current_time = int(time.time()) if now_unix is None else now_unix
-    if (
-        not isinstance(coordinator_input, CoordinatorInput)
-        or not isinstance(credential_approval, CredentialPrepareApproval)
-        or not isinstance(plan, FullCanaryPlan)
-        or staged_plan_publication.path != DEFAULT_STAGED_PLAN_PATH
-        or staged_plan_publication.after.raw != _canonical_bytes(plan.to_mapping())
-        or not isinstance(hba_receipt, ManagedCloudSQLAdminHBAReceipt)
-    ):
-        _fail("owner_approval_request_inputs_invalid")
-    credential_approval.require(
-        coordinator_input=coordinator_input,
-        now_unix=current_time,
-    )
-    approval_source_sha256 = _digest(
-        approval_source_sha256,
-        "owner_approval_request_approval_source_invalid",
-    )
-    if approval_source_sha256 != credential_approval.value["approval_source_sha256"]:
-        _fail("owner_approval_request_approval_source_drifted")
-    fixture_expiry_ms = fixture.get("valid_until_unix_ms")
-    if type(fixture_expiry_ms) is not int or fixture_expiry_ms <= 0:
-        _fail("owner_approval_request_fixture_expiry_invalid")
-    fixture_expiry = fixture_expiry_ms // 1000
-    hard_deadline = _final_approval_hard_deadline(
-        hba_expires_at_unix=hba_receipt.expires_at_unix,
-        fixture_expires_at_unix=fixture_expiry,
-        credential_approval_expires_at_unix=credential_approval.value[
-            "expires_at_unix"
-        ],
-    )
-    max_wait = min(
-        FINAL_APPROVAL_MAX_WAIT_SECONDS,
-        hard_deadline - current_time,
-    )
-    if max_wait <= FINAL_APPROVAL_TRANSMIT_MARGIN_SECONDS:
-        _fail("owner_approval_request_window_exhausted")
-    approval_deadline = current_time + max_wait
-    prior_approval = _capture_root_snapshot(
-        DEFAULT_APPROVAL_PATH,
-        maximum=MAX_OWNER_APPROVAL_BYTES,
-    )
-    unsigned = {
-        "schema": OWNER_APPROVAL_REQUEST_SCHEMA,
-        "ok": True,
-        "state": "awaiting_final_owner_approval",
-        "release_sha": coordinator_input.revision,
-        "coordinator_input_sha256": coordinator_input.sha256,
-        "credential_prepare_approval_sha256": credential_approval.sha256,
-        "owner_subject_sha256": credential_approval.value["owner_subject_sha256"],
-        "approval_source_sha256": approval_source_sha256,
-        "ephemeral_admin_username": derive_ephemeral_admin_username(
-            credential_approval.sha256
-        ),
-        "full_canary_plan_sha256": plan.sha256,
-        "staged_plan_path": str(DEFAULT_STAGED_PLAN_PATH),
-        "staged_plan_file_sha256": staged_plan_publication.after.sha256,
-        "approval_request_path": str(OWNER_APPROVAL_REQUEST_PATH),
-        "approval_path": str(DEFAULT_APPROVAL_PATH),
-        "hba_receipt_sha256": hba_receipt.sha256,
-        "hba_expires_at_unix": hba_receipt.expires_at_unix,
-        "fixture_expires_at_unix": fixture_expiry,
-        "credential_approval_expires_at_unix": credential_approval.value[
-            "expires_at_unix"
-        ],
-        "requested_at_unix": current_time,
-        "approval_deadline_unix": approval_deadline,
-        "owner_input_cutoff_unix": (
-            approval_deadline - FINAL_APPROVAL_TRANSMIT_MARGIN_SECONDS
-        ),
-        "final_approval_transmit_margin_seconds": (
-            FINAL_APPROVAL_TRANSMIT_MARGIN_SECONDS
-        ),
-        "max_wait_seconds": max_wait,
-        "prior_approval_file_sha256": (
-            None if prior_approval is None else prior_approval.sha256
-        ),
-        "final_approval_frame_schema": FINAL_APPROVAL_FRAME_SCHEMA,
-    }
-    request = OwnerApprovalRequest.from_mapping({
-        **unsigned,
-        "request_sha256": _sha256_json(unsigned),
-    })
-    previous_request = _capture_root_snapshot(
-        OWNER_APPROVAL_REQUEST_PATH,
-        maximum=MAX_OWNER_APPROVAL_BYTES,
-    )
-    expected_previous: str | None = None
-    if previous_request is not None:
-        try:
-            old = OwnerApprovalRequest.from_mapping(
-                _decode_mapping(
-                    previous_request.raw,
-                    code="prior_owner_approval_request_invalid",
-                )
-            )
-        except CoordinatorError as exc:
-            raise CoordinatorCleanupBlocked(
-                "prior_owner_approval_request_cleanup_blocked",
-                phase="owner_approval_request",
-            ) from exc
-        if current_time <= old.value["approval_deadline_unix"]:
-            _fail("owner_approval_request_already_active")
-        expected_previous = previous_request.sha256
-    publication = _publish_root_payload(
-        OWNER_APPROVAL_REQUEST_PATH,
-        _canonical_bytes(request.value),
-        expected_previous_sha256=expected_previous,
-    )
-    return request, publication
-
-
-def _approval_path_snapshot_unchanged(
-    before: _RootFileSnapshot | None,
-    after: _RootFileSnapshot | None,
-) -> bool:
-    if before is None or after is None:
-        return before is None and after is None
-    return bool(
-        before.raw == after.raw and _same_file_identity(before.item, after.item)
-    )
-
-
-def _final_approval_cancel_has_state_conflict(
-    *,
-    request_state: str,
-    staged_state: str,
-    owner_state: str,
-) -> bool:
-    request_and_plan_are_coherent = (
-        request_state in {"matching_active", "matching_expired"}
-        and staged_state == "matching_present"
-    ) or (request_state == "retired_absent" and staged_state == "retired_absent")
-    return not request_and_plan_are_coherent or owner_state != "matching_prior"
-
-
-def _parse_final_approval_cancel_receipt(
-    value: Any,
-    *,
-    request: OwnerApprovalRequest,
-    plan: FullCanaryPlan,
-    coordinator_input: CoordinatorInput,
-    credential_approval: CredentialPrepareApproval,
-    approval_request_before: _RootFileSnapshot,
-    staged_plan_before: _RootFileSnapshot,
-) -> Mapping[str, Any]:
-    if (
-        not isinstance(value, Mapping)
-        or set(value) != FINAL_APPROVAL_CANCEL_RECEIPT_FIELDS
-    ):
-        _fail("final_approval_cancel_receipt_fields_invalid")
-    raw = copy.deepcopy(dict(value))
-    unsigned = {key: item for key, item in raw.items() if key != "receipt_sha256"}
-    prior = request.value["prior_approval_file_sha256"]
-    request_state = raw["approval_request_artifact_state"]
-    staged_state = raw["staged_plan_artifact_state"]
-    owner_state = raw["owner_approval_artifact_state"]
-    conflict = _final_approval_cancel_has_state_conflict(
-        request_state=request_state,
-        staged_state=staged_state,
-        owner_state=owner_state,
-    )
-    if (
-        raw["schema"] != FINAL_APPROVAL_CANCEL_RECEIPT_SCHEMA
-        or raw["ok"] is not False
-        or raw["state"]
-        != ("cancelled_no_secret_state_conflict" if conflict else "cancelled_no_secret")
-        or raw["reason"] != "eof_before_mfa1"
-        or raw["release_sha"] != coordinator_input.revision
-        or raw["coordinator_input_sha256"] != coordinator_input.sha256
-        or raw["credential_prepare_approval_sha256"] != credential_approval.sha256
-        or raw["owner_subject_sha256"] != request.value["owner_subject_sha256"]
-        or raw["full_canary_plan_sha256"] != plan.sha256
-        or raw["approval_request_sha256"] != request.sha256
-        or raw["approval_request_path"] != str(OWNER_APPROVAL_REQUEST_PATH)
-        or raw["expected_approval_request_file_sha256"]
-        != approval_request_before.sha256
-        or request_state
-        not in {
-            "matching_active",
-            "matching_expired",
-            "retired_absent",
-            "superseded",
-            "drifted",
-        }
-        or raw["approval_request_present"] is not (request_state != "retired_absent")
-        or raw["approval_request_remains_active"]
-        is not (request_state == "matching_active")
-        or raw["staged_plan_path"] != str(DEFAULT_STAGED_PLAN_PATH)
-        or raw["expected_staged_plan_file_sha256"] != staged_plan_before.sha256
-        or staged_state
-        not in {"matching_present", "retired_absent", "superseded", "drifted"}
-        or raw["staged_plan_present"] is not (staged_state != "retired_absent")
-        or raw["approval_path"] != str(DEFAULT_APPROVAL_PATH)
-        or raw["prior_approval_file_sha256"] != prior
-        or owner_state not in {"matching_prior", "drifted"}
-        or raw["approval_path_matches_prior"] is not (owner_state == "matching_prior")
-        or raw["new_owner_approval_installed"]
-        is not (False if owner_state == "matching_prior" else None)
-        or raw["frame_bytes_received"] != 0
-        or raw["owner_approval_mutation_performed_by_this_helper"] is not False
-        or type(raw["cancelled_at_unix"]) is not int
-        or raw["cancelled_at_unix"] < request.value["requested_at_unix"]
-        or raw["receipt_sha256"] != _sha256_json(unsigned)
-    ):
-        _fail("final_approval_cancel_receipt_invalid")
-    for name in (
-        "observed_approval_request_file_sha256",
-        "observed_staged_plan_file_sha256",
-        "observed_approval_file_sha256",
-    ):
-        if raw[name] is not None:
-            _digest(raw[name], "final_approval_cancel_observed_digest_invalid")
-    if (
-        (request_state == "retired_absent")
-        != (raw["observed_approval_request_file_sha256"] is None)
-        or (staged_state == "retired_absent")
-        != (raw["observed_staged_plan_file_sha256"] is None)
-        or (
-            request_state in {"matching_active", "matching_expired"}
-            and raw["observed_approval_request_file_sha256"]
-            != raw["expected_approval_request_file_sha256"]
-        )
-        or (
-            request_state == "superseded"
-            and raw["observed_approval_request_file_sha256"]
-            == raw["expected_approval_request_file_sha256"]
-        )
-        or (
-            request_state == "drifted"
-            and raw["observed_approval_request_file_sha256"]
-            != raw["expected_approval_request_file_sha256"]
-        )
-        or (
-            request_state == "matching_active"
-            and raw["cancelled_at_unix"] > request.value["approval_deadline_unix"]
-        )
-        or (
-            request_state == "matching_expired"
-            and raw["cancelled_at_unix"] <= request.value["approval_deadline_unix"]
-        )
-        or (
-            staged_state == "matching_present"
-            and raw["observed_staged_plan_file_sha256"]
-            != raw["expected_staged_plan_file_sha256"]
-        )
-        or (
-            staged_state == "superseded"
-            and raw["observed_staged_plan_file_sha256"]
-            == raw["expected_staged_plan_file_sha256"]
-        )
-        or (
-            staged_state == "drifted"
-            and raw["observed_staged_plan_file_sha256"]
-            != raw["expected_staged_plan_file_sha256"]
-        )
-        or (
-            owner_state == "matching_prior"
-            and raw["observed_approval_file_sha256"] != prior
-        )
-        or (
-            owner_state == "drifted"
-            and prior is None
-            and raw["observed_approval_file_sha256"] is None
-        )
-    ):
-        _fail("final_approval_cancel_receipt_invalid")
-    return raw
-
-
-def _inspect_final_approval_request_artifact(
-    *,
-    expected: _RootFileSnapshot,
-    observed: _RootFileSnapshot | None,
-    now_unix: int,
-    request: OwnerApprovalRequest,
-) -> str:
-    if observed is None:
-        return "retired_absent"
-    if _snapshot_is_exact(expected, observed):
-        return (
-            "matching_active"
-            if now_unix <= request.value["approval_deadline_unix"]
-            else "matching_expired"
-        )
-    if observed.raw == expected.raw:
-        return "drifted"
-    # Any different content is a superseding/conflicting replacement.  The
-    # narrower ``drifted`` state is reserved for same bytes through a changed
-    # inode identity (an ABA replacement), which the captured snapshot proves.
-    return "superseded"
-
-
-def _inspect_final_staged_plan_artifact(
-    *,
-    expected: _RootFileSnapshot,
-    observed: _RootFileSnapshot | None,
-) -> str:
-    if observed is None:
-        return "retired_absent"
-    if _snapshot_is_exact(expected, observed):
-        return "matching_present"
-    if observed.raw == expected.raw:
-        return "drifted"
-    return "superseded"
-
-
-def _build_final_approval_cancel_receipt(
-    *,
-    request: OwnerApprovalRequest,
-    plan: FullCanaryPlan,
-    coordinator_input: CoordinatorInput,
-    credential_approval: CredentialPrepareApproval,
-    approval_path_before: _RootFileSnapshot | None,
-    approval_request_before: _RootFileSnapshot,
-    staged_plan_before: _RootFileSnapshot,
-) -> Mapping[str, Any]:
-    approval_request_after = _capture_root_snapshot(
-        OWNER_APPROVAL_REQUEST_PATH,
-        maximum=MAX_OWNER_APPROVAL_BYTES,
-    )
-    staged_plan_after = _capture_root_snapshot(
-        DEFAULT_STAGED_PLAN_PATH,
-        maximum=MAX_COORDINATOR_INPUT_BYTES,
-    )
-    approval_path_after = _capture_root_snapshot(
-        DEFAULT_APPROVAL_PATH,
-        maximum=MAX_OWNER_APPROVAL_BYTES,
-    )
-    prior = request.value["prior_approval_file_sha256"]
-    observed = None if approval_path_after is None else approval_path_after.sha256
-    now_unix = int(time.time())
-    request_state = _inspect_final_approval_request_artifact(
-        expected=approval_request_before,
-        observed=approval_request_after,
-        now_unix=now_unix,
-        request=request,
-    )
-    staged_state = _inspect_final_staged_plan_artifact(
-        expected=staged_plan_before,
-        observed=staged_plan_after,
-    )
-    owner_matches = (
-        _approval_path_snapshot_unchanged(
-            approval_path_before,
-            approval_path_after,
-        )
-        and observed == prior
-    )
-    owner_state = "matching_prior" if owner_matches else "drifted"
-    conflict = _final_approval_cancel_has_state_conflict(
-        request_state=request_state,
-        staged_state=staged_state,
-        owner_state=owner_state,
-    )
-    unsigned = {
-        "schema": FINAL_APPROVAL_CANCEL_RECEIPT_SCHEMA,
-        "ok": False,
-        "state": (
-            "cancelled_no_secret_state_conflict" if conflict else "cancelled_no_secret"
-        ),
-        "reason": "eof_before_mfa1",
-        "release_sha": coordinator_input.revision,
-        "coordinator_input_sha256": coordinator_input.sha256,
-        "credential_prepare_approval_sha256": credential_approval.sha256,
-        "owner_subject_sha256": request.value["owner_subject_sha256"],
-        "full_canary_plan_sha256": plan.sha256,
-        "approval_request_sha256": request.sha256,
-        "approval_request_path": str(OWNER_APPROVAL_REQUEST_PATH),
-        "expected_approval_request_file_sha256": approval_request_before.sha256,
-        "observed_approval_request_file_sha256": (
-            None if approval_request_after is None else approval_request_after.sha256
-        ),
-        "approval_request_artifact_state": request_state,
-        "approval_request_present": approval_request_after is not None,
-        "approval_request_remains_active": request_state == "matching_active",
-        "staged_plan_path": str(DEFAULT_STAGED_PLAN_PATH),
-        "expected_staged_plan_file_sha256": staged_plan_before.sha256,
-        "observed_staged_plan_file_sha256": (
-            None if staged_plan_after is None else staged_plan_after.sha256
-        ),
-        "staged_plan_artifact_state": staged_state,
-        "staged_plan_present": staged_plan_after is not None,
-        "approval_path": str(DEFAULT_APPROVAL_PATH),
-        "prior_approval_file_sha256": prior,
-        "observed_approval_file_sha256": observed,
-        "owner_approval_artifact_state": owner_state,
-        "approval_path_matches_prior": owner_matches,
-        "new_owner_approval_installed": False if owner_matches else None,
-        "frame_bytes_received": 0,
-        "owner_approval_mutation_performed_by_this_helper": False,
-        "cancelled_at_unix": now_unix,
-    }
-    receipt = {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
-    return _parse_final_approval_cancel_receipt(
-        receipt,
-        request=request,
-        plan=plan,
-        coordinator_input=coordinator_input,
-        credential_approval=credential_approval,
-        approval_request_before=approval_request_before,
-        staged_plan_before=staged_plan_before,
-    )
-
-
-def _final_owner_approval_is_bound_to_request(
-    approval: FullCanaryOwnerApproval,
-    request: OwnerApprovalRequest,
-) -> bool:
-    return bool(
-        approval.value["plan_sha256"] == request.value["full_canary_plan_sha256"]
-        and approval.value["owner_subject_sha256"]
-        == request.value["owner_subject_sha256"]
-        and approval.value["approval_source_sha256"]
-        == request.value["approval_source_sha256"]
-        and request.value["requested_at_unix"]
-        <= approval.value["approved_at_unix"]
-        <= request.value["owner_input_cutoff_unix"]
-        and approval.value["expires_at_unix"]
-        <= min(
-            request.value["hba_expires_at_unix"],
-            request.value["fixture_expires_at_unix"],
-            request.value["credential_approval_expires_at_unix"],
-        )
-    )
-
-
-def _require_install_final_owner_approval_binding(
-    approval: FullCanaryOwnerApproval,
-    request: OwnerApprovalRequest,
-) -> None:
-    if not _final_owner_approval_is_bound_to_request(approval, request):
-        _fail(
-            "final_owner_approval_not_bound",
-            phase="final_approval_install",
-        )
-
-
-def _require_runtime_final_owner_approval_binding(
-    approval: FullCanaryOwnerApproval,
-    request: OwnerApprovalRequest,
-) -> None:
-    if not _final_owner_approval_is_bound_to_request(approval, request):
-        _fail("owner_approval_ttl_or_binding_invalid")
-
-
-def install_final_owner_approval(
-    *,
-    gate_emitter: Callable[[Mapping[str, Any]], None],
-    frame_reader: Callable[[], Mapping[str, Any]] = _read_final_owner_approval_frame,
-) -> Mapping[str, Any]:
-    """Install one exact final approval through the fixed OOB MFA1 frame."""
-
-    _harden_secret_process()
-    request, plan, coordinator_input, credential_approval = (
-        _load_owner_approval_request_live()
-    )
-    approval_path_before = _capture_root_snapshot(
-        DEFAULT_APPROVAL_PATH,
-        maximum=MAX_OWNER_APPROVAL_BYTES,
-    )
-    approval_request_before = _capture_root_snapshot(
-        OWNER_APPROVAL_REQUEST_PATH,
-        maximum=MAX_OWNER_APPROVAL_BYTES,
-    )
-    staged_plan_before = _capture_root_snapshot(
-        DEFAULT_STAGED_PLAN_PATH,
-        maximum=MAX_COORDINATOR_INPUT_BYTES,
-    )
-    if (
-        None if approval_path_before is None else approval_path_before.sha256
-    ) != request.value["prior_approval_file_sha256"]:
-        _fail(
-            "final_approval_path_drifted_before_gate",
-            phase="final_approval_install",
-        )
-    if (
-        approval_request_before is None
-        or approval_request_before.raw != _canonical_bytes(request.value)
-        or staged_plan_before is None
-        or staged_plan_before.raw != _canonical_bytes(plan.to_mapping())
-        or staged_plan_before.sha256 != request.value["staged_plan_file_sha256"]
-    ):
-        _fail(
-            "final_approval_gate_artifact_drifted",
-            phase="final_approval_install",
-        )
-    gate_emitter(request.value)
-    try:
-        approval_raw = frame_reader()
-    except _FinalApprovalNoSecretCancellation:
-        with _lifecycle_lock():
-            return _build_final_approval_cancel_receipt(
-                request=request,
-                plan=plan,
-                coordinator_input=coordinator_input,
-                credential_approval=credential_approval,
-                approval_path_before=approval_path_before,
-                approval_request_before=approval_request_before,
-                staged_plan_before=staged_plan_before,
-            )
-    try:
-        approval = FullCanaryOwnerApproval.from_mapping(approval_raw)
-    except (TypeError, ValueError) as exc:
-        raise CoordinatorError(
-            "final_owner_approval_contract_invalid",
-            phase="final_approval_install",
-        ) from exc
-    with _lifecycle_lock():
-        request_again, plan_again, input_again, credential_again = (
-            _load_owner_approval_request_live()
-        )
-        approval_path_again = _capture_root_snapshot(
-            DEFAULT_APPROVAL_PATH,
-            maximum=MAX_OWNER_APPROVAL_BYTES,
-        )
-        now_unix = int(time.time())
-        approval.require(plan_sha256=plan.sha256, now_unix=now_unix)
-        if (
-            request_again.value != request.value
-            or plan_again.to_mapping() != plan.to_mapping()
-            or input_again.sha256 != coordinator_input.sha256
-            or credential_again.sha256 != credential_approval.sha256
-            or not _approval_path_snapshot_unchanged(
-                approval_path_before,
-                approval_path_again,
-            )
-        ):
-            _fail(
-                "final_owner_approval_not_bound",
-                phase="final_approval_install",
-            )
-        _require_install_final_owner_approval_binding(approval, request)
-        installed_at_unix = now_unix
-        unsigned = {
-            "schema": FINAL_APPROVAL_INSTALL_RECEIPT_SCHEMA,
-            "ok": True,
-            "release_sha": coordinator_input.revision,
-            "coordinator_input_sha256": coordinator_input.sha256,
-            "credential_prepare_approval_sha256": credential_approval.sha256,
-            "owner_subject_sha256": request.value["owner_subject_sha256"],
-            "full_canary_plan_sha256": plan.sha256,
-            "approval_request_sha256": request.sha256,
-            "owner_approval_sha256": approval.sha256,
-            "approval_path": str(DEFAULT_APPROVAL_PATH),
-            "installed_at_unix": installed_at_unix,
-        }
-        terminal_receipt = {
-            **unsigned,
-            "receipt_sha256": _sha256_json(unsigned),
-        }
-        _publish_root_payload(
-            DEFAULT_APPROVAL_PATH,
-            _canonical_bytes(approval.value),
-            expected_previous_sha256=request.value["prior_approval_file_sha256"],
-        )
-        return terminal_receipt
-
-
 def discord_token_install_gate(
     *,
     coordinator_input: CoordinatorInput | None = None,
@@ -3636,60 +4593,6 @@ def _link_discord_token_stage(
     return installed
 
 
-def _load_terminal_recovery_journal(
-    coordinator_input: CoordinatorInput,
-) -> tuple[Mapping[str, Any], _RootFileSnapshot] | None:
-    snapshot = _capture_root_snapshot(
-        COORDINATOR_PROCESS_LEASE_PATH,
-        maximum=MAX_OWNER_APPROVAL_BYTES,
-    )
-    if snapshot is None:
-        return None
-    journal = _decode_mapping(
-        snapshot.raw,
-        code="coordinator_process_journal_invalid",
-    )
-    if journal.get("schema") == LEGACY_RECOVERY_RECEIPT_SCHEMA:
-        _parse_legacy_recovery_receipt(
-            journal,
-            coordinator_input=coordinator_input,
-        )
-        _fail(
-            "legacy_recovery_receipt_reconciliation_required",
-            phase="process_identity",
-        )
-    if journal.get("schema") != RECOVERY_RECEIPT_SCHEMA:
-        _fail("coordinator_process_recovery_required", phase="process_identity")
-    receipt = _parse_recovery_receipt_v2(
-        journal,
-        coordinator_input=coordinator_input,
-    )
-    return receipt, snapshot
-
-
-def _consume_terminal_recovery_journal(
-    coordinator_input: CoordinatorInput,
-) -> Mapping[str, Any] | None:
-    """Retire only an exact terminal recovery journal before a fresh token.
-
-    An active process lease remains a hard blocker.  Moving consumption to
-    the token publication lock closes the terminal-receipt -> token -> run
-    gap: a failure before ``CoordinatorProcessLease.acquire`` can then use the
-    ordinary token-only retirement path without mistaking old terminal truth
-    for a live coordinator.
-    """
-
-    loaded = _load_terminal_recovery_journal(coordinator_input)
-    if loaded is None:
-        return None
-    receipt, snapshot = loaded
-    _remove_exact_root_snapshot(
-        snapshot,
-        state=_RootRemovalState(),
-    )
-    return receipt
-
-
 def install_discord_token(
     *,
     gate_emitter: Any,
@@ -3700,6 +4603,8 @@ def install_discord_token(
     _harden_secret_process()
     coordinator_input = load_coordinator_input()
     _consume_terminal_discord_retirement(coordinator_input)
+    if os.path.lexists(OBSOLETE_COORDINATOR_PROCESS_JOURNAL_PATH):
+        _fail("obsolete_coordinator_process_journal_requires_reconciliation")
     approval = load_discord_token_install_approval(coordinator_input)
     gate = discord_token_install_gate(
         coordinator_input=coordinator_input,
@@ -3726,7 +4631,8 @@ def install_discord_token(
                 coordinator_input=coordinator_input,
                 now_unix=int(time.time()),
             )
-            _consume_terminal_recovery_journal(coordinator_input)
+            if os.path.lexists(OBSOLETE_COORDINATOR_PROCESS_JOURNAL_PATH):
+                _fail("obsolete_coordinator_process_journal_requires_reconciliation")
             if not _services_are_exactly_stopped_and_disabled():
                 _fail(
                     "full_canary_services_not_stopped_for_token_install",
@@ -3831,93 +4737,9 @@ def install_discord_token(
         frame.close()
 
 
-def preflight_owner_launch() -> Mapping[str, Any]:
-    """Return a self-digested no-secret gate before temporary-user mutation."""
-
-    _require_root_linux()
-    coordinator_input = load_coordinator_input()
-    if os.path.lexists(COORDINATOR_PROCESS_LEASE_PATH):
-        journal = _capture_root_snapshot(
-            COORDINATOR_PROCESS_LEASE_PATH,
-            maximum=MAX_OWNER_APPROVAL_BYTES,
-        )
-        if journal is None:
-            _fail("coordinator_process_journal_drifted")
-        journal_value = _decode_mapping(
-            journal.raw,
-            code="coordinator_process_journal_invalid",
-        )
-        if journal_value.get("schema") == LEGACY_RECOVERY_RECEIPT_SCHEMA:
-            _parse_legacy_recovery_receipt(
-                journal_value,
-                coordinator_input=coordinator_input,
-            )
-            _fail(
-                "legacy_recovery_receipt_reconciliation_required",
-                phase="credential_prepare_preflight",
-            )
-        if journal_value.get("schema") == RECOVERY_RECEIPT_SCHEMA:
-            _parse_recovery_receipt_v2(
-                journal_value,
-                coordinator_input=coordinator_input,
-            )
-        else:
-            _fail(
-                "coordinator_process_recovery_required",
-                phase="credential_prepare_preflight",
-            )
-    retirement = _load_discord_retirement(coordinator_input)
-    if retirement is not None and retirement[0]["state"] != "retired":
-        _fail(
-            "discord_token_retirement_recovery_required",
-            phase="credential_prepare_preflight",
-        )
-    approval = load_credential_prepare_approval(coordinator_input)
-    if not _services_are_exactly_stopped_and_disabled():
-        _fail(
-            "full_canary_services_not_stopped_for_owner_preflight",
-            phase="credential_prepare_preflight",
-        )
-    if os.path.lexists(DISCORD_TOKEN_PATH):
-        _fail(
-            "discord_token_target_not_fresh",
-            phase="credential_prepare_preflight",
-        )
-    if os.path.lexists(DISCORD_TOKEN_INSTALL_RECEIPT_PATH):
-        _fail(
-            "discord_token_receipt_target_not_fresh",
-            phase="credential_prepare_preflight",
-        )
-    if os.path.lexists(DISCORD_TOKEN_STAGE_PATH):
-        _fail(
-            "discord_token_stage_not_fresh",
-            phase="credential_prepare_preflight",
-        )
-    if os.path.lexists(CANARY_BOOTSTRAP_CREDENTIAL_PATH):
-        _fail(
-            "bootstrap_credential_target_not_fresh",
-            phase="credential_prepare_preflight",
-        )
-    unsigned = {
-        "schema": OWNER_LAUNCH_GATE_SCHEMA,
-        "ok": True,
-        "state": "credential_prepare_authorized",
-        "coordinator_input_sha256": coordinator_input.sha256,
-        "credential_prepare_approval_sha256": approval.sha256,
-        "owner_subject_sha256": approval.value["owner_subject_sha256"],
-        "release_sha": coordinator_input.revision,
-        "database_host": CANARY_DATABASE_HOST,
-        "database_port": CANARY_DATABASE_PORT,
-        "database_name": CANARY_DATABASE_NAME,
-        "admin_username": derive_ephemeral_admin_username(approval.sha256),
-        "expires_at_unix": approval.value["expires_at_unix"],
-    }
-    return {**unsigned, "gate_sha256": _sha256_json(unsigned)}
-
-
 def _read_exact(fd: int, size: int) -> bytearray:
     if type(fd) is not int or fd < 0 or type(size) is not int or size < 0:
-        _fail("admin_frame_bounds_invalid", phase="credential_read")
+        _fail("secret_frame_bounds_invalid", phase="credential_read")
     result = bytearray()
     while len(result) < size:
         try:
@@ -3925,11 +4747,11 @@ def _read_exact(fd: int, size: int) -> bytearray:
         except OSError as exc:
             _zeroize(result)
             raise CoordinatorError(
-                "admin_frame_read_failed", phase="credential_read"
+                "secret_frame_read_failed", phase="credential_read"
             ) from exc
         if not chunk:
             _zeroize(result)
-            _fail("admin_frame_truncated", phase="credential_read")
+            _fail("secret_frame_truncated", phase="credential_read")
         result.extend(chunk)
     return result
 
@@ -3943,507 +4765,6 @@ def _zeroize(value: bytearray | memoryview | None) -> None:
         value[:] = b"\x00" * len(value)
     except (BufferError, TypeError, ValueError):
         pass
-
-
-def derive_ephemeral_admin_username(
-    credential_prepare_approval_sha256: str,
-) -> str:
-    """Derive the unique bounded login from one exact fresh approval."""
-
-    digest = _digest(
-        credential_prepare_approval_sha256,
-        "credential_prepare_approval_digest_invalid",
-    )
-    username = "muncho_canary_admin_" + digest[:16]
-    if (
-        len(username.encode("ascii")) > MAX_ADMIN_USERNAME_BYTES
-        or _ADMIN_USERNAME_RE.fullmatch(username) is None
-    ):
-        _fail("ephemeral_admin_username_invalid")
-    return username
-
-
-class OpaqueStdinAdminFrame:
-    """One-shot inherited-FD frame whose repr never contains credentials.
-
-    Wire format is exactly ``MCA2`` + username length (u16 big endian) +
-    password length (u32 big endian) + username UTF-8 + password UTF-8 + EOF.
-    The object may be consumed once.  Its password remains a mutable bytearray
-    and is cleared on consume/close/destruction on a best-effort basis.
-    """
-
-    __slots__ = ("_consumed", "_lock", "_password", "_username")
-
-    def __init__(self, *, username: str, password: bytearray) -> None:
-        self._username = username
-        self._password: bytearray | None = password
-        self._consumed = False
-        self._lock = threading.Lock()
-
-    @classmethod
-    def read(
-        cls,
-        *,
-        expected_username: str,
-        fd: int = ADMIN_FRAME_FD,
-    ) -> "OpaqueStdinAdminFrame":
-        if fd != ADMIN_FRAME_FD:
-            _fail("admin_frame_fd_not_fixed", phase="credential_read")
-        try:
-            if os.isatty(fd):
-                _fail("admin_frame_tty_forbidden", phase="credential_read")
-        except OSError as exc:
-            raise CoordinatorError(
-                "admin_frame_fd_unavailable", phase="credential_read"
-            ) from exc
-        header = _read_exact(fd, _FRAME_HEADER.size)
-        username_raw: bytearray | None = None
-        password_raw: bytearray | None = None
-        try:
-            magic, username_size, password_size = _FRAME_HEADER.unpack(header)
-            if magic != ADMIN_FRAME_MAGIC:
-                _fail("admin_frame_magic_invalid", phase="credential_read")
-            if not 1 <= username_size <= MAX_ADMIN_USERNAME_BYTES:
-                _fail("admin_frame_username_bound_invalid", phase="credential_read")
-            if (
-                not MIN_ADMIN_PASSWORD_BYTES
-                <= password_size
-                <= MAX_ADMIN_PASSWORD_BYTES
-            ):
-                _fail("admin_frame_password_bound_invalid", phase="credential_read")
-            username_raw = _read_exact(fd, username_size)
-            password_raw = _read_exact(fd, password_size)
-            try:
-                username = username_raw.decode("utf-8", errors="strict")
-                password_text = password_raw.decode("utf-8", errors="strict")
-            except UnicodeDecodeError as exc:
-                raise CoordinatorError(
-                    "admin_frame_utf8_invalid", phase="credential_read"
-                ) from exc
-            if (
-                username != expected_username
-                or _ADMIN_USERNAME_RE.fullmatch(username) is None
-            ):
-                _fail("admin_frame_username_mismatch", phase="credential_read")
-            if (
-                password_text != password_text.strip()
-                or any(
-                    ord(character) < 32 or ord(character) == 127
-                    for character in password_text
-                )
-                or "\x00" in password_text
-            ):
-                _fail("admin_frame_password_invalid", phase="credential_read")
-            try:
-                trailing = os.read(fd, 1)
-            except OSError as exc:
-                raise CoordinatorError(
-                    "admin_frame_eof_check_failed", phase="credential_read"
-                ) from exc
-            if trailing:
-                _fail("admin_frame_trailing_data", phase="credential_read")
-            # Drop the immutable decoder result before returning.  Python
-            # cannot guarantee clearing it; the authoritative retained copy is
-            # the mutable bytearray and is zeroized below on every path.
-            password_text = ""
-            result_password = password_raw
-            password_raw = None
-            return cls(username=username, password=result_password)
-        finally:
-            _zeroize(header)
-            _zeroize(username_raw)
-            _zeroize(password_raw)
-
-    @property
-    def username(self) -> str:
-        return self._username
-
-    @property
-    def consumed(self) -> bool:
-        with self._lock:
-            return self._consumed
-
-    def consume_password(self) -> bytearray:
-        with self._lock:
-            if self._consumed or self._password is None:
-                _fail("admin_frame_replay_forbidden", phase="credential_read")
-            value = self._password
-            self._password = None
-            self._consumed = True
-            return value
-
-    def close(self) -> None:
-        with self._lock:
-            _zeroize(self._password)
-            self._password = None
-            self._consumed = True
-
-    def __enter__(self) -> "OpaqueStdinAdminFrame":
-        return self
-
-    def __exit__(self, *_args: object) -> None:
-        self.close()
-
-    def __del__(self) -> None:  # pragma: no cover - best-effort fallback.
-        self.close()
-
-    def __repr__(self) -> str:
-        return (
-            "OpaqueStdinAdminFrame("
-            f"username={self.username!r}, consumed={self.consumed!r}, "
-            "password=<redacted>)"
-        )
-
-
-class VerifiedTLSBootstrapAdminSession:
-    """Concrete bounded-wire PostgreSQL session with verified TLS identity."""
-
-    __slots__ = (
-        "_closed",
-        "_lock",
-        "_session",
-        "tls_peer_certificate_sha256",
-        "username",
-    )
-
-    def __init__(
-        self,
-        session: _PostgresWireSession,
-        *,
-        username: str,
-        tls_peer_certificate_sha256: str,
-    ) -> None:
-        self._session = session
-        self.username = username
-        self.tls_peer_certificate_sha256 = _digest(
-            tls_peer_certificate_sha256,
-            "admin_tls_peer_certificate_digest_invalid",
-        )
-        self._closed = False
-        self._lock = threading.Lock()
-
-    @classmethod
-    def open(
-        cls,
-        *,
-        frame: OpaqueStdinAdminFrame,
-        tls_server_name: str,
-        expected_tls_peer_certificate_sha256: str,
-    ) -> "VerifiedTLSBootstrapAdminSession":
-        if not isinstance(frame, OpaqueStdinAdminFrame):
-            raise TypeError("opaque admin frame is required")
-        if _TLS_NAME_RE.fullmatch(tls_server_name) is None:
-            _fail("admin_tls_server_name_invalid", phase="admin_connect")
-        expected_peer = _digest(
-            expected_tls_peer_certificate_sha256,
-            "admin_tls_peer_certificate_digest_invalid",
-        )
-        password = frame.consume_password()
-        protected: ssl.SSLSocket | None = None
-        ownership_transferred = False
-        try:
-            # The bounded connection helper only consults expected_uid while
-            # validating the public CA.  Authentication consumes the opaque
-            # bytes below; no credential source/path fallback is used.
-            config = WriterDBConfig(
-                host=CANARY_DATABASE_HOST,
-                tls_server_name=tls_server_name,
-                port=CANARY_DATABASE_PORT,
-                database=CANARY_DATABASE_NAME,
-                user=frame.username,
-                ca_file=CANARY_DATABASE_CA_PATH,
-                credential=CredentialSource(expected_uid=0, fd=ADMIN_FRAME_FD),
-                application_name="muncho-full-canary-coordinator",
-            )
-            protected, observed_peer = _open_verified_tls_connection(config)
-            if observed_peer != expected_peer:
-                _fail("admin_tls_peer_certificate_mismatch", phase="admin_connect")
-            _send_startup_message(
-                protected,
-                config=config,
-                database=CANARY_DATABASE_NAME,
-            )
-            try:
-                password_text = password.decode("utf-8", errors="strict")
-                _authenticate(
-                    protected,
-                    user=frame.username,
-                    password=password_text,
-                )
-            finally:
-                password_text = ""
-            wire = _PostgresWireSession(protected)
-            ownership_transferred = True
-            return cls(
-                wire,
-                username=frame.username,
-                tls_peer_certificate_sha256=observed_peer,
-            )
-        except CoordinatorError:
-            raise
-        except (PostgresProtocolError, OSError, ssl.SSLError, UnicodeError) as exc:
-            raise CoordinatorError(
-                "admin_verified_tls_session_failed", phase="admin_connect"
-            ) from exc
-        finally:
-            _zeroize(password)
-            frame.close()
-            if protected is not None and not ownership_transferred:
-                try:
-                    protected.close()
-                except OSError:
-                    pass
-
-    def query(self, sql: str, *, maximum_rows: int) -> Any:
-        with self._lock:
-            if self._closed:
-                _fail("admin_session_closed", phase="database_operation")
-            return self._session.query(sql, maximum_rows=maximum_rows)
-
-    @property
-    def closed(self) -> bool:
-        with self._lock:
-            return self._closed
-
-    def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._session.close()
-            self._closed = True
-
-    def __repr__(self) -> str:
-        return (
-            "VerifiedTLSBootstrapAdminSession("
-            f"username={self.username!r}, "
-            f"tls_peer_certificate_sha256={self.tls_peer_certificate_sha256!r}, "
-            f"closed={self._closed!r}, credential=<redacted>)"
-        )
-
-
-class BootstrapCredentialLease:
-    """Rotate, install, attest, then provably retire one bootstrap password."""
-
-    def __init__(
-        self,
-        *,
-        coordinator_input: CoordinatorInput,
-        admin_session: VerifiedTLSBootstrapAdminSession,
-        password_factory: Callable[[], bytes] = lambda: base64.urlsafe_b64encode(
-            secrets.token_bytes(48)
-        ),
-        hba_collector: Callable[[WriterDBConfig], ManagedCloudSQLAdminHBAReceipt] = (
-            collect_managed_cloudsqladmin_hba_receipt
-        ),
-    ) -> None:
-        if not isinstance(coordinator_input, CoordinatorInput):
-            raise TypeError("coordinator input is required")
-        if not isinstance(admin_session, VerifiedTLSBootstrapAdminSession):
-            raise TypeError("verified bootstrap administrator session is required")
-        self.coordinator_input = coordinator_input
-        self.admin_session = admin_session
-        self._password_factory = password_factory
-        self._hba_collector = hba_collector
-        self._installed: os.stat_result | None = None
-        self._removal_state = _SecretRemovalState()
-        self._password_disabled = False
-        self._credential_removed = False
-        self._prepared = False
-        self._retired = False
-        self._lock = threading.Lock()
-
-    @property
-    def password_disabled(self) -> bool:
-        return self._password_disabled
-
-    @property
-    def credential_removed(self) -> bool:
-        return self._credential_removed
-
-    @property
-    def recovery_material_preserved(self) -> bool:
-        return (self._installed is not None and not self._credential_removed) or (
-            self._installed is None
-            and not self._credential_removed
-            and os.path.lexists(CANARY_BOOTSTRAP_CREDENTIAL_PATH)
-        )
-
-    @staticmethod
-    def _require_do_result(result: Any, *, code: str) -> None:
-        if (
-            str(getattr(result, "command_tag", "")).upper() != "DO"
-            or tuple(getattr(result, "rows", ()))
-            or tuple(getattr(result, "columns", ()))
-        ):
-            _fail(code, phase="bootstrap_credential")
-
-    def prepare(self) -> tuple[Mapping[str, Any], ManagedCloudSQLAdminHBAReceipt]:
-        """Create the exact login credential and collect fresh user-bound HBA."""
-
-        with self._lock:
-            if self._prepared or self._retired:
-                _fail("bootstrap_credential_lease_replay_forbidden")
-            if os.path.lexists(CANARY_BOOTSTRAP_CREDENTIAL_PATH):
-                _fail("bootstrap_credential_target_not_fresh")
-            generated = self._password_factory()
-            if not isinstance(generated, bytes):
-                _fail("bootstrap_password_factory_invalid")
-            password = bytearray(generated)
-            generated = b""
-            try:
-                if not MIN_ADMIN_PASSWORD_BYTES <= len(
-                    password
-                ) <= MAX_ADMIN_PASSWORD_BYTES or any(
-                    byte < 33 or byte == 127 for byte in password
-                ):
-                    _fail("bootstrap_password_generated_invalid")
-                password_base64 = base64.b64encode(password).decode("ascii")
-                sql = _BOOTSTRAP_ROLE_PASSWORD_TEMPLATE.format(
-                    password_base64=password_base64
-                )
-                result = self.admin_session.query(sql, maximum_rows=0)
-                self._require_do_result(
-                    result,
-                    code="bootstrap_role_shape_or_rotation_failed",
-                )
-                password_base64 = ""
-                self._installed = _atomic_install_secret(
-                    CANARY_BOOTSTRAP_CREDENTIAL_PATH,
-                    password,
-                    uid=self.coordinator_input.identities.writer_uid,
-                    gid=self.coordinator_input.identities.writer_gid,
-                )
-                config = WriterDBConfig(
-                    host=CANARY_DATABASE_HOST,
-                    tls_server_name=self.coordinator_input.tls_server_name,
-                    port=CANARY_DATABASE_PORT,
-                    database=CANARY_DATABASE_NAME,
-                    user=CANARY_BOOTSTRAP_LOGIN,
-                    ca_file=CANARY_DATABASE_CA_PATH,
-                    credential=CredentialSource(
-                        expected_uid=self.coordinator_input.identities.writer_uid,
-                        expected_gid=self.coordinator_input.identities.writer_gid,
-                        path=CANARY_BOOTSTRAP_CREDENTIAL_PATH,
-                        allowed_modes=frozenset({0o400}),
-                    ),
-                    application_name="muncho-canary-bootstrap-hba-probe",
-                )
-                receipt = self._hba_collector(config)
-                if not isinstance(receipt, ManagedCloudSQLAdminHBAReceipt):
-                    _fail("bootstrap_hba_receipt_type_invalid")
-                now_unix = int(time.time())
-                if (
-                    not receipt.is_fresh(now_unix)
-                    or receipt.host != CANARY_DATABASE_HOST
-                    or receipt.tls_server_name != self.coordinator_input.tls_server_name
-                    or receipt.port != CANARY_DATABASE_PORT
-                    or receipt.user != CANARY_BOOTSTRAP_LOGIN
-                    or receipt.database != "cloudsqladmin"
-                    or receipt.server_certificate_sha256
-                    != self.admin_session.tls_peer_certificate_sha256
-                    or receipt.tls_peer_verified is not True
-                ):
-                    _fail("bootstrap_hba_receipt_binding_invalid")
-                writer_config = copy.deepcopy(
-                    dict(self.coordinator_input.value["writer_config"])
-                )
-                scope = writer_config.get("canary_scope_preapproval")
-                if not isinstance(scope, dict):
-                    _fail("bootstrap_writer_scope_invalid")
-                scope["bootstrap_credential_file"] = str(
-                    CANARY_BOOTSTRAP_CREDENTIAL_PATH
-                )
-                scope["bootstrap_managed_cloudsqladmin_hba_rejection_receipt"] = (
-                    receipt.as_dict()
-                )
-                scope["bootstrap_managed_cloudsqladmin_hba_rejection_sha256"] = (
-                    receipt.sha256
-                )
-                self._prepared = True
-                return writer_config, receipt
-            except BaseException as primary:
-                try:
-                    self._retire_locked()
-                except BaseException as cleanup:
-                    raise ExceptionGroup(
-                        "bootstrap credential preparation cleanup blocked",
-                        [primary, cleanup],
-                    ) from None
-                raise
-            finally:
-                _zeroize(password)
-
-    def _retire_locked(self) -> None:
-        if self._retired:
-            return
-        try:
-            result = self.admin_session.query(
-                _BOOTSTRAP_ROLE_DISABLE_SQL,
-                maximum_rows=0,
-            )
-            self._require_do_result(
-                result,
-                code="bootstrap_password_disable_unconfirmed",
-            )
-            self._password_disabled = True
-        except BaseException as exc:
-            raise CoordinatorCleanupBlocked(
-                "bootstrap_password_cleanup_blocked",
-                phase="bootstrap_credential_cleanup",
-            ) from exc
-        if self._installed is not None:
-            try:
-                _remove_exact_secret(
-                    CANARY_BOOTSTRAP_CREDENTIAL_PATH,
-                    self._installed,
-                    state=self._removal_state,
-                )
-                self._credential_removed = True
-            except BaseException as exc:
-                raise CoordinatorCleanupBlocked(
-                    "bootstrap_credential_file_cleanup_blocked",
-                    phase="bootstrap_credential_cleanup",
-                ) from exc
-        else:
-            if os.path.lexists(CANARY_BOOTSTRAP_CREDENTIAL_PATH):
-                raise CoordinatorCleanupBlocked(
-                    "bootstrap_credential_unowned_cleanup_blocked",
-                    phase="bootstrap_credential_cleanup",
-                )
-            self._credential_removed = True
-        self._retired = True
-
-    def retire(self) -> None:
-        with self._lock:
-            self._retire_locked()
-
-
-class CredentialRetiringAdminSession:
-    """Session facade that retires bootstrap authority before closing."""
-
-    def __init__(
-        self,
-        session: VerifiedTLSBootstrapAdminSession,
-        lease: BootstrapCredentialLease,
-    ) -> None:
-        self._session = session
-        self._lease = lease
-        self._closed = False
-        self._lock = threading.Lock()
-
-    def query(self, sql: str, *, maximum_rows: int) -> Any:
-        return self._session.query(sql, maximum_rows=maximum_rows)
-
-    def close(self) -> None:
-        with self._lock:
-            if self._closed:
-                return
-            self._lease.retire()
-            self._session.close()
-            self._closed = True
-
-    def __repr__(self) -> str:
-        return "CredentialRetiringAdminSession(credential=<redacted>)"
 
 
 @dataclass(frozen=True)
@@ -4535,61 +4856,6 @@ class _WriterPublication:
         self._rolled_back = True
 
 
-def coordinator_secret_gate(
-    *,
-    coordinator_input: CoordinatorInput,
-    approval: CredentialPrepareApproval,
-    process_lease: "CoordinatorProcessLease",
-) -> Mapping[str, Any]:
-    """Validate post-token preconditions and authorize one MCA2 read."""
-
-    _require_root_linux()
-    approval.require(
-        coordinator_input=coordinator_input,
-        now_unix=int(time.time()),
-    )
-    if (
-        not isinstance(process_lease, CoordinatorProcessLease)
-        or process_lease.retired
-        or process_lease.value["coordinator_input_sha256"] != coordinator_input.sha256
-        or process_lease.value["credential_prepare_approval_sha256"] != approval.sha256
-    ):
-        _fail("coordinator_process_lease_not_bound")
-    _validate_secret_metadata(
-        DISCORD_TOKEN_PATH,
-        uid=coordinator_input.identities.edge_uid,
-        gid=coordinator_input.identities.edge_gid,
-        maximum=MAX_DISCORD_TOKEN_BYTES,
-    )
-    if os.path.lexists(CANARY_BOOTSTRAP_CREDENTIAL_PATH):
-        _fail(
-            "bootstrap_credential_target_not_fresh",
-            phase="coordinator_secret_gate",
-        )
-    unsigned = {
-        "schema": SECRET_GATE_SCHEMA,
-        "ok": True,
-        "state": "awaiting_admin_credential",
-        "coordinator_input_sha256": coordinator_input.sha256,
-        "credential_prepare_approval_sha256": approval.sha256,
-        "owner_subject_sha256": approval.value["owner_subject_sha256"],
-        "release_sha": coordinator_input.revision,
-        "admin_username": derive_ephemeral_admin_username(approval.sha256),
-        "database_host": CANARY_DATABASE_HOST,
-        "database_port": CANARY_DATABASE_PORT,
-        "database_name": CANARY_DATABASE_NAME,
-        "tls_server_name": coordinator_input.tls_server_name,
-        "tls_peer_certificate_sha256": (coordinator_input.tls_peer_certificate_sha256),
-        "expires_at_unix": approval.value["expires_at_unix"],
-        "frame_schema": ADMIN_FRAME_SCHEMA,
-        "coordinator_process_lease_sha256": process_lease.value["lease_sha256"],
-        "coordinator_pid": process_lease.value["pid"],
-        "coordinator_start_time_ticks": process_lease.value["process_start_time_ticks"],
-        "coordinator_boot_id_sha256": process_lease.value["boot_id_sha256"],
-    }
-    return {**unsigned, "gate_sha256": _sha256_json(unsigned)}
-
-
 def _services_are_exactly_stopped_and_disabled() -> bool:
     states = {
         unit: collect_service_state(unit)
@@ -4599,142 +4865,66 @@ def _services_are_exactly_stopped_and_disabled() -> bool:
     return bool(checks) and all(checks.values())
 
 
-def _remove_active_approval_request(publication: _RootPublication) -> None:
-    errors: list[BaseException] = []
-    if not publication._unlinked:
-        try:
-            current = _capture_root_snapshot(
-                OWNER_APPROVAL_REQUEST_PATH,
-                maximum=MAX_OWNER_APPROVAL_BYTES,
-            )
-            if (
-                current is None
-                or current.raw != publication.after.raw
-                or not _same_file_identity(current.item, publication.after.item)
-            ):
-                raise RuntimeError("approval request cleanup identity changed")
-            OWNER_APPROVAL_REQUEST_PATH.unlink()
-            publication._unlinked = True
-        except BaseException as exc:
-            errors.append(exc)
-    fsync_error: BaseException | None = None
-    for _attempt in range(2):
-        try:
-            _fsync_directory(OWNER_APPROVAL_REQUEST_PATH.parent)
-            fsync_error = None
-            break
-        except BaseException as exc:
-            fsync_error = exc
-    if fsync_error is not None:
-        errors.append(fsync_error)
+def _validated_activation_release_file(
+    coordinator_input: CoordinatorInput,
+    relative_path: Path,
+    *,
+    maximum_bytes: int,
+) -> tuple[Path, bytes, str]:
+    """Read one manifest-bound file without constructing a premature plan."""
+
+    if (
+        relative_path.is_absolute()
+        or ".." in relative_path.parts
+        or relative_path.as_posix() != str(relative_path)
+        or not 0 < maximum_bytes <= MAX_COORDINATOR_INPUT_BYTES
+    ):
+        _fail("coordinator_release_file_request_invalid", phase="process_identity")
+    from gateway.canonical_writer_planner import load_release_manifest
+
     try:
-        OWNER_APPROVAL_REQUEST_PATH.lstat()
-    except FileNotFoundError:
-        pass
-    except BaseException as exc:
-        errors.append(exc)
-    else:
-        errors.append(RuntimeError("approval request cleanup unconfirmed"))
-    if errors:
-        raise CoordinatorCleanupBlocked(
-            "owner_approval_request_cleanup_blocked",
-            phase="owner_approval_request_cleanup",
-        ) from ExceptionGroup("owner approval request cleanup failures", errors)
-
-
-class _SignalFence:
-    """Convert graceful termination signals into the normal cleanup path."""
-
-    def __init__(self) -> None:
-        self._signal = signal
-        self._previous: dict[int, Any] = {}
-        self._previous_active: Any = None
-        self.cleaning = False
-        self.received = False
-
-    def __enter__(self) -> "_SignalFence":
-        for name in ("SIGHUP", "SIGINT", "SIGTERM"):
-            number = getattr(self._signal, name, None)
-            if number is None:
-                continue
-            self._previous[number] = self._signal.getsignal(number)
-            self._signal.signal(number, self._handle)
-        self._previous_active = getattr(_ACTIVE_SIGNAL_FENCE, "value", None)
-        _ACTIVE_SIGNAL_FENCE.value = self
-        return self
-
-    def _handle(self, _number: int, _frame: Any) -> None:
-        self.received = True
-        if not self.cleaning:
-            # Flip before raising so every later signal is suppressed while
-            # Python unwinds through publication rollback and secret cleanup.
-            self.cleaning = True
-            raise CoordinatorError(
-                "coordinator_graceful_termination_requested",
-                phase="signal",
-            )
-
-    def begin_cleanup(self) -> None:
-        self.cleaning = True
-
-    def __exit__(self, *_args: object) -> None:
-        self.cleaning = True
-        handled = set(self._previous)
-        pthread_sigmask = getattr(self._signal, "pthread_sigmask", None)
-        old_mask: Any = None
-        if callable(pthread_sigmask) and handled:
-            old_mask = pthread_sigmask(self._signal.SIG_BLOCK, handled)
-        try:
-            # Discard any signal queued during cleanup without exposing a
-            # one-handler-at-a-time restoration window.  Re-block before the
-            # caller's handlers are restored, then restore the original mask
-            # only after the handler set is complete.
-            if old_mask is not None:
-                discardable = handled.difference(set(old_mask))
-                for number in handled:
-                    self._signal.signal(number, self._signal.SIG_IGN)
-                if discardable:
-                    pthread_sigmask(self._signal.SIG_UNBLOCK, discardable)
-                    pthread_sigmask(self._signal.SIG_BLOCK, discardable)
-            for number, handler in self._previous.items():
-                self._signal.signal(number, handler)
-        finally:
-            if old_mask is not None:
-                pthread_sigmask(self._signal.SIG_SETMASK, old_mask)
-            if self._previous_active is None:
-                try:
-                    del _ACTIVE_SIGNAL_FENCE.value
-                except AttributeError:
-                    pass
-            else:
-                _ACTIVE_SIGNAL_FENCE.value = self._previous_active
-
-
-_PROCESS_LEASE_FIELDS = frozenset({
-    "schema",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "pid",
-    "process_start_time_ticks",
-    "boot_id_sha256",
-    "boot_time_ns",
-    "module_origin",
-    "module_sha256",
-    "process_exe_sha256",
-    "process_cmdline_sha256",
-    "created_at_unix",
-    "lease_sha256",
-})
+        manifest, manifest_raw = load_release_manifest(coordinator_input.revision)
+        release = _release_binding(coordinator_input.writer_activation_plan)
+        mapping = manifest.to_mapping()
+        if (
+            _sha256_bytes(manifest_raw) != release["manifest_file_sha256"]
+            or mapping.get("artifact_root") != release["artifact_root"]
+            or mapping.get("interpreter") != release["interpreter"]
+            or mapping.get("artifact_sha256") != release["artifact_sha256"]
+        ):
+            _fail("coordinator_release_manifest_digest_drifted")
+        matches = [
+            item
+            for item in mapping.get("entries", [])
+            if isinstance(item, Mapping)
+            and item.get("path") == relative_path.as_posix()
+        ]
+        if len(matches) != 1 or matches[0].get("kind") != "file":
+            _fail("coordinator_release_file_not_manifest_bound")
+        expected_sha256 = _digest(
+            matches[0].get("sha256"),
+            "coordinator_release_file_digest_invalid",
+        )
+        path = Path(release["artifact_root"]) / relative_path
+        raw = _stable_root_read(path, maximum=maximum_bytes)
+        if _sha256_bytes(raw) != expected_sha256:
+            _fail("coordinator_release_file_digest_drifted")
+        return path, raw, expected_sha256
+    except CoordinatorError:
+        raise
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        raise CoordinatorError(
+            "coordinator_release_file_not_manifest_bound",
+            phase="process_identity",
+        ) from exc
 
 
 def _sealed_coordinator_module_identity(
     coordinator_input: CoordinatorInput,
 ) -> tuple[str, str]:
     origin, module_sha256 = module_file_identity(__file__)
-    artifact_root = Path(coordinator_input.base_plan.release["artifact_root"])
+    release = _release_binding(coordinator_input.writer_activation_plan)
+    artifact_root = Path(release["artifact_root"])
     try:
         relative = Path(origin).relative_to(artifact_root).as_posix()
     except ValueError as exc:
@@ -4755,8 +4945,8 @@ def _sealed_coordinator_module_identity(
             phase="process_identity",
         )
     try:
-        sealed_path, _sealed_raw, sealed_sha256 = _validated_release_file(
-            coordinator_input.base_plan,
+        sealed_path, _sealed_raw, sealed_sha256 = _validated_activation_release_file(
+            coordinator_input,
             Path(relative),
             maximum_bytes=MAX_FIXED_CANARY_ARTIFACT_BYTES,
         )
@@ -4795,13 +4985,11 @@ def _process_executable_sha256(pid: int) -> str:
 
 _ATTESTED_CLI_COMMANDS = frozenset({
     "publish-coordinator-input",
-    "preflight-owner-launch",
-    "preflight-recovery",
+    "preflight-phase-b-apply",
+    "preflight-phase-b-live-run",
+    "phase-b-apply",
     "run",
-    "recover",
-    "finalize-recovery",
     "install-discord-token",
-    "install-final-approval",
     "stop-and-retire-discord-token",
 })
 
@@ -4814,7 +5002,7 @@ def _expected_command_cmdline(
     if command not in _ATTESTED_CLI_COMMANDS:
         _fail("coordinator_process_command_invalid", phase="process_identity")
     values = (
-        str(coordinator_input.base_plan.release["interpreter"]),
+        str(_release_binding(coordinator_input.writer_activation_plan)["interpreter"]),
         "-B",
         "-I",
         "-m",
@@ -4831,12 +5019,13 @@ def _expected_run_cmdline(coordinator_input: CoordinatorInput) -> bytes:
 def _current_executable_manifest_identity(
     coordinator_input: CoordinatorInput,
 ) -> str:
-    expected_path = Path(coordinator_input.base_plan.release["interpreter"])
-    artifact_root = Path(coordinator_input.base_plan.release["artifact_root"])
+    release = _release_binding(coordinator_input.writer_activation_plan)
+    expected_path = Path(release["interpreter"])
+    artifact_root = Path(release["artifact_root"])
     try:
         relative = expected_path.relative_to(artifact_root)
-        sealed_path, sealed_raw, sealed_sha256 = _validated_release_file(
-            coordinator_input.base_plan,
+        sealed_path, sealed_raw, sealed_sha256 = _validated_activation_release_file(
+            coordinator_input,
             relative,
             maximum_bytes=MAX_RELEASE_MANIFEST_BYTES,
         )
@@ -4935,280 +5124,6 @@ def _attest_current_cli_process(
     }
 
 
-def _process_exec_binding(
-    pid: int,
-    *,
-    coordinator_input: CoordinatorInput,
-) -> tuple[str, str]:
-    cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
-    expected = _expected_run_cmdline(coordinator_input)
-    if cmdline != expected:
-        _fail("coordinator_process_cmdline_invalid", phase="process_identity")
-    return _process_executable_sha256(pid), _sha256_bytes(cmdline)
-
-
-def _parse_process_lease(
-    value: Any,
-    *,
-    coordinator_input: CoordinatorInput,
-) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != _PROCESS_LEASE_FIELDS:
-        _fail("coordinator_process_lease_invalid", phase="recovery_preflight")
-    raw = copy.deepcopy(dict(value))
-    unsigned = {key: item for key, item in raw.items() if key != "lease_sha256"}
-    origin, module_sha256 = _sealed_coordinator_module_identity(coordinator_input)
-    current_exe_sha256 = _process_executable_sha256(os.getpid())
-    if (
-        raw["schema"] != "muncho-full-canary-coordinator-process-lease.v1"
-        or raw["release_sha"] != coordinator_input.revision
-        or raw["coordinator_input_sha256"] != coordinator_input.sha256
-        or _SHA256_RE.fullmatch(str(raw["credential_prepare_approval_sha256"])) is None
-        or _SHA256_RE.fullmatch(str(raw["owner_subject_sha256"])) is None
-        or raw["ephemeral_admin_username"]
-        != derive_ephemeral_admin_username(raw["credential_prepare_approval_sha256"])
-        or type(raw["pid"]) is not int
-        or raw["pid"] <= 1
-        or type(raw["process_start_time_ticks"]) is not int
-        or raw["process_start_time_ticks"] <= 0
-        or type(raw["boot_time_ns"]) is not int
-        or raw["boot_time_ns"] < 0
-        or raw["module_origin"] != origin
-        or raw["module_sha256"] != module_sha256
-        or raw["process_exe_sha256"] != current_exe_sha256
-        or type(raw["created_at_unix"]) is not int
-        or raw["created_at_unix"] < 0
-        or raw["lease_sha256"] != _sha256_json(unsigned)
-    ):
-        _fail("coordinator_process_lease_invalid", phase="recovery_preflight")
-    _digest(raw["boot_id_sha256"], "coordinator_process_boot_id_invalid")
-    _digest(raw["process_cmdline_sha256"], "coordinator_process_cmdline_digest_invalid")
-    return raw
-
-
-def _load_process_lease_record(
-    *,
-    coordinator_input: CoordinatorInput,
-) -> tuple[Mapping[str, Any], _RootFileSnapshot]:
-    snapshot = _capture_root_snapshot(
-        COORDINATOR_PROCESS_LEASE_PATH,
-        maximum=MAX_OWNER_APPROVAL_BYTES,
-    )
-    if snapshot is None:
-        _fail(
-            "coordinator_process_recovery_not_required",
-            phase="recovery_preflight",
-        )
-    return (
-        _parse_process_lease(
-            _decode_mapping(
-                snapshot.raw,
-                code="coordinator_process_lease_invalid",
-            ),
-            coordinator_input=coordinator_input,
-        ),
-        snapshot,
-    )
-
-
-def _wait_for_pidfd_exit(pidfd: int, *, timeout_seconds: float) -> bool:
-    if type(pidfd) is not int or pidfd < 0 or not 0 <= timeout_seconds <= 60:
-        _fail("recovery_pidfd_wait_invalid", phase="recovery_process")
-    try:
-        readable, _writable, _exceptional = select.select(
-            [pidfd],
-            [],
-            [],
-            timeout_seconds,
-        )
-    except (OSError, ValueError) as exc:
-        raise CoordinatorError(
-            "recovery_pidfd_wait_failed",
-            phase="recovery_process",
-        ) from exc
-    return pidfd in readable
-
-
-def _pidfd_signal(pidfd: int, signum: int, *, code: str) -> bool:
-    sender = getattr(signal, "pidfd_send_signal", None)
-    if not callable(sender):
-        _fail("recovery_pidfd_api_unavailable", phase="recovery_process")
-    try:
-        sender(pidfd, signum, None, 0)
-        return True
-    except ProcessLookupError:
-        return False
-    except OSError as exc:
-        raise CoordinatorError(code, phase="recovery_process") from exc
-
-
-@dataclass
-class CoordinatorProcessLease:
-    value: Mapping[str, Any]
-    publication: _RootPublication
-    lock_fd: int
-    retired: bool = False
-
-    @classmethod
-    def acquire(
-        cls,
-        *,
-        coordinator_input: CoordinatorInput,
-        credential_approval: CredentialPrepareApproval,
-    ) -> "CoordinatorProcessLease":
-        _require_root_linux()
-        parent = COORDINATOR_PROCESS_LEASE_PATH.parent
-        parent_item = parent.lstat()
-        if (
-            not stat.S_ISDIR(parent_item.st_mode)
-            or stat.S_ISLNK(parent_item.st_mode)
-            or parent_item.st_uid != 0
-            or parent_item.st_gid != 0
-            or stat.S_IMODE(parent_item.st_mode) & 0o022
-        ):
-            _fail("coordinator_process_lease_parent_invalid")
-        lock_parent = COORDINATOR_PROCESS_LOCK_PATH.parent
-        if not os.path.lexists(lock_parent):
-            anchor = lock_parent.parent.lstat()
-            if (
-                not stat.S_ISDIR(anchor.st_mode)
-                or stat.S_ISLNK(anchor.st_mode)
-                or anchor.st_uid != 0
-                or stat.S_IMODE(anchor.st_mode) & 0o022
-            ):
-                _fail("coordinator_process_lock_parent_invalid")
-            os.mkdir(lock_parent, 0o700)
-            os.chown(lock_parent, 0, 0)
-            os.chmod(lock_parent, 0o700)
-            _fsync_directory(lock_parent.parent)
-        lock_parent_item = lock_parent.lstat()
-        if (
-            not stat.S_ISDIR(lock_parent_item.st_mode)
-            or stat.S_ISLNK(lock_parent_item.st_mode)
-            or lock_parent_item.st_uid != 0
-            or lock_parent_item.st_gid != 0
-            or stat.S_IMODE(lock_parent_item.st_mode) != 0o700
-        ):
-            _fail("coordinator_process_lock_parent_invalid")
-        descriptor = os.open(
-            COORDINATOR_PROCESS_LOCK_PATH,
-            os.O_RDWR
-            | os.O_CREAT
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-            0o600,
-        )
-        try:
-            os.fchown(descriptor, 0, 0)
-            os.fchmod(descriptor, 0o600)
-            fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            lock_item = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(lock_item.st_mode)
-                or lock_item.st_uid != 0
-                or lock_item.st_gid != 0
-                or stat.S_IMODE(lock_item.st_mode) != 0o600
-            ):
-                _fail("coordinator_process_lock_invalid")
-            if os.path.lexists(COORDINATOR_PROCESS_LEASE_PATH):
-                journal = _capture_root_snapshot(
-                    COORDINATOR_PROCESS_LEASE_PATH,
-                    maximum=MAX_OWNER_APPROVAL_BYTES,
-                )
-                if journal is None:
-                    _fail("coordinator_process_journal_drifted")
-                journal_value = _decode_mapping(
-                    journal.raw,
-                    code="coordinator_process_journal_invalid",
-                )
-                if journal_value.get("schema") == LEGACY_RECOVERY_RECEIPT_SCHEMA:
-                    _parse_legacy_recovery_receipt(
-                        journal_value,
-                        coordinator_input=coordinator_input,
-                    )
-                    _fail(
-                        "legacy_recovery_receipt_reconciliation_required",
-                        phase="process_identity",
-                    )
-                if journal_value.get("schema") != RECOVERY_RECEIPT_SCHEMA:
-                    _fail("coordinator_process_recovery_required")
-                _parse_recovery_receipt_v2(
-                    journal_value,
-                    coordinator_input=coordinator_input,
-                )
-                _remove_exact_root_snapshot(
-                    journal,
-                    state=_RootRemovalState(),
-                )
-            pid = os.getpid()
-            boot_sha256, boottime_ns = boot_identity()
-            module_origin, module_sha256 = _sealed_coordinator_module_identity(
-                coordinator_input
-            )
-            process_exe_sha256, process_cmdline_sha256 = _process_exec_binding(
-                pid,
-                coordinator_input=coordinator_input,
-            )
-            unsigned = {
-                "schema": "muncho-full-canary-coordinator-process-lease.v1",
-                "release_sha": coordinator_input.revision,
-                "coordinator_input_sha256": coordinator_input.sha256,
-                "credential_prepare_approval_sha256": (credential_approval.sha256),
-                "owner_subject_sha256": credential_approval.value[
-                    "owner_subject_sha256"
-                ],
-                "ephemeral_admin_username": derive_ephemeral_admin_username(
-                    credential_approval.sha256
-                ),
-                "pid": pid,
-                "process_start_time_ticks": process_start_time_ticks(pid),
-                "boot_id_sha256": boot_sha256,
-                "boot_time_ns": boottime_ns,
-                "module_origin": module_origin,
-                "module_sha256": module_sha256,
-                "process_exe_sha256": process_exe_sha256,
-                "process_cmdline_sha256": process_cmdline_sha256,
-                "created_at_unix": int(time.time()),
-            }
-            value = {**unsigned, "lease_sha256": _sha256_json(unsigned)}
-            publication = _publish_root_payload(
-                COORDINATOR_PROCESS_LEASE_PATH,
-                _canonical_bytes(value),
-                expected_previous_sha256=None,
-            )
-            return cls(
-                value=value,
-                publication=publication,
-                lock_fd=descriptor,
-            )
-        except BaseException:
-            try:
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
-            except BaseException:
-                pass
-            os.close(descriptor)
-            raise
-
-    def retire(self) -> None:
-        if self.retired:
-            return
-        _remove_exact_root_snapshot(
-            self.publication.after,
-            state=self.publication._removal_state,
-        )
-        fcntl.flock(self.lock_fd, fcntl.LOCK_UN)
-        os.close(self.lock_fd)
-        self.lock_fd = -1
-        self.retired = True
-
-    def abandon_lock_on_process_exit(self) -> None:
-        if self.lock_fd >= 0:
-            try:
-                os.close(self.lock_fd)
-            except OSError:
-                pass
-            self.lock_fd = -1
-
-
 def _error_code_and_phase(
     error: BaseException,
     *,
@@ -5231,721 +5146,6 @@ def _error_code_and_phase(
     if isinstance(selected, CoordinatorError):
         return selected.code, selected.phase or fallback_phase
     return "coordinator_execution_failed", fallback_phase
-
-
-@dataclass(frozen=True)
-class _PriorPlanReconciliation:
-    runtime_snapshot: _RootFileSnapshot | None
-    staged_snapshot: _RootFileSnapshot | None
-    preclaim_reconciliation: Mapping[str, Any] | None
-
-
-def _reconcile_prior_plan_before_credential_prepare(
-    *,
-    admin_session: VerifiedTLSBootstrapAdminSession,
-) -> _PriorPlanReconciliation:
-    """Retire prior plan truth before a new transient credential exists."""
-
-    # The fixed stop is intentionally independent of every mutable plan and
-    # evidence byte.  A corrupt prior plan must never keep services running.
-    mechanical = _attempt_mechanical_reverse_stop()
-    errors = list(mechanical.errors)
-    runtime_snapshot: _RootFileSnapshot | None = None
-    staged_snapshot: _RootFileSnapshot | None = None
-    try:
-        runtime_snapshot = _capture_root_snapshot(DEFAULT_PLAN_PATH)
-    except BaseException as exc:
-        errors.append(exc)
-    try:
-        staged_snapshot = _capture_root_snapshot(DEFAULT_STAGED_PLAN_PATH)
-    except BaseException as exc:
-        errors.append(exc)
-    if errors:
-        _raise_preserving_cleanup_errors(
-            "prior-plan mechanical stop/snapshot failed",
-            errors,
-        )
-    if runtime_snapshot is None:
-        if staged_snapshot is not None:
-            _fail("prestage_runtime_plan_missing")
-        return _PriorPlanReconciliation(None, None, None)
-    previous: FullCanaryPlan | None = None
-    try:
-        previous = load_full_canary_plan()
-        if staged_snapshot is not None:
-            staged_previous = FullCanaryPlan.from_mapping(
-                _decode_mapping(
-                    staged_snapshot.raw,
-                    code="prestage_plan_invalid",
-                )
-            )
-            if staged_previous.to_mapping() != previous.to_mapping():
-                _fail("prestage_plan_runtime_drifted")
-    except BaseException as exc:
-        errors.append(exc)
-    prior_evidence: BootstrapReconciliationEvidence | None = None
-    if previous is not None:
-        try:
-            prior_evidence = _load_or_reconcile_bootstrap_authority(
-                plan=previous,
-                admin_session=admin_session,
-            )
-        except BaseException as exc:
-            errors.append(exc)
-    prior_stop: Mapping[str, Any] | None = None
-    if previous is not None and prior_evidence is not None and not errors:
-        try:
-            prior_stop = FullCanaryLifecycle(
-                previous,
-                bootstrap_reconciliation_evidence=prior_evidence,
-            ).attest_stopped_after_mechanical_stop(
-                reason="operator_requested",
-                stopped=mechanical.stopped,
-                prior_generation=mechanical.prior_preclaim_generation,
-            )
-            _validate_recovery_stop_receipt(
-                prior_stop,
-                plan=previous,
-                expected_bootstrap_reconciliation=prior_evidence,
-            )
-        except BaseException as exc:
-            errors.append(exc)
-    _raise_preserving_cleanup_errors(
-        "prior-plan mechanical stop/evidence reconciliation failed",
-        errors,
-    )
-    if prior_stop is None:
-        raise AssertionError("prior-plan stop receipt is unavailable")
-    prior_preclaim = prior_stop.get("preclaim_reconciliation")
-    if not isinstance(prior_preclaim, Mapping):
-        _fail("prestage_preclaim_reconciliation_missing")
-    return _PriorPlanReconciliation(
-        runtime_snapshot=runtime_snapshot,
-        staged_snapshot=staged_snapshot,
-        preclaim_reconciliation=copy.deepcopy(dict(prior_preclaim)),
-    )
-
-
-def _stop_failed_driver_services(plan: FullCanaryPlan) -> None:
-    """Always attempt reverse-order stop even if durable evidence is unreadable."""
-
-    mechanical = _attempt_mechanical_reverse_stop()
-    errors = list(mechanical.errors)
-    durable_evidence: BootstrapReconciliationEvidence | None = None
-    try:
-        durable_evidence = load_bootstrap_evidence_envelope(plan)
-    except BootstrapEvidenceUnavailable:
-        pass
-    except BaseException as exc:
-        errors.append(exc)
-    if not errors:
-        try:
-            lifecycle = (
-                FullCanaryLifecycle(plan)
-                if durable_evidence is None
-                else FullCanaryLifecycle(
-                    plan,
-                    bootstrap_reconciliation_evidence=durable_evidence,
-                )
-            )
-            lifecycle.attest_stopped_after_mechanical_stop(
-                reason="verification_failed",
-                stopped=mechanical.stopped,
-                prior_generation=mechanical.prior_preclaim_generation,
-            )
-        except BaseException as exc:
-            errors.append(exc)
-    _raise_preserving_cleanup_errors(
-        "failed-driver mechanical stop/evidence attestation failed",
-        errors,
-    )
-
-
-def run_full_canary(
-    *,
-    frame_emitter: Callable[[Mapping[str, Any]], None],
-    admin_frame_reader: Callable[..., OpaqueStdinAdminFrame] = (
-        OpaqueStdinAdminFrame.read
-    ),
-    admin_session_opener: Callable[..., VerifiedTLSBootstrapAdminSession] = (
-        VerifiedTLSBootstrapAdminSession.open
-    ),
-    driver_factory: Callable[..., HonestFullCanaryDriver] = HonestFullCanaryDriver,
-) -> Mapping[str, Any]:
-    """Execute one same-process full canary and return one terminal receipt."""
-
-    coordinator_input: CoordinatorInput | None = None
-    credential_approval: CredentialPrepareApproval | None = None
-    admin_session: VerifiedTLSBootstrapAdminSession | None = None
-    credential_lease: BootstrapCredentialLease | None = None
-    writer_publication: _WriterPublication | None = None
-    staged_plan_publication: _RootPublication | None = None
-    runtime_plan_publication: _RootPublication | None = None
-    request_publication: _RootPublication | None = None
-    prepared: Any = None
-    plan: FullCanaryPlan | None = None
-    live_result: Mapping[str, Any] | None = None
-    driver_started = False
-    services_terminal = False
-    discord_token_identity: os.stat_result | None = None
-    discord_token_removed = False
-    discord_receipt_snapshot: _RootFileSnapshot | None = None
-    discord_receipt_removal = _RootRemovalState()
-    discord_install_receipt: Mapping[str, Any] | None = None
-    phase = "process_hardening"
-    primary: BaseException | None = None
-    cleanup_errors: list[BaseException] = []
-    prior_writer: _WriterSnapshot | None = None
-    prior_staged_plan: _RootFileSnapshot | None = None
-    prior_runtime_plan: _RootFileSnapshot | None = None
-    prior_preclaim_reconciliation: Mapping[str, Any] | None = None
-    process_lease: CoordinatorProcessLease | None = None
-
-    with _SignalFence() as signal_fence:
-        try:
-            _harden_secret_process()
-            phase = "coordinator_input"
-            coordinator_input = load_coordinator_input()
-            (
-                discord_install_receipt,
-                discord_token_identity,
-                discord_receipt_snapshot,
-            ) = load_discord_token_install_receipt(
-                coordinator_input,
-            )
-            services_terminal = _services_are_exactly_stopped_and_disabled()
-            if not services_terminal:
-                _fail(
-                    "full_canary_services_not_initially_stopped",
-                    phase="coordinator_input",
-                )
-            credential_approval = load_credential_prepare_approval(coordinator_input)
-            process_lease = CoordinatorProcessLease.acquire(
-                coordinator_input=coordinator_input,
-                credential_approval=credential_approval,
-            )
-            phase = "secret_gate"
-            gate = coordinator_secret_gate(
-                coordinator_input=coordinator_input,
-                approval=credential_approval,
-                process_lease=process_lease,
-            )
-            frame_emitter(gate)
-            credential_approval.require(
-                coordinator_input=coordinator_input,
-                now_unix=int(time.time()),
-            )
-            phase = "admin_credential"
-            frame = admin_frame_reader(
-                expected_username=gate["admin_username"],
-            )
-            phase = "admin_connect"
-            admin_session = admin_session_opener(
-                frame=frame,
-                tls_server_name=coordinator_input.tls_server_name,
-                expected_tls_peer_certificate_sha256=(
-                    coordinator_input.tls_peer_certificate_sha256
-                ),
-            )
-            phase = "prior_plan_reconciliation"
-            prior = _reconcile_prior_plan_before_credential_prepare(
-                admin_session=admin_session,
-            )
-            prior_runtime_plan = prior.runtime_snapshot
-            prior_staged_plan = prior.staged_snapshot
-            prior_preclaim_reconciliation = prior.preclaim_reconciliation
-            credential_lease = BootstrapCredentialLease(
-                coordinator_input=coordinator_input,
-                admin_session=admin_session,
-            )
-            phase = "bootstrap_credential"
-            final_writer_config, hba_receipt = credential_lease.prepare()
-            fixture = _validated_e2e_fixture(coordinator_input.base_plan)
-            prior_writer = _capture_writer_snapshot(
-                coordinator_input.identities.writer_gid
-            )
-
-            def reconcile_previous() -> Mapping[str, Any] | None:
-                if prior_preclaim_reconciliation is None:
-                    _fail("prestage_runtime_plan_missing")
-                return copy.deepcopy(dict(prior_preclaim_reconciliation))
-
-            def publish_staged_writer(
-                path: Path,
-                payload: bytes,
-                **kwargs: Any,
-            ) -> None:
-                nonlocal writer_publication
-                with _defer_termination_signals():
-                    _atomic_stage_writer_config(path, payload, **kwargs)
-                    writer_raw, writer_item = _read_staged_writer_config(
-                        DEFAULT_WRITER_CONFIG_SOURCE,
-                        mode=0o440,
-                        uid=0,
-                        gid=coordinator_input.identities.writer_gid,
-                    )
-                    if writer_raw != payload:
-                        _fail("staged_writer_publication_drifted")
-                    writer_publication = _WriterPublication(
-                        writer_gid=coordinator_input.identities.writer_gid,
-                        before=prior_writer,
-                        after=_WriterSnapshot(
-                            raw=writer_raw,
-                            item=writer_item,
-                        ),
-                    )
-
-            def build_plan() -> FullCanaryPlan:
-                nonlocal writer_publication, staged_plan_publication
-                nonlocal request_publication, plan
-                writer_raw, writer_item = _read_staged_writer_config(
-                    DEFAULT_WRITER_CONFIG_SOURCE,
-                    mode=0o440,
-                    uid=0,
-                    gid=coordinator_input.identities.writer_gid,
-                )
-                if (
-                    writer_publication is None
-                    or writer_publication.after.raw != writer_raw
-                    or not _same_file_identity(
-                        writer_publication.after.item,
-                        writer_item,
-                    )
-                ):
-                    _fail("staged_writer_publication_untracked")
-                writer_artifact = ExactArtifact(
-                    source_path=DEFAULT_WRITER_CONFIG_SOURCE,
-                    target_path=DEFAULT_WRITER_CONFIG,
-                    sha256=_sha256_bytes(writer_raw),
-                    mode=0o440,
-                    uid=0,
-                    gid=coordinator_input.identities.writer_gid,
-                )
-                plan = build_full_canary_plan(
-                    writer_activation_plan=(coordinator_input.writer_activation_plan),
-                    writer_activation_receipt=coordinator_input.value[
-                        "writer_activation_receipt"
-                    ],
-                    writer_activation_receipt_file_sha256=coordinator_input.value[
-                        "writer_activation_receipt_file_sha256"
-                    ],
-                    identities=coordinator_input.identities,
-                    writer_config=writer_artifact,
-                    gateway_config=coordinator_input.artifacts["gateway_config"],
-                    edge_config=coordinator_input.artifacts["edge_config"],
-                    e2e_fixture=coordinator_input.artifacts["e2e_fixture"],
-                    host_identity_receipt=coordinator_input.artifacts[
-                        "host_identity_receipt"
-                    ],
-                )
-                existing_staged = _capture_root_snapshot(DEFAULT_STAGED_PLAN_PATH)
-                expected_staged = (
-                    None
-                    if existing_staged is None
-                    else (
-                        existing_staged.sha256
-                        if prior_staged_plan is not None
-                        and existing_staged.sha256 == prior_staged_plan.sha256
-                        else _fail("staged_plan_unreconciled")
-                    )
-                )
-                staged_plan_publication = _publish_root_payload(
-                    DEFAULT_STAGED_PLAN_PATH,
-                    _canonical_bytes(plan.to_mapping()),
-                    expected_previous_sha256=expected_staged,
-                )
-                scope = final_writer_config.get("canary_scope_preapproval")
-                if not isinstance(scope, Mapping):
-                    _fail("final_writer_scope_missing")
-                request, request_publication = build_owner_approval_request(
-                    coordinator_input=coordinator_input,
-                    credential_approval=credential_approval,
-                    plan=plan,
-                    staged_plan_publication=staged_plan_publication,
-                    hba_receipt=hba_receipt,
-                    fixture=fixture,
-                    approval_source_sha256=str(scope["approval_source_sha256"]),
-                )
-                approval_state["request"] = request
-                return plan
-
-            approval_state: dict[str, Any] = {}
-
-            def approve(final_plan: FullCanaryPlan) -> FullCanaryOwnerApproval:
-                nonlocal runtime_plan_publication, request_publication
-                request = approval_state.get("request")
-                if not isinstance(request, OwnerApprovalRequest):
-                    _fail("owner_approval_request_missing")
-                remaining_seconds = (
-                    float(request.value["approval_deadline_unix"]) - time.time()
-                )
-                if remaining_seconds < 1:
-                    _fail("owner_approval_wait_window_exhausted")
-                approval = wait_for_fresh_owner_approval(
-                    final_plan,
-                    timeout_seconds=min(
-                        float(request.value["max_wait_seconds"]),
-                        remaining_seconds,
-                    ),
-                    ready_callback=lambda: frame_emitter(request.value),
-                )
-                now_unix = int(time.time())
-                approval.require(
-                    plan_sha256=final_plan.sha256,
-                    now_unix=now_unix,
-                )
-                _require_runtime_final_owner_approval_binding(
-                    approval,
-                    request,
-                )
-                if (
-                    now_unix > request.value["approval_deadline_unix"]
-                    or now_unix
-                    > request.value["hba_expires_at_unix"]
-                    - HBA_EXPIRY_SAFETY_MARGIN_SECONDS
-                ):
-                    _fail("owner_approval_ttl_or_binding_invalid")
-                existing_runtime = _capture_root_snapshot(DEFAULT_PLAN_PATH)
-                expected_runtime = (
-                    None
-                    if existing_runtime is None
-                    else (
-                        existing_runtime.sha256
-                        if prior_runtime_plan is not None
-                        and existing_runtime.sha256 == prior_runtime_plan.sha256
-                        else _fail("runtime_plan_unreconciled")
-                    )
-                )
-                runtime_plan_publication = _publish_root_payload(
-                    DEFAULT_PLAN_PATH,
-                    _canonical_bytes(final_plan.to_mapping()),
-                    expected_previous_sha256=expected_runtime,
-                )
-                if request_publication is None:
-                    _fail("owner_approval_request_publication_missing")
-                _remove_active_approval_request(request_publication)
-                request_publication = None
-                return approval
-
-            phase = "plan_and_final_approval"
-            prepared = prepare_session_bound_plan(
-                writer_config=final_writer_config,
-                fixture=fixture,
-                writer_gid=coordinator_input.identities.writer_gid,
-                bootstrap_sql_sha256=coordinator_input.value["bootstrap_sql_sha256"],
-                bootstrap_retire_sql_sha256=coordinator_input.value[
-                    "bootstrap_retire_sql_sha256"
-                ],
-                staged_writer_config=DEFAULT_WRITER_CONFIG_SOURCE,
-                plan_builder=build_plan,
-                approval_provider=approve,
-                writer=publish_staged_writer,
-                prestage_reconciler=reconcile_previous,
-            )
-            plan = prepared.plan
-            now_unix = int(time.time())
-            prepared.approval.require(
-                plan_sha256=plan.sha256,
-                now_unix=now_unix,
-            )
-            if (
-                now_unix
-                > hba_receipt.expires_at_unix - HBA_EXPIRY_SAFETY_MARGIN_SECONDS
-            ):
-                _fail("hba_receipt_expired_before_canary")
-            wrapped_session = CredentialRetiringAdminSession(
-                admin_session,
-                credential_lease,
-            )
-            provisioner = PreopenedSessionBootstrapProvisioner(
-                wrapped_session,
-                tls_peer_certificate_sha256=(admin_session.tls_peer_certificate_sha256),
-            )
-            phase = "live_driver"
-            driver_started = True
-            services_terminal = False
-            live_result = driver_factory(
-                prepared,
-                bootstrap_provisioner=provisioner,
-            ).run()
-            if not _services_are_exactly_stopped_and_disabled():
-                _fail(
-                    "full_canary_terminal_service_truth_unconfirmed",
-                    phase="terminal_cleanup",
-                )
-            services_terminal = True
-        except BaseException as exc:
-            primary = exc
-        finally:
-            signal_fence.begin_cleanup()
-            if prepared is not None:
-                try:
-                    prepared.discard_session_key()
-                except BaseException as exc:
-                    cleanup_errors.append(exc)
-            if driver_started and live_result is None and plan is not None:
-                try:
-                    _stop_failed_driver_services(plan)
-                    if not _services_are_exactly_stopped_and_disabled():
-                        raise CoordinatorCleanupBlocked(
-                            "full_canary_terminal_service_truth_unconfirmed",
-                            phase="terminal_cleanup",
-                        )
-                    services_terminal = True
-                except BaseException as exc:
-                    cleanup_errors.append(exc)
-            if credential_lease is not None:
-                try:
-                    credential_lease.retire()
-                except BaseException as first:
-                    try:
-                        credential_lease.retire()
-                    except BaseException as second:
-                        cleanup_errors.append(
-                            ExceptionGroup(
-                                "bootstrap credential retirement retries failed",
-                                [first, second],
-                            )
-                        )
-            if admin_session is not None and not admin_session.closed:
-                try:
-                    admin_session.close()
-                except BaseException as first:
-                    try:
-                        admin_session.close()
-                    except BaseException as second:
-                        cleanup_errors.append(
-                            ExceptionGroup(
-                                "admin session close retries failed",
-                                [first, second],
-                            )
-                        )
-            if discord_token_identity is not None and services_terminal:
-                try:
-                    retirement = _retire_discord_token_lease(
-                        coordinator_input=coordinator_input,
-                        install_receipt=discord_install_receipt,
-                        installed=discord_token_identity,
-                        install_snapshot=discord_receipt_snapshot,
-                    )
-                    discord_token_removed = (
-                        retirement["state"] == "retired"
-                        and retirement["token_removed"] is True
-                        and retirement["install_receipt_removed"] is True
-                    )
-                    discord_receipt_removal.unlinked = discord_token_removed
-                except BaseException as exc:
-                    cleanup_errors.append(exc)
-            if request_publication is not None:
-                try:
-                    _remove_active_approval_request(request_publication)
-                    request_publication = None
-                except BaseException as exc:
-                    cleanup_errors.append(exc)
-            if not driver_started:
-                for publication in (
-                    runtime_plan_publication,
-                    staged_plan_publication,
-                ):
-                    if publication is not None:
-                        try:
-                            publication.rollback()
-                        except BaseException as exc:
-                            cleanup_errors.append(exc)
-                if writer_publication is not None:
-                    try:
-                        writer_publication.rollback()
-                    except BaseException as exc:
-                        cleanup_errors.append(exc)
-            if process_lease is not None and not process_lease.retired:
-                credential_cleanup_complete = credential_lease is None or (
-                    credential_lease.password_disabled
-                    and credential_lease.credential_removed
-                )
-                durable_cleanup_complete = (
-                    primary is None
-                    and not signal_fence.received
-                    and not cleanup_errors
-                    and (admin_session is None or admin_session.closed)
-                    and credential_cleanup_complete
-                    and services_terminal
-                    and not os.path.lexists(DISCORD_TOKEN_PATH)
-                    and not os.path.lexists(DISCORD_TOKEN_STAGE_PATH)
-                    and not os.path.lexists(DISCORD_TOKEN_INSTALL_RECEIPT_PATH)
-                    and not os.path.lexists(CANARY_BOOTSTRAP_CREDENTIAL_PATH)
-                    and not os.path.lexists(OWNER_APPROVAL_REQUEST_PATH)
-                )
-                if durable_cleanup_complete:
-                    try:
-                        process_lease.retire()
-                    except BaseException as first:
-                        try:
-                            process_lease.retire()
-                        except BaseException as second:
-                            cleanup_errors.append(
-                                ExceptionGroup(
-                                    "coordinator process lease retirement retries failed",
-                                    [first, second],
-                                )
-                            )
-                else:
-                    # Preserve the exact root lease as the recovery journal,
-                    # but release this process's flock before returning the
-                    # terminal cleanup-blocked receipt.
-                    process_lease.abandon_lock_on_process_exit()
-
-    session_closed = admin_session is None or admin_session.closed
-    password_disabled = (
-        credential_lease is not None and credential_lease.password_disabled
-    )
-    credential_removed = (
-        credential_lease is not None and credential_lease.credential_removed
-    )
-    discord_pair_absent = (
-        not os.path.lexists(DISCORD_TOKEN_PATH)
-        and not os.path.lexists(DISCORD_TOKEN_STAGE_PATH)
-        and not os.path.lexists(DISCORD_TOKEN_INSTALL_RECEIPT_PATH)
-    )
-    if discord_token_identity is None and discord_pair_absent:
-        discord_token_removed = True
-    recovery_preserved = (
-        bool(
-            credential_lease is not None
-            and credential_lease.recovery_material_preserved
-        )
-        or not session_closed
-        or (
-            discord_token_identity is not None
-            and (not discord_token_removed or not discord_receipt_removal.unlinked)
-        )
-        or (process_lease is not None and not process_lease.retired)
-        or any(
-            os.path.lexists(path)
-            for path in (
-                DISCORD_TOKEN_PATH,
-                DISCORD_TOKEN_STAGE_PATH,
-                DISCORD_TOKEN_INSTALL_RECEIPT_PATH,
-                CANARY_BOOTSTRAP_CREDENTIAL_PATH,
-                OWNER_APPROVAL_REQUEST_PATH,
-                COORDINATOR_PROCESS_LEASE_PATH,
-            )
-        )
-    )
-    plan_sha256 = None if plan is None else plan.sha256
-    if primary is None and not cleanup_errors and live_result is not None:
-        if (
-            not session_closed
-            or not password_disabled
-            or not credential_removed
-            or not discord_token_removed
-            or not discord_receipt_removal.unlinked
-        ):
-            primary = CoordinatorCleanupBlocked(
-                "terminal_cleanup_attestation_incomplete",
-                phase="terminal_cleanup",
-            )
-        else:
-            unsigned = {
-                "schema": COORDINATOR_RECEIPT_SCHEMA,
-                "ok": True,
-                "release_sha": coordinator_input.revision,
-                "coordinator_input_sha256": coordinator_input.sha256,
-                "credential_prepare_approval_sha256": credential_approval.sha256,
-                "owner_subject_sha256": credential_approval.value[
-                    "owner_subject_sha256"
-                ],
-                "ephemeral_admin_username": derive_ephemeral_admin_username(
-                    credential_approval.sha256
-                ),
-                "temporary_admin_delete_required": True,
-                "full_canary_plan_sha256": plan.sha256,
-                "owner_approval_sha256": prepared.approval.sha256,
-                "live_driver_result": copy.deepcopy(dict(live_result)),
-                "live_driver_receipt_sha256": _sha256_json(live_result),
-                "bootstrap_login_password_disabled": True,
-                "bootstrap_credential_removed": True,
-                "discord_token_removed": discord_token_removed,
-                "admin_session_closed": True,
-                "coordinator_process_lease_retired": True,
-                "services_enabled": False,
-                "completed_at_unix": int(time.time()),
-            }
-            return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
-
-    if primary is None:
-        primary = (
-            cleanup_errors[0]
-            if cleanup_errors
-            else CoordinatorError(
-                "coordinator_terminal_result_missing",
-                phase="terminal",
-            )
-        )
-    code, failure_phase = _error_code_and_phase(
-        primary,
-        fallback_phase=phase,
-    )
-    cleanup_blocked = bool(cleanup_errors) or not session_closed or recovery_preserved
-    unsigned_failure = {
-        "schema": COORDINATOR_FAILURE_SCHEMA,
-        "ok": False,
-        "phase": failure_phase,
-        "error_code": code,
-        "release_sha": (
-            None if coordinator_input is None else coordinator_input.revision
-        ),
-        "coordinator_input_sha256": (
-            None if coordinator_input is None else coordinator_input.sha256
-        ),
-        "credential_prepare_approval_sha256": (
-            None if credential_approval is None else credential_approval.sha256
-        ),
-        "owner_subject_sha256": (
-            None
-            if credential_approval is None
-            else credential_approval.value["owner_subject_sha256"]
-        ),
-        "ephemeral_admin_username": (
-            None
-            if credential_approval is None
-            else derive_ephemeral_admin_username(credential_approval.sha256)
-        ),
-        "full_canary_plan_sha256": plan_sha256,
-        "cleanup_status": ("cleanup_blocked" if cleanup_blocked else "complete"),
-        "recovery_material_preserved": recovery_preserved,
-        "admin_session_closed": session_closed,
-        "coordinator_process_lease_retired": (
-            process_lease is None or process_lease.retired
-        ),
-        "bootstrap_login_password_disabled": password_disabled,
-        "bootstrap_credential_removed": credential_removed,
-        "discord_token_removed": discord_token_removed,
-        "services_enabled": False if services_terminal else None,
-    }
-    return {
-        **unsigned_failure,
-        "receipt_sha256": _sha256_json(unsigned_failure),
-    }
-
-
-_DISCORD_RETIREMENT_FIELDS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "release_sha",
-    "coordinator_input_sha256",
-    "discord_token_install_receipt_sha256",
-    "token_path",
-    "token_device",
-    "token_inode",
-    "services_stopped_proven",
-    "services_enabled",
-    "token_removed",
-    "install_receipt_removed",
-    "prepared_at_unix",
-    "retired_at_unix",
-    "receipt_sha256",
-})
 
 
 def _parse_discord_retirement(
@@ -6133,75 +5333,6 @@ def _load_prepared_discord_retirement_source(
         # attributed safely and must never be guessed away.
         _fail("discord_token_retirement_impossible_artifact_subset")
     return retirement, retirement_snapshot, install_state
-
-
-def _recovery_discord_retirement_inputs(
-    *,
-    coordinator_input: CoordinatorInput,
-    gate: Mapping[str, Any],
-) -> tuple[
-    Mapping[str, Any] | None,
-    os.stat_result | None,
-    _RootFileSnapshot | None,
-]:
-    """Resolve a gate to the exact current monotonic retirement subset."""
-
-    gate_state = gate["discord_token_state"]
-    if gate_state not in {"installed", "retirement_prepared", "retired"}:
-        _fail("recovery_discord_token_gate_state_invalid")
-    retirement_loaded = _load_discord_retirement(coordinator_input)
-    if retirement_loaded is None:
-        if gate_state != "installed" or os.path.lexists(DISCORD_TOKEN_STAGE_PATH):
-            _fail("recovery_discord_token_drifted")
-        state = _load_discord_install_state(coordinator_input)
-        if (
-            state.state != "installed"
-            or state.token_item is None
-            or state.receipt_sha256 != gate["discord_token_install_receipt_sha256"]
-            or state.device != gate["token_device"]
-            or state.inode != gate["token_inode"]
-        ):
-            _fail("recovery_discord_token_drifted")
-        return state.value, state.token_item, state.snapshot
-
-    retirement = retirement_loaded[0]
-    if (
-        retirement["discord_token_install_receipt_sha256"]
-        != gate["discord_token_install_receipt_sha256"]
-        or retirement["token_device"] != gate["token_device"]
-        or retirement["token_inode"] != gate["token_inode"]
-    ):
-        _fail("recovery_discord_token_drifted")
-    if gate_state == "retirement_prepared" and (
-        gate["discord_retirement_receipt_sha256"] is None
-        or _prepared_discord_retirement_sha256(retirement)
-        != gate["discord_retirement_receipt_sha256"]
-    ):
-        _fail("recovery_discord_retirement_causal_drifted")
-    if gate_state == "retired" and (
-        retirement["state"] != "retired"
-        or retirement["receipt_sha256"] != gate["discord_retirement_receipt_sha256"]
-    ):
-        _fail("recovery_discord_retirement_terminal_drifted")
-
-    if retirement["state"] == "retirement_prepared":
-        _same_retirement, _snapshot, state = _load_prepared_discord_retirement_source(
-            coordinator_input,
-            require_terminal_install=True,
-        )
-        if state is None:
-            return None, None, None
-        return state.value, state.token_item, state.snapshot
-    if any(
-        os.path.lexists(path)
-        for path in (
-            DISCORD_TOKEN_PATH,
-            DISCORD_TOKEN_STAGE_PATH,
-            DISCORD_TOKEN_INSTALL_RECEIPT_PATH,
-        )
-    ):
-        _fail("recovery_discord_token_terminal_artifact_survived")
-    return None, None, None
 
 
 def _consume_terminal_discord_retirement(
@@ -6581,3261 +5712,14 @@ def _finish_prepared_discord_retirement_without_install_state(
     return terminal
 
 
-def _require_recovery_do_result(result: Any, *, code: str) -> None:
-    if (
-        str(getattr(result, "command_tag", "")).upper() != "DO"
-        or tuple(getattr(result, "rows", ()))
-        or tuple(getattr(result, "columns", ()))
-    ):
-        _fail(code, phase="recovery_database_cleanup")
-
-
-def _load_staged_plan_for_recovery(
-    snapshot: _RootFileSnapshot,
-    *,
-    coordinator_input: CoordinatorInput,
-) -> FullCanaryPlan:
-    try:
-        plan = FullCanaryPlan.from_mapping(
-            _decode_mapping(snapshot.raw, code="recovery_staged_plan_invalid")
-        )
-    except (TypeError, ValueError) as exc:
-        raise CoordinatorError(
-            "recovery_staged_plan_invalid",
-            phase="recovery_lifecycle",
-        ) from exc
-    if plan.revision != coordinator_input.revision or snapshot.raw != _canonical_bytes(
-        plan.to_mapping()
-    ):
-        _fail("recovery_staged_plan_drifted", phase="recovery_lifecycle")
-    return plan
-
-
-def _validate_recovery_stop_receipt(
-    value: Mapping[str, Any],
-    *,
-    plan: FullCanaryPlan,
-    expected_bootstrap_reconciliation: (BootstrapReconciliationEvidence | None) = None,
-) -> tuple[str, str, str]:
-    if not isinstance(value, Mapping):
-        _fail("recovery_stop_receipt_invalid", phase="recovery_lifecycle")
-    receipt = copy.deepcopy(dict(value))
-    unsigned = {key: item for key, item in receipt.items() if key != "receipt_sha256"}
-    preclaim = receipt.get("preclaim_reconciliation")
-    result = preclaim.get("result") if isinstance(preclaim, Mapping) else None
-    preclaim_state = result.get("outcome") if isinstance(result, Mapping) else None
-    bootstrap_reconciliation = receipt.get("bootstrap_reconciliation")
-    bootstrap_descriptor = receipt.get("bootstrap_evidence_descriptor")
-    expected_reconciliation = (
-        None
-        if expected_bootstrap_reconciliation is None
-        else expected_bootstrap_reconciliation.reconciliation_receipt
-    )
-    expected_descriptor = (
-        None
-        if expected_bootstrap_reconciliation is None
-        else expected_bootstrap_reconciliation.descriptor.to_mapping()
-        if expected_bootstrap_reconciliation.descriptor is not None
-        else None
-    )
-    never_authorized = receipt.get("bootstrap_never_authorized_evidence")
-    receipt_path = receipt.get("receipt_path")
-    stopped_at = receipt.get("stopped_at_unix")
-    if (
-        receipt.get("schema") != FULL_CANARY_RECEIPT_SCHEMA
-        or receipt.get("stage") != "stopped"
-        or receipt.get("revision") != plan.revision
-        or receipt.get("full_canary_plan_sha256") != plan.sha256
-        or receipt.get("units_enabled") is not False
-        or receipt.get("reason")
-        not in {
-            "operator_requested",
-            "verification_complete",
-            "verification_failed",
-        }
-        or receipt.get("stop_order")
-        != [GATEWAY_UNIT_NAME, WRITER_UNIT_NAME, EDGE_UNIT_NAME]
-        or type(stopped_at) is not int
-        or stopped_at < 0
-        or receipt.get("receipt_sha256") != _sha256_json(unsigned)
-        or not isinstance(receipt_path, str)
-        or bootstrap_reconciliation != expected_reconciliation
-        or bootstrap_descriptor != expected_descriptor
-        or "bootstrap_never_authorized_evidence" not in receipt
-        or (
-            expected_bootstrap_reconciliation is not None
-            and never_authorized is not None
-        )
-        or preclaim_state not in {"retired", "claimed", "not_preapproved"}
-        or not isinstance(preclaim, Mapping)
-        or preclaim.get("receipt_sha256") is None
-    ):
-        _fail("recovery_stop_receipt_invalid", phase="recovery_lifecycle")
-    persisted = _stable_root_read(
-        Path(receipt_path),
-        maximum=MAX_COORDINATOR_INPUT_BYTES,
-    )
-    if persisted != _canonical_bytes(receipt):
-        _fail("recovery_stop_receipt_not_durable", phase="recovery_lifecycle")
-    if expected_bootstrap_reconciliation is not None:
-        approval_time = expected_bootstrap_reconciliation.approval.value.get(
-            "approved_at_unix"
-        )
-        reconciliation_time = (
-            expected_bootstrap_reconciliation.reconciliation_receipt.get(
-                "reconciled_at_unix"
-            )
-        )
-        provisioning = expected_bootstrap_reconciliation.provisioning_receipt
-        provisioning_time = (
-            None
-            if provisioning is None
-            else provisioning.get("applied_at_unix")
-        )
-        if (
-            type(approval_time) is not int
-            or type(reconciliation_time) is not int
-            or (
-                provisioning_time is not None
-                and type(provisioning_time) is not int
-            )
-            or not approval_time
-            <= (
-                approval_time
-                if provisioning_time is None
-                else provisioning_time
-            )
-            <= reconciliation_time
-            <= stopped_at
-        ):
-            _fail(
-                "recovery_stop_receipt_temporal_order_invalid",
-                phase="recovery_lifecycle",
-            )
-        try:
-            resolved = load_bootstrap_evidence_from_receipt(
-                Path(receipt_path),
-                plan=plan,
-            )
-        except BaseException as exc:
-            raise CoordinatorError(
-                "recovery_stop_receipt_bootstrap_truth_invalid",
-                phase="recovery_lifecycle",
-            ) from exc
-        if resolved != expected_bootstrap_reconciliation:
-            _fail(
-                "recovery_stop_receipt_bootstrap_truth_drifted",
-                phase="recovery_lifecycle",
-            )
-    elif (
-        receipt.get("bootstrap_evidence_present") is not False
-        or receipt.get("bootstrap_evidence_descriptor") is not None
-        or receipt.get("owner_approval_receipt") is not None
-        or receipt.get("owner_approval_receipt_sha256") is not None
-        or receipt.get("bootstrap_provisioning_receipt") is not None
-        or receipt.get("bootstrap_reconciliation") is not None
-        or receipt.get("bootstrap_reconciliation_complete") is not False
-        or receipt.get("bootstrap_durable_evidence_recovery_required")
-        is not False
-        or (
-            never_authorized is not None
-            and (
-                not isinstance(never_authorized, Mapping)
-                or set(never_authorized)
-                != {"path", "file_sha256", "receipt_sha256"}
-                or _SHA256_RE.fullmatch(
-                    str(never_authorized.get("file_sha256", ""))
-                )
-                is None
-                or _SHA256_RE.fullmatch(
-                    str(never_authorized.get("receipt_sha256", ""))
-                )
-                is None
-                or not isinstance(never_authorized.get("path"), str)
-            )
-        )
-    ):
-        _fail("recovery_stop_receipt_invalid", phase="recovery_lifecycle")
-    _digest(
-        preclaim["receipt_sha256"],
-        "recovery_preclaim_receipt_digest_invalid",
-    )
-    return (
-        str(receipt["receipt_sha256"]),
-        str(preclaim["receipt_sha256"]),
-        str(preclaim_state),
-    )
-
-
-def _remove_recovery_root_artifact(path: Path) -> None:
-    snapshot = _capture_root_snapshot(path)
-    if snapshot is not None:
-        _remove_exact_root_snapshot(snapshot, state=_RootRemovalState())
-
-
-def _remove_recovery_writer_artifact(writer_gid: int) -> None:
-    snapshot = _capture_writer_snapshot(writer_gid)
-    if snapshot is not None:
-        _WriterPublication(
-            writer_gid=writer_gid,
-            before=None,
-            after=snapshot,
-        ).rollback()
-
-
-def _publish_preplan_stopped_report(
-    *,
-    coordinator_input: CoordinatorInput,
-    lease: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    if (
-        any(
-            os.path.lexists(path)
-            for path in (
-                DEFAULT_PLAN_PATH,
-                DEFAULT_STAGED_PLAN_PATH,
-                DEFAULT_WRITER_CONFIG_SOURCE,
-                OWNER_APPROVAL_REQUEST_PATH,
-                CANARY_BOOTSTRAP_CREDENTIAL_PATH,
-            )
-        )
-        or not _services_are_exactly_stopped_and_disabled()
-    ):
-        _fail("recovery_preplan_truth_unresolved", phase="recovery_lifecycle")
-    unsigned = {
-        "schema": PREPLAN_STOPPED_REPORT_SCHEMA,
-        "ok": True,
-        "state": "preplan_stopped",
-        "release_sha": coordinator_input.revision,
-        "coordinator_input_sha256": coordinator_input.sha256,
-        "credential_prepare_approval_sha256": lease[
-            "credential_prepare_approval_sha256"
-        ],
-        "owner_subject_sha256": lease["owner_subject_sha256"],
-        "base_plan_sha256": coordinator_input.base_plan.sha256,
-        "runtime_plan_absent": True,
-        "staged_plan_absent": True,
-        "staged_writer_config_absent": True,
-        "owner_approval_request_absent": True,
-        "bootstrap_scope_activation_artifacts_absent": True,
-        "migration_owner_membership_removed": True,
-        "bootstrap_login_password_disabled": True,
-        "bootstrap_credential_removed": True,
-        "services_stopped_proven": True,
-        "services_enabled": False,
-        "completed_at_unix": int(time.time()),
-    }
-    report = {**unsigned, "report_sha256": _sha256_json(unsigned)}
-    existing = _capture_root_snapshot(
-        PREPLAN_STOPPED_REPORT_PATH,
-        maximum=MAX_OWNER_APPROVAL_BYTES,
-    )
-    if existing is None:
-        _publish_root_payload(
-            PREPLAN_STOPPED_REPORT_PATH,
-            _canonical_bytes(report),
-            expected_previous_sha256=None,
-        )
-        return report
-    prior = _decode_mapping(existing.raw, code="recovery_preplan_report_invalid")
-    prior_unsigned = {
-        key: item for key, item in prior.items() if key != "report_sha256"
-    }
-    stable_names = set(unsigned).difference({"completed_at_unix"})
-    if (
-        set(prior) != set(report)
-        or any(prior.get(name) != unsigned[name] for name in stable_names)
-        or prior.get("report_sha256") != _sha256_json(prior_unsigned)
-    ):
-        _fail("recovery_preplan_report_drifted", phase="recovery_lifecycle")
-    return prior
-
-
-_RECOVERY_RECEIPT_FIELDS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "recovery_gate_sha256",
-    "owner_recovery_ack_sha256",
-    "stale_process_lease_sha256",
-    "process_termination_proven",
-    "process_lock_acquired",
-    "process_lease_removed",
-    "canonical_stop_receipt_sha256",
-    "preplan_stopped_report_sha256",
-    "preclaim_reconciliation_receipt_sha256",
-    "preclaim_reconciliation_state",
-    "admin_session_closed",
-    "migration_owner_membership_removed",
-    "bootstrap_login_password_disabled",
-    "bootstrap_credential_removed",
-    "discord_token_removed",
-    "discord_install_receipt_removed",
-    "discord_retirement_receipt_sha256",
-    "services_stopped_proven",
-    "services_enabled",
-    "safe_to_delete_temporary_admin",
-    "completed_at_unix",
-    "receipt_sha256",
-})
-
-
-def _parse_legacy_recovery_receipt(
-    value: Any,
-    *,
-    coordinator_input: CoordinatorInput,
-) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != _RECOVERY_RECEIPT_FIELDS:
-        _fail("recovery_receipt_invalid", phase="recovery_terminal")
-    raw = copy.deepcopy(dict(value))
-    unsigned = {key: item for key, item in raw.items() if key != "receipt_sha256"}
-    canonical = raw["canonical_stop_receipt_sha256"]
-    preplan = raw["preplan_stopped_report_sha256"]
-    if (
-        raw["schema"] != LEGACY_RECOVERY_RECEIPT_SCHEMA
-        or raw["ok"] is not True
-        or raw["state"] != "recovered"
-        or raw["release_sha"] != coordinator_input.revision
-        or raw["coordinator_input_sha256"] != coordinator_input.sha256
-        or (canonical is None) == (preplan is None)
-        or any(
-            raw[name] is not True
-            for name in (
-                "process_termination_proven",
-                "process_lock_acquired",
-                "process_lease_removed",
-                "admin_session_closed",
-                "migration_owner_membership_removed",
-                "bootstrap_login_password_disabled",
-                "bootstrap_credential_removed",
-                "discord_token_removed",
-                "discord_install_receipt_removed",
-                "services_stopped_proven",
-                "safe_to_delete_temporary_admin",
-            )
-        )
-        or raw["services_enabled"] is not False
-        or raw["receipt_sha256"] != _sha256_json(unsigned)
-    ):
-        _fail("recovery_receipt_invalid", phase="recovery_terminal")
-    for name in (
-        "credential_prepare_approval_sha256",
-        "owner_subject_sha256",
-        "recovery_gate_sha256",
-        "owner_recovery_ack_sha256",
-        "stale_process_lease_sha256",
-        "discord_retirement_receipt_sha256",
-    ):
-        _digest(raw[name], "recovery_receipt_digest_invalid")
-    if canonical is None:
-        _digest(preplan, "recovery_preplan_receipt_digest_invalid")
-        if (
-            raw["preclaim_reconciliation_receipt_sha256"] is not None
-            or raw["preclaim_reconciliation_state"] is not None
-        ):
-            _fail("recovery_receipt_preplan_matrix_invalid")
-    else:
-        _digest(canonical, "recovery_stop_receipt_digest_invalid")
-        _digest(
-            raw["preclaim_reconciliation_receipt_sha256"],
-            "recovery_preclaim_receipt_digest_invalid",
-        )
-        if raw["preclaim_reconciliation_state"] not in {
-            "retired",
-            "claimed",
-            "not_preapproved",
-        }:
-            _fail("recovery_receipt_preclaim_state_invalid")
-    return raw
-
-
-_RECOVERY_CAUSAL_STATE_FIELDS = frozenset({
-    "schema",
-    "discord_token_state",
-    "discord_token_install_receipt_sha256",
-    "token_device",
-    "token_inode",
-    "discord_retirement_receipt_sha256",
-    "causal_state_sha256",
-})
-_RECOVERY_CAUSAL_STATE_SCHEMA = "muncho-full-canary-recovery-causal-state.v1"
-
-_RECOVERY_TAKEOVER_GATE_FIELDS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "predecessor_kind",
-    "predecessor_schema",
-    "predecessor_journal_sha256",
-    "predecessor_generation",
-    "original_run_process_lease_sha256",
-    "causal_recovery_state_sha256",
-    "target_pid",
-    "target_process_start_time_ticks",
-    "target_boot_id_sha256",
-    "target_boot_time_ns",
-    "target_uid",
-    "target_gid",
-    "target_module_origin",
-    "target_module_sha256",
-    "target_process_exe_sha256",
-    "target_process_cmdline_sha256",
-    "target_process_identity_state",
-    "discord_token_state",
-    "discord_token_install_receipt_sha256",
-    "token_device",
-    "token_inode",
-    "discord_retirement_receipt_sha256",
-    "db_secret_accepted",
-    "frame_schema",
-    "observed_at_unix",
-    "expires_at_unix",
-    "gate_sha256",
-})
-
-_RECOVERY_TAKEOVER_ACK_FIELDS = frozenset({
-    "schema",
-    "scope",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "recovery_takeover_gate_sha256",
-    "predecessor_kind",
-    "predecessor_schema",
-    "predecessor_journal_sha256",
-    "predecessor_generation",
-    "original_run_process_lease_sha256",
-    "causal_recovery_state_sha256",
-    "target_pid",
-    "target_process_start_time_ticks",
-    "target_boot_id_sha256",
-    "target_boot_time_ns",
-    "target_uid",
-    "target_gid",
-    "target_module_origin",
-    "target_module_sha256",
-    "target_process_exe_sha256",
-    "target_process_cmdline_sha256",
-    "target_process_identity_state",
-    "discord_token_state",
-    "discord_token_install_receipt_sha256",
-    "token_device",
-    "token_inode",
-    "discord_retirement_receipt_sha256",
-    "nonce_sha256",
-    "approved_at_unix",
-    "expires_at_unix",
-    "ack_sha256",
-})
-
-_RECOVERY_WORKER_IDENTITY_FIELDS = (
-    "recovery_worker_pid",
-    "recovery_worker_process_start_time_ticks",
-    "recovery_worker_boot_id_sha256",
-    "recovery_worker_boot_time_ns",
-    "recovery_worker_uid",
-    "recovery_worker_gid",
-    "recovery_worker_module_origin",
-    "recovery_worker_module_sha256",
-    "recovery_worker_process_exe_sha256",
-    "recovery_worker_process_cmdline_sha256",
-)
-
-_RECOVERY_WORKER_LEASE_FIELDS = frozenset({
-    "schema",
-    "state",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "original_run_process_lease",
-    "original_run_process_lease_sha256",
-    "causal_recovery_state",
-    "causal_recovery_state_sha256",
-    "predecessor_kind",
-    "predecessor_schema",
-    "predecessor_journal_sha256",
-    "predecessor_generation",
-    "recovery_generation",
-    "transition_seq",
-    "previous_transition_sha256",
-    "recovery_takeover_gate_sha256",
-    "owner_recovery_takeover_ack_sha256",
-    *_RECOVERY_WORKER_IDENTITY_FIELDS,
-    "predecessor_termination_proven",
-    "predecessor_process_lock_acquired",
-    "predecessor_journal_replaced",
-    "claimed_at_unix",
-    "updated_at_unix",
-    "owner_authority_expires_at_unix",
-    "worker_lease_sha256",
-})
-
-_RECOVERY_SECRET_GATE_FIELDS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "recovery_takeover_gate_sha256",
-    "owner_recovery_takeover_ack_sha256",
-    "predecessor_kind",
-    "predecessor_journal_sha256",
-    "predecessor_generation",
-    "original_run_process_lease_sha256",
-    "causal_recovery_state_sha256",
-    "recovery_worker_lease_sha256",
-    "recovery_worker_state",
-    "recovery_worker_transition_seq",
-    *_RECOVERY_WORKER_IDENTITY_FIELDS,
-    "database_host",
-    "database_port",
-    "database_name",
-    "tls_server_name",
-    "tls_peer_certificate_sha256",
-    "admin_frame_schema",
-    "gate_nonce_sha256",
-    "expires_at_unix",
-    "gate_sha256",
-})
-
-_RECOVERY_CLEANUP_FIELDS = frozenset({
-    "canonical_stop_receipt_sha256",
-    "preplan_stopped_report_sha256",
-    "preclaim_reconciliation_receipt_sha256",
-    "preclaim_reconciliation_state",
-    "admin_frame_zeroized",
-    "admin_session_closed",
-    "migration_owner_membership_removed",
-    "bootstrap_login_password_disabled",
-    "bootstrap_credential_removed",
-    "discord_token_removed",
-    "discord_install_receipt_removed",
-    "discord_retirement_receipt_sha256",
-    "services_stopped_proven",
-    "services_enabled",
-})
-
-_RECOVERY_WORKER_COMPLETION_FIELDS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "original_run_process_lease",
-    "original_run_process_lease_sha256",
-    "causal_recovery_state_sha256",
-    "predecessor_kind",
-    "predecessor_journal_sha256",
-    "predecessor_generation",
-    "recovery_generation",
-    "recovery_takeover_gate_sha256",
-    "owner_recovery_takeover_ack_sha256",
-    "recovery_worker_lease_sha256",
-    *_RECOVERY_WORKER_IDENTITY_FIELDS,
-    "predecessor_termination_proven",
-    "predecessor_process_lock_acquired",
-    "predecessor_journal_replaced",
-    *_RECOVERY_CLEANUP_FIELDS,
-    "recovery_worker_exit_proven",
-    "safe_to_delete_temporary_admin",
-    "cleanup_completed_at_unix",
-    "completion_sha256",
-})
-
-_RECOVERY_RECEIPT_V2_FIELDS = frozenset({
-    *(
-        _RECOVERY_WORKER_COMPLETION_FIELDS
-        - {
-            "completion_sha256",
-            "recovery_worker_exit_proven",
-            "safe_to_delete_temporary_admin",
-        }
-    ),
-    "recovery_worker_completion_sha256",
-    "recovery_worker_lock_acquired",
-    "recovery_worker_exit_proven",
-    "safe_to_delete_temporary_admin",
-    "finalized_at_unix",
-    "receipt_sha256",
-})
-
-_RECOVERY_CONCURRENT_LOSER_RECEIPT_FIELDS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "recovery_takeover_gate_sha256",
-    "owner_recovery_takeover_ack_sha256",
-    "predecessor_kind",
-    "predecessor_schema",
-    "predecessor_journal_sha256",
-    "predecessor_generation",
-    "original_run_process_lease_sha256",
-    "target_pid",
-    "target_process_start_time_ticks",
-    "target_boot_id_sha256",
-    "target_boot_time_ns",
-    "target_uid",
-    "target_gid",
-    "target_module_origin",
-    "target_module_sha256",
-    "target_process_exe_sha256",
-    "target_process_cmdline_sha256",
-    "target_signal_attempted_by_loser",
-    "target_termination_proven_by_loser",
-    "process_lock_acquired_by_loser",
-    "journal_cas_attempted_by_loser",
-    "journal_cas_succeeded_by_loser",
-    "observed_successor_schema",
-    "observed_successor_state",
-    "observed_successor_journal_sha256",
-    "observed_successor_generation",
-    "observed_successor_worker_pid",
-    "observed_successor_worker_process_start_time_ticks",
-    "observed_successor_worker_boot_id_sha256",
-    "observed_successor_worker_module_sha256",
-    "observed_successor_worker_process_exe_sha256",
-    "observed_successor_worker_process_cmdline_sha256",
-    "secret_gate_emitted_by_loser",
-    "admin_frame_bytes_received_by_loser",
-    "admin_session_opened_by_loser",
-    "admin_credential_mutation_performed_by_loser",
-    "worker_lease_published_by_loser",
-    "retryable",
-    "completed_at_unix",
-    "receipt_sha256",
-})
-
-_RECOVERY_FINALIZE_PENDING_RECEIPT_FIELDS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "recovery_worker_completion_sha256",
-    *_RECOVERY_WORKER_IDENTITY_FIELDS,
-    "completion_admin_authority_may_have_been_used",
-    "completion_admin_frame_zeroized",
-    "completion_admin_session_closed",
-    "worker_identity_state",
-    "target_signal_attempted_by_finalizer",
-    "target_termination_proven_by_finalizer",
-    "process_lock_acquired_by_finalizer",
-    "completion_cas_attempted_by_finalizer",
-    "completion_cas_succeeded_by_finalizer",
-    "observed_journal_sha256",
-    "secret_gate_emitted_by_finalizer",
-    "admin_frame_bytes_received_by_finalizer",
-    "admin_session_opened_by_finalizer",
-    "admin_credential_mutation_performed_by_finalizer",
-    "retryable",
-    "completed_at_unix",
-    "receipt_sha256",
-})
-
-
-def _recovery_predecessor_kind_generation_valid(
-    value: Mapping[str, Any],
-) -> bool:
-    return bool(
-        value.get("predecessor_kind") == "run_process_lease"
-        and value.get("predecessor_generation") == 0
-        or value.get("predecessor_kind") == "recovery_worker_lease"
-        and type(value.get("predecessor_generation")) is int
-        and value["predecessor_generation"] >= 1
-    )
-
-
-def _recovery_predecessor_kind_schema_generation_valid(
-    value: Mapping[str, Any],
-) -> bool:
-    return bool(
-        _recovery_predecessor_kind_generation_valid(value)
-        and (
-            value["predecessor_kind"] == "run_process_lease"
-            and value.get("predecessor_schema")
-            == "muncho-full-canary-coordinator-process-lease.v1"
-            or value["predecessor_kind"] == "recovery_worker_lease"
-            and value.get("predecessor_schema") == RECOVERY_WORKER_LEASE_SCHEMA
-        )
-    )
-
-
-def _parse_recovery_causal_state(value: Any) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != _RECOVERY_CAUSAL_STATE_FIELDS:
-        _fail("recovery_causal_state_invalid", phase="recovery_preflight")
-    raw = copy.deepcopy(dict(value))
-    unsigned = {key: item for key, item in raw.items() if key != "causal_state_sha256"}
-    state = raw["discord_token_state"]
-    positive_pair = (
-        type(raw["token_device"]) is int
-        and raw["token_device"] > 0
-        and type(raw["token_inode"]) is int
-        and raw["token_inode"] > 0
-    )
-    null_pair = raw["token_device"] is None and raw["token_inode"] is None
-    if (
-        raw["schema"] != _RECOVERY_CAUSAL_STATE_SCHEMA
-        or state not in {"installed", "retirement_prepared", "retired"}
-        or (state == "installed" and not positive_pair)
-        or (state != "installed" and not (positive_pair or null_pair))
-        or (state == "installed") != (raw["discord_retirement_receipt_sha256"] is None)
-        or raw["causal_state_sha256"] != _sha256_json(unsigned)
-    ):
-        _fail("recovery_causal_state_invalid", phase="recovery_preflight")
-    _digest(
-        raw["discord_token_install_receipt_sha256"],
-        "recovery_causal_install_digest_invalid",
-    )
-    if raw["discord_retirement_receipt_sha256"] is not None:
-        _digest(
-            raw["discord_retirement_receipt_sha256"],
-            "recovery_causal_retirement_digest_invalid",
-        )
-    return raw
-
-
-def _observe_recovery_causal_state(
-    coordinator_input: CoordinatorInput,
-) -> Mapping[str, Any]:
-    retirement_loaded = _load_discord_retirement(coordinator_input)
-    if (
-        retirement_loaded is not None
-        and retirement_loaded[0]["state"] == "retirement_prepared"
-    ):
-        retirement, _snapshot, _install = _load_prepared_discord_retirement_source(
-            coordinator_input,
-            require_terminal_install=True,
-        )
-        state = "retirement_prepared"
-        install_sha256 = retirement["discord_token_install_receipt_sha256"]
-        device = retirement["token_device"]
-        inode = retirement["token_inode"]
-        retirement_sha256 = retirement["receipt_sha256"]
-    elif os.path.lexists(DISCORD_TOKEN_INSTALL_RECEIPT_PATH):
-        receipt, identity, _snapshot = load_discord_token_install_receipt(
-            coordinator_input
-        )
-        if identity is None:
-            _fail(
-                "recovery_discord_token_identity_missing",
-                phase="recovery_preflight",
-            )
-        state = "installed"
-        install_sha256 = receipt["receipt_sha256"]
-        device = identity.st_dev
-        inode = identity.st_ino
-        retirement_sha256 = None
-    else:
-        if (
-            retirement_loaded is None
-            or retirement_loaded[0]["state"] != "retired"
-            or any(
-                os.path.lexists(path)
-                for path in (
-                    DISCORD_TOKEN_PATH,
-                    DISCORD_TOKEN_STAGE_PATH,
-                    DISCORD_TOKEN_INSTALL_RECEIPT_PATH,
-                )
-            )
-        ):
-            _fail(
-                "recovery_discord_token_state_invalid",
-                phase="recovery_preflight",
-            )
-        retirement = retirement_loaded[0]
-        state = "retired"
-        install_sha256 = retirement["discord_token_install_receipt_sha256"]
-        device = retirement["token_device"]
-        inode = retirement["token_inode"]
-        retirement_sha256 = retirement["receipt_sha256"]
-    unsigned = {
-        "schema": _RECOVERY_CAUSAL_STATE_SCHEMA,
-        "discord_token_state": state,
-        "discord_token_install_receipt_sha256": install_sha256,
-        "token_device": device,
-        "token_inode": inode,
-        "discord_retirement_receipt_sha256": retirement_sha256,
-    }
-    return _parse_recovery_causal_state({
-        **unsigned,
-        "causal_state_sha256": _sha256_json(unsigned),
-    })
-
-
-def _validate_recovery_worker_identity_fields(value: Mapping[str, Any]) -> None:
-    for name in (
-        "recovery_worker_pid",
-        "recovery_worker_process_start_time_ticks",
-        "recovery_worker_boot_time_ns",
-        "recovery_worker_uid",
-        "recovery_worker_gid",
-    ):
-        if type(value.get(name)) is not int:
-            _fail("recovery_worker_identity_invalid", phase="recovery_preflight")
-    if (
-        value["recovery_worker_pid"] <= 1
-        or value["recovery_worker_process_start_time_ticks"] <= 0
-        or value["recovery_worker_boot_time_ns"] < 0
-        or value["recovery_worker_uid"] != 0
-        or value["recovery_worker_gid"] != 0
-        or not isinstance(value.get("recovery_worker_module_origin"), str)
-        or not value["recovery_worker_module_origin"]
-    ):
-        _fail("recovery_worker_identity_invalid", phase="recovery_preflight")
-    for name in (
-        "recovery_worker_boot_id_sha256",
-        "recovery_worker_module_sha256",
-        "recovery_worker_process_exe_sha256",
-        "recovery_worker_process_cmdline_sha256",
-    ):
-        _digest(value.get(name), "recovery_worker_identity_digest_invalid")
-
-
-def _parse_recovery_worker_lease(
-    value: Any,
-    *,
-    coordinator_input: CoordinatorInput,
-) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != _RECOVERY_WORKER_LEASE_FIELDS:
-        _fail("recovery_worker_lease_invalid", phase="recovery_preflight")
-    raw = copy.deepcopy(dict(value))
-    unsigned = {key: item for key, item in raw.items() if key != "worker_lease_sha256"}
-    original = raw["original_run_process_lease"]
-    parsed_original = _parse_process_lease(
-        original,
-        coordinator_input=coordinator_input,
-    )
-    causal = _parse_recovery_causal_state(raw["causal_recovery_state"])
-    expected_state = {
-        1: "claimed_awaiting_admin",
-        2: "admin_authority_may_be_in_use",
-    }.get(raw["transition_seq"])
-    if (
-        raw["schema"] != RECOVERY_WORKER_LEASE_SCHEMA
-        or expected_state is None
-        or raw["state"] != expected_state
-        or raw["release_sha"] != coordinator_input.revision
-        or raw["coordinator_input_sha256"] != coordinator_input.sha256
-        or raw["credential_prepare_approval_sha256"]
-        != parsed_original["credential_prepare_approval_sha256"]
-        or raw["owner_subject_sha256"] != parsed_original["owner_subject_sha256"]
-        or raw["ephemeral_admin_username"]
-        != parsed_original["ephemeral_admin_username"]
-        or raw["original_run_process_lease_sha256"] != parsed_original["lease_sha256"]
-        or raw["causal_recovery_state_sha256"] != causal["causal_state_sha256"]
-        or not _recovery_predecessor_kind_schema_generation_valid(raw)
-        or type(raw["predecessor_generation"]) is not int
-        or raw["predecessor_generation"] < 0
-        or type(raw["recovery_generation"]) is not int
-        or raw["recovery_generation"] != raw["predecessor_generation"] + 1
-        or raw["predecessor_termination_proven"] is not True
-        or raw["predecessor_process_lock_acquired"] is not True
-        or raw["predecessor_journal_replaced"] is not True
-        or type(raw["claimed_at_unix"]) is not int
-        or type(raw["updated_at_unix"]) is not int
-        or type(raw["owner_authority_expires_at_unix"]) is not int
-        or not 0 <= raw["claimed_at_unix"] <= raw["updated_at_unix"]
-        or not 1
-        <= raw["owner_authority_expires_at_unix"] - raw["claimed_at_unix"]
-        <= RECOVERY_WORKER_LEASE_MAX_SECONDS
-        or raw["updated_at_unix"] > raw["owner_authority_expires_at_unix"]
-        or raw["worker_lease_sha256"] != _sha256_json(unsigned)
-    ):
-        _fail("recovery_worker_lease_invalid", phase="recovery_preflight")
-    for name in (
-        "predecessor_journal_sha256",
-        "previous_transition_sha256",
-        "recovery_takeover_gate_sha256",
-        "owner_recovery_takeover_ack_sha256",
-    ):
-        _digest(raw[name], "recovery_worker_lease_digest_invalid")
-    if raw["transition_seq"] == 1 and (
-        raw["previous_transition_sha256"] != raw["predecessor_journal_sha256"]
-    ):
-        _fail("recovery_worker_transition_invalid", phase="recovery_preflight")
-    _validate_recovery_worker_identity_fields(raw)
-    return raw
-
-
-def _parse_recovery_worker_completion(
-    value: Any,
-    *,
-    coordinator_input: CoordinatorInput,
-) -> Mapping[str, Any]:
-    if (
-        not isinstance(value, Mapping)
-        or set(value) != _RECOVERY_WORKER_COMPLETION_FIELDS
-    ):
-        _fail("recovery_worker_completion_invalid", phase="recovery_terminal")
-    raw = copy.deepcopy(dict(value))
-    unsigned = {key: item for key, item in raw.items() if key != "completion_sha256"}
-    original = _parse_process_lease(
-        raw["original_run_process_lease"],
-        coordinator_input=coordinator_input,
-    )
-    canonical = raw["canonical_stop_receipt_sha256"]
-    preplan = raw["preplan_stopped_report_sha256"]
-    if (
-        raw["schema"] != RECOVERY_WORKER_COMPLETION_SCHEMA
-        or raw["ok"] is not False
-        or raw["state"] != "cleanup_complete_awaiting_worker_exit"
-        or raw["release_sha"] != coordinator_input.revision
-        or raw["coordinator_input_sha256"] != coordinator_input.sha256
-        or raw["original_run_process_lease_sha256"] != original["lease_sha256"]
-        or raw["credential_prepare_approval_sha256"]
-        != original["credential_prepare_approval_sha256"]
-        or raw["owner_subject_sha256"] != original["owner_subject_sha256"]
-        or raw["ephemeral_admin_username"] != original["ephemeral_admin_username"]
-        or not _recovery_predecessor_kind_generation_valid(raw)
-        or type(raw["predecessor_generation"]) is not int
-        or type(raw["recovery_generation"]) is not int
-        or raw["recovery_generation"] != raw["predecessor_generation"] + 1
-        or raw["predecessor_termination_proven"] is not True
-        or raw["predecessor_process_lock_acquired"] is not True
-        or raw["predecessor_journal_replaced"] is not True
-        or (canonical is None) == (preplan is None)
-        or raw["admin_frame_zeroized"] is not True
-        or raw["admin_session_closed"] is not True
-        or any(
-            raw[name] is not True
-            for name in (
-                "migration_owner_membership_removed",
-                "bootstrap_login_password_disabled",
-                "bootstrap_credential_removed",
-                "discord_token_removed",
-                "discord_install_receipt_removed",
-                "services_stopped_proven",
-            )
-        )
-        or raw["services_enabled"] is not False
-        or raw["recovery_worker_exit_proven"] is not False
-        or raw["safe_to_delete_temporary_admin"] is not False
-        or type(raw["cleanup_completed_at_unix"]) is not int
-        or raw["cleanup_completed_at_unix"] < 0
-        or raw["completion_sha256"] != _sha256_json(unsigned)
-    ):
-        _fail("recovery_worker_completion_invalid", phase="recovery_terminal")
-    for name in (
-        "credential_prepare_approval_sha256",
-        "owner_subject_sha256",
-        "original_run_process_lease_sha256",
-        "causal_recovery_state_sha256",
-        "predecessor_journal_sha256",
-        "recovery_takeover_gate_sha256",
-        "owner_recovery_takeover_ack_sha256",
-        "recovery_worker_lease_sha256",
-        "discord_retirement_receipt_sha256",
-    ):
-        _digest(raw[name], "recovery_worker_completion_digest_invalid")
-    _validate_recovery_worker_identity_fields(raw)
-    _validate_recovery_cleanup_matrix(raw)
-    return raw
-
-
-def _validate_recovery_cleanup_matrix(raw: Mapping[str, Any]) -> None:
-    canonical = raw["canonical_stop_receipt_sha256"]
-    preplan = raw["preplan_stopped_report_sha256"]
-    if canonical is None:
-        _digest(preplan, "recovery_preplan_receipt_digest_invalid")
-        if (
-            raw["preclaim_reconciliation_receipt_sha256"] is not None
-            or raw["preclaim_reconciliation_state"] is not None
-        ):
-            _fail("recovery_receipt_preplan_matrix_invalid")
-    else:
-        _digest(canonical, "recovery_stop_receipt_digest_invalid")
-        _digest(
-            raw["preclaim_reconciliation_receipt_sha256"],
-            "recovery_preclaim_receipt_digest_invalid",
-        )
-        if raw["preclaim_reconciliation_state"] not in {
-            "retired",
-            "claimed",
-            "not_preapproved",
-        }:
-            _fail("recovery_receipt_preclaim_state_invalid")
-
-
-def _project_recovery_worker_completion_from_receipt(
-    raw: Mapping[str, Any],
-    *,
-    coordinator_input: CoordinatorInput,
-) -> Mapping[str, Any]:
-    """Reconstruct and authenticate the exact completion sealed by final v2."""
-
-    projected_unsigned = {
-        key: copy.deepcopy(raw[key])
-        for key in _RECOVERY_WORKER_COMPLETION_FIELDS
-        if key
-        not in {
-            "schema",
-            "ok",
-            "state",
-            "recovery_worker_exit_proven",
-            "safe_to_delete_temporary_admin",
-            "completion_sha256",
-        }
-    }
-    projected_unsigned.update({
-        "schema": RECOVERY_WORKER_COMPLETION_SCHEMA,
-        "ok": False,
-        "state": "cleanup_complete_awaiting_worker_exit",
-        "recovery_worker_exit_proven": False,
-        "safe_to_delete_temporary_admin": False,
-    })
-    projected_sha256 = _sha256_json(projected_unsigned)
-    if raw["recovery_worker_completion_sha256"] != projected_sha256:
-        _fail(
-            "recovery_receipt_completion_projection_invalid",
-            phase="recovery_terminal",
-        )
-    return _parse_recovery_worker_completion(
-        {**projected_unsigned, "completion_sha256": projected_sha256},
-        coordinator_input=coordinator_input,
-    )
-
-
-def _parse_recovery_receipt_v2(
-    value: Any,
-    *,
-    coordinator_input: CoordinatorInput,
-) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != _RECOVERY_RECEIPT_V2_FIELDS:
-        _fail("recovery_receipt_invalid", phase="recovery_terminal")
-    raw = copy.deepcopy(dict(value))
-    unsigned = {key: item for key, item in raw.items() if key != "receipt_sha256"}
-    original = _parse_process_lease(
-        raw["original_run_process_lease"],
-        coordinator_input=coordinator_input,
-    )
-    if (
-        raw["schema"] != RECOVERY_RECEIPT_SCHEMA
-        or raw["ok"] is not True
-        or raw["state"] != "recovered"
-        or raw["release_sha"] != coordinator_input.revision
-        or raw["coordinator_input_sha256"] != coordinator_input.sha256
-        or raw["original_run_process_lease_sha256"] != original["lease_sha256"]
-        or raw["credential_prepare_approval_sha256"]
-        != original["credential_prepare_approval_sha256"]
-        or raw["owner_subject_sha256"] != original["owner_subject_sha256"]
-        or raw["ephemeral_admin_username"] != original["ephemeral_admin_username"]
-        or not _recovery_predecessor_kind_generation_valid(raw)
-        or type(raw["predecessor_generation"]) is not int
-        or type(raw["recovery_generation"]) is not int
-        or raw["recovery_generation"] != raw["predecessor_generation"] + 1
-        or raw["predecessor_termination_proven"] is not True
-        or raw["predecessor_process_lock_acquired"] is not True
-        or raw["predecessor_journal_replaced"] is not True
-        or (raw["canonical_stop_receipt_sha256"] is None)
-        == (raw["preplan_stopped_report_sha256"] is None)
-        or raw["admin_frame_zeroized"] is not True
-        or raw["admin_session_closed"] is not True
-        or any(
-            raw[name] is not True
-            for name in (
-                "migration_owner_membership_removed",
-                "bootstrap_login_password_disabled",
-                "bootstrap_credential_removed",
-                "discord_token_removed",
-                "discord_install_receipt_removed",
-                "services_stopped_proven",
-            )
-        )
-        or raw["services_enabled"] is not False
-        or raw["recovery_worker_lock_acquired"] is not True
-        or raw["recovery_worker_exit_proven"] is not True
-        or raw["safe_to_delete_temporary_admin"] is not True
-        or type(raw["finalized_at_unix"]) is not int
-        or raw["finalized_at_unix"] < raw["cleanup_completed_at_unix"]
-        or raw["receipt_sha256"] != _sha256_json(unsigned)
-    ):
-        _fail("recovery_receipt_invalid", phase="recovery_terminal")
-    for name in (
-        "credential_prepare_approval_sha256",
-        "owner_subject_sha256",
-        "original_run_process_lease_sha256",
-        "causal_recovery_state_sha256",
-        "predecessor_journal_sha256",
-        "recovery_takeover_gate_sha256",
-        "owner_recovery_takeover_ack_sha256",
-        "recovery_worker_lease_sha256",
-        "recovery_worker_completion_sha256",
-        "discord_retirement_receipt_sha256",
-    ):
-        _digest(raw[name], "recovery_receipt_digest_invalid")
-    _validate_recovery_worker_identity_fields(raw)
-    _validate_recovery_cleanup_matrix(raw)
-    _project_recovery_worker_completion_from_receipt(
-        raw,
-        coordinator_input=coordinator_input,
-    )
-    return raw
-
-
-def _current_recovery_worker_identity(
-    coordinator_input: CoordinatorInput,
-) -> Mapping[str, Any]:
-    pid = os.getpid()
-    boot_sha256, boot_time_ns = boot_identity()
-    module_origin, module_sha256 = _sealed_coordinator_module_identity(
-        coordinator_input
-    )
-    expected = _expected_command_cmdline(coordinator_input, command="recover")
-    try:
-        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
-        owner = Path(f"/proc/{pid}").stat()
-    except OSError as exc:
-        raise CoordinatorError(
-            "recovery_worker_identity_unavailable",
-            phase="recovery_process",
-        ) from exc
-    if cmdline != expected or owner.st_uid != 0 or owner.st_gid != 0:
-        _fail("recovery_worker_identity_invalid", phase="recovery_process")
-    return {
-        "recovery_worker_pid": pid,
-        "recovery_worker_process_start_time_ticks": process_start_time_ticks(pid),
-        "recovery_worker_boot_id_sha256": boot_sha256,
-        "recovery_worker_boot_time_ns": boot_time_ns,
-        "recovery_worker_uid": owner.st_uid,
-        "recovery_worker_gid": owner.st_gid,
-        "recovery_worker_module_origin": module_origin,
-        "recovery_worker_module_sha256": module_sha256,
-        "recovery_worker_process_exe_sha256": _process_executable_sha256(pid),
-        "recovery_worker_process_cmdline_sha256": _sha256_bytes(cmdline),
-    }
-
-
-def _run_lease_recovery_target(lease: Mapping[str, Any]) -> Mapping[str, Any]:
-    return {
-        "target_pid": lease["pid"],
-        "target_process_start_time_ticks": lease["process_start_time_ticks"],
-        "target_boot_id_sha256": lease["boot_id_sha256"],
-        "target_boot_time_ns": lease["boot_time_ns"],
-        "target_uid": 0,
-        "target_gid": 0,
-        "target_module_origin": lease["module_origin"],
-        "target_module_sha256": lease["module_sha256"],
-        "target_process_exe_sha256": lease["process_exe_sha256"],
-        "target_process_cmdline_sha256": lease["process_cmdline_sha256"],
-        "target_command": "run",
-    }
-
-
-def _worker_recovery_target(value: Mapping[str, Any]) -> Mapping[str, Any]:
-    return {
-        "target_pid": value["recovery_worker_pid"],
-        "target_process_start_time_ticks": value[
-            "recovery_worker_process_start_time_ticks"
-        ],
-        "target_boot_id_sha256": value["recovery_worker_boot_id_sha256"],
-        "target_boot_time_ns": value["recovery_worker_boot_time_ns"],
-        "target_uid": value["recovery_worker_uid"],
-        "target_gid": value["recovery_worker_gid"],
-        "target_module_origin": value["recovery_worker_module_origin"],
-        "target_module_sha256": value["recovery_worker_module_sha256"],
-        "target_process_exe_sha256": value["recovery_worker_process_exe_sha256"],
-        "target_process_cmdline_sha256": value[
-            "recovery_worker_process_cmdline_sha256"
-        ],
-        "target_command": "recover",
-    }
-
-
-def _target_public_identity(target: Mapping[str, Any]) -> Mapping[str, Any]:
-    return {
-        key: target[key]
-        for key in (
-            "target_pid",
-            "target_process_start_time_ticks",
-            "target_boot_id_sha256",
-            "target_boot_time_ns",
-            "target_uid",
-            "target_gid",
-            "target_module_origin",
-            "target_module_sha256",
-            "target_process_exe_sha256",
-            "target_process_cmdline_sha256",
-        )
-    }
-
-
-def _validate_recovery_target_public_fields(value: Mapping[str, Any]) -> None:
-    for name in (
-        "target_pid",
-        "target_process_start_time_ticks",
-        "target_boot_time_ns",
-        "target_uid",
-        "target_gid",
-    ):
-        if type(value.get(name)) is not int:
-            _fail("recovery_target_identity_invalid", phase="recovery_preflight")
-    if (
-        value["target_pid"] <= 1
-        or value["target_process_start_time_ticks"] <= 0
-        or value["target_boot_time_ns"] < 0
-        or value["target_uid"] != 0
-        or value["target_gid"] != 0
-        or not isinstance(value.get("target_module_origin"), str)
-        or not value["target_module_origin"]
-    ):
-        _fail("recovery_target_identity_invalid", phase="recovery_preflight")
-
-
-def _recovery_target_is_exactly_alive(
-    target: Mapping[str, Any],
-    *,
-    coordinator_input: CoordinatorInput,
-) -> bool:
-    current_boot_sha256, _boot_time_ns = boot_identity()
-    if current_boot_sha256 != target["target_boot_id_sha256"]:
-        return False
-    pid = target["target_pid"]
-    try:
-        observed_start = process_start_time_ticks(pid)
-    except (FileNotFoundError, ProcessLookupError):
-        return False
-    except (OSError, RuntimeError) as exc:
-        raise CoordinatorError(
-            "recovery_process_identity_observation_failed",
-            phase="recovery_process",
-        ) from exc
-    try:
-        owner = Path(f"/proc/{pid}").stat()
-    except (FileNotFoundError, ProcessLookupError):
-        return False
-    except OSError as exc:
-        raise CoordinatorError(
-            "recovery_process_identity_observation_failed",
-            phase="recovery_process",
-        ) from exc
-    if observed_start != target["target_process_start_time_ticks"]:
-        # PID reuse means the exact target is absent.  Never inspect or signal
-        # the replacement as the predecessor recovery process.
-        return False
-    if owner.st_uid != target["target_uid"] or owner.st_gid != target["target_gid"]:
-        _fail("recovery_process_identity_drifted", phase="recovery_process")
-    try:
-        stat_line = Path(f"/proc/{pid}/stat").read_text(encoding="ascii")
-        process_state = stat_line[stat_line.rfind(")") + 2 :].split(" ", 1)[0]
-    except (FileNotFoundError, ProcessLookupError):
-        return False
-    except (OSError, UnicodeError, ValueError, IndexError) as exc:
-        raise CoordinatorError(
-            "recovery_process_identity_observation_failed",
-            phase="recovery_process",
-        ) from exc
-    if re.fullmatch(r"[A-Z]", process_state) is None:
-        _fail(
-            "recovery_process_identity_observation_failed",
-            phase="recovery_process",
-        )
-    if process_state in {"Z", "X"}:
-        # The exact task has exited; an unreaped zombie must not be treated as
-        # an executable drift or signalled as a live recovery worker.
-        return False
-    try:
-        cmdline = Path(f"/proc/{pid}/cmdline").read_bytes()
-        expected = _expected_command_cmdline(
-            coordinator_input,
-            command=target["target_command"],
-        )
-        exe_sha256 = _process_executable_sha256(pid)
-    except (FileNotFoundError, ProcessLookupError):
-        return False
-    except OSError as exc:
-        raise CoordinatorError(
-            "recovery_process_identity_observation_failed",
-            phase="recovery_process",
-        ) from exc
-    if (
-        cmdline != expected
-        or _sha256_bytes(cmdline) != target["target_process_cmdline_sha256"]
-        or exe_sha256 != target["target_process_exe_sha256"]
-    ):
-        _fail(
-            "recovery_process_exec_identity_drifted",
-            phase="recovery_process",
-        )
-    return True
-
-
-def _open_exact_recovery_target_pidfd(
-    *,
-    coordinator_input: CoordinatorInput,
-    target: Mapping[str, Any],
-) -> int | None:
-    opener = getattr(os, "pidfd_open", None)
-    sender = getattr(signal, "pidfd_send_signal", None)
-    if not callable(opener) or not callable(sender):
-        _fail("recovery_pidfd_api_unavailable", phase="recovery_process")
-    try:
-        pidfd = opener(target["target_pid"], 0)
-    except ProcessLookupError:
-        return None
-    except OSError as exc:
-        raise CoordinatorError(
-            "recovery_pidfd_open_failed",
-            phase="recovery_process",
-        ) from exc
-    try:
-        if not _recovery_target_is_exactly_alive(
-            target,
-            coordinator_input=coordinator_input,
-        ):
-            os.close(pidfd)
-            return None
-        return pidfd
-    except BaseException:
-        os.close(pidfd)
-        raise
-
-
-def _terminate_exact_recovery_target(
-    *,
-    coordinator_input: CoordinatorInput,
-    target: Mapping[str, Any],
-) -> tuple[bool, bool]:
-    if target["target_pid"] == os.getpid():
-        _fail("recovery_process_identity_is_self", phase="recovery_process")
-    if not _recovery_target_is_exactly_alive(
-        target,
-        coordinator_input=coordinator_input,
-    ):
-        return False, True
-    pidfd = _open_exact_recovery_target_pidfd(
-        coordinator_input=coordinator_input,
-        target=target,
-    )
-    if pidfd is None:
-        return False, True
-    signal_attempted = False
-    pidfd_exit_proven = False
-    try:
-        signal_attempted = _pidfd_signal(
-            pidfd,
-            signal.SIGTERM,
-            code="recovery_process_sigterm_failed",
-        )
-        if _wait_for_pidfd_exit(
-            pidfd,
-            timeout_seconds=RECOVERY_PROCESS_TERM_SECONDS,
-        ):
-            pidfd_exit_proven = True
-        else:
-            if _recovery_target_is_exactly_alive(
-                target,
-                coordinator_input=coordinator_input,
-            ):
-                signal_attempted = (
-                    _pidfd_signal(
-                        pidfd,
-                        signal.SIGKILL,  # windows-footgun: ok
-                        code="recovery_process_sigkill_failed",
-                    )
-                    or signal_attempted
-                )
-                if not _wait_for_pidfd_exit(
-                    pidfd,
-                    timeout_seconds=RECOVERY_PROCESS_KILL_SECONDS,
-                ):
-                    _fail(
-                        "recovery_process_termination_unconfirmed",
-                        phase="recovery_process",
-                    )
-                pidfd_exit_proven = True
-    finally:
-        os.close(pidfd)
-    if not pidfd_exit_proven and _recovery_target_is_exactly_alive(
-        target,
-        coordinator_input=coordinator_input,
-    ):
-        _fail(
-            "recovery_process_termination_unconfirmed",
-            phase="recovery_process",
-        )
-    return signal_attempted, True
-
-
-def _open_recovery_process_lock(*, nonblocking: bool) -> int | None:
-    descriptor = os.open(
-        COORDINATOR_PROCESS_LOCK_PATH,
-        os.O_RDWR
-        | os.O_CREAT
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
-        0o600,
-    )
-    try:
-        item = os.fstat(descriptor)
-        if (
-            not stat.S_ISREG(item.st_mode)
-            or item.st_uid != 0
-            or item.st_gid != 0
-            or stat.S_IMODE(item.st_mode) != 0o600
-        ):
-            _fail("coordinator_process_lock_invalid", phase="recovery_process")
-        operation = fcntl.LOCK_EX | (fcntl.LOCK_NB if nonblocking else 0)
-        try:
-            fcntl.flock(descriptor, operation)
-        except BlockingIOError:
-            os.close(descriptor)
-            return None
-        return descriptor
-    except BaseException:
-        try:
-            os.close(descriptor)
-        except OSError:
-            pass
-        raise
-
-
-def _close_recovery_process_lock(descriptor: int) -> None:
-    if descriptor < 0:
-        return
-    try:
-        fcntl.flock(descriptor, fcntl.LOCK_UN)
-    finally:
-        os.close(descriptor)
-
-
-def _snapshot_is_exact(
-    expected: _RootFileSnapshot,
-    observed: _RootFileSnapshot | None,
-) -> bool:
-    return bool(
-        observed is not None
-        and observed.raw == expected.raw
-        and _same_file_identity(observed.item, expected.item)
-    )
-
-
-def _cas_recovery_journal(
-    *,
-    expected: _RootFileSnapshot,
-    value: Mapping[str, Any],
-) -> _RootPublication:
-    current = _capture_root_snapshot(
-        COORDINATOR_PROCESS_LEASE_PATH,
-        maximum=MAX_COORDINATOR_INPUT_BYTES,
-    )
-    if not _snapshot_is_exact(expected, current):
-        _fail("recovery_journal_cas_lost", phase="recovery_process")
-    return _publish_root_payload(
-        COORDINATOR_PROCESS_LEASE_PATH,
-        _canonical_bytes(value),
-        expected_previous_sha256=expected.sha256,
-    )
-
-
-@dataclass(frozen=True)
-class _RecoveryPredecessor:
-    kind: str
-    schema: str
-    generation: int
-    value: Mapping[str, Any]
-    snapshot: _RootFileSnapshot
-    original_run_lease: Mapping[str, Any]
-    causal_state: Mapping[str, Any]
-    target: Mapping[str, Any]
-
-
-def _load_recovery_predecessor(
-    coordinator_input: CoordinatorInput,
-) -> _RecoveryPredecessor:
-    snapshot = _capture_root_snapshot(
-        COORDINATOR_PROCESS_LEASE_PATH,
-        maximum=MAX_COORDINATOR_INPUT_BYTES,
-    )
-    if snapshot is None:
-        _fail(
-            "coordinator_process_recovery_not_required",
-            phase="recovery_preflight",
-        )
-    value = _decode_mapping(
-        snapshot.raw,
-        code="coordinator_process_journal_invalid",
-    )
-    schema = value.get("schema")
-    if schema == "muncho-full-canary-coordinator-process-lease.v1":
-        lease = _parse_process_lease(
-            value,
-            coordinator_input=coordinator_input,
-        )
-        return _RecoveryPredecessor(
-            kind="run_process_lease",
-            schema=str(schema),
-            generation=0,
-            value=lease,
-            snapshot=snapshot,
-            original_run_lease=lease,
-            causal_state=_observe_recovery_causal_state(coordinator_input),
-            target=_run_lease_recovery_target(lease),
-        )
-    if schema == RECOVERY_WORKER_LEASE_SCHEMA:
-        worker = _parse_recovery_worker_lease(
-            value,
-            coordinator_input=coordinator_input,
-        )
-        return _RecoveryPredecessor(
-            kind="recovery_worker_lease",
-            schema=str(schema),
-            generation=worker["recovery_generation"],
-            value=worker,
-            snapshot=snapshot,
-            original_run_lease=worker["original_run_process_lease"],
-            causal_state=worker["causal_recovery_state"],
-            target=_worker_recovery_target(worker),
-        )
-    if schema == RECOVERY_WORKER_COMPLETION_SCHEMA:
-        _parse_recovery_worker_completion(
-            value,
-            coordinator_input=coordinator_input,
-        )
-        _fail(
-            "recovery_completion_requires_finalization",
-            phase="recovery_preflight",
-        )
-    if schema == LEGACY_RECOVERY_RECEIPT_SCHEMA:
-        _parse_legacy_recovery_receipt(
-            value,
-            coordinator_input=coordinator_input,
-        )
-        _fail(
-            "legacy_recovery_receipt_reconciliation_required",
-            phase="recovery_preflight",
-        )
-    if schema == RECOVERY_RECEIPT_SCHEMA:
-        _parse_recovery_receipt_v2(value, coordinator_input=coordinator_input)
-        _fail(
-            "coordinator_process_recovery_not_required",
-            phase="recovery_preflight",
-        )
-    _fail("coordinator_process_journal_invalid", phase="recovery_preflight")
-
-
-def _parse_recovery_takeover_gate(
-    value: Any,
-    *,
-    coordinator_input: CoordinatorInput,
-) -> Mapping[str, Any]:
-    if not isinstance(value, Mapping) or set(value) != _RECOVERY_TAKEOVER_GATE_FIELDS:
-        _fail("recovery_takeover_gate_invalid", phase="recovery_preflight")
-    raw = copy.deepcopy(dict(value))
-    unsigned = {key: item for key, item in raw.items() if key != "gate_sha256"}
-    positive_pair = (
-        type(raw["token_device"]) is int
-        and raw["token_device"] > 0
-        and type(raw["token_inode"]) is int
-        and raw["token_inode"] > 0
-    )
-    null_pair = raw["token_device"] is None and raw["token_inode"] is None
-    if (
-        raw["schema"] != RECOVERY_TAKEOVER_GATE_SCHEMA
-        or raw["ok"] is not True
-        or raw["state"] != "awaiting_owner_recovery_takeover_ack"
-        or raw["release_sha"] != coordinator_input.revision
-        or raw["coordinator_input_sha256"] != coordinator_input.sha256
-        or not _recovery_predecessor_kind_schema_generation_valid(raw)
-        or type(raw["predecessor_generation"]) is not int
-        or raw["predecessor_generation"] < 0
-        or raw["target_process_identity_state"] not in {"exact_alive", "not_alive"}
-        or raw["discord_token_state"]
-        not in {"installed", "retirement_prepared", "retired"}
-        or (raw["discord_token_state"] == "installed" and not positive_pair)
-        or (
-            raw["discord_token_state"] != "installed"
-            and not (positive_pair or null_pair)
-        )
-        or raw["db_secret_accepted"] is not False
-        or raw["frame_schema"] != RECOVERY_ACK_FRAME_SCHEMA
-        or type(raw["observed_at_unix"]) is not int
-        or type(raw["expires_at_unix"]) is not int
-        or not 1
-        <= raw["expires_at_unix"] - raw["observed_at_unix"]
-        <= RECOVERY_GATE_MAX_SECONDS
-        or raw["gate_sha256"] != _sha256_json(unsigned)
-    ):
-        _fail("recovery_takeover_gate_invalid", phase="recovery_preflight")
-    for name in (
-        "credential_prepare_approval_sha256",
-        "owner_subject_sha256",
-        "predecessor_journal_sha256",
-        "original_run_process_lease_sha256",
-        "causal_recovery_state_sha256",
-        "target_boot_id_sha256",
-        "target_module_sha256",
-        "target_process_exe_sha256",
-        "target_process_cmdline_sha256",
-        "discord_token_install_receipt_sha256",
-    ):
-        _digest(raw[name], "recovery_takeover_gate_digest_invalid")
-    if raw["discord_retirement_receipt_sha256"] is not None:
-        _digest(
-            raw["discord_retirement_receipt_sha256"],
-            "recovery_takeover_gate_digest_invalid",
-        )
-    _validate_recovery_target_public_fields(raw)
-    return raw
-
-
-def recovery_gate(*, now_unix: int | None = None) -> Mapping[str, Any]:
-    """Return one no-secret owner gate for the exact current predecessor."""
-
-    _require_root_linux()
-    coordinator_input = load_coordinator_input()
-    predecessor = _load_recovery_predecessor(coordinator_input)
-    observed_at = int(time.time()) if now_unix is None else now_unix
-    if type(observed_at) is not int or observed_at < 0:
-        _fail("recovery_clock_invalid", phase="recovery_preflight")
-    target_alive = _recovery_target_is_exactly_alive(
-        predecessor.target,
-        coordinator_input=coordinator_input,
-    )
-    causal = predecessor.causal_state
-    unsigned = {
-        "schema": RECOVERY_TAKEOVER_GATE_SCHEMA,
-        "ok": True,
-        "state": "awaiting_owner_recovery_takeover_ack",
-        "release_sha": coordinator_input.revision,
-        "coordinator_input_sha256": coordinator_input.sha256,
-        "credential_prepare_approval_sha256": predecessor.original_run_lease[
-            "credential_prepare_approval_sha256"
-        ],
-        "owner_subject_sha256": predecessor.original_run_lease["owner_subject_sha256"],
-        "ephemeral_admin_username": predecessor.original_run_lease[
-            "ephemeral_admin_username"
-        ],
-        "predecessor_kind": predecessor.kind,
-        "predecessor_schema": predecessor.schema,
-        "predecessor_journal_sha256": predecessor.snapshot.sha256,
-        "predecessor_generation": predecessor.generation,
-        "original_run_process_lease_sha256": predecessor.original_run_lease[
-            "lease_sha256"
-        ],
-        "causal_recovery_state_sha256": causal["causal_state_sha256"],
-        **_target_public_identity(predecessor.target),
-        "target_process_identity_state": (
-            "exact_alive" if target_alive else "not_alive"
-        ),
-        "discord_token_state": causal["discord_token_state"],
-        "discord_token_install_receipt_sha256": causal[
-            "discord_token_install_receipt_sha256"
-        ],
-        "token_device": causal["token_device"],
-        "token_inode": causal["token_inode"],
-        "discord_retirement_receipt_sha256": causal[
-            "discord_retirement_receipt_sha256"
-        ],
-        "db_secret_accepted": False,
-        "frame_schema": RECOVERY_ACK_FRAME_SCHEMA,
-        "observed_at_unix": observed_at,
-        "expires_at_unix": observed_at + RECOVERY_GATE_MAX_SECONDS,
-    }
-    return _parse_recovery_takeover_gate(
-        {**unsigned, "gate_sha256": _sha256_json(unsigned)},
-        coordinator_input=coordinator_input,
-    )
-
-
-def _read_recovery_ack(
-    *,
-    gate: Mapping[str, Any],
-    fd: int = ADMIN_FRAME_FD,
-) -> Mapping[str, Any]:
-    """Read only MRA1; the SQL credential is a later gated frame."""
-
-    if fd != ADMIN_FRAME_FD:
-        _fail("recovery_ack_fd_not_fixed", phase="recovery_ack")
-    if os.isatty(fd):
-        _fail("recovery_ack_tty_forbidden", phase="recovery_ack")
-    header = _read_exact(fd, _ACK_FRAME_HEADER.size)
-    raw = bytearray()
-    try:
-        magic, size = _ACK_FRAME_HEADER.unpack(header)
-        if magic != RECOVERY_ACK_FRAME_MAGIC:
-            _fail("recovery_ack_magic_invalid", phase="recovery_ack")
-        if not 1 <= size <= MAX_OWNER_APPROVAL_BYTES:
-            _fail("recovery_ack_bound_invalid", phase="recovery_ack")
-        raw = _read_exact(fd, size)
-        value = _decode_mapping(bytes(raw), code="recovery_ack_json_invalid")
-    finally:
-        _zeroize(header)
-        _zeroize(raw)
-    if set(value) != _RECOVERY_TAKEOVER_ACK_FIELDS:
-        _fail("recovery_ack_fields_invalid", phase="recovery_ack")
-    unsigned = {key: item for key, item in value.items() if key != "ack_sha256"}
-    now_unix = int(time.time())
-    mirrored = {
-        "release_sha",
-        "coordinator_input_sha256",
-        "credential_prepare_approval_sha256",
-        "owner_subject_sha256",
-        "ephemeral_admin_username",
-        "predecessor_kind",
-        "predecessor_schema",
-        "predecessor_journal_sha256",
-        "predecessor_generation",
-        "original_run_process_lease_sha256",
-        "causal_recovery_state_sha256",
-        "target_pid",
-        "target_process_start_time_ticks",
-        "target_boot_id_sha256",
-        "target_boot_time_ns",
-        "target_uid",
-        "target_gid",
-        "target_module_origin",
-        "target_module_sha256",
-        "target_process_exe_sha256",
-        "target_process_cmdline_sha256",
-        "target_process_identity_state",
-        "discord_token_state",
-        "discord_token_install_receipt_sha256",
-        "token_device",
-        "token_inode",
-        "discord_retirement_receipt_sha256",
-    }
-    if (
-        value["schema"] != RECOVERY_TAKEOVER_ACK_SCHEMA
-        or value["scope"] != "terminate_exact_recovery_predecessor_and_claim_worker"
-        or value["recovery_takeover_gate_sha256"] != gate["gate_sha256"]
-        or any(value[name] != gate[name] for name in mirrored)
-        or type(value["approved_at_unix"]) is not int
-        or type(value["expires_at_unix"]) is not int
-        or not gate["observed_at_unix"]
-        <= value["approved_at_unix"]
-        <= now_unix
-        <= value["expires_at_unix"]
-        or not 1
-        <= value["expires_at_unix"] - value["approved_at_unix"]
-        <= RECOVERY_GATE_MAX_SECONDS
-        or value["expires_at_unix"] > gate["expires_at_unix"]
-        or value["ack_sha256"] != _sha256_json(unsigned)
-    ):
-        _fail("recovery_ack_not_bound", phase="recovery_ack")
-    _digest(value["nonce_sha256"], "recovery_ack_nonce_invalid")
-    return copy.deepcopy(dict(value))
-
-
-def _successor_worker_identity(
-    value: Mapping[str, Any],
-    *,
-    coordinator_input: CoordinatorInput,
-) -> tuple[Mapping[str, Any], int]:
-    schema = value.get("schema")
-    if schema == RECOVERY_WORKER_LEASE_SCHEMA:
-        parsed = _parse_recovery_worker_lease(
-            value,
-            coordinator_input=coordinator_input,
-        )
-    elif schema == RECOVERY_WORKER_COMPLETION_SCHEMA:
-        parsed = _parse_recovery_worker_completion(
-            value,
-            coordinator_input=coordinator_input,
-        )
-    elif schema == RECOVERY_RECEIPT_SCHEMA:
-        parsed = _parse_recovery_receipt_v2(
-            value,
-            coordinator_input=coordinator_input,
-        )
-    else:
-        _fail("recovery_worker_successor_invalid", phase="recovery_process")
-    return parsed, int(parsed["recovery_generation"])
-
-
-def _observe_concurrent_recovery_successor(
-    *,
-    coordinator_input: CoordinatorInput,
-    predecessor: _RecoveryPredecessor,
-) -> tuple[Mapping[str, Any], _RootFileSnapshot]:
-    deadline = time.monotonic() + RECOVERY_CONCURRENT_OBSERVE_SECONDS
-    while True:
-        snapshot = _capture_root_snapshot(
-            COORDINATOR_PROCESS_LEASE_PATH,
-            maximum=MAX_COORDINATOR_INPUT_BYTES,
-        )
-        if snapshot is not None and snapshot.sha256 != predecessor.snapshot.sha256:
-            value = _decode_mapping(
-                snapshot.raw,
-                code="recovery_worker_successor_invalid",
-            )
-            _successor_worker_identity(
-                value,
-                coordinator_input=coordinator_input,
-            )
-            return value, snapshot
-        if time.monotonic() >= deadline:
-            _fail(
-                "recovery_worker_claim_contended_unresolved",
-                phase="recovery_process",
-            )
-        time.sleep(0.01)
-
-
-def _build_recovery_concurrent_loser_receipt(
-    *,
-    coordinator_input: CoordinatorInput,
-    predecessor: _RecoveryPredecessor,
-    gate: Mapping[str, Any],
-    ack: Mapping[str, Any],
-    signal_attempted: bool,
-    target_termination_proven: bool,
-) -> Mapping[str, Any]:
-    successor, successor_snapshot = _observe_concurrent_recovery_successor(
-        coordinator_input=coordinator_input,
-        predecessor=predecessor,
-    )
-    parsed, generation = _successor_worker_identity(
-        successor,
-        coordinator_input=coordinator_input,
-    )
-    if (
-        parsed["release_sha"] != coordinator_input.revision
-        or parsed["coordinator_input_sha256"] != coordinator_input.sha256
-        or parsed["credential_prepare_approval_sha256"]
-        != gate["credential_prepare_approval_sha256"]
-        or parsed["owner_subject_sha256"] != gate["owner_subject_sha256"]
-        or parsed["original_run_process_lease_sha256"]
-        != gate["original_run_process_lease_sha256"]
-        or parsed["causal_recovery_state_sha256"]
-        != gate["causal_recovery_state_sha256"]
-        or generation <= predecessor.generation
-        or (
-            generation == predecessor.generation + 1
-            and parsed["predecessor_journal_sha256"] != predecessor.snapshot.sha256
-        )
-    ):
-        _fail("recovery_worker_successor_state_conflict", phase="recovery_process")
-    unsigned = {
-        "schema": RECOVERY_CONCURRENT_LOSER_RECEIPT_SCHEMA,
-        "ok": False,
-        "state": "recovery_worker_claim_lost_no_secret",
-        "release_sha": coordinator_input.revision,
-        "coordinator_input_sha256": coordinator_input.sha256,
-        "credential_prepare_approval_sha256": gate[
-            "credential_prepare_approval_sha256"
-        ],
-        "owner_subject_sha256": gate["owner_subject_sha256"],
-        "ephemeral_admin_username": gate["ephemeral_admin_username"],
-        "recovery_takeover_gate_sha256": gate["gate_sha256"],
-        "owner_recovery_takeover_ack_sha256": ack["ack_sha256"],
-        "predecessor_kind": predecessor.kind,
-        "predecessor_schema": predecessor.schema,
-        "predecessor_journal_sha256": predecessor.snapshot.sha256,
-        "predecessor_generation": predecessor.generation,
-        "original_run_process_lease_sha256": gate["original_run_process_lease_sha256"],
-        **_target_public_identity(predecessor.target),
-        "target_signal_attempted_by_loser": signal_attempted,
-        "target_termination_proven_by_loser": target_termination_proven,
-        "process_lock_acquired_by_loser": False,
-        "journal_cas_attempted_by_loser": False,
-        "journal_cas_succeeded_by_loser": False,
-        "observed_successor_schema": parsed["schema"],
-        "observed_successor_state": parsed["state"],
-        "observed_successor_journal_sha256": successor_snapshot.sha256,
-        "observed_successor_generation": generation,
-        "observed_successor_worker_pid": parsed["recovery_worker_pid"],
-        "observed_successor_worker_process_start_time_ticks": parsed[
-            "recovery_worker_process_start_time_ticks"
-        ],
-        "observed_successor_worker_boot_id_sha256": parsed[
-            "recovery_worker_boot_id_sha256"
-        ],
-        "observed_successor_worker_module_sha256": parsed[
-            "recovery_worker_module_sha256"
-        ],
-        "observed_successor_worker_process_exe_sha256": parsed[
-            "recovery_worker_process_exe_sha256"
-        ],
-        "observed_successor_worker_process_cmdline_sha256": parsed[
-            "recovery_worker_process_cmdline_sha256"
-        ],
-        "secret_gate_emitted_by_loser": False,
-        "admin_frame_bytes_received_by_loser": 0,
-        "admin_session_opened_by_loser": False,
-        "admin_credential_mutation_performed_by_loser": False,
-        "worker_lease_published_by_loser": False,
-        "retryable": True,
-        "completed_at_unix": int(time.time()),
-    }
-    return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
-
-
-@dataclass(frozen=True)
-class _RecoveryWorkerClaim:
-    lock_fd: int
-    predecessor: _RecoveryPredecessor
-    gate: Mapping[str, Any]
-    ack: Mapping[str, Any]
-    lease: Mapping[str, Any]
-    snapshot: _RootFileSnapshot
-
-
-def _claim_recovery_worker(
-    *,
-    coordinator_input: CoordinatorInput,
-    predecessor: _RecoveryPredecessor,
-    gate: Mapping[str, Any],
-    ack: Mapping[str, Any],
-) -> _RecoveryWorkerClaim | Mapping[str, Any]:
-    now_unix = int(time.time())
-    current = _capture_root_snapshot(
-        COORDINATOR_PROCESS_LEASE_PATH,
-        maximum=MAX_COORDINATOR_INPUT_BYTES,
-    )
-    if (
-        not _snapshot_is_exact(predecessor.snapshot, current)
-        or now_unix > gate["expires_at_unix"]
-        or now_unix > ack["expires_at_unix"]
-    ):
-        _fail("recovery_predecessor_drifted_before_signal", phase="recovery_process")
-    signal_attempted, termination_proven = _terminate_exact_recovery_target(
-        coordinator_input=coordinator_input,
-        target=predecessor.target,
-    )
-    lock_fd = _open_recovery_process_lock(nonblocking=True)
-    if lock_fd is None:
-        return _build_recovery_concurrent_loser_receipt(
-            coordinator_input=coordinator_input,
-            predecessor=predecessor,
-            gate=gate,
-            ack=ack,
-            signal_attempted=signal_attempted,
-            target_termination_proven=termination_proven,
-        )
-    try:
-        now_unix = int(time.time())
-        current = _capture_root_snapshot(
-            COORDINATOR_PROCESS_LEASE_PATH,
-            maximum=MAX_COORDINATOR_INPUT_BYTES,
-        )
-        if (
-            not _snapshot_is_exact(predecessor.snapshot, current)
-            or _recovery_target_is_exactly_alive(
-                predecessor.target,
-                coordinator_input=coordinator_input,
-            )
-            or now_unix > gate["expires_at_unix"]
-            or now_unix > ack["expires_at_unix"]
-        ):
-            _fail("recovery_predecessor_drifted_before_cas", phase="recovery_process")
-        identity = _current_recovery_worker_identity(coordinator_input)
-        unsigned = {
-            "schema": RECOVERY_WORKER_LEASE_SCHEMA,
-            "state": "claimed_awaiting_admin",
-            "release_sha": coordinator_input.revision,
-            "coordinator_input_sha256": coordinator_input.sha256,
-            "credential_prepare_approval_sha256": gate[
-                "credential_prepare_approval_sha256"
-            ],
-            "owner_subject_sha256": gate["owner_subject_sha256"],
-            "ephemeral_admin_username": gate["ephemeral_admin_username"],
-            "original_run_process_lease": copy.deepcopy(
-                dict(predecessor.original_run_lease)
-            ),
-            "original_run_process_lease_sha256": gate[
-                "original_run_process_lease_sha256"
-            ],
-            "causal_recovery_state": copy.deepcopy(dict(predecessor.causal_state)),
-            "causal_recovery_state_sha256": gate["causal_recovery_state_sha256"],
-            "predecessor_kind": predecessor.kind,
-            "predecessor_schema": predecessor.schema,
-            "predecessor_journal_sha256": predecessor.snapshot.sha256,
-            "predecessor_generation": predecessor.generation,
-            "recovery_generation": predecessor.generation + 1,
-            "transition_seq": 1,
-            "previous_transition_sha256": predecessor.snapshot.sha256,
-            "recovery_takeover_gate_sha256": gate["gate_sha256"],
-            "owner_recovery_takeover_ack_sha256": ack["ack_sha256"],
-            **identity,
-            "predecessor_termination_proven": termination_proven,
-            "predecessor_process_lock_acquired": True,
-            "predecessor_journal_replaced": True,
-            "claimed_at_unix": now_unix,
-            "updated_at_unix": now_unix,
-            "owner_authority_expires_at_unix": min(
-                gate["expires_at_unix"],
-                ack["expires_at_unix"],
-                now_unix + RECOVERY_WORKER_LEASE_MAX_SECONDS,
-            ),
-        }
-        lease = {
-            **unsigned,
-            "worker_lease_sha256": _sha256_json(unsigned),
-        }
-        publication = _cas_recovery_journal(
-            expected=predecessor.snapshot,
-            value=lease,
-        )
-        parsed = _parse_recovery_worker_lease(
-            lease,
-            coordinator_input=coordinator_input,
-        )
-        return _RecoveryWorkerClaim(
-            lock_fd=lock_fd,
-            predecessor=predecessor,
-            gate=gate,
-            ack=ack,
-            lease=parsed,
-            snapshot=publication.after,
-        )
-    except BaseException:
-        _close_recovery_process_lock(lock_fd)
-        raise
-
-
-def _transition_recovery_worker_to_admin_authority(
-    *,
-    coordinator_input: CoordinatorInput,
-    claim: _RecoveryWorkerClaim,
-) -> _RecoveryWorkerClaim:
-    current_identity = _current_recovery_worker_identity(coordinator_input)
-    if any(
-        current_identity[name] != claim.lease[name]
-        for name in _RECOVERY_WORKER_IDENTITY_FIELDS
-    ):
-        _fail("recovery_worker_identity_drifted", phase="recovery_process")
-    now_unix = int(time.time())
-    if now_unix > claim.lease["owner_authority_expires_at_unix"]:
-        _fail("recovery_owner_authority_expired", phase="recovery_secret_gate")
-    unsigned = {
-        **{
-            key: copy.deepcopy(item)
-            for key, item in claim.lease.items()
-            if key
-            not in {
-                "state",
-                "transition_seq",
-                "previous_transition_sha256",
-                "updated_at_unix",
-                "worker_lease_sha256",
-            }
-        },
-        "state": "admin_authority_may_be_in_use",
-        "transition_seq": 2,
-        "previous_transition_sha256": claim.snapshot.sha256,
-        "updated_at_unix": now_unix,
-    }
-    lease = {**unsigned, "worker_lease_sha256": _sha256_json(unsigned)}
-    publication = _cas_recovery_journal(
-        expected=claim.snapshot,
-        value=lease,
-    )
-    return _RecoveryWorkerClaim(
-        lock_fd=claim.lock_fd,
-        predecessor=claim.predecessor,
-        gate=claim.gate,
-        ack=claim.ack,
-        lease=_parse_recovery_worker_lease(
-            lease,
-            coordinator_input=coordinator_input,
-        ),
-        snapshot=publication.after,
-    )
-
-
-def _build_recovery_secret_gate(
-    *,
-    coordinator_input: CoordinatorInput,
-    claim: _RecoveryWorkerClaim,
-) -> Mapping[str, Any]:
-    if (
-        claim.lease["state"] != "admin_authority_may_be_in_use"
-        or claim.lease["transition_seq"] != 2
-    ):
-        _fail("recovery_secret_gate_worker_phase_invalid", phase="recovery_secret_gate")
-    now_unix = int(time.time())
-    expires_at = min(
-        claim.gate["expires_at_unix"],
-        claim.ack["expires_at_unix"],
-        claim.lease["owner_authority_expires_at_unix"],
-    )
-    if now_unix > expires_at:
-        _fail("recovery_secret_gate_expired", phase="recovery_secret_gate")
-    unsigned = {
-        "schema": RECOVERY_SECRET_GATE_SCHEMA,
-        "ok": True,
-        "state": "awaiting_recovery_admin_credential",
-        "release_sha": coordinator_input.revision,
-        "coordinator_input_sha256": coordinator_input.sha256,
-        "credential_prepare_approval_sha256": claim.lease[
-            "credential_prepare_approval_sha256"
-        ],
-        "owner_subject_sha256": claim.lease["owner_subject_sha256"],
-        "ephemeral_admin_username": claim.lease["ephemeral_admin_username"],
-        "recovery_takeover_gate_sha256": claim.gate["gate_sha256"],
-        "owner_recovery_takeover_ack_sha256": claim.ack["ack_sha256"],
-        "predecessor_kind": claim.lease["predecessor_kind"],
-        "predecessor_journal_sha256": claim.lease["predecessor_journal_sha256"],
-        "predecessor_generation": claim.lease["predecessor_generation"],
-        "original_run_process_lease_sha256": claim.lease[
-            "original_run_process_lease_sha256"
-        ],
-        "causal_recovery_state_sha256": claim.lease["causal_recovery_state_sha256"],
-        "recovery_worker_lease_sha256": claim.lease["worker_lease_sha256"],
-        "recovery_worker_state": claim.lease["state"],
-        "recovery_worker_transition_seq": claim.lease["transition_seq"],
-        **{name: claim.lease[name] for name in _RECOVERY_WORKER_IDENTITY_FIELDS},
-        "database_host": CANARY_DATABASE_HOST,
-        "database_port": CANARY_DATABASE_PORT,
-        "database_name": CANARY_DATABASE_NAME,
-        "tls_server_name": coordinator_input.tls_server_name,
-        "tls_peer_certificate_sha256": (coordinator_input.tls_peer_certificate_sha256),
-        "admin_frame_schema": RECOVERY_ADMIN_FRAME_SCHEMA,
-        "gate_nonce_sha256": _sha256_bytes(secrets.token_bytes(32)),
-        "expires_at_unix": expires_at,
-    }
-    gate = {**unsigned, "gate_sha256": _sha256_json(unsigned)}
-    if set(gate) != _RECOVERY_SECRET_GATE_FIELDS:
-        _fail("recovery_secret_gate_fields_invalid", phase="recovery_secret_gate")
-    return gate
-
-
-def _revalidate_recovery_worker_snapshot(
-    *,
-    coordinator_input: CoordinatorInput,
-    claim: _RecoveryWorkerClaim,
-) -> None:
-    current = _capture_root_snapshot(
-        COORDINATOR_PROCESS_LEASE_PATH,
-        maximum=MAX_COORDINATOR_INPUT_BYTES,
-    )
-    if not _snapshot_is_exact(claim.snapshot, current):
-        _fail("recovery_worker_lease_drifted", phase="recovery_process")
-    parsed = _parse_recovery_worker_lease(
-        _decode_mapping(current.raw, code="recovery_worker_lease_invalid"),
-        coordinator_input=coordinator_input,
-    )
-    if parsed != claim.lease:
-        _fail("recovery_worker_lease_drifted", phase="recovery_process")
-    identity = _current_recovery_worker_identity(coordinator_input)
-    if any(
-        identity[name] != claim.lease[name] for name in _RECOVERY_WORKER_IDENTITY_FIELDS
-    ):
-        _fail("recovery_worker_identity_drifted", phase="recovery_process")
-
-
-class _DeferredRecoveryAdminClose:
-    """Let sealed SQL finish while retaining the session for login disable."""
-
-    def __init__(self, session: VerifiedTLSBootstrapAdminSession) -> None:
-        self._session = session
-        self.closed = False
-
-    def query(self, sql: str, *, maximum_rows: int) -> Any:
-        if self.closed:
-            _fail("recovery_reconciliation_session_closed")
-        return self._session.query(sql, maximum_rows=maximum_rows)
-
-    def close(self) -> None:
-        self.closed = True
-
-
-def _reconcile_bootstrap_authority_for_recovery(
-    *,
-    plan: FullCanaryPlan,
-    admin_session: VerifiedTLSBootstrapAdminSession,
-) -> BootstrapReconciliationEvidence:
-    """Replay only the sealed retirement SQL on a verified recovery session."""
-
-    try:
-        approval = load_full_canary_approval()
-        writer_raw = _validate_artifact_source(
-            plan.artifacts["writer_config"],
-            label="writer_config",
-        )
-        writer_config = _validate_writer_config(
-            writer_raw,
-            plan.identities,
-            plan=plan,
-            expected_approval_source_sha256=str(
-                approval.value["approval_source_sha256"]
-            ),
-            require_fresh_canary_scope=False,
-        )
-        request = _build_canary_bootstrap_provisioning_request(
-            plan,
-            approval,
-            writer_config,
-        )
-        deferred = _DeferredRecoveryAdminClose(admin_session)
-        provisioner = PreopenedSessionBootstrapProvisioner(
-            deferred,
-            tls_peer_certificate_sha256=(admin_session.tls_peer_certificate_sha256),
-        )
-        raw_reconciliation = provisioner.reconcile(request, None)
-        if not deferred.closed:
-            _fail(
-                "recovery_reconciliation_session_fence_missing",
-                phase="recovery_database_cleanup",
-            )
-        reconciliation = _validate_canary_bootstrap_reconciliation_receipt(
-            raw_reconciliation,
-            request=request,
-            provisioning_receipt=None,
-            approval=approval,
-            expected_session_continuity="recovery_session",
-        )
-        return persist_bootstrap_evidence_envelope(
-            plan,
-            validated_bootstrap_reconciliation_evidence(
-                plan=plan,
-                approval=approval,
-                request=request,
-                provisioning_receipt=None,
-                reconciliation_receipt=reconciliation,
-                expected_session_continuity="recovery_session",
-            ),
-        )
-    except CoordinatorError:
-        raise
-    except BaseException as exc:
-        raise CoordinatorCleanupBlocked(
-            "bootstrap_sql_reconciliation_blocked",
-            phase="recovery_database_cleanup",
-        ) from exc
-
-
-def _load_or_reconcile_bootstrap_authority(
-    *,
-    plan: FullCanaryPlan,
-    admin_session: VerifiedTLSBootstrapAdminSession,
-) -> BootstrapReconciliationEvidence:
-    try:
-        return load_bootstrap_evidence_envelope(plan)
-    except BootstrapEvidenceUnavailable:
-        return _reconcile_bootstrap_authority_for_recovery(
-            plan=plan,
-            admin_session=admin_session,
-        )
-
-
-@dataclass(frozen=True)
-class _MechanicalStopAttempt:
-    prior_preclaim_generation: tuple[int, ...] | None
-    stopped: tuple[str, ...]
-    errors: tuple[BaseException, ...] | BaseException | None = ()
-
-    def __post_init__(self) -> None:
-        if self.errors is None:
-            object.__setattr__(self, "errors", ())
-        elif isinstance(self.errors, BaseException):
-            object.__setattr__(self, "errors", (self.errors,))
-        elif not isinstance(self.errors, tuple) or any(
-            not isinstance(item, BaseException) for item in self.errors
-        ):
-            raise TypeError("mechanical stop errors are invalid")
-
-    @property
-    def error(self) -> BaseException | None:
-        errors = self.errors
-        assert isinstance(errors, tuple)
-        if not errors:
-            return None
-        if len(errors) == 1:
-            return errors[0]
-        return BaseExceptionGroup(
-            "preclaim observation and mechanical reverse stop failed",
-            list(errors),
-        )
-
-
-def _attempt_mechanical_reverse_stop() -> _MechanicalStopAttempt:
-    errors: list[BaseException] = []
-    prior: tuple[int, ...] | None = None
-    try:
-        stopped = mechanically_stop_full_canary_services()
-    except BaseException as exc:
-        errors.append(exc)
-        stopped = ()
-    try:
-        prior = observe_canary_preclaim_reconciliation_generation()
-    except BaseException as exc:
-        errors.append(exc)
-    return _MechanicalStopAttempt(prior, stopped, tuple(errors))
-
-
-def _raise_preserving_cleanup_errors(
-    label: str,
-    errors: Sequence[BaseException],
-) -> None:
-    if not errors:
-        return
-    if len(errors) == 1:
-        raise errors[0]
-    raise BaseExceptionGroup(label, list(errors))
-
-
-def _perform_recovery_cleanup(
-    *,
-    coordinator_input: CoordinatorInput,
-    original_run_lease: Mapping[str, Any],
-    causal_state: Mapping[str, Any],
-    admin_session: VerifiedTLSBootstrapAdminSession,
-) -> Mapping[str, Any]:
-    # Fixed mechanical reverse-stop is the first recovery action.  Neither a
-    # plan/evidence snapshot nor a failing preclaim observation may delay it.
-    mechanical = _attempt_mechanical_reverse_stop()
-    cleanup_errors: list[BaseException] = list(mechanical.errors)
-    runtime_snapshot: _RootFileSnapshot | None = None
-    staged_snapshot: _RootFileSnapshot | None = None
-    snapshot_failed = False
-    for path, target in (
-        (DEFAULT_PLAN_PATH, "runtime"),
-        (DEFAULT_STAGED_PLAN_PATH, "staged"),
-    ):
-        try:
-            captured = _capture_root_snapshot(path)
-            if target == "runtime":
-                runtime_snapshot = captured
-            else:
-                staged_snapshot = captured
-        except BaseException as exc:
-            snapshot_failed = True
-            cleanup_errors.append(exc)
-    canonical_stop_sha256: str | None = None
-    preplan_report_sha256: str | None = None
-    preclaim_sha256: str | None = None
-    preclaim_state: str | None = None
-    plan: FullCanaryPlan | None = None
-    staged_plan: FullCanaryPlan | None = None
-    plan_load_failed = False
-    bootstrap_reconciliation: BootstrapReconciliationEvidence | None = None
-    never_authorized_evidence: BootstrapNeverAuthorizedEvidence | None = None
-    staged_never_authorized = False
-    if not snapshot_failed and runtime_snapshot is not None:
-        try:
-            plan = load_full_canary_plan()
-            if plan.revision != coordinator_input.revision:
-                raise CoordinatorError(
-                    "recovery_runtime_plan_drifted",
-                    phase="recovery_lifecycle",
-                )
-        except BaseException as exc:
-            plan_load_failed = True
-            cleanup_errors.append(exc)
-        if staged_snapshot is not None:
-            try:
-                staged_plan = _load_staged_plan_for_recovery(
-                    staged_snapshot,
-                    coordinator_input=coordinator_input,
-                )
-            except BaseException as exc:
-                plan_load_failed = True
-                cleanup_errors.append(exc)
-        if (
-            plan is not None
-            and staged_snapshot is not None
-            and staged_plan is not None
-            and staged_plan.to_mapping() != plan.to_mapping()
-        ):
-            plan_load_failed = True
-            cleanup_errors.append(
-                CoordinatorError(
-                    "recovery_plan_pair_drifted",
-                    phase="recovery_lifecycle",
-                )
-            )
-        if plan is not None and not plan_load_failed:
-            try:
-                bootstrap_reconciliation = _load_or_reconcile_bootstrap_authority(
-                    plan=plan,
-                    admin_session=admin_session,
-                )
-            except BaseException as exc:
-                cleanup_errors.append(exc)
-    elif not snapshot_failed and staged_snapshot is not None:
-        try:
-            plan = _load_staged_plan_for_recovery(
-                staged_snapshot,
-                coordinator_input=coordinator_input,
-            )
-        except BaseException as exc:
-            plan_load_failed = True
-            cleanup_errors.append(exc)
-        if plan is not None and not os.path.lexists(DEFAULT_APPROVAL_PATH):
-            try:
-                never_authorized_evidence = (
-                    load_bootstrap_never_authorized_evidence(plan)
-                )
-            except FileNotFoundError:
-                try:
-                    bootstrap_reconciliation = (
-                        load_bootstrap_evidence_envelope(plan)
-                    )
-                except BootstrapEvidenceUnavailable:
-                    staged_never_authorized = True
-                except BaseException as exc:
-                    cleanup_errors.append(exc)
-            except BaseException as exc:
-                cleanup_errors.append(exc)
-            else:
-                staged_never_authorized = True
-                try:
-                    load_bootstrap_evidence_envelope(plan)
-                except BootstrapEvidenceUnavailable:
-                    pass
-                else:
-                    cleanup_errors.append(
-                        CoordinatorCleanupBlocked(
-                            "recovery_never_authorized_evidence_conflicts",
-                            phase="recovery_database_cleanup",
-                        )
-                    )
-        elif plan is not None:
-            try:
-                bootstrap_reconciliation = (
-                    _load_or_reconcile_bootstrap_authority(
-                        plan=plan,
-                        admin_session=admin_session,
-                    )
-                )
-            except BaseException as exc:
-                cleanup_errors.append(exc)
-        if (
-            plan is not None
-            and
-            bootstrap_reconciliation is not None
-            and bootstrap_reconciliation.outcome
-            not in {"not_authorized", "retired"}
-        ):
-            cleanup_errors.append(
-                CoordinatorCleanupBlocked(
-                    "recovery_staged_bootstrap_outcome_invalid",
-                    phase="recovery_database_cleanup",
-                )
-            )
-
-    database_disabled = never_authorized_evidence is not None
-    if not database_disabled:
-        try:
-            database_cleanup = admin_session.query(
-                _BOOTSTRAP_ROLE_DISABLE_SQL,
-                maximum_rows=0,
-            )
-            _require_recovery_do_result(
-                database_cleanup,
-                code="recovery_database_cleanup_unconfirmed",
-            )
-            database_disabled = True
-        except BaseException as exc:
-            cleanup_errors.append(exc)
-    try:
-        if os.path.lexists(CANARY_BOOTSTRAP_CREDENTIAL_PATH):
-            bootstrap_item = _validate_secret_metadata(
-                CANARY_BOOTSTRAP_CREDENTIAL_PATH,
-                uid=coordinator_input.identities.writer_uid,
-                gid=coordinator_input.identities.writer_gid,
-                maximum=MAX_ADMIN_PASSWORD_BYTES,
-            )
-            _remove_exact_secret(
-                CANARY_BOOTSTRAP_CREDENTIAL_PATH,
-                bootstrap_item,
-                state=_SecretRemovalState(),
-            )
-    except BaseException as exc:
-        cleanup_errors.append(exc)
-    try:
-        admin_session.close()
-    except BaseException as exc:
-        cleanup_errors.append(exc)
-
-    # Unknown snapshot/plan truth cannot authorize any semantic artifact
-    # mutation.  The fixed stop, database disable, exact credential removal,
-    # and admin close above are still attempted and every error is retained.
-    if snapshot_failed or plan_load_failed:
-        _raise_preserving_cleanup_errors(
-            "recovery snapshot/plan and mechanical cleanup failed",
-            cleanup_errors,
-        )
-
-    if plan is not None:
-        if (
-            staged_never_authorized
-            and not cleanup_errors
-            and database_disabled
-            and not os.path.lexists(CANARY_BOOTSTRAP_CREDENTIAL_PATH)
-        ):
-            try:
-                if never_authorized_evidence is None:
-                    preclaim = mechanically_reconcile_never_authorized_preclaim(
-                        plan,
-                        prior_generation=(
-                            mechanical.prior_preclaim_generation
-                        ),
-                    )
-                    never_authorized_evidence = (
-                        persist_bootstrap_never_authorized_evidence(
-                            plan,
-                            staged_plan_file_sha256=staged_snapshot.sha256,
-                            bootstrap_login_disabled=True,
-                            stopped=mechanical.stopped,
-                            preclaim_reconciliation=preclaim,
-                        )
-                    )
-                else:
-                    if (
-                        never_authorized_evidence.value[
-                            "staged_plan_file_sha256"
-                        ]
-                        != staged_snapshot.sha256
-                        or never_authorized_evidence.value[
-                            "mechanical_stop_order"
-                        ]
-                        != list(mechanical.stopped)
-                    ):
-                        _fail(
-                            "recovery_never_authorized_evidence_drifted",
-                            phase="recovery_database_cleanup",
-                        )
-                    preclaim = never_authorized_evidence.value[
-                        "preclaim_reconciliation"
-                    ]
-                canonical_stop_sha256 = (
-                    never_authorized_evidence.value["receipt_sha256"]
-                )
-                preclaim_sha256 = preclaim["receipt_sha256"]
-                preclaim_state = preclaim["result"]["outcome"]
-            except BaseException as exc:
-                cleanup_errors.append(exc)
-        elif bootstrap_reconciliation is not None and not cleanup_errors:
-            try:
-                stop_receipt = FullCanaryLifecycle(
-                    plan,
-                    bootstrap_reconciliation_evidence=(
-                        bootstrap_reconciliation
-                    ),
-                ).attest_stopped_after_mechanical_stop(
-                    reason="operator_requested",
-                    stopped=mechanical.stopped,
-                    prior_generation=mechanical.prior_preclaim_generation,
-                )
-                (
-                    canonical_stop_sha256,
-                    preclaim_sha256,
-                    preclaim_state,
-                ) = _validate_recovery_stop_receipt(
-                    stop_receipt,
-                    plan=plan,
-                    expected_bootstrap_reconciliation=(
-                        bootstrap_reconciliation
-                    ),
-                )
-            except BaseException as exc:
-                cleanup_errors.append(exc)
-        elif not cleanup_errors:
-            cleanup_errors.append(
-                CoordinatorCleanupBlocked(
-                    "recovery_bootstrap_reconciliation_missing",
-                    phase="recovery_database_cleanup",
-                )
-            )
-        _raise_preserving_cleanup_errors(
-            "recovery stop/evidence cleanup failed",
-            cleanup_errors,
-        )
-        if runtime_snapshot is None:
-            _remove_recovery_root_artifact(DEFAULT_STAGED_PLAN_PATH)
-            _remove_recovery_writer_artifact(
-                coordinator_input.identities.writer_gid
-            )
-    else:
-        _raise_preserving_cleanup_errors(
-            "preplan mechanical/database cleanup failed",
-            cleanup_errors,
-        )
-        if not _services_are_exactly_stopped_and_disabled():
-            _fail(
-                "recovery_preplan_services_not_stopped",
-                phase="recovery_lifecycle",
-            )
-        _remove_recovery_writer_artifact(coordinator_input.identities.writer_gid)
-        _remove_recovery_root_artifact(OWNER_APPROVAL_REQUEST_PATH)
-        report = _publish_preplan_stopped_report(
-            coordinator_input=coordinator_input,
-            lease=original_run_lease,
-        )
-        preplan_report_sha256 = str(report["report_sha256"])
-    _remove_recovery_root_artifact(OWNER_APPROVAL_REQUEST_PATH)
-
-    install_receipt, installed, install_snapshot = _recovery_discord_retirement_inputs(
-        coordinator_input=coordinator_input,
-        gate=causal_state,
-    )
-    retirement = _retire_discord_token_lease(
-        coordinator_input=coordinator_input,
-        install_receipt=install_receipt,
-        installed=installed,
-        install_snapshot=install_snapshot,
-    )
-    if (
-        retirement["state"] != "retired"
-        or retirement["discord_token_install_receipt_sha256"]
-        != causal_state["discord_token_install_receipt_sha256"]
-        or retirement["token_device"] != causal_state["token_device"]
-        or retirement["token_inode"] != causal_state["token_inode"]
-        or not _services_are_exactly_stopped_and_disabled()
-        or any(
-            os.path.lexists(path)
-            for path in (
-                DISCORD_TOKEN_PATH,
-                DISCORD_TOKEN_STAGE_PATH,
-                DISCORD_TOKEN_INSTALL_RECEIPT_PATH,
-                CANARY_BOOTSTRAP_CREDENTIAL_PATH,
-            )
-        )
-        or not admin_session.closed
-    ):
-        _fail("recovery_terminal_truth_unconfirmed", phase="recovery_terminal")
-    return {
-        "canonical_stop_receipt_sha256": canonical_stop_sha256,
-        "preplan_stopped_report_sha256": preplan_report_sha256,
-        "preclaim_reconciliation_receipt_sha256": preclaim_sha256,
-        "preclaim_reconciliation_state": preclaim_state,
-        "admin_frame_zeroized": True,
-        "admin_session_closed": True,
-        "migration_owner_membership_removed": True,
-        "bootstrap_login_password_disabled": True,
-        "bootstrap_credential_removed": True,
-        "discord_token_removed": True,
-        "discord_install_receipt_removed": True,
-        "discord_retirement_receipt_sha256": retirement["receipt_sha256"],
-        "services_stopped_proven": True,
-        "services_enabled": False,
-    }
-
-
-def _publish_recovery_worker_completion(
-    *,
-    coordinator_input: CoordinatorInput,
-    claim: _RecoveryWorkerClaim,
-    cleanup: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    if set(cleanup) != _RECOVERY_CLEANUP_FIELDS:
-        _fail("recovery_cleanup_fields_invalid", phase="recovery_terminal")
-    _revalidate_recovery_worker_snapshot(
-        coordinator_input=coordinator_input,
-        claim=claim,
-    )
-    unsigned = {
-        "schema": RECOVERY_WORKER_COMPLETION_SCHEMA,
-        "ok": False,
-        "state": "cleanup_complete_awaiting_worker_exit",
-        "release_sha": coordinator_input.revision,
-        "coordinator_input_sha256": coordinator_input.sha256,
-        "credential_prepare_approval_sha256": claim.lease[
-            "credential_prepare_approval_sha256"
-        ],
-        "owner_subject_sha256": claim.lease["owner_subject_sha256"],
-        "ephemeral_admin_username": claim.lease["ephemeral_admin_username"],
-        "original_run_process_lease": copy.deepcopy(
-            dict(claim.lease["original_run_process_lease"])
-        ),
-        "original_run_process_lease_sha256": claim.lease[
-            "original_run_process_lease_sha256"
-        ],
-        "causal_recovery_state_sha256": claim.lease["causal_recovery_state_sha256"],
-        "predecessor_kind": claim.lease["predecessor_kind"],
-        "predecessor_journal_sha256": claim.lease["predecessor_journal_sha256"],
-        "predecessor_generation": claim.lease["predecessor_generation"],
-        "recovery_generation": claim.lease["recovery_generation"],
-        "recovery_takeover_gate_sha256": claim.lease["recovery_takeover_gate_sha256"],
-        "owner_recovery_takeover_ack_sha256": claim.lease[
-            "owner_recovery_takeover_ack_sha256"
-        ],
-        "recovery_worker_lease_sha256": claim.lease["worker_lease_sha256"],
-        **{name: claim.lease[name] for name in _RECOVERY_WORKER_IDENTITY_FIELDS},
-        "predecessor_termination_proven": claim.lease["predecessor_termination_proven"],
-        "predecessor_process_lock_acquired": claim.lease[
-            "predecessor_process_lock_acquired"
-        ],
-        "predecessor_journal_replaced": claim.lease["predecessor_journal_replaced"],
-        **copy.deepcopy(dict(cleanup)),
-        "recovery_worker_exit_proven": False,
-        "safe_to_delete_temporary_admin": False,
-        "cleanup_completed_at_unix": int(time.time()),
-    }
-    completion = {
-        **unsigned,
-        "completion_sha256": _sha256_json(unsigned),
-    }
-    parsed = _parse_recovery_worker_completion(
-        completion,
-        coordinator_input=coordinator_input,
-    )
-    _cas_recovery_journal(expected=claim.snapshot, value=parsed)
-    return parsed
-
-
-def _read_recovery_admin_frame(
-    *,
-    expected_username: str,
-    expected_gate_sha256: str,
-    expected_gate_nonce_sha256: str,
-    fd: int = ADMIN_FRAME_FD,
-) -> OpaqueStdinAdminFrame:
-    """Read MRC2 bound to the just-emitted unpredictable stage-two gate."""
-
-    if fd != ADMIN_FRAME_FD:
-        _fail("recovery_admin_frame_fd_not_fixed", phase="credential_read")
-    if os.isatty(fd):
-        _fail("recovery_admin_frame_tty_forbidden", phase="credential_read")
-    expected_gate = bytes.fromhex(
-        _digest(expected_gate_sha256, "recovery_secret_gate_digest_invalid")
-    )
-    expected_nonce = bytes.fromhex(
-        _digest(expected_gate_nonce_sha256, "recovery_secret_nonce_digest_invalid")
-    )
-    magic_raw = _read_exact(fd, 4)
-    if bytes(magic_raw) != RECOVERY_ADMIN_FRAME_MAGIC:
-        _zeroize(magic_raw)
-        _fail("recovery_admin_frame_magic_invalid", phase="credential_read")
-    header_tail = bytearray()
-    username_raw: bytearray | None = None
-    password_raw: bytearray | None = None
-    try:
-        (
-            gate_raw,
-            nonce_raw,
-            username_size,
-            password_size,
-        ) = _RECOVERY_ADMIN_FRAME_TAIL.unpack(
-            header_tail := _read_exact(fd, _RECOVERY_ADMIN_FRAME_TAIL.size)
-        )
-        if gate_raw != expected_gate or nonce_raw != expected_nonce:
-            _fail("recovery_admin_frame_gate_not_bound", phase="credential_read")
-        if not 1 <= username_size <= MAX_ADMIN_USERNAME_BYTES:
-            _fail("admin_frame_username_bound_invalid", phase="credential_read")
-        if not MIN_ADMIN_PASSWORD_BYTES <= password_size <= MAX_ADMIN_PASSWORD_BYTES:
-            _fail("admin_frame_password_bound_invalid", phase="credential_read")
-        username_raw = _read_exact(fd, username_size)
-        password_raw = _read_exact(fd, password_size)
-        try:
-            username = username_raw.decode("utf-8", errors="strict")
-            password_text = password_raw.decode("utf-8", errors="strict")
-        except UnicodeDecodeError as exc:
-            raise CoordinatorError(
-                "admin_frame_utf8_invalid",
-                phase="credential_read",
-            ) from exc
-        if (
-            username != expected_username
-            or _ADMIN_USERNAME_RE.fullmatch(username) is None
-        ):
-            _fail("admin_frame_username_mismatch", phase="credential_read")
-        if (
-            password_text != password_text.strip()
-            or any(
-                ord(character) < 32 or ord(character) == 127
-                for character in password_text
-            )
-            or "\x00" in password_text
-        ):
-            _fail("admin_frame_password_invalid", phase="credential_read")
-        try:
-            trailing = os.read(fd, 1)
-        except OSError as exc:
-            raise CoordinatorError(
-                "admin_frame_eof_check_failed",
-                phase="credential_read",
-            ) from exc
-        if trailing:
-            _fail("admin_frame_trailing_data", phase="credential_read")
-        password_text = ""
-        result_password = password_raw
-        password_raw = None
-        return OpaqueStdinAdminFrame(
-            username=username,
-            password=result_password,
-        )
-    finally:
-        _zeroize(magic_raw)
-        _zeroize(header_tail)
-        _zeroize(username_raw)
-        _zeroize(password_raw)
-
-
-def recover_full_canary(
-    *,
-    gate_emitter: Callable[[Mapping[str, Any]], None],
-    ack_reader: Callable[..., Mapping[str, Any]] = _read_recovery_ack,
-    admin_frame_reader: Callable[..., OpaqueStdinAdminFrame] = (
-        _read_recovery_admin_frame
-    ),
-    admin_session_opener: Callable[..., VerifiedTLSBootstrapAdminSession] = (
-        VerifiedTLSBootstrapAdminSession.open
-    ),
-) -> Mapping[str, Any]:
-    """Run the two-stage no-secret claim then exact recovery worker cleanup."""
-
-    _harden_secret_process()
-    coordinator_input = load_coordinator_input()
-    predecessor = _load_recovery_predecessor(coordinator_input)
-    gate = recovery_gate()
-    if (
-        gate["predecessor_journal_sha256"] != predecessor.snapshot.sha256
-        or gate["predecessor_kind"] != predecessor.kind
-    ):
-        _fail("recovery_gate_predecessor_drifted", phase="recovery_preflight")
-    gate_emitter(gate)
-    ack = ack_reader(gate=gate)
-    claim_or_loser = _claim_recovery_worker(
-        coordinator_input=coordinator_input,
-        predecessor=predecessor,
-        gate=gate,
-        ack=ack,
-    )
-    if isinstance(claim_or_loser, Mapping):
-        return claim_or_loser
-    claim = claim_or_loser
-    admin_frame: OpaqueStdinAdminFrame | None = None
-    admin_session: VerifiedTLSBootstrapAdminSession | None = None
-    try:
-        claim = _transition_recovery_worker_to_admin_authority(
-            coordinator_input=coordinator_input,
-            claim=claim,
-        )
-        _revalidate_recovery_worker_snapshot(
-            coordinator_input=coordinator_input,
-            claim=claim,
-        )
-        secret_gate = _build_recovery_secret_gate(
-            coordinator_input=coordinator_input,
-            claim=claim,
-        )
-        gate_emitter(secret_gate)
-        admin_frame = admin_frame_reader(
-            expected_username=secret_gate["ephemeral_admin_username"],
-            expected_gate_sha256=secret_gate["gate_sha256"],
-            expected_gate_nonce_sha256=secret_gate["gate_nonce_sha256"],
-        )
-        _revalidate_recovery_worker_snapshot(
-            coordinator_input=coordinator_input,
-            claim=claim,
-        )
-        if int(time.time()) > secret_gate["expires_at_unix"]:
-            _fail("recovery_secret_gate_expired", phase="recovery_secret_gate")
-        admin_session = admin_session_opener(
-            frame=admin_frame,
-            tls_server_name=secret_gate["tls_server_name"],
-            expected_tls_peer_certificate_sha256=secret_gate[
-                "tls_peer_certificate_sha256"
-            ],
-        )
-        # The frame is explicitly zeroized before any completion claim.  The
-        # connection owns no reusable password after open succeeds.
-        admin_frame.close()
-        cleanup = _perform_recovery_cleanup(
-            coordinator_input=coordinator_input,
-            original_run_lease=claim.lease["original_run_process_lease"],
-            causal_state=claim.lease["causal_recovery_state"],
-            admin_session=admin_session,
-        )
-        if not admin_session.closed or not admin_frame.consumed:
-            _fail("recovery_secret_cleanup_unconfirmed", phase="recovery_terminal")
-        return _publish_recovery_worker_completion(
-            coordinator_input=coordinator_input,
-            claim=claim,
-            cleanup=cleanup,
-        )
-    finally:
-        _begin_active_signal_cleanup()
-        if admin_frame is not None:
-            admin_frame.close()
-        if admin_session is not None and not admin_session.closed:
-            try:
-                admin_session.close()
-            except BaseException:
-                pass
-        _close_recovery_process_lock(claim.lock_fd)
-
-
-def _parse_recovery_finalize_pending_receipt(
-    value: Any,
-    *,
-    coordinator_input: CoordinatorInput,
-    completion: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    if (
-        not isinstance(value, Mapping)
-        or set(value) != _RECOVERY_FINALIZE_PENDING_RECEIPT_FIELDS
-    ):
-        _fail("recovery_finalize_pending_receipt_invalid", phase="recovery_terminal")
-    raw = copy.deepcopy(dict(value))
-    unsigned = {key: item for key, item in raw.items() if key != "receipt_sha256"}
-    if (
-        raw["schema"] != RECOVERY_FINALIZE_PENDING_RECEIPT_SCHEMA
-        or raw["ok"] is not False
-        or raw["state"] != "recovery_finalization_pending_no_secret"
-        or raw["release_sha"] != coordinator_input.revision
-        or raw["coordinator_input_sha256"] != coordinator_input.sha256
-        or raw["credential_prepare_approval_sha256"]
-        != completion["credential_prepare_approval_sha256"]
-        or raw["owner_subject_sha256"] != completion["owner_subject_sha256"]
-        or raw["ephemeral_admin_username"] != completion["ephemeral_admin_username"]
-        or raw["recovery_worker_completion_sha256"] != completion["completion_sha256"]
-        or any(
-            raw[name] != completion[name] for name in _RECOVERY_WORKER_IDENTITY_FIELDS
-        )
-        or raw["completion_admin_authority_may_have_been_used"] is not True
-        or raw["completion_admin_frame_zeroized"] is not True
-        or raw["completion_admin_session_closed"] is not True
-        or raw["worker_identity_state"] not in {"exact_alive", "not_alive"}
-        or type(raw["target_signal_attempted_by_finalizer"]) is not bool
-        or type(raw["target_termination_proven_by_finalizer"]) is not bool
-        or type(raw["process_lock_acquired_by_finalizer"]) is not bool
-        or raw["completion_cas_attempted_by_finalizer"] is not False
-        or raw["completion_cas_succeeded_by_finalizer"] is not False
-        or (
-            raw["worker_identity_state"] == "exact_alive"
-            and raw["target_termination_proven_by_finalizer"] is True
-        )
-        or (
-            raw["process_lock_acquired_by_finalizer"] is True
-            and raw["worker_identity_state"] != "exact_alive"
-        )
-        or raw["observed_journal_sha256"] != _sha256_bytes(_canonical_bytes(completion))
-        or raw["secret_gate_emitted_by_finalizer"] is not False
-        or raw["admin_frame_bytes_received_by_finalizer"] != 0
-        or raw["admin_session_opened_by_finalizer"] is not False
-        or raw["admin_credential_mutation_performed_by_finalizer"] is not False
-        or raw["retryable"] is not True
-        or type(raw["completed_at_unix"]) is not int
-        or raw["completed_at_unix"] < completion["cleanup_completed_at_unix"]
-        or raw["receipt_sha256"] != _sha256_json(unsigned)
-    ):
-        _fail("recovery_finalize_pending_receipt_invalid", phase="recovery_terminal")
-    _digest(raw["observed_journal_sha256"], "recovery_finalize_journal_digest_invalid")
-    return raw
-
-
-def _build_recovery_finalize_pending_receipt(
-    *,
-    coordinator_input: CoordinatorInput,
-    completion: Mapping[str, Any],
-    observed: _RootFileSnapshot,
-    worker_identity_state: str,
-    signal_attempted: bool,
-    termination_proven: bool,
-    lock_acquired: bool,
-    cas_attempted: bool,
-) -> Mapping[str, Any]:
-    unsigned = {
-        "schema": RECOVERY_FINALIZE_PENDING_RECEIPT_SCHEMA,
-        "ok": False,
-        "state": "recovery_finalization_pending_no_secret",
-        "release_sha": coordinator_input.revision,
-        "coordinator_input_sha256": coordinator_input.sha256,
-        "credential_prepare_approval_sha256": completion[
-            "credential_prepare_approval_sha256"
-        ],
-        "owner_subject_sha256": completion["owner_subject_sha256"],
-        "ephemeral_admin_username": completion["ephemeral_admin_username"],
-        "recovery_worker_completion_sha256": completion["completion_sha256"],
-        **{name: completion[name] for name in _RECOVERY_WORKER_IDENTITY_FIELDS},
-        "completion_admin_authority_may_have_been_used": True,
-        "completion_admin_frame_zeroized": completion["admin_frame_zeroized"],
-        "completion_admin_session_closed": completion["admin_session_closed"],
-        "worker_identity_state": worker_identity_state,
-        "target_signal_attempted_by_finalizer": signal_attempted,
-        "target_termination_proven_by_finalizer": termination_proven,
-        "process_lock_acquired_by_finalizer": lock_acquired,
-        "completion_cas_attempted_by_finalizer": cas_attempted,
-        "completion_cas_succeeded_by_finalizer": False,
-        "observed_journal_sha256": observed.sha256,
-        "secret_gate_emitted_by_finalizer": False,
-        "admin_frame_bytes_received_by_finalizer": 0,
-        "admin_session_opened_by_finalizer": False,
-        "admin_credential_mutation_performed_by_finalizer": False,
-        "retryable": True,
-        "completed_at_unix": int(time.time()),
-    }
-    return _parse_recovery_finalize_pending_receipt(
-        {**unsigned, "receipt_sha256": _sha256_json(unsigned)},
-        coordinator_input=coordinator_input,
-        completion=completion,
-    )
-
-
-def _final_recovery_receipt_from_completion(
-    *,
-    coordinator_input: CoordinatorInput,
-    completion: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    unsigned = {
-        **{
-            key: copy.deepcopy(item)
-            for key, item in completion.items()
-            if key
-            not in {
-                "schema",
-                "ok",
-                "state",
-                "completion_sha256",
-                "recovery_worker_exit_proven",
-                "safe_to_delete_temporary_admin",
-            }
-        },
-        "schema": RECOVERY_RECEIPT_SCHEMA,
-        "ok": True,
-        "state": "recovered",
-        "recovery_worker_completion_sha256": completion["completion_sha256"],
-        "recovery_worker_lock_acquired": True,
-        "recovery_worker_exit_proven": True,
-        "safe_to_delete_temporary_admin": True,
-        "finalized_at_unix": int(time.time()),
-    }
-    return _parse_recovery_receipt_v2(
-        {**unsigned, "receipt_sha256": _sha256_json(unsigned)},
-        coordinator_input=coordinator_input,
-    )
-
-
-def _parse_concurrent_final_receipt_for_completion(
-    value: Any,
-    *,
-    coordinator_input: CoordinatorInput,
-    completion: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    receipt = _parse_recovery_receipt_v2(
-        value,
-        coordinator_input=coordinator_input,
-    )
-    if receipt["recovery_worker_completion_sha256"] != completion["completion_sha256"]:
-        _fail("recovery_final_successor_state_conflict", phase="recovery_terminal")
-    return receipt
-
-
-def finalize_recovery() -> Mapping[str, Any]:
-    """No-secret exact worker-exit proof and completion-to-v2 CAS."""
-
-    _require_root_linux()
-    coordinator_input = load_coordinator_input()
-    snapshot = _capture_root_snapshot(
-        COORDINATOR_PROCESS_LEASE_PATH,
-        maximum=MAX_COORDINATOR_INPUT_BYTES,
-    )
-    if snapshot is None:
-        _fail(
-            "coordinator_process_recovery_not_required",
-            phase="recovery_preflight",
-        )
-    value = _decode_mapping(snapshot.raw, code="coordinator_process_journal_invalid")
-    if value.get("schema") == LEGACY_RECOVERY_RECEIPT_SCHEMA:
-        _parse_legacy_recovery_receipt(
-            value,
-            coordinator_input=coordinator_input,
-        )
-        _fail(
-            "legacy_recovery_receipt_reconciliation_required",
-            phase="recovery_preflight",
-        )
-    if value.get("schema") == RECOVERY_RECEIPT_SCHEMA:
-        return _parse_recovery_receipt_v2(
-            value,
-            coordinator_input=coordinator_input,
-        )
-    completion = _parse_recovery_worker_completion(
-        value,
-        coordinator_input=coordinator_input,
-    )
-    target = _worker_recovery_target(completion)
-    signal_attempted = False
-    termination_proven = False
-    try:
-        signal_attempted, termination_proven = _terminate_exact_recovery_target(
-            coordinator_input=coordinator_input,
-            target=target,
-        )
-    except CoordinatorError as exc:
-        if exc.code != "recovery_process_termination_unconfirmed":
-            raise
-        current = _capture_root_snapshot(
-            COORDINATOR_PROCESS_LEASE_PATH,
-            maximum=MAX_COORDINATOR_INPUT_BYTES,
-        )
-        if not _snapshot_is_exact(snapshot, current):
-            _fail("recovery_completion_drifted", phase="recovery_terminal")
-        return _build_recovery_finalize_pending_receipt(
-            coordinator_input=coordinator_input,
-            completion=completion,
-            observed=current,
-            worker_identity_state="exact_alive",
-            signal_attempted=True,
-            termination_proven=False,
-            lock_acquired=False,
-            cas_attempted=False,
-        )
-    lock_fd = _open_recovery_process_lock(nonblocking=True)
-    if lock_fd is None:
-        current = _capture_root_snapshot(
-            COORDINATOR_PROCESS_LEASE_PATH,
-            maximum=MAX_COORDINATOR_INPUT_BYTES,
-        )
-        if current is None:
-            _fail("recovery_completion_lost", phase="recovery_terminal")
-        current_value = _decode_mapping(
-            current.raw,
-            code="coordinator_process_journal_invalid",
-        )
-        if current_value.get("schema") == RECOVERY_RECEIPT_SCHEMA:
-            return _parse_concurrent_final_receipt_for_completion(
-                current_value,
-                coordinator_input=coordinator_input,
-                completion=completion,
-            )
-        if not _snapshot_is_exact(snapshot, current):
-            _fail("recovery_completion_drifted", phase="recovery_terminal")
-        return _build_recovery_finalize_pending_receipt(
-            coordinator_input=coordinator_input,
-            completion=completion,
-            observed=current,
-            worker_identity_state=(
-                "exact_alive"
-                if _recovery_target_is_exactly_alive(
-                    target,
-                    coordinator_input=coordinator_input,
-                )
-                else "not_alive"
-            ),
-            signal_attempted=signal_attempted,
-            termination_proven=termination_proven,
-            lock_acquired=False,
-            cas_attempted=False,
-        )
-    try:
-        current = _capture_root_snapshot(
-            COORDINATOR_PROCESS_LEASE_PATH,
-            maximum=MAX_COORDINATOR_INPUT_BYTES,
-        )
-        if current is not None:
-            current_value = _decode_mapping(
-                current.raw,
-                code="coordinator_process_journal_invalid",
-            )
-            if current_value.get("schema") == RECOVERY_RECEIPT_SCHEMA:
-                return _parse_concurrent_final_receipt_for_completion(
-                    current_value,
-                    coordinator_input=coordinator_input,
-                    completion=completion,
-                )
-        if not _snapshot_is_exact(snapshot, current):
-            _fail("recovery_completion_drifted", phase="recovery_terminal")
-        if _recovery_target_is_exactly_alive(
-            target,
-            coordinator_input=coordinator_input,
-        ):
-            return _build_recovery_finalize_pending_receipt(
-                coordinator_input=coordinator_input,
-                completion=completion,
-                observed=current,
-                worker_identity_state="exact_alive",
-                signal_attempted=signal_attempted,
-                termination_proven=False,
-                lock_acquired=True,
-                cas_attempted=False,
-            )
-        receipt = _final_recovery_receipt_from_completion(
-            coordinator_input=coordinator_input,
-            completion=completion,
-        )
-        _cas_recovery_journal(expected=snapshot, value=receipt)
-        return receipt
-    finally:
-        _close_recovery_process_lock(lock_fd)
-
-
-def preflight_recovery() -> Mapping[str, Any]:
-    """Read-only discovery of run/worker/completion/final journal truth."""
-
-    _require_root_linux()
-    coordinator_input = load_coordinator_input()
-    snapshot = _capture_root_snapshot(
-        COORDINATOR_PROCESS_LEASE_PATH,
-        maximum=MAX_COORDINATOR_INPUT_BYTES,
-    )
-    if snapshot is None:
-        _fail(
-            "coordinator_process_recovery_not_required",
-            phase="recovery_preflight",
-        )
-    value = _decode_mapping(snapshot.raw, code="coordinator_process_journal_invalid")
-    schema = value.get("schema")
-    if schema == LEGACY_RECOVERY_RECEIPT_SCHEMA:
-        _parse_legacy_recovery_receipt(
-            value,
-            coordinator_input=coordinator_input,
-        )
-        _fail(
-            "legacy_recovery_receipt_reconciliation_required",
-            phase="recovery_preflight",
-        )
-    if schema == RECOVERY_RECEIPT_SCHEMA:
-        return _parse_recovery_receipt_v2(
-            value,
-            coordinator_input=coordinator_input,
-        )
-    if schema == RECOVERY_WORKER_COMPLETION_SCHEMA:
-        return _parse_recovery_worker_completion(
-            value,
-            coordinator_input=coordinator_input,
-        )
-    return recovery_gate()
-
-
-_DISCORD_RETIREMENT_ACK_FIELDS = frozenset({
-    "schema",
-    "scope",
-    "release_sha",
-    "coordinator_input_sha256",
-    "owner_subject_sha256",
-    "retirement_gate_sha256",
-    "discord_token_install_receipt_sha256",
-    "token_device",
-    "token_inode",
-    "nonce_sha256",
-    "approved_at_unix",
-    "expires_at_unix",
-    "ack_sha256",
-})
-
-
 def discord_retirement_gate(
     *,
     now_unix: int | None = None,
 ) -> Mapping[str, Any]:
     _require_root_linux()
     coordinator_input = load_coordinator_input()
-    # A terminal recovery receipt is historical truth, not an active lease.
-    # Validate and preserve it; only an active/invalid journal blocks DRA1.
-    _load_terminal_recovery_journal(coordinator_input)
+    if os.path.lexists(OBSOLETE_COORDINATOR_PROCESS_JOURNAL_PATH):
+        _fail("obsolete_coordinator_process_journal_requires_reconciliation")
     install_state: _DiscordInstallState | None = None
     existing_retirement = _load_discord_retirement(coordinator_input)
     if (
@@ -9882,12 +5766,12 @@ def discord_retirement_gate(
         "discord_token_install_receipt_sha256": install_sha256,
         "token_device": token_device,
         "token_inode": token_inode,
-        # This proves active-lease absence.  A validated terminal recovery
-        # receipt may still occupy the durable journal path.
+        # The target session-bound coordinator owns no privileged process
+        # lease.  Any artifact at the retired legacy path blocks this gate.
         "process_lease_absent": True,
         "services_stopped_proven": True,
         "frame_schema": DISCORD_RETIREMENT_ACK_FRAME_SCHEMA,
-        "expires_at_unix": current_time + RECOVERY_GATE_MAX_SECONDS,
+        "expires_at_unix": current_time + DISCORD_RETIREMENT_GATE_MAX_SECONDS,
     }
     return {**unsigned, "gate_sha256": _sha256_json(unsigned)}
 
@@ -9937,7 +5821,7 @@ def _read_discord_retirement_ack(
         or not value["approved_at_unix"] <= now_unix <= value["expires_at_unix"]
         or not 1
         <= value["expires_at_unix"] - value["approved_at_unix"]
-        <= RECOVERY_GATE_MAX_SECONDS
+        <= DISCORD_RETIREMENT_GATE_MAX_SECONDS
         or value["expires_at_unix"] > gate["expires_at_unix"]
         or value["ack_sha256"] != _sha256_json(unsigned)
     ):
@@ -10000,93 +5884,17 @@ def stop_and_retire_discord_token(
     gate_emitter: Callable[[Mapping[str, Any]], None],
     ack_reader: Callable[..., Mapping[str, Any]] = (_read_discord_retirement_ack),
 ) -> Mapping[str, Any]:
-    """Stop/prove services and idempotently finish the token retirement."""
+    """Mechanically stop and retire only the installed Discord lease."""
 
     _require_root_linux()
-    # Stopping the fixed services is independent of, and precedes, every
-    # operator gate/journal/ack read.  Gate failure must never leave a live
-    # canary, and a stop failure must remain visible alongside gate failure.
-    mechanical = _attempt_mechanical_reverse_stop()
-    stop_errors: list[BaseException] = []
-    if mechanical.error is not None:
-        stop_errors.append(mechanical.error)
-    coordinator_input: CoordinatorInput | None = None
-    gate: Mapping[str, Any] | None = None
-    try:
-        coordinator_input = load_coordinator_input()
-        validate_dedicated_canary_host(coordinator_input.base_plan)
-        gate = discord_retirement_gate()
-        gate_emitter(gate)
-        ack_reader(gate=gate)
-        _load_terminal_recovery_journal(coordinator_input)
-        _revalidate_discord_retirement_gate_source(
-            coordinator_input=coordinator_input,
-            gate=gate,
-        )
-    except BaseException as exc:
-        stop_errors.append(exc)
-    _raise_preserving_cleanup_errors(
-        "discord recovery mechanical stop/gate failed",
-        stop_errors,
-    )
-    if coordinator_input is None or gate is None:
-        raise AssertionError("discord retirement gate state is unavailable")
-    if os.path.lexists(DEFAULT_PLAN_PATH):
-        active_plan = load_full_canary_plan()
-        if active_plan.revision != coordinator_input.revision:
-            _fail("discord_token_recovery_runtime_plan_drifted")
-        durable_evidence: BootstrapReconciliationEvidence | None = None
-        try:
-            durable_evidence = load_bootstrap_evidence_envelope(active_plan)
-        except (OSError, RuntimeError, ValueError) as exc:
-            wrapped = CoordinatorError(
-                "discord_token_recovery_bootstrap_evidence_required",
-                phase="discord_token_retirement",
-            )
-            wrapped.__cause__ = exc
-            stop_errors.append(wrapped)
-        if durable_evidence is not None and not stop_errors:
-            try:
-                stop_receipt = FullCanaryLifecycle(
-                    active_plan,
-                    bootstrap_reconciliation_evidence=durable_evidence,
-                ).attest_stopped_after_mechanical_stop(
-                    reason="operator_requested",
-                    stopped=mechanical.stopped,
-                    prior_generation=(
-                        mechanical.prior_preclaim_generation
-                    ),
-                )
-                _validate_recovery_stop_receipt(
-                    stop_receipt,
-                    plan=active_plan,
-                    expected_bootstrap_reconciliation=durable_evidence,
-                )
-            except BaseException as exc:
-                stop_errors.append(exc)
-        _raise_preserving_cleanup_errors(
-            "discord recovery mechanical stop/evidence failed",
-            stop_errors,
-        )
-    else:
-        _raise_preserving_cleanup_errors(
-            "discord recovery mechanical stop failed",
-            stop_errors,
-        )
-        if any(
-            os.path.lexists(path)
-            for path in (
-                DEFAULT_STAGED_PLAN_PATH,
-                DEFAULT_WRITER_CONFIG_SOURCE,
-                OWNER_APPROVAL_REQUEST_PATH,
-                CANARY_BOOTSTRAP_CREDENTIAL_PATH,
-            )
-        ):
-            _fail("discord_token_recovery_canonical_state_unresolved")
-        if not _services_are_exactly_stopped_and_disabled():
-            _fail("discord_token_recovery_services_not_stopped")
+    mechanically_stop_full_canary_services()
+    if not _services_are_exactly_stopped_and_disabled():
+        _fail("discord_token_recovery_services_not_stopped")
+    coordinator_input = load_coordinator_input()
+    gate = discord_retirement_gate()
+    gate_emitter(gate)
+    ack_reader(gate=gate)
     with _lifecycle_lock():
-        _load_terminal_recovery_journal(coordinator_input)
         if not _services_are_exactly_stopped_and_disabled():
             _fail("discord_token_recovery_services_not_stopped")
         final_state = _revalidate_discord_retirement_gate_source(
@@ -10103,6 +5911,295 @@ def stop_and_retire_discord_token(
         )
 
 
+def run_session_bound_full_canary(
+    *,
+    frame_emitter: Callable[[Mapping[str, Any]], None],
+    final_approval_frame_reader: Callable[[], Mapping[str, Any]] = (
+        _read_final_owner_approval_frame
+    ),
+    driver_factory: Callable[..., HonestFullCanaryDriver] = HonestFullCanaryDriver,
+) -> Mapping[str, Any]:
+    """Run the admin-free target canary from terminal Phase-B readiness.
+
+    The only ephemeral secret created here is the loopback API session key
+    owned by ``prepare_session_bound_plan``.  The writer configuration is
+    staged unchanged, only the fixture receives the key digest, and the raw
+    key is consumed once by the live driver.  Plan meaning, effort, and task
+    decisions remain model-authored.
+    """
+
+    _require_root_linux()
+    _harden_secret_process()
+    coordinator_input = load_coordinator_input()
+    if not _services_are_exactly_stopped_and_disabled():
+        _fail("full_canary_services_not_initially_stopped", phase="live_preflight")
+    foundation, readiness_anchor = _load_fixed_phase_b_live_authority(
+        coordinator_input
+    )
+    phase_b_approval = foundation.get("approval")
+    if (
+        not isinstance(phase_b_approval, Mapping)
+        or phase_b_approval.get("approval_source_sha256")
+        != PHASE_B_PINNED_APPROVAL_SOURCE_SHA256
+    ):
+        _fail("phase_b_owner_lineage_not_pinned", phase="live_preflight")
+    owner_subject_sha256 = _digest(
+        phase_b_approval.get("owner_subject_sha256"),
+        "phase_b_owner_subject_invalid",
+    )
+    phase_b_approval_sha256 = _digest(
+        phase_b_approval.get("approval_sha256"),
+        "phase_b_owner_approval_invalid",
+    )
+    base_fixture = _validated_base_e2e_fixture(coordinator_input)
+    fixture_expiry = int(base_fixture["valid_until_unix_ms"]) // 1000
+    writer_config = copy.deepcopy(dict(coordinator_input.value["writer_config"]))
+
+    discord_install_receipt, discord_token_identity, discord_receipt_snapshot = (
+        load_discord_token_install_receipt(coordinator_input)
+    )
+    prior_writer = _capture_writer_snapshot(coordinator_input.identities.writer_gid)
+    writer_publication: _WriterPublication | None = None
+    staged_plan_publication: _RootPublication | None = None
+    runtime_plan_publication: _RootPublication | None = None
+    prepared: Any = None
+    plan: FullCanaryPlan | None = None
+    live_result: Mapping[str, Any] | None = None
+    token_retired = False
+    primary: BaseException | None = None
+    cleanup_errors: list[BaseException] = []
+
+    def publish_staged_writer(path: Path, payload: bytes, **kwargs: Any) -> None:
+        nonlocal writer_publication
+        _atomic_stage_writer_config(path, payload, **kwargs)
+        raw, item = _read_staged_writer_config(
+            DEFAULT_WRITER_CONFIG_SOURCE,
+            mode=0o440,
+            uid=0,
+            gid=coordinator_input.identities.writer_gid,
+        )
+        if raw != payload:
+            _fail("staged_writer_publication_drifted")
+        writer_publication = _WriterPublication(
+            writer_gid=coordinator_input.identities.writer_gid,
+            before=prior_writer,
+            after=_WriterSnapshot(raw=raw, item=item),
+        )
+
+    def stale_writer_clearance() -> Mapping[str, Any]:
+        raw, _item = _read_staged_writer_config(
+            DEFAULT_WRITER_CONFIG_SOURCE,
+            mode=0o440,
+            uid=0,
+            gid=coordinator_input.identities.writer_gid,
+        )
+        if not _services_are_exactly_stopped_and_disabled():
+            _fail("staged_writer_config_unreconciled")
+        return {
+            "schema": "muncho-full-canary-stale-artifact-clearance.v1",
+            "staged_path": str(DEFAULT_WRITER_CONFIG_SOURCE),
+            "stale_sha256": _sha256_bytes(raw),
+            "services_stopped": True,
+        }
+
+    def build_plan() -> FullCanaryPlan:
+        nonlocal plan, staged_plan_publication
+        writer_raw, _writer_item = _read_staged_writer_config(
+            DEFAULT_WRITER_CONFIG_SOURCE,
+            mode=0o440,
+            uid=0,
+            gid=coordinator_input.identities.writer_gid,
+        )
+        fixture_raw, _fixture_item = _read_staged_writer_config(
+            DEFAULT_E2E_FIXTURE,
+            mode=0o440,
+            uid=0,
+            gid=coordinator_input.identities.gateway_gid,
+        )
+        writer_artifact = ExactArtifact(
+            source_path=DEFAULT_WRITER_CONFIG_SOURCE,
+            target_path=DEFAULT_WRITER_CONFIG,
+            sha256=_sha256_bytes(writer_raw),
+            mode=0o440,
+            uid=0,
+            gid=coordinator_input.identities.writer_gid,
+        )
+        fixture_artifact = ExactArtifact(
+            source_path=DEFAULT_E2E_FIXTURE,
+            target_path=DEFAULT_E2E_FIXTURE,
+            sha256=_sha256_bytes(fixture_raw),
+            mode=0o440,
+            uid=0,
+            gid=coordinator_input.identities.gateway_gid,
+        )
+        plan = build_full_canary_plan(
+            writer_activation_plan=coordinator_input.writer_activation_plan,
+            writer_activation_receipt=coordinator_input.value[
+                "writer_activation_receipt"
+            ],
+            writer_activation_receipt_file_sha256=coordinator_input.value[
+                "writer_activation_receipt_file_sha256"
+            ],
+            phase_b_readiness_anchor=readiness_anchor,
+            identities=coordinator_input.identities,
+            writer_config=writer_artifact,
+            gateway_config=coordinator_input.artifacts["gateway_config"],
+            edge_config=coordinator_input.artifacts["edge_config"],
+            e2e_fixture=fixture_artifact,
+            host_identity_receipt=coordinator_input.artifacts[
+                "host_identity_receipt"
+            ],
+        )
+        validate_dedicated_canary_host(plan)
+        if os.path.lexists(DEFAULT_STAGED_PLAN_PATH):
+            _fail("staged_plan_target_not_fresh")
+        staged_plan_publication = _publish_root_payload(
+            DEFAULT_STAGED_PLAN_PATH,
+            _canonical_bytes(plan.to_mapping()),
+            expected_previous_sha256=None,
+        )
+        return plan
+
+    def approve(final_plan: FullCanaryPlan) -> FullCanaryOwnerApproval:
+        nonlocal runtime_plan_publication
+        now_unix = int(time.time())
+        hard_deadline = min(now_unix + 900, fixture_expiry)
+        if hard_deadline - now_unix < 30:
+            _fail("owner_approval_wait_window_exhausted")
+        request_unsigned = {
+            "schema": SESSION_BOUND_APPROVAL_REQUEST_SCHEMA,
+            "ok": True,
+            "state": "awaiting_session_bound_owner_approval",
+            "release_sha": coordinator_input.revision,
+            "coordinator_input_sha256": coordinator_input.sha256,
+            "full_canary_plan_sha256": final_plan.sha256,
+            "staged_plan_path": str(DEFAULT_STAGED_PLAN_PATH),
+            "staged_plan_file_sha256": _sha256_bytes(
+                _canonical_bytes(final_plan.to_mapping())
+            ),
+            "fixture_sha256": final_plan.artifacts["e2e_fixture"].sha256,
+            "phase_b_readiness_anchor_sha256": _sha256_json(readiness_anchor),
+            "phase_b_approval_sha256": phase_b_approval_sha256,
+            "owner_subject_sha256": owner_subject_sha256,
+            "approval_source_sha256": PHASE_B_PINNED_APPROVAL_SOURCE_SHA256,
+            "requested_at_unix": now_unix,
+            "owner_input_cutoff_unix": hard_deadline - 5,
+            "approval_deadline_unix": hard_deadline,
+            "approval_path": None,
+            "final_approval_frame_schema": FINAL_APPROVAL_FRAME_SCHEMA,
+        }
+        request = {
+            **request_unsigned,
+            "request_sha256": _sha256_json(request_unsigned),
+        }
+        frame_emitter(request)
+        try:
+            approval = FullCanaryOwnerApproval.from_mapping(
+                final_approval_frame_reader()
+            )
+        except (TypeError, ValueError) as exc:
+            raise CoordinatorError(
+                "final_owner_approval_contract_invalid",
+                phase="final_approval",
+            ) from exc
+        approved_at = approval.value["approved_at_unix"]
+        current = int(time.time())
+        approval.require(plan_sha256=final_plan.sha256, now_unix=current)
+        if (
+            approval.value["owner_subject_sha256"] != owner_subject_sha256
+            or approval.value["approval_source_sha256"]
+            != PHASE_B_PINNED_APPROVAL_SOURCE_SHA256
+            or not now_unix <= approved_at <= request["owner_input_cutoff_unix"]
+            or approval.value["expires_at_unix"] > hard_deadline
+        ):
+            _fail("final_owner_approval_not_bound", phase="final_approval")
+        if os.path.lexists(DEFAULT_PLAN_PATH):
+            _fail("runtime_plan_target_not_fresh")
+        runtime_plan_publication = _publish_root_payload(
+            DEFAULT_PLAN_PATH,
+            _canonical_bytes(final_plan.to_mapping()),
+            expected_previous_sha256=None,
+        )
+        return approval
+
+    try:
+        prepared = prepare_session_bound_plan(
+            writer_config=writer_config,
+            fixture=base_fixture,
+            writer_gid=coordinator_input.identities.writer_gid,
+            staged_writer_config=DEFAULT_WRITER_CONFIG_SOURCE,
+            staged_fixture=DEFAULT_E2E_FIXTURE,
+            fixture_gid=coordinator_input.identities.gateway_gid,
+            plan_builder=build_plan,
+            approval_provider=approve,
+            writer=publish_staged_writer,
+            prestage_reconciler=stale_writer_clearance,
+        )
+        plan = prepared.plan
+        live_result = driver_factory(prepared).run()
+        if not _services_are_exactly_stopped_and_disabled():
+            _fail("full_canary_terminal_service_truth_unconfirmed")
+    except BaseException as exc:
+        primary = exc
+    finally:
+        if prepared is not None:
+            try:
+                prepared.discard_session_key()
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+        if not _services_are_exactly_stopped_and_disabled():
+            try:
+                mechanically_stop_full_canary_services()
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+        if _services_are_exactly_stopped_and_disabled():
+            try:
+                retirement = _retire_discord_token_lease(
+                    coordinator_input=coordinator_input,
+                    install_receipt=discord_install_receipt,
+                    installed=discord_token_identity,
+                    install_snapshot=discord_receipt_snapshot,
+                )
+                token_retired = bool(
+                    retirement.get("state") == "retired"
+                    and retirement.get("token_removed") is True
+                    and retirement.get("install_receipt_removed") is True
+                )
+            except BaseException as exc:
+                cleanup_errors.append(exc)
+        if primary is not None or cleanup_errors:
+            errors = ([] if primary is None else [primary]) + cleanup_errors
+            raise ExceptionGroup("session-bound full-canary failed", errors)
+
+    assert plan is not None and prepared is not None and live_result is not None
+    if not token_retired:
+        _fail("discord_token_retirement_unconfirmed", phase="terminal_cleanup")
+    unsigned = {
+        "schema": SESSION_BOUND_COORDINATOR_RECEIPT_SCHEMA,
+        "ok": True,
+        "state": "verified_stopped_and_credentials_retired",
+        "release_sha": coordinator_input.revision,
+        "coordinator_input_sha256": coordinator_input.sha256,
+        "full_canary_plan_sha256": plan.sha256,
+        "owner_approval_sha256": prepared.approval.sha256,
+        "phase_b_readiness_anchor_sha256": _sha256_json(readiness_anchor),
+        "api_session_key_sha256": prepared.session_key_sha256,
+        "fixture_sha256": prepared.fixture_sha256,
+        "live_driver_result": copy.deepcopy(dict(live_result)),
+        "live_driver_receipt_sha256": _sha256_json(live_result),
+        "services_stopped": True,
+        "discord_token_retired": True,
+        "temporary_admin_created": False,
+        "bootstrap_credential_created": False,
+        "completed_at_unix": int(time.time()),
+    }
+    return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
+
+
+# The admin-free implementation is the sole live target.
+run_full_canary = run_session_bound_full_canary
+
+
 def _cli_parser() -> Any:
     import argparse
 
@@ -10113,13 +6210,11 @@ def _cli_parser() -> Any:
         "command",
         choices=(
             "publish-coordinator-input",
-            "preflight-owner-launch",
-            "preflight-recovery",
+            "preflight-phase-b-apply",
+            "preflight-phase-b-live-run",
+            "phase-b-apply",
             "run",
-            "recover",
-            "finalize-recovery",
             "install-discord-token",
-            "install-final-approval",
             "stop-and-retire-discord-token",
         ),
     )
@@ -10142,7 +6237,6 @@ def _unbound_failure(
         fallback_phase="command",
     )
     coordinator_input: CoordinatorInput | None = None
-    credential_approval: CredentialPrepareApproval | None = None
     try:
         raw = _stable_root_read(
             COORDINATOR_INPUT_PATH,
@@ -10153,21 +6247,6 @@ def _unbound_failure(
         )
     except BaseException:
         pass
-    if coordinator_input is not None:
-        try:
-            raw = _stable_root_read(
-                CREDENTIAL_PREPARE_APPROVAL_PATH,
-                maximum=MAX_OWNER_APPROVAL_BYTES,
-            )
-            credential_approval = CredentialPrepareApproval.from_mapping(
-                _decode_mapping(
-                    raw,
-                    code="credential_prepare_approval_json_invalid",
-                )
-            )
-        except BaseException:
-            pass
-    bootstrap_absent = not os.path.lexists(CANARY_BOOTSTRAP_CREDENTIAL_PATH)
     token_absent = not os.path.lexists(DISCORD_TOKEN_PATH) and not os.path.lexists(
         DISCORD_TOKEN_STAGE_PATH
     )
@@ -10189,30 +6268,24 @@ def _unbound_failure(
     discord_token_logically_removed = (
         token_absent and token_receipt_absent and retirement_terminal
     )
-    request_absent = not os.path.lexists(OWNER_APPROVAL_REQUEST_PATH)
-    process_lease_absent = not os.path.lexists(COORDINATOR_PROCESS_LEASE_PATH)
+    process_lease_absent = not os.path.lexists(
+        OBSOLETE_COORDINATOR_PROCESS_JOURNAL_PATH
+    )
     try:
         services_terminal = _services_are_exactly_stopped_and_disabled()
     except BaseException:
         services_terminal = False
-    # ``run`` and ``recover`` may both have crossed a privileged SQL-session
-    # boundary before an exception reaches this generic receipt builder.  A
-    # generic failure has no closure witness, so it must never manufacture
-    # one; only their specialized terminal records may prove closure.
-    session_closed = command not in {"run", "recover"}
     complete = (
         not isinstance(error, CoordinatorCleanupBlocked)
-        and bootstrap_absent
         and discord_token_logically_removed
-        and request_absent
         and process_lease_absent
         and services_terminal
-        and session_closed
     )
     unsigned = {
         "schema": COORDINATOR_FAILURE_SCHEMA,
         "ok": False,
         "phase": phase,
+        "command": command,
         "error_code": code,
         "release_sha": (
             None if coordinator_input is None else coordinator_input.revision
@@ -10220,30 +6293,11 @@ def _unbound_failure(
         "coordinator_input_sha256": (
             None if coordinator_input is None else coordinator_input.sha256
         ),
-        "credential_prepare_approval_sha256": (
-            None if credential_approval is None else credential_approval.sha256
-        ),
-        "owner_subject_sha256": (
-            None
-            if credential_approval is None
-            else credential_approval.value["owner_subject_sha256"]
-        ),
-        "ephemeral_admin_username": (
-            None
-            if credential_approval is None
-            else derive_ephemeral_admin_username(credential_approval.sha256)
-        ),
-        "full_canary_plan_sha256": None,
         "cleanup_status": "complete" if complete else "cleanup_blocked",
-        "recovery_material_preserved": not complete,
-        "admin_session_closed": session_closed,
-        "coordinator_process_lease_retired": process_lease_absent,
-        "bootstrap_login_password_disabled": False,
-        # No bootstrap lease exists in an unbound/pre-admin command, so this
-        # must not turn ambient absence into a fabricated cleanup action.
-        "bootstrap_credential_removed": False,
         "discord_token_removed": discord_token_logically_removed,
-        "services_enabled": False if services_terminal else None,
+        "services_stopped": services_terminal,
+        "obsolete_process_journal_absent": process_lease_absent,
+        "completed_at_unix": int(time.time()),
     }
     return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
 
@@ -10253,16 +6307,15 @@ def _execute_mutating_cli(
     command: str,
     operation: Callable[[], Mapping[str, Any]],
 ) -> int:
-    with _SignalFence() as fence:
-        try:
-            receipt = operation()
-        except BaseException as exc:
-            fence.begin_cleanup()
+    try:
+        receipt = operation()
+    except BaseException as exc:
+        with _defer_termination_signals():
             _emit_frame(_unbound_failure(exc, command=command))
-            return 2
-        fence.begin_cleanup()
+        return 2
+    with _defer_termination_signals():
         _emit_frame(receipt)
-        return 0 if receipt.get("ok") is True else 2
+    return 0 if receipt.get("ok") is True else 2
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -10278,22 +6331,22 @@ def main(argv: Sequence[str] | None = None) -> int:
             coordinator_input,
             command=command,
         )
-        if command == "preflight-owner-launch":
-            _emit_frame(preflight_owner_launch())
+        if command == "preflight-phase-b-apply":
+            _emit_frame(preflight_phase_b_apply())
             return 0
-        if command == "preflight-recovery":
-            _emit_frame(preflight_recovery())
+        if command == "preflight-phase-b-live-run":
+            _emit_frame(preflight_phase_b_live_run())
             return 0
         if command == "install-discord-token":
             return _execute_mutating_cli(
                 command=command,
                 operation=lambda: install_discord_token(gate_emitter=_emit_frame),
             )
-        if command == "install-final-approval":
+        if command == "phase-b-apply":
             return _execute_mutating_cli(
                 command=command,
-                operation=lambda: install_final_owner_approval(
-                    gate_emitter=_emit_frame
+                operation=lambda: apply_fixed_phase_b_foundation(
+                    frame_emitter=_emit_frame,
                 ),
             )
         if command == "stop-and-retire-discord-token":
@@ -10302,16 +6355,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 operation=lambda: stop_and_retire_discord_token(
                     gate_emitter=_emit_frame,
                 ),
-            )
-        if command == "recover":
-            return _execute_mutating_cli(
-                command=command,
-                operation=lambda: recover_full_canary(gate_emitter=_emit_frame),
-            )
-        if command == "finalize-recovery":
-            return _execute_mutating_cli(
-                command=command,
-                operation=finalize_recovery,
             )
         if command == "run":
             return _execute_mutating_cli(
@@ -10325,7 +6368,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 __all__ = [
-    "ADMIN_FRAME_SCHEMA",
     "CANARY_DATABASE_HOST",
     "CANARY_DATABASE_NAME",
     "CANARY_DATABASE_PORT",
@@ -10333,30 +6375,16 @@ __all__ = [
     "COORDINATOR_INPUT_PATH",
     "COORDINATOR_INPUT_PUBLICATION_RECEIPT_PATH",
     "COORDINATOR_INPUT_SCHEMA",
-    "CREDENTIAL_PREPARE_APPROVAL_PATH",
-    "FINAL_APPROVAL_CANCEL_RECEIPT_FIELDS",
-    "FINAL_APPROVAL_CANCEL_RECEIPT_SCHEMA",
     "FINAL_APPROVAL_FRAME_SCHEMA",
-    "FINAL_APPROVAL_TRANSMIT_MARGIN_SECONDS",
-    "OWNER_APPROVAL_REQUEST_PATH",
     "CoordinatorInput",
     "CoordinatorError",
-    "OwnerApprovalRequest",
     "OpaqueDiscordTokenFrame",
-    "OpaqueStdinAdminFrame",
-    "VerifiedTLSBootstrapAdminSession",
     "collect_and_publish_coordinator_input",
     "collect_coordinator_input",
-    "derive_ephemeral_admin_username",
     "discord_retirement_gate",
     "install_discord_token",
-    "install_final_owner_approval",
-    "finalize_recovery",
     "main",
-    "preflight_owner_launch",
-    "preflight_recovery",
     "publish_coordinator_input",
-    "recover_full_canary",
     "run_full_canary",
     "stop_and_retire_discord_token",
 ]

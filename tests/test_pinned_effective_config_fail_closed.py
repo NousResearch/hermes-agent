@@ -307,61 +307,26 @@ def test_codex_app_server_rechecks_pin_at_dispatch_boundary() -> None:
     agent._run_codex_app_server_turn.assert_not_called()
 
 
-def _configure_codex_iteration_summary_agent(
-    agent: run_agent.AIAgent,
-) -> None:
+def test_iteration_boundary_receipt_never_dispatches_provider() -> None:
+    agent = _make_test_agent()
     agent.api_mode = "codex_responses"
     agent.provider = "openai-codex"
     agent.model = "gpt-5.6-sol"
-    agent._build_api_kwargs = MagicMock(return_value={"input": []})
-    agent._run_codex_stream = MagicMock(return_value=object())
-    transport = MagicMock()
-    transport.normalize_response.return_value.content = ""
-    agent._get_transport = MagicMock(return_value=transport)
+    agent._run_codex_stream = MagicMock()
 
-
-def test_iteration_summary_rechecks_pin_before_first_provider_call() -> None:
-    agent = _make_test_agent()
-    _configure_codex_iteration_summary_agent(agent)
-
-    with (
-        patch(
-            "hermes_cli.config.attest_pinned_effective_config_projection",
-            side_effect=_pin_violation(),
-        ),
-        pytest.raises(
-            config_module.PinnedEffectiveConfigError,
-            match="synthetic pinned drift",
-        ),
-    ):
-        agent._handle_max_iterations(
+    with patch(
+        "hermes_cli.config.attest_pinned_effective_config_projection"
+    ) as attest:
+        result = agent._handle_max_iterations(
             [{"role": "user", "content": "finish the bounded plan"}],
             90,
         )
 
+    assert result.startswith(
+        "[RUNTIME BOUNDARY RECEIPT — NOT MODEL-AUTHORED]"
+    )
+    attest.assert_not_called()
     agent._run_codex_stream.assert_not_called()
-
-
-def test_iteration_summary_rechecks_pin_before_retry_provider_call() -> None:
-    agent = _make_test_agent()
-    _configure_codex_iteration_summary_agent(agent)
-
-    with (
-        patch(
-            "hermes_cli.config.attest_pinned_effective_config_projection",
-            side_effect=[None, _pin_violation()],
-        ),
-        pytest.raises(
-            config_module.PinnedEffectiveConfigError,
-            match="synthetic pinned drift",
-        ),
-    ):
-        agent._handle_max_iterations(
-            [{"role": "user", "content": "finish the bounded plan"}],
-            90,
-        )
-
-    agent._run_codex_stream.assert_called_once()
 
 
 def test_context_compression_rechecks_pin_before_compressor() -> None:

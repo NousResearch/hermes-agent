@@ -630,23 +630,23 @@ class TestSkillManageDispatcher:
         assert (tmp_path / "bundled" / "SKILL.md").exists()
 
 
-class TestSecurityScanGate:
-    """_security_scan_skill is gated by skills.guard_agent_created config flag."""
+class TestMechanicalPackagePreflightGate:
+    """The optional agent-created package preflight keeps its config gate."""
 
     def test_scan_noop_when_flag_off(self, tmp_path):
-        """Default config (flag off) short-circuits before running scan_skill."""
-        from tools.skill_manager_tool import _security_scan_skill
+        """Default config short-circuits before running the preflight."""
+        from tools.skill_manager_tool import _mechanical_preflight_skill
 
         with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=False), \
              patch("tools.skill_manager_tool.scan_skill") as mock_scan:
-            result = _security_scan_skill(tmp_path)
+            result = _mechanical_preflight_skill(tmp_path)
 
         assert result is None
         mock_scan.assert_not_called()  # scan never ran
 
     def test_scan_runs_when_flag_on(self, tmp_path):
-        """When flag is on, scan_skill is invoked and its verdict is honored."""
-        from tools.skill_manager_tool import _security_scan_skill
+        """When enabled, the mechanical preflight result is honored."""
+        from tools.skill_manager_tool import _mechanical_preflight_skill
         from tools.skills_guard import ScanResult
 
         # Fake a safe scan result — caller should return None (allow)
@@ -660,19 +660,18 @@ class TestSecurityScanGate:
         )
         with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=True), \
              patch("tools.skill_manager_tool.scan_skill", return_value=fake_result) as mock_scan:
-            result = _security_scan_skill(tmp_path)
+            result = _mechanical_preflight_skill(tmp_path)
 
         assert result is None
         mock_scan.assert_called_once()
 
-    def test_scan_blocks_dangerous_when_flag_on(self, tmp_path):
-        """Dangerous verdict + flag on → returns an error string for the agent."""
-        from tools.skill_manager_tool import _security_scan_skill
+    def test_preflight_requires_confirmation_for_mechanical_blocker(self, tmp_path):
+        from tools.skill_manager_tool import _mechanical_preflight_skill
         from tools.skills_guard import ScanResult, Finding
 
         finding = Finding(
-            pattern_id="test", severity="critical", category="exfiltration",
-            file="SKILL.md", line=1, match="curl $TOKEN", description="test",
+            pattern_id="binary_file", severity="critical", category="structural",
+            file="payload.exe", line=0, match="binary: .exe", description="binary file",
         )
         fake_result = ScanResult(
             skill_name="test",
@@ -684,10 +683,10 @@ class TestSecurityScanGate:
         )
         with patch("tools.skill_manager_tool._guard_agent_created_enabled", return_value=True), \
              patch("tools.skill_manager_tool.scan_skill", return_value=fake_result):
-            result = _security_scan_skill(tmp_path)
+            result = _mechanical_preflight_skill(tmp_path)
 
         assert result is not None
-        assert "Security scan blocked" in result
+        assert "Mechanical package preflight requires confirmation" in result
 
     def test_guard_flag_reads_config_default_false(self):
         """_guard_agent_created_enabled returns False when config doesn't set it."""

@@ -26,6 +26,7 @@ import gateway.discord_edge_bootstrap as edge_bootstrap_module
 import gateway.discord_edge_runtime as edge_runtime_module
 import gateway.discord_edge_service as edge_service_module
 import gateway.discord_rest_edge as edge_rest_module
+import gateway.systemd_credentials as systemd_credentials_module
 from gateway.canonical_writer_boundary import harden_current_process_against_dumping
 from gateway.canonical_writer_readiness import (
     boot_identity,
@@ -41,7 +42,14 @@ from gateway.discord_edge_bootstrap import (
     load_service_config,
     serve_service,
 )
-from gateway.discord_edge_protocol import DiscordPublicTargetType
+from gateway.systemd_credentials import (
+    DISCORD_EDGE_UNIT as SYSTEMD_DISCORD_EDGE_UNIT,
+    DISCORD_PRIVATE_KEY_CREDENTIAL,
+    DISCORD_TOKEN_CREDENTIAL,
+    SystemdCredentialError,
+    is_expected_systemd_credential,
+    systemd_credential_provenance,
+)
 
 
 EDGE_READINESS_SCHEMA = "muncho-discord-edge-readiness-v1"
@@ -49,6 +57,8 @@ DEFAULT_EDGE_READINESS_PATH = Path(
     "/run/muncho-discord-egress/runtime-attestation.json"
 )
 _MAX_CONFIG_BYTES = 64 * 1024
+_MAX_TOKEN_BYTES = 512
+_MAX_PRIVATE_KEY_BYTES = 8 * 1024
 _FORBIDDEN_ENVIRONMENT_NAMES = frozenset(
     {
         "DISCORD_BOT_TOKEN",
@@ -124,9 +134,40 @@ def _stable_regular_file_sha256(path: Path, *, maximum: int) -> str:
     return digest.hexdigest()
 
 
-def _file_provenance(path: Path, *, expected_uid: int, expected_mode: int) -> Mapping[str, Any]:
+def _file_provenance(
+    path: Path,
+    *,
+    expected_uid: int,
+    expected_mode: int,
+    systemd_credential_name: str | None = None,
+    maximum: int = _MAX_CONFIG_BYTES,
+) -> Mapping[str, Any]:
     """Return non-content credential provenance; never a secret digest."""
 
+    if systemd_credential_name is not None:
+        try:
+            systemd_bound = is_expected_systemd_credential(
+                path,
+                unit=SYSTEMD_DISCORD_EDGE_UNIT,
+                name=systemd_credential_name,
+            )
+            if systemd_bound:
+                if expected_mode != 0o400:
+                    raise SystemdCredentialError(
+                        "systemd_credential_file_provenance_invalid"
+                    )
+                return systemd_credential_provenance(
+                    path,
+                    unit=SYSTEMD_DISCORD_EDGE_UNIT,
+                    name=systemd_credential_name,
+                    service_uid=expected_uid,
+                    maximum=maximum,
+                    credentials_directory=path.parent,
+                )
+        except SystemdCredentialError as exc:
+            raise RuntimeError(
+                "Discord edge systemd credential provenance is invalid"
+            ) from exc
     item = Path(path).lstat()
     if (
         not stat.S_ISREG(item.st_mode)
@@ -153,6 +194,7 @@ def build_edge_readiness_receipt(
     *,
     config_path: Path,
     now_unix: int | None = None,
+    readiness_bootstrap_path: str | os.PathLike[str] | None = None,
 ) -> Mapping[str, Any]:
     """Attest the exact live edge from inside its systemd MainPID."""
 
@@ -180,11 +222,16 @@ def build_edge_readiness_receipt(
         raise RuntimeError("Discord edge readiness time is invalid")
     modules: dict[str, Mapping[str, str]] = {}
     module_paths = {
-        "readiness_bootstrap": __file__,
+        "readiness_bootstrap": (
+            __file__
+            if readiness_bootstrap_path is None
+            else os.fspath(readiness_bootstrap_path)
+        ),
         "edge_bootstrap": edge_bootstrap_module.__file__,
         "edge_runtime": edge_runtime_module.__file__,
         "edge_service": edge_service_module.__file__,
         "edge_rest_transport": edge_rest_module.__file__,
+        "systemd_credentials": systemd_credentials_module.__file__,
     }
     for name, raw_path in sorted(module_paths.items()):
         origin, digest = module_file_identity(raw_path)
@@ -211,15 +258,20 @@ def build_edge_readiness_receipt(
             config.token_file,
             expected_uid=config.edge_uid,
             expected_mode=0o400,
+            systemd_credential_name=DISCORD_TOKEN_CREDENTIAL,
+            maximum=_MAX_TOKEN_BYTES,
         ),
         "edge_receipt_private_key_provenance": _file_provenance(
             config.edge_receipt_private_key_file,
             expected_uid=config.edge_uid,
             expected_mode=0o400,
+            systemd_credential_name=DISCORD_PRIVATE_KEY_CREDENTIAL,
+            maximum=_MAX_PRIVATE_KEY_BYTES,
         ),
         "writer_capability_public_key_id": config.writer_capability_public_key_id,
         "edge_receipt_public_key_id": config.edge_receipt_public_key_id,
-        "allowed_target_types": sorted(item.value for item in DiscordPublicTargetType),
+        "target_policy": config.target_policy,
+        "allowed_target_types": list(bootstrap.adapter.allowed_target_types),
         "forbidden_target_types": [
             "direct_message",
             "dm",
@@ -237,6 +289,7 @@ def run_edge(
     config_path: Path,
     *,
     readiness_path: Path = DEFAULT_EDGE_READINESS_PATH,
+    readiness_bootstrap_path: str | os.PathLike[str] | None = None,
 ) -> None:
     """Start, attest, and serve the existing edge; close on every failure."""
 
@@ -248,6 +301,7 @@ def run_edge(
         receipt = build_edge_readiness_receipt(
             bootstrap,
             config_path=Path(config_path),
+            readiness_bootstrap_path=readiness_bootstrap_path,
         )
         write_runtime_attestation(readiness_path, receipt)
         if not notify_systemd_attestation(

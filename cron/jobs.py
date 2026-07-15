@@ -870,6 +870,14 @@ def load_jobs() -> List[Dict[str, Any]]:
 
 def _save_jobs_unlocked(jobs: List[Dict[str, Any]]):
     """Save all jobs to storage. Caller must hold _jobs_lock()."""
+    # This is the common persistence choke point for the model tool, CLI,
+    # dashboard/API, scheduler state changes, and future direct callers.  Once
+    # the production latch is active, validate the complete post-mutation set
+    # while the jobs lock is still held and before a temporary file exists.
+    # Per-caller prechecks remain useful UX, but are not the security boundary.
+    from cron.production_policy import enforce_production_cron_jobs
+
+    enforce_production_cron_jobs(jobs)
     jobs_file = _current_cron_store().jobs_file
     ensure_dirs()
     fd, tmp_path = tempfile.mkstemp(dir=str(jobs_file.parent), suffix='.tmp', prefix='.jobs_')
@@ -1114,8 +1122,17 @@ def create_job(
     now = _hermes_now().isoformat()
 
     normalized_skills = _normalize_skill_list(skill, skills)
-    normalized_model = _normalize_job_optional_text(model)
-    normalized_provider = _normalize_job_optional_text(provider)
+    # Production create remains ergonomic for callers that omit the inference
+    # axes, while preserving the exact sealed route. Explicit alternatives are
+    # rejected by the policy helper; they are never silently overwritten.
+    from cron.production_policy import pin_production_cron_create_route
+
+    routed_provider, routed_model = pin_production_cron_create_route(
+        provider,
+        model,
+    )
+    normalized_model = _normalize_job_optional_text(routed_model)
+    normalized_provider = _normalize_job_optional_text(routed_provider)
     normalized_base_url = _normalize_job_optional_text(base_url, strip_trailing_slash=True)
     normalized_script = str(script).strip() if isinstance(script, str) else None
     normalized_script = normalized_script or None
@@ -1208,6 +1225,8 @@ def create_job(
         "last_status": None,
         "last_error": None,
         "last_delivery_error": None,
+        "last_delivery_status": "none",
+        "last_delivery_confirmed_at": None,
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
@@ -1465,8 +1484,13 @@ def remove_job(job_id: str) -> bool:
     return False
 
 
-def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
-                 delivery_error: Optional[str] = None):
+def mark_job_run(
+    job_id: str,
+    success: bool,
+    error: Optional[str] = None,
+    delivery_error: Optional[str] = None,
+    delivery_status: Optional[str] = None,
+):
     """
     Mark a job as having been run.
     
@@ -1475,7 +1499,19 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
 
     ``delivery_error`` is tracked separately from the agent error — a job
     can succeed (agent produced output) but fail delivery (platform down).
+    ``delivery_status`` is an exact mechanical observation. A missing status
+    never becomes a receipt merely because ``delivery_error`` is absent.
     """
+    normalized_delivery_status = delivery_status or (
+        "failed" if delivery_error else "none"
+    )
+    if normalized_delivery_status not in {
+        "none",
+        "confirmed",
+        "failed",
+        "unconfirmed",
+    }:
+        raise ValueError("invalid delivery_status")
     with _jobs_lock():
         jobs = load_jobs()
         for i, job in enumerate(jobs):
@@ -1486,6 +1522,10 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 job["last_error"] = error if not success else None
                 # Track delivery failures separately — cleared on successful delivery
                 job["last_delivery_error"] = delivery_error
+                job["last_delivery_status"] = normalized_delivery_status
+                job["last_delivery_confirmed_at"] = (
+                    now if normalized_delivery_status == "confirmed" else None
+                )
                 # Clear any external-fire claim so a re-armed recurring job can
                 # be claimed again on its next fire (Phase 4C CAS).
                 job["fire_claim"] = None

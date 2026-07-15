@@ -201,6 +201,9 @@ def _native_digests(
         writer_unit_sha256=hashlib.sha256(
             bundle.writer_service.encode()
         ).hexdigest(),
+        phase_b_readiness_unit_sha256=hashlib.sha256(
+            bundle.phase_b_readiness_service.encode()
+        ).hexdigest(),
         gateway_unit_sha256=hashlib.sha256(
             bundle.gateway_service.encode()
         ).hexdigest(),
@@ -376,11 +379,11 @@ def test_native_plan_is_discovery_only_and_binds_collector_receipt():
     assert "external_native_mappings" not in plan.to_mapping()
 
 
-def test_final_plan_is_the_only_deployable_v3_contract():
+def test_final_plan_is_the_only_deployable_v4_contract():
     native_receipt = _stopped_receipt()
     plan = _final_plan()
 
-    assert plan.schema == "muncho-writer-only-activation-plan.v3"
+    assert plan.schema == "muncho-writer-only-activation-plan.v4"
     assert plan.digests.native_observation_receipt_sha256 == native_receipt.sha256
     assert plan.collector_argv[1:3] == ("-B", "-I")
     assert plan.validator_argv[1:3] == ("-B", "-I")

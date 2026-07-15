@@ -104,3 +104,32 @@ def test_iteration_budget_remaining():
     assert budget.remaining == 2
     budget.refund()
     assert budget.remaining == 3
+
+
+def test_execution_lease_is_one_atomic_aggregate_across_workers():
+    """Concurrent parent/child callers share one finite provider-call ceiling."""
+
+    from run_agent import ExecutionLease
+
+    lease = ExecutionLease(max_total=25)
+
+    def worker() -> int:
+        admitted = 0
+        for _ in range(20):
+            admitted += int(lease.consume())
+        return admitted
+
+    with ThreadPoolExecutor(max_workers=5) as executor:
+        admitted = sum(executor.map(lambda _: worker(), range(5)))
+
+    assert admitted == 25
+    assert lease.used == 25
+    assert lease.remaining == 0
+    assert lease.consume() is False
+    assert not hasattr(lease, "refund")
+
+
+def test_default_execution_lease_allows_ten_full_slices():
+    from agent.iteration_budget import default_execution_lease_calls
+
+    assert default_execution_lease_calls(90) == 900

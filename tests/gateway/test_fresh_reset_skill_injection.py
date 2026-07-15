@@ -19,11 +19,11 @@ After the fix:
     consumes the flag immediately after the check, so subsequent messages
     are treated as continuing the session and the flag does not leak.
 
-We use ``was_auto_reset`` for surprise resets (idle/daily/suspended) and
-``is_fresh_reset`` for user-initiated resets because the former also drives
-a "Session automatically reset due to inactivity" user-facing notice and
-a context-note prepend into the agent's prompt — both wrong for an explicit
-/new or /reset.
+We use ``was_auto_reset`` for policy resets (idle/daily/suspended) and
+``is_fresh_reset`` for ``reset_session`` boundaries. The persisted
+``fresh_reset_reason`` distinguishes user-initiated /new or /reset from
+involuntary compression exhaustion without overloading ``was_auto_reset``,
+which also drives the inactivity notice and context-note prepend.
 """
 
 from gateway.config import GatewayConfig, Platform
@@ -70,6 +70,21 @@ class TestResetSessionStampsFreshReset:
 
         assert new_entry is not None
         assert new_entry.is_fresh_reset is True
+        assert new_entry.fresh_reset_reason == "explicit_new"
+
+    def test_reset_session_persists_compression_exhaustion_reason(self, tmp_path):
+        store = _make_store(tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+
+        new_entry = store.reset_session(
+            entry.session_key,
+            fresh_reset_reason="compression_exhaustion",
+        )
+
+        assert new_entry is not None
+        assert new_entry.is_fresh_reset is True
+        assert new_entry.fresh_reset_reason == "compression_exhaustion"
 
     def test_reset_session_unknown_key_returns_none(self, tmp_path):
         store = _make_store(tmp_path)
@@ -185,6 +200,21 @@ class TestPersistence:
         assert new_entry.is_fresh_reset is True
         restored = SessionEntry.from_dict(new_entry.to_dict())
         assert restored.is_fresh_reset is True
+        assert restored.fresh_reset_reason == "explicit_new"
+
+    def test_compression_reason_survives_to_dict_from_dict(self, tmp_path):
+        store = _make_store(tmp_path)
+        source = _make_source()
+        entry = store.get_or_create_session(source)
+        new_entry = store.reset_session(
+            entry.session_key,
+            fresh_reset_reason="compression_exhaustion",
+        )
+
+        restored = SessionEntry.from_dict(new_entry.to_dict())
+
+        assert restored.is_fresh_reset is True
+        assert restored.fresh_reset_reason == "compression_exhaustion"
 
     def test_default_false_when_missing_from_dict(self, tmp_path):
         """Older sessions.json files written before this field existed must
@@ -198,3 +228,4 @@ class TestPersistence:
         }
         entry = SessionEntry.from_dict(data)
         assert entry.is_fresh_reset is False
+        assert entry.fresh_reset_reason is None

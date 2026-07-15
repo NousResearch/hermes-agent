@@ -20,7 +20,6 @@ from typing import Any
 import pytest
 
 import gateway.canonical_full_canary_live_driver as live
-import gateway.canonical_full_canary_runtime as runtime
 from gateway.canonical_full_canary_runtime import (
     ExactArtifact,
     FullCanaryIdentities,
@@ -56,7 +55,12 @@ def _identities() -> FullCanaryIdentities:
     )
 
 
-def _plan(tmp_path: Path, *, writer_digest: str = "e" * 64) -> FullCanaryPlan:
+def _plan(
+    tmp_path: Path,
+    *,
+    writer_digest: str = "e" * 64,
+    fixture_digest: str = FIXTURE_SHA256,
+) -> FullCanaryPlan:
     identities = _identities()
     return FullCanaryPlan(
         revision=REVISION,
@@ -65,6 +69,16 @@ def _plan(tmp_path: Path, *, writer_digest: str = "e" * 64) -> FullCanaryPlan:
         writer_activation_plan={},
         writer_activation_receipt={},
         writer_activation_receipt_file_sha256="f" * 64,
+        phase_b_readiness_anchor={
+            "phase_b_release_revision": REVISION,
+            "phase_b_plan_sha256": "1" * 64,
+            "phase_b_approval_sha256": "2" * 64,
+            "phase_b_terminal_receipt_sha256": "3" * 64,
+            "phase_b_foundation_generation_sha256": "4" * 64,
+            "phase_b_readiness_receipt_sha256": "5" * 64,
+            "phase_b_readiness_handoff_file_sha256": "6" * 64,
+            "phase_b_readiness_sequence": 1,
+        },
         artifacts={
             "writer_config": ExactArtifact(
                 source_path=tmp_path / "writer.json",
@@ -77,7 +91,7 @@ def _plan(tmp_path: Path, *, writer_digest: str = "e" * 64) -> FullCanaryPlan:
             "e2e_fixture": ExactArtifact(
                 source_path=tmp_path / "fixture.json",
                 target_path=Path("/etc/muncho/full-canary/fixture.json"),
-                sha256=FIXTURE_SHA256,
+                sha256=fixture_digest,
                 mode=0o440,
                 uid=0,
                 gid=identities.gateway_gid,
@@ -124,17 +138,30 @@ def test_prepare_stages_session_digest_before_plan_and_approval(
     tmp_path: Path,
 ) -> None:
     order: list[str] = []
-    captured: dict[str, Any] = {}
+    captured: dict[str, dict[str, Any]] = {}
 
     def writer(path: Path, payload: bytes, **metadata: Any) -> None:
         order.append("writer")
-        captured.update(path=path, payload=payload, metadata=metadata)
+        captured["writer"] = {"path": path, "payload": payload, "metadata": metadata}
+
+    def fixture_writer(path: Path, payload: bytes, **metadata: Any) -> None:
+        order.append("fixture")
+        captured["fixture"] = {
+            "path": path,
+            "payload": payload,
+            "metadata": metadata,
+        }
 
     def build() -> FullCanaryPlan:
         order.append("plan")
-        assert "payload" in captured
-        digest = hashlib.sha256(captured["payload"]).hexdigest()
-        return _plan(tmp_path, writer_digest=digest)
+        assert set(captured) == {"writer", "fixture"}
+        return _plan(
+            tmp_path,
+            writer_digest=hashlib.sha256(captured["writer"]["payload"]).hexdigest(),
+            fixture_digest=hashlib.sha256(
+                captured["fixture"]["payload"]
+            ).hexdigest(),
+        )
 
     def approve(plan: FullCanaryPlan) -> FullCanaryOwnerApproval:
         order.append("approval")
@@ -148,51 +175,47 @@ def test_prepare_stages_session_digest_before_plan_and_approval(
                 "port": 5432,
                 "database": "muncho_canary_brain",
             },
-            "canary_scope_preapproval": {
-                "grant_id": "grant:live-driver",
-                "case_id": _fixture()["case_id"],
-                "release_sha256": RELEASE_SHA256,
-                "fixture_sha256": FIXTURE_SHA256,
-                "run_id": _fixture()["canary_run_id"],
-                "session_key_sha256": "0" * 64,
-                "expires_at": "2026-01-01T00:00:00+00:00",
-                "approved_by": "1279454038731264061",
-                "approval_source_sha256": "2" * 64,
-                "provisioning_receipt_sha256": "3" * 64,
-                "bootstrap_database_user": ("canonical_brain_canary_bootstrap_login"),
-            },
         },
         fixture=_fixture(),
         writer_gid=_identities().writer_gid,
-        bootstrap_sql_sha256="9" * 64,
-        bootstrap_retire_sql_sha256="8" * 64,
         staged_writer_config=tmp_path / "writer.json",
+        staged_fixture=tmp_path / "fixture.json",
+        fixture_gid=_identities().gateway_gid,
         plan_builder=build,
         approval_provider=approve,
         session_key_factory=lambda: SESSION_KEY,
         writer=writer,
+        fixture_writer=fixture_writer,
         process_guard=lambda: order.append("harden"),
     )
 
-    assert order == ["harden", "writer", "plan", "approval"]
+    assert order == ["harden", "writer", "fixture", "plan", "approval"]
     assert prepared.session_key == SESSION_KEY
     assert SESSION_KEY not in repr(prepared)
-    assert SESSION_KEY.encode() not in captured["payload"]
-    staged = json.loads(captured["payload"])
-    assert staged["canary_scope_preapproval"]["session_key_sha256"] == (
+    assert SESSION_KEY.encode() not in captured["writer"]["payload"]
+    assert SESSION_KEY.encode() not in captured["fixture"]["payload"]
+    assert json.loads(captured["writer"]["payload"]) == {
+        "database": {
+            "host": "10.0.0.8",
+            "tls_server_name": "db.internal",
+            "port": 5432,
+            "database": "muncho_canary_brain",
+        }
+    }
+    staged_fixture = json.loads(captured["fixture"]["payload"])
+    assert staged_fixture["api_session_key_sha256"] == (
         hashlib.sha256(SESSION_KEY.encode()).hexdigest()
     )
-    assert staged["canary_scope_preapproval"][
-        "provisioning_receipt_sha256"
-    ] == live.canonical_canary_bootstrap_authorization_sha256(
-        staged,
-        bootstrap_sql_sha256="9" * 64,
-        bootstrap_retire_sql_sha256="8" * 64,
-    )
-    assert captured["metadata"] == {
+    assert captured["writer"]["metadata"] == {
         "mode": 0o440,
         "uid": 0,
         "gid": _identities().writer_gid,
+        "expected_existing_sha256": None,
+    }
+    assert captured["fixture"]["metadata"] == {
+        "mode": 0o440,
+        "uid": 0,
+        "gid": _identities().gateway_gid,
         "expected_existing_sha256": None,
     }
 
@@ -206,18 +229,6 @@ def _old_staged_config() -> dict[str, Any]:
             "port": 5432,
             "database": "muncho_canary_brain",
             "user": "canonical_brain_writer_login",
-        },
-        "canary_scope_preapproval": {
-            "grant_id": "grant:old",
-            "case_id": "case:old",
-            "release_sha256": "1" * 64,
-            "fixture_sha256": "2" * 64,
-            "run_id": "run:old",
-            "session_key_sha256": "3" * 64,
-            "expires_at": "2026-07-13T12:00:00+00:00",
-            "approved_by": "1279454038731264061",
-            "approval_source_sha256": "4" * 64,
-            "provisioning_receipt_sha256": "5" * 64,
         },
     }
 
@@ -236,7 +247,7 @@ def _fake_stage_stat() -> SimpleNamespace:
     )
 
 
-def test_different_staged_plan_is_preserved_without_fresh_db_reconciliation(
+def test_different_staged_plan_is_preserved_without_stopped_service_clearance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     old_raw = live._canonical_bytes(_old_staged_config())
@@ -261,97 +272,55 @@ def test_different_staged_plan_is_preserved_without_fresh_db_reconciliation(
         )
 
 
-def test_different_staged_plan_requires_fresh_exact_terminal_receipt(
+def test_different_staged_plan_accepts_exact_stopped_service_clearance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    old = _old_staged_config()
-    old_raw = live._canonical_bytes(old)
+    old_raw = live._canonical_bytes(_old_staged_config())
     order: list[str] = []
-    validated: dict[str, Any] = {}
+    path = Path("/etc/muncho/full-canary/staged/writer.json")
     monkeypatch.setattr(live.os.path, "lexists", lambda _path: True)
     monkeypatch.setattr(
         live,
         "_read_staged_writer_config",
         lambda *_a, **_k: (old_raw, _fake_stage_stat()),
     )
-    monkeypatch.setattr(
-        live,
-        "observe_canary_preclaim_reconciliation_generation",
-        lambda _path: (9,),
-    )
-
-    def validate(**kwargs: Any) -> dict[str, Any]:
-        order.append("validate")
-        validated.update(kwargs)
-        return {"result": {"outcome": "retired", "authority_active": False}}
-
-    monkeypatch.setattr(
-        live,
-        "validate_canary_preclaim_reconciliation_receipt",
-        validate,
-    )
     digest = live._reconcile_existing_staged_writer_config(
-        Path("/etc/muncho/full-canary/staged/writer.json"),
+        path,
         b'{"different":true}',
         mode=0o440,
         uid=0,
         gid=2201,
-        reconciler=lambda: order.append("reconcile"),
+        reconciler=lambda: order.append("clear") or {
+            "schema": "muncho-full-canary-stale-artifact-clearance.v1",
+            "staged_path": str(path),
+            "stale_sha256": hashlib.sha256(old_raw).hexdigest(),
+            "services_stopped": True,
+        },
     )
 
     assert digest == hashlib.sha256(old_raw).hexdigest()
-    assert order == ["reconcile", "validate"]
-    assert validated["source_config_raw"] == old_raw
-    assert validated["writer_config"] == old
-    assert validated["allowed_outcomes"] == frozenset({"retired", "claimed"})
-    assert validated["prior_generation"] == (9,)
-    assert validated["require_fresh_generation"] is True
+    assert order == ["clear"]
 
 
-def test_different_staged_plan_accepts_prior_durable_reconciliation(
+def test_different_staged_plan_rejects_nonmechanical_clearance(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    old = _old_staged_config()
-    old_raw = live._canonical_bytes(old)
-    durable = {"result": {"outcome": "retired"}}
-    events: list[str] = []
+    old_raw = live._canonical_bytes(_old_staged_config())
     monkeypatch.setattr(live.os.path, "lexists", lambda _path: True)
     monkeypatch.setattr(
         live,
         "_read_staged_writer_config",
         lambda *_a, **_k: (old_raw, _fake_stage_stat()),
     )
-    monkeypatch.setattr(
-        live,
-        "observe_canary_preclaim_reconciliation_generation",
-        lambda _path: events.append("observe_prior") or (1,),
-    )
-
-    def validate(value, **kwargs: Any) -> dict[str, Any]:
-        assert value is durable
-        assert kwargs["source_config_raw"] == old_raw
-        assert kwargs["writer_config"] == old
-        assert kwargs["allowed_outcomes"] == frozenset({"retired", "claimed"})
-        events.append("validate_durable")
-        return durable
-
-    monkeypatch.setattr(
-        live,
-        "_validate_canary_preclaim_reconciliation_value",
-        validate,
-    )
-
-    digest = live._reconcile_existing_staged_writer_config(
-        Path("/etc/muncho/full-canary/staged/writer.json"),
-        b'{"different":true}',
-        mode=0o440,
-        uid=0,
-        gid=2201,
-        reconciler=lambda: events.append("reuse") or durable,
-    )
-
-    assert digest == hashlib.sha256(old_raw).hexdigest()
-    assert events == ["observe_prior", "reuse", "validate_durable"]
+    with pytest.raises(live.LiveCanaryError, match="staged_writer_config_unreconciled"):
+        live._reconcile_existing_staged_writer_config(
+            Path("/etc/muncho/full-canary/staged/writer.json"),
+            b'{"different":true}',
+            mode=0o440,
+            uid=0,
+            gid=2201,
+            reconciler=lambda: {"result": {"outcome": "retired"}},
+        )
 
 
 def test_fresh_approval_callback_waits_for_a_new_exact_plan_publication(
@@ -546,131 +515,11 @@ def _prepared(
             if session_key_sha256 is None
             else session_key_sha256
         ),
+        fixture_sha256=plan.artifacts["e2e_fixture"].sha256,
         writer_config_sha256=plan.artifacts["writer_config"].sha256,
         plan=plan,
         approval=_approval(plan),
     )
-
-
-class _BootstrapProvisioner:
-    def __init__(self) -> None:
-        self.abort_count = 0
-        self.active = True
-
-    def provision(self, _request: Any) -> dict[str, Any]:
-        raise AssertionError("provision must not run in this test")
-
-    def reconcile(
-        self,
-        _request: Any,
-        _provisioning_receipt: Any,
-    ) -> dict[str, Any]:
-        raise AssertionError("reconcile must not run in this test")
-
-    def abort(self) -> None:
-        self.abort_count += 1
-        self.active = False
-
-
-def test_driver_default_lifecycle_retains_blocked_admin_boundary(
-    tmp_path: Path,
-) -> None:
-    prepared = _prepared(tmp_path)
-    driver = live.HonestFullCanaryDriver(prepared, root_guard=lambda: None)
-
-    lifecycle = driver._lifecycle(prepared.plan)
-
-    with pytest.raises(
-        runtime.FullCanaryBootstrapAdminUnavailable,
-        match="ephemeral bootstrap admin connection is unavailable",
-    ):
-        lifecycle.bootstrap_provisioner.provision(None)
-    prepared.discard_session_key()
-
-
-def test_driver_rejects_factory_and_preopened_provisioner_together(
-    tmp_path: Path,
-) -> None:
-    prepared = _prepared(tmp_path)
-    provisioner = _BootstrapProvisioner()
-
-    with pytest.raises(TypeError, match="mutually exclusive"):
-        live.HonestFullCanaryDriver(
-            prepared,
-            lifecycle_factory=lambda plan: runtime.FullCanaryLifecycle(plan),
-            bootstrap_provisioner=provisioner,
-        )
-
-    prepared.discard_session_key()
-
-
-def test_driver_aborts_and_releases_preopened_admin_on_earliest_failure(
-    tmp_path: Path,
-) -> None:
-    prepared = _prepared(tmp_path)
-    provisioner = _BootstrapProvisioner()
-    driver = live.HonestFullCanaryDriver(
-        prepared,
-        bootstrap_provisioner=provisioner,
-        root_guard=lambda: (_ for _ in ()).throw(
-            PermissionError("process hardening failed")
-        ),
-    )
-
-    with pytest.raises(PermissionError, match="process hardening failed"):
-        driver.run()
-
-    assert provisioner.abort_count == 1
-    assert provisioner.active is False
-    assert driver._bootstrap_provisioner is None
-    assert prepared.session_key is None
-
-
-def test_driver_retries_transient_preopened_admin_close_failure(
-    tmp_path: Path,
-) -> None:
-    prepared = _prepared(tmp_path)
-
-    class CloseFailsOnceProvisioner(_BootstrapProvisioner):
-        def abort(self) -> None:
-            self.abort_count += 1
-            if self.abort_count == 1:
-                raise RuntimeError("transient close failure")
-            self.active = False
-
-    provisioner = CloseFailsOnceProvisioner()
-    driver = live.HonestFullCanaryDriver(
-        prepared,
-        bootstrap_provisioner=provisioner,
-        root_guard=lambda: (_ for _ in ()).throw(
-            PermissionError("process hardening failed")
-        ),
-    )
-
-    with pytest.raises(PermissionError, match="process hardening failed"):
-        driver.run()
-
-    assert provisioner.abort_count == 2
-    assert provisioner.active is False
-    assert driver._bootstrap_provisioner is None
-
-
-def test_driver_injects_only_the_explicit_preopened_provisioner(
-    tmp_path: Path,
-) -> None:
-    prepared = _prepared(tmp_path)
-    provisioner = _BootstrapProvisioner()
-    driver = live.HonestFullCanaryDriver(
-        prepared,
-        bootstrap_provisioner=provisioner,
-        root_guard=lambda: None,
-    )
-
-    lifecycle = driver._lifecycle(prepared.plan)
-
-    assert lifecycle.bootstrap_provisioner is provisioner
-    prepared.discard_session_key()
-    provisioner.abort()
 
 
 def _patch_driver_dependencies(
@@ -678,6 +527,10 @@ def _patch_driver_dependencies(
     fixture: dict[str, Any],
     order: list[str],
 ) -> None:
+    fixture.setdefault(
+        "api_session_key_sha256",
+        hashlib.sha256(SESSION_KEY.encode()).hexdigest(),
+    )
     monkeypatch.setattr(live, "_validated_e2e_fixture", lambda _plan: fixture)
     monkeypatch.setattr(
         live,
@@ -944,16 +797,13 @@ def _complete_readback(event: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def test_live_readback_is_derived_and_cross_checked_with_post_revoke_projection() -> (
-    None
-):
+def test_live_readback_is_exactly_cross_checked_with_projection() -> None:
     event = _readback_event("event:before", "task.plan.updated")
-    revoke = _readback_event("event:revoke", "canary.scope.revoked")
     readback = _complete_readback(event)
     incomplete, missing = live._validate_live_readback(
         readback,
         payload={"query_view": "resume_bundle", "query_limit": 200},
-        projection_events=[event, revoke],
+        projection_events=[event],
     )
     assert incomplete is False
     assert missing == []
@@ -978,9 +828,19 @@ def test_incomplete_live_readback_cannot_be_relabelled_complete(
         live._validate_live_readback(
             readback,
             payload={"query_view": "resume_bundle", "query_limit": 200},
+            projection_events=[event],
+        )
+
+
+def test_live_readback_rejects_any_post_readback_case_event() -> None:
+    event = _readback_event("event:before", "task.plan.updated")
+    with pytest.raises(live.LiveCanaryError, match="canonical_live_readback_projection_drift"):
+        live._validate_live_readback(
+            _complete_readback(event),
+            payload={"query_view": "resume_bundle", "query_limit": 200},
             projection_events=[
                 event,
-                _readback_event("event:revoke", "canary.scope.revoked"),
+                _readback_event("event:after", "task.verification.recorded"),
             ],
         )
 
@@ -1201,28 +1061,6 @@ def test_live_assembler_output_passes_the_packaged_offline_verifier(
         )
 
     projection: list[dict[str, Any]] = []
-    scope_keys = {
-        "canary.scope.preapproved": "canary_scope_preapproval",
-        "canary.scope.claimed": "canary_scope_claim",
-        "canary.scope.revoked": "canary_scope_revocation",
-    }
-    for event in truth["scope_events"]:
-        scope = copy.deepcopy(event["scope"])
-        scope.pop("session_tombstone_recorded", None)
-        if "expires_at_unix_ms" in scope:
-            scope["expires_at"] = iso(scope.pop("expires_at_unix_ms"))
-        projection.append({
-            "event_id": event["event_id"],
-            "event_type": event["event_type"],
-            "case_id": case_id,
-            "occurred_at": iso(event["occurred_at_unix_ms"]),
-            "payload": {scope_keys[event["event_type"]]: scope},
-            "safety": (
-                {"session_tombstone_recorded": True}
-                if event["event_type"] == "canary.scope.revoked"
-                else {}
-            ),
-        })
     for event in truth["plan_events"]:
         plan_value = copy.deepcopy(event["plan"])
         criterion_ids = plan_value.pop("criterion_ids")
@@ -1269,11 +1107,7 @@ def test_live_assembler_output_passes_the_packaged_offline_verifier(
         "safety": {},
     })
 
-    readback_events = [
-        copy.deepcopy(event)
-        for event in projection
-        if event["event_type"] != "canary.scope.revoked"
-    ]
+    readback_events = copy.deepcopy(projection)
     readback = {
         "request_id": truth["writer_query_request_id"],
         "status": "ok",
@@ -1324,9 +1158,18 @@ def test_live_assembler_output_passes_the_packaged_offline_verifier(
         })
 
     add_frame("plugin_ready", {"gateway_pid": peer.pid}, session=None, turn=None)
-    claim = copy.deepcopy(truth["scope_events"][1]["scope"])
-    claim.update(success=True, claimed_at="writer-authored")
-    add_frame("canonical_scope_claim", claim, session=session_id, turn=None)
+    add_frame(
+        "api_session_bound",
+        {
+            "success": True,
+            "runtime_platform": "api_server",
+            "runtime_session_id": session_id,
+            "session_key_sha256": fixture["api_session_key_sha256"],
+            "fixture_sha256": template["fixture_sha256"],
+        },
+        session=session_id,
+        turn=None,
+    )
     add_frame("private_target_probe_ready", {}, session=session_id, turn=None)
     private_result = copy.deepcopy(template["private_denial"])
     for name in (
@@ -1388,7 +1231,7 @@ def test_live_assembler_output_passes_the_packaged_offline_verifier(
             if call_id == "call:reasoning":
                 tool_payload.update(
                     reasoning_directive={
-                        "effort": "xhigh",
+                        "effort": "max",
                         "reason_code": "model-authored",
                     },
                     reasoning_control=template["reasoning_directive"][

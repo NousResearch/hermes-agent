@@ -2,7 +2,7 @@
 
 When ``approvals.destructive_slash_confirm`` is True (default), /new,
 /reset, and /undo route through the slash-confirm primitive — native
-yes/no buttons on Telegram/Discord/Slack, text fallback elsewhere.
+three-option buttons on Telegram/Discord/Slack, text fallback elsewhere.
 When False (after "Always Approve"), the destructive action runs
 immediately.
 """
@@ -17,6 +17,7 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import MessageEvent
+from gateway.run import _slash_confirm_protocol_choice
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -75,6 +76,42 @@ def _make_runner():
     runner._thread_metadata_for_source = lambda *a, **kw: None
     runner._reply_anchor_for_event = lambda _e: None
     return runner
+
+
+@pytest.mark.parametrize(
+    ("raw", "prefix", "expected"),
+    [
+        ("/approve", "/", "once"),
+        ("/always", "/", "always"),
+        ("/cancel", "/", "cancel"),
+        ("!approve", "!", "once"),
+        ("!always", "!", "always"),
+        ("!cancel", "!", "cancel"),
+    ],
+)
+def test_slash_confirm_accepts_only_advertised_protocol(raw, prefix, expected):
+    assert _slash_confirm_protocol_choice(raw, prefix) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "/yes",
+        "/ok",
+        "/confirm",
+        "/no",
+        "/deny",
+        "/remember",
+        "/nevermind",
+        "/once",
+        "/approve once",
+        "/always approve",
+        "approve",
+        "yes",
+    ],
+)
+def test_slash_confirm_rejects_semantic_aliases(raw):
+    assert _slash_confirm_protocol_choice(raw, "/") is None
 
 
 @pytest.mark.asyncio
@@ -259,3 +296,52 @@ async def test_resolve_always_persists_opt_out_and_runs_execute(monkeypatch):
     assert resolved is not None
     assert "✨ fresh" in resolved
     assert "config.yaml" in resolved
+
+
+@pytest.mark.asyncio
+async def test_resolve_always_downgrades_to_once_when_production_pin_blocks_write(
+    monkeypatch,
+):
+    """A refused persistence must never be reported as a permanent opt-out."""
+    from hermes_cli import config as config_module
+    from tools import slash_confirm as _slash_confirm_mod
+
+    runner = _make_runner()
+    runner._read_user_config = lambda: {
+        "approvals": {"destructive_slash_confirm": True}
+    }
+    session_key = build_session_key(_make_source())
+    runner._session_key_for_source = lambda src: session_key
+    _slash_confirm_mod.clear(session_key)
+
+    import cli as cli_mod
+
+    monkeypatch.setattr(cli_mod, "save_config_value", lambda _path, _value: False)
+    monkeypatch.setattr(
+        config_module,
+        "effective_config_projection_is_pinned",
+        lambda: True,
+    )
+    execute = AsyncMock(return_value="✨ fresh")
+
+    await runner._maybe_confirm_destructive_slash(
+        event=_make_event("/new"),
+        command="new",
+        title="/new",
+        detail="Discards history.",
+        execute=execute,
+    )
+    pending = _slash_confirm_mod.get_pending(session_key)
+    assert pending is not None
+
+    resolved = await _slash_confirm_mod.resolve(
+        session_key,
+        pending["confirm_id"],
+        "always",
+    )
+
+    execute.assert_awaited_once()
+    assert resolved is not None
+    assert "The action ran once" in resolved
+    assert "production configuration is sealed" in resolved
+    assert "Future /clear" not in resolved

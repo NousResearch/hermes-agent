@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+import os
+import stat
 import threading
 from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -24,26 +26,113 @@ from gateway.platforms.api_server import (
     _effective_uid_for_systemd_credential,
     _session_stream_outcome,
 )
+from gateway import systemd_credentials as credentials
 from gateway.session_context import clear_session_vars
 from hermes_state import SessionDB
 
 
-def _credential_config() -> PlatformConfig:
+CONTROL_CREDENTIAL = b"canary-control-key\n"
+APPROVAL_CREDENTIAL = b"owner-approval-passkey-for-tests-0123456789\n"
+
+
+def _credential_config(*, with_approval: bool = False) -> PlatformConfig:
+    extra = {
+        "host": "127.0.0.1",
+        "port": 8642,
+        "key_credential": credentials.GATEWAY_API_BEARER_CREDENTIAL,
+    }
+    if with_approval:
+        extra["approval_passkey_credential"] = (
+            credentials.GATEWAY_API_APPROVAL_CREDENTIAL
+        )
     return PlatformConfig(
         enabled=True,
-        extra={
-            "host": "127.0.0.1",
-            "port": 8642,
-            "key_credential": "api-server.key",
-        },
+        extra=extra,
     )
 
 
-def _write_credential(directory: Path, value: bytes = b"canary-control-key\n") -> Path:
-    path = directory / "api-server.key"
-    path.write_bytes(value)
-    path.chmod(0o600)
-    return path
+def _stat_with(
+    item: os.stat_result,
+    *,
+    uid: int,
+    gid: int,
+    permission: int,
+    inode_delta: int = 0,
+) -> os.stat_result:
+    values = list(item)
+    values[0] = stat.S_IFMT(item.st_mode) | permission
+    values[1] = item.st_ino + inode_delta
+    values[4] = uid
+    values[5] = gid
+    return os.stat_result(values)
+
+
+def _install_gateway_credentials(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    owner_uid: int | None = None,
+    directory_gid: int = 0,
+    file_gid: int = 0,
+    directory_mode: int = 0o500,
+    file_mode: int = 0o400,
+) -> tuple[Path, dict[str, Path]]:
+    service_uid = os.geteuid()
+    observed_uid = service_uid if owner_uid is None else owner_uid
+    root = tmp_path / "run" / "credentials"
+    directory = root / credentials.GATEWAY_API_UNIT
+    directory.mkdir(parents=True, mode=0o700)
+    values = {
+        credentials.GATEWAY_API_BEARER_CREDENTIAL: CONTROL_CREDENTIAL,
+        credentials.GATEWAY_API_APPROVAL_CREDENTIAL: APPROVAL_CREDENTIAL,
+    }
+    paths: dict[str, Path] = {}
+    for name, value in values.items():
+        path = directory / name
+        path.write_bytes(value)
+        path.chmod(0o400)
+        paths[name] = path
+    directory.chmod(0o500)
+
+    monkeypatch.setattr(credentials, "SYSTEMD_CREDENTIAL_ROOT", root)
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(directory))
+    monkeypatch.delenv("API_SERVER_KEY", raising=False)
+    monkeypatch.delenv("API_SERVER_APPROVAL_PASSKEY", raising=False)
+
+    real_lstat = credentials._lstat
+    real_fstat = credentials._fstat
+    path_set = set(paths.values())
+
+    def fake_lstat(path: str | os.PathLike[str]) -> os.stat_result:
+        candidate = Path(path)
+        item = real_lstat(path)
+        if candidate == directory:
+            return _stat_with(
+                item,
+                uid=observed_uid,
+                gid=directory_gid,
+                permission=directory_mode,
+            )
+        if candidate in path_set:
+            return _stat_with(
+                item,
+                uid=observed_uid,
+                gid=file_gid,
+                permission=file_mode,
+            )
+        return item
+
+    def fake_fstat(descriptor: int) -> os.stat_result:
+        return _stat_with(
+            real_fstat(descriptor),
+            uid=observed_uid,
+            gid=file_gid,
+            permission=file_mode,
+        )
+
+    monkeypatch.setattr(credentials, "_lstat", fake_lstat)
+    monkeypatch.setattr(credentials, "_fstat", fake_fstat)
+    return directory, paths
 
 
 def _session_app(adapter: APIServerAdapter) -> web.Application:
@@ -66,18 +155,18 @@ def _session_app(adapter: APIServerAdapter) -> web.Application:
     return app
 
 
+@pytest.mark.parametrize("owner_uid", [None, 0], ids=["service-owned", "root-owned"])
 @pytest.mark.asyncio
 async def test_systemd_credential_starts_authenticated_loopback_surface(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    owner_uid: int | None,
 ) -> None:
-    credential_dir = tmp_path / "credentials"
-    credential_dir.mkdir()
-    _write_credential(credential_dir)
-    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(credential_dir))
-    monkeypatch.delenv("API_SERVER_KEY", raising=False)
+    _install_gateway_credentials(tmp_path, monkeypatch, owner_uid=owner_uid)
 
-    adapter = APIServerAdapter(_credential_config())
+    adapter = APIServerAdapter(_credential_config(with_approval=True))
+    assert adapter._api_key == CONTROL_CREDENTIAL.rstrip().decode()
+    assert adapter._approval_passkey == APPROVAL_CREDENTIAL.rstrip().decode()
     adapter._session_db = SessionDB(tmp_path / "state.db")
     app = _session_app(adapter)
     async with TestClient(TestServer(app)) as client:
@@ -92,19 +181,39 @@ async def test_systemd_credential_starts_authenticated_loopback_surface(
     adapter._session_db.close()
 
 
-@pytest.mark.parametrize("credential_name", ["../key", "/tmp/key", "nested/key", ""])
-def test_systemd_credential_rejects_non_basename(
+@pytest.mark.parametrize(
+    "credential_name",
+    ["../key", "/tmp/key", "nested/key", "", "api-approval-passkey"],
+)
+def test_systemd_credential_rejects_wrong_control_name(
     credential_name: str,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(tmp_path))
-    monkeypatch.delenv("API_SERVER_KEY", raising=False)
+    _install_gateway_credentials(tmp_path, monkeypatch)
     config = PlatformConfig(
         enabled=True,
         extra={"key_credential": credential_name},
     )
-    with pytest.raises(ValueError, match="safe basename"):
+    with pytest.raises(ValueError, match="reviewed purpose"):
+        APIServerAdapter(config)
+
+
+def test_systemd_credential_rejects_swapped_owner_approval_name(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_gateway_credentials(tmp_path, monkeypatch)
+    config = PlatformConfig(
+        enabled=True,
+        extra={
+            "key_credential": credentials.GATEWAY_API_BEARER_CREDENTIAL,
+            "approval_passkey_credential": (
+                credentials.GATEWAY_API_BEARER_CREDENTIAL
+            ),
+        },
+    )
+    with pytest.raises(ValueError, match="reviewed purpose"):
         APIServerAdapter(config)
 
 
@@ -120,15 +229,18 @@ def test_systemd_credential_rejects_symlink(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    root = tmp_path / "run" / "credentials"
+    credential_dir = root / credentials.GATEWAY_API_UNIT
+    credential_dir.mkdir(parents=True)
     secret = tmp_path / "secret"
     secret.write_bytes(b"secret")
-    secret.chmod(0o600)
-    credential_dir = tmp_path / "credentials"
-    credential_dir.mkdir()
-    (credential_dir / "api-server.key").symlink_to(secret)
+    secret.chmod(0o400)
+    (credential_dir / credentials.GATEWAY_API_BEARER_CREDENTIAL).symlink_to(secret)
+    credential_dir.chmod(0o500)
+    monkeypatch.setattr(credentials, "SYSTEMD_CREDENTIAL_ROOT", root)
     monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(credential_dir))
     monkeypatch.delenv("API_SERVER_KEY", raising=False)
-    with pytest.raises(ValueError, match="metadata is unsafe"):
+    with pytest.raises(ValueError, match="file_provenance_invalid"):
         APIServerAdapter(_credential_config())
 
 
@@ -136,10 +248,7 @@ def test_systemd_credential_rejects_inline_or_environment_conflict(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    credential_dir = tmp_path / "credentials"
-    credential_dir.mkdir()
-    _write_credential(credential_dir)
-    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(credential_dir))
+    _install_gateway_credentials(tmp_path, monkeypatch)
     monkeypatch.setenv("API_SERVER_KEY", "environment-key")
     with pytest.raises(ValueError, match="cannot be combined"):
         APIServerAdapter(_credential_config())
@@ -149,6 +258,115 @@ def test_systemd_credential_rejects_inline_or_environment_conflict(
     config.extra["key"] = "inline-key"
     with pytest.raises(ValueError, match="cannot be combined"):
         APIServerAdapter(config)
+
+
+@pytest.mark.parametrize("directory_kind", ["wrong-unit", "wrong-path"])
+def test_systemd_credential_rejects_wrong_gateway_directory_binding(
+    directory_kind: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    directory, _paths = _install_gateway_credentials(tmp_path, monkeypatch)
+    if directory_kind == "wrong-unit":
+        supplied = directory.parent / "other.service"
+    else:
+        supplied = tmp_path / "unreviewed" / credentials.GATEWAY_API_UNIT
+    monkeypatch.setenv("CREDENTIALS_DIRECTORY", str(supplied))
+
+    with pytest.raises(ValueError, match="exact gateway.*binding"):
+        APIServerAdapter(_credential_config())
+
+
+@pytest.mark.parametrize(
+    (
+        "directory_gid",
+        "file_gid",
+        "directory_mode",
+        "file_mode",
+        "error_code",
+    ),
+    [
+        (1, 0, 0o500, 0o400, "directory_provenance_invalid"),
+        (0, 1, 0o500, 0o400, "file_provenance_invalid"),
+        (0, 0, 0o700, 0o400, "directory_provenance_invalid"),
+        (0, 0, 0o500, 0o600, "file_provenance_invalid"),
+    ],
+)
+def test_systemd_credential_rejects_wrong_directory_or_file_provenance(
+    directory_gid: int,
+    file_gid: int,
+    directory_mode: int,
+    file_mode: int,
+    error_code: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_gateway_credentials(
+        tmp_path,
+        monkeypatch,
+        directory_gid=directory_gid,
+        file_gid=file_gid,
+        directory_mode=directory_mode,
+        file_mode=file_mode,
+    )
+
+    with pytest.raises(ValueError, match=error_code):
+        APIServerAdapter(_credential_config())
+
+
+def test_systemd_credential_rejects_unreviewed_owner(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_gateway_credentials(
+        tmp_path,
+        monkeypatch,
+        owner_uid=os.geteuid() + 1,
+    )
+
+    with pytest.raises(ValueError, match="directory_provenance_invalid"):
+        APIServerAdapter(_credential_config())
+
+
+def test_systemd_credential_rejects_identity_change_during_read(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_gateway_credentials(tmp_path, monkeypatch)
+    stable_fstat = credentials._fstat
+    calls = 0
+
+    def changed_fstat(descriptor: int) -> os.stat_result:
+        nonlocal calls
+        calls += 1
+        item = stable_fstat(descriptor)
+        if calls == 2:
+            return _stat_with(
+                item,
+                uid=item.st_uid,
+                gid=item.st_gid,
+                permission=stat.S_IMODE(item.st_mode),
+                inode_delta=1,
+            )
+        return item
+
+    monkeypatch.setattr(credentials, "_fstat", changed_fstat)
+    with pytest.raises(ValueError, match="systemd_credential_changed"):
+        APIServerAdapter(_credential_config())
+
+
+def test_systemd_credential_rejects_unreadable_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_gateway_credentials(tmp_path, monkeypatch)
+
+    def denied_open(_path: Path, _flags: int) -> int:
+        raise PermissionError("test-only denial")
+
+    monkeypatch.setattr(credentials, "_open", denied_open)
+    with pytest.raises(ValueError, match="systemd_credential_read_failed"):
+        APIServerAdapter(_credential_config())
 
 
 def _event_payloads(body: str) -> dict[str, dict]:

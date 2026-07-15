@@ -2476,7 +2476,10 @@ class DiscordEdgeRuntime:
             assert isinstance(thread, DiscordEdgeThreadReadback)
             if (
                 thread.target.target_type
-                is not DiscordPublicTargetType.PUBLIC_GUILD_THREAD
+                not in {
+                    DiscordPublicTargetType.PUBLIC_GUILD_THREAD,
+                    DiscordPublicTargetType.GUILD_THREAD,
+                }
                 or thread.target.guild_id != request.intent.target.guild_id
                 or thread.target.channel_id != accepted.discord_object_id
                 or thread.target.parent_channel_id != request.intent.target.channel_id

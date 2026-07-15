@@ -36,8 +36,11 @@ Phase 1 creates only:
 - regional subnet `muncho-canary-europe-west3` (`10.90.0.0/24`);
 - private Service Networking range `muncho-canary-sql-range`
   (`10.91.0.0/24`) and its single Google-managed peering;
-- runtime service account `muncho-canary-v2-runtime`, with only Logging Writer
-  and Monitoring Metric Writer and no user-managed keys;
+- runtime service account `muncho-canary-v2-runtime`, with only Logging Writer,
+  Monitoring Metric Writer, and the conditional custom
+  `munchoCanaryCloudSqlReadinessV1` role. The custom role contains only
+  `cloudsql.instances.get` and its IAM condition binds it to
+  `muncho-canary-pg18-v2`; the identity has no user-managed keys;
 - private-only PostgreSQL 18 instance `muncho-canary-pg18-v2` and database
   `muncho_canary_brain`.
 
@@ -92,9 +95,11 @@ python -m scripts.canary.host apply \
 ```
 
 This phase has one mutation: create `muncho-canary-v2-01` as an `e2-medium`
-Shielded VM with the pinned Debian 12 image, 20 GB balanced disk, exact
-logging/monitoring scopes, OS Login, disabled legacy metadata endpoints, and
-only the `iap-ssh` tag. It has an ephemeral premium-tier public address for IAP
+Shielded VM with the pinned Debian 12 image, 40 GB balanced disk, exact
+`cloud-platform` OAuth scope, OS Login, disabled legacy metadata endpoints, and
+only the `iap-ssh` tag. Effective authority remains limited by the exact three
+project IAM bindings attested in phase 1; the broad predefined Cloud SQL Viewer
+role is forbidden. It has an ephemeral premium-tier public address for IAP
 reachability and no deletion protection because it is a temporary canary.
 
 The foundation and network plans contain no VM-create command. The host
@@ -102,6 +107,128 @@ preflight nests a fresh effective-firewall attestation and requires all network
 steps satisfied; consequently the VM cannot be created before the firewall
 boundary is live. Every apply receipt still requires a post-apply read-only
 attestation before the next phase or runtime enablement.
+
+### One-time existing-host storage transition
+
+The already-created v2 canary predates the 40 GB host contract and has one
+identity-pinned 20 GB boot disk. Its one-way transition is a separate bounded
+gate. The resize half does not deploy code, start a service, create a snapshot,
+run a guest command, or change IAM:
+
+```bash
+python -m scripts.canary.host_storage plan
+python -m scripts.canary.host_storage_preflight \
+  > /root/approved-canary-host-storage-preflight.json
+python -m scripts.canary.host_storage apply \
+  --preflight /root/approved-canary-host-storage-preflight.json \
+  --approved-plan-sha256 <exact-storage-plan-sha256> \
+  > /root/canary-host-storage-apply-receipt.json
+```
+
+The source preflight permits 20 GB only for VM instance ID
+`9153645328899914617` and disk ID `4195397669213846393`, with the exact normal
+`persistent-disk-0` boot attachment, and the exact normal host shape failing
+solely because its canonical target is now 40 GB. The apply
+contains exactly one `gcloud compute disks resize` command, fixed to the owner
+account, project, zone, disk, and 40 GB target. It returns hashes of command
+output, never raw provider output.
+
+Guest evidence reuses the owner launcher's sealed IAP transport material:
+`google_compute_engine`, its matching public key, and the exact
+`google_compute_known_hosts` entry for the pinned VM ID. Before and after the
+read, the collector proves that same public key is already present in the
+owner's OS Login profile and that instance/project authorization did not
+change. It uses `gcloud compute ssh --plain`, never imports or uploads a key,
+and fails closed before disk mutation if the existing profile does not match.
+The separate `skyvision_mac_ops_ed25519` key remains owner-signing authority;
+it is not SSH transport material.
+
+Live execution established the narrower contract for the pinned Debian image:
+the disk resize is online, but its `google-disk-expand` path expands the root
+partition and ext4 filesystem during the next boot. It did not expand the
+online root immediately. The storage plan remains byte-identical to the
+already approved resize-only plan; a separate digest-bound boot plan now owns
+the conditional stop/start and makes the boot dependency explicit.
+
+Collect the boot preflight only after the resize receipt exists and a fresh
+storage report is exactly `transition_pending`. It proves the fixed VM and disk
+IDs, the source-sized root on the 40 GB disk, the current boot digest, and the
+complete runtime-unit inventory. Every canary runtime unit must be absent or
+disabled and inactive before the VM can stop:
+
+```bash
+python -m scripts.canary.host_storage_boot plan
+python -m scripts.canary.host_storage_boot preflight \
+  --storage-apply-receipt /root/canary-host-storage-apply-receipt.json \
+  > /root/canary-host-storage-boot-preflight.json
+python -m scripts.canary.host_storage_boot apply \
+  --preflight /root/canary-host-storage-boot-preflight.json \
+  --approved-plan-sha256 <exact-storage-boot-plan-sha256> \
+  > /root/canary-host-storage-boot-receipt.json
+```
+
+The boot executor contains only the exact identity-pinned `gcloud compute
+instances stop` and `start` calls through the sealed owner SDK. It grants no
+`growpart`, `resize2fs`, guest shell, cleanup, repair, or service-start
+authority. Before `stop`, it publishes and fsyncs an owner-only, append-only
+intent below
+`/Users/emillomliev/.hermes/canary-storage-boot-transactions`. The transaction
+ID binds the approved plan, preflight, resize receipt, VM/disk IDs, prior boot,
+and stopped service-state digest. Every stop/start observation and command
+completion is then appended with its own self-digest and monotonic chronology.
+A pre-existing `TERMINATED` VM is never enough to authorize `start`: recovery
+requires that exact unexpired pre-stop intent. An unrelated or stale stopped
+state fails closed. A crash after either command can only append the evidence
+that remains observable; it cannot manufacture a missing command receipt. Once
+the terminal receipt is durable, retries replay it without another observation
+or mutation.
+
+After the boot, collect a new report until normal host preflight passes exact
+40 GB and the read-only guest fact proves `/dev/sda1` is ext4 at `/`, the
+filesystem exposes at least 39,000,000,000 bytes, and at least 8 GiB remains
+available. Bind the resize, boot preflight, boot receipt, and terminal
+postflight into one readiness receipt:
+
+```bash
+python -m scripts.canary.host_storage_preflight \
+  > /root/canary-host-storage-postflight.json
+python -m scripts.canary.host_storage attest \
+  --apply-receipt /root/canary-host-storage-apply-receipt.json \
+  --boot-preflight /root/canary-host-storage-boot-preflight.json \
+  --boot-receipt /root/canary-host-storage-boot-receipt.json \
+  --postflight /root/canary-host-storage-postflight.json \
+  > /root/canary-host-storage-readiness-receipt.json
+```
+
+Only `muncho-isolated-canary-host-storage-readiness-receipt.v2` with a valid
+self-digest and the required boot-receipt binding establishes storage
+readiness after a 20 → 40 GB mutation. An already target-ready 40 GB host stays
+idempotent and does not manufacture a boot dependency. Readiness explicitly
+does not open a runtime gate; the remaining stopped-release and canary
+preflights still apply.
+
+The live v2 canary completed its historical resize and reboot before the
+journaled boot contract existed. Do not reboot it again to fabricate missing
+history. Its one exact reconciliation path accepts only the three fixed
+owner-only archives and a newly collected target-ready postflight:
+
+```bash
+python -m scripts.canary.host_storage_preflight \
+  > /root/canary-host-storage-postflight.json
+python -m scripts.canary.host_storage attest \
+  --apply-receipt /Users/emillomliev/.hermes/owner-approvals/canary-storage/apply-b2ada08f473cf67dee9c738852373d19d9dba473fdc8ee3cdf834f14d951dbd5.json \
+  --legacy-boot-receipt /Users/emillomliev/.hermes/owner-approvals/canary-storage/boot-expansion-7430a8e859c6f24261ef89182dc49c64c2f5832b50e8918bdae8008b8c0a0cb8.json \
+  --legacy-readiness-receipt /Users/emillomliev/.hermes/owner-approvals/canary-storage/readiness-de2da85103d578073b795828fbad2db2a602d63cbb079352e9c90e74d6400777.json \
+  --postflight /root/canary-host-storage-postflight.json \
+  > /root/canary-host-storage-readiness-receipt-v2.json
+```
+
+This special receipt records
+`boot_evidence_kind=legacy_live_receipt_reconciliation`, binds both legacy
+receipt hashes, and states `preboot_boot_id_evidence=false` and
+`preboot_service_state_evidence=false`; those archived facts do not exist. It
+also keeps `opens_runtime_gate=false` and requires the follow-on stopped-runtime
+gate. Journaled and legacy evidence arguments are mutually exclusive.
 
 ## Later host/runtime gates
 
@@ -172,233 +299,141 @@ cleanup or repair authority is part of this action. An exact terminal retry may
 only revalidate the same source, sealed release, live stopped state, and receipt
 bytes.
 
-## Phase 4 — packaged writer-only activation
+## Phase 4 — stopped writer activation through the owner launcher
 
-Runtime mutation is performed by the sealed wheel, not by importing this
-source-only `scripts.canary` package on the VM. The source
-`scripts.canary.writer_activation` entrypoint is only a delegate to the same
-packaged planner and contains no alternate preview or deployment logic.
+The operator entry point is the local, release-bound owner launcher. Do not run
+the packaged VM modules by hand. The launcher accepts no remote command, path,
+SQL statement, credential, or semantic instruction. It selects only reviewed
+packaged commands from the sealed wheel and validates one canonical JSON result
+from each command.
 
-Before any unit is installed or started, root runs the packaged trusted
-collector against the sealed release and live PostgreSQL authority. The
-collector reads the already provisioned credential through its pinned file
-descriptor, but its append-only receipt records only file provenance and
-digests—never credential content or a credential digest:
-
-```bash
-<sealed-python> -B -I -m gateway.canonical_writer_config_collector collect \
-  --revision <exact-40-character-release-sha> \
-  --release-artifact-sha256 <sealed-release-artifact-sha256> \
-  --release-manifest-file-sha256 <sealed-manifest-file-sha256> \
-  --tls-server-name <verified-cloud-sql-certificate-san> \
-  --owner-discord-user-id <owner-id>
-```
-
-The result supplies `receipt_sha256`. While that receipt's live HBA evidence
-is still fresh, the packaged planner derives the SQL private IP and TLS name
-from the receipt itself; they are deliberately not accepted again as CLI
-facts. It renders and exclusively stages the two reviewed units plus the
-discovery plan at their fixed paths. Output contains digests only and grants
-no approval:
-
-```bash
-<sealed-python> -B -I -m gateway.canonical_writer_planner build-native-plan \
-  --revision <exact-40-character-release-sha> \
-  --external-iam-policy-sha256 <exact-reviewed-policy-sha256> \
-  --config-collector-receipt-sha256 <receipt-sha256>
-```
-
-Root then installs that strict staged discovery plan at the only accepted
-path, still without starting a service:
-
-```bash
-<sealed-python> -B -I -m gateway.canonical_writer_activation install-native-plan \
-  --plan /etc/muncho/writer-activation/staged/native-observation-plan.json
-```
-
-The bootstrap owner confirmation is root-provisioned and out of band. Its
-receipt truthfully records
-`authority_kind=trusted_root_bootstrap_out_of_band_owner` and
-`cryptographic_owner_proof=false`; this is not a claim that a passkey or
-signature was verified. Renewals are installed append-only at
-`approvals/<scope>/<plan-sha>/<receipt-sha>.json`:
-
-```bash
-<sealed-python> -B -I -m gateway.canonical_writer_activation install-approval \
-  --staged-receipt /etc/muncho/writer-activation/staged/owner-approval.json
-<sealed-python> -B -I -m gateway.canonical_writer_activation install-external-iam \
-  --staged-receipt /etc/muncho/writer-activation/staged/external-iam-receipt.json \
-  --external-iam-policy-sha256 <exact-reviewed-policy-sha256> \
-  --plan /etc/muncho/writer-activation/native-observation-plan.json \
-  --approved-plan-sha256 <exact-native-plan-sha256> \
-  --owner-approval-receipt \
-    /etc/muncho/writer-activation/approvals/native_observation/<plan-sha>/<approval-sha>.json
-```
-
-The IAM helper archives both old and new generations before atomically
-replacing only the fixed live file under `/run`. It accepts no unapproved
-refresh: the staged IAM receipt's `source_approval_sha256` must equal the exact
-owner receipt for the pinned native or final plan, and the lifecycle rechecks
-that binding again before mutation and immediately before service start. The
-native observation plan
-contains no guessed mapping list or placeholder manifest. It binds the exact
-release, configs, canary users/groups/homes, SQL `/32`, TLS name and CA,
-retired-helper and Discord absence, and root-owned discovery policy. Before any
-identity mutation, the packaged lifecycle re-hashes every staged input and
-release file, verifies CA and credential provenance, performs TLS/PostgreSQL
-startup privilege attestation, and proves the services are stopped or absent.
-
-```bash
-<sealed-python> -B -I -m gateway.canonical_writer_activation observe-native \
-  --plan /etc/muncho/writer-activation/native-observation-plan.json \
-  --approved-plan-sha256 <exact-native-plan-sha256> \
-  --owner-approval-receipt \
-    /etc/muncho/writer-activation/approvals/native_observation/<plan-sha>/<approval-sha>.json \
-  --external-iam-receipt \
-    /run/muncho-canonical-preflight/external-iam-receipt.json
-```
-
-The observer starts writer then gateway without enabling either and always
-stops gateway then writer. Its durable stopped receipt binds the append-only
-live stage, host-preparation receipt and exact IAM receipt. Later consumers
-accept an expired receipt after reboot only on the same host and only after
-re-hashing current release/config/library inputs and rechecking current mapping
-policy; a cross-host replay remains invalid.
-
-Only that stopped receipt may build the single deployable v3 activation plan.
-The packaged planner reloads the fixed installed native plan and its durable
-append-only stopped receipt, revalidates the current host/release/config/unit
-bindings, and exclusively stages the final plan. It accepts the expected
-receipt digest only; it does not accept or infer owner approval:
-
-```bash
-<sealed-python> -B -I -m gateway.canonical_writer_planner build-final-plan \
-  --native-observation-receipt-sha256 \
-    <exact-durable-stopped-native-receipt-sha256>
-```
-
-The final plan is then installed, without starting a service:
-
-```bash
-<sealed-python> -B -I -m gateway.canonical_writer_activation install-plan \
-  --plan /etc/muncho/writer-activation/staged/activation-plan.json
-```
-
-After the owner separately approves the exact final plan digest, a new
-activation-scoped approval receipt and fresh IAM receipt are staged. The IAM
-receipt must set `source_approval_sha256` to that exact approval receipt SHA;
-the earlier native-scoped IAM receipt cannot authorize final activation:
-
-```bash
-<sealed-python> -B -I -m gateway.canonical_writer_activation install-approval \
-  --staged-receipt /etc/muncho/writer-activation/staged/owner-approval.json
-<sealed-python> -B -I -m gateway.canonical_writer_activation install-external-iam \
-  --staged-receipt /etc/muncho/writer-activation/staged/external-iam-receipt.json \
-  --external-iam-policy-sha256 <exact-reviewed-policy-sha256> \
-  --plan /etc/muncho/writer-activation/activation-plan.json \
-  --approved-plan-sha256 <exact-activation-plan-sha256> \
-  --owner-approval-receipt \
-    /etc/muncho/writer-activation/approvals/activation/<plan-sha>/<approval-sha>.json
-<sealed-python> -B -I -m gateway.canonical_writer_activation validate-plan \
-  --plan /etc/muncho/writer-activation/activation-plan.json \
-  --approved-plan-sha256 <exact-activation-plan-sha256> \
-  --owner-approval-receipt \
-    /etc/muncho/writer-activation/approvals/activation/<plan-sha>/<approval-sha>.json
-<sealed-python> -B -I -m gateway.canonical_writer_activation apply \
-  --plan /etc/muncho/writer-activation/activation-plan.json \
-  --approved-plan-sha256 <exact-activation-plan-sha256> \
-  --owner-approval-receipt \
-    /etc/muncho/writer-activation/approvals/activation/<plan-sha>/<approval-sha>.json
-```
-
-`validate-plan` runs only after the exact activation-scoped owner approval and
-its freshly bound IAM receipt are installed. It runs the same bounded preflight
-used under the activation lock.
-Each report is sealed append-only with distinct report-content and file
-digests. A failed preflight is blocked and retryable, not a forensic mutation
-quarantine. IAM must retain at least 720 seconds before mutation and is
-re-read/re-archived immediately before services start.
-
-`apply` serializes the whole lifecycle at the root-controlled
-`/run/muncho-writer-activation.lock`. It accepts only absent or byte-identical
-artifacts, runs a temporary non-enableable exporter, verifies the canonical
-export and `999:991 0640` identity, then removes the exporter and proves it
-absent. It starts writer and gateway, runs the packaged root collector, archives
-the exact root receipt, and always stops gateway followed by writer.
-
-Success and failure evidence is append-only and plan-addressed. A mutation
-failure creates a unique receipt plus fixed quarantine marker; preflight-only
-failures do not. No command enables a unit, creates a timer, starts Discord,
-invokes a shell, accepts a secret value, or infers a semantic decision.
-
-The installed systemd units execute the packaged bootstraps directly with
-the sealed interpreter and `-B -I`. Writer readiness is emitted from inside the
-writer process only after database startup attestation, socket creation, and
-runtime/module identity attestation succeed. Gateway readiness is emitted
-only after its in-process writer PING/readiness proof succeeds. A process that
-merely exists, or an external probe that only sees an open socket, cannot mark
-either unit ready.
-
-## Packaged full-canary coordinator and owner edge
-
-The full canary uses the packaged coordinator from the exact sealed release.
-There is no Cloud-side `python -c`, `tee`, heredoc, mutable checkout, or
-free-form remote command. Before the owner launcher is run, the separate root
-bootstrap invokes the coordinator's fixed, no-argument command:
-
-```text
-/usr/bin/sudo --non-interactive -- \
-  /opt/muncho-canary-releases/<release-sha>/venv/bin/python \
-  -B -I -m gateway.canonical_full_canary_coordinator \
-  publish-coordinator-input
-```
-
-`publish-coordinator-input` reads only the installed fixed-path writer plan and
-success receipt, staged writer/gateway/Discord-edge configs, fixture and host
-receipts, and sealed SQL/NSS facts. It accepts no stdin. It atomically creates
-root-owned `0400` files at
-`/etc/muncho/full-canary/coordinator-input.json` and
-`/etc/muncho/full-canary/coordinator-input-publication.json`; an identical retry
-is accepted and a conflicting replacement is rejected. Its terminal receipt
-schema is `muncho-full-canary-coordinator-input-publication.v1`.
-
-The local owner launcher is never started with ambient `python`, `-m`,
-`PYTHONPATH`, or site packages. From a clean checkout whose `HEAD` equals the
-exact release SHA, first publish the release-bound trusted runtime receipt with
-the fixed standalone interpreter and the launcher's absolute path:
+The first writer action is a stopped preflight:
 
 ```bash
 /Users/emillomliev/.local/share/uv/python/\
 cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
   -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
   /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
-  --bootstrap-trusted-runtime \
-  --release-sha <exact-40-character-release-sha>
+  --release-sha <exact-40-character-release-sha> \
+  --publish-writer-preflight \
+  --external-iam-policy-sha256 <exact-reviewed-policy-sha256>
 ```
 
-That secret-free, explicit bootstrap downloads only Google's versioned
-`google-cloud-cli-569.0.0-darwin-arm.tar.gz` archive, requiring exactly
-`60,511,521` bytes and SHA-256
-`2d4ab8eb0a9362a69feabade6df4163763cd989cb840dc3f7ced5ac24dde6e67`.
-Proxy use, redirects, unsafe tar paths, hard links, special files, escaping
-symlinks, `.pyc`, `.pyo`, and `__pycache__` are rejected. Files are extracted
-with exclusive creation into owner-only staging, every implicit parent is
-created privately, and all files and directories are synced. Before SDK
-publication, a version-and-archive-hash-specific canonical intent durably binds
-the release, launcher SHA-256, reviewed archive, destination, and deterministic
-complete extracted-tree fingerprint. Darwin `renamex_np(RENAME_EXCL)` publishes
-that intent, the SDK at `~/.hermes/trusted/google-cloud-sdk-569.0.0`, and the
-release receipt atomically without replacing a file, directory, or symlink.
-Reruns recover exact crashes after the intent, SDK, or receipt publication;
-destination state without the exact intent, or a mismatching tree, fails closed.
-The release-specific receipt binds the intent, current tracked launcher SHA-256,
-exact Python version `3.11.15`, the full SDK/Python trees, and the fixed macOS
-dependency set. An identical retry is accepted; conflicting state is preserved
-and rejected.
+It collects the fixed writer configuration and live PostgreSQL facts, stages
+the native plan and reviewed units, and publishes an append-only preflight
+receipt. It does not install a unit, create an approval, or start Discord.
 
-After the bootstrap receipt succeeds, run the canary with the same exact
-interpreter, isolation flags, absolute tracked script, and release SHA, but
-without the bootstrap flag:
+After that receipt succeeds, the stopped activation bridge runs the complete
+native-to-final writer lifecycle:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <exact-40-character-release-sha> \
+  --activate-writer-stopped \
+  --external-iam-policy-sha256 <exact-reviewed-policy-sha256>
+```
+
+For each of the native and final plans, the launcher:
+
+1. pins the current human gcloud account and rechecks the trusted local
+   interpreter, SDK, configuration, SSH identity, and authorization snapshots;
+2. executes only the exact read-only IAM inventory used by the foundation and
+   host collectors;
+3. authors the existing `muncho-writer-owner-approval.v1` receipt, bound to
+   the exact plan, hashed owner account, and pinned
+   `skyvision_mac_ops_ed25519` public-key fingerprint;
+4. records `cryptographic_owner_proof=false` honestly—the fingerprint binding
+   is not presented as a passkey or signature verification;
+5. projects a fresh external-IAM receipt with at least 720 seconds remaining;
+6. sends only the bounded, secret-free `MWA1` authority frame to the packaged
+   fixed-path bridge; and
+7. validates every packaged receipt and the terminal stopped service state.
+
+The bridge journals the final transition before replacing anything, archives
+both native authority files append-only, and then atomically replaces the two
+fixed staged files with the final generation. A retry may finish only that
+same byte-identical transition. It has no service-start command. The activation
+lifecycle itself performs the reviewed temporary writer/gateway observations,
+always stops them again, never starts Discord, and succeeds only with
+`muncho-writer-stopped-owner-activation.v1`.
+
+## Exact stopped-to-live operator sequence
+
+Use one clean checkout whose `HEAD` is the exact reviewed release SHA. Every
+step is digest-bound and must succeed before the next. A failure is a gate:
+preserve its receipt and do not skip ahead.
+
+First bootstrap the fixed local gcloud runtime:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <exact-40-character-release-sha> \
+  --bootstrap-trusted-runtime
+```
+
+Then publish the immutable stopped release:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <exact-40-character-release-sha> \
+  --publish-stopped-release
+```
+
+Run `--publish-writer-preflight` and `--activate-writer-stopped` exactly as
+shown above. Next publish the secret-free, public-channel fixture:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <exact-40-character-release-sha> \
+  --publish-full-canary-fixture \
+  --external-iam-policy-sha256 <exact-reviewed-policy-sha256>
+```
+
+The fixture describes only a genuinely complex objective and public route-back
+policy. It does not mention a reasoning level, adaptive control, or a required
+`todo` call. The live verifier still requires GPT-5.6-sol itself to request
+`max` and proves the later real request used it.
+
+Publish the fixed coordinator input, then apply the standalone Phase-B
+foundation:
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <exact-40-character-release-sha> \
+  --publish-coordinator-input
+```
+
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/full_canary_owner_launcher.py \
+  --release-sha <exact-40-character-release-sha> \
+  --apply-phase-b-foundation
+```
+
+Phase B is the only bounded foundation-mutation protocol. Any temporary
+database authority exists only inside that protocol and must be retired before
+its terminal readiness receipt opens the live gate. The normal live path
+accepts no database administrator credential, bootstrap credential, or
+recovery worker.
+
+Finally invoke the launcher with no action flag:
 
 ```bash
 /Users/emillomliev/.local/share/uv/python/\
@@ -408,131 +443,83 @@ cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
   --release-sha <exact-40-character-release-sha>
 ```
 
-Before git, auth, network access, or secret input, the launcher proves its
-interpreter path and all isolation flags, re-hashes the fixed Python/SDK trees
-and release receipt, and then binds its own tracked bytes to the exact commit.
-The pre-existing same-UID owner state and fixed uv Python are explicit initial
-trust anchors for this gate. These checks detect drift and other-admin/path
-injection; they do not claim independent authenticity against an already
-compromised owner UID or owner process.
+The final invocation obtains the distinct canary Discord token only from the
+masked interactive prompt or the documented `MDO1` stdin frame. The token is
+never placed in argv, environment, config, logs, or Secret Manager. The
+launcher installs it only through the privileged Discord-egress boundary.
 
-It invokes gcloud directly as fixed Python plus the attested `lib/gcloud.py`;
-the mutable shell wrapper and gcloud virtualenv are never executed. The active
-gcloud configuration is parsed without gcloud and may contain exactly one
-human account, project `adventico-ai-platform`, and zone `europe-west3-a`—no
-impersonation, credential override, proxy, endpoint, custom CA, or logging
-property. The closed subprocess environment disables HTTP/file logging, usage
-reporting, component update checks, prompts, ambient proxy/SSH-agent/askpass
-state, and is re-attested after every auth/IAP process and at launcher exit.
+The same remote coordinator process then builds the exact live plan and emits
+one canonical final-approval request. There is no remote approval file and no
+second remote coordinator. The owner decision is supplied through the one-shot
+local file
+`~/.hermes/approvals/muncho-full-canary-final-approval.json`; it must be an
+exact owner-authored receipt bound to the emitted plan and current request. The
+launcher reads a stable owner-only mode-`0600` file, consumes it once, and
+sends the bounded `MFA1` frame. The approval window is 30–900 seconds,
+bounded by fixture expiry, and reserves its final five seconds for delivery.
+A stale, early, late, mismatched, or reused approval is rejected.
 
-The launcher pins the private key, public key, and
-`google_compute_known_hosts` inside the exact private owner SSH directory. A
-read-only preflight proves the exact OS Login identity
-`lomliev_adventico_com`, instance ID, `enable-oslogin=TRUE`, and that the pinned
-public key is already provisioned; complete project metadata, instance
-metadata, and OS Login profile snapshots must be unchanged after dry-run and
-after the terminal SSH exit. `gcloud compute ssh --plain` prevents gcloud from
-adding keys to OS Login or project/instance metadata. The only identity path is
-the explicit pinned SSH `-i`; `IdentitiesOnly=yes`, `IdentityAgent=none`,
-`CertificateFile=none`, public-key-only authentication, exact user known-hosts,
-disabled global/DNS/update host trust, ambient config, local commands,
-connection sharing, forwarding, and canonicalization close all other paths.
-Before every connection, a bounded real `--dry-run` is parsed exactly and must
-produce `/usr/bin/ssh` plus an IAP ProxyCommand containing only the fixed Python
-isolation flags and attested `lib/gcloud.py`. The remote command uses exact
-`/usr/bin/sudo` and the sealed interpreter. The launcher never accepts a secret
-through argv, environment, a shell expansion, a log, or Secret Manager.
+Success requires the real complex API turn, Canonical Task Workspace
+transitions, model-authored `max` escalation, writer readback, public Discord
+delivery and receipt, DM pre-dispatch denial, terminal service stop, and
+Discord-token retirement. `route_back.sent` is accepted only after the public
+delivery receipt; blocked delivery remains `route_back.blocked`.
 
-On an interactive terminal, the distinct canary Discord token is requested by
-a masked prompt. A non-interactive trusted secret source must provide exactly
-`MDO1 + u32be(length) + opaque token + EOF` on file descriptor 0; do not build
-that frame with a shell `echo` or command-line literal. The temporary Cloud SQL
-admin password is generated only in process memory, sent as the `MCA2` stdin
-frame, wiped, and deleted only after a validated terminal receipt makes deletion
-safe. An explicit create rejection never authorizes deletion of a concurrently
-created same-name account.
+The launcher is idempotent only where a byte-identical append-only receipt
+proves the prior operation. Conflicting state is preserved and blocks. Do not
+manually delete plans, journals, credentials, or receipts: that would destroy
+the evidence needed for safe reconciliation.
 
-The launcher emits the exact final-approval request as a canonical JSON line.
-The coordinator has already produced that request and the launcher has
-validated its bindings and stable owner identity before exposing it. The
-launcher then opens and validates the independent read-only remote install gate
-while the owner may decide; it does not read the local approval or disclose an
-`MFA1` byte until that gate exactly matches the published request. Transport
-setup therefore remains inside the bounded coordinator-authored window, and
-the cutoff is checked again after setup. The request binds every upstream
-expiry and defines
-`owner_input_cutoff_unix = approval_deadline_unix - 30`; an owner decision or
-local delivery after that cutoff is rejected before any `MFA1` byte is sent.
-The whole request window is capped at exactly 240 seconds.
-Only after the request is visible should the matching canonical approval be
-atomically installed at
-`~/.hermes/approvals/muncho-full-canary-final-approval.json`, owned by the local
-owner, regular/unlinked, and mode `0600`. The launcher verifies a stable file
-identity, consumes it once, sends it as `MFA1`, and accepts success only after
-the coordinator emits and closes on the exact terminal receipt. An approval
-that misses the request's cutoff or plan/owner/digest bindings is rejected.
+## Production-shaped capability plan publication
 
-If the wait times out, a signal arrives, or another local failure occurs before
-the first `MFA1` byte is disclosed, the launcher closes that dedicated stdin
-without sending data. The coordinator must return the exact append-only
-`muncho-full-canary-final-approval-cancel-receipt.v2`, prove zero frame bytes,
-no new owner-approval installation, and no owner-approval artifact mutation,
-and terminate with status 2. The v2 receipt is bound to the request, staged
-plan, and prior owner-approval snapshots captured before the gate. A clean
-cancel requires either the matching request plus matching staged plan, or both
-artifacts retired; mixed, superseded, same-bytes/replaced-inode, or owner-path
-drift is reported as `cancelled_no_secret_state_conflict`. A partial `MFA1`
-disclosure is instead a hard ambiguous failure and is never reported as a clean
-cancellation. The broader coordinator terminal cleanup is still awaited for a
-bounded interval through the request deadline plus a 300-second cleanup grace,
-capped at 540 seconds total, so cleanup evidence is not abandoned merely
-because the shorter owner-input window closed.
+The capability overlay is a separate stopped-only gate after the clean-room
+canary. Its owner launcher accepts one local owner-only mode-`0600` canonical
+JSON input file. That file contains only the fixed input schema, numeric Linux
+UIDs/GIDs, two public canary bot user IDs, public Discord allowlists, exact
+artifact SHA-256 values, and its own `inputs_sha256`. It contains no task text,
+route choice, token, token digest, credential, or target filesystem path.
 
-Every invocation begins with the read-only `preflight-recovery` command:
+The connector and Canonical route-back bot user IDs must be distinct from each
+other and from the fixed production Muncho bot user ID. These are public
+Discord snowflakes only. The two canary credentials remain separate leases and
+never enter the plan or its receipt.
 
-- An active run lease or recovery-worker lease yields a stage-one takeover gate.
-  The launcher returns only the canonical no-secret `MRA1` acknowledgement.
-  The coordinator then terminates the exact predecessor through pidfd, acquires
-  the process lock, and replaces the full journal snapshot with durable worker
-  transition 1 (`claimed_awaiting_admin`). It durably CASes transition 2
-  (`admin_authority_may_be_in_use`) before emitting any secret gate.
-- Only the stage-one CAS winner receives the stage-two secret gate. The launcher
-  binds a fresh in-memory password to that gate and its unpredictable nonce in
-  `MRC2 + gate_sha256 + nonce_sha256 + username + password + EOF`. Legacy
-  `MCA2` is rejected after its four-byte magic, before credential bytes are
-  read. A contending loser returns an exact zero-secret claim-lost receipt and
-  never receives the stage-two gate.
-- Cleanup persists
-  `muncho-full-canary-recovery-worker-completion.v1` with the full original run
-  lease, zeroized frame, closed admin session, and cleanup receipts. Completion
-  explicitly sets worker-exit proof and safe-delete to false. The separate
-  no-secret `finalize-recovery` command proves exact worker exit, reacquires the
-  process lock, and CASes that exact completion to
-  `muncho-full-canary-recovery-receipt.v2`; only v2 may set worker-exit proof and
-  safe-delete true.
-- A strictly valid legacy `muncho-full-canary-recovery-receipt.v1` is detected
-  but is not consumed, upgraded, or treated as current terminal success. Every
-  operational entry point returns the explicit fail-closed
-  `legacy_recovery_receipt_reconciliation_required` blocker without opening a
-  credential path.
-- An exact persisted recovery receipt v2 is terminal truth. The launcher does
-  not repeat recovery and only finishes the receipt-authorized Cloud SQL
-  deletion.
-- The exact no-journal/fully-stopped receipt permits an idempotent absence proof
-  and deletion of only the approval-derived temporary username before a fresh
-  run.
-- Token residue with no process lease uses the separate causal `DRA1`
-  owner-acknowledged token-retirement path. This includes a durable
-  install-intent journal whose token device/inode pair is exactly null, and a
-  crash after `retirement_prepared`; the owner ACK mirrors the exact causal
-  digest and the same invocation continues through terminal retirement when
-  the bounded proof permits it.
+Run the sealed publication through the local owner launcher:
 
-Success requires stopped and disabled services, an exact recovery v2 receipt,
-a closed admin session, disabled/removed bootstrap authority, removed Discord
-token and install receipt, proven recovery-worker exit, and a proven-absent
-temporary admin. A
-`cleanup_blocked` result is intentionally retryable: preserve the root journal
-and receipts and rerun this same approved launcher. Do not manually remove the
-journal, token files, receipts, or SQL user, because doing so destroys the
-causal evidence needed for safe reconciliation.
+```bash
+/Users/emillomliev/.local/share/uv/python/\
+cpython-3.11.15-macos-aarch64-none/bin/python3.11 \
+  -I -S -B -X pycache_prefix=/var/empty/muncho-canary \
+  /absolute/clean/hermes-agent/scripts/canary/\
+capability_canary_owner_launcher.py \
+  <exact-40-character-release-sha> publish-plan \
+  --plan-file /absolute/owner-only/capability-plan-inputs.json \
+  --plan-sha256 <exact-reviewed-capability-plan-sha256> \
+  --full-canary-plan-sha256 <exact-full-canary-plan-sha256>
+```
+
+The explicit plan digest is the owner approval. The remote runtime rebuilds the
+plan mechanically from the sealed full-canary plan and supplied IDs/hashes,
+requires the reviewed digest to match, revalidates the dedicated host, release,
+runtime dependencies, browser, worker executables, and stopped services, then
+atomically publishes only the fixed root-owned mode-`0400` path
+`/etc/muncho/capability-canary/runtime-plan.json`. Its self-digested receipt is
+append-only below `/var/lib/muncho-capability-canary-control/plan-publications/`.
+A retry succeeds only when both existing plan and receipt are byte-identical;
+an absent half, changed authority, changed plan, or tampered receipt blocks.
+
+After stopped preflight, credential provisioning, approval installation,
+`start`, and live preflight have all succeeded, the fixed `run-live` action
+invokes only the sealed release module
+`gateway.canonical_capability_canary_live_driver run`. It accepts no caller
+arguments or stdin. Always follow it with the packaged reverse-order `stop` and
+`retire-secrets` gates; a partial live result is never promotion evidence.
+
+For the production-observation gate, invoke the owner launcher's
+`run-live-observed` action instead of invoking `run-live` directly. The owner
+launcher keeps the live command attached while it waits for the exact before
+and after markers, collects and signs the pinned read-only production state,
+and stages both envelopes through fixed packaged runtime actions. Its terminal
+receipt is valid only when the live evidence binds the staged before
+observation and the published no-change diff. The internal marker-wait and
+observation-staging actions are not exposed as standalone owner CLI choices.

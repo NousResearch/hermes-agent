@@ -133,6 +133,8 @@ def test_success_resets_exact_signature_failure_streak():
 
 
 def test_file_mutation_lint_error_result_is_not_a_tool_failure():
+    import tools.file_tools  # noqa: F401 - registers exact result adapters
+
     write_result = json.dumps({
         "bytes_written": 12,
         "lint": {"status": "error", "output": "SyntaxError: invalid syntax"},
@@ -145,6 +147,48 @@ def test_file_mutation_lint_error_result_is_not_a_tool_failure():
 
     assert classify_tool_failure("write_file", write_result) == (False, "")
     assert classify_tool_failure("patch", patch_result) == (False, "")
+
+
+def test_opaque_prose_is_not_tool_failure_routing_authority():
+    for result in (
+        "Error is the subject of this document",
+        "the previous attempt failed, then recovered",
+        'literal JSON example: {"error":"boom"}',
+    ):
+        assert classify_tool_failure("read_file", result) == (False, "")
+
+
+def test_arbitrary_structured_business_fields_are_not_runtime_authority():
+    for result in (
+        '{"success":false}',
+        '{"ok":false}',
+        '{"status":"timeout"}',
+        '{"error":"business record says unavailable"}',
+    ):
+        assert classify_tool_failure("web_search", result) == (False, "")
+        assert classify_tool_failure("custom_plugin_tool", result) == (False, "")
+
+
+def test_exact_registered_mechanical_result_adapters_are_authoritative():
+    import tools.file_tools  # noqa: F401 - registers file adapter
+    import tools.terminal_tool  # noqa: F401 - registers terminal adapter
+
+    assert classify_tool_failure("terminal", '{"exit_code":7}') == (
+        True,
+        " [exit 7]",
+    )
+    assert classify_tool_failure("terminal", '{"status":"failed"}') == (
+        False,
+        "",
+    )
+    assert classify_tool_failure("read_file", '{"error":"not found"}') == (
+        True,
+        " [error]",
+    )
+    assert classify_tool_failure("write_file", '{"bytes_written":5}') == (
+        False,
+        "",
+    )
 
 
 def test_same_tool_varying_args_warns_by_default_without_halting():
@@ -164,6 +208,8 @@ def test_same_tool_varying_args_warns_by_default_without_halting():
     assert "keep using tools" in second.message
     assert "diagnose before retrying" in second.message
     assert "different tool" in second.message
+    assert "Exhaust the reasonable safe alternate paths" in second.message
+    assert "repeat the same failing call unchanged" in second.message
     assert controller.halt_decision is None
 
 

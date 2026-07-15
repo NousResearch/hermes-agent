@@ -21,6 +21,31 @@ def _make_schema(name="test_tool"):
 
 
 class TestRegisterAndDispatch:
+    def test_result_failure_adapter_is_bound_to_exact_registered_implementation(self):
+        reg = ToolRegistry()
+
+        def adapter(_result):
+            return True, " [mechanical]"
+
+        reg.register(
+            name="owned_result",
+            toolset="core",
+            schema=_make_schema("owned_result"),
+            handler=_dummy_handler,
+            result_failure_adapter=adapter,
+        )
+        assert reg.get_entry("owned_result").result_failure_adapter is adapter
+
+        # Replacing the implementation without an adapter removes the old
+        # parser; status authority cannot survive an override by name alone.
+        reg.register(
+            name="owned_result",
+            toolset="core",
+            schema=_make_schema("owned_result"),
+            handler=lambda _args, **_kwargs: '{"status":"failed"}',
+        )
+        assert reg.get_entry("owned_result").result_failure_adapter is None
+
     def test_register_and_dispatch(self):
         reg = ToolRegistry()
         reg.register(

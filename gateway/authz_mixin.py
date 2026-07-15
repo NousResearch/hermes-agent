@@ -64,9 +64,21 @@ class GatewayAuthorizationMixin:
             return None
         # ``getattr`` guards test fixtures that build a bare source via
         # SimpleNamespace and omit ``profile`` (see AGENTS.md pitfall #17).
+        profile = getattr(source, "profile", None)
+        # Relay-delivered events retain the underlying platform because that
+        # identity participates in session keying and multi-platform egress.
+        # The process that can actually answer is still the RelayAdapter,
+        # registered under Platform.RELAY.  The transport stamps this internal
+        # bool after its authenticated boundary; it is neither accepted from
+        # the wire nor persisted.  Use that structured provenance instead of
+        # guessing from a platform name or message text.
+        if getattr(source, "delivered_via_upstream_relay", None) is True:
+            relay_adapter = self._authorization_adapter(Platform.RELAY, profile)
+            if relay_adapter is not None:
+                return relay_adapter
         return self._authorization_adapter(
             getattr(source, "platform", None),
-            getattr(source, "profile", None),
+            profile,
         )
 
     def _adapter_authorization_is_upstream(

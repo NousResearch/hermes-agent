@@ -78,9 +78,31 @@ def _conversation_without_handoff(n_exchanges=12):
 
 def _conversation_with_handoff(n_exchanges=12):
     """Build message list WITH a compaction handoff in protected head."""
-    from agent.context_compressor import SUMMARY_PREFIX
+    from agent.context_compressor import (
+        COMPRESSED_SUMMARY_METADATA_KEY,
+        SUMMARY_PREFIX,
+        _SUMMARY_END_MARKER,
+    )
+    from agent.message_provenance import (
+        CONTEXT_COMPACTION_SUMMARY_KIND,
+        MESSAGE_PROVENANCE_KEY,
+        bind_message_fragment,
+    )
+
+    handoff = f"{SUMMARY_PREFIX}\nPrevious summary.\n\n{_SUMMARY_END_MARKER}"
     msgs = [{"role": "system", "content": "You are a helpful assistant."}]
-    msgs.append({"role": "user", "content": SUMMARY_PREFIX + "\nPrevious summary."})
+    msgs.append(
+        {
+            "role": "user",
+            "content": handoff,
+            COMPRESSED_SUMMARY_METADATA_KEY: True,
+            MESSAGE_PROVENANCE_KEY: bind_message_fragment(
+                None,
+                kind=CONTEXT_COMPACTION_SUMMARY_KIND,
+                exact_text=handoff,
+            ),
+        }
+    )
     for i in range(n_exchanges):
         msgs.append({"role": "user", "content": f"Question {i}"})
         msgs.append({"role": "assistant", "content": f"Answer {i}"})

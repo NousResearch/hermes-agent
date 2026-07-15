@@ -405,6 +405,11 @@ def load_cli_config() -> Dict[str, Any]:
             "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
             "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
             "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+            "isolated_worker_socket": "/run/muncho-isolated-worker/worker.sock",
+            "isolated_worker_server_uid": 0,
+            "isolated_worker_server_gid": 0,
+            "isolated_worker_socket_uid": 0,
+            "isolated_worker_socket_gid": 0,
             "docker_volumes": [],  # host:container volume mounts for Docker backend
             "docker_mount_cwd_to_workspace": False,  # explicit opt-in only; default off for sandbox isolation
         },
@@ -429,7 +434,7 @@ def load_cli_config() -> Dict[str, Any]:
             "reasoning_effort": "",
             "adaptive_reasoning": {
                 "enabled": True,
-                "max_effort": "xhigh",
+                "max_effort": "max",
             },
             "service_tier": "",
             "personalities": {
@@ -621,6 +626,11 @@ def load_cli_config() -> Dict[str, Any]:
         "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
         "modal_image": "TERMINAL_MODAL_IMAGE",
         "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+        "isolated_worker_socket": "TERMINAL_ISOLATED_WORKER_SOCKET",
+        "isolated_worker_server_uid": "TERMINAL_ISOLATED_WORKER_SERVER_UID",
+        "isolated_worker_server_gid": "TERMINAL_ISOLATED_WORKER_SERVER_GID",
+        "isolated_worker_socket_uid": "TERMINAL_ISOLATED_WORKER_SOCKET_UID",
+        "isolated_worker_socket_gid": "TERMINAL_ISOLATED_WORKER_SOCKET_GID",
         # SSH config
         "ssh_host": "TERMINAL_SSH_HOST",
         "ssh_user": "TERMINAL_SSH_USER",
@@ -3652,6 +3662,9 @@ def save_config_value(key_path: str, value: any) -> bool:
     config_path = user_config_path if user_config_path.exists() else project_config_path
     
     try:
+        from hermes_cli.config import refuse_pinned_effective_config_write
+
+        refuse_pinned_effective_config_write(config_path)
         # Ensure parent directory exists (for ~/.hermes/config.yaml on first use)
         config_path.parent.mkdir(parents=True, exist_ok=True)
         
@@ -4048,6 +4061,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # don't auto-queue another continuation on top of a user-cancelled
         # turn (which would make Ctrl+C feel like it did nothing).
         self._last_turn_interrupted = False
+        # Claimed once by _maybe_continue_goal_after_turn. These fields bind
+        # post-turn handling to the exact durable standing-goal generation;
+        # cached GoalManager state is never treated as authority.
+        self._last_goal_turn_id = ""
+        self._last_goal_generation_id = ""
+        self._last_goal_turn_failed = False
         self._should_exit = False
         # /exit --delete: when True, the current session's SQLite history and
         # on-disk transcripts are deleted during shutdown. Set by
@@ -9177,31 +9196,34 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             pass  # Non-fatal — never break the main loop
 
     def _maybe_continue_goal_after_turn(self) -> None:
-        """Hook run after every CLI turn. Judges + maybe re-queues.
+        """Consume one exact model-authored goal outcome and maybe re-queue.
 
-        Safe to call when no goal is set — returns quickly.
-
-        Preemption is automatic: if a real user message is already in
-        ``_pending_input`` we skip judging (the user's new input takes
-        priority and we'll re-judge after that turn). If judge says done,
-        mark it done and tell the user. If judge says continue and we're
-        under budget, push the continuation prompt onto the queue.
-
-        Interrupt handling: if the turn was user-cancelled (Ctrl+C), we
-        AUTO-PAUSE the goal instead of judging + re-queuing. Otherwise
-        Ctrl+C feels like it did nothing — the judge runs on whatever
-        partial output landed, almost always says "continue", and the
-        loop keeps going. Auto-pause keeps the goal recoverable via
-        ``/goal resume`` once the user has sorted out what they want.
-        The empty-response skip mirrors the gateway guard at
-        ``_handle_message`` in ``gateway/run.py``.
+        The primary model already made the semantic decision through
+        ``todo.goal_outcome``. This hook only applies that exact turn's durable
+        result. A queued real user message preempts auto-continuation, but the
+        completed turn is still consumed first so its outcome cannot leak into
+        the next turn.
         """
         mgr = self._get_goal_manager()
-        if mgr is None or not mgr.is_active():
+        if mgr is None:
             return
 
-        # If a real user message is already queued, don't inject a
-        # continuation prompt on top — let the user's turn go first.
+        # Claim once. Every early-return path below either consumes or abandons
+        # this exact authority; no later turn can accidentally reuse it.
+        turn_id = str(getattr(self, "_last_goal_turn_id", "") or "")
+        generation_id = str(
+            getattr(self, "_last_goal_generation_id", "") or ""
+        )
+        turn_failed = bool(getattr(self, "_last_goal_turn_failed", False))
+        self._last_goal_turn_id = ""
+        self._last_goal_generation_id = ""
+        self._last_goal_turn_failed = False
+        if not turn_id or not generation_id:
+            return
+
+        # Detect whether a real user message is already queued. We still apply
+        # this completed turn's exact outcome, but never inject a continuation
+        # on top of the user's next message.
         # Slash commands don't count as "real user messages" for this
         # check: they're inspection/mutation (e.g. /subgoal added mid-
         # run) and the process_loop dispatches them via process_command,
@@ -9210,10 +9232,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # slash command consumes its queue slot via process_command()
         # which never re-fires the goal hook. Peek at all queued entries
         # and only defer when there's a non-slash payload.
+        has_real_message = False
         try:
             pending = getattr(self, "_pending_input", None)
             if pending is not None and not pending.empty():
-                has_real_message = False
                 try:
                     # Queue.queue is the underlying deque — direct peek
                     # without disturbing FIFO order.
@@ -9227,21 +9249,20 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                         has_real_message = True
                         break
                 except Exception:
-                    # Fallback: if we can't introspect the queue, behave
-                    # like the old check and defer to be safe.
+                    # If queue introspection fails, suppress only the automatic
+                    # enqueue; durable outcome consumption still proceeds.
                     has_real_message = True
-                if has_real_message:
-                    return
         except Exception:
-            pass
+            has_real_message = True
 
-        # If the turn was user-interrupted (Ctrl+C), auto-pause the goal
-        # and bail. The judge call would almost always return "continue"
-        # on the partial output and immediately re-queue another turn,
-        # which is exactly what the user cancelled. Pausing (rather than
-        # silently skipping) is the observable, recoverable behavior.
+        # An interrupted turn is explicitly abandoned, then the standing goal
+        # is paused for a visible, recoverable user experience.
         if getattr(self, "_last_turn_interrupted", False):
             try:
+                mgr.abandon_model_turn(
+                    originating_turn_id=turn_id,
+                    goal_generation_id=generation_id,
+                )
                 mgr.pause(reason="user-interrupted (Ctrl+C)")
             except Exception as exc:
                 logging.debug("goal pause-on-interrupt failed: %s", exc)
@@ -9272,11 +9293,17 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         except Exception:
             last_response = ""
 
-        # Skip judging on empty/whitespace-only responses. These are almost
-        # always transient failures (API error, empty stream) where the
-        # judge would say "continue" and trip the consecutive-parse-failures
-        # backstop unnecessarily. Mirrors the gateway guard.
-        if not last_response.strip():
+        # Error/partial/empty paths do not represent a completed model turn.
+        # Revoke their authority explicitly without burning goal budget or
+        # creating a continuation.
+        if turn_failed or not last_response.strip():
+            try:
+                mgr.abandon_model_turn(
+                    originating_turn_id=turn_id,
+                    goal_generation_id=generation_id,
+                )
+            except Exception as exc:
+                logging.debug("goal turn abandon failed: %s", exc)
             return
 
         try:
@@ -9287,6 +9314,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
 
         decision = mgr.evaluate_after_turn(
             last_response,
+            originating_turn_id=turn_id,
+            goal_generation_id=generation_id,
             user_initiated=True,
             background_processes=_bg_procs,
         )
@@ -9294,7 +9323,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         if msg:
             _cprint(f"  {msg}")
 
-        if decision.get("should_continue"):
+        if decision.get("should_continue") and not has_real_message:
             prompt = decision.get("continuation_prompt")
             if prompt:
                 try:
@@ -12105,6 +12134,9 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         # this to True. Early returns (credential refresh failure, etc.)
         # leave it False, which is correct — those aren't user interrupts.
         self._last_turn_interrupted = False
+        self._last_goal_turn_id = ""
+        self._last_goal_generation_id = ""
+        self._last_goal_turn_failed = False
 
         # Refresh provider credentials if needed (handles key rotation transparently)
         if not self._ensure_runtime_credentials():
@@ -12532,6 +12564,33 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             sys.stdout.flush()
             time.sleep(0.15)
 
+            # Capture the exact turn/generation before any post-turn hook runs.
+            # A result-less abandoned daemon turn is included: abandoning its
+            # durable authority makes any late todo write fail closed.
+            _agent_goal_turn_id = str(
+                getattr(self.agent, "_current_turn_id", "") or ""
+            ) if self.agent else ""
+            _result_goal_turn_id = str(
+                result.get("turn_id", "") or ""
+            ) if isinstance(result, dict) else ""
+            self._last_goal_turn_id = (
+                _result_goal_turn_id or _agent_goal_turn_id
+            )
+            self._last_goal_generation_id = (
+                str(
+                    getattr(self.agent, "_current_goal_generation_id", "")
+                    or ""
+                )
+                if self.agent
+                and self._last_goal_turn_id == _agent_goal_turn_id
+                else ""
+            )
+            self._last_goal_turn_failed = bool(
+                not isinstance(result, dict)
+                or result.get("failed")
+                or result.get("partial")
+            )
+
             # Update history with full conversation
             self.conversation_history = result.get("messages", self.conversation_history) if result else self.conversation_history
 
@@ -12754,6 +12813,14 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             return response
             
         except Exception as e:
+            if self.agent:
+                self._last_goal_turn_id = str(
+                    getattr(self.agent, "_current_turn_id", "") or ""
+                )
+                self._last_goal_generation_id = str(
+                    getattr(self.agent, "_current_goal_generation_id", "") or ""
+                )
+                self._last_goal_turn_failed = True
             print(f"Error: {e}")
             return None
         finally:

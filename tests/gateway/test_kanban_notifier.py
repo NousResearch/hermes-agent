@@ -23,6 +23,17 @@ class DisconnectedAdapters(dict):
 
 
 async def _run_one_notifier_tick(monkeypatch, runner):
+    from hermes_cli import config as hermes_config
+
+    # Generic Hermes now keeps embedded Kanban dispatch opt-in. These tests
+    # exercise notifier delivery, not the dispatch gate, so enable the
+    # mechanical service explicitly instead of relying on the historical
+    # default. Gate-specific behavior is covered separately.
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True}},
+    )
     real_sleep = asyncio.sleep
 
     async def fake_sleep(delay):

@@ -113,7 +113,7 @@ from agent.process_bootstrap import (
     _SafeWriter,  # noqa: F401  # re-exported for tests that `from run_agent import _SafeWriter`
     _get_proxy_for_base_url,
 )
-from agent.iteration_budget import IterationBudget
+from agent.iteration_budget import ExecutionLease, IterationBudget
 
 
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -424,7 +424,7 @@ class AIAgent:
         command: str = None,
         args: list[str] | None = None,
         model: str = "",
-        max_iterations: int = 90,  # Default tool-calling iterations (shared with subagents)
+        max_iterations: int = 90,  # Default per-agent renewable slice size
         tool_delay: float = 1.0,
         enabled_toolsets: List[str] = None,
         disabled_toolsets: List[str] = None,
@@ -479,6 +479,7 @@ class AIAgent:
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
+        execution_lease: "ExecutionLease" = None,
         fallback_model: Dict[str, Any] = None,
         credential_pool=None,
         checkpoints_enabled: bool = False,
@@ -555,6 +556,7 @@ class AIAgent:
             session_db=session_db,
             parent_session_id=parent_session_id,
             iteration_budget=iteration_budget,
+            execution_lease=execution_lease,
             fallback_model=fallback_model,
             credential_pool=credential_pool,
             checkpoints_enabled=checkpoints_enabled,
@@ -824,18 +826,12 @@ class AIAgent:
         allowed even with stream consumers registered because no tokens
         are being streamed at that point.
 
-        After the main response has been delivered and the remaining tool
-        calls are post-response housekeeping (``_mute_post_response``),
-        all non-forced output is suppressed.
-
         ``suppress_status_output`` is a stricter CLI automation mode used by
         parseable single-query flows such as ``hermes chat -q``. In that mode,
         all status/diagnostic prints routed through ``_vprint`` are suppressed
         so stdout stays machine-readable.
         """
         if getattr(self, "suppress_status_output", False):
-            return
-        if not force and getattr(self, "_mute_post_response", False):
             return
         if not force and self._has_stream_consumers() and not self._executing_tools:
             return
@@ -874,6 +870,22 @@ class AIAgent:
             and getattr(self, "platform", "") == "cli"
         )
 
+    def _emit_status_event(self, event_type: str, message: str) -> None:
+        """Emit one typed status without allowing delivery errors to escape."""
+        try:
+            self._vprint(f"{self.log_prefix}{message}", force=True)
+        except Exception:
+            pass
+        if self.status_callback:
+            try:
+                self.status_callback(event_type, message)
+            except Exception:
+                logger.debug(
+                    "status_callback error for %s",
+                    event_type,
+                    exc_info=True,
+                )
+
     def _emit_status(self, message: str) -> None:
         """Emit a lifecycle status message to both CLI and gateway channels.
 
@@ -884,15 +896,16 @@ class AIAgent:
         This helper never raises — exceptions are swallowed so it cannot
         interrupt the retry/fallback logic.
         """
-        try:
-            self._vprint(f"{self.log_prefix}{message}", force=True)
-        except Exception:
-            pass
-        if self.status_callback:
-            try:
-                self.status_callback("lifecycle", message)
-            except Exception:
-                logger.debug("status_callback error in _emit_status", exc_info=True)
+        self._emit_status_event("lifecycle", message)
+
+    def _emit_terminal_status(self, message: str) -> None:
+        """Emit a status that may exactly mirror this turn's final response.
+
+        Human-facing gateways defer this typed event until the final text is
+        available and suppress it only when both visible strings are exactly
+        equal. CLI and programmatic surfaces continue to receive it normally.
+        """
+        self._emit_status_event("terminal_final_mirror", message)
 
     def _emit_warning(self, message: str) -> None:
         """Emit a user-visible warning through the same status plumbing.
@@ -1884,6 +1897,7 @@ class AIAgent:
                     tool_calls=tool_calls_data,
                     tool_call_id=msg.get("tool_call_id"),
                     finish_reason=msg.get("finish_reason"),
+                    internal_provenance=msg.get("_hermes_provenance"),
                     reasoning=msg.get("reasoning") if role == "assistant" else None,
                     reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
@@ -3297,6 +3311,8 @@ class AIAgent:
             "max_iterations": self.max_iterations,
             "budget_used": self.iteration_budget.used,
             "budget_max": self.iteration_budget.max_total,
+            "execution_lease_used": self.execution_lease.used,
+            "execution_lease_max": self.execution_lease.max_total,
         }
 
     def shutdown_memory_provider(self, messages: list = None) -> None:
@@ -3557,10 +3573,15 @@ class AIAgent:
         seed the store without a matching canonical tool call
         (GHSA-5g4g-6jrg-mw3g).
         """
-        from tools.todo_tool import MAX_TODO_RESULT_CHARS
+        from tools.todo_tool import MAX_TODO_RESULT_CHARS, TodoStore
 
         # Walk history backwards to find the most recent todo tool response
         last_todo_response = None
+        last_todo_fence_state = None
+        last_todo_binding_state = None
+        last_todo_sync_blocked_state = None
+        last_todo_binding_present = False
+        last_todo_sync_blocked_present = False
         for idx in range(len(history) - 1, -1, -1):
             msg = history[idx]
             if msg.get("role") != "tool":
@@ -3584,17 +3605,92 @@ class AIAgent:
                 continue
             try:
                 data = json.loads(content)
+                canonical_fence = data.get("canonical_fence")
+                canonical_fence_state = data.get("canonical_fence_state")
+                canonical_binding_state = data.get("canonical_binding_state")
+                canonical_sync_blocked_state = data.get(
+                    "canonical_sync_blocked_state"
+                )
+                if (
+                    isinstance(canonical_fence, dict)
+                    and canonical_fence.get("status")
+                    == "canonical_reconciliation_required"
+                ):
+                    # This is a tombstone, not an ordinary empty todo list.
+                    # Stop the backwards scan so an older successful result
+                    # cannot be restored after an append that may have
+                    # committed.  A valid exact state recreates the fence;
+                    # invalid/missing state still safely leaves the store
+                    # empty rather than rolling it back.
+                    if isinstance(canonical_fence_state, dict):
+                        last_todo_fence_state = canonical_fence_state
+                    last_todo_response = []
+                    break
                 if "todos" in data and isinstance(data["todos"], list):
                     last_todo_response = data["todos"]
+                    last_todo_binding_present = (
+                        "canonical_binding_state" in data
+                    )
+                    last_todo_sync_blocked_present = (
+                        "canonical_sync_blocked_state" in data
+                    )
+                    last_todo_binding_state = canonical_binding_state
+                    last_todo_sync_blocked_state = canonical_sync_blocked_state
                     break
             except (json.JSONDecodeError, TypeError):
                 continue
 
-        if last_todo_response:
-            # Replay the items into the store (replace mode)
-            self._todo_store.write(last_todo_response, merge=False)
-            if not self.quiet_mode:
-                self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
+        hydrated_store = TodoStore()
+        if last_todo_fence_state is not None:
+            try:
+                hydrated_store.restore_canonical_fence(
+                    last_todo_fence_state
+                )
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "Rejected invalid Canonical todo fence during hydration: "
+                    "session=%s error=%s",
+                    self.session_id or "none",
+                    exc,
+                )
+            else:
+                self._todo_store = hydrated_store
+        elif last_todo_response is not None:
+            # Validate the complete paired receipt in an isolated store before
+            # replacing live state. A malformed advertised binding/blocker must
+            # never degrade into an unbound local plan.
+            try:
+                hydrated_store.write(last_todo_response, merge=False)
+                if last_todo_binding_present:
+                    if not isinstance(last_todo_binding_state, dict):
+                        raise ValueError(
+                            "canonical todo binding must be an object"
+                        )
+                    hydrated_store.restore_canonical_binding(
+                        last_todo_binding_state
+                    )
+                if last_todo_sync_blocked_present:
+                    if not isinstance(last_todo_sync_blocked_state, dict):
+                        raise ValueError(
+                            "canonical todo sync blocker must be an object"
+                        )
+                    hydrated_store.restore_canonical_sync_blocked(
+                        last_todo_sync_blocked_state
+                    )
+            except (TypeError, ValueError) as exc:
+                logger.warning(
+                    "Rejected invalid Canonical todo state during hydration: "
+                    "session=%s error=%s",
+                    self.session_id or "none",
+                    exc,
+                )
+            else:
+                self._todo_store = hydrated_store
+                if not self.quiet_mode:
+                    self._vprint(
+                        f"{self.log_prefix}📋 Restored "
+                        f"{len(last_todo_response)} todo item(s) from history"
+                    )
         _set_interrupt(False)
 
     @classmethod
@@ -5783,10 +5879,11 @@ class AIAgent:
         persist_user_message: Optional[str] = None,
         persist_user_timestamp: Optional[float] = None,
         moa_config: Optional[dict[str, Any]] = None,
+        user_message_provenance: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """Forwarder — see ``agent.conversation_loop.run_conversation``."""
         from agent.conversation_loop import run_conversation
-        return run_conversation(
+        result = run_conversation(
             self,
             user_message,
             system_message,
@@ -5795,8 +5892,19 @@ class AIAgent:
             stream_callback,
             persist_user_message,
             persist_user_timestamp=persist_user_timestamp,
+            user_message_provenance=user_message_provenance,
             moa_config=moa_config,
         )
+        if isinstance(result, dict):
+            from agent.delivery_outcome import get_delivery_outcome
+
+            turn_id = str(getattr(self, "_current_turn_id", "") or "")
+            result.setdefault("turn_id", turn_id)
+            result.setdefault(
+                "delivery_outcome",
+                get_delivery_outcome(self, turn_id),
+            )
+        return result
 
     def chat(self, message: str, stream_callback: Optional[callable] = None) -> str:
         """

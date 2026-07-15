@@ -20,7 +20,7 @@ SQL_IP = "10.91.0.3"
 def _foundation_report():
     plan = build_foundation_plan()
     return {
-        "schema": "muncho-isolated-canary-foundation-preflight.v2",
+        "schema": "muncho-isolated-canary-foundation-preflight.v3",
         "ok": True,
         "collected_at_unix": COLLECTED_AT,
         "plan_sha256": plan.sha256,

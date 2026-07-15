@@ -114,13 +114,22 @@ def _artifact_sql() -> bytes:
 def _receipt(raw: bytes) -> dict[str, object]:
     lines = [line for line in raw.decode("utf-8").splitlines() if line]
     assert len(lines) == 1
-    value = json.loads(lines[0])
+    envelope = json.loads(lines[0])
+    assert isinstance(envelope, dict)
+    assert set(envelope) == {"unsigned_receipt_jsonb_text", "receipt"}
+    unsigned_text = envelope["unsigned_receipt_jsonb_text"]
+    value = envelope["receipt"]
+    assert isinstance(unsigned_text, str)
     assert isinstance(value, dict)
-    digest = value.pop("receipt_sha256")
-    rendered = json.dumps(value, ensure_ascii=False, separators=(", ", ": "))
-    assert digest == hashlib.sha256(rendered.encode("utf-8")).hexdigest()
-    value["receipt_sha256"] = digest
-    return value
+    digest = value["receipt_sha256"]
+    unsigned = dict(value)
+    unsigned.pop("receipt_sha256")
+    assert json.loads(unsigned_text) == unsigned
+    assert digest == hashlib.sha256(unsigned_text.encode("utf-8")).hexdigest()
+    return {
+        **value,
+        "unsigned_receipt_jsonb_text": unsigned_text,
+    }
 
 
 def _identity(container: str) -> bytes:

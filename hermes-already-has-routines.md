@@ -74,13 +74,13 @@ Run a Python script *before* the agent. The script's stdout becomes context. The
 
 ```bash
 hermes cron create "every 1h" \
-  "If CHANGE DETECTED, summarize what changed. If NO_CHANGE, respond with [SILENT]." \
+  "If CHANGE DETECTED, summarize what changed. If NO_CHANGE, call todo with delivery_outcome action=suppress and a concrete reason." \
   --script ~/.hermes/scripts/watch-site.py \
   --name "Pricing monitor" \
   --deliver telegram
 ```
 
-The `[SILENT]` pattern means you only get notified when something actually happens. No spam.
+The structured `todo.delivery_outcome` choice means you only get notified when something actually happens. No text marker or external classifier decides for the model.
 
 ### Multi-Skill Workflows
 

@@ -769,10 +769,109 @@ def test_client_rejects_wrong_writer_pid_or_uid_before_sending(tmp_path, writer_
         with pytest.raises(CanonicalWriterClientError) as rejected:
             client.request("ping", {}, {})
         assert rejected.value.code == ErrorCode.UNAUTHORIZED_PEER
+        assert rejected.value.write_may_have_occurred is False
         assert calls == []
         client.close()
     finally:
         _stop_server(server, thread)
+
+
+def test_client_transport_error_tracks_whether_send_was_reached(
+    tmp_path,
+    monkeypatch,
+):
+    class _Socket:
+        def settimeout(self, _timeout):
+            return None
+
+        def close(self):
+            return None
+
+    client = _client(
+        tmp_path / "unused.sock",
+        max_reconnect_attempts=0,
+    )
+    fake_socket = _Socket()
+    monkeypatch.setattr(client, "_connect", lambda _timeout: fake_socket)
+    monkeypatch.setattr(client, "_reauthorize_server", lambda _sock: None)
+    monkeypatch.setattr(
+        "gateway.canonical_writer_client.send_message",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(socket.timeout()),
+    )
+
+    with pytest.raises(CanonicalWriterClientError) as after_send:
+        client.call(
+            CanonicalWriterOperation.EVENT_APPEND_MODEL,
+            {},
+            runtime={},
+            idempotency_key="transport:after-send",
+        )
+
+    assert after_send.value.code == ErrorCode.TIMEOUT
+    assert after_send.value.write_may_have_occurred is True
+
+    monkeypatch.setattr(
+        client,
+        "_connect",
+        lambda _timeout: (_ for _ in ()).throw(OSError("connect failed")),
+    )
+    with pytest.raises(CanonicalWriterClientError) as before_send:
+        client.call(
+            CanonicalWriterOperation.EVENT_APPEND_MODEL,
+            {},
+            runtime={},
+            idempotency_key="transport:before-send",
+        )
+
+    assert before_send.value.code == ErrorCode.TRANSPORT_ERROR
+    assert before_send.value.write_may_have_occurred is False
+
+
+def test_client_transport_certainty_is_aggregated_across_reconnect_attempts(
+    tmp_path,
+    monkeypatch,
+):
+    class _Socket:
+        def settimeout(self, _timeout):
+            return None
+
+        def close(self):
+            return None
+
+    client = _client(
+        tmp_path / "unused.sock",
+        max_reconnect_attempts=1,
+    )
+    attempts = []
+
+    def _connect(_timeout):
+        attempts.append(True)
+        if len(attempts) == 1:
+            return _Socket()
+        raise CanonicalWriterClientError(
+            ErrorCode.UNAUTHORIZED_PEER,
+            "reconnect peer rejected",
+            write_may_have_occurred=False,
+        )
+
+    monkeypatch.setattr(client, "_connect", _connect)
+    monkeypatch.setattr(client, "_reauthorize_server", lambda _sock: None)
+    monkeypatch.setattr(
+        "gateway.canonical_writer_client.send_message",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(socket.timeout()),
+    )
+
+    with pytest.raises(CanonicalWriterClientError) as failure:
+        client.call(
+            CanonicalWriterOperation.EVENT_APPEND_MODEL,
+            {},
+            runtime={},
+            idempotency_key="transport:aggregate",
+        )
+
+    assert len(attempts) == 2
+    assert failure.value.code == ErrorCode.UNAUTHORIZED_PEER
+    assert failure.value.write_may_have_occurred is True
 
 
 def test_client_rechecks_current_writer_main_pid_before_every_request(tmp_path):

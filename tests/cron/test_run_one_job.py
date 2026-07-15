@@ -14,24 +14,44 @@ import cron.scheduler as s
 
 
 def _patch_pipeline(monkeypatch, *, success=True, output="out", final="final response",
-                    error=None, silent_marker_in=None):
+                    error=None, delivery_action=None):
     """Patch the job pipeline primitives and record the call order."""
     calls = []
 
     def fake_run_job(job, *, defer_agent_teardown=None):
         calls.append(("run_job", job["id"]))
-        fr = final if silent_marker_in is None else silent_marker_in
-        return (success, output, fr, error)
+        turn_id = "cron-turn-1" if delivery_action else ""
+        outcome = (
+            {
+                "action": delivery_action,
+                "reason": "model-authored test choice",
+                "turn_id": turn_id,
+            }
+            if delivery_action
+            else None
+        )
+        return s.CronJobRunResult(
+            success,
+            output,
+            final,
+            error,
+            delivery_outcome=outcome,
+            turn_id=turn_id,
+        )
 
     def fake_save(jid, out):
         calls.append(("save", jid))
         return f"/tmp/{jid}.txt"
 
-    def fake_deliver(job, content, adapters=None, loop=None):
+    def fake_deliver(
+        job, content, adapters=None, loop=None, *, delivery_observation=None
+    ):
         calls.append(("deliver", job["id"]))
         return None
 
-    def fake_mark(jid, ok, err=None, delivery_error=None):
+    def fake_mark(
+        jid, ok, err=None, delivery_error=None, delivery_status=None
+    ):
         calls.append(("mark", jid, ok))
 
     monkeypatch.setattr(s, "run_job", fake_run_job)
@@ -66,10 +86,9 @@ def test_run_one_job_success_sequence(monkeypatch):
     assert calls[-1] == ("mark", "j2", True)
 
 
-def test_run_one_job_silent_skips_delivery(monkeypatch):
-    """A [SILENT] final response saves output + marks the run but does NOT
-    deliver."""
-    calls = _patch_pipeline(monkeypatch, silent_marker_in="[SILENT]")
+def test_run_one_job_structured_suppress_skips_delivery(monkeypatch):
+    """A same-turn structured suppress saves output without delivery."""
+    calls = _patch_pipeline(monkeypatch, delivery_action="suppress")
 
     s.run_one_job({"id": "j3", "name": "t"})
 
@@ -184,7 +203,9 @@ def test_run_one_job_delivers_before_agent_teardown(monkeypatch):
         defer_agent_teardown.append(FakeAgent())
         return (True, "out", "final response", None)
 
-    def fake_deliver(job, content, adapters=None, loop=None):
+    def fake_deliver(
+        job, content, adapters=None, loop=None, *, delivery_observation=None
+    ):
         order.append("deliver")
         return None
 
@@ -219,7 +240,9 @@ def test_run_one_job_tears_down_deferred_agent_when_delivery_raises(monkeypatch)
         defer_agent_teardown.append(FakeAgent())
         return (True, "out", "final response", None)
 
-    def boom_deliver(job, content, adapters=None, loop=None):
+    def boom_deliver(
+        job, content, adapters=None, loop=None, *, delivery_observation=None
+    ):
         order.append("deliver-raise")
         raise RuntimeError("send blew up")
 
@@ -238,7 +261,7 @@ def test_run_one_job_tears_down_deferred_agent_when_delivery_raises(monkeypatch)
 
 
 def test_run_one_job_tears_down_deferred_agent_when_save_raises(monkeypatch):
-    """#58720 W1: if save_job_output (or the [SILENT]/empty computation) raises
+    """#58720 W1: if save_job_output (or structured outcome handling) raises
     AFTER run_job hands the agent back but BEFORE delivery, the deferred agent
     must still be torn down. The outer `except` would otherwise swallow the
     error and leak the agent (#10200). Teardown lives in a finally spanning

@@ -44,6 +44,13 @@ class PinnedEffectiveConfigError(RuntimeError):
     """The process-pinned effective config can no longer be proven exact."""
 
 
+PINNED_EFFECTIVE_CONFIG_WRITE_BLOCKED = (
+    "Configuration changes are disabled while the sealed production "
+    "configuration is active. Apply the change through the reviewed "
+    "deployment configuration and restart the service."
+)
+
+
 def _backup_corrupt_config(config_path: Path) -> Optional[Path]:
     """Preserve a corrupted ``config.yaml`` by copying it to a timestamped ``.bak``.
 
@@ -1043,9 +1050,14 @@ DEFAULT_CONFIG = {
         "reasoning_effort": "",
         "adaptive_reasoning": {
             "enabled": True,
-            # Keep max closed until the exact production transport is proven.
-            "max_effort": "xhigh",
+            # GPT-5.6 Sol supports the full model-authored effort range.
+            "max_effort": "max",
         },
+        # Post-turn memory/skill review runs a separate model fork after the
+        # primary answer. Keep the upstream feature available by default, but
+        # production model-sovereignty runtimes disable it so semantic memory
+        # and skill decisions remain inside the user's primary model loop.
+        "background_review_enabled": True,
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
@@ -1053,15 +1065,6 @@ DEFAULT_CONFIG = {
         # (force on/off for all models), or a list of model-name substrings
         # to match (e.g. ["gpt", "codex", "gemini", "qwen"]).
         "tool_use_enforcement": "auto",
-        # Intent-ack continuation: when the model opens a turn by narrating an
-        # action it will take ("I'll go check the logs...") but emits no tool
-        # call, intercept the turn-end, inject a "continue now, execute the
-        # tools" nudge, and loop instead of ending the turn (capped at 2 nudges
-        # per turn). This is the corrective sibling of tool_use_enforcement (the
-        # preventive prompt-side guard). Values: "auto" (default — fires only on
-        # the codex_responses api_mode, the historical behavior), true (all
-        # api_modes — fixes the Gemini/Claude "stops after stating intent" case),
-        # false (never), or a list of model-name substrings to match.
         # Universal "finish the job" guidance — short prompt block applied to
         # all models that targets two cross-family failure modes: (1) stopping
         # after a stub instead of finishing the artifact, (2) fabricating
@@ -1246,6 +1249,13 @@ DEFAULT_CONFIG = {
         "singularity_image": "docker://nikolaik/python-nodejs:python3.11-nodejs20",
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
+        # Config-only AF_UNIX boundary. Runtime UIDs/GIDs are deployment pins;
+        # no lease id or host workspace path is user-configurable.
+        "isolated_worker_socket": "/run/muncho-isolated-worker/worker.sock",
+        "isolated_worker_server_uid": 0,
+        "isolated_worker_server_gid": 0,
+        "isolated_worker_socket_uid": 0,
+        "isolated_worker_socket_gid": 0,
         # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
@@ -1452,17 +1462,10 @@ DEFAULT_CONFIG = {
                                       # 0 for long-running rolling-compaction sessions
                                       # where you want nothing pinned except the
                                       # system prompt + rolling summary + recent tail.
-        "abort_on_summary_failure": False,  # When True, auto-compression that fails
-                                      # to generate a summary (aux LLM errored / returned
-                                      # non-JSON / timed out) aborts entirely instead of
-                                      # dropping the middle window with a static
-                                      # "summary unavailable" placeholder.  Messages are
-                                      # preserved unchanged and the session "freezes" at
-                                      # its current size until the user runs /compress
-                                      # (which bypasses the failure cooldown) or /new.
-                                      # Default False matches historical behavior; set to
-                                      # True if you'd rather pause than silently lose
-                                      # context turns when your aux model is flaky.
+        "abort_on_summary_failure": True,   # Preserve the complete transcript when
+                                      # summarization fails. Never discard the middle
+                                      # window behind a placeholder; retry compression
+                                      # or start a new session instead.
         "codex_gpt55_autoraise": True,  # Historical key name kept for compatibility.
                                       # When True, gpt-5.4 / gpt-5.5 / gpt-5.6 on the
                                       # ChatGPT Codex OAuth route raise their compaction
@@ -1722,10 +1725,9 @@ DEFAULT_CONFIG = {
             "timeout": 600,
             "extra_body": {},
         },
-        # Monitor — compatibility slot for the explicit legacy
-        # cron/scripts/classify_items.py helper. Built-in cron catalogs use the
-        # scheduled primary AIAgent to judge importance; they never route that
-        # semantic decision through this auxiliary slot.
+        # Monitor — generic auxiliary-client compatibility slot. Built-in cron
+        # catalogs use the scheduled primary AIAgent to judge importance; they
+        # never route that semantic decision through this auxiliary slot.
         "monitor": {
             "provider": "auto",
             "model": "",
@@ -2294,18 +2296,15 @@ DEFAULT_CONFIG = {
     "prefill_messages_file": "",
 
     # Goals — persistent cross-turn goals (Ralph-style loop).
-    # After every turn, a lightweight judge call asks the auxiliary model
-    # whether the active /goal is satisfied by the assistant's last
-    # response. If not, Hermes feeds a continuation prompt back into the
-    # same session and keeps working until the goal is done, the turn
-    # budget is exhausted, or the user pauses/clears it. Judge failures
-    # fail OPEN (continue) so a flaky judge never wedges progress — the
-    # turn budget is the real backstop.
+    # The primary model records a structured outcome through the todo tool.
+    # Hermes applies it mechanically and feeds a continuation prompt back
+    # into the same session until the model reports verified completion or
+    # blocking, the optional turn budget is exhausted, or the user pauses/clears it.
+    # Missing outcome state fails OPEN to continuation.
     "goals": {
-        # Max continuation turns before Hermes auto-pauses the goal and
-        # asks the user to /goal resume. Protects against judge false
-        # negatives (goal actually done but judge says continue) and
-        # unbounded model spend on fuzzy / unachievable goals.
+        # Max continuation turns before Hermes auto-pauses the goal and asks
+        # the user to /goal resume. Set 0 to continue until the model records
+        # verified completion/a genuine blocker or the user pauses/clears it.
         "max_turns": 20,
     },
 
@@ -2355,16 +2354,11 @@ DEFAULT_CONFIG = {
         "inline_shell": False,
         # Timeout (seconds) for each !`cmd` snippet when inline_shell is on.
         "inline_shell_timeout": 10,
-        # Run the keyword/pattern security scanner on skills the agent
-        # writes via skill_manage (create/edit/patch).  Off by default
-        # because the agent can already execute the same code paths via
-        # terminal() with no gate, so the scan adds friction (blocks
-        # skills that mention risky keywords in prose) without meaningful
-        # security.  Turn on if you want the belt-and-suspenders — a
-        # dangerous verdict will then surface as a tool error to the
-        # agent, which can retry with the flagged content removed.
-        # External hub installs (trusted/community sources) are always
-        # scanned regardless of this setting.
+        # Re-run the mechanical package preflight (path/symlink/type/
+        # permission/count/size) after skill_manage writes. The legacy key
+        # name is retained for config compatibility. Authored text is never
+        # keyword-scanned or semantically classified. External hub installs
+        # always run the package preflight regardless of this setting.
         "guard_agent_created": False,
         # Approval gate for skill_manage (create/edit/patch/write_file/delete/
         # remove_file), applied to BOTH foreground agent turns and the
@@ -2730,19 +2724,12 @@ DEFAULT_CONFIG = {
         "output_retention": 50,
     },
 
-    # Kanban multi-agent coordination — controls the dispatcher loop that
-    # spawns workers for ready tasks. The dispatcher ticks every N seconds
-    # (default 60), reclaims stale claims, promotes dependency-satisfied
-    # todos to ready, and fires `hermes -p <assignee> chat -q ...` for
-    # each claimable ready task. One dispatcher per profile is sufficient;
-    # running more than one on the same kanban.db will race for claims.
+    # Kanban multi-agent coordination. Worker dispatch is explicit opt-in;
+    # the primary model remains the semantic authority for planning/routing.
     "kanban": {
-        # Run the dispatcher inside the gateway process. On by default —
-        # the cost is ~300µs every `dispatch_interval_seconds` when idle,
-        # and gateway is the supervisor users already have. Set to false
-        # only if you run the dispatcher as a separate systemd unit or
-        # don't want the gateway to spawn workers.
-        "dispatch_in_gateway": True,
+        # Mechanical worker dispatch stays off unless an operator explicitly
+        # enables the Kanban execution service.
+        "dispatch_in_gateway": False,
         # Seconds between dispatcher ticks (idle or not). Lower = snappier
         # pickup of newly-ready tasks; higher = less SQL pressure.
         "dispatch_interval_seconds": 60,
@@ -7051,6 +7038,26 @@ def effective_config_projection_is_pinned() -> bool:
         return _PINNED_EFFECTIVE_CONFIG is not None
 
 
+def refuse_pinned_effective_config_write(
+    config_path: Optional[Path] = None,
+) -> None:
+    """Reject config writes after the process activates an immutable pin.
+
+    The optional path exists so every config-writing chokepoint can call the
+    same boundary before it performs any other side effect.  A production pin
+    seals the process, not merely one helper, so all ``config.yaml`` writes are
+    refused while it is active.  The deployment pipeline remains the only
+    authority allowed to replace the file, and does so out of process before a
+    fresh service start establishes a new pin.
+    """
+    del config_path  # Deliberately seal the process rather than one call path.
+    with _CONFIG_LOCK:
+        if _PINNED_EFFECTIVE_CONFIG is not None:
+            raise PinnedEffectiveConfigError(
+                PINNED_EFFECTIVE_CONFIG_WRITE_BLOCKED
+            )
+
+
 def attest_pinned_effective_config_projection() -> Optional[str]:
     """Re-attest an active pin and return its SHA-256, or ``None`` when inactive."""
     with _CONFIG_LOCK:
@@ -7144,6 +7151,7 @@ def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
     """
     from utils import atomic_yaml_write
 
+    refuse_pinned_effective_config_write(config_path)
     require_readable_config_before_write(config_path)
     atomic_yaml_write(config_path, data, **kwargs)
 
@@ -7236,6 +7244,11 @@ TERMINAL_CONFIG_ENV_MAP = {
     "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
     "modal_image": "TERMINAL_MODAL_IMAGE",
     "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+    "isolated_worker_socket": "TERMINAL_ISOLATED_WORKER_SOCKET",
+    "isolated_worker_server_uid": "TERMINAL_ISOLATED_WORKER_SERVER_UID",
+    "isolated_worker_server_gid": "TERMINAL_ISOLATED_WORKER_SERVER_GID",
+    "isolated_worker_socket_uid": "TERMINAL_ISOLATED_WORKER_SOCKET_UID",
+    "isolated_worker_socket_gid": "TERMINAL_ISOLATED_WORKER_SOCKET_GID",
     "ssh_host": "TERMINAL_SSH_HOST",
     "ssh_user": "TERMINAL_SSH_USER",
     "ssh_port": "TERMINAL_SSH_PORT",
@@ -7554,6 +7567,7 @@ def save_config(
     default changes invisible to users.
     """
     with _CONFIG_LOCK:
+        refuse_pinned_effective_config_write(get_config_path())
         if is_managed():
             managed_error("save configuration")
             return
@@ -8480,6 +8494,7 @@ def edit_config():
         managed_error("edit configuration")
         return
     config_path = get_config_path()
+    refuse_pinned_effective_config_write(config_path)
     
     # Ensure config exists
     if not config_path.exists():
@@ -8557,6 +8572,7 @@ def set_config_value(key: str, value: str):
     # Read the raw user config (not merged with defaults) to avoid
     # dumping all default values back to the file
     config_path = get_config_path()
+    refuse_pinned_effective_config_write(config_path)
     require_readable_config_before_write(config_path)
     user_config = {}
     if config_path.exists():

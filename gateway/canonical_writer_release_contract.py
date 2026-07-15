@@ -19,18 +19,29 @@ from typing import Any
 
 
 RELEASE_SCHEMA = "muncho-writer-only-release.v1"
-UNIT_BUNDLE_SCHEMA = "muncho-writer-only-systemd-bundle.v2"
+UNIT_BUNDLE_SCHEMA = "muncho-writer-only-systemd-bundle.v3"
 RELEASE_MANIFEST_NAME = "release-manifest.json"
 MAX_RELEASE_MANIFEST_BYTES = 8 * 1024 * 1024
 INCOMPLETE_MARKER_NAME = ".release-build-incomplete"
 WRITER_MODULE = "gateway.canonical_writer_bootstrap"
 GATEWAY_MODULE = "gateway.canonical_writer_gateway_bootstrap"
+PHASE_B_READINESS_MODULE = "gateway.canonical_writer_phase_b_runtime"
 DEFAULT_RELEASE_BASE = Path("/opt/muncho-canary-releases")
+RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH = Path(
+    "ops/muncho/runtime/dependencies/manifest.json"
+)
+RUNTIME_DEPENDENCY_NPM_CACHE_RELATIVE_PATH = Path(
+    ".runtime-dependency-npm-cache"
+)
 WRITER_UNIT_NAME = "muncho-canonical-writer.service"
+PHASE_B_READINESS_UNIT_NAME = "muncho-canonical-writer-phase-b-readiness.service"
 GATEWAY_UNIT_NAME = "hermes-cloud-gateway.service"
 EXPORTER_UNIT_NAME = "muncho-canonical-writer-export.service"
 DEFAULT_EXPORT_LIMIT = 200_000
 TMPFILES_NAME = "muncho-canonical-writer.conf"
+CANARY_WRITER_MAIN_CAPABILITY_CONTRACT = (
+    "non-root-empty-ambient-no-new-privileges.v1"
+)
 
 _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
@@ -209,6 +220,7 @@ class WriterOnlyUnitSpec:
 @dataclass(frozen=True)
 class SystemdUnitBundle:
     writer_service: str
+    phase_b_readiness_service: str
     gateway_service: str
     exporter_service: str
     tmpfiles: str
@@ -220,6 +232,7 @@ class SystemdUnitBundle:
         return {
             "schema": self.schema,
             "writer_service": self.writer_service,
+            "phase_b_readiness_service": self.phase_b_readiness_service,
             "gateway_service": self.gateway_service,
             "exporter_service": self.exporter_service,
             "tmpfiles": self.tmpfiles,
@@ -331,7 +344,8 @@ def render_systemd_units(
         f"# ModuleOrigin={writer_origin}",
         "[Unit]",
         "Description=Muncho privileged Canonical Writer (isolated canary)",
-        "After=network-online.target",
+        f"Requires={PHASE_B_READINESS_UNIT_NAME}",
+        f"After=network-online.target {PHASE_B_READINESS_UNIT_NAME}",
         "Wants=network-online.target",
         f"Before={GATEWAY_UNIT_NAME}",
         f"AssertPathIsDirectory={spec.writer_runtime}",
@@ -366,6 +380,53 @@ def render_systemd_units(
         "",
         "[Install]",
         "WantedBy=multi-user.target",
+    ]
+    readiness_hardening = [
+        line
+        for line in _common_hardening(address_families="AF_UNIX AF_INET AF_INET6")
+        if line
+        not in {
+            "CapabilityBoundingSet=",
+            "AmbientCapabilities=",
+            "ProcSubset=pid",
+        }
+    ]
+    phase_b_readiness_lines = [
+        "# Fixed root read-only collector for Canonical Writer Phase-B readiness.",
+        f"# ArtifactSHA256={manifest.artifact_sha256}",
+        "[Unit]",
+        "Description=Muncho Canonical Writer Phase-B readiness (fixed root oneshot)",
+        "After=network-online.target",
+        "Wants=network-online.target",
+        f"Before={WRITER_UNIT_NAME}",
+        "AssertPathIsDirectory=/etc/muncho/canonical-writer-phase-b",
+        "AssertPathIsDirectory=/var/lib/muncho/canonical-writer-phase-b",
+        "AssertPathExists=/etc/muncho/trust/cloudsql-server-ca.pem",
+        "",
+        "[Service]",
+        "Type=oneshot",
+        "User=root",
+        "Group=root",
+        f"WorkingDirectory={release_root}",
+        (
+            f"ExecStart={interpreter} -B -I -m {PHASE_B_READINESS_MODULE}"
+        ),
+        "RemainAfterExit=yes",
+        "TimeoutStartSec=120s",
+        "TimeoutStopSec=15s",
+        "KillMode=mixed",
+        "LimitCORE=0",
+        *_fixed_service_environment(user="root", home="/root"),
+        *readiness_hardening,
+        "CapabilityBoundingSet=CAP_DAC_READ_SEARCH",
+        "AmbientCapabilities=",
+        f"BindReadOnlyPaths={release_root}",
+        "ReadOnlyPaths=/etc/muncho/canonical-writer-phase-b",
+        "ReadOnlyPaths=/etc/muncho/trust/cloudsql-server-ca.pem",
+        "ReadWritePaths=/var/lib/muncho/canonical-writer-phase-b",
+        "ReadWritePaths=/var/lib/muncho/canonical-writer-phase-b-readiness",
+        "StandardOutput=journal",
+        "StandardError=journal",
     ]
     gateway_lines = [
         "# Generated from a digest-bound writer-only release; do not edit.",
@@ -455,6 +516,10 @@ def render_systemd_units(
             f"{spec.projector_group} - -"
         ),
         (
+            "d /var/lib/muncho/canonical-writer-phase-b 0750 root "
+            f"{spec.writer_group} - -"
+        ),
+        (
             f"d {spec.gateway_runtime} 0700 {spec.gateway_user} "
             f"{spec.gateway_group} - -"
         ),
@@ -468,6 +533,7 @@ def render_systemd_units(
         ),
     ]
     writer = "\n".join(writer_lines) + "\n"
+    phase_b_readiness = "\n".join(phase_b_readiness_lines) + "\n"
     gateway = "\n".join(gateway_lines) + "\n"
     exporter = "\n".join(exporter_lines) + "\n"
     tmpfiles = "\n".join(tmpfiles_lines) + "\n"
@@ -476,6 +542,7 @@ def render_systemd_units(
     )
     if (
         forbidden.search(writer)
+        or forbidden.search(phase_b_readiness)
         or forbidden.search(gateway)
         or forbidden.search(exporter)
     ):
@@ -483,6 +550,7 @@ def render_systemd_units(
     payload = {
         "schema": UNIT_BUNDLE_SCHEMA,
         "writer_service": writer,
+        "phase_b_readiness_service": phase_b_readiness,
         "gateway_service": gateway,
         "exporter_service": exporter,
         "tmpfiles": tmpfiles,
@@ -499,6 +567,7 @@ def render_systemd_units(
             "socket_client_group": spec.socket_client_group,
             "writer_runtime": str(spec.writer_runtime),
             "writer_runtime_mode": "2750",
+            "phase_b_readiness_unit": PHASE_B_READINESS_UNIT_NAME,
             "database_ip_allow": spec.database_ip_allow[0],
             "exporter_unit": EXPORTER_UNIT_NAME,
             "projection_export_path": str(export_path),
@@ -508,6 +577,7 @@ def render_systemd_units(
     digest = hashlib.sha256(_canonical_bytes(payload)).hexdigest()
     return SystemdUnitBundle(
         writer_service=writer,
+        phase_b_readiness_service=phase_b_readiness,
         gateway_service=gateway,
         exporter_service=exporter,
         tmpfiles=tmpfiles,
@@ -517,6 +587,7 @@ def render_systemd_units(
 
 
 __all__ = [
+    "CANARY_WRITER_MAIN_CAPABILITY_CONTRACT",
     "DEFAULT_EXPORT_LIMIT",
     "DEFAULT_RELEASE_BASE",
     "EXPORTER_UNIT_NAME",
@@ -526,6 +597,10 @@ __all__ = [
     "MAX_RELEASE_MANIFEST_BYTES",
     "RELEASE_MANIFEST_NAME",
     "RELEASE_SCHEMA",
+    "RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH",
+    "RUNTIME_DEPENDENCY_NPM_CACHE_RELATIVE_PATH",
+    "PHASE_B_READINESS_MODULE",
+    "PHASE_B_READINESS_UNIT_NAME",
     "ReleaseManifest",
     "SystemdUnitBundle",
     "TMPFILES_NAME",

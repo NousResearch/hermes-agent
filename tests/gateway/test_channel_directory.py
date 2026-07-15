@@ -33,7 +33,15 @@ def _isolate_channel_aliases(tmp_path_factory):
     that exercise aliases patch CHANNEL_ALIASES_PATH themselves inside the
     test body, which takes precedence over this outer patch."""
     missing = tmp_path_factory.mktemp("aliases") / "none.json"
-    with patch("gateway.channel_directory.CHANNEL_ALIASES_PATH", missing):
+    with patch("gateway.channel_directory.CHANNEL_ALIASES_PATH", missing), \
+         patch(
+             "gateway.channel_directory._discord_public_directory_policy_required",
+             return_value=False,
+         ), \
+         patch(
+             "gateway.channel_directory._load_canonical_discord_channel_aliases",
+             return_value={},
+         ):
         yield
 
 
@@ -938,6 +946,103 @@ class TestChannelAliases:
             entries = load_directory()["platforms"]["whatsapp"]
             injected = [e for e in entries if e["id"] == "999@g.us"]
             assert injected and injected[0]["type"] == "group"
+
+    def test_production_ignores_mutable_discord_alias_overlay(self, tmp_path):
+        cache_file = _write_directory(tmp_path, {
+            "discord": [{
+                "id": "1527000000000000001",
+                "name": "incidents",
+                "guild": "Adventico",
+                "guild_id": "1282725267068157972",
+                "type": "channel",
+                "target_type": "guild_channel",
+            }]
+        })
+        local = {
+            "discord": {
+                "1527000000000000001": {
+                    "name": "attacker-name",
+                    "aliases": ["mutable-route"],
+                },
+                "1527000000000000009": "injected-route",
+            }
+        }
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+             self._setup_aliases(tmp_path, local), \
+             patch(
+                 "gateway.channel_directory._discord_public_directory_policy_required",
+                 return_value=True,
+             ):
+            result = load_directory()
+
+        assert result["platforms"]["discord"] == [{
+            "id": "1527000000000000001",
+            "name": "incidents",
+            "guild": "Adventico",
+            "guild_id": "1282725267068157972",
+            "type": "channel",
+            "target_type": "guild_channel",
+        }]
+
+    def test_canonical_alias_labels_only_exact_live_guild_target(self, tmp_path):
+        cache_file = _write_directory(tmp_path, {
+            "discord": [
+                {
+                    "id": "1527000000000000001",
+                    "name": "incidents",
+                    "guild": "Adventico",
+                    "guild_id": "1282725267068157972",
+                    "type": "channel",
+                    "target_type": "guild_channel",
+                },
+                {
+                    "id": "1527000000000000001:1527000000000000002",
+                    "thread_id": "1527000000000000002",
+                    "parent_channel_id": "1527000000000000001",
+                    "name": "july",
+                    "guild": "Adventico",
+                    "guild_id": "1282725267068157972",
+                    "type": "thread",
+                    "target_type": "guild_thread",
+                },
+            ]
+        })
+        canonical = {
+            "incident desk": {
+                "guild_id": "1282725267068157972",
+                "target_type": "guild_channel",
+                "channel_id": "1527000000000000001",
+            },
+            "july incidents": {
+                "guild_id": "1282725267068157972",
+                "target_type": "guild_thread",
+                "channel_id": "1527000000000000002",
+                "parent_channel_id": "1527000000000000001",
+            },
+            "not live": {
+                "guild_id": "1282725267068157972",
+                "target_type": "guild_channel",
+                "channel_id": "1527000000000000009",
+            },
+        }
+        with patch("gateway.channel_directory.DIRECTORY_PATH", cache_file), \
+             patch(
+                 "gateway.channel_directory._discord_public_directory_policy_required",
+                 return_value=True,
+             ), \
+             patch(
+                 "gateway.channel_directory._load_canonical_discord_channel_aliases",
+                 return_value=canonical,
+             ):
+            result = load_directory()
+
+        root, thread = result["platforms"]["discord"]
+        assert root["aliases"] == ["incident desk"]
+        assert thread["aliases"] == ["july incidents"]
+        assert all(
+            "not live" not in entry.get("aliases", [])
+            for entry in result["platforms"]["discord"]
+        )
 
     def test_no_alias_file_is_noop(self, tmp_path):
         cache_file = _write_directory(tmp_path, {

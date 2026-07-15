@@ -82,6 +82,19 @@ _TELEGRAM_CAPTION_LIMIT = 1024
 _DEFAULT_CAPTION_LIMIT = 4096
 
 
+def _discord_privileged_connector_active() -> bool:
+    """Return whether Discord delivery has a live policy-enforcing relay."""
+
+    try:
+        from gateway.discord_guild_history_client import (
+            discord_guild_history_configured,
+        )
+
+        return discord_guild_history_configured()
+    except Exception:
+        return False
+
+
 def _media_caption_split(text, media_files, *, max_caption_len):
     """Decide whether the accompanying text should ride on the media bubble.
 
@@ -475,13 +488,21 @@ def _handle_send(args):
             })
 
     if platform_name == "discord":
-        from gateway.channel_directory import is_discord_public_target
-
         resolved_discord_target = str(thread_id or chat_id or "").strip()
-        if not is_discord_public_target(resolved_discord_target):
-            return json.dumps(_error(
-                "Discord delivery is restricted to directory-confirmed public guild channels/threads; DMs, groups, and unknown targets are forbidden."
-            ))
+        if not _discord_privileged_connector_active():
+            from gateway.channel_directory import is_discord_public_target
+
+            if not is_discord_public_target(resolved_discord_target):
+                return json.dumps(_error(
+                    "Direct Discord delivery is restricted to directory-confirmed "
+                    "public guild channels/threads; DMs, groups, and unknown "
+                    "targets are forbidden."
+                ))
+        # The pinned connector path deliberately does not trust the mutable
+        # local directory as an authorization oracle. It re-fetches this exact
+        # ID and proves the active public_only or guild_acl policy plus live bot
+        # permissions before dispatch, so newly ACL-authorized production
+        # channels work without a restart or a hardcoded lane list.
 
     duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
     if duplicate_skip:
@@ -907,7 +928,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     # --- Discord: prefer the live gateway adapter.
     # The privileged Muncho policy forbids a model/tool process from bypassing
-    # the adapter's public-target proof with a raw bot-token REST POST.  The
+    # the adapter's connector-policy proof with a raw bot-token REST POST. The
     # registry standalone sender remains available to generic out-of-process
     # Hermes cron, but it fails closed when the writer-boundary policy is on.
     if platform == Platform.DISCORD:

@@ -31,6 +31,17 @@ PRIVATE_SERVICE_RANGE_CIDR = "10.91.0.0/24"
 SERVICE_ACCOUNT_NAME = "muncho-canary-v2-runtime"
 SQL_INSTANCE = "muncho-canary-pg18-v2"
 DATABASE = "muncho_canary_brain"
+CLOUDSQL_READINESS_ROLE_ID = "munchoCanaryCloudSqlReadinessV1"
+CLOUDSQL_READINESS_ROLE_TITLE = "Muncho Canary Cloud SQL Readiness V1"
+CLOUDSQL_READINESS_ROLE_DESCRIPTION = (
+    "Minimal read-only Cloud SQL inventory and quiescence evidence for isolated "
+    "Muncho canary Phase-B readiness."
+)
+CLOUDSQL_READINESS_PERMISSION = "cloudsql.instances.get"
+CLOUDSQL_READINESS_CONDITION_TITLE = "muncho_canary_pg18_v2_readiness_v1"
+CLOUDSQL_READINESS_CONDITION_DESCRIPTION = (
+    "Restrict Phase-B read-only evidence to the isolated canary Cloud SQL instance"
+)
 FORBIDDEN_CANARY_SECRET_NAMES = (
     "muncho-canary-db-password",
     "muncho-canary-discord-bot-token",
@@ -59,6 +70,17 @@ class FoundationSpec:
     @property
     def service_account_email(self) -> str:
         return f"{self.service_account_name}@{self.project}.iam.gserviceaccount.com"
+
+    @property
+    def cloudsql_readiness_role(self) -> str:
+        return f"projects/{self.project}/roles/{CLOUDSQL_READINESS_ROLE_ID}"
+
+    @property
+    def cloudsql_readiness_condition_expression(self) -> str:
+        return (
+            f"resource.name == 'projects/{self.project}/instances/{self.sql_instance}' "
+            "&& resource.type == 'sqladmin.googleapis.com/Instance'"
+        )
 
     def validate(self) -> None:
         if not _PROJECT.fullmatch(self.project):
@@ -121,7 +143,7 @@ def build_plan(spec: FoundationSpec = FoundationSpec()) -> FoundationPlan:
     project = spec.project
     service_account = spec.service_account_email
     return FoundationPlan(
-        schema="muncho-isolated-canary-foundation-plan.v2",
+        schema="muncho-isolated-canary-foundation-plan.v3",
         spec=spec,
         architecture={
             "phase": 1,
@@ -133,9 +155,11 @@ def build_plan(spec: FoundationSpec = FoundationSpec()) -> FoundationPlan:
             "production_vpc_peering_forbidden": True,
             "allowed_vpc_peerings": ["servicenetworking-googleapis-com"],
             "sql_runtime_iam_required": False,
+            "cloud_sql_readiness_iam_required": True,
             "runtime_service_account_allowed_project_roles": [
                 "roles/logging.logWriter",
                 "roles/monitoring.metricWriter",
+                spec.cloudsql_readiness_role,
             ],
             "credential_source": "owner_provisioned_outside_shared_project_secret_manager",
             "next_phase": "network_boundary",
@@ -205,6 +229,22 @@ def build_plan(spec: FoundationSpec = FoundationSpec()) -> FoundationPlan:
                 ),
             ),
             PlanStep(
+                "create_cloudsql_readiness_role",
+                (
+                    "gcloud",
+                    "iam",
+                    "roles",
+                    "create",
+                    CLOUDSQL_READINESS_ROLE_ID,
+                    f"--project={project}",
+                    f"--title={CLOUDSQL_READINESS_ROLE_TITLE}",
+                    f"--description={CLOUDSQL_READINESS_ROLE_DESCRIPTION}",
+                    f"--permissions={CLOUDSQL_READINESS_PERMISSION}",
+                    "--stage=GA",
+                    "--quiet",
+                ),
+            ),
+            PlanStep(
                 "create_runtime_service_account",
                 (
                     "gcloud",
@@ -240,6 +280,24 @@ def build_plan(spec: FoundationSpec = FoundationSpec()) -> FoundationPlan:
                     f"--member=serviceAccount:{service_account}",
                     "--role=roles/monitoring.metricWriter",
                     "--condition=None",
+                    "--quiet",
+                ),
+            ),
+            PlanStep(
+                "grant_cloudsql_readiness",
+                (
+                    "gcloud",
+                    "projects",
+                    "add-iam-policy-binding",
+                    project,
+                    f"--member=serviceAccount:{service_account}",
+                    f"--role={spec.cloudsql_readiness_role}",
+                    (
+                        "--condition="
+                        f"expression={spec.cloudsql_readiness_condition_expression},"
+                        f"title={CLOUDSQL_READINESS_CONDITION_TITLE},"
+                        f"description={CLOUDSQL_READINESS_CONDITION_DESCRIPTION}"
+                    ),
                     "--quiet",
                 ),
             ),
@@ -311,7 +369,7 @@ def execute_plan(
         raise ValueError("approval digest must be lowercase SHA-256")
     if approved_plan_sha256 != plan.sha256:
         raise RuntimeError("approved plan digest does not match exact plan")
-    if preflight.get("schema") != "muncho-isolated-canary-foundation-preflight.v2":
+    if preflight.get("schema") != "muncho-isolated-canary-foundation-preflight.v3":
         raise RuntimeError("preflight schema mismatch")
     if preflight.get("ok") is not True or preflight.get("plan_sha256") != plan.sha256:
         raise RuntimeError("preflight did not pass for exact plan")

@@ -63,16 +63,11 @@ from gateway.canonical_canary_host_identity import (
 )
 from gateway.canonical_writer_activation import ActivationPlan
 from gateway.canonical_writer_bootstrap import (
-    CANARY_PRECLAIM_RECONCILIATION_VERSION,
-    DEFAULT_CANARY_PRECLAIM_RECONCILIATION_RECEIPT_PATH,
     DEFAULT_WRITER_RUNTIME_ATTESTATION_PATH,
     WRITER_RUNTIME_ATTESTATION_VERSION,
 )
 from gateway.canonical_writer_db import (
     managed_cloudsqladmin_hba_receipt_from_mapping,
-)
-from gateway.canonical_writer_postgres_backend import (
-    CANONICAL_CANARY_BOOTSTRAP_LOGIN,
 )
 from gateway.canonical_writer_readiness import (
     DEFAULT_READINESS_RECEIPT_PATH as DEFAULT_GATEWAY_READINESS_PATH,
@@ -83,8 +78,10 @@ from gateway.canonical_writer_readiness import (
     readiness_receipt_sha256,
 )
 from gateway.canonical_writer_release_contract import (
+    CANARY_WRITER_MAIN_CAPABILITY_CONTRACT,
     DEFAULT_RELEASE_BASE,
     GATEWAY_UNIT_NAME,
+    PHASE_B_READINESS_UNIT_NAME,
     RELEASE_MANIFEST_NAME,
     RELEASE_SCHEMA,
     WRITER_UNIT_NAME,
@@ -100,37 +97,6 @@ FULL_CANARY_BUNDLE_SCHEMA = "muncho-full-canary-systemd-bundle.v1"
 FULL_CANARY_PREFLIGHT_SCHEMA = "muncho-full-canary-preflight.v1"
 FULL_CANARY_RECEIPT_SCHEMA = "muncho-full-canary-runtime-receipt.v1"
 FULL_CANARY_APPROVAL_SCHEMA = "muncho-full-canary-owner-approval.v1"
-CANARY_BOOTSTRAP_PROVISIONING_SCHEMA = (
-    "muncho-canonical-canary-bootstrap-provisioning.v1"
-)
-CANARY_BOOTSTRAP_AUTHORIZATION_SCHEMA = (
-    "muncho-canonical-canary-bootstrap-authorization.v1"
-)
-CANARY_BOOTSTRAP_RETIREMENT_SCHEMA = (
-    "muncho-canonical-canary-bootstrap-retirement.v1"
-)
-CANARY_BOOTSTRAP_RECONCILIATION_SCHEMA = (
-    "muncho-canonical-canary-bootstrap-reconciliation.v1"
-)
-CANARY_BOOTSTRAP_ADMIN_SESSION_SCHEMA = (
-    "muncho-canonical-canary-bootstrap-admin-session.v1"
-)
-BOOTSTRAP_EVIDENCE_ENVELOPE_SCHEMA = (
-    "muncho-full-canary-bootstrap-evidence-envelope.v1"
-)
-BOOTSTRAP_EVIDENCE_DESCRIPTOR_SCHEMA = (
-    "muncho-full-canary-bootstrap-evidence-descriptor.v1"
-)
-BOOTSTRAP_EVIDENCE_REQUEST_SCHEMA = (
-    "muncho-full-canary-bootstrap-request-projection.v1"
-)
-BOOTSTRAP_EVIDENCE_ATTEMPT_SCHEMA = (
-    "muncho-full-canary-bootstrap-attempt.v1"
-)
-BOOTSTRAP_NEVER_AUTHORIZED_SCHEMA = (
-    "muncho-full-canary-bootstrap-never-authorized.v1"
-)
-BOOTSTRAP_RECONCILIATION_FUTURE_SKEW_SECONDS = 300
 COLLECTOR_READINESS_SCHEMA = "muncho-full-canary-collector-readiness.v1"
 COLLECTOR_IDENTITY_SCHEMA = "muncho-full-canary-collector-identity.v1"
 PLUGIN_READINESS_SCHEMA = "muncho-full-canary-plugin-readiness.v1"
@@ -141,6 +107,17 @@ EDGE_MODULE = "gateway.full_canary_discord_edge_bootstrap"
 FULL_GATEWAY_MODULE = "gateway.run"
 E2E_VERIFIER_MODULE = "gateway.canonical_full_canary_e2e"
 CANARY_OBSERVER_PLUGIN = "muncho_canary_evidence"
+FULL_CANARY_START_ORDER = (
+    EDGE_UNIT_NAME,
+    WRITER_UNIT_NAME,
+    GATEWAY_UNIT_NAME,
+)
+FULL_CANARY_STOP_ORDER = (
+    GATEWAY_UNIT_NAME,
+    WRITER_UNIT_NAME,
+    EDGE_UNIT_NAME,
+    PHASE_B_READINESS_UNIT_NAME,
+)
 
 DEFAULT_PLAN_PATH = Path("/etc/muncho/full-canary/runtime-plan.json")
 DEFAULT_APPROVAL_PATH = Path("/etc/muncho/full-canary/owner-approval.json")
@@ -164,6 +141,9 @@ DEFAULT_EDGE_CONFIG = Path("/etc/muncho/discord-edge.json")
 DEFAULT_WRITER_UNIT_PATH = Path("/etc/systemd/system") / WRITER_UNIT_NAME
 DEFAULT_GATEWAY_UNIT_PATH = Path("/etc/systemd/system") / GATEWAY_UNIT_NAME
 DEFAULT_EDGE_UNIT_PATH = Path("/etc/systemd/system") / EDGE_UNIT_NAME
+DEFAULT_PHASE_B_READINESS_UNIT_PATH = (
+    Path("/etc/systemd/system") / PHASE_B_READINESS_UNIT_NAME
+)
 DEFAULT_TMPFILES_PATH = Path("/etc/tmpfiles.d/muncho-full-canary.conf")
 DEFAULT_EVIDENCE_ROOT = Path("/var/lib/muncho-full-canary")
 DEFAULT_OBSERVER_CONFIG = Path("/etc/muncho/full-canary/observer.json")
@@ -173,18 +153,6 @@ DEFAULT_OBSERVER_CONFIG_SOURCE = Path(
 DEFAULT_E2E_FIXTURE = Path("/etc/muncho/full-canary/fixture.json")
 DEFAULT_HOST_IDENTITY_RECEIPT = Path(
     "/etc/muncho/full-canary/host-identity.json"
-)
-DEFAULT_CANARY_BOOTSTRAP_SQL_RELATIVE = Path(
-    "scripts/sql/canonical_writer_canary_bootstrap_v1.sql"
-)
-DEFAULT_CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE = Path(
-    "scripts/sql/canonical_writer_canary_bootstrap_retire_v1.sql"
-)
-DEFAULT_CANARY_BOOTSTRAP_CREDENTIAL = Path(
-    "/etc/muncho/credentials/canonical-canary-bootstrap-db-password"
-)
-DEFAULT_CANARY_PRECLAIM_RECONCILIATION_PATH = (
-    DEFAULT_CANARY_PRECLAIM_RECONCILIATION_RECEIPT_PATH
 )
 DEFAULT_COLLECTOR_RUNTIME = Path("/run/muncho-full-canary")
 DEFAULT_COLLECTOR_SOCKET = DEFAULT_COLLECTOR_RUNTIME / "collector.sock"
@@ -274,7 +242,6 @@ GATEWAY_FORBIDDEN_EFFECTIVE_ENVIRONMENT_NAMES = frozenset(
         "HERMES_ENVIRONMENT_HINT",
         "HERMES_EPHEMERAL_SYSTEM_PROMPT",
         "HERMES_FILE_MUTATION_VERIFIER",
-        "HERMES_FILTER_SILENCE_NARRATION",
         "HERMES_GATEWAY_BUSY_STEER_ACK_ENABLED",
         "HERMES_GATEWAY_PLATFORM_CONNECT_TIMEOUT",
         "HERMES_INFERENCE_MODEL",
@@ -403,7 +370,6 @@ _MAX_JSON_BYTES = 8 * 1024 * 1024
 _MAX_CONFIG_BYTES = 2 * 1024 * 1024
 _MAX_COMMAND_OUTPUT_BYTES = 4 * 1024 * 1024
 _MAX_HOST_IDENTITY_RECEIPT_BYTES = 16 * 1024
-_MAX_CANARY_BOOTSTRAP_SQL_BYTES = 128 * 1024
 _COMMAND_TIMEOUT_SECONDS = 180
 _SERVICE_PROPERTIES = (
     "LoadState",
@@ -749,7 +715,7 @@ class FullCanarySystemdBundle:
             raise ValueError("full-canary bundle digest drifted")
         forbidden = re.compile(r"(?im)^(?:EnvironmentFile|PassEnvironment)=")
         if any(forbidden.search(raw[name]) for name in ("edge_service", "writer_service", "gateway_service")):
-            raise ValueError("full-canary unit injects a credential")
+            raise ValueError("full-canary unit injects process environment")
         load_credential = re.compile(r"(?m)^LoadCredential=(.+)$")
         expected_gateway_credential = (
             f"{API_SERVER_CREDENTIAL_NAME}:{DEFAULT_API_SERVER_CONTROL_KEY}"
@@ -858,33 +824,59 @@ class FullCanarySystemdBundle:
             )
         exec_start_pre = re.compile(r"(?m)^ExecStartPre=(.+)$")
         exec_stop_post = re.compile(r"(?m)^ExecStopPost=(.+)$")
-        expected_reconciliation_suffix = (
-            " -B -I -m gateway.canonical_writer_bootstrap "
-            f"--config {DEFAULT_WRITER_CONFIG_SOURCE} "
-            "--reconcile-canary-preclaim"
-        )
         writer_pre_commands = exec_start_pre.findall(raw["writer_service"])
         writer_stop_commands = exec_stop_post.findall(raw["writer_service"])
+        capability_bounding_set = re.compile(
+            r"(?m)^CapabilityBoundingSet=(.*)$"
+        )
+        ambient_capabilities = re.compile(
+            r"(?m)^AmbientCapabilities=(.*)$"
+        )
+        writer_users = re.compile(r"(?m)^User=(.+)$").findall(
+            raw["writer_service"]
+        )
+        writer_exec_start = re.compile(r"(?m)^ExecStart=(.+)$").findall(
+            raw["writer_service"]
+        )
+        expected_writer_exec_start = re.compile(
+            r"/opt/muncho-canary-releases/[0-9a-f]{40}/venv/bin/python "
+            r"-B -I -m gateway\.canonical_writer_bootstrap --config "
+            + re.escape(str(DEFAULT_WRITER_CONFIG))
+        )
         if (
             exec_start_pre.findall(raw["edge_service"])
             or exec_start_pre.findall(raw["gateway_service"])
             or exec_stop_post.findall(raw["edge_service"])
             or exec_stop_post.findall(raw["gateway_service"])
-            or len(writer_pre_commands) != 1
-            or len(writer_stop_commands) != 1
-            or not writer_pre_commands[0].endswith(
-                expected_reconciliation_suffix
+            or writer_pre_commands
+            or writer_stop_commands
+            or re.search(
+                r"(?m)^Exec(?:Start|StartPre|StopPost)=\+",
+                raw["writer_service"],
             )
-            or not writer_stop_commands[0].endswith(
-                expected_reconciliation_suffix
-            )
-            or raw["writer_service"].count(
-                f"ReadOnlyPaths={DEFAULT_WRITER_CONFIG_SOURCE}\n"
-            )
-            != 1
+            is not None
+            or str(DEFAULT_WRITER_CONFIG_SOURCE) in raw["writer_service"]
+            or capability_bounding_set.findall(raw["writer_service"])
+            != [""]
+            or capability_bounding_set.findall(raw["edge_service"]) != [""]
+            or capability_bounding_set.findall(raw["gateway_service"])
+            != [""]
+            or ambient_capabilities.findall(raw["writer_service"]) != [""]
+            or ambient_capabilities.findall(raw["edge_service"]) != [""]
+            or ambient_capabilities.findall(raw["gateway_service"]) != [""]
+            or raw["writer_service"].count("NoNewPrivileges=yes\n") != 1
+            or len(writer_users) != 1
+            or _IDENTITY_RE.fullmatch(writer_users[0]) is None
+            or writer_users[0] == "root"
+            or len(writer_exec_start) != 1
+            or expected_writer_exec_start.fullmatch(writer_exec_start[0])
+            is None
+            or raw["writer_service"].count("Restart=no\n") != 1
+            or "Restart=on-failure\n" in raw["writer_service"]
+            or raw["writer_service"].count("RuntimeMaxSec=900s\n") != 1
         ):
             raise ValueError(
-                "full-canary preclaim reconciliation boundary is not exact"
+                "full-canary privileged writer boundary is not exact"
             )
         if re.search(r"(?im)^ExecStart=.*(?:systemctl|\.timer|\benable\b)", "\n".join(raw.values())):
             raise ValueError("full-canary unit contains forbidden lifecycle authority")
@@ -952,11 +944,42 @@ def _common_hardening() -> list[str]:
     ]
 
 
-def _full_writer_service(writer_only: str, *, interpreter: Path) -> str:
-    """Add only the edge lifecycle dependency to reviewed writer bytes."""
+def _full_writer_service(
+    writer_only: str,
+    *,
+    interpreter: Path,
+    writer_user: str,
+    writer_group: str,
+) -> str:
+    """Transition reviewed credential-free writer bytes to the full canary."""
 
     marker = "Wants=network-online.target\n"
-    if writer_only.count(marker) != 1 or "[Install]\nWantedBy=multi-user.target\n" not in writer_only:
+    release_root = interpreter.parent.parent.parent
+    expected_main = (
+        f"ExecStart={interpreter} -B -I -m "
+        "gateway.canonical_writer_bootstrap "
+        f"--config {DEFAULT_WRITER_CONFIG}\n"
+    )
+    if (
+        writer_only.count(marker) != 1
+        or writer_only.count("[Install]\nWantedBy=multi-user.target\n") != 1
+        or writer_only.count("\n[Unit]\n") > 1
+        or writer_only.count("[Unit]\n") != 1
+        or writer_only.count("\n[Service]\n") != 1
+        or writer_only.count(f"User={writer_user}\n") != 1
+        or writer_only.count(f"Group={writer_group}\n") != 1
+        or writer_only.count(f"WorkingDirectory={release_root}\n") != 1
+        or writer_only.count(expected_main) != 1
+        or writer_only.count("Restart=on-failure\nRestartSec=5s\n") != 1
+        or writer_only.count("NoNewPrivileges=yes\n") != 1
+        or writer_only.count("CapabilityBoundingSet=\n") != 1
+        or writer_only.count("AmbientCapabilities=\n") != 1
+        or re.search(
+            r"(?m)^(?:LoadCredential|ExecStartPre)=",
+            writer_only,
+        )
+        is not None
+    ):
         raise ValueError("writer-only unit cannot be extended exactly")
     result = writer_only.replace(
         marker,
@@ -970,24 +993,9 @@ def _full_writer_service(writer_only: str, *, interpreter: Path) -> str:
         "Description=Muncho privileged Canonical Writer (full isolated canary)",
         1,
     )
-    install_marker = "\n[Install]\n"
-    if result.count(install_marker) != 1:
-        raise ValueError("writer-only unit lacks one install boundary")
-    reconciliation_argv = (
-        f"{interpreter} -B -I -m "
-        "gateway.canonical_writer_bootstrap "
-        f"--config {DEFAULT_WRITER_CONFIG_SOURCE} "
-        "--reconcile-canary-preclaim"
-    )
     return result.replace(
-        install_marker,
-        "\n"
-        + f"ExecStartPre={reconciliation_argv}"
-        + "\n"
-        + f"ExecStopPost={reconciliation_argv}"
-        + "\n"
-        + f"ReadOnlyPaths={DEFAULT_WRITER_CONFIG_SOURCE}\n"
-        + install_marker,
+        "Restart=on-failure\nRestartSec=5s\n",
+        "Restart=no\nRestartSec=5s\nRuntimeMaxSec=900s\n",
         1,
     )
 
@@ -1173,10 +1181,8 @@ def render_full_canary_systemd_bundle(
         "writer_service": _full_writer_service(
             writer_only_service,
             interpreter=interpreter,
-        ).replace(
-            "Restart=on-failure\nRestartSec=5s\n",
-            "Restart=no\nRestartSec=5s\nRuntimeMaxSec=900s\n",
-            1,
+            writer_user=identities.writer_user,
+            writer_group=identities.writer_group,
         ),
         "gateway_service": "\n".join(gateway_lines) + "\n",
         "tmpfiles": "\n".join(tmpfiles_lines) + "\n",
@@ -1254,6 +1260,44 @@ def _validate_writer_only_receipt(
     return copy.deepcopy(dict(raw))
 
 
+_PHASE_B_READINESS_ANCHOR_FIELDS = frozenset(
+    {
+        "phase_b_release_revision",
+        "phase_b_plan_sha256",
+        "phase_b_approval_sha256",
+        "phase_b_terminal_receipt_sha256",
+        "phase_b_foundation_generation_sha256",
+        "phase_b_readiness_receipt_sha256",
+        "phase_b_readiness_handoff_file_sha256",
+        "phase_b_readiness_sequence",
+    }
+)
+
+
+def _validate_phase_b_readiness_anchor(
+    value: Any,
+    *,
+    revision: str,
+) -> Mapping[str, Any]:
+    raw = _strict_mapping(
+        value,
+        fields=_PHASE_B_READINESS_ANCHOR_FIELDS,
+        label="Phase-B readiness anchor",
+    )
+    if (
+        raw["phase_b_release_revision"] != revision
+        or type(raw["phase_b_readiness_sequence"]) is not int
+        or raw["phase_b_readiness_sequence"] < 0
+    ):
+        raise ValueError("Phase-B readiness anchor is not release-bound")
+    for name in _PHASE_B_READINESS_ANCHOR_FIELDS - {
+        "phase_b_release_revision",
+        "phase_b_readiness_sequence",
+    }:
+        _digest(raw[name], f"Phase-B readiness anchor {name}")
+    return copy.deepcopy(dict(raw))
+
+
 def _release_binding(plan: ActivationPlan) -> Mapping[str, str]:
     snapshot = plan.deployment_manifest["snapshot_template"]
     writer_policy = snapshot["writer_deployment"]["policy"]
@@ -1286,6 +1330,7 @@ class FullCanaryPlan:
     writer_activation_plan: Mapping[str, Any]
     writer_activation_receipt: Mapping[str, Any]
     writer_activation_receipt_file_sha256: str
+    phase_b_readiness_anchor: Mapping[str, Any]
     artifacts: Mapping[str, ExactArtifact]
     allowed_previous_sha256: Mapping[str, str]
     unit_bundle: FullCanarySystemdBundle
@@ -1307,6 +1352,7 @@ class FullCanaryPlan:
                     "writer_activation_plan",
                     "writer_activation_receipt",
                     "writer_activation_receipt_file_sha256",
+                    "phase_b_readiness_anchor",
                     "artifacts",
                     "allowed_previous_sha256",
                     "systemd_bundle",
@@ -1363,6 +1409,10 @@ class FullCanaryPlan:
         receipt_file_digest = _digest(
             raw["writer_activation_receipt_file_sha256"],
             "writer activation receipt file digest",
+        )
+        phase_b_anchor = _validate_phase_b_readiness_anchor(
+            raw["phase_b_readiness_anchor"],
+            revision=revision,
         )
         identities = FullCanaryIdentities.from_mapping(raw["identities"])
         artifact_raw = _strict_mapping(
@@ -1482,6 +1532,7 @@ class FullCanaryPlan:
             writer_activation_plan=writer_plan.to_mapping(),
             writer_activation_receipt=writer_receipt,
             writer_activation_receipt_file_sha256=receipt_file_digest,
+            phase_b_readiness_anchor=phase_b_anchor,
             artifacts=artifacts,
             allowed_previous_sha256=previous,
             unit_bundle=bundle,
@@ -1494,6 +1545,7 @@ class FullCanaryPlan:
 
     def _validate_unit_bindings(self) -> None:
         interpreter = self.release["interpreter"]
+        writer_plan = ActivationPlan.from_mapping(self.writer_activation_plan)
         expected_exec = {
             "edge": (
                 f"ExecStart={interpreter} -B -I -m {EDGE_MODULE} "
@@ -1503,28 +1555,55 @@ class FullCanaryPlan:
                 f"ExecStart={interpreter} -B -I -m {FULL_GATEWAY_MODULE} "
                 f"--config {DEFAULT_GATEWAY_CONFIG} --require-canonical-writer"
             ),
-            "writer_stop": (
-                f"ExecStopPost={interpreter} -B -I -m "
+            "writer": (
+                f"ExecStart={interpreter} -B -I -m "
                 "gateway.canonical_writer_bootstrap "
-                f"--config {DEFAULT_WRITER_CONFIG_SOURCE} "
-                "--reconcile-canary-preclaim"
-            ),
-            "writer_pre": (
-                f"ExecStartPre={interpreter} -B -I -m "
-                "gateway.canonical_writer_bootstrap "
-                f"--config {DEFAULT_WRITER_CONFIG_SOURCE} "
-                "--reconcile-canary-preclaim"
+                f"--config {DEFAULT_WRITER_CONFIG}"
             ),
         }
+        writer_pre_commands = re.compile(r"(?m)^ExecStartPre=(.+)$").findall(
+            self.unit_bundle.writer_service
+        )
+        writer_stop_commands = re.compile(r"(?m)^ExecStopPost=(.+)$").findall(
+            self.unit_bundle.writer_service
+        )
         if (
             expected_exec["edge"] not in self.unit_bundle.edge_service
             or expected_exec["gateway"] not in self.unit_bundle.gateway_service
-            or expected_exec["writer_stop"]
+            or expected_exec["writer"] not in self.unit_bundle.writer_service
+            or writer_pre_commands
+            or writer_stop_commands
+            or "LoadCredential=" in self.unit_bundle.writer_service
+            or str(DEFAULT_WRITER_CONFIG_SOURCE)
+            in self.unit_bundle.writer_service
+            or "CapabilityBoundingSet=\n"
             not in self.unit_bundle.writer_service
-            or expected_exec["writer_pre"]
-            not in self.unit_bundle.writer_service
-            or f"ReadOnlyPaths={DEFAULT_WRITER_CONFIG_SOURCE}"
-            not in self.unit_bundle.writer_service
+            or "AmbientCapabilities=\n" not in self.unit_bundle.writer_service
+            or (
+                f"User={self.identities.writer_user}\n"
+                not in self.unit_bundle.writer_service
+            )
+            or (
+                f"Group={self.identities.writer_group}\n"
+                not in self.unit_bundle.writer_service
+            )
+            or "Restart=no\n" not in self.unit_bundle.writer_service
+            or (
+                f"Requires={PHASE_B_READINESS_UNIT_NAME}\n"
+                not in self.unit_bundle.writer_service
+            )
+            or (
+                f"After=network-online.target {PHASE_B_READINESS_UNIT_NAME}\n"
+                not in self.unit_bundle.writer_service
+            )
+            or _sha256_bytes(
+                writer_plan.unit_bundle.phase_b_readiness_service.encode(
+                    "utf-8"
+                )
+            )
+            != writer_plan.install_artifacts[
+                "phase_b_readiness_unit"
+            ].sha256
             or f"After={EDGE_UNIT_NAME}" not in self.unit_bundle.writer_service
             or f"InaccessiblePaths={DEFAULT_EDGE_TOKEN_DIRECTORY}"
             not in self.unit_bundle.gateway_service
@@ -1609,6 +1688,9 @@ class FullCanaryPlan:
             "writer_activation_plan": copy.deepcopy(dict(self.writer_activation_plan)),
             "writer_activation_receipt": copy.deepcopy(dict(self.writer_activation_receipt)),
             "writer_activation_receipt_file_sha256": self.writer_activation_receipt_file_sha256,
+            "phase_b_readiness_anchor": copy.deepcopy(
+                dict(self.phase_b_readiness_anchor)
+            ),
             "artifacts": {
                 name: artifact.to_mapping()
                 for name, artifact in sorted(self.artifacts.items())
@@ -1628,6 +1710,7 @@ def build_full_canary_plan(
     writer_activation_plan: ActivationPlan,
     writer_activation_receipt: Mapping[str, Any],
     writer_activation_receipt_file_sha256: str,
+    phase_b_readiness_anchor: Mapping[str, Any],
     identities: FullCanaryIdentities,
     writer_config: ExactArtifact,
     gateway_config: ExactArtifact,
@@ -1663,6 +1746,10 @@ def build_full_canary_plan(
         "writer_activation_receipt_file_sha256": _digest(
             writer_activation_receipt_file_sha256,
             "writer activation receipt file digest",
+        ),
+        "phase_b_readiness_anchor": _validate_phase_b_readiness_anchor(
+            phase_b_readiness_anchor,
+            revision=writer_activation_plan.revision,
         ),
         "artifacts": {
             "writer_config": writer_config.to_mapping(),
@@ -1917,1450 +2004,6 @@ def _validated_release_file(
     return path, raw, digest
 
 
-def _canary_bootstrap_business_gucs(
-    writer_config: Mapping[str, Any],
-) -> dict[str, str]:
-    scope = writer_config.get("canary_scope_preapproval")
-    database = writer_config.get("database")
-    if not isinstance(scope, Mapping) or not isinstance(database, Mapping):
-        raise RuntimeError("canary bootstrap config is incomplete")
-    values = {
-        "database": database.get("database"),
-        "grant_id": scope.get("grant_id"),
-        "case_id": scope.get("case_id"),
-        "release_sha256": scope.get("release_sha256"),
-        "fixture_sha256": scope.get("fixture_sha256"),
-        "run_id": scope.get("run_id"),
-        "session_key_sha256": scope.get("session_key_sha256"),
-        "expires_at": scope.get("expires_at"),
-        "approved_by": scope.get("approved_by"),
-        "approval_source_sha256": scope.get("approval_source_sha256"),
-    }
-    if any(
-        not isinstance(value, str)
-        or not value
-        or value != value.strip()
-        or _CONTROL_RE.search(value) is not None
-        for value in values.values()
-    ):
-        raise RuntimeError("canary bootstrap GUC binding is invalid")
-    return {
-        "muncho.canonical_canary_bootstrap_" + name: value
-        for name, value in values.items()
-    }
-
-
-def canonical_canary_bootstrap_authorization_sha256(
-    writer_config: Mapping[str, Any],
-    *,
-    bootstrap_sql_sha256: str,
-    bootstrap_retire_sql_sha256: str,
-) -> str:
-    """Digest the non-circular pre-execution bootstrap authorization intent.
-
-    The first ten business GUCs and fixed SQL identify the intent.  This digest
-    becomes the eleventh GUC, so it is deliberately not included in its own
-    preimage.  The owner approval later binds the resulting writer config to
-    the complete full-canary plan.
-    """
-
-    sql_digest = _digest(
-        bootstrap_sql_sha256,
-        "canonical canary bootstrap SQL digest",
-    )
-    retire_sql_digest = _digest(
-        bootstrap_retire_sql_sha256,
-        "canonical canary bootstrap retirement SQL digest",
-    )
-    scope = writer_config.get("canary_scope_preapproval")
-    database = writer_config.get("database")
-    if not isinstance(scope, Mapping) or not isinstance(database, Mapping):
-        raise RuntimeError("canary bootstrap authorization config is incomplete")
-    endpoint = {
-        "host": database.get("host"),
-        "tls_server_name": database.get("tls_server_name"),
-        "port": database.get("port"),
-        "database": database.get("database"),
-        "bootstrap_database_user": scope.get("bootstrap_database_user"),
-    }
-    if (
-        not isinstance(endpoint["host"], str)
-        or not isinstance(endpoint["tls_server_name"], str)
-        or type(endpoint["port"]) is not int
-        or not isinstance(endpoint["database"], str)
-        or endpoint["bootstrap_database_user"]
-        != CANONICAL_CANARY_BOOTSTRAP_LOGIN
-    ):
-        raise RuntimeError("canary bootstrap database binding is invalid")
-    authorization = {
-        "schema": CANARY_BOOTSTRAP_AUTHORIZATION_SCHEMA,
-        "provision_sql_relative_path": (
-            DEFAULT_CANARY_BOOTSTRAP_SQL_RELATIVE.as_posix()
-        ),
-        "provision_sql_sha256": sql_digest,
-        "retire_sql_relative_path": (
-            DEFAULT_CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE.as_posix()
-        ),
-        "retire_sql_sha256": retire_sql_digest,
-        "database": endpoint,
-        "business_guc_bindings": _canary_bootstrap_business_gucs(writer_config),
-    }
-    return _sha256_json(authorization)
-
-
-@dataclass(frozen=True)
-class CanaryBootstrapProvisioningRequest:
-    plan_sha256: str
-    owner_approval_sha256: str
-    approval_source_sha256: str
-    authorization_receipt_sha256: str
-    database: Mapping[str, Any]
-    guc_bindings: Mapping[str, str]
-    guc_bindings_sha256: str
-    sql_path: Path
-    sql_sha256: str
-    sql_bytes: bytes = field(repr=False, compare=False)
-    retire_sql_path: Path
-    retire_sql_sha256: str
-    retire_sql_bytes: bytes = field(repr=False, compare=False)
-
-
-class BootstrapProvisioner(Protocol):
-    """Trusted owner-operated adapter over one already-open admin session."""
-
-    def provision(
-        self,
-        request: CanaryBootstrapProvisioningRequest,
-    ) -> Mapping[str, Any]: ...
-
-    def reconcile(
-        self,
-        request: CanaryBootstrapProvisioningRequest,
-        provisioning_receipt: Mapping[str, Any] | None,
-    ) -> Mapping[str, Any]: ...
-
-    def abort(self) -> None:
-        """Idempotently close the owner-operated session without mutation."""
-        ...
-
-
-class FullCanaryBootstrapAdminUnavailable(RuntimeError):
-    """No ephemeral owner-operated managed-admin session was supplied."""
-
-
-class _BlockedBootstrapProvisioner:
-    def provision(
-        self,
-        _request: CanaryBootstrapProvisioningRequest,
-    ) -> Mapping[str, Any]:
-        raise FullCanaryBootstrapAdminUnavailable(
-            "owner-operated ephemeral bootstrap admin connection is unavailable"
-        )
-
-    def reconcile(
-        self,
-        _request: CanaryBootstrapProvisioningRequest,
-        _provisioning_receipt: Mapping[str, Any] | None,
-    ) -> Mapping[str, Any]:
-        raise FullCanaryBootstrapAdminUnavailable(
-            "owner-operated ephemeral bootstrap admin connection is unavailable"
-        )
-
-    def abort(self) -> None:
-        return None
-
-
-_BLOCKED_BOOTSTRAP_PROVISIONER = _BlockedBootstrapProvisioner()
-
-
-class BootstrapAdminSession(Protocol):
-    """Minimal already-open PostgreSQL session; it carries no credential API."""
-
-    def query(self, sql: str, *, maximum_rows: int) -> Any: ...
-
-    def close(self) -> None: ...
-
-
-def _postgres_text_expression(value: str) -> str:
-    if (
-        not isinstance(value, str)
-        or not value
-        or value != value.strip()
-        or _CONTROL_RE.search(value) is not None
-        or len(value.encode("utf-8")) > 4096
-    ):
-        raise RuntimeError("bootstrap setting text is invalid")
-    encoded = base64.b64encode(value.encode("utf-8")).decode("ascii")
-    return (
-        "pg_catalog.convert_from(pg_catalog.decode('"
-        + encoded
-        + "','base64'),'UTF8')"
-    )
-
-
-def _bootstrap_setting_prefix(bindings: Mapping[str, str]) -> str:
-    if len(bindings) < 11 or any(
-        not isinstance(name, str)
-        or re.fullmatch(
-            r"muncho\.canonical_canary_bootstrap_[a-z0-9_]+",
-            name,
-        )
-        is None
-        for name in bindings
-    ):
-        raise RuntimeError("bootstrap setting names are not exact")
-    return "".join(
-        "SELECT pg_catalog.set_config("
-        + _postgres_text_expression(name)
-        + ","
-        + _postgres_text_expression(bindings[name])
-        + ",false);\n"
-        for name in sorted(bindings)
-    )
-
-
-def _bootstrap_request_identity(
-    request: CanaryBootstrapProvisioningRequest,
-) -> str:
-    return _sha256_json(
-        {
-            "plan_sha256": request.plan_sha256,
-            "owner_approval_sha256": request.owner_approval_sha256,
-            "approval_source_sha256": request.approval_source_sha256,
-            "authorization_receipt_sha256": (
-                request.authorization_receipt_sha256
-            ),
-            "database": request.database,
-            "guc_bindings_sha256": request.guc_bindings_sha256,
-            "sql_path": str(request.sql_path),
-            "sql_sha256": request.sql_sha256,
-            "retire_sql_path": str(request.retire_sql_path),
-            "retire_sql_sha256": request.retire_sql_sha256,
-        }
-    )
-
-
-def _provisioning_application_digest(value: Any) -> str:
-    """Bind a canonical provisioner result without blocking sealed cleanup.
-
-    Invalid/non-JSON results are already rejected as provisioning receipts.
-    They must not prevent the compensating SQL from running, and their
-    potentially sensitive arbitrary content must not be copied into evidence.
-    """
-
-    if not isinstance(value, Mapping):
-        return "0" * 64
-    try:
-        return _sha256_json(value)
-    except ValueError:
-        return "0" * 64
-
-
-class PreopenedSessionBootstrapProvisioner:
-    """One-shot adapter retaining one independently observed admin session.
-
-    Connection establishment, TLS peer verification, and authentication stay
-    outside this runtime.  The adapter independently asks PostgreSQL for its
-    current database, session/current users, and backend PID before applying
-    either sealed artifact.  It never accepts a password and closes the
-    session only after mandatory reconciliation.
-    """
-
-    _IDENTITY_SQL = (
-        "SELECT pg_catalog.current_database()::text AS database_name,"
-        " SESSION_USER::text AS session_user,"
-        " CURRENT_USER::text AS current_user,"
-        " pg_catalog.pg_backend_pid()::text AS backend_pid"
-    )
-
-    def __init__(
-        self,
-        session: BootstrapAdminSession,
-        *,
-        tls_peer_certificate_sha256: str,
-        now: Callable[[], float] = time.time,
-    ) -> None:
-        if not callable(getattr(session, "query", None)) or not callable(
-            getattr(session, "close", None)
-        ):
-            raise TypeError("pre-opened bootstrap admin session is invalid")
-        self._session = session
-        self._tls_peer_certificate_sha256 = _digest(
-            tls_peer_certificate_sha256,
-            "bootstrap admin TLS peer certificate digest",
-        )
-        self._now = now
-        self._request_identity = ""
-        self._session_identity: Mapping[str, Any] | None = None
-        self._provision_attempted = False
-        self._reconciled = False
-        self._closed = False
-        self._close_lock = threading.Lock()
-
-    def _close(self) -> None:
-        with self._close_lock:
-            if self._closed:
-                return
-            # Set the terminal marker only after the underlying session
-            # confirms close.  A transient close failure must remain
-            # retryable by lifecycle/driver final cleanup.
-            self._session.close()
-            self._closed = True
-
-    def abort(self) -> None:
-        """Idempotently close an unused or failed pre-opened admin session."""
-
-        self._close()
-
-    def _observe_session(
-        self,
-        request: CanaryBootstrapProvisioningRequest,
-        *,
-        recheck: bool = False,
-    ) -> Mapping[str, Any]:
-        previous = self._session_identity
-        if previous is not None and not recheck:
-            return self._session_identity
-        result = self._session.query(self._IDENTITY_SQL, maximum_rows=1)
-        columns = tuple(getattr(result, "columns", ()))
-        rows = tuple(getattr(result, "rows", ()))
-        if (
-            columns
-            != ("database_name", "session_user", "current_user", "backend_pid")
-            or len(rows) != 1
-            or len(rows[0]) != 4
-            or not str(getattr(result, "command_tag", "")).upper().startswith(
-                "SELECT"
-            )
-        ):
-            raise RuntimeError("bootstrap admin session observation is invalid")
-        database_name, session_user, current_user, backend_pid_text = rows[0]
-        try:
-            backend_pid = int(str(backend_pid_text))
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError("bootstrap admin backend PID is invalid") from exc
-        forbidden = {
-            "canonical_brain_migration_owner",
-            "canonical_brain_writer",
-            "canonical_brain_canary_bootstrap",
-            CANONICAL_CANARY_BOOTSTRAP_LOGIN,
-        }
-        if (
-            database_name != request.database.get("database")
-            or not isinstance(session_user, str)
-            or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", session_user)
-            is None
-            or session_user in forbidden
-            or current_user != session_user
-            or backend_pid <= 1
-        ):
-            raise RuntimeError("bootstrap admin session identity is not exact")
-        unsigned = {
-            "schema": CANARY_BOOTSTRAP_ADMIN_SESSION_SCHEMA,
-            "database": copy.deepcopy(dict(request.database)),
-            "database_name": database_name,
-            "session_user": session_user,
-            "current_user": current_user,
-            "backend_pid": backend_pid,
-            "tls_peer_certificate_sha256": (
-                self._tls_peer_certificate_sha256
-            ),
-            "tls_peer_verified": True,
-            "observed_at_unix": int(self._now()),
-        }
-        identity = {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
-        if previous is not None:
-            stable_fields = (
-                "schema",
-                "database",
-                "database_name",
-                "session_user",
-                "current_user",
-                "backend_pid",
-                "tls_peer_certificate_sha256",
-                "tls_peer_verified",
-            )
-            if any(identity[name] != previous[name] for name in stable_fields):
-                raise RuntimeError(
-                    "bootstrap admin session changed before reconciliation"
-                )
-            # Keep one stable receipt across provision and reconciliation.  The
-            # fresh query above proves the live backend still has the same
-            # database/user/PID/TLS identity; only its observation timestamp
-            # could differ.
-            return previous
-        self._session_identity = identity
-        return identity
-
-    def _require_request(
-        self,
-        request: CanaryBootstrapProvisioningRequest,
-    ) -> str:
-        if not isinstance(request, CanaryBootstrapProvisioningRequest):
-            raise TypeError("canonical bootstrap provisioning request is required")
-        identity = _bootstrap_request_identity(request)
-        if self._request_identity and identity != self._request_identity:
-            raise RuntimeError("bootstrap admin session request changed")
-        self._request_identity = identity
-        if (
-            _sha256_bytes(request.sql_bytes) != request.sql_sha256
-            or _sha256_bytes(request.retire_sql_bytes)
-            != request.retire_sql_sha256
-            or _sha256_json(request.guc_bindings)
-            != request.guc_bindings_sha256
-            or len(request.guc_bindings) != 11
-        ):
-            raise RuntimeError("bootstrap request artifact binding drifted")
-        return identity
-
-    def provision(
-        self,
-        request: CanaryBootstrapProvisioningRequest,
-    ) -> Mapping[str, Any]:
-        if self._provision_attempted or self._reconciled:
-            raise RuntimeError("bootstrap admin session is one-shot")
-        self._require_request(request)
-        identity = self._observe_session(request)
-        self._provision_attempted = True
-        sql = _bootstrap_setting_prefix(request.guc_bindings) + (
-            request.sql_bytes.decode("utf-8", errors="strict")
-        )
-        result = self._session.query(sql, maximum_rows=32)
-        rows = tuple(getattr(result, "rows", ()))
-        setting_rows = tuple(
-            (request.guc_bindings[name],)
-            for name in sorted(request.guc_bindings)
-        )
-        if (
-            str(getattr(result, "command_tag", "")).upper() != "COMMIT"
-            or rows[: len(setting_rows)] != setting_rows
-            or rows[len(setting_rows) :] != (("",),)
-        ):
-            raise RuntimeError("bootstrap provisioning SQL result is not exact")
-        unsigned = {
-            "schema": CANARY_BOOTSTRAP_PROVISIONING_SCHEMA,
-            "applied": True,
-            "plan_sha256": request.plan_sha256,
-            "owner_approval_sha256": request.owner_approval_sha256,
-            "approval_source_sha256": request.approval_source_sha256,
-            "authorization_receipt_sha256": (
-                request.authorization_receipt_sha256
-            ),
-            "sql_path": str(request.sql_path),
-            "sql_sha256": request.sql_sha256,
-            "retire_sql_path": str(request.retire_sql_path),
-            "retire_sql_sha256": request.retire_sql_sha256,
-            "guc_bindings_sha256": request.guc_bindings_sha256,
-            "database": copy.deepcopy(dict(request.database)),
-            "executor_session_identity": copy.deepcopy(dict(identity)),
-            "executor_session_identity_sha256": identity["receipt_sha256"],
-            "applied_at_unix": int(self._now()),
-        }
-        return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
-
-    def reconcile(
-        self,
-        request: CanaryBootstrapProvisioningRequest,
-        provisioning_receipt: Mapping[str, Any] | None,
-    ) -> Mapping[str, Any]:
-        if self._reconciled:
-            raise RuntimeError("bootstrap admin session reconciliation is one-shot")
-        self._require_request(request)
-        self._reconciled = True
-        try:
-            rollback = self._session.query("ROLLBACK", maximum_rows=0)
-            if str(getattr(rollback, "command_tag", "")).upper() != "ROLLBACK":
-                raise RuntimeError("bootstrap reconciliation rollback fence failed")
-            # Re-query identity after the rollback fence and immediately before
-            # sealed cleanup.  A client that silently auto-reconnected cannot
-            # inherit the cached provisioning identity.
-            identity = self._observe_session(request, recheck=True)
-            provision_digest = _provisioning_application_digest(
-                provisioning_receipt
-            )
-            cleanup_bindings = {
-                **dict(request.guc_bindings),
-                "muncho.canonical_canary_bootstrap_plan_sha256": (
-                    request.plan_sha256
-                ),
-                "muncho.canonical_canary_bootstrap_owner_approval_sha256": (
-                    request.owner_approval_sha256
-                ),
-                "muncho.canonical_canary_bootstrap_executor_session_identity_sha256": (
-                    str(identity["receipt_sha256"])
-                ),
-            }
-            sql = _bootstrap_setting_prefix(cleanup_bindings) + (
-                request.retire_sql_bytes.decode("utf-8", errors="strict")
-            )
-            result = self._session.query(sql, maximum_rows=40)
-            rows = tuple(getattr(result, "rows", ()))
-            expected_columns = (
-                "outcome",
-                "grant_id",
-                "case_id",
-                "authorization_event_id",
-                "consumption_event_id",
-                "retirement_event_id",
-                "retired_inserted",
-                "plan_sha256",
-                "owner_approval_sha256",
-                "executor_session_identity_sha256",
-                "reason",
-                "bootstrap_acl_revoked",
-                "migration_owner_membership_absent",
-            )
-            final_row = rows[-1] if rows else ()
-            if (
-                str(getattr(result, "command_tag", "")).upper() != "COMMIT"
-                or tuple(getattr(result, "columns", ())) != expected_columns
-                or rows[: len(cleanup_bindings)]
-                != tuple(
-                    (cleanup_bindings[name],)
-                    for name in sorted(cleanup_bindings)
-                )
-                or rows[len(cleanup_bindings) : -1] != (("",),)
-                or len(final_row) != len(expected_columns)
-            ):
-                raise RuntimeError("bootstrap reconciliation SQL result is not exact")
-            terminal = dict(zip(expected_columns, final_row, strict=True))
-            outcome = terminal["outcome"]
-            event_ids = {
-                name: terminal[name]
-                for name in (
-                    "authorization_event_id",
-                    "consumption_event_id",
-                    "retirement_event_id",
-                )
-            }
-            try:
-                canonical_event_ids = {
-                    name: (
-                        None
-                        if value is None
-                        else str(uuid.UUID(str(value)))
-                    )
-                    for name, value in event_ids.items()
-                }
-            except (AttributeError, TypeError, ValueError) as exc:
-                raise RuntimeError(
-                    "bootstrap reconciliation event identity is invalid"
-                ) from exc
-            if any(
-                value is not None and canonical_event_ids[name] != value
-                for name, value in event_ids.items()
-            ):
-                raise RuntimeError(
-                    "bootstrap reconciliation event identity is invalid"
-                )
-            retired_inserted = terminal["retired_inserted"] == "t"
-            semantic_matrix = {
-                "not_authorized": {
-                    "authorization_event_id": None,
-                    "consumption_event_id": None,
-                    "retirement_event_id": None,
-                    "retired_inserted": False,
-                    "reason": "provisioning_not_committed",
-                },
-                "consumed": {
-                    "authorization_event_id": canonical_event_ids[
-                        "authorization_event_id"
-                    ],
-                    "consumption_event_id": canonical_event_ids[
-                        "consumption_event_id"
-                    ],
-                    "retirement_event_id": None,
-                    "retired_inserted": False,
-                    "reason": "bootstrap_consumed",
-                },
-                "retired": {
-                    "authorization_event_id": canonical_event_ids[
-                        "authorization_event_id"
-                    ],
-                    "consumption_event_id": None,
-                    "retirement_event_id": canonical_event_ids[
-                        "retirement_event_id"
-                    ],
-                    "retired_inserted": retired_inserted,
-                    "reason": "activation_failed_before_consumption",
-                },
-            }
-            expected_terminal = semantic_matrix.get(str(outcome))
-            if (
-                terminal["grant_id"]
-                != request.guc_bindings.get(
-                    "muncho.canonical_canary_bootstrap_grant_id"
-                )
-                or terminal["case_id"]
-                != request.guc_bindings.get(
-                    "muncho.canonical_canary_bootstrap_case_id"
-                )
-                or terminal["retired_inserted"] not in {"t", "f"}
-                or terminal["plan_sha256"] != request.plan_sha256
-                or terminal["owner_approval_sha256"]
-                != request.owner_approval_sha256
-                or terminal["executor_session_identity_sha256"]
-                != identity["receipt_sha256"]
-                or terminal["bootstrap_acl_revoked"] != "t"
-                or terminal["migration_owner_membership_absent"] != "t"
-                or expected_terminal is None
-                or any(
-                    terminal[name] != expected_terminal[name]
-                    for name in (
-                        "authorization_event_id",
-                        "consumption_event_id",
-                        "retirement_event_id",
-                        "reason",
-                    )
-                )
-                or retired_inserted
-                != expected_terminal["retired_inserted"]
-                or (
-                    outcome in {"consumed", "retired"}
-                    and (
-                        terminal["authorization_event_id"] is None
-                        or (
-                            outcome == "consumed"
-                            and terminal["consumption_event_id"] is None
-                        )
-                        or (
-                            outcome == "retired"
-                            and terminal["retirement_event_id"] is None
-                        )
-                    )
-                )
-            ):
-                raise RuntimeError(
-                    "bootstrap reconciliation terminal truth is not exact"
-                )
-            session_continuity = (
-                "same_provision_session"
-                if self._provision_attempted
-                else "recovery_session"
-            )
-            unsigned = {
-                "schema": CANARY_BOOTSTRAP_RECONCILIATION_SCHEMA,
-                "reconciled": True,
-                "plan_sha256": request.plan_sha256,
-                "owner_approval_sha256": request.owner_approval_sha256,
-                "authorization_receipt_sha256": (
-                    request.authorization_receipt_sha256
-                ),
-                "provisioning_application_receipt_sha256": provision_digest,
-                "provisioning_receipt_present": isinstance(
-                    provisioning_receipt,
-                    Mapping,
-                ),
-                "retire_sql_path": str(request.retire_sql_path),
-                "retire_sql_sha256": request.retire_sql_sha256,
-                "guc_bindings_sha256": request.guc_bindings_sha256,
-                "database": copy.deepcopy(dict(request.database)),
-                "executor_session_identity": copy.deepcopy(dict(identity)),
-                "executor_session_identity_sha256": identity["receipt_sha256"],
-                "session_continuity": session_continuity,
-                "outcome": outcome,
-                "grant_id": terminal["grant_id"],
-                "case_id": terminal["case_id"],
-                "authorization_event_id": terminal["authorization_event_id"],
-                "consumption_event_id": terminal["consumption_event_id"],
-                "retirement_event_id": terminal["retirement_event_id"],
-                "retired_inserted": retired_inserted,
-                "reason": terminal["reason"],
-                "bootstrap_acl_revoked": True,
-                "migration_owner_membership_absent": True,
-                "reconciled_at_unix": int(self._now()),
-            }
-            return {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
-        finally:
-            self._close()
-
-
-def _build_canary_bootstrap_provisioning_request(
-    plan: FullCanaryPlan,
-    approval: FullCanaryOwnerApproval,
-    writer_config: Mapping[str, Any],
-) -> CanaryBootstrapProvisioningRequest:
-    sql_path, sql_bytes, sql_sha256 = _validated_release_file(
-        plan,
-        DEFAULT_CANARY_BOOTSTRAP_SQL_RELATIVE,
-        maximum_bytes=_MAX_CANARY_BOOTSTRAP_SQL_BYTES,
-    )
-    retire_sql_path, retire_sql_bytes, retire_sql_sha256 = (
-        _validated_release_file(
-            plan,
-            DEFAULT_CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE,
-            maximum_bytes=_MAX_CANARY_BOOTSTRAP_SQL_BYTES,
-        )
-    )
-    scope = writer_config["canary_scope_preapproval"]
-    authorization_digest = canonical_canary_bootstrap_authorization_sha256(
-        writer_config,
-        bootstrap_sql_sha256=sql_sha256,
-        bootstrap_retire_sql_sha256=retire_sql_sha256,
-    )
-    if scope.get("provisioning_receipt_sha256") != authorization_digest:
-        raise RuntimeError(
-            "canary bootstrap provisioning authorization digest drifted"
-        )
-    business = _canary_bootstrap_business_gucs(writer_config)
-    gucs = {
-        **business,
-        "muncho.canonical_canary_bootstrap_provisioning_receipt_sha256": (
-            authorization_digest
-        ),
-    }
-    if len(gucs) != 11:
-        raise RuntimeError("canary bootstrap requires exactly eleven GUC bindings")
-    database = writer_config["database"]
-    endpoint = {
-        "host": database["host"],
-        "tls_server_name": database["tls_server_name"],
-        "port": database["port"],
-        "database": database["database"],
-    }
-    return CanaryBootstrapProvisioningRequest(
-        plan_sha256=plan.sha256,
-        owner_approval_sha256=approval.sha256,
-        approval_source_sha256=str(approval.value["approval_source_sha256"]),
-        authorization_receipt_sha256=authorization_digest,
-        database=endpoint,
-        guc_bindings=gucs,
-        guc_bindings_sha256=_sha256_json(gucs),
-        sql_path=sql_path,
-        sql_sha256=sql_sha256,
-        sql_bytes=sql_bytes,
-        retire_sql_path=retire_sql_path,
-        retire_sql_sha256=retire_sql_sha256,
-        retire_sql_bytes=retire_sql_bytes,
-    )
-
-
-def _validate_bootstrap_admin_session_identity(
-    value: Any,
-    *,
-    request: CanaryBootstrapProvisioningRequest,
-) -> str:
-    if not isinstance(value, Mapping):
-        raise RuntimeError("bootstrap admin session identity is not an object")
-    fields = {
-        "schema",
-        "database",
-        "database_name",
-        "session_user",
-        "current_user",
-        "backend_pid",
-        "tls_peer_certificate_sha256",
-        "tls_peer_verified",
-        "observed_at_unix",
-        "receipt_sha256",
-    }
-    unsigned = {
-        key: copy.deepcopy(item)
-        for key, item in value.items()
-        if key != "receipt_sha256"
-    }
-    session_user = value.get("session_user")
-    if (
-        set(value) != fields
-        or value.get("schema") != CANARY_BOOTSTRAP_ADMIN_SESSION_SCHEMA
-        or value.get("database") != request.database
-        or value.get("database_name") != request.database.get("database")
-        or not isinstance(session_user, str)
-        or re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]{0,62}", session_user)
-        is None
-        or value.get("current_user") != session_user
-        or session_user
-        in {
-            "canonical_brain_migration_owner",
-            "canonical_brain_writer",
-            "canonical_brain_canary_bootstrap",
-            CANONICAL_CANARY_BOOTSTRAP_LOGIN,
-        }
-        or type(value.get("backend_pid")) is not int
-        or value["backend_pid"] <= 1
-        or _SHA256_RE.fullmatch(
-            str(value.get("tls_peer_certificate_sha256") or "")
-        )
-        is None
-        or value.get("tls_peer_verified") is not True
-        or type(value.get("observed_at_unix")) is not int
-        or value["observed_at_unix"] < 0
-        or value.get("receipt_sha256") != _sha256_json(unsigned)
-    ):
-        raise RuntimeError("bootstrap admin session identity is not exact")
-    return str(value["receipt_sha256"])
-
-
-def _validate_canary_bootstrap_provisioning_receipt(
-    value: Any,
-    *,
-    request: CanaryBootstrapProvisioningRequest,
-    approval: FullCanaryOwnerApproval,
-) -> Mapping[str, Any]:
-    fields = frozenset(
-        {
-            "schema",
-            "applied",
-            "plan_sha256",
-            "owner_approval_sha256",
-            "approval_source_sha256",
-            "authorization_receipt_sha256",
-            "sql_path",
-            "sql_sha256",
-            "retire_sql_path",
-            "retire_sql_sha256",
-            "guc_bindings_sha256",
-            "database",
-            "executor_session_identity",
-            "executor_session_identity_sha256",
-            "applied_at_unix",
-            "receipt_sha256",
-        }
-    )
-    raw = _strict_mapping(
-        value,
-        fields=fields,
-        label="canary bootstrap provisioning receipt",
-    )
-    unsigned = {key: copy.deepcopy(item) for key, item in raw.items() if key != "receipt_sha256"}
-    applied_at = raw.get("applied_at_unix")
-    try:
-        identity_digest = _validate_bootstrap_admin_session_identity(
-            raw.get("executor_session_identity"),
-            request=request,
-        )
-    except RuntimeError:
-        identity_digest = ""
-    if (
-        raw.get("schema") != CANARY_BOOTSTRAP_PROVISIONING_SCHEMA
-        or raw.get("applied") is not True
-        or raw.get("plan_sha256") != request.plan_sha256
-        or raw.get("owner_approval_sha256") != request.owner_approval_sha256
-        or raw.get("approval_source_sha256")
-        != request.approval_source_sha256
-        or raw.get("authorization_receipt_sha256")
-        != request.authorization_receipt_sha256
-        or raw.get("sql_path") != str(request.sql_path)
-        or raw.get("sql_sha256") != request.sql_sha256
-        or raw.get("retire_sql_path") != str(request.retire_sql_path)
-        or raw.get("retire_sql_sha256") != request.retire_sql_sha256
-        or raw.get("guc_bindings_sha256") != request.guc_bindings_sha256
-        or raw.get("database") != request.database
-        or raw.get("executor_session_identity_sha256") != identity_digest
-        or type(applied_at) is not int
-        or not approval.value["approved_at_unix"]
-        <= applied_at
-        <= approval.value["expires_at_unix"]
-        or raw.get("receipt_sha256") != _sha256_json(unsigned)
-    ):
-        raise RuntimeError("canary bootstrap provisioning receipt is not exact")
-    return copy.deepcopy(dict(raw))
-
-
-def _validate_canary_bootstrap_reconciliation_receipt(
-    value: Any,
-    *,
-    request: CanaryBootstrapProvisioningRequest,
-    provisioning_receipt: Mapping[str, Any] | None,
-    approval: FullCanaryOwnerApproval,
-    expected_session_continuity: str | None = None,
-    now_unix: int | None = None,
-) -> Mapping[str, Any]:
-    if expected_session_continuity not in {
-        None,
-        "same_provision_session",
-        "recovery_session",
-    }:
-        raise ValueError("bootstrap session continuity expectation is invalid")
-    validation_now = int(time.time()) if now_unix is None else now_unix
-    if type(validation_now) is not int:
-        raise ValueError("bootstrap reconciliation validation clock is invalid")
-    fields = {
-        "schema",
-        "reconciled",
-        "plan_sha256",
-        "owner_approval_sha256",
-        "authorization_receipt_sha256",
-        "provisioning_application_receipt_sha256",
-        "provisioning_receipt_present",
-        "retire_sql_path",
-        "retire_sql_sha256",
-        "guc_bindings_sha256",
-        "database",
-        "executor_session_identity",
-        "executor_session_identity_sha256",
-        "session_continuity",
-        "outcome",
-        "grant_id",
-        "case_id",
-        "authorization_event_id",
-        "consumption_event_id",
-        "retirement_event_id",
-        "retired_inserted",
-        "reason",
-        "bootstrap_acl_revoked",
-        "migration_owner_membership_absent",
-        "reconciled_at_unix",
-        "receipt_sha256",
-    }
-    raw = _strict_mapping(
-        value,
-        fields=frozenset(fields),
-        label="canary bootstrap reconciliation receipt",
-    )
-    unsigned = {
-        key: copy.deepcopy(item)
-        for key, item in raw.items()
-        if key != "receipt_sha256"
-    }
-    provision_digest = _provisioning_application_digest(provisioning_receipt)
-    try:
-        identity_digest = _validate_bootstrap_admin_session_identity(
-            raw.get("executor_session_identity"),
-            request=request,
-        )
-    except RuntimeError:
-        identity_digest = ""
-    provision_identity_digest = ""
-    if isinstance(provisioning_receipt, Mapping):
-        try:
-            provision_unsigned = {
-                key: copy.deepcopy(item)
-                for key, item in provisioning_receipt.items()
-                if key != "receipt_sha256"
-            }
-            provision_self_digest_valid = (
-                provisioning_receipt.get("receipt_sha256")
-                == _sha256_json(provision_unsigned)
-            )
-        except (TypeError, ValueError):
-            provision_self_digest_valid = False
-        if (
-            provision_self_digest_valid
-            and provisioning_receipt.get("schema")
-            == CANARY_BOOTSTRAP_PROVISIONING_SCHEMA
-            and provisioning_receipt.get("applied") is True
-        ):
-            provision_identity_digest = str(
-                provisioning_receipt.get(
-                    "executor_session_identity_sha256",
-                    "",
-                )
-            )
-    event_ids: dict[str, str | None] = {}
-    try:
-        for name in (
-            "authorization_event_id",
-            "consumption_event_id",
-            "retirement_event_id",
-        ):
-            value_item = raw.get(name)
-            event_ids[name] = (
-                None
-                if value_item is None
-                else str(uuid.UUID(str(value_item)))
-            )
-    except (AttributeError, TypeError, ValueError):
-        event_ids = {}
-    outcome = raw.get("outcome")
-    expected_terminal: Mapping[str, Any] | None = None
-    if outcome == "not_authorized":
-        expected_terminal = {
-            "authorization_event_id": None,
-            "consumption_event_id": None,
-            "retirement_event_id": None,
-            "retired_inserted": False,
-            "reason": "provisioning_not_committed",
-        }
-    elif outcome == "consumed":
-        expected_terminal = {
-            "authorization_event_id": event_ids.get(
-                "authorization_event_id"
-            ),
-            "consumption_event_id": event_ids.get("consumption_event_id"),
-            "retirement_event_id": None,
-            "retired_inserted": False,
-            "reason": "bootstrap_consumed",
-        }
-    elif outcome == "retired":
-        expected_terminal = {
-            "authorization_event_id": event_ids.get(
-                "authorization_event_id"
-            ),
-            "consumption_event_id": None,
-            "retirement_event_id": event_ids.get("retirement_event_id"),
-            "retired_inserted": raw.get("retired_inserted"),
-            "reason": "activation_failed_before_consumption",
-        }
-    reconciled_at = raw.get("reconciled_at_unix")
-    if (
-        raw.get("schema") != CANARY_BOOTSTRAP_RECONCILIATION_SCHEMA
-        or raw.get("reconciled") is not True
-        or raw.get("plan_sha256") != request.plan_sha256
-        or raw.get("owner_approval_sha256") != request.owner_approval_sha256
-        or raw.get("authorization_receipt_sha256")
-        != request.authorization_receipt_sha256
-        or raw.get("provisioning_application_receipt_sha256")
-        != provision_digest
-        or raw.get("provisioning_receipt_present")
-        != isinstance(provisioning_receipt, Mapping)
-        or raw.get("retire_sql_path") != str(request.retire_sql_path)
-        or raw.get("retire_sql_sha256") != request.retire_sql_sha256
-        or raw.get("guc_bindings_sha256") != request.guc_bindings_sha256
-        or raw.get("database") != request.database
-        or raw.get("executor_session_identity_sha256") != identity_digest
-        or (
-            raw.get("session_continuity") == "same_provision_session"
-            and bool(provision_identity_digest)
-            and identity_digest != provision_identity_digest
-        )
-        or raw.get("session_continuity")
-        not in {"same_provision_session", "recovery_session"}
-        or (
-            expected_session_continuity is not None
-            and raw.get("session_continuity")
-            != expected_session_continuity
-        )
-        or raw.get("grant_id")
-        != request.guc_bindings.get(
-            "muncho.canonical_canary_bootstrap_grant_id"
-        )
-        or raw.get("case_id")
-        != request.guc_bindings.get(
-            "muncho.canonical_canary_bootstrap_case_id"
-        )
-        or set(event_ids) != {
-            "authorization_event_id",
-            "consumption_event_id",
-            "retirement_event_id",
-        }
-        or expected_terminal is None
-        or any(
-            raw.get(name) != expected_terminal.get(name)
-            for name in (
-                "authorization_event_id",
-                "consumption_event_id",
-                "retirement_event_id",
-                "retired_inserted",
-                "reason",
-            )
-        )
-        or (
-            outcome in {"consumed", "retired"}
-            and (
-                raw.get("authorization_event_id") is None
-                or (
-                    outcome == "consumed"
-                    and raw.get("consumption_event_id") is None
-                )
-                or (
-                    outcome == "retired"
-                    and raw.get("retirement_event_id") is None
-                )
-            )
-        )
-        or type(raw.get("retired_inserted")) is not bool
-        or raw.get("bootstrap_acl_revoked") is not True
-        or raw.get("migration_owner_membership_absent") is not True
-        or type(reconciled_at) is not int
-        or reconciled_at < approval.value["approved_at_unix"]
-        or reconciled_at
-        > validation_now + BOOTSTRAP_RECONCILIATION_FUTURE_SKEW_SECONDS
-        or (
-            raw.get("session_continuity") == "same_provision_session"
-            and reconciled_at > approval.value["expires_at_unix"] + 900
-        )
-        or raw.get("receipt_sha256") != _sha256_json(unsigned)
-    ):
-        raise RuntimeError("canary bootstrap reconciliation receipt is not exact")
-    return copy.deepcopy(dict(raw))
-
-
-@dataclass(frozen=True)
-class BootstrapEvidenceDescriptor:
-    schema: str
-    path: Path
-    file_sha256: str
-    envelope_sha256: str
-    attempt_id: str
-
-    @classmethod
-    def from_mapping(cls, value: Any) -> "BootstrapEvidenceDescriptor":
-        raw = _strict_mapping(
-            value,
-            fields=frozenset(
-                {
-                    "schema",
-                    "path",
-                    "file_sha256",
-                    "envelope_sha256",
-                    "attempt_id",
-                }
-            ),
-            label="bootstrap evidence descriptor",
-        )
-        if raw["schema"] != BOOTSTRAP_EVIDENCE_DESCRIPTOR_SCHEMA:
-            raise ValueError("bootstrap evidence descriptor schema is invalid")
-        return cls(
-            schema=BOOTSTRAP_EVIDENCE_DESCRIPTOR_SCHEMA,
-            path=_absolute_path(raw["path"], "bootstrap evidence path"),
-            file_sha256=_digest(
-                raw["file_sha256"],
-                "bootstrap evidence file digest",
-            ),
-            envelope_sha256=_digest(
-                raw["envelope_sha256"],
-                "bootstrap evidence envelope digest",
-            ),
-            attempt_id=_digest(
-                raw["attempt_id"],
-                "bootstrap evidence attempt id",
-            ),
-        )
-
-    def to_mapping(self) -> Mapping[str, Any]:
-        return {
-            "schema": self.schema,
-            "path": str(self.path),
-            "file_sha256": self.file_sha256,
-            "envelope_sha256": self.envelope_sha256,
-            "attempt_id": self.attempt_id,
-        }
-
-
-class BootstrapEvidenceUnavailable(RuntimeError):
-    """No immutable envelope exists for this exact plan."""
-
-
-class BootstrapEvidenceAmbiguous(RuntimeError):
-    """More than one immutable envelope exists for one-attempt plan truth."""
-
-
-@dataclass(frozen=True)
-class BootstrapReconciliationEvidence:
-    """Already validated terminal bootstrap truth for one exact plan."""
-
-    plan_sha256: str
-    approval: FullCanaryOwnerApproval
-    request: CanaryBootstrapProvisioningRequest
-    provisioning_receipt: Mapping[str, Any] | None
-    reconciliation_receipt: Mapping[str, Any]
-    descriptor: BootstrapEvidenceDescriptor | None = None
-
-    @property
-    def outcome(self) -> str:
-        return str(self.reconciliation_receipt["outcome"])
-
-
-@dataclass(frozen=True)
-class BootstrapNeverAuthorizedEvidence:
-    """Durable proof that a staged plan could never reach provisioning."""
-
-    value: Mapping[str, Any]
-    path: Path
-    file_sha256: str
-
-
-def validated_bootstrap_reconciliation_evidence(
-    *,
-    plan: FullCanaryPlan,
-    approval: FullCanaryOwnerApproval,
-    request: CanaryBootstrapProvisioningRequest,
-    provisioning_receipt: Mapping[str, Any] | None,
-    reconciliation_receipt: Mapping[str, Any],
-    expected_session_continuity: str,
-) -> BootstrapReconciliationEvidence:
-    """Build a non-forgeable-by-shape preflight input from exact receipts."""
-
-    if not isinstance(plan, FullCanaryPlan):
-        raise TypeError("full-canary plan is required")
-    if not isinstance(approval, FullCanaryOwnerApproval):
-        raise TypeError("full-canary owner approval is required")
-    if (
-        approval.value.get("plan_sha256") != plan.sha256
-        or not isinstance(request, CanaryBootstrapProvisioningRequest)
-        or request.plan_sha256 != plan.sha256
-        or request.owner_approval_sha256 != approval.sha256
-        or request.approval_source_sha256
-        != approval.value.get("approval_source_sha256")
-    ):
-        raise RuntimeError("bootstrap reconciliation approval binding drifted")
-    validated_provisioning: Mapping[str, Any] | None = None
-    if provisioning_receipt is not None:
-        validated_provisioning = _validate_canary_bootstrap_provisioning_receipt(
-            provisioning_receipt,
-            request=request,
-            approval=approval,
-        )
-    validated_reconciliation = _validate_canary_bootstrap_reconciliation_receipt(
-        reconciliation_receipt,
-        request=request,
-        provisioning_receipt=validated_provisioning,
-        approval=approval,
-        expected_session_continuity=expected_session_continuity,
-    )
-    return BootstrapReconciliationEvidence(
-        plan_sha256=plan.sha256,
-        approval=approval,
-        request=request,
-        provisioning_receipt=(
-            None
-            if validated_provisioning is None
-            else copy.deepcopy(dict(validated_provisioning))
-        ),
-        reconciliation_receipt=copy.deepcopy(dict(validated_reconciliation)),
-    )
-
-
-def _bootstrap_request_projection(
-    request: CanaryBootstrapProvisioningRequest,
-) -> Mapping[str, Any]:
-    if not isinstance(request, CanaryBootstrapProvisioningRequest):
-        raise TypeError("canary bootstrap provisioning request is required")
-    unsigned = {
-        "schema": BOOTSTRAP_EVIDENCE_REQUEST_SCHEMA,
-        "plan_sha256": request.plan_sha256,
-        "owner_approval_sha256": request.owner_approval_sha256,
-        "approval_source_sha256": request.approval_source_sha256,
-        "authorization_receipt_sha256": request.authorization_receipt_sha256,
-        "database": copy.deepcopy(dict(request.database)),
-        "guc_bindings": copy.deepcopy(dict(request.guc_bindings)),
-        "guc_bindings_sha256": request.guc_bindings_sha256,
-        "provision_sql_path": str(request.sql_path),
-        "provision_sql_sha256": request.sql_sha256,
-        "retire_sql_path": str(request.retire_sql_path),
-        "retire_sql_sha256": request.retire_sql_sha256,
-    }
-    return {**unsigned, "request_sha256": _sha256_json(unsigned)}
-
-
-def _bind_bootstrap_request_to_writer_config(
-    *,
-    plan: FullCanaryPlan,
-    approval: FullCanaryOwnerApproval,
-    request: CanaryBootstrapProvisioningRequest,
-    writer_config_raw: bytes,
-) -> Mapping[str, Any]:
-    """Bind every endpoint/GUC value to sealed, secret-free plan bytes."""
-
-    if (
-        not isinstance(writer_config_raw, bytes)
-        or not writer_config_raw
-        or _sha256_bytes(writer_config_raw)
-        != plan.artifacts["writer_config"].sha256
-    ):
-        raise RuntimeError("bootstrap evidence writer config bytes drifted")
-    writer_config = _validate_writer_config(
-        writer_config_raw,
-        plan.identities,
-        plan=plan,
-        expected_approval_source_sha256=str(
-            approval.value["approval_source_sha256"]
-        ),
-        require_fresh_canary_scope=False,
-    )
-    database = writer_config["database"]
-    endpoint = {
-        "host": database["host"],
-        "tls_server_name": database["tls_server_name"],
-        "port": database["port"],
-        "database": database["database"],
-    }
-    authorization = canonical_canary_bootstrap_authorization_sha256(
-        writer_config,
-        bootstrap_sql_sha256=request.sql_sha256,
-        bootstrap_retire_sql_sha256=request.retire_sql_sha256,
-    )
-    expected_gucs = {
-        **_canary_bootstrap_business_gucs(writer_config),
-        "muncho.canonical_canary_bootstrap_provisioning_receipt_sha256": (
-            authorization
-        ),
-    }
-    if (
-        request.plan_sha256 != plan.sha256
-        or request.owner_approval_sha256 != approval.sha256
-        or request.approval_source_sha256
-        != approval.value["approval_source_sha256"]
-        or request.database != endpoint
-        or request.guc_bindings != expected_gucs
-        or request.guc_bindings_sha256 != _sha256_json(expected_gucs)
-        or request.authorization_receipt_sha256 != authorization
-    ):
-        raise RuntimeError(
-            "bootstrap request is not derived from sealed writer config"
-        )
-    return writer_config
-
-
-def _bootstrap_attempt_id(
-    *,
-    plan_sha256: str,
-    owner_approval_sha256: str,
-    request_sha256: str,
-) -> str:
-    return _sha256_json(
-        {
-            "schema": BOOTSTRAP_EVIDENCE_ATTEMPT_SCHEMA,
-            "plan_sha256": _digest(plan_sha256, "bootstrap attempt plan digest"),
-            "owner_approval_sha256": _digest(
-                owner_approval_sha256,
-                "bootstrap attempt approval digest",
-            ),
-            "request_sha256": _digest(
-                request_sha256,
-                "bootstrap attempt request digest",
-            ),
-        }
-    )
-
-
-def _request_from_bootstrap_projection(
-    plan: FullCanaryPlan,
-    approval: FullCanaryOwnerApproval,
-    value: Any,
-    *,
-    writer_config_raw: bytes,
-) -> CanaryBootstrapProvisioningRequest:
-    fields = frozenset(
-        {
-            "schema",
-            "plan_sha256",
-            "owner_approval_sha256",
-            "approval_source_sha256",
-            "authorization_receipt_sha256",
-            "database",
-            "guc_bindings",
-            "guc_bindings_sha256",
-            "provision_sql_path",
-            "provision_sql_sha256",
-            "retire_sql_path",
-            "retire_sql_sha256",
-            "request_sha256",
-        }
-    )
-    raw = _strict_mapping(
-        value,
-        fields=fields,
-        label="bootstrap evidence request projection",
-    )
-    unsigned = {
-        key: copy.deepcopy(item)
-        for key, item in raw.items()
-        if key != "request_sha256"
-    }
-    database = raw["database"]
-    gucs = raw["guc_bindings"]
-    expected_guc_names = {
-        "muncho.canonical_canary_bootstrap_database",
-        "muncho.canonical_canary_bootstrap_grant_id",
-        "muncho.canonical_canary_bootstrap_case_id",
-        "muncho.canonical_canary_bootstrap_release_sha256",
-        "muncho.canonical_canary_bootstrap_fixture_sha256",
-        "muncho.canonical_canary_bootstrap_run_id",
-        "muncho.canonical_canary_bootstrap_session_key_sha256",
-        "muncho.canonical_canary_bootstrap_expires_at",
-        "muncho.canonical_canary_bootstrap_approved_by",
-        "muncho.canonical_canary_bootstrap_approval_source_sha256",
-        "muncho.canonical_canary_bootstrap_provisioning_receipt_sha256",
-    }
-    if (
-        raw["schema"] != BOOTSTRAP_EVIDENCE_REQUEST_SCHEMA
-        or raw["plan_sha256"] != plan.sha256
-        or raw["owner_approval_sha256"] != approval.sha256
-        or raw["approval_source_sha256"]
-        != approval.value["approval_source_sha256"]
-        or not isinstance(database, Mapping)
-        or set(database) != {"host", "tls_server_name", "port", "database"}
-        or any(
-            not isinstance(database.get(name), str)
-            or not database[name]
-            or database[name] != database[name].strip()
-            or _CONTROL_RE.search(database[name]) is not None
-            for name in ("host", "tls_server_name", "database")
-        )
-        or type(database.get("port")) is not int
-        or not 1 <= database["port"] <= 65535
-        or not isinstance(gucs, Mapping)
-        or set(gucs) != expected_guc_names
-        or any(
-            not isinstance(name, str)
-            or not isinstance(item, str)
-            or not item
-            or item != item.strip()
-            or _CONTROL_RE.search(item) is not None
-            for name, item in gucs.items()
-        )
-        or raw["guc_bindings_sha256"] != _sha256_json(gucs)
-        or raw["authorization_receipt_sha256"]
-        != gucs[
-            "muncho.canonical_canary_bootstrap_provisioning_receipt_sha256"
-        ]
-        or gucs["muncho.canonical_canary_bootstrap_database"]
-        != database.get("database")
-        or gucs["muncho.canonical_canary_bootstrap_release_sha256"]
-        != plan.release["artifact_sha256"]
-        or gucs["muncho.canonical_canary_bootstrap_fixture_sha256"]
-        != plan.artifacts["e2e_fixture"].sha256
-        or gucs[
-            "muncho.canonical_canary_bootstrap_approval_source_sha256"
-        ]
-        != approval.value["approval_source_sha256"]
-        or raw["request_sha256"] != _sha256_json(unsigned)
-    ):
-        raise RuntimeError("bootstrap evidence request projection is not exact")
-    for name in (
-        "plan_sha256",
-        "owner_approval_sha256",
-        "approval_source_sha256",
-        "authorization_receipt_sha256",
-        "guc_bindings_sha256",
-        "provision_sql_sha256",
-        "retire_sql_sha256",
-        "request_sha256",
-    ):
-        _digest(raw[name], f"bootstrap evidence {name}")
-    sql_path, sql_bytes, sql_sha256 = _validated_release_file(
-        plan,
-        DEFAULT_CANARY_BOOTSTRAP_SQL_RELATIVE,
-        maximum_bytes=_MAX_CANARY_BOOTSTRAP_SQL_BYTES,
-    )
-    retire_path, retire_bytes, retire_sha256 = _validated_release_file(
-        plan,
-        DEFAULT_CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE,
-        maximum_bytes=_MAX_CANARY_BOOTSTRAP_SQL_BYTES,
-    )
-    if (
-        raw["provision_sql_path"] != str(sql_path)
-        or raw["provision_sql_sha256"] != sql_sha256
-        or raw["retire_sql_path"] != str(retire_path)
-        or raw["retire_sql_sha256"] != retire_sha256
-    ):
-        raise RuntimeError("bootstrap evidence sealed SQL binding drifted")
-    request = CanaryBootstrapProvisioningRequest(
-        plan_sha256=plan.sha256,
-        owner_approval_sha256=approval.sha256,
-        approval_source_sha256=str(approval.value["approval_source_sha256"]),
-        authorization_receipt_sha256=str(raw["authorization_receipt_sha256"]),
-        database=copy.deepcopy(dict(database)),
-        guc_bindings=copy.deepcopy(dict(gucs)),
-        guc_bindings_sha256=str(raw["guc_bindings_sha256"]),
-        sql_path=sql_path,
-        sql_sha256=sql_sha256,
-        sql_bytes=sql_bytes,
-        retire_sql_path=retire_path,
-        retire_sql_sha256=retire_sha256,
-        retire_sql_bytes=retire_bytes,
-    )
-    _bind_bootstrap_request_to_writer_config(
-        plan=plan,
-        approval=approval,
-        request=request,
-        writer_config_raw=writer_config_raw,
-    )
-    return request
-
-
 class _StrictYamlLoader(yaml.SafeLoader):
     def compose_node(self, parent: Any, index: Any) -> Any:
         if self.check_event(yaml.events.AliasEvent):
@@ -3426,7 +2069,7 @@ def _validate_gateway_config(raw: bytes) -> Mapping[str, Any]:
         != {"reasoning_effort", "max_turns", "adaptive_reasoning"}
         or agent["reasoning_effort"] != "high"
         or agent["max_turns"] != 90
-        or adaptive != {"enabled": True, "max_effort": "xhigh"}
+        or adaptive != {"enabled": True, "max_effort": "max"}
     ):
         raise RuntimeError("full gateway model/adaptive reasoning route is not exact")
     kanban = value.get("kanban")
@@ -3509,19 +2152,10 @@ def _validate_gateway_config(raw: bytes) -> Mapping[str, Any]:
 def _validate_writer_config(
     raw: bytes,
     identities: FullCanaryIdentities,
-    *,
-    plan: FullCanaryPlan | None = None,
-    expected_approval_source_sha256: str | None = None,
-    require_fresh_canary_scope: bool = True,
 ) -> Mapping[str, Any]:
-    if type(require_fresh_canary_scope) is not bool:
-        raise TypeError("writer canary scope freshness policy is invalid")
     value = _decode_json(raw, label="full writer config")
     base_fields = {"service", "database", "privileges", "discord_edge_authority"}
-    if frozenset(value) not in {
-        frozenset(base_fields),
-        frozenset(base_fields | {"canary_scope_preapproval"}),
-    }:
+    if set(value) != base_fields:
         raise RuntimeError("full writer config root is not exact")
     service = value.get("service")
     database = value.get("database")
@@ -3613,115 +2247,6 @@ def _validate_writer_config(
         )
     ):
         raise RuntimeError("full writer privilege schema is not exact")
-    scope = value.get("canary_scope_preapproval")
-    if plan is not None:
-        expected_scope_fields = {
-            "grant_id",
-            "case_id",
-            "release_sha256",
-            "fixture_sha256",
-            "run_id",
-            "session_key_sha256",
-            "expires_at",
-            "approved_by",
-            "approval_source_sha256",
-            "provisioning_receipt_sha256",
-            "bootstrap_database_user",
-            "bootstrap_credential_file",
-            "bootstrap_managed_cloudsqladmin_hba_rejection_receipt",
-            "bootstrap_managed_cloudsqladmin_hba_rejection_sha256",
-        }
-        if not isinstance(scope, Mapping) or set(scope) != expected_scope_fields:
-            raise RuntimeError("full writer canary preapproval is not exact")
-        fixture = _validated_e2e_fixture(plan)
-        safe_id = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$")
-        owners = service.get("owner_discord_user_ids")
-        if (
-            not isinstance(scope.get("grant_id"), str)
-            or safe_id.fullmatch(scope["grant_id"]) is None
-            or len(f"canary-scope-claim:{scope['grant_id']}".encode("utf-8"))
-            > 256
-            or not isinstance(scope.get("run_id"), str)
-            or safe_id.fullmatch(scope["run_id"]) is None
-            or scope.get("case_id") != fixture.get("case_id")
-            or scope.get("release_sha256") != plan.release["artifact_sha256"]
-            or scope.get("fixture_sha256")
-            != plan.artifacts["e2e_fixture"].sha256
-            or scope.get("run_id") != fixture.get("canary_run_id")
-            or _SHA256_RE.fullmatch(str(scope.get("session_key_sha256") or ""))
-            is None
-            or scope.get("approved_by") != fixture.get("owner_discord_user_id")
-            or not isinstance(owners, list)
-            or scope.get("approved_by") not in owners
-            or _SHA256_RE.fullmatch(
-                str(scope.get("approval_source_sha256") or "")
-            )
-            is None
-            or _SHA256_RE.fullmatch(
-                str(scope.get("provisioning_receipt_sha256") or "")
-            )
-            is None
-            or scope.get("bootstrap_database_user")
-            != CANONICAL_CANARY_BOOTSTRAP_LOGIN
-            or scope.get("bootstrap_credential_file")
-            != str(DEFAULT_CANARY_BOOTSTRAP_CREDENTIAL)
-            or not isinstance(database, Mapping)
-            or (
-                expected_approval_source_sha256 is not None
-                and scope.get("approval_source_sha256")
-                != expected_approval_source_sha256
-            )
-        ):
-            raise RuntimeError("full writer canary preapproval binding drifted")
-        hba_value = scope.get(
-            "bootstrap_managed_cloudsqladmin_hba_rejection_receipt"
-        )
-        hba_digest = scope.get(
-            "bootstrap_managed_cloudsqladmin_hba_rejection_sha256"
-        )
-        try:
-            if not isinstance(hba_value, Mapping):
-                raise ValueError("receipt is not an object")
-            hba = managed_cloudsqladmin_hba_receipt_from_mapping(hba_value)
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError(
-                "full writer canary bootstrap HBA proof is invalid"
-            ) from exc
-        if (
-            not isinstance(hba_digest, str)
-            or hba.sha256 != hba_digest
-            or hba.user != CANONICAL_CANARY_BOOTSTRAP_LOGIN
-            or hba.host != database.get("host")
-            or hba.tls_server_name != database.get("tls_server_name")
-            or hba.port != database.get("port")
-        ):
-            raise RuntimeError(
-                "full writer canary bootstrap HBA proof is not user-bound"
-            )
-        expires_at = scope.get("expires_at")
-        try:
-            parsed_expiry = datetime.fromisoformat(expires_at)
-        except (TypeError, ValueError) as exc:
-            raise RuntimeError("full writer canary preapproval expiry is invalid") from exc
-        now = datetime.now(timezone.utc)
-        fixture_expiry_ms = fixture["valid_until_unix_ms"]
-        fixture_expiry = datetime.fromtimestamp(
-            fixture_expiry_ms // 1000,
-            tz=timezone.utc,
-        ) + timedelta(milliseconds=fixture_expiry_ms % 1000)
-        if (
-            parsed_expiry.tzinfo is None
-            or parsed_expiry.utcoffset() is None
-            or parsed_expiry.astimezone(timezone.utc) != fixture_expiry
-            or (
-                require_fresh_canary_scope
-                and not now < parsed_expiry.astimezone(timezone.utc)
-                <= now + timedelta(hours=1)
-            )
-        ):
-            raise RuntimeError(
-                "full writer canary preapproval expiry is not fixture-bound/fresh"
-            )
     return value
 
 
@@ -4210,15 +2735,6 @@ def _observer_config_mapping(
     edge_service_identity_sha256: str,
 ) -> Mapping[str, Any]:
     fixture = _validated_e2e_fixture(plan)
-    writer = _validate_writer_config(
-        _validate_artifact_source(
-            plan.artifacts["writer_config"],
-            label="writer_config",
-        ),
-        plan.identities,
-        plan=plan,
-    )
-    scope = writer["canary_scope_preapproval"]
     collector_identity = collector.receipt["service_identity"]
     return {
         "schema": "muncho-canary-evidence-config.v1",
@@ -4252,15 +2768,6 @@ def _observer_config_mapping(
             "connect_timeout_ms": 1000,
             "response_timeout_ms": 2000,
         },
-        "canonical_scope": {
-            "grant_id": scope["grant_id"],
-            "case_id": scope["case_id"],
-            "release_sha256": scope["release_sha256"],
-            "fixture_sha256": scope["fixture_sha256"],
-            "run_id": scope["run_id"],
-            "approval_source_sha256": scope["approval_source_sha256"],
-            "idempotency_key": f"canary-scope-claim:{scope['grant_id']}",
-        },
     }
 
 
@@ -4272,17 +2779,8 @@ def _observer_static_binding_matches(
         return False
     try:
         fixture = _validated_e2e_fixture(plan)
-        writer = _validate_writer_config(
-            _validate_artifact_source(
-                plan.artifacts["writer_config"],
-                label="writer_config",
-            ),
-            plan.identities,
-            plan=plan,
-        )
     except Exception:
         return False
-    scope = writer["canary_scope_preapproval"]
     return (
         value.get("schema") == "muncho-canary-evidence-config.v1"
         and value.get("release_sha") == plan.revision
@@ -4298,16 +2796,6 @@ def _observer_static_binding_matches(
         and isinstance(value.get("discord_edge"), Mapping)
         and value["discord_edge"].get("socket_path")
         == str(DEFAULT_EDGE_SOCKET)
-        and value.get("canonical_scope")
-        == {
-            "grant_id": scope["grant_id"],
-            "case_id": scope["case_id"],
-            "release_sha256": scope["release_sha256"],
-            "fixture_sha256": scope["fixture_sha256"],
-            "run_id": scope["run_id"],
-            "approval_source_sha256": scope["approval_source_sha256"],
-            "idempotency_key": f"canary-scope-claim:{scope['grant_id']}",
-        }
     )
 
 
@@ -4583,7 +3071,7 @@ def load_plugin_readiness(
         "fixture_sha256",
         "release_sha",
         "release_sha256",
-        "canonical_scope_sha256",
+        "api_session_key_sha256",
         "collector_service_identity_sha256",
         "collector_socket_identity_sha256",
         "discord_edge_service_identity_sha256",
@@ -4607,7 +3095,7 @@ def load_plugin_readiness(
         "fixture_sha256": plan.artifacts["e2e_fixture"].sha256,
         "release_sha": plan.revision,
         "release_sha256": plan.release["artifact_sha256"],
-        "canonical_scope_sha256": _sha256_json(observer["canonical_scope"]),
+        "api_session_key_sha256": fixture["api_session_key_sha256"],
         "collector_service_identity_sha256": collector.service_identity_sha256,
         "collector_socket_identity_sha256": _socket_identity_sha256(
             DEFAULT_COLLECTOR_SOCKET,
@@ -4797,387 +3285,6 @@ def _readiness_receipt(
         allowed_modes=frozenset({0o600}),
     )
     return _decode_json(raw, label="runtime readiness receipt")
-
-
-def _validate_writer_bootstrap_consumption(
-    plan: FullCanaryPlan,
-    writer_config: Mapping[str, Any],
-    writer_readiness: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    scope = writer_config.get("canary_scope_preapproval")
-    value = writer_readiness.get("canary_scope_bootstrap_consumption")
-    fields = {
-        "version",
-        "grant_id",
-        "case_id",
-        "release_sha256",
-        "fixture_sha256",
-        "run_id",
-        "session_key_sha256",
-        "expires_at",
-        "approved_by",
-        "approval_source_sha256",
-        "provisioning_receipt_sha256",
-        "bootstrap_database_user",
-        "preapproval_event_id",
-        "consumption_event_id",
-        "preapproved_at",
-        "acl_revoked",
-        "inserted",
-        "receipt_sha256",
-    }
-    if not isinstance(scope, Mapping) or not isinstance(value, Mapping):
-        raise RuntimeError("writer did not attest canary bootstrap consumption")
-    raw = _strict_mapping(
-        value,
-        fields=frozenset(fields),
-        label="writer canary bootstrap consumption",
-    )
-    semantic = (
-        "grant_id",
-        "case_id",
-        "release_sha256",
-        "fixture_sha256",
-        "run_id",
-        "session_key_sha256",
-        "expires_at",
-        "approved_by",
-        "approval_source_sha256",
-        "provisioning_receipt_sha256",
-    )
-    try:
-        preapproval_event = str(uuid.UUID(str(raw.get("preapproval_event_id"))))
-        consumption_event = str(uuid.UUID(str(raw.get("consumption_event_id"))))
-    except (TypeError, ValueError, AttributeError) as exc:
-        raise RuntimeError("writer bootstrap consumption event identity is invalid") from exc
-    unsigned = {
-        key: copy.deepcopy(item)
-        for key, item in raw.items()
-        if key != "receipt_sha256"
-    }
-    if (
-        writer_readiness.get("version") != WRITER_RUNTIME_ATTESTATION_VERSION
-        or raw.get("version") != "canonical-canary-bootstrap-consumption-v1"
-        or any(raw.get(name) != scope.get(name) for name in semantic)
-        or raw.get("bootstrap_database_user")
-        != CANONICAL_CANARY_BOOTSTRAP_LOGIN
-        or preapproval_event == consumption_event
-        or raw.get("preapproval_event_id") != preapproval_event
-        or raw.get("consumption_event_id") != consumption_event
-        or not isinstance(raw.get("preapproved_at"), str)
-        or raw.get("acl_revoked") is not True
-        or raw.get("inserted") is not True
-        or raw.get("receipt_sha256") != _sha256_json(unsigned)
-        or scope.get("release_sha256") != plan.release["artifact_sha256"]
-    ):
-        raise RuntimeError("writer bootstrap consumption receipt is not exact")
-    return copy.deepcopy(dict(raw))
-
-
-_CANARY_PRECLAIM_RESULT_FIELDS = frozenset(
-    {
-        "success",
-        "outcome",
-        "grant_id",
-        "case_id",
-        "release_sha256",
-        "fixture_sha256",
-        "run_id",
-        "session_key_sha256",
-        "expires_at",
-        "approved_by",
-        "approval_source_sha256",
-        "provisioning_receipt_sha256",
-        "preapproval_event_id",
-        "bootstrap_consumption_event_id",
-        "claim_event_id",
-        "retirement_event_id",
-        "revocation_event_id",
-        "claimed_at",
-        "retired_at",
-        "reason",
-        "scope_retired",
-        "authority_active",
-        "inserted",
-        "deduped",
-    }
-)
-_CANARY_PRECLAIM_RECEIPT_FIELDS = frozenset(
-    {
-        "version",
-        "observed_at_unix",
-        "source_config_path",
-        "source_config_sha256",
-        "database_identity",
-        "database_identity_sha256",
-        "result",
-        "receipt_sha256",
-    }
-)
-_CANARY_PRECLAIM_OUTCOMES = frozenset(
-    {"not_preapproved", "retired", "claimed"}
-)
-
-
-def _normalized_utc_timestamp(value: Any, *, label: str) -> str:
-    if not isinstance(value, str) or not value or value != value.strip():
-        raise RuntimeError(f"{label} is invalid")
-    try:
-        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    except ValueError as exc:
-        raise RuntimeError(f"{label} is invalid") from exc
-    if parsed.tzinfo is None:
-        raise RuntimeError(f"{label} is not timezone-aware")
-    return parsed.astimezone(timezone.utc).isoformat()
-
-
-def _canonical_event_id(value: Any, *, label: str) -> str:
-    if not isinstance(value, str):
-        raise RuntimeError(f"{label} is invalid")
-    try:
-        parsed = uuid.UUID(value)
-    except (ValueError, AttributeError) as exc:
-        raise RuntimeError(f"{label} is invalid") from exc
-    if parsed.int == 0 or str(parsed) != value:
-        raise RuntimeError(f"{label} is not canonical")
-    return value
-
-
-def _preclaim_receipt_generation(item: os.stat_result) -> tuple[int, ...]:
-    return (
-        item.st_dev,
-        item.st_ino,
-        item.st_mode,
-        item.st_nlink,
-        item.st_uid,
-        item.st_gid,
-        item.st_size,
-        item.st_mtime_ns,
-        item.st_ctime_ns,
-    )
-
-
-def observe_canary_preclaim_reconciliation_generation(
-    path: Path = DEFAULT_CANARY_PRECLAIM_RECONCILIATION_PATH,
-) -> tuple[int, ...] | None:
-    """Observe an untrusted generation only to prove a later atomic replace."""
-
-    path = _absolute_path(path, "canary preclaim reconciliation receipt")
-    try:
-        return _preclaim_receipt_generation(path.lstat())
-    except FileNotFoundError:
-        return None
-
-
-def _validate_canary_preclaim_reconciliation_value(
-    value: Any,
-    *,
-    source_config_path: Path,
-    source_config_raw: bytes,
-    writer_config: Mapping[str, Any],
-    allowed_outcomes: frozenset[str],
-) -> Mapping[str, Any]:
-    """Validate one DB-authored exact-scope preclaim terminal receipt."""
-
-    if (
-        not allowed_outcomes
-        or not allowed_outcomes.issubset(_CANARY_PRECLAIM_OUTCOMES)
-    ):
-        raise ValueError("canary preclaim allowed outcomes are invalid")
-    raw = _strict_mapping(
-        value,
-        fields=_CANARY_PRECLAIM_RECEIPT_FIELDS,
-        label="canary preclaim reconciliation receipt",
-    )
-    result = _strict_mapping(
-        raw["result"],
-        fields=_CANARY_PRECLAIM_RESULT_FIELDS,
-        label="canary preclaim reconciliation database result",
-    )
-    source_config_path = _absolute_path(
-        source_config_path,
-        "canary preclaim source config",
-    )
-    if not isinstance(source_config_raw, bytes) or not source_config_raw:
-        raise RuntimeError("canary preclaim source config bytes are invalid")
-    source_config_sha256 = _sha256_bytes(source_config_raw)
-    scope = writer_config.get("canary_scope_preapproval")
-    database = writer_config.get("database")
-    expected_database = (
-        {
-            "host": database.get("host"),
-            "tls_server_name": database.get("tls_server_name"),
-            "port": database.get("port"),
-            "database": database.get("database"),
-            "user": database.get("user"),
-        }
-        if isinstance(database, Mapping)
-        else None
-    )
-    if (
-        not isinstance(scope, Mapping)
-        or not isinstance(expected_database, Mapping)
-        or any(
-            not isinstance(expected_database[name], str)
-            or not expected_database[name]
-            for name in ("host", "tls_server_name", "database", "user")
-        )
-        or type(expected_database["port"]) is not int
-    ):
-        raise RuntimeError("canary preclaim config binding is incomplete")
-    unsigned = {
-        key: copy.deepcopy(item)
-        for key, item in raw.items()
-        if key != "receipt_sha256"
-    }
-    if (
-        raw["version"] != CANARY_PRECLAIM_RECONCILIATION_VERSION
-        or type(raw["observed_at_unix"]) is not int
-        or raw["observed_at_unix"] < 0
-        or raw["source_config_path"] != str(source_config_path)
-        or raw["source_config_sha256"] != source_config_sha256
-        or raw["database_identity"] != expected_database
-        or raw["database_identity_sha256"]
-        != _sha256_json(expected_database)
-        or raw["receipt_sha256"] != _sha256_json(unsigned)
-    ):
-        raise RuntimeError("canary preclaim wrapper binding drifted")
-
-    semantic_fields = (
-        "grant_id",
-        "case_id",
-        "release_sha256",
-        "fixture_sha256",
-        "run_id",
-        "session_key_sha256",
-        "approved_by",
-        "approval_source_sha256",
-        "provisioning_receipt_sha256",
-    )
-    if (
-        result["success"] is not True
-        or result["outcome"] not in allowed_outcomes
-        or any(result[name] != scope.get(name) for name in semantic_fields)
-        or _normalized_utc_timestamp(
-            result["expires_at"],
-            label="canary preclaim database expiry",
-        )
-        != _normalized_utc_timestamp(
-            scope.get("expires_at"),
-            label="canary preclaim config expiry",
-        )
-        or result["authority_active"] is not False
-        or type(result["scope_retired"]) is not bool
-        or type(result["inserted"]) is not bool
-        or type(result["deduped"]) is not bool
-    ):
-        raise RuntimeError("canary preclaim semantic binding drifted")
-
-    event_names = (
-        "preapproval_event_id",
-        "bootstrap_consumption_event_id",
-        "claim_event_id",
-        "retirement_event_id",
-        "revocation_event_id",
-    )
-    outcome = result["outcome"]
-    if outcome == "not_preapproved":
-        if (
-            any(result[name] is not None for name in event_names)
-            or result["claimed_at"] is not None
-            or result["retired_at"] is not None
-            or result["reason"] != "preapproval_not_committed"
-            or result["scope_retired"] is not False
-            or result["inserted"] is not False
-            or result["deduped"] is not False
-        ):
-            raise RuntimeError("canary not-preapproved matrix is invalid")
-    elif outcome == "retired":
-        ids = [
-            _canonical_event_id(result[name], label=f"canary {name}")
-            for name in (
-                "preapproval_event_id",
-                "bootstrap_consumption_event_id",
-                "retirement_event_id",
-            )
-        ]
-        if (
-            len(set(ids)) != len(ids)
-            or result["claim_event_id"] is not None
-            or result["revocation_event_id"] is not None
-            or result["claimed_at"] is not None
-            or result["retired_at"]
-            != _normalized_utc_timestamp(
-                result["retired_at"],
-                label="canary preclaim retirement timestamp",
-            )
-            or result["reason"] != "activation_failed_before_first_claim"
-            or result["scope_retired"] is not True
-            or result["inserted"] == result["deduped"]
-        ):
-            raise RuntimeError("canary retired preclaim matrix is invalid")
-    else:
-        ids = [
-            _canonical_event_id(result[name], label=f"canary {name}")
-            for name in (
-                "preapproval_event_id",
-                "bootstrap_consumption_event_id",
-                "claim_event_id",
-                "revocation_event_id",
-            )
-        ]
-        if (
-            len(set(ids)) != len(ids)
-            or result["retirement_event_id"] is not None
-            or result["claimed_at"]
-            != _normalized_utc_timestamp(
-                result["claimed_at"],
-                label="canary claim timestamp",
-            )
-            or result["retired_at"] is not None
-            or result["reason"]
-            != "claim_already_committed_session_retired"
-            or result["scope_retired"] is not False
-            or result["inserted"] == result["deduped"]
-        ):
-            raise RuntimeError("canary claimed preclaim matrix is invalid")
-    return copy.deepcopy(dict(raw))
-
-
-def validate_canary_preclaim_reconciliation_receipt(
-    *,
-    source_config_path: Path,
-    source_config_raw: bytes,
-    writer_config: Mapping[str, Any],
-    writer_uid: int,
-    writer_gid: int,
-    allowed_outcomes: frozenset[str],
-    prior_generation: tuple[int, ...] | None = None,
-    require_fresh_generation: bool = False,
-    receipt_path: Path = DEFAULT_CANARY_PRECLAIM_RECONCILIATION_PATH,
-) -> Mapping[str, Any]:
-    """Read and validate the fixed writer-owned preclaim receipt file."""
-
-    raw, item = _read_stable_file(
-        receipt_path,
-        maximum=512 * 1024,
-        expected_uid=writer_uid,
-        expected_gid=writer_gid,
-        allowed_modes=frozenset({0o600}),
-    )
-    if (
-        require_fresh_generation
-        and _preclaim_receipt_generation(item) == prior_generation
-    ):
-        raise RuntimeError("canary preclaim receipt generation is stale")
-    value = _decode_json(raw, label="canary preclaim reconciliation receipt")
-    return _validate_canary_preclaim_reconciliation_value(
-        value,
-        source_config_path=source_config_path,
-        source_config_raw=source_config_raw,
-        writer_config=writer_config,
-        allowed_outcomes=allowed_outcomes,
-    )
 
 
 def gateway_effective_environment_is_sealed(value: Any) -> bool:
@@ -5475,6 +3582,7 @@ def _api_loopback_listener_identity(gateway_pid: int) -> Mapping[str, Any]:
 def _target_bindings(
     plan: FullCanaryPlan,
 ) -> Mapping[str, tuple[Path, bytes, int, int, int, frozenset[str]]]:
+    writer_plan = ActivationPlan.from_mapping(plan.writer_activation_plan)
     config_payloads = {
         name: _validate_artifact_source(plan.artifacts[name], label=name)
         for name in ("writer_config", "gateway_config", "edge_config")
@@ -5487,6 +3595,16 @@ def _target_bindings(
             0,
             0,
             frozenset({plan.allowed_previous_sha256["writer_unit"]}),
+        ),
+        "phase_b_readiness_unit": (
+            DEFAULT_PHASE_B_READINESS_UNIT_PATH,
+            writer_plan.unit_bundle.phase_b_readiness_service.encode("utf-8"),
+            0o644,
+            0,
+            0,
+            frozenset({
+                writer_plan.install_artifacts["phase_b_readiness_unit"].sha256
+            }),
         ),
         "gateway_unit": (
             DEFAULT_GATEWAY_UNIT_PATH,
@@ -5574,153 +3692,6 @@ def _validate_target_state(plan: FullCanaryPlan, *, phase: str) -> Mapping[str, 
     return checks
 
 
-def _writer_target_bootstrap_state(plan: FullCanaryPlan) -> str:
-    """Classify only exact file states; no task text or inferred intent."""
-
-    artifact = plan.artifacts["writer_config"]
-    try:
-        raw, _item = _read_stable_file(
-            DEFAULT_WRITER_CONFIG,
-            maximum=artifact.maximum_bytes,
-            expected_uid=artifact.uid,
-            expected_gid=artifact.gid,
-            allowed_modes=frozenset({artifact.mode}),
-        )
-    except FileNotFoundError:
-        return "absent"
-    observed = _sha256_bytes(raw)
-    if observed == artifact.sha256:
-        return "configured"
-    retired_payload, retired_sha256 = _retired_writer_config_payload(plan)
-    if observed == retired_sha256 and raw == retired_payload:
-        _validate_bootstrap_retirement_tombstone(
-            plan,
-            expected_retired_sha256=retired_sha256,
-        )
-        return "consumed_retired"
-    if observed == plan.allowed_previous_sha256.get("writer_config"):
-        return "previous"
-    raise RuntimeError("writer bootstrap target state is not exact")
-
-
-def _bootstrap_credential_is_present_and_exact(plan: FullCanaryPlan) -> bool:
-    if not os.path.lexists(DEFAULT_CANARY_BOOTSTRAP_CREDENTIAL):
-        return False
-    exact = _validate_secret_source_metadata(
-        DEFAULT_CANARY_BOOTSTRAP_CREDENTIAL,
-        expected_uid=plan.identities.writer_uid,
-        expected_gid=plan.identities.writer_gid,
-        expected_mode=0o400,
-        maximum_bytes=16 * 1024,
-    )
-    if exact is not True:
-        raise RuntimeError("bootstrap credential metadata is invalid")
-    return True
-
-
-def _revalidate_bootstrap_reconciliation_evidence(
-    plan: FullCanaryPlan,
-    evidence: BootstrapReconciliationEvidence,
-) -> Mapping[str, Any]:
-    if (
-        not isinstance(evidence, BootstrapReconciliationEvidence)
-        or evidence.plan_sha256 != plan.sha256
-        or evidence.request.plan_sha256 != plan.sha256
-    ):
-        raise RuntimeError("bootstrap reconciliation evidence plan drifted")
-    provisioning = evidence.provisioning_receipt
-    if provisioning is not None:
-        provisioning = _validate_canary_bootstrap_provisioning_receipt(
-            provisioning,
-            request=evidence.request,
-            approval=evidence.approval,
-        )
-    validated = _validate_canary_bootstrap_reconciliation_receipt(
-        evidence.reconciliation_receipt,
-        request=evidence.request,
-        provisioning_receipt=provisioning,
-        approval=evidence.approval,
-        expected_session_continuity=str(
-            evidence.reconciliation_receipt.get("session_continuity")
-        ),
-    )
-    if validated != evidence.reconciliation_receipt:
-        raise RuntimeError("bootstrap reconciliation evidence mutated")
-    if evidence.descriptor is not None:
-        loaded = load_bootstrap_evidence_envelope(plan, evidence.descriptor)
-        if (
-            loaded.approval != evidence.approval
-            or loaded.request != evidence.request
-            or loaded.provisioning_receipt != evidence.provisioning_receipt
-            or loaded.reconciliation_receipt != evidence.reconciliation_receipt
-        ):
-            raise RuntimeError("bootstrap evidence descriptor truth drifted")
-    return validated
-
-
-def _validate_bootstrap_lifecycle_state(
-    plan: FullCanaryPlan,
-    *,
-    phase: str,
-    evidence: (
-        BootstrapReconciliationEvidence
-        | BootstrapNeverAuthorizedEvidence
-        | None
-    ),
-) -> str:
-    """Require one exact armed, consumed-retired, or aborted state."""
-
-    credential_present = _bootstrap_credential_is_present_and_exact(plan)
-    target_state = _writer_target_bootstrap_state(plan)
-    tombstone_present = os.path.lexists(
-        _bootstrap_retirement_tombstone_path(plan)
-    )
-    reconciliation: Mapping[str, Any] | None = None
-    never_authorized = isinstance(evidence, BootstrapNeverAuthorizedEvidence)
-    if isinstance(evidence, BootstrapReconciliationEvidence):
-        reconciliation = _revalidate_bootstrap_reconciliation_evidence(
-            plan,
-            evidence,
-        )
-    elif never_authorized:
-        loaded_never_authorized = load_bootstrap_never_authorized_evidence(plan)
-        if loaded_never_authorized != evidence:
-            raise RuntimeError("bootstrap never-authorized evidence drifted")
-
-    if credential_present:
-        if (
-            phase == "stopped"
-            and target_state in {"absent", "configured", "previous"}
-            and not tombstone_present
-            and reconciliation is None
-        ):
-            return "armed"
-        raise RuntimeError("bootstrap credential is present outside exact armed state")
-
-    outcome = None if reconciliation is None else reconciliation.get("outcome")
-    if (
-        target_state == "consumed_retired"
-        and tombstone_present
-        and outcome == "consumed"
-    ):
-        return "consumed_retired"
-    if (
-        phase == "stopped"
-        and target_state in {"absent", "configured", "previous"}
-        and not tombstone_present
-        and outcome in {"not_authorized", "retired"}
-    ):
-        return "aborted_reconciled"
-    if (
-        phase == "stopped"
-        and never_authorized
-        and target_state in {"absent", "configured", "previous"}
-        and not tombstone_present
-    ):
-        return "never_authorized_reconciled"
-    raise RuntimeError("bootstrap credential lifecycle state is mixed or unproven")
-
-
 def _writer_receipt_matches_plan(path: Path, plan: FullCanaryPlan) -> bool:
     raw, _item = _read_stable_file(
         path,
@@ -5754,11 +3725,8 @@ def collect_full_canary_preflight(
         raise TypeError("full-canary plan is required")
     if phase not in {"stopped", "live"}:
         raise ValueError("full-canary preflight phase is invalid")
-    if bootstrap_reconciliation_evidence is not None and not isinstance(
-        bootstrap_reconciliation_evidence,
-        (BootstrapReconciliationEvidence, BootstrapNeverAuthorizedEvidence),
-    ):
-        raise TypeError("bootstrap reconciliation evidence is invalid")
+    if bootstrap_reconciliation_evidence is not None:
+        raise RuntimeError("legacy bootstrap evidence is not startup authority")
     checks: dict[str, bool] = {}
     blockers: list[str] = []
 
@@ -5795,6 +3763,28 @@ def collect_full_canary_preflight(
         if not checks[name]:
             blockers.append(name)
 
+    def phase_b_readiness_is_current_descendant() -> bool:
+        from gateway.canonical_writer_phase_b_runtime import (
+            validate_fixed_phase_b_readiness_descendant,
+            validate_fixed_phase_b_readiness_lineage,
+        )
+
+        return bool(
+            (
+                validate_fixed_phase_b_readiness_descendant
+                if phase == "live"
+                else validate_fixed_phase_b_readiness_lineage
+            )(plan.phase_b_readiness_anchor)
+        )
+
+    check(
+        (
+            "phase_b.readiness_current_descendant"
+            if phase == "live"
+            else "phase_b.readiness_lineage"
+        ),
+        phase_b_readiness_is_current_descendant,
+    )
     check(
         "gateway.sealed_startup_paths",
         lambda: _gateway_startup_paths_are_sealed(plan, phase=phase),
@@ -5835,24 +3825,10 @@ def collect_full_canary_preflight(
             maximum_bytes=2 * 1024 * 1024,
         ),
     )
-    bootstrap_credential_state = "invalid"
-    try:
-        bootstrap_credential_state = _validate_bootstrap_lifecycle_state(
-            plan,
-            phase=phase,
-            evidence=bootstrap_reconciliation_evidence,
-        )
-        checks["credential.canary_bootstrap.lifecycle_state"] = True
-    except Exception:
-        checks["credential.canary_bootstrap.lifecycle_state"] = False
-        blockers.append("credential.canary_bootstrap.lifecycle_state")
-    require_fresh_canary_scope = bootstrap_credential_state == "armed"
     config_readers = {
         "writer_config": lambda raw: _validate_writer_config(
             raw,
             plan.identities,
-            plan=plan,
-            require_fresh_canary_scope=require_fresh_canary_scope,
         ),
         "gateway_config": _validate_gateway_config,
         "edge_config": lambda raw: _validate_edge_config(raw, plan.identities),
@@ -5865,37 +3841,6 @@ def collect_full_canary_preflight(
                 validator(_validate_artifact_source(plan.artifacts[name], label=name))
             ),
         )
-    def bootstrap_authorization_is_exact() -> bool:
-        writer = _validate_writer_config(
-            _validate_artifact_source(
-                plan.artifacts["writer_config"],
-                label="writer_config",
-            ),
-            plan.identities,
-            plan=plan,
-            require_fresh_canary_scope=require_fresh_canary_scope,
-        )
-        _path, _raw, sql_sha256 = _validated_release_file(
-            plan,
-            DEFAULT_CANARY_BOOTSTRAP_SQL_RELATIVE,
-            maximum_bytes=_MAX_CANARY_BOOTSTRAP_SQL_BYTES,
-        )
-        _retire_path, _retire_raw, retire_sql_sha256 = (
-            _validated_release_file(
-                plan,
-                DEFAULT_CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE,
-                maximum_bytes=_MAX_CANARY_BOOTSTRAP_SQL_BYTES,
-            )
-        )
-        return writer["canary_scope_preapproval"][
-            "provisioning_receipt_sha256"
-        ] == canonical_canary_bootstrap_authorization_sha256(
-            writer,
-            bootstrap_sql_sha256=sql_sha256,
-            bootstrap_retire_sql_sha256=retire_sql_sha256,
-        )
-
-    check("bootstrap.sql_and_authorization", bootstrap_authorization_is_exact)
     try:
         target_checks = _validate_target_state(plan, phase=phase)
     except Exception:
@@ -5929,17 +3874,7 @@ def collect_full_canary_preflight(
         "revision": plan.revision,
         "full_canary_plan_sha256": plan.sha256,
         "phase": phase,
-        "bootstrap_credential_state": bootstrap_credential_state,
-        "bootstrap_reconciliation_receipt_sha256": (
-            bootstrap_reconciliation_evidence.reconciliation_receipt.get(
-                "receipt_sha256"
-            )
-            if isinstance(
-                bootstrap_reconciliation_evidence,
-                BootstrapReconciliationEvidence,
-            )
-            else None
-        ),
+        "writer_authority": "phase_b_persistent_writer",
         "checks": dict(sorted(checks.items())),
         "blockers": sorted(set(blockers)),
         "ok": not blockers,
@@ -5954,6 +3889,15 @@ def collect_full_canary_preflight(
 def edge_start_command() -> Command:
     """Start only the edge; the collector/config gate must follow."""
     return Command((SYSTEMCTL, "start", EDGE_UNIT_NAME), timeout_seconds=180)
+
+
+def phase_b_readiness_start_command() -> Command:
+    """Run the fixed root readiness oneshot while every live service is stopped."""
+
+    return Command(
+        (SYSTEMCTL, "start", PHASE_B_READINESS_UNIT_NAME),
+        timeout_seconds=180,
+    )
 
 
 def post_collector_start_commands() -> tuple[Command, ...]:
@@ -6023,7 +3967,7 @@ def stop_service_commands() -> tuple[Command, ...]:
 
     return tuple(
         Command((SYSTEMCTL, "stop", unit), timeout_seconds=120)
-        for unit in (GATEWAY_UNIT_NAME, WRITER_UNIT_NAME, EDGE_UNIT_NAME)
+        for unit in FULL_CANARY_STOP_ORDER
     )
 
 
@@ -6384,1453 +4328,6 @@ def _write_exclusive_bytes(path: Path, payload: bytes, *, mode: int = 0o400) -> 
         os.close(parent_descriptor)
 
 
-def _bootstrap_evidence_root(plan: FullCanaryPlan) -> Path:
-    if not isinstance(plan, FullCanaryPlan):
-        raise TypeError("full-canary plan is required")
-    return (
-        DEFAULT_EVIDENCE_ROOT
-        / "plans"
-        / plan.revision
-        / plan.sha256
-        / "bootstrap-reconciliation"
-    )
-
-
-def _bootstrap_evidence_path(
-    plan: FullCanaryPlan,
-    *,
-    attempt_id: str,
-    envelope_sha256: str,
-) -> Path:
-    attempt_id = _digest(attempt_id, "bootstrap evidence attempt id")
-    envelope_sha256 = _digest(
-        envelope_sha256,
-        "bootstrap evidence envelope digest",
-    )
-    return (
-        _bootstrap_evidence_root(plan)
-        / attempt_id
-        / f"{envelope_sha256}.json"
-    )
-
-
-def _bootstrap_evidence_staging_root(plan: FullCanaryPlan) -> Path:
-    return _bootstrap_evidence_root(plan).parent / (
-        ".bootstrap-reconciliation-publish"
-    )
-
-
-def _bootstrap_evidence_staging_path(
-    plan: FullCanaryPlan,
-    descriptor: BootstrapEvidenceDescriptor,
-) -> Path:
-    return _bootstrap_evidence_staging_root(plan) / (
-        f"{descriptor.attempt_id}-{descriptor.envelope_sha256}.tmp"
-    )
-
-
-def _bootstrap_evidence_envelope(
-    plan: FullCanaryPlan,
-    evidence: BootstrapReconciliationEvidence,
-) -> Mapping[str, Any]:
-    validated = _revalidate_bootstrap_reconciliation_evidence(plan, evidence)
-    writer_config_raw = _validate_artifact_source(
-        plan.artifacts["writer_config"],
-        label="writer_config",
-    )
-    _bind_bootstrap_request_to_writer_config(
-        plan=plan,
-        approval=evidence.approval,
-        request=evidence.request,
-        writer_config_raw=writer_config_raw,
-    )
-    request = _bootstrap_request_projection(evidence.request)
-    attempt_id = _bootstrap_attempt_id(
-        plan_sha256=plan.sha256,
-        owner_approval_sha256=evidence.approval.sha256,
-        request_sha256=str(request["request_sha256"]),
-    )
-    unsigned = {
-        "schema": BOOTSTRAP_EVIDENCE_ENVELOPE_SCHEMA,
-        "revision": plan.revision,
-        "full_canary_plan_sha256": plan.sha256,
-        "attempt_id": attempt_id,
-        "predecessor_envelope_sha256": None,
-        "owner_approval": copy.deepcopy(dict(evidence.approval.value)),
-        "owner_approval_sha256": evidence.approval.sha256,
-        "writer_config_bytes_base64": base64.b64encode(
-            writer_config_raw
-        ).decode("ascii"),
-        "writer_config_sha256": _sha256_bytes(writer_config_raw),
-        "bootstrap_request": copy.deepcopy(dict(request)),
-        "bootstrap_request_sha256": request["request_sha256"],
-        "bootstrap_provisioning_receipt": (
-            None
-            if evidence.provisioning_receipt is None
-            else copy.deepcopy(dict(evidence.provisioning_receipt))
-        ),
-        "bootstrap_reconciliation_receipt": copy.deepcopy(dict(validated)),
-    }
-    return {**unsigned, "envelope_sha256": _sha256_json(unsigned)}
-
-
-def _descriptor_for_bootstrap_envelope(
-    plan: FullCanaryPlan,
-    envelope: Mapping[str, Any],
-    *,
-    file_sha256: str,
-) -> BootstrapEvidenceDescriptor:
-    envelope_sha256 = _digest(
-        envelope.get("envelope_sha256"),
-        "bootstrap evidence envelope digest",
-    )
-    attempt_id = _digest(
-        envelope.get("attempt_id"),
-        "bootstrap evidence attempt id",
-    )
-    return BootstrapEvidenceDescriptor(
-        schema=BOOTSTRAP_EVIDENCE_DESCRIPTOR_SCHEMA,
-        path=_bootstrap_evidence_path(
-            plan,
-            attempt_id=attempt_id,
-            envelope_sha256=envelope_sha256,
-        ),
-        file_sha256=_digest(
-            file_sha256,
-            "bootstrap evidence file digest",
-        ),
-        envelope_sha256=envelope_sha256,
-        attempt_id=attempt_id,
-    )
-
-
-def _bootstrap_evidence_from_bytes(
-    plan: FullCanaryPlan,
-    descriptor: BootstrapEvidenceDescriptor,
-    raw: bytes,
-) -> BootstrapReconciliationEvidence:
-    if _sha256_bytes(raw) != descriptor.file_sha256:
-        raise RuntimeError("bootstrap evidence file digest drifted")
-    envelope = _decode_json(raw, label="bootstrap evidence envelope")
-    if raw != _canonical_bytes(envelope):
-        raise RuntimeError("bootstrap evidence envelope is not canonical")
-    fields = frozenset(
-        {
-            "schema",
-            "revision",
-            "full_canary_plan_sha256",
-            "attempt_id",
-            "predecessor_envelope_sha256",
-            "owner_approval",
-            "owner_approval_sha256",
-            "writer_config_bytes_base64",
-            "writer_config_sha256",
-            "bootstrap_request",
-            "bootstrap_request_sha256",
-            "bootstrap_provisioning_receipt",
-            "bootstrap_reconciliation_receipt",
-            "envelope_sha256",
-        }
-    )
-    exact = _strict_mapping(
-        envelope,
-        fields=fields,
-        label="bootstrap evidence envelope",
-    )
-    unsigned = {
-        key: copy.deepcopy(item)
-        for key, item in exact.items()
-        if key != "envelope_sha256"
-    }
-    approval = FullCanaryOwnerApproval.from_mapping(exact["owner_approval"])
-    encoded_writer_config = exact["writer_config_bytes_base64"]
-    if not isinstance(encoded_writer_config, str) or not encoded_writer_config:
-        raise RuntimeError("bootstrap evidence writer config encoding is invalid")
-    try:
-        writer_config_raw = base64.b64decode(
-            encoded_writer_config.encode("ascii"),
-            validate=True,
-        )
-    except (UnicodeEncodeError, ValueError) as exc:
-        raise RuntimeError(
-            "bootstrap evidence writer config encoding is invalid"
-        ) from exc
-    if (
-        exact["writer_config_sha256"]
-        != plan.artifacts["writer_config"].sha256
-        or _sha256_bytes(writer_config_raw)
-        != exact["writer_config_sha256"]
-    ):
-        raise RuntimeError("bootstrap evidence writer config digest drifted")
-    request = _request_from_bootstrap_projection(
-        plan,
-        approval,
-        exact["bootstrap_request"],
-        writer_config_raw=writer_config_raw,
-    )
-    expected_attempt = _bootstrap_attempt_id(
-        plan_sha256=plan.sha256,
-        owner_approval_sha256=approval.sha256,
-        request_sha256=str(exact["bootstrap_request_sha256"]),
-    )
-    if (
-        exact["schema"] != BOOTSTRAP_EVIDENCE_ENVELOPE_SCHEMA
-        or exact["revision"] != plan.revision
-        or exact["full_canary_plan_sha256"] != plan.sha256
-        or exact["predecessor_envelope_sha256"] is not None
-        or exact["owner_approval_sha256"] != approval.sha256
-        or approval.value["plan_sha256"] != plan.sha256
-        or exact["bootstrap_request_sha256"]
-        != exact["bootstrap_request"]["request_sha256"]
-        or exact["attempt_id"] != expected_attempt
-        or descriptor.attempt_id != expected_attempt
-        or exact["envelope_sha256"] != _sha256_json(unsigned)
-        or descriptor.envelope_sha256 != exact["envelope_sha256"]
-    ):
-        raise RuntimeError("bootstrap evidence envelope binding is not exact")
-    provisioning = exact["bootstrap_provisioning_receipt"]
-    if provisioning is not None and not isinstance(provisioning, Mapping):
-        raise RuntimeError("bootstrap evidence provisioning receipt is invalid")
-    reconciliation = exact["bootstrap_reconciliation_receipt"]
-    if not isinstance(reconciliation, Mapping):
-        raise RuntimeError("bootstrap evidence reconciliation receipt is invalid")
-    evidence = validated_bootstrap_reconciliation_evidence(
-        plan=plan,
-        approval=approval,
-        request=request,
-        provisioning_receipt=provisioning,
-        reconciliation_receipt=reconciliation,
-        expected_session_continuity=str(
-            reconciliation.get("session_continuity")
-        ),
-    )
-    return replace(evidence, descriptor=descriptor)
-
-
-def _load_bootstrap_evidence_descriptor_path(
-    plan: FullCanaryPlan,
-    descriptor: BootstrapEvidenceDescriptor,
-) -> BootstrapReconciliationEvidence:
-    expected_path = _bootstrap_evidence_path(
-        plan,
-        attempt_id=descriptor.attempt_id,
-        envelope_sha256=descriptor.envelope_sha256,
-    )
-    if descriptor.path != expected_path:
-        raise RuntimeError("bootstrap evidence descriptor is not plan-addressed")
-    raw, _item = _read_root_file_via_parent(
-        descriptor.path,
-        maximum=_MAX_JSON_BYTES,
-        expected_uid=0,
-        expected_gid=0,
-        allowed_modes=frozenset({0o400}),
-    )
-    return _bootstrap_evidence_from_bytes(plan, descriptor, raw)
-
-
-def _unlink_exact_bootstrap_staging_entry(
-    parent_descriptor: int,
-    name: str,
-    item: os.stat_result,
-    *,
-    expected_uid: int = 0,
-    expected_gid: int = 0,
-) -> None:
-    name = _entry_name(name)
-    current = os.stat(
-        name,
-        dir_fd=parent_descriptor,
-        follow_symlinks=False,
-    )
-    if (
-        current.st_dev != item.st_dev
-        or current.st_ino != item.st_ino
-        or not stat.S_ISREG(current.st_mode)
-        or stat.S_ISLNK(current.st_mode)
-        or current.st_nlink not in {1, 2}
-        or current.st_uid != expected_uid
-        or current.st_gid != expected_gid
-        or stat.S_IMODE(current.st_mode) != 0o400
-    ):
-        raise RuntimeError("bootstrap evidence staging file drifted")
-    os.unlink(name, dir_fd=parent_descriptor)
-    os.fsync(parent_descriptor)
-
-
-def _unlink_exact_bootstrap_staging_file(
-    path: Path,
-    item: os.stat_result,
-    *,
-    expected_uid: int = 0,
-    expected_gid: int = 0,
-) -> None:
-    """Compatibility wrapper for callers without an already-held parent fd."""
-
-    descriptor = os.open(
-        path.parent,
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
-    )
-    try:
-        _unlink_exact_bootstrap_staging_entry(
-            descriptor,
-            path.name,
-            item,
-            expected_uid=expected_uid,
-            expected_gid=expected_gid,
-        )
-    finally:
-        os.close(descriptor)
-
-
-def _finalize_same_inode_hardlink_publication_at(
-    *,
-    staging_parent_descriptor: int,
-    staging_name: str,
-    final_parent_descriptor: int,
-    final_name: str,
-    staging_item: os.stat_result,
-    expected_uid: int = 0,
-    expected_gid: int = 0,
-) -> None:
-    """Complete link-before-unlink using only held parent descriptors."""
-
-    staging_name = _entry_name(staging_name)
-    final_name = _entry_name(final_name)
-    current_stage = os.stat(
-        staging_name,
-        dir_fd=staging_parent_descriptor,
-        follow_symlinks=False,
-    )
-    current_final = os.stat(
-        final_name,
-        dir_fd=final_parent_descriptor,
-        follow_symlinks=False,
-    )
-    expected_identity = (staging_item.st_dev, staging_item.st_ino)
-    if (
-        (current_stage.st_dev, current_stage.st_ino) != expected_identity
-        or (current_final.st_dev, current_final.st_ino) != expected_identity
-        or current_stage.st_nlink != 2
-        or current_final.st_nlink != 2
-        or not stat.S_ISREG(current_stage.st_mode)
-        or not stat.S_ISREG(current_final.st_mode)
-        or stat.S_ISLNK(current_stage.st_mode)
-        or stat.S_ISLNK(current_final.st_mode)
-        or current_stage.st_uid != expected_uid
-        or current_final.st_uid != expected_uid
-        or current_stage.st_gid != expected_gid
-        or current_final.st_gid != expected_gid
-        or stat.S_IMODE(current_stage.st_mode) != 0o400
-        or stat.S_IMODE(current_final.st_mode) != 0o400
-    ):
-        raise RuntimeError("bootstrap evidence linked publication drifted")
-    os.fsync(final_parent_descriptor)
-    os.unlink(staging_name, dir_fd=staging_parent_descriptor)
-    os.fsync(staging_parent_descriptor)
-    terminal = os.stat(
-        final_name,
-        dir_fd=final_parent_descriptor,
-        follow_symlinks=False,
-    )
-    if (
-        (terminal.st_dev, terminal.st_ino) != expected_identity
-        or terminal.st_nlink != 1
-        or not stat.S_ISREG(terminal.st_mode)
-        or stat.S_ISLNK(terminal.st_mode)
-        or terminal.st_uid != expected_uid
-        or terminal.st_gid != expected_gid
-        or stat.S_IMODE(terminal.st_mode) != 0o400
-    ):
-        raise RuntimeError("bootstrap evidence final link state is invalid")
-
-
-def _finalize_same_inode_hardlink_publication(
-    *,
-    staging_path: Path,
-    final_path: Path,
-    staging_item: os.stat_result,
-    expected_uid: int = 0,
-    expected_gid: int = 0,
-) -> None:
-    """Complete the link-before-temp-unlink crash state exactly once."""
-
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    staging_parent = os.open(staging_path.parent, flags)
-    try:
-        final_parent = os.open(final_path.parent, flags)
-        try:
-            _finalize_same_inode_hardlink_publication_at(
-                staging_parent_descriptor=staging_parent,
-                staging_name=staging_path.name,
-                final_parent_descriptor=final_parent,
-                final_name=final_path.name,
-                staging_item=staging_item,
-                expected_uid=expected_uid,
-                expected_gid=expected_gid,
-            )
-        finally:
-            os.close(final_parent)
-    finally:
-        os.close(staging_parent)
-
-
-def _recover_bootstrap_evidence_staging(
-    plan: FullCanaryPlan,
-    *,
-    expected_uid: int = 0,
-    expected_gid: int = 0,
-    trusted_anchor: Path = Path("/"),
-) -> BootstrapEvidenceDescriptor | None:
-    """Validate and atomically publish one exact orphan staging payload."""
-
-    staging = _bootstrap_evidence_staging_root(plan)
-    try:
-        staging_descriptor = _open_root_directory_chain(
-            staging,
-            create=False,
-            expected_uid=expected_uid,
-            expected_gid=expected_gid,
-            trusted_anchor=trusted_anchor,
-        )
-    except FileNotFoundError:
-        return None
-    try:
-        staging_root_item = os.fstat(staging_descriptor)
-        if (
-            not stat.S_ISDIR(staging_root_item.st_mode)
-            or staging_root_item.st_uid != expected_uid
-            or staging_root_item.st_gid != expected_gid
-            or stat.S_IMODE(staging_root_item.st_mode) & 0o022
-        ):
-            raise RuntimeError(
-                "bootstrap evidence staging root is not controlled"
-            )
-        with os.scandir(staging_descriptor) as entries:
-            candidates = list(entries)
-        if not candidates:
-            _revalidate_root_directory_reachability(
-                staging,
-                staging_descriptor,
-                expected_uid=expected_uid,
-                expected_gid=expected_gid,
-                trusted_anchor=trusted_anchor,
-            )
-            return None
-        if len(candidates) != 1:
-            raise BootstrapEvidenceAmbiguous(
-                "bootstrap evidence staging state is ambiguous"
-            )
-        entry = candidates[0]
-        match = re.fullmatch(
-            r"([0-9a-f]{64})-([0-9a-f]{64})\.tmp",
-            entry.name,
-        )
-        if not entry.is_file(follow_symlinks=False) or match is None:
-            raise RuntimeError("bootstrap evidence staging entry is invalid")
-        raw, item = _read_stable_file_at(
-            staging_descriptor,
-            entry.name,
-            maximum=_MAX_JSON_BYTES,
-            expected_uid=expected_uid,
-            expected_gid=expected_gid,
-            allowed_modes=frozenset({0o400}),
-            allowed_link_counts=frozenset({1, 2}),
-        )
-        descriptor = BootstrapEvidenceDescriptor(
-            schema=BOOTSTRAP_EVIDENCE_DESCRIPTOR_SCHEMA,
-            path=_bootstrap_evidence_path(
-                plan,
-                attempt_id=match.group(1),
-                envelope_sha256=match.group(2),
-            ),
-            file_sha256=_sha256_bytes(raw),
-            envelope_sha256=match.group(2),
-            attempt_id=match.group(1),
-        )
-        try:
-            _bootstrap_evidence_from_bytes(plan, descriptor, raw)
-        except (RuntimeError, TypeError, ValueError) as exc:
-            # This namespace is never authoritative.  A torn unpublished file
-            # may be removed so sealed SQL recovery can generate fresh truth.
-            _unlink_exact_bootstrap_staging_entry(
-                staging_descriptor,
-                entry.name,
-                item,
-                expected_uid=expected_uid,
-                expected_gid=expected_gid,
-            )
-            _revalidate_root_directory_reachability(
-                staging,
-                staging_descriptor,
-                expected_uid=expected_uid,
-                expected_gid=expected_gid,
-                trusted_anchor=trusted_anchor,
-            )
-            raise BootstrapEvidenceUnavailable(
-                "bootstrap evidence staging payload was incomplete"
-            ) from exc
-        final_descriptor = _open_root_directory_chain(
-            descriptor.path.parent,
-            create=True,
-            expected_uid=expected_uid,
-            expected_gid=expected_gid,
-            trusted_anchor=trusted_anchor,
-        )
-        try:
-            try:
-                os.link(
-                    entry.name,
-                    descriptor.path.name,
-                    src_dir_fd=staging_descriptor,
-                    dst_dir_fd=final_descriptor,
-                    follow_symlinks=False,
-                )
-            except FileExistsError:
-                final_item = os.stat(
-                    descriptor.path.name,
-                    dir_fd=final_descriptor,
-                    follow_symlinks=False,
-                )
-                if (final_item.st_dev, final_item.st_ino) != (
-                    item.st_dev,
-                    item.st_ino,
-                ):
-                    final_raw, _ = _read_stable_file_at(
-                        final_descriptor,
-                        descriptor.path.name,
-                        maximum=_MAX_JSON_BYTES,
-                        expected_uid=expected_uid,
-                        expected_gid=expected_gid,
-                        allowed_modes=frozenset({0o400}),
-                    )
-                    existing = _bootstrap_evidence_from_bytes(
-                        plan,
-                        descriptor,
-                        final_raw,
-                    )
-                    if existing.descriptor != descriptor:
-                        raise BootstrapEvidenceAmbiguous(
-                            "bootstrap evidence final publication conflicts"
-                        )
-                    _unlink_exact_bootstrap_staging_entry(
-                        staging_descriptor,
-                        entry.name,
-                        item,
-                        expected_uid=expected_uid,
-                        expected_gid=expected_gid,
-                    )
-                    _revalidate_root_directory_reachability(
-                        descriptor.path.parent,
-                        final_descriptor,
-                        expected_uid=expected_uid,
-                        expected_gid=expected_gid,
-                        trusted_anchor=trusted_anchor,
-                    )
-                    _revalidate_root_directory_reachability(
-                        staging,
-                        staging_descriptor,
-                        expected_uid=expected_uid,
-                        expected_gid=expected_gid,
-                        trusted_anchor=trusted_anchor,
-                    )
-                    return descriptor
-            _finalize_same_inode_hardlink_publication_at(
-                staging_parent_descriptor=staging_descriptor,
-                staging_name=entry.name,
-                final_parent_descriptor=final_descriptor,
-                final_name=descriptor.path.name,
-                staging_item=item,
-                expected_uid=expected_uid,
-                expected_gid=expected_gid,
-            )
-            final_raw, _ = _read_stable_file_at(
-                final_descriptor,
-                descriptor.path.name,
-                maximum=_MAX_JSON_BYTES,
-                expected_uid=expected_uid,
-                expected_gid=expected_gid,
-                allowed_modes=frozenset({0o400}),
-            )
-            _bootstrap_evidence_from_bytes(plan, descriptor, final_raw)
-            _revalidate_root_directory_reachability(
-                descriptor.path.parent,
-                final_descriptor,
-                expected_uid=expected_uid,
-                expected_gid=expected_gid,
-                trusted_anchor=trusted_anchor,
-            )
-            _revalidate_root_directory_reachability(
-                staging,
-                staging_descriptor,
-                expected_uid=expected_uid,
-                expected_gid=expected_gid,
-                trusted_anchor=trusted_anchor,
-            )
-            return descriptor
-        finally:
-            os.close(final_descriptor)
-    finally:
-        os.close(staging_descriptor)
-
-
-def _fallback_bootstrap_evidence_descriptor(
-    plan: FullCanaryPlan,
-    *,
-    expected_uid: int = 0,
-    expected_gid: int = 0,
-    trusted_anchor: Path = Path("/"),
-) -> BootstrapEvidenceDescriptor:
-    root = _bootstrap_evidence_root(plan)
-    try:
-        root_descriptor = _open_root_directory_chain(
-            root,
-            create=False,
-            expected_uid=expected_uid,
-            expected_gid=expected_gid,
-            trusted_anchor=trusted_anchor,
-        )
-    except FileNotFoundError as exc:
-        raise BootstrapEvidenceUnavailable(
-            "bootstrap evidence envelope is unavailable"
-        ) from exc
-    flags = (
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_CLOEXEC", 0)
-        | getattr(os, "O_NOFOLLOW", 0)
-    )
-    candidates: list[tuple[str, str, Path, bytes]] = []
-    try:
-        root_item = os.fstat(root_descriptor)
-        if (
-            not stat.S_ISDIR(root_item.st_mode)
-            or root_item.st_uid != expected_uid
-            or root_item.st_gid != expected_gid
-            or stat.S_IMODE(root_item.st_mode) & 0o022
-        ):
-            raise RuntimeError(
-                "bootstrap evidence root is not root-controlled"
-            )
-        with os.scandir(root_descriptor) as attempts:
-            attempt_entries = list(attempts)
-        for attempt in attempt_entries:
-            if (
-                not attempt.is_dir(follow_symlinks=False)
-                or _SHA256_RE.fullmatch(attempt.name) is None
-            ):
-                raise RuntimeError(
-                    "bootstrap evidence attempt directory is invalid"
-                )
-            attempt_path = root / attempt.name
-            attempt_descriptor = os.open(
-                attempt.name,
-                flags,
-                dir_fd=root_descriptor,
-            )
-            try:
-                item = os.fstat(attempt_descriptor)
-                if (
-                    not stat.S_ISDIR(item.st_mode)
-                    or item.st_uid != expected_uid
-                    or item.st_gid != expected_gid
-                    or stat.S_IMODE(item.st_mode) & 0o022
-                ):
-                    raise RuntimeError(
-                        "bootstrap evidence attempt directory is not root-controlled"
-                    )
-                with os.scandir(attempt_descriptor) as envelopes:
-                    envelope_entries = list(envelopes)
-                for entry in envelope_entries:
-                    match = re.fullmatch(
-                        r"([0-9a-f]{64})\.json",
-                        entry.name,
-                    )
-                    if (
-                        not entry.is_file(follow_symlinks=False)
-                        or match is None
-                    ):
-                        raise RuntimeError(
-                            "bootstrap evidence envelope entry is invalid"
-                        )
-                    raw, _ = _read_stable_file_at(
-                        attempt_descriptor,
-                        entry.name,
-                        maximum=_MAX_JSON_BYTES,
-                        expected_uid=expected_uid,
-                        expected_gid=expected_gid,
-                        allowed_modes=frozenset({0o400}),
-                    )
-                    candidates.append(
-                        (
-                            attempt.name,
-                            match.group(1),
-                            attempt_path / entry.name,
-                            raw,
-                        )
-                    )
-                _revalidate_root_directory_reachability(
-                    attempt_path,
-                    attempt_descriptor,
-                    expected_uid=expected_uid,
-                    expected_gid=expected_gid,
-                    trusted_anchor=trusted_anchor,
-                )
-            finally:
-                os.close(attempt_descriptor)
-        _revalidate_root_directory_reachability(
-            root,
-            root_descriptor,
-            expected_uid=expected_uid,
-            expected_gid=expected_gid,
-            trusted_anchor=trusted_anchor,
-        )
-    finally:
-        os.close(root_descriptor)
-    if not candidates:
-        raise BootstrapEvidenceUnavailable(
-            "bootstrap evidence envelope is unavailable"
-        )
-    if len(candidates) != 1:
-        raise BootstrapEvidenceAmbiguous(
-            "bootstrap evidence envelope is ambiguous"
-        )
-    attempt_id, envelope_sha256, path, raw = candidates[0]
-    return BootstrapEvidenceDescriptor(
-        schema=BOOTSTRAP_EVIDENCE_DESCRIPTOR_SCHEMA,
-        path=path,
-        file_sha256=_sha256_bytes(raw),
-        envelope_sha256=envelope_sha256,
-        attempt_id=attempt_id,
-    )
-
-
-def load_bootstrap_evidence_envelope(
-    plan: FullCanaryPlan,
-    descriptor: BootstrapEvidenceDescriptor | Mapping[str, Any] | None = None,
-) -> BootstrapReconciliationEvidence:
-    """Load only one exact immutable, plan-addressed bootstrap envelope."""
-
-    if descriptor is None:
-        try:
-            recovered = _recover_bootstrap_evidence_staging(plan)
-        except BootstrapEvidenceUnavailable as staging_error:
-            try:
-                parsed = _fallback_bootstrap_evidence_descriptor(plan)
-            except BootstrapEvidenceUnavailable:
-                raise staging_error
-        else:
-            parsed = _fallback_bootstrap_evidence_descriptor(plan)
-            if recovered is not None and recovered != parsed:
-                raise BootstrapEvidenceAmbiguous(
-                    "bootstrap evidence publication state is ambiguous"
-                )
-    elif isinstance(descriptor, BootstrapEvidenceDescriptor):
-        parsed = descriptor
-    else:
-        parsed = BootstrapEvidenceDescriptor.from_mapping(descriptor)
-    return _load_bootstrap_evidence_descriptor_path(plan, parsed)
-
-
-def load_bootstrap_evidence_from_receipt(
-    path: Path,
-    *,
-    plan: FullCanaryPlan,
-) -> BootstrapReconciliationEvidence:
-    """Resolve a receipt descriptor, or the sole immutable plan envelope."""
-
-    path = _absolute_path(path, "bootstrap evidence source receipt")
-    raw, _item = _read_root_file_via_parent(
-        path,
-        maximum=_MAX_JSON_BYTES,
-        expected_uid=0,
-        expected_gid=0,
-        allowed_modes=frozenset({0o400}),
-    )
-    receipt = _decode_json(raw, label="bootstrap evidence source receipt")
-    if raw != _canonical_bytes(receipt):
-        raise RuntimeError("bootstrap evidence source receipt is not canonical")
-    unsigned = {
-        key: copy.deepcopy(item)
-        for key, item in receipt.items()
-        if key != "receipt_sha256"
-    }
-    stage = receipt.get("stage")
-    expected_root = (
-        DEFAULT_EVIDENCE_ROOT
-        / "plans"
-        / plan.revision
-        / plan.sha256
-        / str(stage)
-    )
-    if (
-        receipt.get("schema") != FULL_CANARY_RECEIPT_SCHEMA
-        or stage not in {"started", "failure", "stopped", "verified_stopped"}
-        or receipt.get("revision") != plan.revision
-        or receipt.get("full_canary_plan_sha256") != plan.sha256
-        or receipt.get("receipt_path") != str(path)
-        or path.parent != expected_root
-        or receipt.get("receipt_sha256") != _sha256_json(unsigned)
-    ):
-        raise RuntimeError("bootstrap evidence source receipt is invalid")
-    evidence_present = receipt.get("bootstrap_evidence_present")
-    descriptor_value = receipt.get("bootstrap_evidence_descriptor")
-    required_copies = {
-        "bootstrap_evidence_present",
-        "bootstrap_evidence_descriptor",
-        "bootstrap_never_authorized_evidence",
-        "owner_approval_receipt",
-        "owner_approval_receipt_sha256",
-        "bootstrap_provisioning_receipt",
-        "bootstrap_reconciliation",
-        "bootstrap_reconciliation_complete",
-        "bootstrap_authority_may_require_owner_cleanup",
-        "bootstrap_durable_evidence_recovery_required",
-    }
-    if not required_copies.issubset(receipt):
-        raise RuntimeError("bootstrap evidence receipt fields are incomplete")
-    if evidence_present is not True:
-        raise BootstrapEvidenceUnavailable(
-            "receipt does not carry durable bootstrap evidence"
-        )
-    if receipt.get("bootstrap_never_authorized_evidence") is not None:
-        raise RuntimeError(
-            "reconciled and never-authorized receipt truth conflict"
-        )
-    if not isinstance(descriptor_value, Mapping) or not descriptor_value:
-        raise RuntimeError("bootstrap evidence receipt descriptor is invalid")
-    if (
-        receipt.get("bootstrap_reconciliation_complete") is not True
-        or receipt.get("bootstrap_authority_may_require_owner_cleanup")
-        is not False
-        or receipt.get("bootstrap_durable_evidence_recovery_required")
-        is not False
-    ):
-        raise RuntimeError("bootstrap evidence receipt flags are not exact")
-    timestamp_fields = {
-        "started_at_unix",
-        "failed_at_unix",
-        "stopped_at_unix",
-        "completed_at_unix",
-    }
-    expected_timestamp: str | None = None
-    if stage == "started":
-        expected_timestamp = "started_at_unix"
-    elif stage == "stopped":
-        expected_timestamp = "stopped_at_unix"
-    elif stage == "verified_stopped":
-        expected_timestamp = "completed_at_unix"
-    elif stage == "failure":
-        operation = receipt.get("operation")
-        if operation == "start":
-            expected_timestamp = "failed_at_unix"
-        elif operation == "verify_and_stop":
-            expected_timestamp = "completed_at_unix"
-    terminal_time = receipt.get(expected_timestamp or "")
-    if (
-        expected_timestamp is None
-        or type(terminal_time) is not int
-        or terminal_time < 0
-        or any(
-            name in receipt
-            for name in timestamp_fields - {expected_timestamp}
-        )
-    ):
-        raise RuntimeError("bootstrap evidence receipt timestamp is invalid")
-    evidence = load_bootstrap_evidence_envelope(
-        plan,
-        descriptor=descriptor_value,
-    )
-    if (
-        evidence.descriptor is None
-        or (
-            evidence.descriptor.to_mapping() != descriptor_value
-        )
-    ):
-        raise RuntimeError("bootstrap evidence receipt descriptor drifted")
-    receipt_approval = receipt.get("owner_approval_receipt")
-    receipt_provisioning = receipt.get("bootstrap_provisioning_receipt")
-    receipt_reconciliation = receipt.get("bootstrap_reconciliation")
-    receipt_approval_sha256 = receipt.get("owner_approval_receipt_sha256")
-    if (
-        not isinstance(receipt_approval, Mapping) or not receipt_approval
-    ):
-        raise RuntimeError(
-            "bootstrap evidence copied owner_approval_receipt is not exact"
-        )
-    if (
-        receipt_provisioning is not None
-        and (
-            not isinstance(receipt_provisioning, Mapping)
-            or not receipt_provisioning
-        )
-    ):
-        raise RuntimeError(
-            "bootstrap evidence copied bootstrap_provisioning_receipt is not exact"
-        )
-    if (
-        not isinstance(receipt_reconciliation, Mapping)
-        or not receipt_reconciliation
-    ):
-        raise RuntimeError(
-            "bootstrap evidence copied bootstrap_reconciliation is not exact"
-        )
-    if (
-        receipt_approval != evidence.approval.value
-        or receipt_approval_sha256 != evidence.approval.sha256
-        or receipt_provisioning != evidence.provisioning_receipt
-        or receipt_reconciliation != evidence.reconciliation_receipt
-    ):
-        raise RuntimeError("bootstrap evidence receipt truth conflicts")
-    approval_time = evidence.approval.value["approved_at_unix"]
-    reconciliation_time = evidence.reconciliation_receipt.get(
-        "reconciled_at_unix"
-    )
-    provisioning_time = (
-        None
-        if evidence.provisioning_receipt is None
-        else evidence.provisioning_receipt.get("applied_at_unix")
-    )
-    if (
-        type(approval_time) is not int
-        or type(reconciliation_time) is not int
-        or (
-            provisioning_time is not None
-            and type(provisioning_time) is not int
-        )
-        or not approval_time
-        <= (approval_time if provisioning_time is None else provisioning_time)
-        <= reconciliation_time
-        <= terminal_time
-    ):
-        raise RuntimeError(
-            "bootstrap evidence receipt temporal ordering is invalid"
-        )
-    return evidence
-
-
-def persist_bootstrap_evidence_envelope(
-    plan: FullCanaryPlan,
-    evidence: BootstrapReconciliationEvidence,
-) -> BootstrapReconciliationEvidence:
-    """Persist terminal SQL truth before any lifecycle outcome receipt."""
-
-    envelope = _bootstrap_evidence_envelope(plan, evidence)
-    payload = _canonical_bytes(envelope)
-    descriptor = _descriptor_for_bootstrap_envelope(
-        plan,
-        envelope,
-        file_sha256=_sha256_bytes(payload),
-    )
-    try:
-        existing_evidence = load_bootstrap_evidence_envelope(plan)
-    except BootstrapEvidenceUnavailable:
-        existing_evidence = None
-    if existing_evidence is not None:
-        if existing_evidence.descriptor != descriptor:
-            raise BootstrapEvidenceAmbiguous(
-                "bootstrap evidence attempt already has different truth"
-            )
-        if existing_evidence.reconciliation_receipt != evidence.reconciliation_receipt:
-            raise RuntimeError("persisted bootstrap evidence truth drifted")
-        return existing_evidence
-    staging_path = _bootstrap_evidence_staging_path(plan, descriptor)
-    try:
-        _write_exclusive_bytes(staging_path, payload, mode=0o400)
-    except FileExistsError:
-        pass
-    recovered = _recover_bootstrap_evidence_staging(plan)
-    if recovered != descriptor:
-        raise RuntimeError("bootstrap evidence staging publication drifted")
-    return load_bootstrap_evidence_envelope(plan, descriptor)
-
-
-def _bootstrap_never_authorized_path(plan: FullCanaryPlan) -> Path:
-    return (
-        DEFAULT_EVIDENCE_ROOT
-        / "plans"
-        / plan.revision
-        / plan.sha256
-        / "bootstrap-never-authorized"
-        / "evidence.json"
-    )
-
-
-def _bootstrap_never_authorized_staging_root(plan: FullCanaryPlan) -> Path:
-    return _bootstrap_never_authorized_path(plan).parent.parent / (
-        ".bootstrap-never-authorized-publish"
-    )
-
-
-def _bootstrap_never_authorized_staging_path(plan: FullCanaryPlan) -> Path:
-    return _bootstrap_never_authorized_staging_root(plan) / "evidence.tmp"
-
-
-def _bootstrap_never_authorized_from_bytes(
-    plan: FullCanaryPlan,
-    *,
-    path: Path,
-    raw: bytes,
-) -> BootstrapNeverAuthorizedEvidence:
-    value = _decode_json(raw, label="bootstrap never-authorized evidence")
-    if raw != _canonical_bytes(value):
-        raise RuntimeError("bootstrap never-authorized evidence is not canonical")
-    fields = {
-        "schema",
-        "revision",
-        "full_canary_plan_sha256",
-        "staged_plan_path",
-        "staged_plan_file_sha256",
-        "runtime_plan_absent",
-        "owner_approval_absent",
-        "bootstrap_envelope_absent",
-        "bootstrap_login_disabled",
-        "bootstrap_credential_removed",
-        "writer_config_bytes_base64",
-        "writer_config_sha256",
-        "mechanical_stop_order",
-        "preclaim_reconciliation",
-        "recorded_at_unix",
-        "receipt_sha256",
-    }
-    exact = _strict_mapping(
-        value,
-        fields=frozenset(fields),
-        label="bootstrap never-authorized evidence",
-    )
-    unsigned = {
-        name: copy.deepcopy(item)
-        for name, item in exact.items()
-        if name != "receipt_sha256"
-    }
-    encoded = exact["writer_config_bytes_base64"]
-    if not isinstance(encoded, str) or not encoded:
-        raise RuntimeError("never-authorized writer config encoding is invalid")
-    try:
-        writer_raw = base64.b64decode(encoded.encode("ascii"), validate=True)
-    except (UnicodeEncodeError, ValueError) as exc:
-        raise RuntimeError(
-            "never-authorized writer config encoding is invalid"
-        ) from exc
-    if (
-        exact["schema"] != BOOTSTRAP_NEVER_AUTHORIZED_SCHEMA
-        or exact["revision"] != plan.revision
-        or exact["full_canary_plan_sha256"] != plan.sha256
-        or exact["staged_plan_path"] != str(DEFAULT_STAGED_PLAN_PATH)
-        or _SHA256_RE.fullmatch(
-            str(exact["staged_plan_file_sha256"])
-        )
-        is None
-        or exact["runtime_plan_absent"] is not True
-        or exact["owner_approval_absent"] is not True
-        or exact["bootstrap_envelope_absent"] is not True
-        or exact["bootstrap_login_disabled"] is not True
-        or exact["bootstrap_credential_removed"] is not True
-        or exact["writer_config_sha256"]
-        != plan.artifacts["writer_config"].sha256
-        or _sha256_bytes(writer_raw) != exact["writer_config_sha256"]
-        or exact["mechanical_stop_order"]
-        != [GATEWAY_UNIT_NAME, WRITER_UNIT_NAME, EDGE_UNIT_NAME]
-        or type(exact["recorded_at_unix"]) is not int
-        or exact["recorded_at_unix"] < 0
-        or exact["receipt_sha256"] != _sha256_json(unsigned)
-    ):
-        raise RuntimeError("bootstrap never-authorized evidence is not exact")
-    writer_config = _validate_writer_config(
-        writer_raw,
-        plan.identities,
-        plan=plan,
-        require_fresh_canary_scope=False,
-    )
-    preclaim = _validate_canary_preclaim_reconciliation_value(
-        exact["preclaim_reconciliation"],
-        source_config_path=plan.artifacts["writer_config"].source_path,
-        source_config_raw=writer_raw,
-        writer_config=writer_config,
-        allowed_outcomes=frozenset({"not_preapproved"}),
-    )
-    if preclaim != exact["preclaim_reconciliation"]:
-        raise RuntimeError("never-authorized preclaim truth drifted")
-    return BootstrapNeverAuthorizedEvidence(
-        value=copy.deepcopy(dict(exact)),
-        path=path,
-        file_sha256=_sha256_bytes(raw),
-    )
-
-
-def _load_bootstrap_never_authorized_final(
-    plan: FullCanaryPlan,
-) -> BootstrapNeverAuthorizedEvidence:
-    path = _bootstrap_never_authorized_path(plan)
-    raw, _item = _read_root_file_via_parent(
-        path,
-        maximum=_MAX_JSON_BYTES,
-        expected_uid=0,
-        expected_gid=0,
-        allowed_modes=frozenset({0o400}),
-    )
-    return _bootstrap_never_authorized_from_bytes(plan, path=path, raw=raw)
-
-
-def _recover_bootstrap_never_authorized_staging(
-    plan: FullCanaryPlan,
-    *,
-    expected_uid: int = 0,
-    expected_gid: int = 0,
-    trusted_anchor: Path = Path("/"),
-) -> BootstrapNeverAuthorizedEvidence | None:
-    staging_root = _bootstrap_never_authorized_staging_root(plan)
-    try:
-        staging_descriptor = _open_root_directory_chain(
-            staging_root,
-            create=False,
-            expected_uid=expected_uid,
-            expected_gid=expected_gid,
-            trusted_anchor=trusted_anchor,
-        )
-    except FileNotFoundError:
-        return None
-    try:
-        root_item = os.fstat(staging_descriptor)
-        if (
-            not stat.S_ISDIR(root_item.st_mode)
-            or root_item.st_uid != expected_uid
-            or root_item.st_gid != expected_gid
-            or stat.S_IMODE(root_item.st_mode) & 0o022
-        ):
-            raise RuntimeError(
-                "bootstrap never-authorized staging root is not controlled"
-            )
-        with os.scandir(staging_descriptor) as entries:
-            candidates = list(entries)
-        if not candidates:
-            _revalidate_root_directory_reachability(
-                staging_root,
-                staging_descriptor,
-                expected_uid=expected_uid,
-                expected_gid=expected_gid,
-                trusted_anchor=trusted_anchor,
-            )
-            return None
-        if (
-            len(candidates) != 1
-            or candidates[0].name != "evidence.tmp"
-            or not candidates[0].is_file(follow_symlinks=False)
-        ):
-            raise BootstrapEvidenceAmbiguous(
-                "bootstrap never-authorized staging state is ambiguous"
-            )
-        staging_name = candidates[0].name
-        item: os.stat_result | None = None
-        try:
-            raw, item = _read_stable_file_at(
-                staging_descriptor,
-                staging_name,
-                maximum=_MAX_JSON_BYTES,
-                expected_uid=expected_uid,
-                expected_gid=expected_gid,
-                allowed_modes=frozenset({0o400}),
-                allowed_link_counts=frozenset({1, 2}),
-            )
-            staged = _bootstrap_never_authorized_from_bytes(
-                plan,
-                path=_bootstrap_never_authorized_path(plan),
-                raw=raw,
-            )
-        except (RuntimeError, TypeError, ValueError) as exc:
-            if item is None:
-                current = os.stat(
-                    staging_name,
-                    dir_fd=staging_descriptor,
-                    follow_symlinks=False,
-                )
-                if (
-                    not stat.S_ISREG(current.st_mode)
-                    or stat.S_ISLNK(current.st_mode)
-                    or current.st_uid != expected_uid
-                    or current.st_gid != expected_gid
-                    or current.st_nlink not in {1, 2}
-                    or stat.S_IMODE(current.st_mode) != 0o400
-                ):
-                    raise
-                item = current
-            _unlink_exact_bootstrap_staging_entry(
-                staging_descriptor,
-                staging_name,
-                item,
-                expected_uid=expected_uid,
-                expected_gid=expected_gid,
-            )
-            _revalidate_root_directory_reachability(
-                staging_root,
-                staging_descriptor,
-                expected_uid=expected_uid,
-                expected_gid=expected_gid,
-                trusted_anchor=trusted_anchor,
-            )
-            raise BootstrapEvidenceUnavailable(
-                "bootstrap never-authorized staging payload was incomplete"
-            ) from exc
-        final_path = _bootstrap_never_authorized_path(plan)
-        final_descriptor = _open_root_directory_chain(
-            final_path.parent,
-            create=True,
-            expected_uid=expected_uid,
-            expected_gid=expected_gid,
-            trusted_anchor=trusted_anchor,
-        )
-        try:
-            try:
-                os.link(
-                    staging_name,
-                    final_path.name,
-                    src_dir_fd=staging_descriptor,
-                    dst_dir_fd=final_descriptor,
-                    follow_symlinks=False,
-                )
-            except FileExistsError:
-                final_item = os.stat(
-                    final_path.name,
-                    dir_fd=final_descriptor,
-                    follow_symlinks=False,
-                )
-                if (final_item.st_dev, final_item.st_ino) != (
-                    item.st_dev,
-                    item.st_ino,
-                ):
-                    final_raw, _ = _read_stable_file_at(
-                        final_descriptor,
-                        final_path.name,
-                        maximum=_MAX_JSON_BYTES,
-                        expected_uid=expected_uid,
-                        expected_gid=expected_gid,
-                        allowed_modes=frozenset({0o400}),
-                    )
-                    existing = _bootstrap_never_authorized_from_bytes(
-                        plan,
-                        path=final_path,
-                        raw=final_raw,
-                    )
-                    if existing.value != staged.value:
-                        raise BootstrapEvidenceAmbiguous(
-                            "bootstrap never-authorized final publication conflicts"
-                        )
-                    _unlink_exact_bootstrap_staging_entry(
-                        staging_descriptor,
-                        staging_name,
-                        item,
-                        expected_uid=expected_uid,
-                        expected_gid=expected_gid,
-                    )
-                    _revalidate_root_directory_reachability(
-                        final_path.parent,
-                        final_descriptor,
-                        expected_uid=expected_uid,
-                        expected_gid=expected_gid,
-                        trusted_anchor=trusted_anchor,
-                    )
-                    _revalidate_root_directory_reachability(
-                        staging_root,
-                        staging_descriptor,
-                        expected_uid=expected_uid,
-                        expected_gid=expected_gid,
-                        trusted_anchor=trusted_anchor,
-                    )
-                    return existing
-            _finalize_same_inode_hardlink_publication_at(
-                staging_parent_descriptor=staging_descriptor,
-                staging_name=staging_name,
-                final_parent_descriptor=final_descriptor,
-                final_name=final_path.name,
-                staging_item=item,
-                expected_uid=expected_uid,
-                expected_gid=expected_gid,
-            )
-            final_raw, _ = _read_stable_file_at(
-                final_descriptor,
-                final_path.name,
-                maximum=_MAX_JSON_BYTES,
-                expected_uid=expected_uid,
-                expected_gid=expected_gid,
-                allowed_modes=frozenset({0o400}),
-            )
-            result = _bootstrap_never_authorized_from_bytes(
-                plan,
-                path=final_path,
-                raw=final_raw,
-            )
-            _revalidate_root_directory_reachability(
-                final_path.parent,
-                final_descriptor,
-                expected_uid=expected_uid,
-                expected_gid=expected_gid,
-                trusted_anchor=trusted_anchor,
-            )
-            _revalidate_root_directory_reachability(
-                staging_root,
-                staging_descriptor,
-                expected_uid=expected_uid,
-                expected_gid=expected_gid,
-                trusted_anchor=trusted_anchor,
-            )
-            return result
-        finally:
-            os.close(final_descriptor)
-    finally:
-        os.close(staging_descriptor)
-
-
-def load_bootstrap_never_authorized_evidence(
-    plan: FullCanaryPlan,
-) -> BootstrapNeverAuthorizedEvidence:
-    try:
-        recovered = _recover_bootstrap_never_authorized_staging(plan)
-    except BootstrapEvidenceUnavailable:
-        # A torn unpublished temp is safely discarded.  Existing final truth
-        # still wins; otherwise ordinary absence is reported to the caller.
-        return _load_bootstrap_never_authorized_final(plan)
-    if recovered is not None:
-        return recovered
-    return _load_bootstrap_never_authorized_final(plan)
-
-
-def _never_authorized_evidence_matches_attempt(
-    evidence: BootstrapNeverAuthorizedEvidence,
-    *,
-    staged_plan_file_sha256: str,
-    stopped: Sequence[str],
-    preclaim_reconciliation: Mapping[str, Any],
-) -> bool:
-    return (
-        evidence.value["staged_plan_file_sha256"]
-        == staged_plan_file_sha256
-        and evidence.value["mechanical_stop_order"] == list(stopped)
-        and evidence.value["preclaim_reconciliation"]
-        == preclaim_reconciliation
-        and evidence.value["bootstrap_login_disabled"] is True
-        and evidence.value["bootstrap_credential_removed"] is True
-    )
-
-
-def persist_bootstrap_never_authorized_evidence(
-    plan: FullCanaryPlan,
-    *,
-    staged_plan_file_sha256: str,
-    bootstrap_login_disabled: bool,
-    stopped: Sequence[str],
-    preclaim_reconciliation: Mapping[str, Any],
-) -> BootstrapNeverAuthorizedEvidence:
-    """Seal the distinct staged-only, provably-never-authorized outcome."""
-
-    staged_plan_file_sha256 = _digest(
-        staged_plan_file_sha256,
-        "staged plan file digest",
-    )
-    if (
-        os.path.lexists(DEFAULT_PLAN_PATH)
-        or os.path.lexists(DEFAULT_APPROVAL_PATH)
-        or bootstrap_login_disabled is not True
-        or os.path.lexists(DEFAULT_CANARY_BOOTSTRAP_CREDENTIAL)
-        or list(stopped)
-        != [GATEWAY_UNIT_NAME, WRITER_UNIT_NAME, EDGE_UNIT_NAME]
-    ):
-        raise RuntimeError("never-authorized bootstrap absence proof failed")
-    try:
-        load_bootstrap_evidence_envelope(plan)
-    except BootstrapEvidenceUnavailable:
-        pass
-    else:
-        raise RuntimeError("never-authorized plan has bootstrap evidence")
-    staged_raw, _staged_item = _read_stable_file(
-        DEFAULT_STAGED_PLAN_PATH,
-        maximum=_MAX_JSON_BYTES,
-        expected_uid=0,
-        expected_gid=0,
-        allowed_modes=frozenset({0o400}),
-    )
-    if (
-        _sha256_bytes(staged_raw) != staged_plan_file_sha256
-        or staged_raw != _canonical_bytes(plan.to_mapping())
-    ):
-        raise RuntimeError("never-authorized staged plan drifted")
-    try:
-        existing = load_bootstrap_never_authorized_evidence(plan)
-    except FileNotFoundError:
-        existing = None
-    if existing is not None:
-        if not _never_authorized_evidence_matches_attempt(
-            existing,
-            staged_plan_file_sha256=staged_plan_file_sha256,
-            stopped=stopped,
-            preclaim_reconciliation=preclaim_reconciliation,
-        ):
-            raise RuntimeError("never-authorized bootstrap evidence conflicts")
-        return existing
-    writer_raw = _validate_artifact_source(
-        plan.artifacts["writer_config"],
-        label="writer_config",
-    )
-    writer_config = _validate_writer_config(
-        writer_raw,
-        plan.identities,
-        plan=plan,
-        require_fresh_canary_scope=False,
-    )
-    preclaim = _validate_canary_preclaim_reconciliation_value(
-        preclaim_reconciliation,
-        source_config_path=plan.artifacts["writer_config"].source_path,
-        source_config_raw=writer_raw,
-        writer_config=writer_config,
-        allowed_outcomes=frozenset({"not_preapproved"}),
-    )
-    unsigned = {
-        "schema": BOOTSTRAP_NEVER_AUTHORIZED_SCHEMA,
-        "revision": plan.revision,
-        "full_canary_plan_sha256": plan.sha256,
-        "staged_plan_path": str(DEFAULT_STAGED_PLAN_PATH),
-        "staged_plan_file_sha256": staged_plan_file_sha256,
-        "runtime_plan_absent": True,
-        "owner_approval_absent": True,
-        "bootstrap_envelope_absent": True,
-        "bootstrap_login_disabled": True,
-        "bootstrap_credential_removed": True,
-        "writer_config_bytes_base64": base64.b64encode(writer_raw).decode(
-            "ascii"
-        ),
-        "writer_config_sha256": _sha256_bytes(writer_raw),
-        "mechanical_stop_order": list(stopped),
-        "preclaim_reconciliation": copy.deepcopy(dict(preclaim)),
-        "recorded_at_unix": int(time.time()),
-    }
-    value = {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
-    path = _bootstrap_never_authorized_path(plan)
-    staging_path = _bootstrap_never_authorized_staging_path(plan)
-    try:
-        _write_exclusive_bytes(
-            staging_path,
-            _canonical_bytes(value),
-            mode=0o400,
-        )
-    except FileExistsError:
-        pass
-    loaded = load_bootstrap_never_authorized_evidence(plan)
-    if not _never_authorized_evidence_matches_attempt(
-        loaded,
-        staged_plan_file_sha256=staged_plan_file_sha256,
-        stopped=stopped,
-        preclaim_reconciliation=preclaim_reconciliation,
-    ):
-        raise RuntimeError("never-authorized bootstrap evidence conflicts")
-    return loaded
-
-
 def _write_append_only_receipt(
     plan: FullCanaryPlan,
     *,
@@ -8000,163 +4497,6 @@ def _atomic_install_payload(
     }
 
 
-def _retired_writer_config_payload(
-    plan: FullCanaryPlan,
-) -> tuple[bytes, str]:
-    original = _validate_artifact_source(
-        plan.artifacts["writer_config"],
-        label="writer_config",
-    )
-    value = _decode_json(original, label="sealed writer config for retirement")
-    if set(value) != {
-        "service",
-        "database",
-        "privileges",
-        "discord_edge_authority",
-        "canary_scope_preapproval",
-    }:
-        raise RuntimeError("sealed writer config retirement shape is invalid")
-    retired = copy.deepcopy(dict(value))
-    scope = retired.pop("canary_scope_preapproval", None)
-    if not isinstance(scope, Mapping):
-        raise RuntimeError("writer bootstrap config cannot be retired")
-    payload = _canonical_bytes(retired)
-    if b"canary_scope_preapproval" in payload:
-        raise RuntimeError("retired writer config retained bootstrap authority")
-    return payload, _sha256_bytes(payload)
-
-
-def _bootstrap_retirement_tombstone_path(plan: FullCanaryPlan) -> Path:
-    return (
-        DEFAULT_EVIDENCE_ROOT
-        / "plans"
-        / plan.revision
-        / plan.sha256
-        / "bootstrap-retirement"
-        / "retirement.json"
-    )
-
-
-def _validate_bootstrap_retirement_tombstone(
-    plan: FullCanaryPlan,
-    *,
-    expected_retired_sha256: str,
-    path: Path | None = None,
-) -> Mapping[str, Any]:
-    path = _bootstrap_retirement_tombstone_path(plan) if path is None else path
-    raw, _item = _read_stable_file(
-        path,
-        maximum=512 * 1024,
-        expected_uid=0,
-        expected_gid=0,
-        allowed_modes=frozenset({0o400}),
-    )
-    value = _decode_json(raw, label="canary bootstrap retirement tombstone")
-    fields = {
-        "schema",
-        "revision",
-        "full_canary_plan_sha256",
-        "original_writer_config_sha256",
-        "retired_writer_config_sha256",
-        "writer_readiness_receipt_sha256",
-        "bootstrap_consumption",
-        "retired_target_path",
-        "retired_at_unix",
-        "receipt_sha256",
-    }
-    if set(value) != fields:
-        raise RuntimeError("canary bootstrap retirement tombstone is not exact")
-    unsigned = {
-        key: copy.deepcopy(item)
-        for key, item in value.items()
-        if key != "receipt_sha256"
-    }
-    if (
-        value.get("schema") != CANARY_BOOTSTRAP_RETIREMENT_SCHEMA
-        or value.get("revision") != plan.revision
-        or value.get("full_canary_plan_sha256") != plan.sha256
-        or value.get("original_writer_config_sha256")
-        != plan.artifacts["writer_config"].sha256
-        or value.get("retired_writer_config_sha256")
-        != expected_retired_sha256
-        or _SHA256_RE.fullmatch(
-            str(value.get("writer_readiness_receipt_sha256") or "")
-        )
-        is None
-        or not isinstance(value.get("bootstrap_consumption"), Mapping)
-        or value.get("retired_target_path") != str(DEFAULT_WRITER_CONFIG)
-        or type(value.get("retired_at_unix")) is not int
-        or value.get("receipt_sha256") != _sha256_json(unsigned)
-    ):
-        raise RuntimeError("canary bootstrap retirement tombstone drifted")
-    return value
-
-
-def _retire_writer_bootstrap_config(
-    plan: FullCanaryPlan,
-    *,
-    writer_readiness: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    original = _validate_artifact_source(
-        plan.artifacts["writer_config"],
-        label="writer_config",
-    )
-    writer_config = _validate_writer_config(
-        original,
-        plan.identities,
-        plan=plan,
-    )
-    consumption = _validate_writer_bootstrap_consumption(
-        plan,
-        writer_config,
-        writer_readiness,
-    )
-    payload, retired_sha256 = _retired_writer_config_payload(plan)
-    installed = _atomic_install_payload(
-        plan,
-        name="writer_config_retired",
-        path=DEFAULT_WRITER_CONFIG,
-        payload=payload,
-        mode=plan.artifacts["writer_config"].mode,
-        uid=plan.artifacts["writer_config"].uid,
-        gid=plan.artifacts["writer_config"].gid,
-        allowed_previous=frozenset({plan.artifacts["writer_config"].sha256}),
-    )
-    readiness_sha256 = readiness_receipt_sha256(writer_readiness)
-    unsigned = {
-        "schema": CANARY_BOOTSTRAP_RETIREMENT_SCHEMA,
-        "revision": plan.revision,
-        "full_canary_plan_sha256": plan.sha256,
-        "original_writer_config_sha256": plan.artifacts["writer_config"].sha256,
-        "retired_writer_config_sha256": retired_sha256,
-        "writer_readiness_receipt_sha256": readiness_sha256,
-        "bootstrap_consumption": copy.deepcopy(dict(consumption)),
-        "retired_target_path": str(DEFAULT_WRITER_CONFIG),
-        "retired_at_unix": int(time.time()),
-    }
-    tombstone = {**unsigned, "receipt_sha256": _sha256_json(unsigned)}
-    tombstone_path = _bootstrap_retirement_tombstone_path(plan)
-    try:
-        _write_exclusive_bytes(
-            tombstone_path,
-            _canonical_bytes(tombstone),
-            mode=0o400,
-        )
-    except FileExistsError:
-        existing = _validate_bootstrap_retirement_tombstone(
-            plan,
-            expected_retired_sha256=retired_sha256,
-        )
-        if existing.get("bootstrap_consumption") != consumption:
-            raise RuntimeError("canary bootstrap retirement evidence conflicts")
-        tombstone = copy.deepcopy(dict(existing))
-    return {
-        "installed_writer_config": copy.deepcopy(dict(installed)),
-        "tombstone_path": str(tombstone_path),
-        "tombstone": tombstone,
-    }
-
-
 def _install_plan_artifacts(plan: FullCanaryPlan) -> Mapping[str, Any]:
     installed: dict[str, Any] = {}
     for name, (path, payload, mode, uid, gid, previous) in _target_bindings(plan).items():
@@ -8233,60 +4573,6 @@ def mechanically_stop_full_canary_services(
     return _stop_all(runner=runner)
 
 
-def mechanically_reconcile_never_authorized_preclaim(
-    plan: FullCanaryPlan,
-    *,
-    prior_generation: tuple[int, ...] | None,
-    runner: Runner = _runner,
-) -> Mapping[str, Any]:
-    """Run only the sealed writer preclaim reconciler as the writer identity."""
-
-    writer_raw = _validate_artifact_source(
-        plan.artifacts["writer_config"],
-        label="writer_config",
-    )
-    writer_config = _validate_writer_config(
-        writer_raw,
-        plan.identities,
-        plan=plan,
-        require_fresh_canary_scope=False,
-    )
-    command = Command(
-        (
-            SETPRIV,
-            "--reuid",
-            str(plan.identities.writer_uid),
-            "--regid",
-            str(plan.identities.writer_gid),
-            "--clear-groups",
-            plan.release["interpreter"],
-            "-B",
-            "-I",
-            "-m",
-            "gateway.canonical_writer_bootstrap",
-            "--config",
-            str(plan.artifacts["writer_config"].source_path),
-            "--reconcile-canary-preclaim",
-        ),
-        timeout_seconds=120,
-    )
-    _run_checked(
-        command,
-        runner=runner,
-        label="reconcile never-authorized canary preclaim",
-    )
-    return validate_canary_preclaim_reconciliation_receipt(
-        source_config_path=plan.artifacts["writer_config"].source_path,
-        source_config_raw=writer_raw,
-        writer_config=writer_config,
-        writer_uid=plan.identities.writer_uid,
-        writer_gid=plan.identities.writer_gid,
-        allowed_outcomes=frozenset({"not_preapproved"}),
-        prior_generation=prior_generation,
-        require_fresh_generation=True,
-    )
-
-
 class FullCanaryLifecycle:
     def __init__(
         self,
@@ -8295,48 +4581,13 @@ class FullCanaryLifecycle:
         runner: Runner = _runner,
         metadata_reader: Callable[[str], bytes | str] | None = None,
         local_identity_reader: Callable[[str], bytes | str] | None = None,
-        bootstrap_provisioner: BootstrapProvisioner = (
-            _BLOCKED_BOOTSTRAP_PROVISIONER
-        ),
-        bootstrap_reconciliation_evidence: (
-            BootstrapReconciliationEvidence | None
-        ) = None,
-        bootstrap_never_authorized_evidence: (
-            BootstrapNeverAuthorizedEvidence | None
-        ) = None,
     ) -> None:
         if not isinstance(plan, FullCanaryPlan):
             raise TypeError("full-canary plan is required")
-        if any(
-            not callable(getattr(bootstrap_provisioner, name, None))
-            for name in ("provision", "reconcile", "abort")
-        ):
-            raise TypeError("full-canary bootstrap provisioner contract is invalid")
         self.plan = plan
         self.runner = runner
         self.metadata_reader = metadata_reader
         self.local_identity_reader = local_identity_reader
-        self.bootstrap_provisioner = bootstrap_provisioner
-        if (
-            bootstrap_reconciliation_evidence is not None
-            and bootstrap_never_authorized_evidence is not None
-        ):
-            raise ValueError("bootstrap terminal evidence is ambiguous")
-        if bootstrap_reconciliation_evidence is not None:
-            _revalidate_bootstrap_reconciliation_evidence(
-                plan,
-                bootstrap_reconciliation_evidence,
-            )
-        self._bootstrap_reconciliation_evidence = (
-            bootstrap_reconciliation_evidence
-        )
-        if bootstrap_never_authorized_evidence is not None:
-            loaded = load_bootstrap_never_authorized_evidence(plan)
-            if loaded != bootstrap_never_authorized_evidence:
-                raise RuntimeError("bootstrap never-authorized evidence drifted")
-        self._bootstrap_never_authorized_evidence = (
-            bootstrap_never_authorized_evidence
-        )
 
     def _require_dedicated_host(self) -> Mapping[str, Any]:
         return validate_dedicated_canary_host(
@@ -8352,176 +4603,12 @@ class FullCanaryLifecycle:
             runner=self.runner,
             metadata_reader=self.metadata_reader,
             local_identity_reader=self.local_identity_reader,
-            bootstrap_reconciliation_evidence=(
-                self._bootstrap_reconciliation_evidence
-                or self._bootstrap_never_authorized_evidence
-            ),
         )
-
-    def _bootstrap_evidence_descriptor_value(self) -> Mapping[str, Any] | None:
-        evidence = self._bootstrap_reconciliation_evidence
-        if evidence is None or evidence.descriptor is None:
-            return None
-        _revalidate_bootstrap_reconciliation_evidence(self.plan, evidence)
-        return copy.deepcopy(dict(evidence.descriptor.to_mapping()))
-
-    def _durable_bootstrap_receipt_fields(self) -> Mapping[str, Any]:
-        evidence = self._bootstrap_reconciliation_evidence
-        if evidence is None:
-            never_authorized = self._bootstrap_never_authorized_evidence
-            return {
-                "bootstrap_evidence_present": False,
-                "bootstrap_evidence_descriptor": None,
-                "bootstrap_never_authorized_evidence": (
-                    None
-                    if never_authorized is None
-                    else {
-                        "path": str(never_authorized.path),
-                        "file_sha256": never_authorized.file_sha256,
-                        "receipt_sha256": never_authorized.value[
-                            "receipt_sha256"
-                        ],
-                    }
-                ),
-                "owner_approval_receipt": None,
-                "owner_approval_receipt_sha256": None,
-                "bootstrap_provisioning_receipt": None,
-                "bootstrap_reconciliation": None,
-                "bootstrap_reconciliation_complete": False,
-                "bootstrap_authority_may_require_owner_cleanup": (
-                    never_authorized is None
-                    and _bootstrap_credential_is_present_and_exact(self.plan)
-                ),
-                "bootstrap_durable_evidence_recovery_required": False,
-            }
-        _revalidate_bootstrap_reconciliation_evidence(self.plan, evidence)
-        if evidence.descriptor is None:
-            raise RuntimeError("durable bootstrap evidence descriptor is missing")
-        return {
-            "bootstrap_evidence_present": True,
-            "bootstrap_evidence_descriptor": copy.deepcopy(
-                dict(evidence.descriptor.to_mapping())
-            ),
-            "bootstrap_never_authorized_evidence": None,
-            "owner_approval_receipt": copy.deepcopy(
-                dict(evidence.approval.value)
-            ),
-            "owner_approval_receipt_sha256": evidence.approval.sha256,
-            "bootstrap_provisioning_receipt": (
-                None
-                if evidence.provisioning_receipt is None
-                else copy.deepcopy(dict(evidence.provisioning_receipt))
-            ),
-            "bootstrap_reconciliation": copy.deepcopy(
-                dict(evidence.reconciliation_receipt)
-            ),
-            "bootstrap_reconciliation_complete": True,
-            "bootstrap_authority_may_require_owner_cleanup": False,
-            "bootstrap_durable_evidence_recovery_required": False,
-        }
-
-    def _preclaim_source(
-        self,
-    ) -> tuple[Path, bytes, Mapping[str, Any]]:
-        artifact = self.plan.artifacts["writer_config"]
-        raw = _validate_artifact_source(artifact, label="writer_config")
-        require_fresh_canary_scope = True
-        if self._bootstrap_reconciliation_evidence is not None:
-            # Expiry is waived only after the exact plan/approval/request and
-            # terminal SQL receipt have been revalidated.  Recovery must be
-            # able to attest post-stop truth after an owner window expires,
-            # but an armed credential never receives that waiver.
-            _revalidate_bootstrap_reconciliation_evidence(
-                self.plan,
-                self._bootstrap_reconciliation_evidence,
-            )
-            require_fresh_canary_scope = False
-        elif self._bootstrap_never_authorized_evidence is not None:
-            loaded = load_bootstrap_never_authorized_evidence(self.plan)
-            if loaded != self._bootstrap_never_authorized_evidence:
-                raise RuntimeError("bootstrap never-authorized evidence drifted")
-            require_fresh_canary_scope = False
-        config = _validate_writer_config(
-            raw,
-            self.plan.identities,
-            plan=self.plan,
-            require_fresh_canary_scope=require_fresh_canary_scope,
-        )
-        return artifact.source_path, raw, config
-
-    def _validate_preclaim_receipt(
-        self,
-        *,
-        allowed_outcomes: frozenset[str],
-        prior_generation: tuple[int, ...] | None = None,
-        require_fresh_generation: bool = False,
-    ) -> Mapping[str, Any]:
-        source_path, source_raw, writer_config = self._preclaim_source()
-        return validate_canary_preclaim_reconciliation_receipt(
-            source_config_path=source_path,
-            source_config_raw=source_raw,
-            writer_config=writer_config,
-            writer_uid=self.plan.identities.writer_uid,
-            writer_gid=self.plan.identities.writer_gid,
-            allowed_outcomes=allowed_outcomes,
-            prior_generation=prior_generation,
-            require_fresh_generation=require_fresh_generation,
-        )
-
-    def _validate_poststop_preclaim_receipt(
-        self,
-        *,
-        prior_generation: tuple[int, ...] | None,
-        allow_not_preapproved: bool,
-    ) -> Mapping[str, Any]:
-        allowed = {"retired", "claimed"}
-        if allow_not_preapproved:
-            allowed.add("not_preapproved")
-        receipt = self._validate_preclaim_receipt(
-            allowed_outcomes=frozenset(allowed),
-        )
-        if receipt["result"]["outcome"] == "not_preapproved":
-            # Absence is not durable terminal truth. Re-read it only when the
-            # current stop atomically replaced the prior receipt generation.
-            receipt = self._validate_preclaim_receipt(
-                allowed_outcomes=frozenset({"not_preapproved"}),
-                prior_generation=prior_generation,
-                require_fresh_generation=True,
-            )
-        return receipt
 
     def start(self, approval: FullCanaryOwnerApproval) -> Mapping[str, Any]:
-        """Run one lifecycle and always close its pre-opened admin session."""
+        """Start only the already-founded persistent writer runtime."""
 
-        result: Mapping[str, Any] | None = None
-        primary: BaseException | None = None
-        try:
-            result = self._start_authorized(approval)
-        except BaseException as exc:
-            primary = exc
-        abort_error: BaseException | None = None
-        try:
-            self.bootstrap_provisioner.abort()
-        except BaseException as first_abort_error:
-            try:
-                self.bootstrap_provisioner.abort()
-            except BaseException as second_abort_error:
-                abort_error = ExceptionGroup(
-                    "bootstrap admin-session abort retries failed",
-                    [first_abort_error, second_abort_error],
-                )
-        if primary is not None and abort_error is not None:
-            raise ExceptionGroup(
-                "full-canary start and bootstrap admin-session abort failed",
-                [primary, abort_error],
-            ) from None
-        if primary is not None:
-            raise primary
-        if abort_error is not None:
-            raise abort_error
-        if result is None:
-            raise RuntimeError("full-canary start produced no result")
-        return result
+        return self._start_authorized(approval)
 
     def _start_authorized(
         self,
@@ -8538,40 +4625,17 @@ class FullCanaryLifecycle:
             self.plan.artifacts["writer_config"],
             label="writer_config",
         )
-        writer_config = _validate_writer_config(
+        _validate_writer_config(
             writer_config_raw,
             self.plan.identities,
-            plan=self.plan,
-            expected_approval_source_sha256=str(
-                approval.value["approval_source_sha256"]
-            ),
         )
-        # The built-in runtime has deliberately no admin credential or generic
-        # SQL runner.  An owner-operated adapter over an already-open ephemeral
-        # managed-admin session must be supplied before any mutation begins.
-        if self.bootstrap_provisioner is _BLOCKED_BOOTSTRAP_PROVISIONER:
-            raise FullCanaryBootstrapAdminUnavailable(
-                "owner-operated ephemeral bootstrap admin connection is unavailable"
-            )
         with _lifecycle_lock():
             preflight = self._preflight(phase="stopped")
             mutation_started = False
             installed: Mapping[str, Any] = {}
             started: list[str] = []
-            bootstrap_provisioning_receipt: Mapping[str, Any] | None = None
-            bootstrap_provisioning_result: Mapping[str, Any] | None = None
-            bootstrap_provisioning_request: (
-                CanaryBootstrapProvisioningRequest | None
-            ) = None
-            bootstrap_provision_attempted = False
-            bootstrap_reconciliation: Mapping[str, Any] | None = None
-            bootstrap_evidence: BootstrapReconciliationEvidence | None = None
-            bootstrap_retirement: Mapping[str, Any] | None = None
-            prestart_preclaim_reconciliation: Mapping[str, Any] | None = None
-            poststop_preclaim_reconciliation: Mapping[str, Any] | None = None
-            writer_start_attempted = False
-            writer_start_succeeded = False
-            preclaim_required = False
+            phase_b_current: Mapping[str, Any] | None = None
+            installed_phase_b_anchor: Mapping[str, Any] | None = None
             try:
                 approval.require(
                     plan_sha256=self.plan.sha256,
@@ -8590,6 +4654,7 @@ class FullCanaryLifecycle:
                             str(DEFAULT_EDGE_UNIT_PATH),
                             str(DEFAULT_WRITER_UNIT_PATH),
                             str(DEFAULT_GATEWAY_UNIT_PATH),
+                            str(DEFAULT_PHASE_B_READINESS_UNIT_PATH),
                         )
                     ),
                     runner=self.runner,
@@ -8611,11 +4676,40 @@ class FullCanaryLifecycle:
                     runner=self.runner,
                     label="create full-canary runtime directories",
                 )
+                from gateway.canonical_writer_phase_b_runtime import (
+                    install_fixed_phase_b_full_canary_anchor,
+                    validate_fixed_phase_b_readiness_descendant,
+                )
+
+                # The root collector is zero-input and must finish before any
+                # privileged or model-running canary service starts.
+                # RemainAfterExit keeps its successful generation active so
+                # the writer's Requires=/After= dependency cannot re-run it
+                # after the privileged Discord edge is already live.
+                _run_checked(
+                    phase_b_readiness_start_command(),
+                    runner=self.runner,
+                    label=f"start {PHASE_B_READINESS_UNIT_NAME}",
+                )
                 _validate_inert_gateway_paths(
                     gateway_uid=self.plan.identities.gateway_uid,
                     gateway_gid=self.plan.identities.gateway_gid,
                 )
                 self._preflight(phase="stopped")
+                phase_b_current = validate_fixed_phase_b_readiness_descendant(
+                    self.plan.phase_b_readiness_anchor
+                )
+                installed_phase_b_anchor = (
+                    install_fixed_phase_b_full_canary_anchor(
+                        self.plan.phase_b_readiness_anchor
+                    )
+                )
+                installed = {
+                    **dict(installed),
+                    "phase_b_full_canary_anchor": copy.deepcopy(
+                        dict(installed_phase_b_anchor)
+                    ),
+                }
                 approval.require(
                     plan_sha256=self.plan.sha256,
                     now_unix=int(time.time()),
@@ -8652,96 +4746,20 @@ class FullCanaryLifecycle:
                     plan_sha256=self.plan.sha256,
                     now_unix=int(time.time()),
                 )
-                # The DB mutation is authorized only on the compile-time
-                # dedicated host and immediately precedes writer startup.
                 self._require_dedicated_host()
-                bootstrap_provisioning_request = (
-                    _build_canary_bootstrap_provisioning_request(
-                    self.plan,
-                    approval,
-                    writer_config,
-                )
-                )
-                bootstrap_provision_attempted = True
-                raw_provisioning_result = self.bootstrap_provisioner.provision(
-                    bootstrap_provisioning_request
-                )
-                if isinstance(raw_provisioning_result, Mapping):
-                    bootstrap_provisioning_result = raw_provisioning_result
-                bootstrap_provisioning_receipt = (
-                    _validate_canary_bootstrap_provisioning_receipt(
-                        raw_provisioning_result,
-                        request=bootstrap_provisioning_request,
-                        approval=approval,
-                    )
-                )
                 writer_command, gateway_command = (
                     post_collector_start_commands()
                 )
-                preclaim_generation_before_writer_start = (
-                    observe_canary_preclaim_reconciliation_generation()
-                )
-                writer_start_attempted = True
                 _run_checked(
                     writer_command,
                     runner=self.runner,
                     label=f"start {WRITER_UNIT_NAME}",
                 )
-                writer_start_succeeded = True
                 started.append(WRITER_UNIT_NAME)
-                prestart_preclaim_reconciliation = (
-                    self._validate_preclaim_receipt(
-                        allowed_outcomes=frozenset({"not_preapproved"}),
-                        prior_generation=(
-                            preclaim_generation_before_writer_start
-                        ),
-                        require_fresh_generation=True,
-                    )
-                )
                 writer_readiness = _readiness_receipt(
                     DEFAULT_WRITER_RUNTIME_ATTESTATION_PATH,
                     uid=self.plan.identities.writer_uid,
                     gid=self.plan.identities.writer_gid,
-                )
-                _validate_writer_bootstrap_consumption(
-                    self.plan,
-                    writer_config,
-                    writer_readiness,
-                )
-                bootstrap_retirement = _retire_writer_bootstrap_config(
-                    self.plan,
-                    writer_readiness=writer_readiness,
-                )
-                installed = {
-                    **dict(installed),
-                    "writer_bootstrap_retirement": bootstrap_retirement,
-                }
-                raw_reconciliation = self.bootstrap_provisioner.reconcile(
-                    bootstrap_provisioning_request,
-                    bootstrap_provisioning_result,
-                )
-                bootstrap_reconciliation = (
-                    _validate_canary_bootstrap_reconciliation_receipt(
-                        raw_reconciliation,
-                        request=bootstrap_provisioning_request,
-                        provisioning_receipt=bootstrap_provisioning_result,
-                        approval=approval,
-                        expected_session_continuity="same_provision_session",
-                    )
-                )
-                bootstrap_evidence = validated_bootstrap_reconciliation_evidence(
-                    plan=self.plan,
-                    approval=approval,
-                    request=bootstrap_provisioning_request,
-                    provisioning_receipt=bootstrap_provisioning_receipt,
-                    reconciliation_receipt=bootstrap_reconciliation,
-                    expected_session_continuity="same_provision_session",
-                )
-                self._bootstrap_reconciliation_evidence = (
-                    persist_bootstrap_evidence_envelope(
-                        plan=self.plan,
-                        evidence=bootstrap_evidence,
-                    )
                 )
                 _run_checked(
                     gateway_command,
@@ -8769,12 +4787,15 @@ class FullCanaryLifecycle:
                     self.plan,
                     stage="started",
                     value={
-                        **self._durable_bootstrap_receipt_fields(),
-                        "bootstrap_retirement": copy.deepcopy(
-                            dict(bootstrap_retirement)
+                        "owner_approval_receipt_sha256": approval.sha256,
+                        "phase_b_full_canary_anchor": copy.deepcopy(
+                            dict(installed_phase_b_anchor or {})
                         ),
-                        "prestart_preclaim_reconciliation": copy.deepcopy(
-                            dict(prestart_preclaim_reconciliation)
+                        "phase_b_current_readiness_receipt": copy.deepcopy(
+                            dict(phase_b_current or {})
+                        ),
+                        "writer_runtime_readiness_receipt": copy.deepcopy(
+                            dict(writer_readiness)
                         ),
                         "writer_only_activation_receipt_sha256": self.plan.writer_activation_receipt["receipt_sha256"],
                         "preflight_report_sha256": preflight["report_sha256"],
@@ -8808,119 +4829,12 @@ class FullCanaryLifecycle:
             except BaseException as error:
                 cleanup_errors: list[BaseException] = []
                 ordered_stop_complete = True
-                if (
-                    bootstrap_provision_attempted
-                    and bootstrap_provisioning_request is not None
-                    and bootstrap_reconciliation is None
-                ):
-                    try:
-                        raw_reconciliation = (
-                            self.bootstrap_provisioner.reconcile(
-                                bootstrap_provisioning_request,
-                                bootstrap_provisioning_result,
-                            )
-                        )
-                        bootstrap_reconciliation = (
-                            _validate_canary_bootstrap_reconciliation_receipt(
-                                raw_reconciliation,
-                                request=bootstrap_provisioning_request,
-                                provisioning_receipt=(
-                                    bootstrap_provisioning_result
-                                ),
-                                approval=approval,
-                                expected_session_continuity=(
-                                    "same_provision_session"
-                                ),
-                            )
-                        )
-                        bootstrap_evidence = (
-                            validated_bootstrap_reconciliation_evidence(
-                                plan=self.plan,
-                                approval=approval,
-                                request=bootstrap_provisioning_request,
-                                provisioning_receipt=(
-                                    bootstrap_provisioning_receipt
-                                ),
-                                reconciliation_receipt=(
-                                    bootstrap_reconciliation
-                                ),
-                                expected_session_continuity=(
-                                    "same_provision_session"
-                                ),
-                            )
-                        )
-                        self._bootstrap_reconciliation_evidence = (
-                            persist_bootstrap_evidence_envelope(
-                                plan=self.plan,
-                                evidence=bootstrap_evidence,
-                            )
-                        )
-                    except BaseException as exc:
-                        cleanup_errors.append(exc)
-                if (
-                    bootstrap_evidence is not None
-                    and (
-                        self._bootstrap_reconciliation_evidence is None
-                        or self._bootstrap_reconciliation_evidence.descriptor
-                        is None
-                    )
-                ):
-                    try:
-                        self._bootstrap_reconciliation_evidence = (
-                            persist_bootstrap_evidence_envelope(
-                                plan=self.plan,
-                                evidence=bootstrap_evidence,
-                            )
-                        )
-                    except BaseException as exc:
-                        cleanup_errors.append(exc)
                 if mutation_started:
-                    preclaim_generation_before_stop = None
                     try:
                         _stop_all(runner=self.runner)
                     except BaseException as exc:
                         ordered_stop_complete = False
                         cleanup_errors.append(exc)
-                    try:
-                        preclaim_generation_before_stop = (
-                            observe_canary_preclaim_reconciliation_generation()
-                        )
-                    except BaseException as exc:
-                        cleanup_errors.append(exc)
-                    reconciliation_outcome = (
-                        bootstrap_reconciliation.get("outcome")
-                        if isinstance(bootstrap_reconciliation, Mapping)
-                        else None
-                    )
-                    preclaim_required = (
-                        writer_start_succeeded
-                        or reconciliation_outcome == "consumed"
-                        or (
-                            writer_start_attempted
-                            and bootstrap_reconciliation is None
-                        )
-                    )
-                    if preclaim_required:
-                        try:
-                            poststop_preclaim_reconciliation = (
-                                self._validate_poststop_preclaim_receipt(
-                                    prior_generation=(
-                                        preclaim_generation_before_stop
-                                    ),
-                                    allow_not_preapproved=(
-                                        not writer_start_succeeded
-                                        and reconciliation_outcome
-                                        != "consumed"
-                                    ),
-                                )
-                            )
-                        except BaseException as exc:
-                            cleanup_errors.append(exc)
-                durable_bootstrap_evidence = bool(
-                    self._bootstrap_reconciliation_evidence is not None
-                    and self._bootstrap_reconciliation_evidence.descriptor
-                    is not None
-                )
                 failure = _write_append_only_receipt(
                     self.plan,
                     stage="failure",
@@ -8932,47 +4846,11 @@ class FullCanaryLifecycle:
                         "owner_approval_receipt_sha256": approval.sha256,
                         "preflight_report_sha256": preflight["report_sha256"],
                         "started_before_failure": started,
-                        "bootstrap_provisioning_receipt": (
-                            None
-                            if bootstrap_provisioning_receipt is None
-                            else copy.deepcopy(
-                                dict(bootstrap_provisioning_receipt)
-                            )
+                        "phase_b_full_canary_anchor": copy.deepcopy(
+                            dict(installed_phase_b_anchor or {})
                         ),
-                        "bootstrap_retirement": copy.deepcopy(
-                            dict(bootstrap_retirement or {})
-                        ),
-                        "bootstrap_reconciliation": (
-                            None
-                            if bootstrap_reconciliation is None
-                            else copy.deepcopy(dict(bootstrap_reconciliation))
-                        ),
-                        "bootstrap_evidence_descriptor": (
-                            self._bootstrap_evidence_descriptor_value()
-                        ),
-                        "bootstrap_evidence_present": (
-                            durable_bootstrap_evidence
-                        ),
-                        "prestart_preclaim_reconciliation": copy.deepcopy(
-                            dict(prestart_preclaim_reconciliation or {})
-                        ),
-                        "poststop_preclaim_reconciliation": copy.deepcopy(
-                            dict(poststop_preclaim_reconciliation or {})
-                        ),
-                        "bootstrap_authority_may_require_owner_cleanup": (
-                            bootstrap_provision_attempted
-                            and not durable_bootstrap_evidence
-                        ),
-                        "bootstrap_durable_evidence_recovery_required": (
-                            bootstrap_provision_attempted
-                            and not durable_bootstrap_evidence
-                        ),
-                        "preclaim_authority_may_require_owner_cleanup": (
-                            preclaim_required
-                            and poststop_preclaim_reconciliation is None
-                        ),
-                        "bootstrap_reconciliation_complete": (
-                            durable_bootstrap_evidence
+                        "phase_b_current_readiness_receipt": copy.deepcopy(
+                            dict(phase_b_current or {})
                         ),
                         "error_type": type(error).__name__,
                         "error_sha256": _sha256_bytes(
@@ -8999,38 +4877,18 @@ class FullCanaryLifecycle:
         *,
         reason: str,
         stopped: Sequence[str],
-        prior_generation: tuple[int, ...] | None,
     ) -> Mapping[str, Any]:
-        if list(stopped) != [GATEWAY_UNIT_NAME, WRITER_UNIT_NAME, EDGE_UNIT_NAME]:
+        if list(stopped) != list(FULL_CANARY_STOP_ORDER):
             raise RuntimeError("full-canary mechanical stop order is invalid")
-        if self._bootstrap_never_authorized_evidence is None:
-            preclaim_reconciliation = self._validate_poststop_preclaim_receipt(
-                prior_generation=prior_generation,
-                allow_not_preapproved=True,
-            )
-        else:
-            preclaim_reconciliation = self._validate_preclaim_receipt(
-                allowed_outcomes=frozenset({"not_preapproved"}),
-            )
-            if (
-                preclaim_reconciliation
-                != self._bootstrap_never_authorized_evidence.value[
-                    "preclaim_reconciliation"
-                ]
-            ):
-                raise RuntimeError(
-                    "never-authorized preclaim reconciliation drifted"
-                )
         report = self._preflight(phase="stopped")
         return _write_append_only_receipt(
             self.plan,
             stage="stopped",
             value={
-                **self._durable_bootstrap_receipt_fields(),
                 "reason": reason,
                 "stop_order": list(stopped),
-                "preclaim_reconciliation": copy.deepcopy(
-                    dict(preclaim_reconciliation)
+                "phase_b_readiness_anchor": copy.deepcopy(
+                    dict(self.plan.phase_b_readiness_anchor)
                 ),
                 "units_enabled": False,
                 "stopped_report_sha256": report["report_sha256"],
@@ -9043,7 +4901,6 @@ class FullCanaryLifecycle:
         *,
         reason: str,
         stopped: Sequence[str],
-        prior_generation: tuple[int, ...] | None,
     ) -> Mapping[str, Any]:
         if reason not in {
             "operator_requested",
@@ -9057,7 +4914,6 @@ class FullCanaryLifecycle:
             return self._attest_stopped_locked(
                 reason=reason,
                 stopped=stopped,
-                prior_generation=prior_generation,
             )
 
     def stop(self, *, reason: str = "operator_requested") -> Mapping[str, Any]:
@@ -9070,15 +4926,8 @@ class FullCanaryLifecycle:
         _require_root_linux()
         errors: list[BaseException] = []
         stopped: tuple[str, ...] = ()
-        preclaim_generation_before_stop = None
         try:
             stopped = _stop_all(runner=self.runner)
-        except BaseException as exc:
-            errors.append(exc)
-        try:
-            preclaim_generation_before_stop = (
-                observe_canary_preclaim_reconciliation_generation()
-            )
         except BaseException as exc:
             errors.append(exc)
         try:
@@ -9096,7 +4945,6 @@ class FullCanaryLifecycle:
             return self._attest_stopped_locked(
                 reason=reason,
                 stopped=stopped,
-                prior_generation=preclaim_generation_before_stop,
             )
 
     def verify_and_stop(
@@ -9124,7 +4972,6 @@ class FullCanaryLifecycle:
         primary: BaseException | None = None
         stopped: tuple[str, ...] = ()
         stopped_report: Mapping[str, Any] | None = None
-        preclaim_reconciliation: Mapping[str, Any] | None = None
         semantic_cleanup_safe = False
         lifecycle_lock = None
         lifecycle_lock_entered = False
@@ -9211,33 +5058,12 @@ class FullCanaryLifecycle:
             primary = exc
         finally:
             cleanup_errors: list[BaseException] = []
-            preclaim_generation_before_stop = None
             try:
                 stopped = _stop_all(runner=self.runner)
             except BaseException as exc:
                 cleanup_errors.append(exc)
-            try:
-                preclaim_generation_before_stop = (
-                    observe_canary_preclaim_reconciliation_generation()
-                )
-            except BaseException as exc:
-                cleanup_errors.append(exc)
             if not cleanup_errors and semantic_cleanup_safe:
                 try:
-                    preclaim_reconciliation = (
-                        self._validate_poststop_preclaim_receipt(
-                            prior_generation=preclaim_generation_before_stop,
-                            allow_not_preapproved=False,
-                        )
-                    )
-                    if (
-                        primary is None
-                        and preclaim_reconciliation["result"]["outcome"]
-                        != "claimed"
-                    ):
-                        raise RuntimeError(
-                            "verified canary scope was not durably claimed and retired"
-                        )
                     stopped_report = self._preflight(phase="stopped")
                 except BaseException as exc:
                     cleanup_errors.append(exc)
@@ -9271,7 +5097,6 @@ class FullCanaryLifecycle:
             self.plan,
             stage="verified_stopped" if primary is None else "failure",
             value={
-                **self._durable_bootstrap_receipt_fields(),
                 "operation": "verify_and_stop",
                 "full_canary_start_receipt_sha256": loaded_start.file_sha256,
                 "full_canary_start_receipt_internal_sha256": start_receipt[
@@ -9284,8 +5109,8 @@ class FullCanaryLifecycle:
                 ),
                 "verifier_result": copy.deepcopy(dict(verifier_result or {})),
                 "stop_order": list(stopped),
-                "preclaim_reconciliation": copy.deepcopy(
-                    dict(preclaim_reconciliation or {})
+                "phase_b_readiness_anchor": copy.deepcopy(
+                    dict(self.plan.phase_b_readiness_anchor)
                 ),
                 "stopped_report_sha256": (
                     stopped_report.get("report_sha256") if stopped_report else None
@@ -9356,14 +5181,12 @@ def load_start_receipt(
         or value.get("full_canary_plan_sha256") != plan.sha256
         or value.get("units_enabled") is not False
         or value.get("runtime_max_seconds") != 900
-        or value.get("start_order")
-        != [EDGE_UNIT_NAME, WRITER_UNIT_NAME, GATEWAY_UNIT_NAME]
+        or value.get("start_order") != list(FULL_CANARY_START_ORDER)
         or receipt_path.parent != expected_root
         or receipt_path != path
         or value.get("receipt_sha256") != _sha256_json(unsigned)
     ):
         raise RuntimeError("full-canary start receipt is invalid")
-    load_bootstrap_evidence_from_receipt(path, plan=plan)
     identities = value.get("service_identity_receipts")
     if not isinstance(identities, Mapping) or set(identities) != {"edge", "writer", "gateway"}:
         raise RuntimeError("full-canary start identity receipts are incomplete")
@@ -9524,58 +5347,6 @@ def load_full_canary_approval(
     return FullCanaryOwnerApproval.from_mapping(value)
 
 
-def load_bootstrap_terminal_evidence(
-    plan: FullCanaryPlan,
-    *,
-    phase: str,
-) -> BootstrapReconciliationEvidence | BootstrapNeverAuthorizedEvidence | None:
-    """Load durable truth; absence is accepted only for one exact armed state."""
-
-    try:
-        evidence = load_bootstrap_evidence_envelope(plan)
-    except BootstrapEvidenceUnavailable:
-        try:
-            never_authorized = load_bootstrap_never_authorized_evidence(plan)
-        except FileNotFoundError:
-            state = _validate_bootstrap_lifecycle_state(
-                plan,
-                phase=phase,
-                evidence=None,
-            )
-            if state != "armed":
-                raise BootstrapEvidenceUnavailable(
-                    "durable bootstrap terminal evidence is required"
-                )
-            return None
-        return never_authorized
-    if os.path.lexists(_bootstrap_never_authorized_path(plan)):
-        raise BootstrapEvidenceAmbiguous(
-            "reconciled and never-authorized evidence both exist"
-        )
-    return evidence
-
-
-def _lifecycle_for_bootstrap_terminal_evidence(
-    plan: FullCanaryPlan,
-    evidence: (
-        BootstrapReconciliationEvidence
-        | BootstrapNeverAuthorizedEvidence
-        | None
-    ),
-) -> FullCanaryLifecycle:
-    if isinstance(evidence, BootstrapReconciliationEvidence):
-        return FullCanaryLifecycle(
-            plan,
-            bootstrap_reconciliation_evidence=evidence,
-        )
-    if isinstance(evidence, BootstrapNeverAuthorizedEvidence):
-        return FullCanaryLifecycle(
-            plan,
-            bootstrap_never_authorized_evidence=evidence,
-        )
-    return FullCanaryLifecycle(plan)
-
-
 def _cli_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Digest-bound isolated full Muncho canary lifecycle"
@@ -9605,14 +5376,9 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.command == "validate":
             plan = load_full_canary_plan()
-            terminal_evidence = load_bootstrap_terminal_evidence(
-                plan,
-                phase=args.phase,
-            )
             result = collect_full_canary_preflight(
                 plan,
                 phase=args.phase,
-                bootstrap_reconciliation_evidence=terminal_evidence,
             )
         elif args.command == "start":
             plan = load_full_canary_plan()
@@ -9621,28 +5387,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
         elif args.command == "stop":
             terminal_errors: list[BaseException] = []
-            prior_generation = None
             stopped: tuple[str, ...] = ()
             try:
                 stopped = mechanically_stop_full_canary_services()
             except BaseException as exc:
                 terminal_errors.append(exc)
-            try:
-                prior_generation = (
-                    observe_canary_preclaim_reconciliation_generation()
-                )
-            except BaseException as exc:
-                terminal_errors.append(exc)
             plan: FullCanaryPlan | None = None
-            terminal_evidence = None
             try:
                 plan = load_full_canary_plan()
-                terminal_evidence = (
-                    load_bootstrap_terminal_evidence(
-                        plan,
-                        phase="stopped",
-                    )
-                )
             except BaseException as exc:
                 terminal_errors.append(exc)
             if len(terminal_errors) > 1:
@@ -9654,13 +5406,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise terminal_errors[0]
             if plan is None:
                 raise AssertionError("full-canary stop plan is unavailable")
-            result = _lifecycle_for_bootstrap_terminal_evidence(
+            result = FullCanaryLifecycle(
                 plan,
-                terminal_evidence,
             ).attest_stopped_after_mechanical_stop(
                 reason=args.reason,
                 stopped=stopped,
-                prior_generation=prior_generation,
             )
         elif args.command == "verify-and-stop":
             # This compile-time identity fence is deliberately independent of
@@ -9671,22 +5421,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             result = None
             try:
                 plan = load_full_canary_plan()
-                terminal_evidence = load_bootstrap_terminal_evidence(
-                    plan,
-                    phase="live",
-                )
-                if not isinstance(
-                    terminal_evidence,
-                    BootstrapReconciliationEvidence,
-                ):
-                    raise RuntimeError(
-                        "verify-and-stop requires durable reconciliation evidence"
-                    )
                 load_start_receipt(args.start_receipt, plan=plan)
-                result = _lifecycle_for_bootstrap_terminal_evidence(
-                    plan,
-                    terminal_evidence,
-                ).verify_and_stop(
+                result = FullCanaryLifecycle(plan).verify_and_stop(
                     start_receipt_path=args.start_receipt,
                     evidence_path=expected_live_evidence_path(plan),
                     evidence_sha256=args.evidence_sha256,
@@ -9701,10 +5437,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 # intentionally idempotent outer safety boundary.
                 try:
                     mechanically_stop_full_canary_services()
-                except BaseException as exc:
-                    terminal_errors.append(exc)
-                try:
-                    observe_canary_preclaim_reconciliation_generation()
                 except BaseException as exc:
                     terminal_errors.append(exc)
             combined = ([primary] if primary is not None else []) + terminal_errors

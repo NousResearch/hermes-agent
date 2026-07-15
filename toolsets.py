@@ -171,6 +171,15 @@ TOOLSETS = {
         "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
+
+    "skills_readonly": {
+        "description": (
+            "Read shared skill documents without exposing the profile-global "
+            "skill mutation tool"
+        ),
+        "tools": ["skills_list", "skill_view"],
+        "includes": [],
+    },
     
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
@@ -291,6 +300,16 @@ TOOLSETS = {
     "discord": {
         "description": "Discord read and participate tools (fetch messages, search members, create threads)",
         "tools": ["discord"],
+        "includes": [],
+    },
+
+    "discord_guild_read": {
+        "description": (
+            "Credential-free bounded reads from exact Discord guild channels and "
+            "type-10/11 threads authorized by live requester ACL or an exact "
+            "reviewed cron binding"
+        ),
+        "tools": ["discord_guild_history"],
         "includes": [],
     },
 

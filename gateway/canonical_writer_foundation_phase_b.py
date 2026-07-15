@@ -3,8 +3,9 @@
 This module owns no semantic decision.  It validates an owner-authored exact
 plan and mechanically composes injected, fixed-scope boundaries.  In
 particular it cannot choose a database, user, role, SQL payload, service, or
-recovery strategy.  Production transport/wiring is intentionally absent until
-every injected boundary has its own live preflight.
+recovery strategy.  Packaged production wiring lives at the privileged edge in
+``gateway.canonical_writer_phase_b_runtime`` so this foundation remains free of
+transport and owner-identity policy.
 
 The persistent bootstrap login is never deleted here.  Its provisional
 password is used once through a dedicated self-session boundary, disabled by
@@ -16,18 +17,34 @@ deleted.
 from __future__ import annotations
 
 import copy
+import base64
 import hashlib
+import hmac
 import json
 import os
 import re
 import secrets
 import stat
+import struct
 import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterator, Mapping, Protocol, Sequence
+
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+
+from gateway.canonical_canary_host_identity import (
+    DEDICATED_CANARY_INSTANCE_ID,
+    DEDICATED_CANARY_INSTANCE_NAME,
+    DEDICATED_CANARY_PROJECT_ID,
+    DEDICATED_CANARY_PROJECT_NUMBER,
+    DEDICATED_CANARY_SERVICE_ACCOUNT,
+    DEDICATED_CANARY_ZONE,
+    FULL_CANARY_HOST_IDENTITY_SCHEMA,
+)
 
 try:  # The workflow can be imported on Windows, but its hardened journal is POSIX-only.
     import fcntl
@@ -98,7 +115,16 @@ else:
 PHASE_B_PREFLIGHT_SCHEMA = "muncho-canonical-writer-phase-b-preflight.v1"
 PHASE_B_RECOVERY_SCHEMA = "muncho-canonical-writer-phase-b-recovery.v1"
 PHASE_B_PLAN_SCHEMA = "muncho-canonical-writer-phase-b-plan.v1"
-PHASE_B_APPROVAL_SCHEMA = "muncho-canonical-writer-phase-b-approval.v1"
+PHASE_B_APPROVAL_SCHEMA = "muncho-canonical-writer-phase-b-approval.v2"
+PHASE_B_SOURCE_AUTH_SCHEMA = (
+    "muncho-canonical-writer-phase-b-owner-source-auth.v1"
+)
+PHASE_B_APPROVAL_SSHSIG_NAMESPACE = (
+    "muncho-canonical-writer-phase-b-owner-v2"
+)
+PHASE_B_SOURCE_AUTH_SSHSIG_NAMESPACE = (
+    "muncho-canonical-writer-phase-b-source-auth-v1"
+)
 PHASE_B_JOURNAL_SCHEMA = "muncho-canonical-writer-phase-b-journal.v1"
 PHASE_B_ROLE_RECEIPT_SCHEMA = (
     "muncho-canonical-writer-foundation-phase-b-role-preterminal.v1"
@@ -113,6 +139,32 @@ PHASE_B_TERMINAL_OBSERVATION_SCHEMA = (
 )
 PHASE_B_TERMINAL_RECEIPT_SCHEMA = (
     "muncho-canonical-writer-phase-b-terminal.v1"
+)
+PHASE_B_DURABLE_FOUNDATION_SCHEMA = (
+    "muncho-canonical-writer-foundation-phase-b-durable.v1"
+)
+PHASE_B_READINESS_OBSERVATION_SCHEMA = (
+    "muncho-canonical-writer-foundation-phase-b-readiness-observation.v1"
+)
+PHASE_B_READINESS_RECEIPT_SCHEMA = (
+    "muncho-canonical-writer-foundation-phase-b-readiness.v1"
+)
+PHASE_B_BOOTSTRAP_CONTINUITY_SCHEMA = (
+    "muncho-canonical-writer-foundation-phase-b-bootstrap-continuity.v1"
+)
+PHASE_B_READINESS_MAX_AGE_SECONDS = 300
+_PHASE_B_READINESS_ROOT = Path(
+    "/var/lib/muncho/canonical-writer-phase-b-readiness"
+)
+
+# Readiness is startup authority, not a caller-owned cache.  Production
+# publication is therefore rooted in a fixed root-owned journal.  Tests may
+# replace these private process constants, but the public reader never accepts
+# a path or an authority identity from its caller.
+_READINESS_AUTHORITY_UID = 0
+_READINESS_AUTHORITY_GID = 0
+PHASE_B_VM_OAUTH_SCOPES = (
+    "https://www.googleapis.com/auth/cloud-platform",
 )
 
 TEMPORARY_ADMIN_AUTHORITY_RECEIPT_SCHEMA = (
@@ -529,16 +581,21 @@ def _oid(value: Any, code: str = "phase_b_database_preflight_invalid") -> str:
     return value
 
 
-def _validate_database_receipt_envelope(value: Any, *, code: str) -> dict[str, Any]:
-    """Validate the exact PostgreSQL JSONB text rather than reconstructing it.
+def _validate_exact_unsigned_json_text(
+    *,
+    unsigned_text: Any,
+    unsigned_value: Mapping[str, Any],
+    digest: Any,
+    code: str,
+) -> None:
+    """Bind a receipt to exact producer-authored UTF-8 JSON bytes.
 
-    PostgreSQL's JSONB text ordering is not the canonical JSON encoding used by
-    the outer plan.  The SQL receipt therefore carries its exact unsigned text;
-    preserving and hashing those bytes is the only replay-safe verification.
+    PostgreSQL JSONB text ordering is intentionally not recreated here.  The
+    producer carries the exact ``jsonb::text`` bytes; Python only hashes those
+    bytes and parses them to prove that they describe the returned unsigned
+    value without duplicate keys or non-finite numbers.
     """
 
-    raw = _strict_mapping(value, _DB_PREFLIGHT_FIELDS, code)
-    unsigned_text = raw["unsigned_receipt_jsonb_text"]
     if not isinstance(unsigned_text, str):
         raise PhaseBError(code)
     try:
@@ -547,7 +604,7 @@ def _validate_database_receipt_envelope(value: Any, *, code: str) -> dict[str, A
         raise PhaseBError(code) from exc
     if not encoded or len(encoded) > _MAX_JSON_BYTES:
         raise PhaseBError(code)
-    if _sha256_bytes(encoded) != _digest(raw["receipt_sha256"], code):
+    if _sha256_bytes(encoded) != _digest(digest, code):
         raise PhaseBError(code)
 
     def reject_duplicate_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -568,13 +625,25 @@ def _validate_database_receipt_envelope(value: Any, *, code: str) -> dict[str, A
         )
     except (TypeError, ValueError, json.JSONDecodeError) as exc:
         raise PhaseBError(code) from exc
+    if not isinstance(parsed, dict) or parsed != unsigned_value:
+        raise PhaseBError(code)
+
+
+def _validate_database_receipt_envelope(value: Any, *, code: str) -> dict[str, Any]:
+    """Validate the exact PostgreSQL JSONB text rather than reconstructing it."""
+
+    raw = _strict_mapping(value, _DB_PREFLIGHT_FIELDS, code)
     unsigned = {
         name: item
         for name, item in raw.items()
         if name not in {"unsigned_receipt_jsonb_text", "receipt_sha256"}
     }
-    if not isinstance(parsed, dict) or parsed != unsigned:
-        raise PhaseBError(code)
+    _validate_exact_unsigned_json_text(
+        unsigned_text=raw["unsigned_receipt_jsonb_text"],
+        unsigned_value=unsigned,
+        digest=raw["receipt_sha256"],
+        code=code,
+    )
     return raw
 
 
@@ -1832,6 +1901,9 @@ _PLAN_FIELDS = frozenset(
         "schema",
         "release_revision",
         "owner_subject_sha256",
+        "owner_resume_public_key_ed25519_hex",
+        "owner_resume_key_id",
+        "owner_resume_public_key_file_sha256",
         "intent_sha256",
         "temporary_admin_username",
         "target",
@@ -1864,6 +1936,18 @@ class PhaseBPlan:
         )
         preflight = PhaseBPreflight.from_mapping(raw["initial_preflight"])
         owner = _digest(raw["owner_subject_sha256"], "phase_b_plan_invalid")
+        public_hex = raw["owner_resume_public_key_ed25519_hex"]
+        if not isinstance(public_hex, str) or re.fullmatch(r"[0-9a-f]{64}", public_hex) is None:
+            raise PhaseBError("phase_b_plan_owner_key_invalid")
+        public_bytes = bytes.fromhex(public_hex)
+        if (
+            raw["owner_resume_key_id"] != hashlib.sha256(public_bytes).hexdigest()
+            or _SHA256_RE.fullmatch(
+                str(raw["owner_resume_public_key_file_sha256"])
+            )
+            is None
+        ):
+            raise PhaseBError("phase_b_plan_owner_key_invalid")
         if (
             raw["schema"] != PHASE_B_PLAN_SCHEMA
             or raw["release_revision"] != preflight.revision
@@ -1900,6 +1984,11 @@ class PhaseBPlan:
         intent = {
             "release_revision": preflight.revision,
             "owner_subject_sha256": owner,
+            "owner_resume_public_key_ed25519_hex": public_hex,
+            "owner_resume_key_id": raw["owner_resume_key_id"],
+            "owner_resume_public_key_file_sha256": raw[
+                "owner_resume_public_key_file_sha256"
+            ],
             "initial_preflight_sha256": preflight.sha256,
             "stable_preflight_sha256": preflight.stable_sha256,
             "preflight_artifact_sha256": raw["preflight_artifact_sha256"],
@@ -1944,10 +2033,25 @@ def build_phase_b_plan(
     preflight: PhaseBPreflight,
     *,
     owner_subject_sha256: str,
+    owner_resume_public_key_ed25519_hex: str,
+    owner_resume_public_key_file_sha256: str,
 ) -> PhaseBPlan:
     if not isinstance(preflight, PhaseBPreflight):
         raise TypeError("PhaseBPreflight is required")
     owner = _digest(owner_subject_sha256, "phase_b_owner_subject_invalid")
+    if (
+        not isinstance(owner_resume_public_key_ed25519_hex, str)
+        or re.fullmatch(r"[0-9a-f]{64}", owner_resume_public_key_ed25519_hex)
+        is None
+    ):
+        raise PhaseBError("phase_b_plan_owner_key_invalid")
+    owner_resume_public_key_file_sha256 = _digest(
+        owner_resume_public_key_file_sha256,
+        "phase_b_plan_owner_key_invalid",
+    )
+    owner_resume_key_id = hashlib.sha256(
+        bytes.fromhex(owner_resume_public_key_ed25519_hex)
+    ).hexdigest()
     artifacts = preflight.value["release_artifacts"]
     target = {
         "project": PROJECT,
@@ -1962,6 +2066,13 @@ def build_phase_b_plan(
     intent = {
         "release_revision": preflight.revision,
         "owner_subject_sha256": owner,
+        "owner_resume_public_key_ed25519_hex": (
+            owner_resume_public_key_ed25519_hex
+        ),
+        "owner_resume_key_id": owner_resume_key_id,
+        "owner_resume_public_key_file_sha256": (
+            owner_resume_public_key_file_sha256
+        ),
         "initial_preflight_sha256": preflight.sha256,
         "stable_preflight_sha256": preflight.stable_sha256,
         "preflight_artifact_sha256": artifacts[PREFLIGHT_ARTIFACT_PATH],
@@ -1973,6 +2084,13 @@ def build_phase_b_plan(
         "schema": PHASE_B_PLAN_SCHEMA,
         "release_revision": preflight.revision,
         "owner_subject_sha256": owner,
+        "owner_resume_public_key_ed25519_hex": (
+            owner_resume_public_key_ed25519_hex
+        ),
+        "owner_resume_key_id": owner_resume_key_id,
+        "owner_resume_public_key_file_sha256": (
+            owner_resume_public_key_file_sha256
+        ),
         "intent_sha256": intent_sha,
         "temporary_admin_username": TEMPORARY_ADMIN_PREFIX + intent_sha[:16],
         "target": target,
@@ -1992,19 +2110,145 @@ def build_phase_b_plan(
     )
 
 
+_SSHSIG_BEGIN = "-----BEGIN SSH SIGNATURE-----"
+_SSHSIG_END = "-----END SSH SIGNATURE-----"
+_MAX_SSHSIG_ASCII_BYTES = 4096
+
+
+def _ssh_string(value: bytes) -> bytes:
+    return struct.pack(">I", len(value)) + value
+
+
+def _read_ssh_string(payload: bytes, offset: int) -> tuple[bytes, int]:
+    if offset + 4 > len(payload):
+        raise PhaseBError("phase_b_approval_signature_invalid")
+    size = struct.unpack(">I", payload[offset : offset + 4])[0]
+    start = offset + 4
+    end = start + size
+    if size > _MAX_SSHSIG_ASCII_BYTES or end > len(payload):
+        raise PhaseBError("phase_b_approval_signature_invalid")
+    return payload[start:end], end
+
+
+def verify_phase_b_sshsig(
+    signature: str,
+    *,
+    message: bytes,
+    public_key_ed25519_hex: str,
+    namespace: str,
+) -> None:
+    """Strictly verify OpenSSH SSHSIG/Ed25519 over SHA-512(message)."""
+
+    if (
+        not isinstance(signature, str)
+        or not isinstance(message, bytes)
+        or not isinstance(namespace, str)
+        or not namespace
+        or len(signature.encode("ascii", errors="ignore"))
+        > _MAX_SSHSIG_ASCII_BYTES
+        or not signature.startswith(_SSHSIG_BEGIN + "\n")
+        or not signature.endswith("\n" + _SSHSIG_END + "\n")
+        or re.fullmatch(r"[0-9a-f]{64}", public_key_ed25519_hex or "") is None
+    ):
+        raise PhaseBError("phase_b_approval_signature_invalid")
+    lines = signature.splitlines()
+    if (
+        len(lines) < 3
+        or lines[0] != _SSHSIG_BEGIN
+        or lines[-1] != _SSHSIG_END
+        or any(re.fullmatch(r"[A-Za-z0-9+/=]{1,70}", line) is None for line in lines[1:-1])
+        or any(len(line) != 70 for line in lines[1:-2])
+    ):
+        raise PhaseBError("phase_b_approval_signature_invalid")
+    try:
+        envelope = base64.b64decode("".join(lines[1:-1]), validate=True)
+    except (ValueError, UnicodeError) as exc:
+        raise PhaseBError("phase_b_approval_signature_invalid") from exc
+    if not envelope.startswith(b"SSHSIG"):
+        raise PhaseBError("phase_b_approval_signature_invalid")
+    offset = 6
+    if offset + 4 > len(envelope) or struct.unpack(">I", envelope[offset:offset+4])[0] != 1:
+        raise PhaseBError("phase_b_approval_signature_invalid")
+    offset += 4
+    public_blob, offset = _read_ssh_string(envelope, offset)
+    observed_namespace, offset = _read_ssh_string(envelope, offset)
+    reserved, offset = _read_ssh_string(envelope, offset)
+    hash_algorithm, offset = _read_ssh_string(envelope, offset)
+    signature_blob, offset = _read_ssh_string(envelope, offset)
+    if offset != len(envelope):
+        raise PhaseBError("phase_b_approval_signature_invalid")
+    key_type, key_offset = _read_ssh_string(public_blob, 0)
+    public_bytes, key_offset = _read_ssh_string(public_blob, key_offset)
+    algorithm, signature_offset = _read_ssh_string(signature_blob, 0)
+    raw_signature, signature_offset = _read_ssh_string(signature_blob, signature_offset)
+    try:
+        expected_public = bytes.fromhex(public_key_ed25519_hex)
+    except ValueError as exc:
+        raise PhaseBError("phase_b_approval_signature_invalid") from exc
+    if (
+        key_offset != len(public_blob)
+        or signature_offset != len(signature_blob)
+        or key_type != b"ssh-ed25519"
+        or algorithm != b"ssh-ed25519"
+        or public_bytes != expected_public
+        or len(public_bytes) != 32
+        or len(raw_signature) != 64
+        or observed_namespace != namespace.encode("ascii")
+        or reserved != b""
+        or hash_algorithm != b"sha512"
+    ):
+        raise PhaseBError("phase_b_approval_signature_invalid")
+    signed = (
+        b"SSHSIG"
+        + _ssh_string(observed_namespace)
+        + _ssh_string(reserved)
+        + _ssh_string(hash_algorithm)
+        + _ssh_string(hashlib.sha512(message).digest())
+    )
+    try:
+        Ed25519PublicKey.from_public_bytes(public_bytes).verify(
+            raw_signature,
+            signed,
+        )
+    except (InvalidSignature, ValueError) as exc:
+        raise PhaseBError("phase_b_approval_signature_invalid") from exc
+
+
 _APPROVAL_FIELDS = frozenset(
     {
         "schema",
+        "purpose",
+        "sequence",
+        "previous_approval_sha256",
         "plan_sha256",
+        "intent_sha256",
         "owner_subject_sha256",
         "approval_source_sha256",
+        "owner_public_key_ed25519_hex",
+        "owner_key_id",
+        "owner_public_key_file_sha256",
+        "source_authentication_sha256",
         "approved",
         "issued_at_unix",
         "expires_at_unix",
         "secret_material_recorded",
+        "signature_sshsig",
         "approval_sha256",
     }
 )
+
+_APPROVAL_SIGNATURE_FIELDS = _APPROVAL_FIELDS - {
+    "signature_sshsig",
+    "approval_sha256",
+}
+
+
+def phase_b_approval_signature_payload(value: Mapping[str, Any]) -> bytes:
+    if set(value) != _APPROVAL_FIELDS:
+        raise PhaseBError("phase_b_approval_invalid")
+    return _canonical_bytes(
+        {name: _json_copy(value[name]) for name in _APPROVAL_SIGNATURE_FIELDS}
+    )
 
 
 @dataclass(frozen=True)
@@ -2028,19 +2272,50 @@ class PhaseBApproval:
             code="phase_b_approval_invalid",
         )
         current = int(time.time()) if now_unix is None else now_unix
+        sequence = raw["sequence"]
+        previous = raw["previous_approval_sha256"]
+        purpose = raw["purpose"]
+        public_hex = raw["owner_public_key_ed25519_hex"]
+        signature = raw["signature_sshsig"]
         if (
             raw["schema"] != PHASE_B_APPROVAL_SCHEMA
+            or type(sequence) is not int
+            or sequence < 0
+            or purpose
+            != ("initial_apply" if sequence == 0 else "resume_incomplete")
+            or (sequence == 0 and previous is not None)
+            or (
+                sequence > 0
+                and (
+                    not isinstance(previous, str)
+                    or _SHA256_RE.fullmatch(previous) is None
+                )
+            )
             or raw["plan_sha256"] != plan.sha256
+            or raw["intent_sha256"] != plan.value["intent_sha256"]
             or raw["owner_subject_sha256"] != plan.owner_subject_sha256
+            or public_hex
+            != plan.value["owner_resume_public_key_ed25519_hex"]
+            or raw["owner_key_id"] != plan.value["owner_resume_key_id"]
+            or raw["owner_public_key_file_sha256"]
+            != plan.value["owner_resume_public_key_file_sha256"]
             or raw["approved"] is not True
             or type(raw["issued_at_unix"]) is not int
             or type(raw["expires_at_unix"]) is not int
             or not raw["issued_at_unix"] <= current < raw["expires_at_unix"]
             or raw["expires_at_unix"] - raw["issued_at_unix"] > 3600
             or raw["secret_material_recorded"] is not False
+            or not isinstance(signature, str)
         ):
             raise PhaseBError("phase_b_approval_invalid")
         _digest(raw["approval_source_sha256"], "phase_b_approval_invalid")
+        _digest(raw["source_authentication_sha256"], "phase_b_approval_invalid")
+        verify_phase_b_sshsig(
+            signature,
+            message=phase_b_approval_signature_payload(raw),
+            public_key_ed25519_hex=public_hex,
+            namespace=PHASE_B_APPROVAL_SSHSIG_NAMESPACE,
+        )
         _require_secret_free(raw)
         return cls(_json_copy(raw))
 
@@ -2048,8 +2323,213 @@ class PhaseBApproval:
     def sha256(self) -> str:
         return str(self.value["approval_sha256"])
 
+    @property
+    def sequence(self) -> int:
+        return int(self.value["sequence"])
+
     def to_mapping(self) -> dict[str, Any]:
         return _json_copy(self.value)
+
+
+_SOURCE_AUTH_FIELDS = frozenset(
+    {
+        "schema",
+        "authority_kind",
+        "purpose",
+        "sequence",
+        "previous_approval_sha256",
+        "plan_sha256",
+        "intent_sha256",
+        "owner_subject_sha256",
+        "approval_source_sha256",
+        "owner_key_id",
+        "requested_at_unix",
+        "expires_at_unix",
+        "nonce_sha256",
+        "signature_sshsig",
+        "receipt_sha256",
+    }
+)
+_SOURCE_AUTH_SIGNATURE_FIELDS = _SOURCE_AUTH_FIELDS - {
+    "signature_sshsig",
+    "receipt_sha256",
+}
+
+
+def phase_b_source_authentication_signature_payload(
+    value: Mapping[str, Any],
+) -> bytes:
+    if set(value) != _SOURCE_AUTH_FIELDS:
+        raise PhaseBError("phase_b_source_authentication_invalid")
+    return _canonical_bytes(
+        {
+            name: _json_copy(value[name])
+            for name in _SOURCE_AUTH_SIGNATURE_FIELDS
+        }
+    )
+
+
+def validate_phase_b_source_authentication(
+    value: Any,
+    *,
+    plan: PhaseBPlan,
+    approval: PhaseBApproval,
+) -> Mapping[str, Any]:
+    raw = validate_phase_b_pending_source_authentication(
+        value,
+        plan=plan,
+        expected_sequence=approval.sequence,
+        expected_previous_approval_sha256=approval.value[
+            "previous_approval_sha256"
+        ],
+        expected_purpose=str(approval.value["purpose"]),
+        expected_approval_source_sha256=str(
+            approval.value["approval_source_sha256"]
+        ),
+    )
+    if (
+        raw["purpose"] != approval.value["purpose"]
+        or raw["requested_at_unix"] != approval.value["issued_at_unix"]
+        or raw["expires_at_unix"] != approval.value["expires_at_unix"]
+        or approval.value["source_authentication_sha256"]
+        != raw["receipt_sha256"]
+    ):
+        raise PhaseBError("phase_b_source_authentication_invalid")
+    return raw
+
+
+def validate_phase_b_pending_source_authentication(
+    value: Any,
+    *,
+    plan: PhaseBPlan,
+    expected_sequence: int,
+    expected_previous_approval_sha256: str | None,
+    expected_purpose: str = "resume_incomplete",
+    expected_approval_source_sha256: str,
+) -> Mapping[str, Any]:
+    raw = _hashed_mapping(
+        value,
+        fields=_SOURCE_AUTH_FIELDS,
+        digest_field="receipt_sha256",
+        code="phase_b_source_authentication_invalid",
+    )
+    if (
+        raw["schema"] != PHASE_B_SOURCE_AUTH_SCHEMA
+        or raw["authority_kind"] != "skyvision_mac_ops_ed25519"
+        or expected_purpose not in {"initial_apply", "resume_incomplete"}
+        or raw["purpose"] != expected_purpose
+        or raw["sequence"] != expected_sequence
+        or raw["previous_approval_sha256"]
+        != expected_previous_approval_sha256
+        or raw["plan_sha256"] != plan.sha256
+        or raw["intent_sha256"] != plan.value["intent_sha256"]
+        or raw["owner_subject_sha256"] != plan.owner_subject_sha256
+        or raw["approval_source_sha256"]
+        != expected_approval_source_sha256
+        or raw["owner_key_id"] != plan.value["owner_resume_key_id"]
+        or type(raw["requested_at_unix"]) is not int
+        or type(raw["expires_at_unix"]) is not int
+        or not 1 <= raw["expires_at_unix"] - raw["requested_at_unix"] <= 3600
+    ):
+        raise PhaseBError("phase_b_source_authentication_invalid")
+    _digest(raw["nonce_sha256"], "phase_b_source_authentication_invalid")
+    verify_phase_b_sshsig(
+        raw["signature_sshsig"],
+        message=phase_b_source_authentication_signature_payload(raw),
+        public_key_ed25519_hex=plan.value[
+            "owner_resume_public_key_ed25519_hex"
+        ],
+        namespace=PHASE_B_SOURCE_AUTH_SSHSIG_NAMESPACE,
+    )
+    _require_secret_free(raw)
+    return _json_copy(raw)
+
+
+def validate_phase_b_approval_chain(
+    values: Sequence[Mapping[str, Any]],
+    *,
+    plan: PhaseBPlan,
+    now_unix: int | None = None,
+    require_fresh_head: bool = False,
+) -> tuple[PhaseBApproval, ...]:
+    """Validate one contiguous, same-authority approval chain.
+
+    Historical members are validated at their issue time.  Freshness is a
+    property of the current head only and is requested explicitly by the
+    mutation boundary; durable replay never silently upgrades old approval.
+    """
+
+    if (
+        not isinstance(values, Sequence)
+        or isinstance(values, (str, bytes, bytearray, memoryview))
+        or not values
+        or type(require_fresh_head) is not bool
+    ):
+        raise PhaseBError("phase_b_approval_chain_invalid")
+    result: list[PhaseBApproval] = []
+    previous: PhaseBApproval | None = None
+    for sequence, value in enumerate(values):
+        if not isinstance(value, Mapping) or type(value.get("issued_at_unix")) is not int:
+            raise PhaseBError("phase_b_approval_chain_invalid")
+        approval = PhaseBApproval.from_mapping(
+            value,
+            plan=plan,
+            now_unix=int(value["issued_at_unix"]),
+        )
+        if (
+            approval.sequence != sequence
+            or approval.value["previous_approval_sha256"]
+            != (None if previous is None else previous.sha256)
+            or (
+                previous is not None
+                and (
+                    approval.value["intent_sha256"]
+                    != previous.value["intent_sha256"]
+                    or approval.value["owner_subject_sha256"]
+                    != previous.value["owner_subject_sha256"]
+                    or approval.value["approval_source_sha256"]
+                    != previous.value["approval_source_sha256"]
+                    or approval.value["owner_public_key_ed25519_hex"]
+                    != previous.value["owner_public_key_ed25519_hex"]
+                    or approval.value["owner_key_id"]
+                    != previous.value["owner_key_id"]
+                    or approval.value["owner_public_key_file_sha256"]
+                    != previous.value["owner_public_key_file_sha256"]
+                    or approval.value["issued_at_unix"]
+                    <= previous.value["issued_at_unix"]
+                )
+            )
+        ):
+            raise PhaseBError("phase_b_approval_chain_invalid")
+        result.append(approval)
+        previous = approval
+    assert previous is not None
+    if require_fresh_head:
+        current = int(time.time()) if now_unix is None else now_unix
+        PhaseBApproval.from_mapping(
+            previous.to_mapping(),
+            plan=plan,
+            now_unix=current,
+        )
+    return tuple(result)
+
+
+def _active_approval_for_time(
+    approvals: Sequence[PhaseBApproval],
+    *,
+    recorded_at_unix: int,
+) -> PhaseBApproval:
+    candidates = [
+        approval
+        for approval in approvals
+        if approval.value["issued_at_unix"] <= recorded_at_unix
+    ]
+    if not candidates:
+        raise PhaseBError("phase_b_approval_invalid")
+    active = candidates[-1]
+    if recorded_at_unix >= active.value["expires_at_unix"]:
+        raise PhaseBError("phase_b_approval_invalid")
+    return active
 
 
 def _validate_operation_row(
@@ -2076,6 +2556,84 @@ def _validate_operation_row(
     if value[2] == "DONE" and value[4] is not True:
         raise PhaseBError("phase_b_cloud_operation_failed")
     return list(value)
+
+
+_CLOUD_USER_RESOURCE_FIELDS = frozenset(
+    {
+        "databaseRoles",
+        "etag",
+        "host",
+        "instance",
+        "name",
+        "project",
+        "type",
+    }
+)
+
+
+def _validate_cloud_user_resource(value: Any) -> dict[str, Any]:
+    """Validate one complete, secret-free stable Cloud SQL user projection."""
+
+    raw = _strict_mapping(
+        value,
+        _CLOUD_USER_RESOURCE_FIELDS,
+        "phase_b_cloud_user_resource_invalid",
+    )
+    roles = raw["databaseRoles"]
+    etag = raw["etag"]
+    if (
+        not isinstance(roles, list)
+        or roles != sorted(set(roles))
+        or any(not isinstance(role, str) or not role for role in roles)
+        or not isinstance(etag, str)
+        or not 1 <= len(etag) <= 1024
+        or any(ord(character) < 0x21 or ord(character) > 0x7E for character in etag)
+        or raw["host"] != ""
+        or raw["instance"] != SQL_INSTANCE
+        or not isinstance(raw["name"], str)
+        or not raw["name"]
+        or raw["project"] != PROJECT
+        or raw["type"] != "BUILT_IN"
+    ):
+        raise PhaseBError("phase_b_cloud_user_resource_invalid")
+    _require_secret_free(raw)
+    return raw
+
+
+def _validate_terminal_cloud_inventory(
+    value: Any,
+    *,
+    bootstrap_resource: Mapping[str, Any],
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        raise PhaseBError("phase_b_cloud_user_inventory_invalid")
+    resources = [_validate_cloud_user_resource(item) for item in value]
+    if resources != sorted(resources, key=lambda item: item["name"]):
+        raise PhaseBError("phase_b_cloud_user_inventory_invalid")
+    by_name = {item["name"]: item for item in resources}
+    expected_names = {SQL_USER, "postgres", CANARY_BOOTSTRAP_LOGIN}
+    if len(by_name) != len(resources) or set(by_name) != expected_names:
+        raise PhaseBError("phase_b_cloud_user_inventory_invalid")
+    expected_bootstrap = _validate_bootstrap_resource(bootstrap_resource)
+    if by_name[CANARY_BOOTSTRAP_LOGIN] != expected_bootstrap:
+        raise PhaseBError("phase_b_cloud_user_inventory_invalid")
+    for name in (SQL_USER, "postgres"):
+        if by_name[name]["databaseRoles"] != []:
+            raise PhaseBError("phase_b_cloud_user_inventory_invalid")
+    return resources
+
+
+def _validate_terminal_cloud_operations(value: Any) -> list[list[Any]]:
+    if not isinstance(value, list):
+        raise PhaseBError("phase_b_cloud_operation_horizon_invalid")
+    rows = [_validate_operation_row(row) for row in value]
+    if (
+        rows != sorted(rows, key=lambda row: row[0])
+        or len({row[0] for row in rows}) != len(rows)
+        or any(row[2] != "DONE" or row[4] is not True for row in rows)
+    ):
+        raise PhaseBError("phase_b_cloud_operation_horizon_invalid")
+    return rows
 
 
 def _validate_temporary_admin_authority(
@@ -2204,7 +2762,7 @@ def _validate_bootstrap_authority(
     return raw
 
 
-_ROLE_RECEIPT_FIELDS = frozenset(
+_ROLE_RECEIPT_BODY_FIELDS = frozenset(
     {
         "schema",
         "phase",
@@ -2226,10 +2784,54 @@ _ROLE_RECEIPT_FIELDS = frozenset(
         "receipt_sha256",
     }
 )
+_ROLE_RECEIPT_FIELDS = frozenset(
+    {*_ROLE_RECEIPT_BODY_FIELDS, "unsigned_receipt_jsonb_text"}
+)
+_ROLE_RECEIPT_SQL_ENVELOPE_FIELDS = frozenset(
+    {"unsigned_receipt_jsonb_text", "receipt"}
+)
 
 
 def _validate_role_receipt(value: Any, *, plan: PhaseBPlan) -> dict[str, Any]:
-    raw = _strict_mapping(value, _ROLE_RECEIPT_FIELDS, "phase_b_role_receipt_invalid")
+    if not isinstance(value, Mapping):
+        raise PhaseBError("phase_b_role_receipt_invalid")
+    if set(value) == _ROLE_RECEIPT_SQL_ENVELOPE_FIELDS:
+        envelope = _strict_mapping(
+            value,
+            _ROLE_RECEIPT_SQL_ENVELOPE_FIELDS,
+            "phase_b_role_receipt_invalid",
+        )
+        body = _strict_mapping(
+            envelope["receipt"],
+            _ROLE_RECEIPT_BODY_FIELDS,
+            "phase_b_role_receipt_invalid",
+        )
+        raw = {
+            **body,
+            "unsigned_receipt_jsonb_text": envelope[
+                "unsigned_receipt_jsonb_text"
+            ],
+        }
+    else:
+        raw = _strict_mapping(
+            value,
+            _ROLE_RECEIPT_FIELDS,
+            "phase_b_role_receipt_invalid",
+        )
+        body = {
+            name: item
+            for name, item in raw.items()
+            if name != "unsigned_receipt_jsonb_text"
+        }
+    unsigned = {
+        name: item for name, item in body.items() if name != "receipt_sha256"
+    }
+    _validate_exact_unsigned_json_text(
+        unsigned_text=raw["unsigned_receipt_jsonb_text"],
+        unsigned_value=unsigned,
+        digest=body["receipt_sha256"],
+        code="phase_b_role_receipt_invalid",
+    )
     if (
         raw["schema"] != PHASE_B_ROLE_RECEIPT_SCHEMA
         or raw["phase"] != "phase_b_role_and_connect"
@@ -2282,7 +2884,6 @@ def _validate_role_receipt(value: Any, *, plan: PhaseBPlan) -> dict[str, Any]:
         }
     if raw["temporary_auto_membership"] != expected_bridge:
         raise PhaseBError("phase_b_role_receipt_invalid")
-    _digest(raw["receipt_sha256"], "phase_b_role_receipt_invalid")
     _require_secret_free(raw)
     return _json_copy(raw)
 
@@ -2936,12 +3537,88 @@ _TERMINAL_OBSERVATION_FIELDS = frozenset(
     }
 )
 
+_READINESS_RUNTIME_CLOUD_FIELDS = frozenset(
+    {
+        "project",
+        "instance",
+        "instance_projection",
+        "instance_projection_sha256",
+        "user_state_authority",
+        "bootstrap_role_present",
+        "bootstrap_login_present",
+        "temporary_admin_absent",
+        "temporary_admin_username_sha256",
+        "temporary_admin_users",
+        "user_operations_quiescent",
+        "relevant_user_operations",
+        "operation_ledger_sha256",
+        "observed_at_unix",
+    }
+)
+_READINESS_INSTANCE_PROJECTION = {
+    "backendType": "SECOND_GEN",
+    "connectionName": (
+        "adventico-ai-platform:europe-west3:muncho-canary-pg18-v2"
+    ),
+    "databaseVersion": "POSTGRES_18",
+    "ipAddresses": [{"ipAddress": "10.91.0.3", "type": "PRIVATE"}],
+    "name": SQL_INSTANCE,
+    "project": PROJECT,
+    "region": "europe-west3",
+    "state": "RUNNABLE",
+}
+_READINESS_INSTANCE_PROJECTION_SHA256 = (
+    "c7979c4b0a97724a0ac6ac3217a67977a9584622546143aef093b146b7061139"
+)
+
+
+def _validate_readiness_runtime_cloud(
+    value: Any,
+    *,
+    plan: PhaseBPlan,
+    observed_at_unix: int,
+) -> dict[str, Any]:
+    raw = _strict_mapping(
+        value,
+        _READINESS_RUNTIME_CLOUD_FIELDS,
+        "phase_b_readiness_cloud_invalid",
+    )
+    projection = raw["instance_projection"]
+    operations = _validate_terminal_cloud_operations(
+        raw["relevant_user_operations"]
+    )
+    if (
+        raw["project"] != PROJECT
+        or raw["instance"] != SQL_INSTANCE
+        or projection != _READINESS_INSTANCE_PROJECTION
+        or raw["instance_projection_sha256"]
+        != _READINESS_INSTANCE_PROJECTION_SHA256
+        or raw["instance_projection_sha256"]
+        != _sha256_bytes(_canonical_bytes(projection) + b"\n")
+        or raw["user_state_authority"] != "postgres_pg_roles"
+        or raw["bootstrap_role_present"] is not True
+        or raw["bootstrap_login_present"] is not True
+        or raw["temporary_admin_absent"] is not True
+        or raw["temporary_admin_username_sha256"]
+        != _sha256_bytes(plan.temporary_admin_username.encode("ascii"))
+        or raw["temporary_admin_users"] != []
+        or raw["user_operations_quiescent"] is not True
+        or raw["operation_ledger_sha256"] != _sha256_json(operations)
+        or raw["observed_at_unix"] != observed_at_unix
+        or any(row[2] != "DONE" or row[4] is not True for row in operations)
+    ):
+        raise PhaseBError("phase_b_readiness_cloud_invalid")
+    return raw
+
 
 def _validate_terminal_observation(
     value: Any,
     *,
     plan: PhaseBPlan,
     execution_preflight_session_sha256: str | None,
+    services_release_revision: str | None = None,
+    expected_bootstrap_authority: Mapping[str, Any] | None = None,
+    expected_absence_receipt: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     raw = _hashed_mapping(
         value,
@@ -3005,33 +3682,115 @@ def _validate_terminal_observation(
         raise PhaseBError("phase_b_terminal_observation_invalid")
     _digest(raw["session_identity_sha256"], "phase_b_terminal_observation_invalid")
     _require_same_credential(plan.preflight.value["credential"], observation.value["credential"])
-    _validate_services(raw["services"], release_revision=plan.revision)
-    cloud = _strict_mapping(
-        raw["cloud_sql"],
-        frozenset(
-            {
-                "project",
-                "instance",
-                "bootstrap_resource",
-                "temporary_admin_absent",
-                "temporary_admin_username_sha256",
-                "user_operations_quiescent",
-                "operation_ledger_sha256",
-            }
+    services = _validate_services(
+        raw["services"],
+        release_revision=(
+            plan.revision
+            if services_release_revision is None
+            else _revision(services_release_revision)
         ),
-        "phase_b_terminal_cloud_invalid",
     )
-    if (
-        cloud["project"] != PROJECT
-        or cloud["instance"] != SQL_INSTANCE
-        or cloud["temporary_admin_absent"] is not True
-        or cloud["temporary_admin_username_sha256"]
-        != _sha256_bytes(plan.temporary_admin_username.encode("ascii"))
-        or cloud["user_operations_quiescent"] is not True
-    ):
-        raise PhaseBError("phase_b_terminal_cloud_invalid")
-    _digest(cloud["operation_ledger_sha256"], "phase_b_terminal_cloud_invalid")
-    _validate_bootstrap_resource(cloud["bootstrap_resource"])
+    runtime_cloud = set(raw["cloud_sql"]) == _READINESS_RUNTIME_CLOUD_FIELDS
+    bootstrap_resource: Mapping[str, Any] | None = None
+    if runtime_cloud:
+        if (
+            services_release_revision is None
+            or expected_bootstrap_authority is not None
+            or expected_absence_receipt is not None
+        ):
+            raise PhaseBError("phase_b_terminal_cloud_invalid")
+        cloud = _validate_readiness_runtime_cloud(
+            raw["cloud_sql"],
+            plan=plan,
+            observed_at_unix=raw["observed_at_unix"],
+        )
+        operations = _validate_terminal_cloud_operations(
+            cloud["relevant_user_operations"]
+        )
+    else:
+        cloud = _strict_mapping(
+            raw["cloud_sql"],
+            frozenset(
+                {
+                    "project",
+                    "instance",
+                    "bootstrap_resource",
+                    "temporary_admin_absent",
+                    "temporary_admin_username_sha256",
+                    "user_inventory",
+                    "user_inventory_sha256",
+                    "user_operations_quiescent",
+                    "relevant_user_operations",
+                    "operation_ledger_sha256",
+                    "observed_at_unix",
+                }
+            ),
+            "phase_b_terminal_cloud_invalid",
+        )
+        if (
+            cloud["project"] != PROJECT
+            or cloud["instance"] != SQL_INSTANCE
+            or cloud["temporary_admin_absent"] is not True
+            or cloud["temporary_admin_username_sha256"]
+            != _sha256_bytes(plan.temporary_admin_username.encode("ascii"))
+            or cloud["user_operations_quiescent"] is not True
+            or type(cloud["observed_at_unix"]) is not int
+            or cloud["observed_at_unix"] <= 0
+            or cloud["observed_at_unix"] != raw["observed_at_unix"]
+            or services["observed_at_unix"] != raw["observed_at_unix"]
+        ):
+            raise PhaseBError("phase_b_terminal_cloud_invalid")
+        bootstrap_resource = _validate_bootstrap_resource(
+            cloud["bootstrap_resource"]
+        )
+        inventory = _validate_terminal_cloud_inventory(
+            cloud["user_inventory"],
+            bootstrap_resource=bootstrap_resource,
+        )
+        operations = _validate_terminal_cloud_operations(
+            cloud["relevant_user_operations"]
+        )
+        if (
+            cloud["user_inventory_sha256"] != _sha256_json(inventory)
+            or cloud["operation_ledger_sha256"] != _sha256_json(operations)
+        ):
+            raise PhaseBError("phase_b_terminal_cloud_invalid")
+    if expected_bootstrap_authority is not None:
+        if bootstrap_resource is None:
+            raise PhaseBError("phase_b_terminal_bootstrap_resource_drifted")
+        authority = _validate_bootstrap_authority(
+            expected_bootstrap_authority,
+            plan=plan,
+        )
+        if (
+            _sha256_json(bootstrap_resource)
+            != authority["resource_projection_sha256"]
+            or bootstrap_resource["etag"] != authority["etag"]
+        ):
+            raise PhaseBError("phase_b_terminal_bootstrap_resource_drifted")
+        operation_by_name = {row[0]: row for row in operations}
+        bootstrap_operation = operation_by_name.get(authority["operation_name"])
+        if bootstrap_operation != [
+            authority["operation_name"],
+            authority["operation_type"],
+            "DONE",
+            plan.owner_subject_sha256,
+            True,
+        ]:
+            raise PhaseBError("phase_b_terminal_bootstrap_operation_missing")
+    if expected_absence_receipt is not None:
+        absence = _strict_mapping(
+            expected_absence_receipt,
+            _ABSENCE_FIELDS,
+            "phase_b_terminal_absence_receipt_drifted",
+        )
+        absence_rows = [
+            _validate_operation_row(row)
+            for row in absence["terminal_user_operations"]
+        ]
+        operation_by_name = {row[0]: row for row in operations}
+        if any(operation_by_name.get(row[0]) != row for row in absence_rows):
+            raise PhaseBError("phase_b_terminal_absence_receipt_drifted")
     if terminal_database_state["bootstrap_login_present"] is not True:
         raise PhaseBError("phase_b_terminal_cloud_database_mismatch")
     _require_secret_free(raw)
@@ -3070,6 +3829,7 @@ _JOURNAL_FIELDS = frozenset(
         "schema",
         "sequence",
         "plan_sha256",
+        "approval_sha256",
         "event",
         "idempotency_key",
         "previous_entry_sha256",
@@ -3106,6 +3866,7 @@ class PhaseBJournalEntry:
             raw["schema"] != PHASE_B_JOURNAL_SCHEMA
             or raw["sequence"] != expected_sequence
             or raw["plan_sha256"] != plan.sha256
+            or _SHA256_RE.fullmatch(str(raw["approval_sha256"])) is None
             or raw["event"] not in JOURNAL_EVENTS
             or not isinstance(raw["idempotency_key"], str)
             or not raw["idempotency_key"]
@@ -3140,8 +3901,14 @@ class AppendOnlyPhaseBJournal:
     def __init__(self, root: Path) -> None:
         if not isinstance(root, Path) or not root.is_absolute():
             raise PhaseBError("phase_b_journal_root_invalid")
-        self.root = root
+        try:
+            self.root = root.parent.resolve(strict=True) / root.name
+        except OSError as exc:
+            raise PhaseBError("phase_b_journal_root_invalid") from exc
         self._lock_depth = 0
+        self._active_plan_sha256: str | None = None
+        self._active_root_fd: int | None = None
+        self._active_plan_fd: int | None = None
 
     def _plan_root(self, plan: PhaseBPlan) -> Path:
         return self.root / plan.sha256
@@ -3156,204 +3923,315 @@ class AppendOnlyPhaseBJournal:
         return self._plan_root(plan) / ".lock"
 
     @staticmethod
-    def _ensure_directory(path: Path) -> None:
+    def _directory_flags() -> int:
+        return (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+
+    @staticmethod
+    def _trusted_directory_status(status: os.stat_result) -> bool:
+        return (
+            stat.S_ISDIR(status.st_mode)
+            and not stat.S_ISLNK(status.st_mode)
+            and stat.S_IMODE(status.st_mode) == _JOURNAL_MODE
+            and status.st_uid == _effective_uid()
+            and status.st_gid == _effective_gid()
+        )
+
+    @classmethod
+    def _open_absolute_parent(cls, path: Path) -> tuple[int, str]:
+        """Open every existing parent component without following symlinks."""
+
+        parts = path.parts
+        if not path.is_absolute() or len(parts) < 2 or not path.name:
+            raise PhaseBError("phase_b_journal_root_invalid")
+        try:
+            descriptor = os.open(parts[0], cls._directory_flags())
+            for component in parts[1:-1]:
+                child = os.open(
+                    component,
+                    cls._directory_flags(),
+                    dir_fd=descriptor,
+                )
+                status = os.fstat(child)
+                if not stat.S_ISDIR(status.st_mode):
+                    os.close(child)
+                    raise PhaseBError("phase_b_journal_directory_untrusted")
+                os.close(descriptor)
+                descriptor = child
+        except PhaseBError:
+            try:
+                os.close(descriptor)
+            except (OSError, UnboundLocalError):
+                pass
+            raise
+        except OSError as exc:
+            try:
+                os.close(descriptor)
+            except (OSError, UnboundLocalError):
+                pass
+            raise PhaseBError("phase_b_journal_unavailable") from exc
+        return descriptor, path.name
+
+    @classmethod
+    def _open_child_directory(
+        cls,
+        parent_fd: int,
+        name: str,
+        *,
+        missing_ok: bool = False,
+    ) -> int | None:
+        descriptor: int | None = None
+        observed = False
+        try:
+            before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            observed = True
+            descriptor = os.open(
+                name,
+                cls._directory_flags(),
+                dir_fd=parent_fd,
+            )
+            opened = os.fstat(descriptor)
+            after = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            if descriptor is not None:
+                os.close(descriptor)
+            if missing_ok and not observed:
+                return None
+            raise PhaseBError("phase_b_journal_unavailable") from None
+        except OSError as exc:
+            if descriptor is not None:
+                os.close(descriptor)
+            raise PhaseBError("phase_b_journal_unavailable") from exc
+        assert descriptor is not None
+
+        def identity(value: os.stat_result) -> tuple[int, ...]:
+            return (
+                value.st_dev,
+                value.st_ino,
+                value.st_mode,
+                value.st_uid,
+                value.st_gid,
+            )
+
+        if (
+            identity(before) != identity(opened)
+            or identity(opened) != identity(after)
+            or not cls._trusted_directory_status(opened)
+        ):
+            os.close(descriptor)
+            raise PhaseBError("phase_b_journal_directory_untrusted")
+        return descriptor
+
+    @classmethod
+    def _ensure_child_directory(cls, parent_fd: int, name: str) -> int:
         created = False
         try:
-            path.mkdir(mode=_JOURNAL_MODE, parents=True, exist_ok=False)
+            os.mkdir(name, _JOURNAL_MODE, dir_fd=parent_fd)
             created = True
         except FileExistsError:
             pass
         except OSError as exc:
             raise PhaseBError("phase_b_journal_unavailable") from exc
+        if created:
+            try:
+                descriptor = os.open(
+                    name,
+                    cls._directory_flags(),
+                    dir_fd=parent_fd,
+                )
+            except OSError as exc:
+                raise PhaseBError("phase_b_journal_unavailable") from exc
+        else:
+            opened = cls._open_child_directory(parent_fd, name)
+            assert opened is not None
+            descriptor = opened
         try:
-            status = path.lstat()
+            status = os.fstat(descriptor)
             if (
                 created
                 and status.st_uid == _effective_uid()
                 and status.st_gid != _effective_gid()
             ):
-                os.chown(path, -1, _effective_gid(), follow_symlinks=False)
-                status = path.lstat()
+                os.fchown(descriptor, -1, _effective_gid())
+                status = os.fstat(descriptor)
+            if not cls._trusted_directory_status(status):
+                raise PhaseBError("phase_b_journal_directory_untrusted")
+            # Always retry both durability barriers.  If a previous mkdir
+            # succeeded but its parent fsync failed, seeing FileExistsError on
+            # retry must not skip the missing durability proof.
+            os.fsync(descriptor)
+            os.fsync(parent_fd)
+        except PhaseBError:
+            os.close(descriptor)
+            raise
         except OSError as exc:
+            os.close(descriptor)
             raise PhaseBError("phase_b_journal_unavailable") from exc
-        if (
-            stat.S_ISLNK(status.st_mode)
-            or not stat.S_ISDIR(status.st_mode)
-            or stat.S_IMODE(status.st_mode) != _JOURNAL_MODE
-            or status.st_uid != _effective_uid()
-            or status.st_gid != _effective_gid()
-        ):
-            raise PhaseBError("phase_b_journal_directory_untrusted")
+        return descriptor
+
+    def _open_root_handle(self, *, create: bool) -> int | None:
+        parent_fd, name = self._open_absolute_parent(self.root)
+        try:
+            if create:
+                return self._ensure_child_directory(parent_fd, name)
+            return self._open_child_directory(parent_fd, name, missing_ok=True)
+        finally:
+            os.close(parent_fd)
 
     @staticmethod
-    def _fsync_directory(path: Path) -> None:
-        descriptor = os.open(
-            path,
-            os.O_RDONLY
-            | getattr(os, "O_DIRECTORY", 0)
+    def _open_lock_at(plan_fd: int, *, create: bool) -> int:
+        flags = (
+            (os.O_RDWR if create else os.O_RDONLY)
             | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
+            | getattr(os, "O_NOFOLLOW", 0)
         )
+        if create:
+            flags |= os.O_CREAT
+        existed = True
         try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-
-    @contextmanager
-    def lock(self, plan: PhaseBPlan) -> Iterator[None]:
-        if fcntl is None:
-            raise PhaseBError("phase_b_posix_lock_unavailable")
-        self._ensure_directory(self.root)
-        self._ensure_directory(self._plan_root(plan))
-        path = self._lock_path(plan)
-        lock_existed = False
-        try:
-            path.lstat()
-            lock_existed = True
+            os.stat(".lock", dir_fd=plan_fd, follow_symlinks=False)
         except FileNotFoundError:
-            pass
+            existed = False
         try:
             descriptor = os.open(
-                path,
-                os.O_RDWR
-                | os.O_CREAT
-                | getattr(os, "O_CLOEXEC", 0)
-                | getattr(os, "O_NOFOLLOW", 0),
+                ".lock",
+                flags,
                 _JOURNAL_FILE_MODE,
+                dir_fd=plan_fd,
             )
-        except OSError as exc:
-            raise PhaseBError("phase_b_journal_lock_untrusted") from exc
-        try:
             status = os.fstat(descriptor)
             if (
-                not lock_existed
+                create
+                and not existed
                 and status.st_uid == _effective_uid()
                 and status.st_gid != _effective_gid()
             ):
                 os.fchown(descriptor, -1, _effective_gid())
                 status = os.fstat(descriptor)
-            if (
-                not stat.S_ISREG(status.st_mode)
-                or stat.S_IMODE(status.st_mode) != _JOURNAL_FILE_MODE
-                or status.st_nlink != 1
-                or status.st_uid != _effective_uid()
-                or status.st_gid != _effective_gid()
-            ):
-                raise PhaseBError("phase_b_journal_lock_untrusted")
-            fcntl.flock(descriptor, fcntl.LOCK_EX)
-            self._lock_depth += 1
-            yield
-        finally:
+            after = os.stat(".lock", dir_fd=plan_fd, follow_symlinks=False)
+        except OSError as exc:
             try:
-                self._lock_depth = max(0, self._lock_depth - 1)
-                fcntl.flock(descriptor, fcntl.LOCK_UN)
+                os.close(descriptor)
+            except (OSError, UnboundLocalError):
+                pass
+            raise PhaseBError("phase_b_journal_lock_untrusted") from exc
+        if (
+            (status.st_dev, status.st_ino)
+            != (after.st_dev, after.st_ino)
+            or not stat.S_ISREG(status.st_mode)
+            or stat.S_IMODE(status.st_mode) != _JOURNAL_FILE_MODE
+            or status.st_nlink != 1
+            or status.st_uid != _effective_uid()
+            or status.st_gid != _effective_gid()
+        ):
+            os.close(descriptor)
+            raise PhaseBError("phase_b_journal_lock_untrusted")
+        if create:
+            try:
+                os.fsync(descriptor)
+                os.fsync(plan_fd)
+            except OSError as exc:
+                os.close(descriptor)
+                raise PhaseBError("phase_b_journal_lock_untrusted") from exc
+        return descriptor
+
+    @staticmethod
+    def _read_canonical_entry_at(
+        directory_fd: int,
+        name: str,
+        *,
+        expected_link_count: int,
+    ) -> Mapping[str, Any]:
+        try:
+            before = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+            descriptor = os.open(
+                name,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory_fd,
+            )
+            try:
+                opened = os.fstat(descriptor)
+                chunks = bytearray()
+                while len(chunks) <= _MAX_JSON_BYTES:
+                    chunk = os.read(
+                        descriptor,
+                        min(1024 * 1024, _MAX_JSON_BYTES + 1 - len(chunks)),
+                    )
+                    if not chunk:
+                        break
+                    chunks.extend(chunk)
+                payload = bytes(chunks)
+                after = os.fstat(descriptor)
             finally:
                 os.close(descriptor)
+        except OSError as exc:
+            raise PhaseBError("phase_b_journal_read_failed") from exc
 
-    def load(self, plan: PhaseBPlan) -> list[PhaseBJournalEntry]:
-        if self.root.exists():
-            self._ensure_directory(self.root)
-        if self._plan_root(plan).exists():
-            self._ensure_directory(self._plan_root(plan))
-        entries_root = self._entries_root(plan)
-        if not entries_root.exists():
-            return []
-        self._ensure_directory(entries_root)
-        paths = sorted(entries_root.iterdir(), key=lambda path: path.name)
-        if any(re.fullmatch(r"[0-9]{8}\.json", path.name) is None for path in paths):
+        def identity(value: os.stat_result) -> tuple[int, ...]:
+            return (
+                value.st_dev,
+                value.st_ino,
+                value.st_mode,
+                value.st_uid,
+                value.st_gid,
+                value.st_size,
+                value.st_mtime_ns,
+                value.st_ctime_ns,
+                value.st_nlink,
+            )
+
+        if (
+            identity(before) != identity(opened)
+            or identity(opened) != identity(after)
+            or not stat.S_ISREG(opened.st_mode)
+            or stat.S_IMODE(opened.st_mode) != _JOURNAL_FILE_MODE
+            or opened.st_nlink != expected_link_count
+            or opened.st_uid != _effective_uid()
+            or opened.st_gid != _effective_gid()
+            or not payload
+            or len(payload) > _MAX_JSON_BYTES
+        ):
+            raise PhaseBError("phase_b_journal_file_untrusted")
+        try:
+            decoded = json.loads(payload.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise PhaseBError("phase_b_journal_json_invalid") from exc
+        if not isinstance(decoded, Mapping) or _canonical_bytes(decoded) != payload:
+            raise PhaseBError("phase_b_journal_not_canonical")
+        return _json_copy(decoded)
+
+    def _load_entries_from_fd(
+        self,
+        plan: PhaseBPlan,
+        entries_fd: int,
+        *,
+        linked_sequence: int | None = None,
+    ) -> list[PhaseBJournalEntry]:
+        try:
+            names = sorted(os.listdir(entries_fd))
+        except OSError as exc:
+            raise PhaseBError("phase_b_journal_unavailable") from exc
+        if any(re.fullmatch(r"[0-9]{8}\.json", name) is None for name in names):
             raise PhaseBError("phase_b_journal_path_invalid")
         entries: list[PhaseBJournalEntry] = []
         previous: str | None = None
-        seen_keys: dict[str, PhaseBJournalEntry] = {}
-        for sequence, path in enumerate(paths):
-            if path.name != f"{sequence:08d}.json":
+        seen_keys: set[str] = set()
+        for sequence, name in enumerate(names):
+            if name != f"{sequence:08d}.json":
                 raise PhaseBError("phase_b_journal_sequence_invalid")
-            try:
-                before = path.lstat()
-                descriptor = os.open(
-                    path,
-                    os.O_RDONLY
-                    | getattr(os, "O_CLOEXEC", 0)
-                    | getattr(os, "O_NOFOLLOW", 0),
-                )
-                try:
-                    opened = os.fstat(descriptor)
-                    chunks = bytearray()
-                    while len(chunks) <= _MAX_JSON_BYTES:
-                        chunk = os.read(
-                            descriptor,
-                            min(1024 * 1024, _MAX_JSON_BYTES + 1 - len(chunks)),
-                        )
-                        if not chunk:
-                            break
-                        chunks.extend(chunk)
-                    raw = bytes(chunks)
-                    after = os.fstat(descriptor)
-                finally:
-                    os.close(descriptor)
-            except OSError as exc:
-                raise PhaseBError("phase_b_journal_read_failed") from exc
-            if (
-                (
-                    before.st_dev,
-                    before.st_ino,
-                    before.st_mode,
-                    before.st_uid,
-                    before.st_gid,
-                    before.st_size,
-                    before.st_mtime_ns,
-                    before.st_ctime_ns,
-                    before.st_nlink,
-                )
-                != (
-                    opened.st_dev,
-                    opened.st_ino,
-                    opened.st_mode,
-                    opened.st_uid,
-                    opened.st_gid,
-                    opened.st_size,
-                    opened.st_mtime_ns,
-                    opened.st_ctime_ns,
-                    opened.st_nlink,
-                )
-                or (
-                    opened.st_dev,
-                    opened.st_ino,
-                    opened.st_mode,
-                    opened.st_uid,
-                    opened.st_gid,
-                    opened.st_size,
-                    opened.st_mtime_ns,
-                    opened.st_ctime_ns,
-                    opened.st_nlink,
-                )
-                != (
-                    after.st_dev,
-                    after.st_ino,
-                    after.st_mode,
-                    after.st_uid,
-                    after.st_gid,
-                    after.st_size,
-                    after.st_mtime_ns,
-                    after.st_ctime_ns,
-                    after.st_nlink,
-                )
-                or stat.S_ISLNK(before.st_mode)
-                or not stat.S_ISREG(before.st_mode)
-                or stat.S_IMODE(before.st_mode) != _JOURNAL_FILE_MODE
-                or before.st_nlink != 1
-                or before.st_uid != _effective_uid()
-                or before.st_gid != _effective_gid()
-                or not raw
-                or len(raw) > _MAX_JSON_BYTES
-            ):
-                raise PhaseBError("phase_b_journal_file_untrusted")
-            try:
-                decoded = json.loads(raw.decode("utf-8"))
-            except (UnicodeError, json.JSONDecodeError) as exc:
-                raise PhaseBError("phase_b_journal_json_invalid") from exc
-            if _canonical_bytes(decoded) != raw:
-                raise PhaseBError("phase_b_journal_not_canonical")
+            decoded = self._read_canonical_entry_at(
+                entries_fd,
+                name,
+                expected_link_count=(
+                    2 if linked_sequence == sequence else 1
+                ),
+            )
             entry = PhaseBJournalEntry.from_mapping(
                 decoded,
                 plan=plan,
@@ -3365,11 +4243,218 @@ class AppendOnlyPhaseBJournal:
                 raise PhaseBError("phase_b_journal_idempotency_key_reused")
             if entries and entries[-1].event == "terminal":
                 raise PhaseBError("phase_b_journal_after_terminal")
-            seen_keys[key] = entry
+            seen_keys.add(key)
             entries.append(entry)
             previous = entry.sha256
         self._validate_event_prerequisites(entries)
         return entries
+
+    def _recover_staging_locked(self, plan: PhaseBPlan, plan_fd: int) -> None:
+        if self._lock_depth != 1:
+            raise PhaseBError("phase_b_journal_lock_required")
+        staging_fd = self._open_child_directory(
+            plan_fd,
+            "staging",
+            missing_ok=True,
+        )
+        if staging_fd is None:
+            return
+        entries_fd = self._open_child_directory(
+            plan_fd,
+            "entries",
+            missing_ok=True,
+        )
+        try:
+            stage_names = sorted(os.listdir(staging_fd))
+            if not stage_names:
+                return
+            if len(stage_names) != 1 or entries_fd is None:
+                raise PhaseBError("phase_b_journal_staging_conflict")
+            stage_name = stage_names[0]
+            match = re.fullmatch(
+                r"([0-9]{8})\.([0-9a-f]{32})\.stage",
+                stage_name,
+            )
+            if match is None:
+                raise PhaseBError("phase_b_journal_staging_conflict")
+            sequence = int(match.group(1))
+            try:
+                descriptor = os.open(
+                    stage_name,
+                    os.O_RDONLY
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=staging_fd,
+                )
+                stage_status = os.fstat(descriptor)
+            except OSError as exc:
+                raise PhaseBError("phase_b_journal_staging_conflict") from exc
+            finally:
+                try:
+                    os.close(descriptor)
+                except (OSError, UnboundLocalError):
+                    pass
+            if (
+                not stat.S_ISREG(stage_status.st_mode)
+                or stat.S_IMODE(stage_status.st_mode) != _JOURNAL_FILE_MODE
+                or stage_status.st_uid != _effective_uid()
+                or stage_status.st_gid != _effective_gid()
+                or stage_status.st_nlink not in {1, 2}
+            ):
+                raise PhaseBError("phase_b_journal_staging_conflict")
+            final_names = sorted(os.listdir(entries_fd))
+            same_final = [
+                name for name in final_names if name == f"{sequence:08d}.json"
+            ]
+            if stage_status.st_nlink == 1:
+                if same_final or sequence != len(final_names):
+                    raise PhaseBError("phase_b_journal_staging_conflict")
+                os.unlink(stage_name, dir_fd=staging_fd)
+                os.fsync(staging_fd)
+                return
+            if (
+                same_final != [f"{sequence:08d}.json"]
+                or sequence != len(final_names) - 1
+            ):
+                raise PhaseBError("phase_b_journal_staging_conflict")
+            final_status = os.stat(
+                same_final[0],
+                dir_fd=entries_fd,
+                follow_symlinks=False,
+            )
+            if (
+                final_status.st_nlink != 2
+                or (final_status.st_dev, final_status.st_ino)
+                != (stage_status.st_dev, stage_status.st_ino)
+            ):
+                raise PhaseBError("phase_b_journal_staging_conflict")
+            entries = self._load_entries_from_fd(
+                plan,
+                entries_fd,
+                linked_sequence=sequence,
+            )
+            staged = self._read_canonical_entry_at(
+                staging_fd,
+                stage_name,
+                expected_link_count=2,
+            )
+            if not entries or staged != entries[-1].value:
+                raise PhaseBError("phase_b_journal_staging_conflict")
+            # Retry the publication durability barrier before removing the
+            # only evidence that distinguishes a linked crash window.
+            os.fsync(entries_fd)
+            os.unlink(stage_name, dir_fd=staging_fd)
+            os.fsync(staging_fd)
+            os.fsync(entries_fd)
+        except OSError as exc:
+            raise PhaseBError("phase_b_journal_staging_conflict") from exc
+        finally:
+            if entries_fd is not None:
+                os.close(entries_fd)
+            os.close(staging_fd)
+
+    def _load_from_plan_fd(
+        self,
+        plan: PhaseBPlan,
+        plan_fd: int,
+    ) -> list[PhaseBJournalEntry]:
+        try:
+            names = set(os.listdir(plan_fd))
+        except OSError as exc:
+            raise PhaseBError("phase_b_journal_unavailable") from exc
+        if not names.issubset({".lock", "entries", "staging"}):
+            raise PhaseBError("phase_b_journal_path_invalid")
+        staging_fd = self._open_child_directory(
+            plan_fd,
+            "staging",
+            missing_ok=True,
+        )
+        if staging_fd is not None:
+            try:
+                if os.listdir(staging_fd):
+                    raise PhaseBError("phase_b_journal_staging_residue")
+            finally:
+                os.close(staging_fd)
+        entries_fd = self._open_child_directory(
+            plan_fd,
+            "entries",
+            missing_ok=True,
+        )
+        if entries_fd is None:
+            return []
+        try:
+            return self._load_entries_from_fd(plan, entries_fd)
+        finally:
+            os.close(entries_fd)
+
+    @contextmanager
+    def lock(self, plan: PhaseBPlan) -> Iterator[None]:
+        if fcntl is None:
+            raise PhaseBError("phase_b_posix_lock_unavailable")
+        if self._lock_depth != 0:
+            raise PhaseBError("phase_b_journal_lock_reentrant")
+        root_fd = self._open_root_handle(create=True)
+        assert root_fd is not None
+        plan_fd: int | None = None
+        descriptor: int | None = None
+        try:
+            plan_fd = self._ensure_child_directory(root_fd, plan.sha256)
+            descriptor = self._open_lock_at(plan_fd, create=True)
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            self._lock_depth = 1
+            self._active_plan_sha256 = plan.sha256
+            self._active_root_fd = root_fd
+            self._active_plan_fd = plan_fd
+            self._recover_staging_locked(plan, plan_fd)
+            yield
+        finally:
+            try:
+                self._lock_depth = 0
+                self._active_plan_sha256 = None
+                self._active_root_fd = None
+                self._active_plan_fd = None
+                if descriptor is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+                if plan_fd is not None:
+                    os.close(plan_fd)
+                os.close(root_fd)
+
+    def load(self, plan: PhaseBPlan) -> list[PhaseBJournalEntry]:
+        if (
+            self._lock_depth == 1
+            and self._active_plan_sha256 == plan.sha256
+            and self._active_plan_fd is not None
+        ):
+            return self._load_from_plan_fd(plan, self._active_plan_fd)
+        if fcntl is None:
+            raise PhaseBError("phase_b_posix_lock_unavailable")
+        root_fd = self._open_root_handle(create=False)
+        if root_fd is None:
+            return []
+        plan_fd = self._open_child_directory(
+            root_fd,
+            plan.sha256,
+            missing_ok=True,
+        )
+        if plan_fd is None:
+            os.close(root_fd)
+            return []
+        descriptor: int | None = None
+        try:
+            descriptor = self._open_lock_at(plan_fd, create=False)
+            fcntl.flock(descriptor, fcntl.LOCK_SH)
+            return self._load_from_plan_fd(plan, plan_fd)
+        finally:
+            if descriptor is not None:
+                try:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                finally:
+                    os.close(descriptor)
+            os.close(plan_fd)
+            os.close(root_fd)
 
     @staticmethod
     def _validate_event_prerequisites(entries: Sequence[PhaseBJournalEntry]) -> None:
@@ -3403,6 +4488,7 @@ class AppendOnlyPhaseBJournal:
         self,
         plan: PhaseBPlan,
         *,
+        approval: PhaseBApproval,
         event: str,
         idempotency_key: str,
         evidence: Mapping[str, Any],
@@ -3410,79 +4496,137 @@ class AppendOnlyPhaseBJournal:
     ) -> PhaseBJournalEntry:
         if event not in JOURNAL_EVENTS:
             raise PhaseBError("phase_b_journal_event_invalid")
+        if not isinstance(approval, PhaseBApproval):
+            raise PhaseBError("phase_b_journal_approval_invalid")
         if self._lock_depth != 1:
             raise PhaseBError("phase_b_journal_lock_required")
+        if (
+            self._active_plan_sha256 != plan.sha256
+            or self._active_plan_fd is None
+        ):
+            raise PhaseBError("phase_b_journal_lock_required")
         _require_secret_free(evidence)
-        self._ensure_directory(self._entries_root(plan))
-        self._ensure_directory(self._staging_root(plan))
-        entries = self.load(plan)
-        for existing in entries:
-            if existing.value["idempotency_key"] == idempotency_key:
-                if existing.event != event or existing.evidence != evidence:
-                    raise PhaseBError("phase_b_journal_idempotency_conflict")
-                return existing
-        terminal = event == "terminal"
-        unsigned = {
-            "schema": PHASE_B_JOURNAL_SCHEMA,
-            "sequence": len(entries),
-            "plan_sha256": plan.sha256,
-            "event": event,
-            "idempotency_key": idempotency_key,
-            "previous_entry_sha256": entries[-1].sha256 if entries else None,
-            "evidence": _json_copy(evidence),
-            "preterminal": not terminal,
-            "safe_to_start": terminal,
-            "recorded_at_unix": int(time.time()) if now_unix is None else now_unix,
-        }
-        entry = PhaseBJournalEntry.from_mapping(
-            {**unsigned, "entry_sha256": _sha256_json(unsigned)},
+        recorded_at = int(time.time()) if now_unix is None else now_unix
+        PhaseBApproval.from_mapping(
+            approval.to_mapping(),
             plan=plan,
-            expected_sequence=len(entries),
-            expected_previous=entries[-1].sha256 if entries else None,
+            now_unix=recorded_at,
         )
-        self._validate_event_prerequisites([*entries, entry])
-        payload = _canonical_bytes(entry.value)
-        stage = self._staging_root(plan) / (
-            f"{len(entries):08d}.{secrets.token_hex(16)}.stage"
-        )
-        final = self._entries_root(plan) / f"{len(entries):08d}.json"
-        descriptor = os.open(
-            stage,
-            os.O_WRONLY
-            | os.O_CREAT
-            | os.O_EXCL
-            | getattr(os, "O_CLOEXEC", 0)
-            | getattr(os, "O_NOFOLLOW", 0),
-            _JOURNAL_FILE_MODE,
-        )
+        plan_fd = self._active_plan_fd
+        self._recover_staging_locked(plan, plan_fd)
+        entries_fd = self._ensure_child_directory(plan_fd, "entries")
         try:
-            status = os.fstat(descriptor)
-            if status.st_uid == _effective_uid() and status.st_gid != _effective_gid():
-                os.fchown(descriptor, -1, _effective_gid())
-            written = 0
-            while written < len(payload):
-                count = os.write(descriptor, payload[written:])
-                if count <= 0:
-                    raise PhaseBError("phase_b_journal_write_failed")
-                written += count
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+            staging_fd = self._ensure_child_directory(plan_fd, "staging")
+        except BaseException:
+            os.close(entries_fd)
+            raise
         try:
-            os.link(stage, final)
-            self._fsync_directory(self._entries_root(plan))
-        except FileExistsError as exc:
-            raise PhaseBError("phase_b_journal_append_collision") from exc
-        finally:
+            entries = self._load_entries_from_fd(plan, entries_fd)
+            for existing in entries:
+                if existing.value["idempotency_key"] == idempotency_key:
+                    if existing.event != event or existing.evidence != evidence:
+                        raise PhaseBError("phase_b_journal_idempotency_conflict")
+                    return existing
+            terminal = event == "terminal"
+            unsigned = {
+                "schema": PHASE_B_JOURNAL_SCHEMA,
+                "sequence": len(entries),
+                "plan_sha256": plan.sha256,
+                "approval_sha256": approval.sha256,
+                "event": event,
+                "idempotency_key": idempotency_key,
+                "previous_entry_sha256": (
+                    entries[-1].sha256 if entries else None
+                ),
+                "evidence": _json_copy(evidence),
+                "preterminal": not terminal,
+                "safe_to_start": terminal,
+                "recorded_at_unix": (
+                    recorded_at
+                ),
+            }
+            entry = PhaseBJournalEntry.from_mapping(
+                {**unsigned, "entry_sha256": _sha256_json(unsigned)},
+                plan=plan,
+                expected_sequence=len(entries),
+                expected_previous=(entries[-1].sha256 if entries else None),
+            )
+            self._validate_event_prerequisites([*entries, entry])
+            payload = _canonical_bytes(entry.value)
+            stage_name = (
+                f"{len(entries):08d}.{secrets.token_hex(16)}.stage"
+            )
+            final_name = f"{len(entries):08d}.json"
+            descriptor = os.open(
+                stage_name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                _JOURNAL_FILE_MODE,
+                dir_fd=staging_fd,
+            )
             try:
-                stage.unlink()
-            except FileNotFoundError:
-                pass
-            self._fsync_directory(self._staging_root(plan))
-        loaded = self.load(plan)
-        if not loaded or loaded[-1].sha256 != entry.sha256:
-            raise PhaseBError("phase_b_journal_readback_failed")
-        return loaded[-1]
+                try:
+                    status = os.fstat(descriptor)
+                    if (
+                        status.st_uid == _effective_uid()
+                        and status.st_gid != _effective_gid()
+                    ):
+                        os.fchown(descriptor, -1, _effective_gid())
+                        status = os.fstat(descriptor)
+                    if (
+                        not stat.S_ISREG(status.st_mode)
+                        or stat.S_IMODE(status.st_mode) != _JOURNAL_FILE_MODE
+                        or status.st_nlink != 1
+                        or status.st_uid != _effective_uid()
+                        or status.st_gid != _effective_gid()
+                    ):
+                        raise PhaseBError("phase_b_journal_file_untrusted")
+                    written = 0
+                    while written < len(payload):
+                        count = os.write(descriptor, payload[written:])
+                        if count <= 0:
+                            raise PhaseBError("phase_b_journal_write_failed")
+                        written += count
+                    os.fsync(descriptor)
+                except OSError as exc:
+                    raise PhaseBError("phase_b_journal_write_failed") from exc
+            finally:
+                os.close(descriptor)
+            try:
+                # Persist the recovery marker before publishing a hard link.
+                # After this barrier a crash leaves either a discardable
+                # one-link stage or an authenticated two-link publication.
+                os.fsync(staging_fd)
+                os.link(
+                    stage_name,
+                    final_name,
+                    src_dir_fd=staging_fd,
+                    dst_dir_fd=entries_fd,
+                    follow_symlinks=False,
+                )
+                # If this fails, preserve both links.  Recovery retries this
+                # exact durability barrier before it removes the stage.
+                os.fsync(entries_fd)
+            except FileExistsError as exc:
+                raise PhaseBError("phase_b_journal_append_collision") from exc
+            except OSError as exc:
+                raise PhaseBError("phase_b_journal_publish_failed") from exc
+            try:
+                os.unlink(stage_name, dir_fd=staging_fd)
+                os.fsync(staging_fd)
+                os.fsync(entries_fd)
+            except OSError as exc:
+                raise PhaseBError("phase_b_journal_publish_failed") from exc
+            loaded = self._load_entries_from_fd(plan, entries_fd)
+            if not loaded or loaded[-1].sha256 != entry.sha256:
+                raise PhaseBError("phase_b_journal_readback_failed")
+            return loaded[-1]
+        finally:
+            os.close(staging_fd)
+            os.close(entries_fd)
 
     def events(self, plan: PhaseBPlan) -> frozenset[str]:
         return frozenset(entry.event for entry in self.load(plan))
@@ -3515,7 +4659,7 @@ class TemporaryAdminBoundary(Protocol):
         expected_mutation_context_sha256: str,
     ) -> None: ...
 
-    def create_or_rotate_recovery(self, username: str, password: str) -> None: ...
+    def create_or_rotate_recovery(self, username: str) -> bytearray: ...
 
     def mutation_reconciliation_required(self) -> bool: ...
 
@@ -3531,7 +4675,7 @@ class TemporaryAdminBoundary(Protocol):
 class BootstrapLoginBoundary(Protocol):
     def describe(self) -> Mapping[str, Any] | None: ...
 
-    def create_or_rotate_recovery(self, provisional_password: str) -> None: ...
+    def create_or_rotate_recovery(self) -> bytearray: ...
 
     def mutation_reconciliation_required(self) -> bool: ...
 
@@ -3574,7 +4718,6 @@ TerminalCollector = Callable[
     Mapping[str, Any],
 ]
 ServicesCollector = Callable[[PhaseBPlan, str], Mapping[str, Any]]
-SecretFactory = Callable[[], bytearray]
 
 
 @dataclass(frozen=True)
@@ -3590,13 +4733,6 @@ class PhaseBDependencies:
     predelete_collector: PredeleteCollector
     terminal_collector: TerminalCollector
     services_collector: ServicesCollector
-    secret_factory: SecretFactory
-
-
-def _default_secret_factory() -> bytearray:
-    import base64
-
-    return bytearray(base64.urlsafe_b64encode(secrets.token_bytes(48)))
 
 
 def _require_dependencies(value: Any) -> PhaseBDependencies:
@@ -3613,7 +4749,6 @@ def _require_dependencies(value: Any) -> PhaseBDependencies:
         "predelete_collector",
         "terminal_collector",
         "services_collector",
-        "secret_factory",
     ):
         if not callable(getattr(value, field, None)):
             raise PhaseBError("phase_b_adapters_missing")
@@ -3659,6 +4794,7 @@ def _recheck_services(
     dependencies: PhaseBDependencies,
     journal: AppendOnlyPhaseBJournal,
     *,
+    approval: PhaseBApproval,
     transition: str,
     clock: Callable[[], float],
 ) -> Mapping[str, Any]:
@@ -3671,19 +4807,45 @@ def _recheck_services(
     )
     if _service_stable_projection(services) != _service_stable_projection(initial):
         raise PhaseBError("phase_b_services_changed_after_approval")
+    recorded_at = int(clock())
+    if services["observed_at_unix"] > recorded_at:
+        raise PhaseBError("phase_b_services_observed_in_future")
+    service_attempt = sum(
+        1
+        for entry in journal.load(plan)
+        if entry.event == "services_stopped"
+        and entry.evidence.get("transition") == transition
+    )
     journal.append(
         plan,
+        approval=approval,
         event="services_stopped",
-        idempotency_key=f"services:{transition}:{services['attestation_sha256']}",
+        idempotency_key=(
+            f"services:{transition}:{service_attempt:08d}:"
+            f"{services['attestation_sha256']}"
+        ),
         evidence={
             "transition": transition,
             "services_attestation": services,
             "preterminal": True,
             "safe_to_start": False,
         },
-        now_unix=int(clock()),
+        now_unix=recorded_at,
     )
     return services
+
+
+def _pending_service_transition(
+    journal: AppendOnlyPhaseBJournal,
+    plan: PhaseBPlan,
+) -> str | None:
+    entries = journal.load(plan)
+    if not entries or entries[-1].event != "services_stopped":
+        return None
+    transition = entries[-1].evidence.get("transition")
+    if not isinstance(transition, str) or not transition:
+        raise PhaseBError("phase_b_journal_services_invalid")
+    return transition
 
 
 def _revalidate_approval(
@@ -3701,50 +4863,69 @@ def _revalidate_approval(
 def _provision_temporary_admin(
     boundary: TemporaryAdminBoundary,
     plan: PhaseBPlan,
-    secret: bytearray,
     *,
     before_mutation: Callable[[], None],
-) -> Mapping[str, Any]:
+) -> tuple[Mapping[str, Any], bytearray]:
     boundary.begin_mutation_observation(
         expected_owner_subject_sha256=plan.owner_subject_sha256,
         expected_mutation_context_sha256=plan.sha256,
     )
-    encoded = secret.decode("ascii")
+    candidate: Any = None
     try:
         before_mutation()
-        boundary.create_or_rotate_recovery(plan.temporary_admin_username, encoded)
+        candidate = boundary.create_or_rotate_recovery(
+            plan.temporary_admin_username
+        )
     except Exception:
         if not boundary.mutation_reconciliation_required():
             raise
         before_mutation()
-        boundary.create_or_rotate_recovery(plan.temporary_admin_username, encoded)
-    boundary.require_current_authority(plan.temporary_admin_username)
-    return _validate_temporary_admin_authority(
-        boundary.temporary_admin_authority_receipt(
+        candidate = boundary.create_or_rotate_recovery(
             plan.temporary_admin_username
-        ),
-        plan=plan,
-    )
+        )
+    try:
+        secret = _require_secret(candidate)
+        boundary.require_current_authority(plan.temporary_admin_username)
+        authority = _validate_temporary_admin_authority(
+            boundary.temporary_admin_authority_receipt(
+                plan.temporary_admin_username
+            ),
+            plan=plan,
+        )
+    except BaseException:
+        if isinstance(candidate, bytearray):
+            _zeroize(candidate)
+        raise
+    return authority, secret
 
 
 def _provision_bootstrap_login(
     boundary: BootstrapLoginBoundary,
     plan: PhaseBPlan,
-    secret: bytearray,
     *,
     before_mutation: Callable[[], None],
-) -> Mapping[str, Any]:
-    encoded = secret.decode("ascii")
+) -> tuple[Mapping[str, Any], bytearray]:
+    candidate: Any = None
     try:
         before_mutation()
-        boundary.create_or_rotate_recovery(encoded)
+        candidate = boundary.create_or_rotate_recovery()
     except Exception:
         if not boundary.mutation_reconciliation_required():
             raise
         before_mutation()
-        boundary.create_or_rotate_recovery(encoded)
-    boundary.require_current_authority()
-    return _validate_bootstrap_authority(boundary.authority_receipt(), plan=plan)
+        candidate = boundary.create_or_rotate_recovery()
+    try:
+        secret = _require_secret(candidate)
+        boundary.require_current_authority()
+        authority = _validate_bootstrap_authority(
+            boundary.authority_receipt(),
+            plan=plan,
+        )
+    except BaseException:
+        if isinstance(candidate, bytearray):
+            _zeroize(candidate)
+        raise
+    return authority, secret
 
 
 def _safe_close(session: ClosableSession | None) -> None:
@@ -3889,6 +5070,12 @@ def _validate_terminal_receipt(
         or raw["secret_material_recorded"] is not False
         or type(terminal_at) is not int
         or terminal_at < approval.value["issued_at_unix"]
+        or terminal_at >= approval.value["expires_at_unix"]
+        or terminal_observation["observed_at_unix"] > terminal_at
+        or terminal_observation["cloud_sql"]["observed_at_unix"] > terminal_at
+        or services["observed_at_unix"] > terminal_at
+        or hba_receipt["observed_at_unix"] > terminal_at
+        or terminal_at >= hba_receipt["expires_at_unix"]
     ):
         raise PhaseBError("phase_b_terminal_receipt_invalid")
     _require_secret_free(raw)
@@ -3989,6 +5176,8 @@ def _terminal_replay_bindings(
         terminal_event.get("terminal_observation"),
         plan=plan,
         execution_preflight_session_sha256=None,
+        expected_bootstrap_authority=post_disable_authority,
+        expected_absence_receipt=absence_receipt,
     )
     terminal_service_events = [
         entry.evidence
@@ -4019,6 +5208,561 @@ def _terminal_replay_bindings(
         "terminal_observation": terminal_observation,
         "services": services,
     }
+
+
+def _validate_terminal_journal_chain(
+    entries: Sequence[PhaseBJournalEntry],
+    *,
+    plan: PhaseBPlan,
+    approvals: Sequence[PhaseBApproval],
+) -> tuple[dict[str, Mapping[str, Any]], PhaseBApproval]:
+    """Replay every durable evidence envelope without invoking a boundary."""
+
+    if not entries or entries[-1].event != "terminal":
+        raise PhaseBError("phase_b_durable_terminal_missing")
+    if any(
+        entries[index].value["recorded_at_unix"]
+        < entries[index - 1].value["recorded_at_unix"]
+        for index in range(1, len(entries))
+    ):
+        raise PhaseBError("phase_b_journal_time_regressed")
+    if not approvals:
+        raise PhaseBError("phase_b_approval_chain_invalid")
+
+    bindings = _terminal_replay_bindings(entries, plan=plan)
+    initial_services = _validate_services(
+        plan.preflight.value["services"],
+        release_revision=plan.revision,
+    )
+    bootstrap_authorities: list[tuple[int, Mapping[str, Any]]] = []
+    bootstrap_operation_names: set[str] = set()
+    bootstrap_receipt_sha256s: set[str] = set()
+    bootstrap_disable_index: int | None = None
+    latest_hba_authority_sha256: str | None = None
+    initial_admin_authorities: list[Mapping[str, Any]] = []
+    deletion_admin_authorities: list[Mapping[str, Any]] = []
+    admin_operation_names: set[str] = set()
+    terminal_observations: list[Mapping[str, Any]] = []
+    pending_service_transition: str | None = None
+    pending_service_observed_at: int | None = None
+    role_ready_seen = False
+    temporary_admin_absent_seen = False
+    transition_required = {
+        "role_ready": "phase_b_role_artifact",
+        "bootstrap_password_disabled": "bootstrap_password_self_disable",
+        "temporary_admin_absent": "temporary_admin_delete",
+        "terminal_observed": "terminal_observation",
+    }
+    known_service_transitions = frozenset(
+        {
+            *transition_required.values(),
+            "temporary_admin_initial_authority",
+            "temporary_admin_predelete_reacquire",
+            "bootstrap_login_authority",
+            "bootstrap_login_rotation_authority",
+        }
+    )
+
+    for entry_index, entry in enumerate(entries):
+        event = entry.event
+        evidence = entry.evidence
+        active_approval = _active_approval_for_time(
+            approvals,
+            recorded_at_unix=int(entry.value["recorded_at_unix"]),
+        )
+        if entry.value["approval_sha256"] != active_approval.sha256:
+            raise PhaseBError("phase_b_journal_approval_head_mismatch")
+        required_transition = transition_required.get(event)
+        consumed_service_transition: str | None = None
+        if event != "services_stopped":
+            if event == "bootstrap_authority":
+                allowed_bootstrap_transitions = {
+                    "bootstrap_login_authority",
+                    "bootstrap_login_rotation_authority",
+                }
+                if (
+                    bootstrap_authorities
+                    and latest_hba_authority_sha256
+                    == bootstrap_authorities[-1][1]["receipt_sha256"]
+                ):
+                    allowed_bootstrap_transitions.add(
+                        "bootstrap_password_self_disable"
+                    )
+                if pending_service_transition not in allowed_bootstrap_transitions:
+                    raise PhaseBError("phase_b_journal_service_boundary_missing")
+                consumed_service_transition = pending_service_transition
+                pending_service_transition = None
+                pending_service_observed_at = None
+            elif event == "temporary_admin_authority":
+                allowed_admin_transitions = {
+                    "temporary_admin_initial_authority"
+                }
+                if initial_admin_authorities and not role_ready_seen:
+                    allowed_admin_transitions.add("phase_b_role_artifact")
+                if pending_service_transition not in allowed_admin_transitions:
+                    raise PhaseBError("phase_b_journal_service_boundary_missing")
+                consumed_service_transition = pending_service_transition
+                pending_service_transition = None
+                pending_service_observed_at = None
+            elif event == "temporary_admin_predelete_authority":
+                allowed_delete_transitions = {
+                    "temporary_admin_predelete_reacquire"
+                }
+                if deletion_admin_authorities and not temporary_admin_absent_seen:
+                    allowed_delete_transitions.add("temporary_admin_delete")
+                if pending_service_transition not in allowed_delete_transitions:
+                    raise PhaseBError("phase_b_journal_service_boundary_missing")
+                consumed_service_transition = pending_service_transition
+                pending_service_transition = None
+                pending_service_observed_at = None
+            elif required_transition is not None:
+                if pending_service_transition != required_transition:
+                    raise PhaseBError("phase_b_journal_service_boundary_missing")
+                consumed_service_transition = pending_service_transition
+                pending_service_transition = None
+                pending_service_observed_at = None
+            elif pending_service_transition is not None:
+                raise PhaseBError("phase_b_journal_service_boundary_stale")
+
+        if event == "intent":
+            raw = _strict_mapping(
+                evidence,
+                frozenset(
+                    {
+                        "approval_sha256",
+                        "plan_sha256",
+                        "preterminal",
+                        "safe_to_start",
+                        "secret_material_recorded",
+                    }
+                ),
+                "phase_b_journal_intent_invalid",
+            )
+            if (
+                raw["approval_sha256"] != active_approval.sha256
+                or raw["plan_sha256"] != plan.sha256
+                or raw["preterminal"] is not True
+                or raw["safe_to_start"] is not False
+                or raw["secret_material_recorded"] is not False
+                or not active_approval.value["issued_at_unix"]
+                <= entry.value["recorded_at_unix"]
+                < active_approval.value["expires_at_unix"]
+            ):
+                raise PhaseBError("phase_b_journal_intent_invalid")
+        elif event == "services_stopped":
+            raw = _strict_mapping(
+                evidence,
+                frozenset(
+                    {
+                        "transition",
+                        "services_attestation",
+                        "preterminal",
+                        "safe_to_start",
+                    }
+                ),
+                "phase_b_journal_services_invalid",
+            )
+            services = _validate_services(
+                raw["services_attestation"],
+                release_revision=plan.revision,
+            )
+            if (
+                not isinstance(raw["transition"], str)
+                or not raw["transition"]
+                or len(raw["transition"]) > 96
+                or raw["transition"] not in known_service_transitions
+                or raw["preterminal"] is not True
+                or raw["safe_to_start"] is not False
+                or _service_stable_projection(services)
+                != _service_stable_projection(initial_services)
+                or services["observed_at_unix"]
+                > entry.value["recorded_at_unix"]
+            ):
+                raise PhaseBError("phase_b_journal_services_invalid")
+            # A crash retry may repeat the exact pending transition with fresh,
+            # non-regressing observation evidence.  A different transition
+            # cannot erase an unconsumed boundary: that would let an inserted
+            # journal row manufacture causality for the following mutation.
+            if (
+                pending_service_transition is not None
+                and (
+                    raw["transition"] != pending_service_transition
+                    or (
+                        pending_service_observed_at is not None
+                        and services["observed_at_unix"]
+                        < pending_service_observed_at
+                    )
+                )
+            ):
+                raise PhaseBError("phase_b_journal_service_boundary_stale")
+            pending_service_transition = raw["transition"]
+            pending_service_observed_at = services["observed_at_unix"]
+        elif event in {
+            "temporary_admin_authority",
+            "temporary_admin_predelete_authority",
+        }:
+            raw = _strict_mapping(
+                evidence,
+                frozenset(
+                    {
+                        "purpose",
+                        "authority_receipt",
+                        "preterminal",
+                        "safe_to_start",
+                    }
+                ),
+                "phase_b_journal_admin_authority_invalid",
+            )
+            expected_purpose = (
+                "foundation_sql"
+                if event == "temporary_admin_authority"
+                else "fresh_predelete_authority"
+            )
+            authority = _validate_temporary_admin_authority(
+                raw["authority_receipt"],
+                plan=plan,
+            )
+            if (
+                (
+                    event == "temporary_admin_predelete_authority"
+                    and temporary_admin_absent_seen
+                )
+                or raw["purpose"] != expected_purpose
+                or raw["preterminal"] is not True
+                or raw["safe_to_start"] is not False
+            ):
+                raise PhaseBError("phase_b_journal_admin_authority_invalid")
+            operation_name = str(authority["authority_operation"][0])
+            if operation_name in admin_operation_names:
+                raise PhaseBError("phase_b_journal_admin_authority_reused")
+            admin_operation_names.add(operation_name)
+            target = (
+                initial_admin_authorities
+                if event == "temporary_admin_authority"
+                else deletion_admin_authorities
+            )
+            target.append(authority)
+        elif event == "role_ready":
+            if role_ready_seen:
+                raise PhaseBError("phase_b_journal_role_repeated")
+            raw = _strict_mapping(
+                evidence,
+                frozenset({"role_receipt", "preterminal", "safe_to_start"}),
+                "phase_b_journal_role_invalid",
+            )
+            role = _validate_role_receipt(raw["role_receipt"], plan=plan)
+            if (
+                role != bindings["role_receipt"]
+                or raw["preterminal"] is not True
+                or raw["safe_to_start"] is not False
+            ):
+                raise PhaseBError("phase_b_journal_role_invalid")
+            role_ready_seen = True
+        elif event == "bootstrap_authority":
+            raw = _strict_mapping(
+                evidence,
+                frozenset(
+                    {"authority_receipt", "preterminal", "safe_to_start"}
+                ),
+                "phase_b_journal_bootstrap_authority_invalid",
+            )
+            authority = _validate_bootstrap_authority(
+                raw["authority_receipt"],
+                plan=plan,
+            )
+            if bootstrap_disable_index is not None:
+                raise PhaseBError("phase_b_journal_bootstrap_authority_after_disable")
+            operation_name = str(authority["operation_name"])
+            receipt_sha256 = str(authority["receipt_sha256"])
+            if (
+                operation_name in bootstrap_operation_names
+                or receipt_sha256 in bootstrap_receipt_sha256s
+            ):
+                raise PhaseBError("phase_b_journal_bootstrap_authority_reused")
+            bootstrap_operation_names.add(operation_name)
+            bootstrap_receipt_sha256s.add(receipt_sha256)
+            valid_create = (
+                authority["operation_type"] == "CREATE_USER"
+                and consumed_service_transition == "bootstrap_login_authority"
+                and not bootstrap_authorities
+            )
+            valid_update = (
+                authority["operation_type"] == "UPDATE_USER"
+                and (
+                    (
+                        consumed_service_transition
+                        in {
+                            "bootstrap_login_authority",
+                            "bootstrap_login_rotation_authority",
+                        }
+                        and (
+                            not bootstrap_authorities
+                            or consumed_service_transition
+                            == "bootstrap_login_rotation_authority"
+                        )
+                    )
+                    or (
+                        consumed_service_transition
+                        == "bootstrap_password_self_disable"
+                        and bootstrap_authorities
+                        and latest_hba_authority_sha256
+                        == bootstrap_authorities[-1][1]["receipt_sha256"]
+                    )
+                )
+            )
+            if not (valid_create or valid_update):
+                raise PhaseBError(
+                    "phase_b_journal_bootstrap_authority_transition_invalid"
+                )
+            bootstrap_authorities.append((entry_index, authority))
+            latest_hba_authority_sha256 = None
+            if raw["preterminal"] is not True or raw["safe_to_start"] is not False:
+                raise PhaseBError("phase_b_journal_bootstrap_authority_invalid")
+        elif event == "bootstrap_hba_rejected":
+            if bootstrap_disable_index is not None:
+                raise PhaseBError("phase_b_journal_hba_after_disable")
+            raw = _strict_mapping(
+                evidence,
+                frozenset({"hba_receipt", "preterminal", "safe_to_start"}),
+                "phase_b_journal_hba_invalid",
+            )
+            hba_value = _strict_mapping(
+                raw["hba_receipt"],
+                _HBA_FIELDS,
+                "phase_b_journal_hba_invalid",
+            )
+            if not bootstrap_authorities:
+                raise PhaseBError("phase_b_journal_hba_invalid")
+            authority = bootstrap_authorities[-1][1]
+            if (
+                hba_value["bootstrap_authority_receipt_sha256"]
+                != authority["receipt_sha256"]
+            ):
+                raise PhaseBError("phase_b_journal_hba_invalid")
+            _validate_hba_receipt(raw["hba_receipt"], plan=plan, authority=authority)
+            if (
+                raw["hba_receipt"]["observed_at_unix"]
+                > entry.value["recorded_at_unix"]
+                or raw["preterminal"] is not True
+                or raw["safe_to_start"] is not False
+            ):
+                raise PhaseBError("phase_b_journal_hba_invalid")
+            latest_hba_authority_sha256 = str(authority["receipt_sha256"])
+        elif event == "bootstrap_password_disabled":
+            raw = _strict_mapping(
+                evidence,
+                frozenset(
+                    {
+                        "initial_authority_receipt",
+                        "post_disable_authority_receipt",
+                        "hba_receipt",
+                        "self_disable_receipt",
+                        "preterminal",
+                        "safe_to_start",
+                    }
+                ),
+                "phase_b_journal_bootstrap_disable_invalid",
+            )
+            authority = _validate_bootstrap_authority(
+                raw["initial_authority_receipt"],
+                plan=plan,
+            )
+            post_authority = _validate_bootstrap_authority(
+                raw["post_disable_authority_receipt"],
+                plan=plan,
+            )
+            hba = _validate_hba_receipt(
+                raw["hba_receipt"],
+                plan=plan,
+                authority=authority,
+            )
+            disabled = _validate_self_disable_receipt(
+                raw["self_disable_receipt"],
+                plan=plan,
+                authority=authority,
+                hba=hba,
+            )
+            if (
+                not bootstrap_authorities
+                or authority != bootstrap_authorities[-1][1]
+                or authority != post_authority
+                or authority != bindings["bootstrap_authority"]
+                or hba != bindings["hba_receipt"]
+                or disabled != bindings["self_disable_receipt"]
+                or hba["observed_at_unix"] > entry.value["recorded_at_unix"]
+                or raw["preterminal"] is not True
+                or raw["safe_to_start"] is not False
+            ):
+                raise PhaseBError("phase_b_journal_bootstrap_disable_invalid")
+            if bootstrap_disable_index is not None:
+                raise PhaseBError("phase_b_journal_bootstrap_disable_repeated")
+            bootstrap_disable_index = entry_index
+        elif event == "predelete_verified":
+            raw = _strict_mapping(
+                evidence,
+                frozenset(
+                    {
+                        "predelete_receipt",
+                        "process_instance_sha256",
+                        "preterminal",
+                        "safe_to_start",
+                    }
+                ),
+                "phase_b_journal_predelete_invalid",
+            )
+            _digest(
+                raw["process_instance_sha256"],
+                "phase_b_journal_predelete_invalid",
+            )
+            if (
+                raw["predelete_receipt"] != bindings["predelete_receipt"]
+                or raw["preterminal"] is not True
+                or raw["safe_to_start"] is not False
+            ):
+                raise PhaseBError("phase_b_journal_predelete_invalid")
+        elif event == "temporary_admin_closed":
+            common = {
+                "predelete_receipt_sha256",
+                "admin_session_closed",
+                "provisional_secret_zeroized",
+                "preterminal",
+                "safe_to_start",
+                "secret_material_recorded",
+            }
+            direct = frozenset({*common, "process_instance_sha256"})
+            recovered = frozenset(
+                {
+                    *common,
+                    "process_recovery_boundary",
+                    "predelete_process_instance_sha256",
+                    "recovery_process_instance_sha256",
+                }
+            )
+            if not isinstance(evidence, Mapping) or set(evidence) not in {
+                direct,
+                recovered,
+            }:
+                raise PhaseBError("phase_b_journal_admin_close_invalid")
+            raw = copy.deepcopy(dict(evidence))
+            if set(raw) == direct:
+                _digest(
+                    raw["process_instance_sha256"],
+                    "phase_b_journal_admin_close_invalid",
+                )
+            else:
+                before = _digest(
+                    raw["predelete_process_instance_sha256"],
+                    "phase_b_journal_admin_close_invalid",
+                )
+                after = _digest(
+                    raw["recovery_process_instance_sha256"],
+                    "phase_b_journal_admin_close_invalid",
+                )
+                if raw["process_recovery_boundary"] is not True or before == after:
+                    raise PhaseBError("phase_b_journal_admin_close_invalid")
+            if (
+                raw["predelete_receipt_sha256"]
+                != bindings["predelete_receipt"]["receipt_sha256"]
+                or raw["admin_session_closed"] is not True
+                or raw["provisional_secret_zeroized"] is not True
+                or raw["preterminal"] is not True
+                or raw["safe_to_start"] is not False
+                or raw["secret_material_recorded"] is not False
+            ):
+                raise PhaseBError("phase_b_journal_admin_close_invalid")
+        elif event == "temporary_admin_absent":
+            if temporary_admin_absent_seen:
+                raise PhaseBError("phase_b_journal_admin_absence_repeated")
+            raw = _strict_mapping(
+                evidence,
+                frozenset(
+                    {
+                        "fresh_predelete_authority_receipt",
+                        "full_absence_receipt",
+                        "preterminal",
+                        "safe_to_start",
+                    }
+                ),
+                "phase_b_journal_admin_absence_invalid",
+            )
+            authority = _validate_temporary_admin_authority(
+                raw["fresh_predelete_authority_receipt"],
+                plan=plan,
+            )
+            absence = _validate_admin_absence_receipt(
+                raw["full_absence_receipt"],
+                plan=plan,
+                fresh_authority=authority,
+            )
+            if (
+                authority != bindings["deletion_admin_authority"]
+                or absence != bindings["absence_receipt"]
+                or raw["preterminal"] is not True
+                or raw["safe_to_start"] is not False
+            ):
+                raise PhaseBError("phase_b_journal_admin_absence_invalid")
+            temporary_admin_absent_seen = True
+        elif event == "terminal_observed":
+            raw = _strict_mapping(
+                evidence,
+                frozenset(
+                    {"terminal_observation", "preterminal", "safe_to_start"}
+                ),
+                "phase_b_journal_terminal_observation_invalid",
+            )
+            terminal = _validate_terminal_observation(
+                raw["terminal_observation"],
+                plan=plan,
+                execution_preflight_session_sha256=None,
+                expected_bootstrap_authority=bindings["post_disable_authority"],
+                expected_absence_receipt=bindings["absence_receipt"],
+            )
+            if (
+                raw["preterminal"] is not True
+                or raw["safe_to_start"] is not False
+                or terminal["observed_at_unix"]
+                > entry.value["recorded_at_unix"]
+            ):
+                raise PhaseBError("phase_b_journal_terminal_observation_invalid")
+            terminal_observations.append(terminal)
+        elif event == "terminal":
+            terminal_evidence = _strict_mapping(
+                evidence,
+                frozenset({"terminal_receipt"}),
+                "phase_b_terminal_receipt_invalid",
+            )
+            terminal_value = _strict_mapping(
+                terminal_evidence["terminal_receipt"],
+                _TERMINAL_RECEIPT_FIELDS,
+                "phase_b_terminal_receipt_invalid",
+            )
+            if terminal_value["terminal_at_unix"] != entry.value["recorded_at_unix"]:
+                raise PhaseBError("phase_b_terminal_receipt_invalid")
+        else:  # pragma: no cover - PhaseBJournalEntry already rejects this.
+            raise PhaseBError("phase_b_journal_event_invalid")
+
+    if pending_service_transition is not None:
+        raise PhaseBError("phase_b_journal_service_boundary_stale")
+    if not bootstrap_authorities or bootstrap_disable_index is None:
+        raise PhaseBError("phase_b_journal_bootstrap_authority_invalid")
+    if bootstrap_authorities[-1][1]["operation_type"] != "UPDATE_USER":
+        raise PhaseBError("phase_b_journal_bootstrap_authority_not_latest_update")
+    if (
+        not initial_admin_authorities
+        or initial_admin_authorities[-1] != bindings["initial_admin_authority"]
+        or not deletion_admin_authorities
+        or deletion_admin_authorities[-1] != bindings["deletion_admin_authority"]
+        or not terminal_observations
+        or terminal_observations[-1] != bindings["terminal_observation"]
+    ):
+        raise PhaseBError("phase_b_journal_terminal_binding_invalid")
+    terminal_approval = _active_approval_for_time(
+        approvals,
+        recorded_at_unix=int(entries[-1].value["recorded_at_unix"]),
+    )
+    if entries[-1].value["approval_sha256"] != terminal_approval.sha256:
+        raise PhaseBError("phase_b_journal_approval_head_mismatch")
+    return bindings, terminal_approval
 
 
 def _terminal_receipt(
@@ -4099,10 +5843,2021 @@ def _terminal_receipt(
     )
 
 
+_DURABLE_FOUNDATION_FIELDS = frozenset(
+    {
+        "schema",
+        "foundation_release_revision",
+        "plan_sha256",
+        "approval_sha256",
+        "approval_sequence",
+        "approval_chain_sha256",
+        "journal_entry_count",
+        "terminal_entry_sequence",
+        "terminal_entry_sha256",
+        "terminal_receipt_sha256",
+        "terminal_observation_sha256",
+        "terminal_at_unix",
+        "generation_sha256",
+    }
+)
+
+
+class PhaseBDurableFoundation:
+    """Validated immutable Phase-B generation, independent of later releases."""
+
+    __slots__ = (
+        "_plan_bytes",
+        "_approval_bytes",
+        "_generation_bytes",
+        "_terminal_receipt_bytes",
+        "_terminal_observation_bytes",
+        "_authority_seal",
+        "_authority_tag",
+    )
+
+    def __new__(cls, *_args: Any, **_kwargs: Any) -> "PhaseBDurableFoundation":
+        raise TypeError(
+            "PhaseBDurableFoundation is issued only by "
+            "load_durable_phase_b_foundation"
+        )
+
+    def __setattr__(self, _name: str, _value: Any) -> None:
+        raise AttributeError("PhaseBDurableFoundation is immutable")
+
+    def _mapping(self, attribute: str) -> dict[str, Any]:
+        _require_durable_foundation(self)
+        encoded = getattr(self, attribute)
+        try:
+            decoded = json.loads(encoded.decode("utf-8"))
+        except (AttributeError, UnicodeError, json.JSONDecodeError) as exc:
+            raise PhaseBError("phase_b_durable_foundation_untrusted") from exc
+        if not isinstance(decoded, dict) or _canonical_bytes(decoded) != encoded:
+            raise PhaseBError("phase_b_durable_foundation_untrusted")
+        return decoded
+
+    @property
+    def plan(self) -> PhaseBPlan:
+        return PhaseBPlan.from_mapping(self._mapping("_plan_bytes"))
+
+    @property
+    def approval(self) -> Mapping[str, Any]:
+        return self._mapping("_approval_bytes")
+
+    @property
+    def generation(self) -> Mapping[str, Any]:
+        return self._mapping("_generation_bytes")
+
+    @property
+    def generation_sha256(self) -> str:
+        return str(self.generation["generation_sha256"])
+
+    @property
+    def terminal_receipt(self) -> Mapping[str, Any]:
+        return self._mapping("_terminal_receipt_bytes")
+
+    @property
+    def terminal_observation(self) -> Mapping[str, Any]:
+        return self._mapping("_terminal_observation_bytes")
+
+    @property
+    def terminal_at_unix(self) -> int:
+        return int(self.generation["terminal_at_unix"])
+
+    @property
+    def terminal_entry_sha256(self) -> str:
+        return str(self.generation["terminal_entry_sha256"])
+
+    def to_mapping(self) -> dict[str, Any]:
+        return {
+            "plan": self._mapping("_plan_bytes"),
+            "approval": self._mapping("_approval_bytes"),
+            "generation": self._mapping("_generation_bytes"),
+            "terminal_receipt": self._mapping("_terminal_receipt_bytes"),
+            "terminal_observation": self._mapping(
+                "_terminal_observation_bytes"
+            ),
+        }
+
+
+def _approval_chain_values(value: Any) -> list[Mapping[str, Any]]:
+    if isinstance(value, Mapping):
+        return [_json_copy(value)]
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes, bytearray, memoryview))
+        or not value
+        or any(not isinstance(item, Mapping) for item in value)
+    ):
+        raise PhaseBError("phase_b_approval_chain_invalid")
+    return [_json_copy(item) for item in value]
+
+
+def _load_durable_phase_b_components(
+    plan: PhaseBPlan,
+    *,
+    approval: Any,
+    journal: AppendOnlyPhaseBJournal,
+) -> tuple[bytes, bytes, bytes, bytes, bytes]:
+    """Read and semantically replay one completed Phase-B generation.
+
+    This loader never invokes a collector, transport, or mutation boundary.
+    The historical approval is evaluated at the authenticated terminal time,
+    so normal present-day expiry cannot erase a completed generation.
+    """
+
+    _require_foundation_runtime()
+    if not isinstance(plan, PhaseBPlan):
+        raise TypeError("PhaseBPlan is required")
+    if not isinstance(journal, AppendOnlyPhaseBJournal):
+        raise PhaseBError("phase_b_journal_missing")
+    validated_plan = PhaseBPlan.from_mapping(plan.to_mapping())
+    entries = journal.load(validated_plan)
+    if not entries or entries[-1].event != "terminal":
+        raise PhaseBError("phase_b_durable_terminal_missing")
+
+    terminal_evidence = _strict_mapping(
+        entries[-1].evidence,
+        frozenset({"terminal_receipt"}),
+        "phase_b_terminal_receipt_invalid",
+    )
+    approval_values = _approval_chain_values(approval)
+    approvals = validate_phase_b_approval_chain(
+        approval_values,
+        plan=validated_plan,
+    )
+    bindings, approved = _validate_terminal_journal_chain(
+        entries,
+        plan=validated_plan,
+        approvals=approvals,
+    )
+    terminal_receipt = _validate_terminal_receipt(
+        terminal_evidence["terminal_receipt"],
+        plan=validated_plan,
+        approval=approved,
+        **bindings,
+    )
+    terminal_observation = bindings["terminal_observation"]
+    terminal_at = terminal_receipt["terminal_at_unix"]
+    if entries[-1].value["recorded_at_unix"] != terminal_at:
+        raise PhaseBError("phase_b_durable_terminal_time_invalid")
+
+    unsigned = {
+        "schema": PHASE_B_DURABLE_FOUNDATION_SCHEMA,
+        "foundation_release_revision": validated_plan.revision,
+        "plan_sha256": validated_plan.sha256,
+        "approval_sha256": approved.sha256,
+        "approval_sequence": approved.sequence,
+        "approval_chain_sha256": _sha256_json(approval_values),
+        "journal_entry_count": len(entries),
+        "terminal_entry_sequence": int(entries[-1].value["sequence"]),
+        "terminal_entry_sha256": entries[-1].sha256,
+        "terminal_receipt_sha256": terminal_receipt["receipt_sha256"],
+        "terminal_observation_sha256": terminal_observation[
+            "observation_sha256"
+        ],
+        "terminal_at_unix": terminal_at,
+    }
+    generation = _hashed_mapping(
+        {**unsigned, "generation_sha256": _sha256_json(unsigned)},
+        fields=_DURABLE_FOUNDATION_FIELDS,
+        digest_field="generation_sha256",
+        code="phase_b_durable_foundation_invalid",
+    )
+    _require_secret_free(generation)
+    return (
+        _canonical_bytes(validated_plan.to_mapping()),
+        _canonical_bytes(approved.to_mapping()),
+        _canonical_bytes(generation),
+        _canonical_bytes(terminal_receipt),
+        _canonical_bytes(terminal_observation),
+    )
+
+
+def _install_durable_foundation_boundary() -> tuple[Callable[..., Any], Callable[[Any], None]]:
+    """Install a closure-sealed loader; no mapping-only mint factory escapes."""
+
+    authority_seal = object()
+    authentication_key = secrets.token_bytes(32)
+
+    def authenticate(value: Any) -> bytes:
+        digest = hmac.new(authentication_key, digestmod=hashlib.sha256)
+        for attribute in (
+            "_plan_bytes",
+            "_approval_bytes",
+            "_generation_bytes",
+            "_terminal_receipt_bytes",
+            "_terminal_observation_bytes",
+        ):
+            encoded = getattr(value, attribute, None)
+            if not isinstance(encoded, bytes):
+                return b""
+            digest.update(len(encoded).to_bytes(8, "big"))
+            digest.update(encoded)
+        return digest.digest()
+
+    def require(value: Any) -> None:
+        if (
+            type(value) is not PhaseBDurableFoundation
+            or getattr(value, "_authority_seal", None) is not authority_seal
+        ):
+            raise PhaseBError("phase_b_durable_foundation_untrusted")
+        expected = authenticate(value)
+        observed = getattr(value, "_authority_tag", None)
+        if (
+            not isinstance(observed, bytes)
+            or not expected
+            or not hmac.compare_digest(observed, expected)
+        ):
+            raise PhaseBError("phase_b_durable_foundation_untrusted")
+
+    def load(
+        plan: PhaseBPlan,
+        *,
+        approval: Any,
+        journal: AppendOnlyPhaseBJournal,
+    ) -> PhaseBDurableFoundation:
+        components = _load_durable_phase_b_components(
+            plan,
+            approval=approval,
+            journal=journal,
+        )
+        issued = object.__new__(PhaseBDurableFoundation)
+        for attribute, encoded in zip(
+            (
+                "_plan_bytes",
+                "_approval_bytes",
+                "_generation_bytes",
+                "_terminal_receipt_bytes",
+                "_terminal_observation_bytes",
+            ),
+            components,
+            strict=True,
+        ):
+            object.__setattr__(issued, attribute, encoded)
+        object.__setattr__(issued, "_authority_seal", authority_seal)
+        object.__setattr__(issued, "_authority_tag", authenticate(issued))
+        require(issued)
+        return issued
+
+    return load, require
+
+
+load_durable_phase_b_foundation, _require_durable_foundation = (
+    _install_durable_foundation_boundary()
+)
+
+
+_BOOTSTRAP_CONTINUITY_FIELDS = frozenset(
+    {
+        "schema",
+        "source_kind",
+        "foundation_generation_sha256",
+        "source_receipt_sha256",
+        "bootstrap_resource_sha256",
+        "operation_ledger_sha256",
+        "observed_at_unix",
+        "continuity_sha256",
+    }
+)
+
+
+@dataclass(frozen=True)
+class PhaseBBootstrapRuntimeContinuity:
+    """First-generation continuity proved by the immutable Phase-B terminal.
+
+    A later bootstrap rotation must not be accepted from caller-authored
+    digests.  A future bootstrap-v2 adapter may add a capability-validated
+    constructor; this public v1 parser deliberately accepts only the original
+    Phase-B terminal generation.
+    """
+
+    _value: Mapping[str, Any]
+
+    @classmethod
+    def from_mapping(
+        cls,
+        value: Any,
+        *,
+        foundation: PhaseBDurableFoundation,
+        bootstrap_resource: Mapping[str, Any],
+        operation_ledger_sha256: str,
+        observed_at_unix: int,
+    ) -> "PhaseBBootstrapRuntimeContinuity":
+        _require_durable_foundation(foundation)
+        resource = _validate_bootstrap_resource(bootstrap_resource)
+        ledger = _digest(
+            operation_ledger_sha256,
+            "phase_b_bootstrap_continuity_invalid",
+        )
+        raw = _hashed_mapping(
+            value,
+            fields=_BOOTSTRAP_CONTINUITY_FIELDS,
+            digest_field="continuity_sha256",
+            code="phase_b_bootstrap_continuity_invalid",
+        )
+        terminal = foundation.terminal_observation
+        historical_cloud = _strict_mapping(
+            terminal["cloud_sql"],
+            frozenset(
+                {
+                    "project",
+                    "instance",
+                    "bootstrap_resource",
+                    "temporary_admin_absent",
+                    "temporary_admin_username_sha256",
+                    "user_inventory",
+                    "user_inventory_sha256",
+                    "user_operations_quiescent",
+                    "relevant_user_operations",
+                    "operation_ledger_sha256",
+                    "observed_at_unix",
+                }
+            ),
+            "phase_b_bootstrap_continuity_invalid",
+        )
+        historical_resource = _validate_bootstrap_resource(
+            historical_cloud["bootstrap_resource"]
+        )
+        terminal_receipt = foundation.terminal_receipt
+        if (
+            raw["schema"] != PHASE_B_BOOTSTRAP_CONTINUITY_SCHEMA
+            or raw["source_kind"] != "phase_b_terminal"
+            or raw["foundation_generation_sha256"]
+            != foundation.generation_sha256
+            or raw["source_receipt_sha256"]
+            != terminal_receipt["receipt_sha256"]
+            or raw["bootstrap_resource_sha256"] != _sha256_json(resource)
+            or raw["operation_ledger_sha256"] != ledger
+            or raw["observed_at_unix"] != observed_at_unix
+            or type(observed_at_unix) is not int
+            or observed_at_unix <= 0
+            or resource != historical_resource
+            or ledger != historical_cloud["operation_ledger_sha256"]
+        ):
+            raise PhaseBError("phase_b_bootstrap_continuity_invalid")
+        _require_secret_free(raw)
+        return cls(_json_copy(raw))
+
+    @property
+    def sha256(self) -> str:
+        return str(self._value["continuity_sha256"])
+
+    def to_mapping(self) -> dict[str, Any]:
+        return _json_copy(self._value)
+
+
+def build_phase_b_terminal_bootstrap_continuity(
+    foundation: PhaseBDurableFoundation,
+    *,
+    bootstrap_resource: Mapping[str, Any],
+    operation_ledger_sha256: str,
+    observed_at_unix: int,
+) -> PhaseBBootstrapRuntimeContinuity:
+    """Build only the immutable first-generation bootstrap continuity proof."""
+
+    _require_durable_foundation(foundation)
+    resource = _validate_bootstrap_resource(bootstrap_resource)
+    ledger = _digest(
+        operation_ledger_sha256,
+        "phase_b_bootstrap_continuity_invalid",
+    )
+    unsigned = {
+        "schema": PHASE_B_BOOTSTRAP_CONTINUITY_SCHEMA,
+        "source_kind": "phase_b_terminal",
+        "foundation_generation_sha256": foundation.generation_sha256,
+        "source_receipt_sha256": foundation.terminal_receipt["receipt_sha256"],
+        "bootstrap_resource_sha256": _sha256_json(resource),
+        "operation_ledger_sha256": ledger,
+        "observed_at_unix": observed_at_unix,
+    }
+    return PhaseBBootstrapRuntimeContinuity.from_mapping(
+        {**unsigned, "continuity_sha256": _sha256_json(unsigned)},
+        foundation=foundation,
+        bootstrap_resource=resource,
+        operation_ledger_sha256=ledger,
+        observed_at_unix=observed_at_unix,
+    )
+
+
+_READINESS_HOST_IDENTITY_FIELDS = frozenset(
+    {
+        "schema",
+        "collector_authority",
+        "project_id",
+        "project_number",
+        "zone",
+        "instance_name",
+        "instance_id",
+        "service_account_email",
+        "gce_identity_sha256",
+        "machine_id_sha256",
+        "hostname_sha256",
+        "host_identity_sha256",
+        "boot_id_sha256",
+        "observed_at_unix",
+        "receipt_sha256",
+        "oauth_scopes",
+        "oauth_scopes_sha256",
+    }
+)
+
+
+def _validate_readiness_host_identity(value: Any, *, observed_at_unix: int) -> dict[str, Any]:
+    raw = _strict_mapping(
+        value,
+        _READINESS_HOST_IDENTITY_FIELDS,
+        "phase_b_readiness_host_identity_invalid",
+    )
+    receipt_unsigned = {
+        name: item
+        for name, item in raw.items()
+        if name not in {"receipt_sha256", "oauth_scopes", "oauth_scopes_sha256"}
+    }
+    scopes = raw["oauth_scopes"]
+    if (
+        raw["schema"] != FULL_CANARY_HOST_IDENTITY_SCHEMA
+        or raw["collector_authority"]
+        != "trusted_root_read_only_host_collector"
+        or raw["project_id"] != DEDICATED_CANARY_PROJECT_ID
+        or raw["project_number"] != DEDICATED_CANARY_PROJECT_NUMBER
+        or raw["zone"] != DEDICATED_CANARY_ZONE
+        or raw["instance_name"] != DEDICATED_CANARY_INSTANCE_NAME
+        or raw["instance_id"] != DEDICATED_CANARY_INSTANCE_ID
+        or raw["service_account_email"] != DEDICATED_CANARY_SERVICE_ACCOUNT
+        or raw["observed_at_unix"] != observed_at_unix
+        or raw["receipt_sha256"] != _sha256_json(receipt_unsigned)
+        or scopes != list(PHASE_B_VM_OAUTH_SCOPES)
+        or raw["oauth_scopes_sha256"] != _sha256_json(scopes)
+        or any(
+            _SHA256_RE.fullmatch(str(raw[name])) is None
+            for name in (
+                "gce_identity_sha256",
+                "machine_id_sha256",
+                "hostname_sha256",
+                "host_identity_sha256",
+                "boot_id_sha256",
+            )
+        )
+    ):
+        raise PhaseBError("phase_b_readiness_host_identity_invalid")
+    _require_secret_free(raw)
+    return raw
+
+
+_READINESS_OBSERVATION_FIELDS = frozenset(
+    {
+        "schema",
+        "current_release_revision",
+        "foundation_generation_sha256",
+        "foundation_terminal_receipt_sha256",
+        "terminal_observation",
+        "host_identity",
+        "cloud_sql",
+        "credential",
+        "services",
+        "bootstrap_runtime_continuity",
+        "observed_at_unix",
+        "observation_sha256",
+    }
+)
+class _PhaseBReadinessObservation:
+    """Parsed readiness data, never authority merely because it is valid.
+
+    The installed closure-sealed issuer gathers fixed external evidence itself;
+    this parser only validates data and never attaches authority.  Accepting a
+    caller-authored mapping as authority here would turn schema validation into
+    startup permission.
+    """
+
+    __slots__ = ("_value_bytes", "_authority_seal", "_authority_tag")
+
+    def __new__(cls, *_args: Any, **_kwargs: Any) -> "_PhaseBReadinessObservation":
+        raise TypeError(
+            "_PhaseBReadinessObservation is parsed only by from_mapping"
+        )
+
+    def __setattr__(self, _name: str, _value: Any) -> None:
+        raise AttributeError("_PhaseBReadinessObservation is immutable")
+
+    @classmethod
+    def from_mapping(
+        cls,
+        value: Any,
+        *,
+        foundation: PhaseBDurableFoundation,
+        current_release_revision: str,
+        now_unix: int | None = None,
+    ) -> "_PhaseBReadinessObservation":
+        _require_durable_foundation(foundation)
+        revision = _revision(current_release_revision)
+        current = int(time.time()) if now_unix is None else now_unix
+        if type(current) is not int or current <= 0:
+            raise PhaseBError("phase_b_readiness_time_invalid")
+        raw = _hashed_mapping(
+            value,
+            fields=_READINESS_OBSERVATION_FIELDS,
+            digest_field="observation_sha256",
+            code="phase_b_readiness_observation_invalid",
+        )
+        plan = foundation.plan
+        historical_terminal = foundation.terminal_observation
+        historical_session = _digest(
+            historical_terminal.get("session_identity_sha256"),
+            "phase_b_readiness_database_invalid",
+        )
+        terminal = _validate_terminal_observation(
+            raw["terminal_observation"],
+            plan=plan,
+            execution_preflight_session_sha256=historical_session,
+            services_release_revision=revision,
+        )
+        host_identity = _validate_readiness_host_identity(
+            raw["host_identity"],
+            observed_at_unix=raw["observed_at_unix"],
+        )
+        cloud_evidence = _strict_mapping(
+            raw["cloud_sql"],
+            frozenset({"observation", "observed_at_unix"}),
+            "phase_b_readiness_cloud_invalid",
+        )
+        cloud = _validate_readiness_runtime_cloud(
+            cloud_evidence["observation"],
+            plan=plan,
+            observed_at_unix=raw["observed_at_unix"],
+        )
+        operations = _validate_terminal_cloud_operations(
+            cloud["relevant_user_operations"]
+        )
+        credential_evidence = _strict_mapping(
+            raw["credential"],
+            frozenset({"identity", "observed_at_unix"}),
+            "phase_b_readiness_credential_invalid",
+        )
+        credential = _validate_credential(credential_evidence["identity"])
+        _require_same_credential(
+            plan.preflight.value["credential"],
+            credential,
+        )
+        services = _validate_services(
+            raw["services"],
+            release_revision=revision,
+        )
+        observed_at = raw["observed_at_unix"]
+        if (
+            raw["schema"] != PHASE_B_READINESS_OBSERVATION_SCHEMA
+            or raw["current_release_revision"] != revision
+            or raw["foundation_generation_sha256"]
+            != foundation.generation_sha256
+            or raw["foundation_terminal_receipt_sha256"]
+            != foundation.terminal_receipt["receipt_sha256"]
+            or type(observed_at) is not int
+            or not foundation.terminal_at_unix <= observed_at <= current
+            or current - observed_at > PHASE_B_READINESS_MAX_AGE_SECONDS
+            or cloud_evidence["observed_at_unix"] != observed_at
+            or credential_evidence["observed_at_unix"] != observed_at
+            or terminal["observed_at_unix"] != observed_at
+            or services["observed_at_unix"] != observed_at
+            or terminal["services"] != services
+            or host_identity["observed_at_unix"] != observed_at
+        ):
+            raise PhaseBError("phase_b_readiness_observation_invalid")
+
+        terminal_cloud = terminal["cloud_sql"]
+        terminal_foundation = FoundationObservation.from_mapping(
+            terminal["foundation_observation"]
+        )
+        if terminal_cloud != cloud:
+            raise PhaseBError("phase_b_readiness_cloud_mismatch")
+        _require_same_credential(
+            credential,
+            terminal_foundation.value["credential"],
+        )
+        PhaseBBootstrapRuntimeContinuity.from_mapping(
+            raw["bootstrap_runtime_continuity"],
+            foundation=foundation,
+            bootstrap_resource=historical_terminal["cloud_sql"][
+                "bootstrap_resource"
+            ],
+            operation_ledger_sha256=cloud["operation_ledger_sha256"],
+            observed_at_unix=observed_at,
+        )
+        _require_secret_free(raw)
+        parsed = object.__new__(cls)
+        object.__setattr__(parsed, "_value_bytes", _canonical_bytes(raw))
+        object.__setattr__(parsed, "_authority_seal", None)
+        object.__setattr__(parsed, "_authority_tag", None)
+        return parsed
+
+    def _mapping(self) -> dict[str, Any]:
+        try:
+            decoded = json.loads(self._value_bytes.decode("utf-8"))
+        except (AttributeError, UnicodeError, json.JSONDecodeError) as exc:
+            raise PhaseBError("phase_b_readiness_observation_untrusted") from exc
+        if (
+            not isinstance(decoded, dict)
+            or _canonical_bytes(decoded) != self._value_bytes
+        ):
+            raise PhaseBError("phase_b_readiness_observation_untrusted")
+        return decoded
+
+    @property
+    def sha256(self) -> str:
+        return str(self._mapping()["observation_sha256"])
+
+    @property
+    def observed_at_unix(self) -> int:
+        return int(self._mapping()["observed_at_unix"])
+
+    @property
+    def current_release_revision(self) -> str:
+        return str(self._mapping()["current_release_revision"])
+
+    def to_mapping(self) -> dict[str, Any]:
+        return self._mapping()
+
+
+def _install_readiness_observation_boundary() -> tuple[
+    Callable[..., _PhaseBReadinessObservation],
+    Callable[[Any], None],
+]:
+    """Install a fixed-collector issuer and its matching consumer.
+
+    The issuer deliberately accepts no evidence mapping or collector from its
+    caller.  It invokes the packaged fixed-target collector from inside this
+    closure, validates the resulting observation, and only then attaches the
+    process-private capability seal.  Consequently schema-valid caller data,
+    ``object.__new__`` instances, and monkey-patched writer calls remain unable
+    to authorize startup publication.
+    """
+
+    authority_seal = object()
+    authentication_key = secrets.token_bytes(32)
+
+    def require(value: Any) -> None:
+        if (
+            type(value) is not _PhaseBReadinessObservation
+            or getattr(value, "_authority_seal", None) is not authority_seal
+        ):
+            raise PhaseBError("phase_b_readiness_observation_untrusted")
+        encoded = getattr(value, "_value_bytes", None)
+        observed = getattr(value, "_authority_tag", None)
+        if not isinstance(encoded, bytes) or not isinstance(observed, bytes):
+            raise PhaseBError("phase_b_readiness_observation_untrusted")
+        expected = hmac.new(
+            authentication_key,
+            encoded,
+            hashlib.sha256,
+        ).digest()
+        if not hmac.compare_digest(observed, expected):
+            raise PhaseBError("phase_b_readiness_observation_untrusted")
+
+    def collect(
+        foundation: PhaseBDurableFoundation,
+        *,
+        current_release_revision: str,
+        now_unix: int | None = None,
+    ) -> _PhaseBReadinessObservation:
+        _require_durable_foundation(foundation)
+        revision = _revision(current_release_revision)
+        current = int(time.time()) if now_unix is None else now_unix
+        if type(current) is not int or current <= 0:
+            raise PhaseBError("phase_b_readiness_time_invalid")
+        # Import lazily to keep this foundation module usable for offline plan
+        # validation and Windows packaging inspection.  The called function is
+        # zero-input with respect to evidence selection: all external targets
+        # and collectors are compile-time fixed in the packaged runtime.
+        try:
+            from gateway.canonical_writer_phase_b_runtime import (
+                _collect_fixed_phase_b_readiness_mapping,
+            )
+
+            raw = _collect_fixed_phase_b_readiness_mapping(
+                foundation,
+                current_release_revision=revision,
+                observed_at_unix=current,
+            )
+        except PhaseBError:
+            raise
+        except BaseException as exc:
+            raise PhaseBError("phase_b_readiness_collection_failed") from exc
+        parsed = _PhaseBReadinessObservation.from_mapping(
+            raw,
+            foundation=foundation,
+            current_release_revision=revision,
+            now_unix=current,
+        )
+        issued = object.__new__(_PhaseBReadinessObservation)
+        object.__setattr__(issued, "_value_bytes", parsed._value_bytes)
+        object.__setattr__(issued, "_authority_seal", authority_seal)
+        object.__setattr__(
+            issued,
+            "_authority_tag",
+            hmac.new(
+                authentication_key,
+                parsed._value_bytes,
+                hashlib.sha256,
+            ).digest(),
+        )
+        require(issued)
+        return issued
+
+    return collect, require
+
+
+(
+    _collect_trusted_readiness_observation,
+    _require_trusted_readiness_observation,
+) = (
+    _install_readiness_observation_boundary()
+)
+
+
+_READINESS_RECEIPT_FIELDS = frozenset(
+    {
+        "schema",
+        "ok",
+        "state",
+        "safe_to_start",
+        "current_release_revision",
+        "foundation_generation_sha256",
+        "foundation_terminal_receipt_sha256",
+        "sequence",
+        "previous_receipt_sha256",
+        "readiness_observation",
+        "readiness_observation_sha256",
+        "observed_at_unix",
+        "issued_at_unix",
+        "expires_at_unix",
+        "secret_material_recorded",
+        "receipt_sha256",
+    }
+)
+
+
+class PhaseBReadinessReceipt:
+    """Opaque readiness authority issued only from the fixed durable journal."""
+
+    __slots__ = ("_value_bytes", "_authority_seal", "_authority_tag")
+
+    def __new__(cls, *_args: Any, **_kwargs: Any) -> "PhaseBReadinessReceipt":
+        raise TypeError(
+            "PhaseBReadinessReceipt is issued only from the fixed readiness journal"
+        )
+
+    def __setattr__(self, _name: str, _value: Any) -> None:
+        raise AttributeError("PhaseBReadinessReceipt is immutable")
+
+    def _mapping(self) -> dict[str, Any]:
+        _require_readiness_receipt(self)
+        try:
+            decoded = json.loads(self._value_bytes.decode("utf-8"))
+        except (AttributeError, UnicodeError, json.JSONDecodeError) as exc:
+            raise PhaseBError("phase_b_readiness_receipt_untrusted") from exc
+        if not isinstance(decoded, dict) or _canonical_bytes(decoded) != self._value_bytes:
+            raise PhaseBError("phase_b_readiness_receipt_untrusted")
+        return decoded
+
+    @property
+    def sha256(self) -> str:
+        return str(self._mapping()["receipt_sha256"])
+
+    @property
+    def sequence(self) -> int:
+        return int(self._mapping()["sequence"])
+
+    def to_mapping(self) -> dict[str, Any]:
+        return self._mapping()
+
+
+def _validate_phase_b_readiness_receipt_mapping(
+    value: Any,
+    *,
+    foundation: PhaseBDurableFoundation,
+    current_release_revision: str,
+    expected_sequence: int,
+    expected_previous_receipt_sha256: str | None,
+    now_unix: int | None = None,
+) -> dict[str, Any]:
+    _require_durable_foundation(foundation)
+    revision = _revision(current_release_revision)
+    current = int(time.time()) if now_unix is None else now_unix
+    if (
+        type(current) is not int
+        or current <= 0
+        or type(expected_sequence) is not int
+        or expected_sequence < 0
+        or (expected_sequence == 0)
+        is not (expected_previous_receipt_sha256 is None)
+    ):
+        raise PhaseBError("phase_b_readiness_chain_invalid")
+    if expected_previous_receipt_sha256 is not None:
+        _digest(
+            expected_previous_receipt_sha256,
+            "phase_b_readiness_chain_invalid",
+        )
+    raw = _hashed_mapping(
+        value,
+        fields=_READINESS_RECEIPT_FIELDS,
+        digest_field="receipt_sha256",
+        code="phase_b_readiness_receipt_invalid",
+    )
+    observation = _PhaseBReadinessObservation.from_mapping(
+        raw["readiness_observation"],
+        foundation=foundation,
+        current_release_revision=revision,
+        now_unix=current,
+    )
+    observed_at = raw["observed_at_unix"]
+    issued_at = raw["issued_at_unix"]
+    expires_at = raw["expires_at_unix"]
+    if (
+        raw["schema"] != PHASE_B_READINESS_RECEIPT_SCHEMA
+        or raw["ok"] is not True
+        or raw["state"] != "ready"
+        or raw["safe_to_start"] is not True
+        or raw["current_release_revision"] != revision
+        or raw["foundation_generation_sha256"]
+        != foundation.generation_sha256
+        or raw["foundation_terminal_receipt_sha256"]
+        != foundation.terminal_receipt["receipt_sha256"]
+        or raw["sequence"] != expected_sequence
+        or raw["previous_receipt_sha256"]
+        != expected_previous_receipt_sha256
+        or raw["readiness_observation_sha256"] != observation.sha256
+        or observed_at != observation.observed_at_unix
+        or type(issued_at) is not int
+        or type(expires_at) is not int
+        or not observed_at <= issued_at <= current < expires_at
+        or expires_at - observed_at > PHASE_B_READINESS_MAX_AGE_SECONDS
+        or raw["secret_material_recorded"] is not False
+    ):
+        raise PhaseBError("phase_b_readiness_receipt_invalid")
+    _require_secret_free(raw)
+    return raw
+
+
+class _PhaseBReadinessJournalFoundation:
+    """Fixed-identity mechanics shared by the reader and root writer."""
+
+    def __init__(self) -> None:
+        self.root = _PHASE_B_READINESS_ROOT
+        self._lock_depth = 0
+        self._lock_exclusive = False
+        self._active_root_fd: int | None = None
+        self._active_generation_fd: int | None = None
+
+    def _generation_root(self, foundation: PhaseBDurableFoundation) -> Path:
+        return self.root / foundation.generation_sha256
+
+    def _entries_root(self, foundation: PhaseBDurableFoundation) -> Path:
+        return self._generation_root(foundation) / "entries"
+
+    def _staging_root(self, foundation: PhaseBDurableFoundation) -> Path:
+        return self._generation_root(foundation) / "staging"
+
+    @staticmethod
+    def _require_writer_authority() -> None:
+        if _effective_uid() != _READINESS_AUTHORITY_UID:
+            raise PhaseBError("phase_b_readiness_writer_authority_required")
+
+    @staticmethod
+    def _directory_flags() -> int:
+        return (
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+
+    @staticmethod
+    def _trusted_directory_status(status: os.stat_result) -> bool:
+        return (
+            stat.S_ISDIR(status.st_mode)
+            and not stat.S_ISLNK(status.st_mode)
+            and stat.S_IMODE(status.st_mode) == _JOURNAL_MODE
+            and status.st_uid == _READINESS_AUTHORITY_UID
+            and status.st_gid == _READINESS_AUTHORITY_GID
+        )
+
+    @staticmethod
+    def _directory_identity(status: os.stat_result) -> tuple[int, ...]:
+        return (
+            status.st_dev,
+            status.st_ino,
+            status.st_mode,
+            status.st_uid,
+            status.st_gid,
+        )
+
+    @staticmethod
+    def _fsync_directory_handle(descriptor: int, _path: Path) -> None:
+        """Persist the already-open directory, never re-resolve its path."""
+
+        os.fsync(descriptor)
+
+    @classmethod
+    def _open_absolute_parent(cls, path: Path) -> tuple[int, str]:
+        parts = path.parts
+        if not path.is_absolute() or len(parts) < 2 or not path.name:
+            raise PhaseBError("phase_b_readiness_journal_root_invalid")
+        descriptor: int | None = None
+        try:
+            descriptor = os.open(parts[0], cls._directory_flags())
+            for component in parts[1:-1]:
+                child = os.open(
+                    component,
+                    cls._directory_flags(),
+                    dir_fd=descriptor,
+                )
+                opened = os.fstat(child)
+                if not stat.S_ISDIR(opened.st_mode):
+                    os.close(child)
+                    raise PhaseBError(
+                        "phase_b_readiness_journal_directory_untrusted"
+                    )
+                os.close(descriptor)
+                descriptor = child
+        except PhaseBError:
+            if descriptor is not None:
+                os.close(descriptor)
+            raise
+        except OSError as exc:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            raise PhaseBError(
+                "phase_b_readiness_journal_unavailable"
+            ) from exc
+        assert descriptor is not None
+        return descriptor, path.name
+
+    @classmethod
+    def _open_child_directory_at(
+        cls,
+        parent_fd: int,
+        name: str,
+        *,
+        missing_ok: bool = False,
+    ) -> int | None:
+        descriptor: int | None = None
+        observed = False
+        try:
+            before = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+            observed = True
+            descriptor = os.open(
+                name,
+                cls._directory_flags(),
+                dir_fd=parent_fd,
+            )
+            opened = os.fstat(descriptor)
+            after = os.stat(name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            if descriptor is not None:
+                os.close(descriptor)
+            if missing_ok and not observed:
+                return None
+            raise PhaseBError(
+                "phase_b_readiness_journal_unavailable"
+            ) from None
+        except OSError as exc:
+            if descriptor is not None:
+                os.close(descriptor)
+            raise PhaseBError(
+                "phase_b_readiness_journal_unavailable"
+            ) from exc
+        assert descriptor is not None
+        if (
+            cls._directory_identity(before)
+            != cls._directory_identity(opened)
+            or cls._directory_identity(opened)
+            != cls._directory_identity(after)
+            or not cls._trusted_directory_status(opened)
+        ):
+            os.close(descriptor)
+            raise PhaseBError(
+                "phase_b_readiness_journal_directory_untrusted"
+            )
+        return descriptor
+
+    @classmethod
+    def _ensure_child_directory_at(
+        cls,
+        parent_fd: int,
+        name: str,
+        *,
+        parent_path: Path,
+    ) -> int:
+        cls._require_writer_authority()
+        created = False
+        try:
+            os.mkdir(name, _JOURNAL_MODE, dir_fd=parent_fd)
+            created = True
+        except FileExistsError:
+            pass
+        except OSError as exc:
+            raise PhaseBError(
+                "phase_b_readiness_journal_unavailable"
+            ) from exc
+        if created:
+            try:
+                descriptor = os.open(
+                    name,
+                    cls._directory_flags(),
+                    dir_fd=parent_fd,
+                )
+            except OSError as exc:
+                raise PhaseBError(
+                    "phase_b_readiness_journal_unavailable"
+                ) from exc
+        else:
+            opened = cls._open_child_directory_at(parent_fd, name)
+            assert opened is not None
+            descriptor = opened
+        try:
+            opened = os.fstat(descriptor)
+            if (
+                created
+                and opened.st_uid == _READINESS_AUTHORITY_UID
+                and opened.st_gid != _READINESS_AUTHORITY_GID
+            ):
+                os.fchown(
+                    descriptor,
+                    -1,
+                    _READINESS_AUTHORITY_GID,
+                )
+                opened = os.fstat(descriptor)
+            if not cls._trusted_directory_status(opened):
+                raise PhaseBError(
+                    "phase_b_readiness_journal_directory_untrusted"
+                )
+            # Both barriers are retried after EEXIST.  mkdir may have reached
+            # disk while the previous parent fsync was the only failed step.
+            cls._fsync_directory_handle(descriptor, parent_path / name)
+            cls._fsync_directory_handle(parent_fd, parent_path)
+        except PhaseBError:
+            os.close(descriptor)
+            raise
+        except OSError as exc:
+            os.close(descriptor)
+            raise PhaseBError(
+                "phase_b_readiness_journal_unavailable"
+            ) from exc
+        return descriptor
+
+    def _open_root_handle(self, *, create: bool) -> int | None:
+        parent_fd, name = self._open_absolute_parent(self.root)
+        try:
+            if create:
+                return self._ensure_child_directory_at(
+                    parent_fd,
+                    name,
+                    parent_path=self.root.parent,
+                )
+            return self._open_child_directory_at(
+                parent_fd,
+                name,
+                missing_ok=True,
+            )
+        finally:
+            os.close(parent_fd)
+
+    @classmethod
+    def _open_lock_at(
+        cls,
+        generation_fd: int,
+        *,
+        create: bool,
+        generation_path: Path,
+    ) -> int:
+        flags = (
+            (os.O_RDWR if create else os.O_RDONLY)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        if create:
+            flags |= os.O_CREAT
+        descriptor: int | None = None
+        existed = True
+        try:
+            os.stat(".lock", dir_fd=generation_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            existed = False
+        try:
+            descriptor = os.open(
+                ".lock",
+                flags,
+                _JOURNAL_FILE_MODE,
+                dir_fd=generation_fd,
+            )
+            opened = os.fstat(descriptor)
+            if (
+                create
+                and not existed
+                and opened.st_uid == _READINESS_AUTHORITY_UID
+                and opened.st_gid != _READINESS_AUTHORITY_GID
+            ):
+                os.fchown(descriptor, -1, _READINESS_AUTHORITY_GID)
+                opened = os.fstat(descriptor)
+            after = os.stat(
+                ".lock",
+                dir_fd=generation_fd,
+                follow_symlinks=False,
+            )
+        except OSError as exc:
+            if descriptor is not None:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            raise PhaseBError("phase_b_readiness_journal_lock_untrusted") from exc
+        assert descriptor is not None
+        identity = lambda value: (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_uid,
+            value.st_gid,
+            value.st_nlink,
+        )
+        if (
+            identity(opened) != identity(after)
+            or not stat.S_ISREG(opened.st_mode)
+            or stat.S_IMODE(opened.st_mode) != _JOURNAL_FILE_MODE
+            or opened.st_nlink != 1
+            or opened.st_uid != _READINESS_AUTHORITY_UID
+            or opened.st_gid != _READINESS_AUTHORITY_GID
+        ):
+            os.close(descriptor)
+            raise PhaseBError("phase_b_readiness_journal_lock_untrusted")
+        if create:
+            try:
+                os.fsync(descriptor)
+                cls._fsync_directory_handle(
+                    generation_fd,
+                    generation_path,
+                )
+            except OSError as exc:
+                os.close(descriptor)
+                raise PhaseBError(
+                    "phase_b_readiness_journal_lock_untrusted"
+                ) from exc
+        return descriptor
+
+    @contextmanager
+    def _exclusive_lock(self, foundation: PhaseBDurableFoundation) -> Iterator[None]:
+        _require_durable_foundation(foundation)
+        if fcntl is None:
+            raise PhaseBError("phase_b_posix_lock_unavailable")
+        self._require_writer_authority()
+        if self._lock_depth != 0:
+            raise PhaseBError("phase_b_readiness_journal_lock_reentrant")
+        root_fd = self._open_root_handle(create=True)
+        assert root_fd is not None
+        generation_path = self._generation_root(foundation)
+        generation_fd: int | None = None
+        descriptor: int | None = None
+        try:
+            generation_fd = self._ensure_child_directory_at(
+                root_fd,
+                foundation.generation_sha256,
+                parent_path=self.root,
+            )
+            descriptor = self._open_lock_at(
+                generation_fd,
+                create=True,
+                generation_path=generation_path,
+            )
+            fcntl.flock(descriptor, fcntl.LOCK_EX)
+            self._lock_depth = 1
+            self._lock_exclusive = True
+            self._active_root_fd = root_fd
+            self._active_generation_fd = generation_fd
+            self._recover_staging(foundation, generation_fd=generation_fd)
+            yield
+        finally:
+            try:
+                self._lock_depth = 0
+                self._lock_exclusive = False
+                self._active_root_fd = None
+                self._active_generation_fd = None
+                if descriptor is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+                if generation_fd is not None:
+                    os.close(generation_fd)
+                os.close(root_fd)
+
+    @contextmanager
+    def _shared_lock(self, foundation: PhaseBDurableFoundation) -> Iterator[None]:
+        _require_durable_foundation(foundation)
+        if fcntl is None:
+            raise PhaseBError("phase_b_posix_lock_unavailable")
+        if self._lock_depth != 0:
+            raise PhaseBError("phase_b_readiness_journal_lock_reentrant")
+        root_fd = self._open_root_handle(create=False)
+        if root_fd is None:
+            raise PhaseBError("phase_b_readiness_receipt_missing")
+        generation_fd = self._open_child_directory_at(
+            root_fd,
+            foundation.generation_sha256,
+            missing_ok=True,
+        )
+        if generation_fd is None:
+            os.close(root_fd)
+            raise PhaseBError("phase_b_readiness_receipt_missing")
+        descriptor: int | None = None
+        try:
+            descriptor = self._open_lock_at(
+                generation_fd,
+                create=False,
+                generation_path=self._generation_root(foundation),
+            )
+            fcntl.flock(descriptor, fcntl.LOCK_SH)
+            self._lock_depth = 1
+            self._lock_exclusive = False
+            self._active_root_fd = root_fd
+            self._active_generation_fd = generation_fd
+            yield
+        finally:
+            try:
+                self._lock_depth = 0
+                self._active_root_fd = None
+                self._active_generation_fd = None
+                if descriptor is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+            finally:
+                if descriptor is not None:
+                    os.close(descriptor)
+                os.close(generation_fd)
+                os.close(root_fd)
+
+    @staticmethod
+    def _read_canonical_file_at(
+        directory_fd: int,
+        name: str,
+        *,
+        expected_link_count: int = 1,
+    ) -> Mapping[str, Any]:
+        if expected_link_count not in {1, 2}:
+            raise PhaseBError("phase_b_readiness_journal_file_untrusted")
+        try:
+            before = os.stat(
+                name,
+                dir_fd=directory_fd,
+                follow_symlinks=False,
+            )
+            descriptor = os.open(
+                name,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory_fd,
+            )
+            try:
+                opened = os.fstat(descriptor)
+                chunks = bytearray()
+                while len(chunks) <= _MAX_JSON_BYTES:
+                    chunk = os.read(
+                        descriptor,
+                        min(1024 * 1024, _MAX_JSON_BYTES + 1 - len(chunks)),
+                    )
+                    if not chunk:
+                        break
+                    chunks.extend(chunk)
+                payload = bytes(chunks)
+                after = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+        except OSError as exc:
+            raise PhaseBError("phase_b_readiness_journal_read_failed") from exc
+        identity = lambda value: (
+            value.st_dev,
+            value.st_ino,
+            value.st_mode,
+            value.st_uid,
+            value.st_gid,
+            value.st_size,
+            value.st_mtime_ns,
+            value.st_ctime_ns,
+            value.st_nlink,
+        )
+        if (
+            identity(before) != identity(opened)
+            or identity(opened) != identity(after)
+            or stat.S_ISLNK(before.st_mode)
+            or not stat.S_ISREG(before.st_mode)
+            or stat.S_IMODE(before.st_mode) != _JOURNAL_FILE_MODE
+            or before.st_nlink != expected_link_count
+            or before.st_uid != _READINESS_AUTHORITY_UID
+            or before.st_gid != _READINESS_AUTHORITY_GID
+            or not payload
+            or len(payload) > _MAX_JSON_BYTES
+        ):
+            raise PhaseBError("phase_b_readiness_journal_file_untrusted")
+        try:
+            decoded = json.loads(payload.decode("utf-8"))
+        except (UnicodeError, json.JSONDecodeError) as exc:
+            raise PhaseBError("phase_b_readiness_journal_json_invalid") from exc
+        if not isinstance(decoded, Mapping) or _canonical_bytes(decoded) != payload:
+            raise PhaseBError("phase_b_readiness_journal_not_canonical")
+        return _json_copy(decoded)
+
+    def _recover_staging(
+        self,
+        foundation: PhaseBDurableFoundation,
+        *,
+        generation_fd: int,
+    ) -> None:
+        if self._lock_depth != 1 or not self._lock_exclusive:
+            raise PhaseBError("phase_b_readiness_journal_lock_required")
+        staging_fd = self._open_child_directory_at(
+            generation_fd,
+            "staging",
+            missing_ok=True,
+        )
+        if staging_fd is None:
+            return
+        entries_fd = self._open_child_directory_at(
+            generation_fd,
+            "entries",
+            missing_ok=True,
+        )
+        generation_path = self._generation_root(foundation)
+        staging_path = generation_path / "staging"
+        entries_path = generation_path / "entries"
+        try:
+            stages = sorted(os.listdir(staging_fd))
+            if not stages:
+                return
+            if len(stages) != 1 or entries_fd is None:
+                raise PhaseBError(
+                    "phase_b_readiness_journal_staging_conflict"
+                )
+            stage_name = stages[0]
+            match = re.fullmatch(
+                r"([0-9]{8})\.([0-9a-f]{32})\.stage",
+                stage_name,
+            )
+            if match is None:
+                raise PhaseBError(
+                    "phase_b_readiness_journal_staging_conflict"
+                )
+            sequence = int(match.group(1))
+            try:
+                before = os.stat(
+                    stage_name,
+                    dir_fd=staging_fd,
+                    follow_symlinks=False,
+                )
+                descriptor = os.open(
+                    stage_name,
+                    os.O_RDONLY
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    dir_fd=staging_fd,
+                )
+                try:
+                    opened = os.fstat(descriptor)
+                finally:
+                    os.close(descriptor)
+                after = os.stat(
+                    stage_name,
+                    dir_fd=staging_fd,
+                    follow_symlinks=False,
+                )
+            except OSError as exc:
+                raise PhaseBError(
+                    "phase_b_readiness_journal_read_failed"
+                ) from exc
+            identity = lambda value: (
+                value.st_dev,
+                value.st_ino,
+                value.st_mode,
+                value.st_uid,
+                value.st_gid,
+                value.st_size,
+                value.st_nlink,
+            )
+            if (
+                identity(before) != identity(opened)
+                or identity(opened) != identity(after)
+                or not stat.S_ISREG(opened.st_mode)
+                or stat.S_IMODE(opened.st_mode) != _JOURNAL_FILE_MODE
+                or opened.st_uid != _READINESS_AUTHORITY_UID
+                or opened.st_gid != _READINESS_AUTHORITY_GID
+                or opened.st_nlink not in {1, 2}
+            ):
+                raise PhaseBError(
+                    "phase_b_readiness_journal_staging_conflict"
+                )
+            final_names = sorted(os.listdir(entries_fd))
+            same_sequence = [
+                name
+                for name in final_names
+                if name.startswith(f"{sequence:08d}-")
+            ]
+            if opened.st_nlink == 1:
+                if same_sequence or sequence != len(final_names):
+                    raise PhaseBError(
+                        "phase_b_readiness_journal_staging_conflict"
+                    )
+                os.unlink(stage_name, dir_fd=staging_fd)
+                self._fsync_directory_handle(staging_fd, staging_path)
+                return
+
+            if len(same_sequence) != 1 or sequence != len(final_names) - 1:
+                raise PhaseBError(
+                    "phase_b_readiness_journal_staging_conflict"
+                )
+            value = self._read_canonical_file_at(
+                staging_fd,
+                stage_name,
+                expected_link_count=2,
+            )
+            issued_at = value.get("issued_at_unix")
+            revision = value.get("current_release_revision")
+            if type(issued_at) is not int or not isinstance(revision, str):
+                raise PhaseBError(
+                    "phase_b_readiness_journal_staging_conflict"
+                )
+            loaded = self._load_receipt_bytes_from_fd(
+                foundation,
+                entries_fd,
+                linked_sequence=sequence,
+            )
+            if not loaded or json.loads(loaded[-1].decode("utf-8")) != value:
+                raise PhaseBError(
+                    "phase_b_readiness_journal_staging_conflict"
+                )
+            receipt_sha256 = str(value.get("receipt_sha256"))
+            final_name = f"{sequence:08d}-{receipt_sha256}.json"
+            final_status = os.stat(
+                final_name,
+                dir_fd=entries_fd,
+                follow_symlinks=False,
+            )
+            if (
+                same_sequence != [final_name]
+                or final_status.st_nlink != 2
+                or (opened.st_dev, opened.st_ino)
+                != (final_status.st_dev, final_status.st_ino)
+            ):
+                raise PhaseBError(
+                    "phase_b_readiness_journal_staging_conflict"
+                )
+            # Retry the exact final publication barrier before discarding the
+            # only marker that distinguishes the linked crash window.
+            self._fsync_directory_handle(entries_fd, entries_path)
+            os.unlink(stage_name, dir_fd=staging_fd)
+            self._fsync_directory_handle(staging_fd, staging_path)
+            self._fsync_directory_handle(entries_fd, entries_path)
+        except OSError as exc:
+            raise PhaseBError(
+                "phase_b_readiness_journal_staging_conflict"
+            ) from exc
+        finally:
+            if entries_fd is not None:
+                os.close(entries_fd)
+            os.close(staging_fd)
+
+    def _load_receipt_bytes_from_fd(
+        self,
+        foundation: PhaseBDurableFoundation,
+        entries_fd: int,
+        *,
+        linked_sequence: int | None = None,
+    ) -> list[bytes]:
+        _require_durable_foundation(foundation)
+        try:
+            names = sorted(os.listdir(entries_fd))
+        except OSError as exc:
+            raise PhaseBError(
+                "phase_b_readiness_journal_unavailable"
+            ) from exc
+        receipts: list[bytes] = []
+        previous: str | None = None
+        previous_issued_at: int | None = None
+        previous_observed_at: int | None = None
+        for sequence, name in enumerate(names):
+            match = re.fullmatch(
+                r"([0-9]{8})-([0-9a-f]{64})\.json",
+                name,
+            )
+            if match is None or int(match.group(1)) != sequence:
+                raise PhaseBError("phase_b_readiness_journal_sequence_invalid")
+            value = self._read_canonical_file_at(
+                entries_fd,
+                name,
+                expected_link_count=(
+                    2 if linked_sequence == sequence else 1
+                ),
+            )
+            issued_at = value.get("issued_at_unix")
+            revision = value.get("current_release_revision")
+            if type(issued_at) is not int or not isinstance(revision, str):
+                raise PhaseBError("phase_b_readiness_receipt_invalid")
+            receipt = _validate_phase_b_readiness_receipt_mapping(
+                value,
+                foundation=foundation,
+                current_release_revision=revision,
+                expected_sequence=sequence,
+                expected_previous_receipt_sha256=previous,
+                now_unix=issued_at,
+            )
+            receipt_sha256 = str(receipt["receipt_sha256"])
+            if match.group(2) != receipt_sha256:
+                raise PhaseBError("phase_b_readiness_journal_path_invalid")
+            observed_at = int(value["observed_at_unix"])
+            if (
+                previous_issued_at is not None
+                and (
+                    issued_at < previous_issued_at
+                    or (
+                        previous_observed_at is not None
+                        and observed_at < previous_observed_at
+                    )
+                )
+            ):
+                raise PhaseBError("phase_b_readiness_journal_time_regressed")
+            receipts.append(_canonical_bytes(receipt))
+            previous = receipt_sha256
+            previous_issued_at = issued_at
+            previous_observed_at = observed_at
+        return receipts
+
+    def _load_receipt_bytes_unlocked(
+        self,
+        foundation: PhaseBDurableFoundation,
+    ) -> list[bytes]:
+        _require_durable_foundation(foundation)
+        if (
+            self._lock_depth != 1
+            or self._active_generation_fd is None
+        ):
+            raise PhaseBError("phase_b_readiness_journal_lock_required")
+        generation_fd = self._active_generation_fd
+        try:
+            names = set(os.listdir(generation_fd))
+        except OSError as exc:
+            raise PhaseBError(
+                "phase_b_readiness_journal_unavailable"
+            ) from exc
+        if not names.issubset({".lock", "entries", "staging"}):
+            raise PhaseBError("phase_b_readiness_journal_path_invalid")
+        staging_fd = self._open_child_directory_at(
+            generation_fd,
+            "staging",
+            missing_ok=True,
+        )
+        if staging_fd is not None:
+            try:
+                if os.listdir(staging_fd):
+                    raise PhaseBError(
+                        "phase_b_readiness_journal_staging_residue"
+                    )
+            finally:
+                os.close(staging_fd)
+        entries_fd = self._open_child_directory_at(
+            generation_fd,
+            "entries",
+            missing_ok=True,
+        )
+        if entries_fd is None:
+            return []
+        try:
+            return self._load_receipt_bytes_from_fd(
+                foundation,
+                entries_fd,
+            )
+        finally:
+            os.close(entries_fd)
+
+    def _load_unlocked(
+        self,
+        foundation: PhaseBDurableFoundation,
+    ) -> list[PhaseBReadinessReceipt]:
+        return _load_sealed_readiness_receipts(self, foundation)
+
+    def _append_unlocked(
+        self,
+        foundation: PhaseBDurableFoundation,
+        *,
+        observation: _PhaseBReadinessObservation,
+        current_release_revision: str,
+        now_unix: int,
+    ) -> PhaseBReadinessReceipt:
+        if (
+            self._lock_depth != 1
+            or not self._lock_exclusive
+            or self._active_generation_fd is None
+        ):
+            raise PhaseBError("phase_b_readiness_journal_lock_required")
+        self._require_writer_authority()
+        if not isinstance(observation, _PhaseBReadinessObservation):
+            raise TypeError("_PhaseBReadinessObservation is required")
+        _require_trusted_readiness_observation(observation)
+        generation_fd = self._active_generation_fd
+        generation_path = self._generation_root(foundation)
+        entries_path = self._entries_root(foundation)
+        staging_path = self._staging_root(foundation)
+        entries_fd = self._ensure_child_directory_at(
+            generation_fd,
+            "entries",
+            parent_path=generation_path,
+        )
+        try:
+            staging_fd = self._ensure_child_directory_at(
+                generation_fd,
+                "staging",
+                parent_path=generation_path,
+            )
+        except BaseException:
+            os.close(entries_fd)
+            raise
+        try:
+            self._recover_staging(
+                foundation,
+                generation_fd=generation_fd,
+            )
+            receipt_bytes = self._load_receipt_bytes_from_fd(
+                foundation,
+                entries_fd,
+            )
+            previous = None
+            if receipt_bytes:
+                previous_value = json.loads(
+                    receipt_bytes[-1].decode("utf-8")
+                )
+                previous = str(previous_value["receipt_sha256"])
+            receipt = _build_phase_b_readiness_receipt_mapping(
+                foundation,
+                observation=observation,
+                current_release_revision=current_release_revision,
+                sequence=len(receipt_bytes),
+                previous_receipt_sha256=previous,
+                now_unix=now_unix,
+            )
+            payload = _canonical_bytes(receipt)
+            stage_name = (
+                f"{len(receipt_bytes):08d}."
+                f"{secrets.token_hex(16)}.stage"
+            )
+            final_name = (
+                f"{len(receipt_bytes):08d}-"
+                f"{receipt['receipt_sha256']}.json"
+            )
+            descriptor = os.open(
+                stage_name,
+                os.O_WRONLY
+                | os.O_CREAT
+                | os.O_EXCL
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                _JOURNAL_FILE_MODE,
+                dir_fd=staging_fd,
+            )
+            try:
+                try:
+                    status = os.fstat(descriptor)
+                    if (
+                        status.st_uid == _READINESS_AUTHORITY_UID
+                        and status.st_gid != _READINESS_AUTHORITY_GID
+                    ):
+                        os.fchown(
+                            descriptor,
+                            -1,
+                            _READINESS_AUTHORITY_GID,
+                        )
+                        status = os.fstat(descriptor)
+                    if (
+                        not stat.S_ISREG(status.st_mode)
+                        or stat.S_IMODE(status.st_mode)
+                        != _JOURNAL_FILE_MODE
+                        or status.st_nlink != 1
+                        or status.st_uid != _READINESS_AUTHORITY_UID
+                        or status.st_gid != _READINESS_AUTHORITY_GID
+                    ):
+                        raise PhaseBError(
+                            "phase_b_readiness_journal_file_untrusted"
+                        )
+                    offset = 0
+                    while offset < len(payload):
+                        written = os.write(descriptor, payload[offset:])
+                        if written <= 0:
+                            raise PhaseBError(
+                                "phase_b_readiness_journal_write_failed"
+                            )
+                        offset += written
+                    os.fsync(descriptor)
+                except OSError as exc:
+                    raise PhaseBError(
+                        "phase_b_readiness_journal_write_failed"
+                    ) from exc
+            finally:
+                os.close(descriptor)
+            try:
+                self._fsync_directory_handle(staging_fd, staging_path)
+                os.link(
+                    stage_name,
+                    final_name,
+                    src_dir_fd=staging_fd,
+                    dst_dir_fd=entries_fd,
+                    follow_symlinks=False,
+                )
+                self._fsync_directory_handle(entries_fd, entries_path)
+            except FileExistsError as exc:
+                raise PhaseBError(
+                    "phase_b_readiness_journal_fork"
+                ) from exc
+            except OSError as exc:
+                raise PhaseBError(
+                    "phase_b_readiness_journal_publish_failed"
+                ) from exc
+            try:
+                os.unlink(stage_name, dir_fd=staging_fd)
+                self._fsync_directory_handle(staging_fd, staging_path)
+                # Removing the second link changes the final inode metadata.
+                # Retry this barrier after a crash before accepting readback.
+                self._fsync_directory_handle(entries_fd, entries_path)
+            except OSError as exc:
+                raise PhaseBError(
+                    "phase_b_readiness_journal_publish_failed"
+                ) from exc
+            loaded_bytes = self._load_receipt_bytes_from_fd(
+                foundation,
+                entries_fd,
+            )
+            if (
+                len(loaded_bytes) != len(receipt_bytes) + 1
+                or json.loads(loaded_bytes[-1].decode("utf-8"))
+                != receipt
+            ):
+                raise PhaseBError(
+                    "phase_b_readiness_journal_readback_failed"
+                )
+            loaded = self._load_unlocked(foundation)
+            if not loaded or loaded[-1].sha256 != receipt["receipt_sha256"]:
+                raise PhaseBError(
+                    "phase_b_readiness_journal_readback_failed"
+                )
+            return loaded[-1]
+        finally:
+            os.close(staging_fd)
+            os.close(entries_fd)
+
+    def _latest_fresh_unlocked(
+        self,
+        foundation: PhaseBDurableFoundation,
+        *,
+        expected_current_release_revision: str,
+        now_unix: int | None = None,
+    ) -> PhaseBReadinessReceipt:
+        revision = _revision(expected_current_release_revision)
+        receipts = self._load_unlocked(foundation)
+        if not receipts:
+            raise PhaseBError("phase_b_readiness_receipt_missing")
+        latest = receipts[-1]
+        value = latest.to_mapping()
+        if value["current_release_revision"] != revision:
+            raise PhaseBError("phase_b_readiness_release_mismatch")
+        previous = receipts[-2].sha256 if len(receipts) > 1 else None
+        validated = _validate_phase_b_readiness_receipt_mapping(
+            value,
+            foundation=foundation,
+            current_release_revision=revision,
+            expected_sequence=len(receipts) - 1,
+            expected_previous_receipt_sha256=previous,
+            now_unix=now_unix,
+        )
+        if validated != value:
+            raise PhaseBError("phase_b_readiness_receipt_invalid")
+        return latest
+
+
+def _install_readiness_receipt_boundary() -> tuple[
+    Callable[[Any, PhaseBDurableFoundation], list[PhaseBReadinessReceipt]],
+    Callable[[Any], None],
+]:
+    """Seal receipts only after the fixed journal has authenticated its files."""
+
+    authority_seal = object()
+    authentication_key = secrets.token_bytes(32)
+
+    def authenticate(value: Any) -> bytes:
+        encoded = getattr(value, "_value_bytes", None)
+        if not isinstance(encoded, bytes):
+            return b""
+        return hmac.new(
+            authentication_key,
+            encoded,
+            hashlib.sha256,
+        ).digest()
+
+    def require(value: Any) -> None:
+        if (
+            type(value) is not PhaseBReadinessReceipt
+            or getattr(value, "_authority_seal", None) is not authority_seal
+        ):
+            raise PhaseBError("phase_b_readiness_receipt_untrusted")
+        expected = authenticate(value)
+        observed = getattr(value, "_authority_tag", None)
+        if (
+            not isinstance(observed, bytes)
+            or not expected
+            or not hmac.compare_digest(observed, expected)
+        ):
+            raise PhaseBError("phase_b_readiness_receipt_untrusted")
+
+    def load(
+        journal: Any,
+        foundation: PhaseBDurableFoundation,
+    ) -> list[PhaseBReadinessReceipt]:
+        if type(journal) is not _PhaseBReadinessJournalFoundation:
+            raise PhaseBError("phase_b_readiness_journal_missing")
+        _require_durable_foundation(foundation)
+        encoded_values = (
+            _PhaseBReadinessJournalFoundation._load_receipt_bytes_unlocked(
+                journal,
+                foundation,
+            )
+        )
+        receipts: list[PhaseBReadinessReceipt] = []
+        for encoded in encoded_values:
+            issued = object.__new__(PhaseBReadinessReceipt)
+            object.__setattr__(issued, "_value_bytes", encoded)
+            object.__setattr__(issued, "_authority_seal", authority_seal)
+            object.__setattr__(issued, "_authority_tag", authenticate(issued))
+            require(issued)
+            receipts.append(issued)
+        return receipts
+
+    return load, require
+
+
+_load_sealed_readiness_receipts, _require_readiness_receipt = (
+    _install_readiness_receipt_boundary()
+)
+
+
+class AppendOnlyPhaseBReadinessJournal:
+    """Read-only view of the fixed root-owned readiness authority head."""
+
+    __slots__ = ("_journal",)
+
+    def __init__(self) -> None:
+        self._journal = _PhaseBReadinessJournalFoundation()
+
+    @property
+    def root(self) -> Path:
+        return self._journal.root
+
+    def latest_fresh(
+        self,
+        foundation: PhaseBDurableFoundation,
+        *,
+        expected_current_release_revision: str,
+        now_unix: int | None = None,
+    ) -> PhaseBReadinessReceipt:
+        with self._journal._shared_lock(foundation):
+            return self._journal._latest_fresh_unlocked(
+                foundation,
+                expected_current_release_revision=(
+                    expected_current_release_revision
+                ),
+                now_unix=now_unix,
+            )
+
+
+class _PhaseBReadinessWriterBoundary:
+    """Non-exported root-authority publication boundary.
+
+    The packaged fixed-target collector is invoked only by the closure-sealed
+    issuer above.  Ordinary application callers receive only the fixed-journal
+    reader and cannot turn a mapping into a publishable observation.
+    """
+
+    __slots__ = ("_journal",)
+
+    def __init__(self) -> None:
+        self._journal = _PhaseBReadinessJournalFoundation()
+
+    @property
+    def root(self) -> Path:
+        return self._journal.root
+
+    def publish(
+        self,
+        foundation: PhaseBDurableFoundation,
+        *,
+        observation: _PhaseBReadinessObservation,
+        current_release_revision: str,
+        now_unix: int,
+    ) -> PhaseBReadinessReceipt:
+        self._journal._require_writer_authority()
+        if not isinstance(observation, _PhaseBReadinessObservation):
+            raise TypeError("_PhaseBReadinessObservation is required")
+        _require_trusted_readiness_observation(observation)
+        with self._journal._exclusive_lock(foundation):
+            return self._journal._append_unlocked(
+                foundation,
+                observation=observation,
+                current_release_revision=current_release_revision,
+                now_unix=now_unix,
+            )
+
+
+def _build_phase_b_readiness_receipt_mapping(
+    foundation: PhaseBDurableFoundation,
+    *,
+    observation: _PhaseBReadinessObservation,
+    current_release_revision: str,
+    sequence: int,
+    previous_receipt_sha256: str | None,
+    now_unix: int | None = None,
+) -> dict[str, Any]:
+    """Build validated bytes for publication, never an in-memory authority."""
+
+    _require_durable_foundation(foundation)
+    if not isinstance(observation, _PhaseBReadinessObservation):
+        raise TypeError("_PhaseBReadinessObservation is required")
+    _require_trusted_readiness_observation(observation)
+    current = int(time.time()) if now_unix is None else now_unix
+    revision = _revision(current_release_revision)
+    validated_observation = _PhaseBReadinessObservation.from_mapping(
+        observation.to_mapping(),
+        foundation=foundation,
+        current_release_revision=revision,
+        now_unix=current,
+    )
+    expires_at = (
+        validated_observation.observed_at_unix
+        + PHASE_B_READINESS_MAX_AGE_SECONDS
+    )
+    unsigned = {
+        "schema": PHASE_B_READINESS_RECEIPT_SCHEMA,
+        "ok": True,
+        "state": "ready",
+        "safe_to_start": True,
+        "current_release_revision": revision,
+        "foundation_generation_sha256": foundation.generation_sha256,
+        "foundation_terminal_receipt_sha256": foundation.terminal_receipt[
+            "receipt_sha256"
+        ],
+        "sequence": sequence,
+        "previous_receipt_sha256": previous_receipt_sha256,
+        "readiness_observation": validated_observation.to_mapping(),
+        "readiness_observation_sha256": validated_observation.sha256,
+        "observed_at_unix": validated_observation.observed_at_unix,
+        "issued_at_unix": current,
+        "expires_at_unix": expires_at,
+        "secret_material_recorded": False,
+    }
+    return _validate_phase_b_readiness_receipt_mapping(
+        {**unsigned, "receipt_sha256": _sha256_json(unsigned)},
+        foundation=foundation,
+        current_release_revision=revision,
+        expected_sequence=sequence,
+        expected_previous_receipt_sha256=previous_receipt_sha256,
+        now_unix=current,
+    )
+
+
+def validate_published_phase_b_readiness_receipt(
+    value: Any,
+    *,
+    foundation: PhaseBDurableFoundation,
+    journal: AppendOnlyPhaseBReadinessJournal,
+    expected_current_release_revision: str,
+    now_unix: int | None = None,
+) -> PhaseBReadinessReceipt:
+    """Validate only the current head authenticated by the trusted journal."""
+
+    if not isinstance(journal, AppendOnlyPhaseBReadinessJournal):
+        raise PhaseBError("phase_b_readiness_journal_missing")
+    with journal._journal._shared_lock(foundation):
+        latest = journal._journal._latest_fresh_unlocked(
+            foundation,
+            expected_current_release_revision=(
+                expected_current_release_revision
+            ),
+            now_unix=now_unix,
+        )
+        if (
+            not isinstance(value, Mapping)
+            or _json_copy(value) != latest.to_mapping()
+        ):
+            raise PhaseBError("phase_b_readiness_receipt_not_current_head")
+        return latest
+
+
 def execute_approved_phase_b(
     plan: PhaseBPlan,
     *,
-    approval: Mapping[str, Any],
+    approval: Any,
     role_artifact: SealedSQLArtifact,
     journal: AppendOnlyPhaseBJournal,
     dependencies: PhaseBDependencies,
@@ -4122,32 +7877,39 @@ def execute_approved_phase_b(
         raise TypeError("PhaseBPlan is required")
     if not isinstance(journal, AppendOnlyPhaseBJournal):
         raise PhaseBError("phase_b_journal_missing")
-    deps = _require_dependencies(dependencies)
-    approved = PhaseBApproval.from_mapping(
-        approval,
+    approval_values = _approval_chain_values(approval)
+    entries = journal.load(plan)
+    if entries and entries[-1].event == "terminal":
+        durable = load_durable_phase_b_foundation(
+            plan,
+            approval=approval_values,
+            journal=journal,
+        )
+        return _json_copy(durable.terminal_receipt)
+
+    approvals = validate_phase_b_approval_chain(
+        approval_values,
         plan=plan,
         now_unix=int(_clock()),
+        require_fresh_head=True,
     )
+    approved = approvals[-1]
+    deps = _require_dependencies(dependencies)
     artifact = _validate_role_artifact(role_artifact, plan=plan)
 
     with journal.lock(plan):
         entries = journal.load(plan)
         if entries and entries[-1].event == "terminal":
-            receipt = entries[-1].evidence.get("terminal_receipt")
-            if not isinstance(receipt, Mapping):
-                raise PhaseBError("phase_b_terminal_receipt_missing")
-            bindings = _terminal_replay_bindings(entries, plan=plan)
-            return _json_copy(
-                _validate_terminal_receipt(
-                    receipt,
-                    plan=plan,
-                    approval=approved,
-                    **bindings,
-                )
+            durable = load_durable_phase_b_foundation(
+                plan,
+                approval=approval_values,
+                journal=journal,
             )
+            return _json_copy(durable.terminal_receipt)
         if not entries:
             journal.append(
                 plan,
+                approval=approved,
                 event="intent",
                 idempotency_key="approved-intent",
                 evidence={
@@ -4160,6 +7922,7 @@ def execute_approved_phase_b(
                 now_unix=int(_clock()),
             )
         events = journal.events(plan)
+        pending_transition = _pending_service_transition(journal, plan)
 
         execution_writer: ClosableSession | None = None
         try:
@@ -4197,27 +7960,35 @@ def execute_approved_phase_b(
         role_receipt: Mapping[str, Any] | None = None
         predelete_receipt: Mapping[str, Any] | None = None
         predelete_process_instance_sha256: str | None = None
-        needs_sql_admin = not {"role_ready", "predelete_verified"}.issubset(events)
+        needs_sql_admin = "role_ready" not in events
         try:
             if needs_sql_admin:
+                initial_admin_transition = (
+                    "phase_b_role_artifact"
+                    if pending_transition == "phase_b_role_artifact"
+                    else "temporary_admin_initial_authority"
+                )
                 _recheck_services(
                     plan, deps, journal,
-                    transition="temporary_admin_initial_authority",
+                    approval=approved,
+                    transition=initial_admin_transition,
                     clock=_clock,
                 )
                 initial_admin_boundary = deps.temporary_admin_factory(plan)
-                initial_admin_secret = _require_secret(deps.secret_factory())
                 _revalidate_approval(approved, plan, _clock)
-                initial_admin_authority = _provision_temporary_admin(
+                (
+                    initial_admin_authority,
+                    initial_admin_secret,
+                ) = _provision_temporary_admin(
                     initial_admin_boundary,
                     plan,
-                    initial_admin_secret,
                     before_mutation=lambda: _revalidate_approval(
                         approved, plan, _clock
                     ),
                 )
                 journal.append(
                     plan,
+                    approval=approved,
                     event="temporary_admin_authority",
                     idempotency_key=(
                         "temporary-admin-initial:"
@@ -4250,6 +8021,7 @@ def execute_approved_phase_b(
                     raise PhaseBError("phase_b_admin_session_missing")
                 _recheck_services(
                     plan, deps, journal,
+                    approval=approved,
                     transition="phase_b_role_artifact",
                     clock=_clock,
                 )
@@ -4268,6 +8040,7 @@ def execute_approved_phase_b(
                 )
                 journal.append(
                     plan,
+                    approval=approved,
                     event="role_ready",
                     idempotency_key="role:" + role_receipt["receipt_sha256"],
                     evidence={
@@ -4292,26 +8065,39 @@ def execute_approved_phase_b(
             self_disable_receipt: Mapping[str, Any]
             bootstrap_mutation_boundary: BootstrapLoginBoundary | None = None
             if "bootstrap_password_disabled" not in events:
+                bootstrap_transition = (
+                    "bootstrap_password_self_disable"
+                    if pending_transition == "bootstrap_password_self_disable"
+                    else (
+                        "bootstrap_login_rotation_authority"
+                        if "bootstrap_authority" in events
+                        else "bootstrap_login_authority"
+                    )
+                )
                 _recheck_services(
                     plan, deps, journal,
-                    transition="bootstrap_login_authority",
+                    approval=approved,
+                    transition=bootstrap_transition,
                     clock=_clock,
                 )
                 bootstrap_boundary = deps.bootstrap_login_factory(plan)
                 bootstrap_mutation_boundary = bootstrap_boundary
-                bootstrap_secret = _require_secret(deps.secret_factory())
+                bootstrap_secret: bytearray | None = None
                 try:
                     _revalidate_approval(approved, plan, _clock)
-                    bootstrap_authority = _provision_bootstrap_login(
+                    (
+                        bootstrap_authority,
+                        bootstrap_secret,
+                    ) = _provision_bootstrap_login(
                         bootstrap_boundary,
                         plan,
-                        bootstrap_secret,
                         before_mutation=lambda: _revalidate_approval(
                             approved, plan, _clock
                         ),
                     )
                     journal.append(
                         plan,
+                        approval=approved,
                         event="bootstrap_authority",
                         idempotency_key=(
                             "bootstrap-authority:"
@@ -4324,8 +8110,60 @@ def execute_approved_phase_b(
                         },
                         now_unix=int(_clock()),
                     )
+                    if bootstrap_authority["operation_type"] == "CREATE_USER":
+                        # The create proves existence; a separately observed
+                        # rotation is the fresh authority consumed by HBA and
+                        # self-disable.  Both Cloud mutations remain journaled.
+                        _recheck_services(
+                            plan,
+                            deps,
+                            journal,
+                            approval=approved,
+                            transition="bootstrap_login_rotation_authority",
+                            clock=_clock,
+                        )
+                        _revalidate_approval(approved, plan, _clock)
+                        previous_bootstrap_secret = bootstrap_secret
+                        (
+                            bootstrap_authority,
+                            bootstrap_secret,
+                        ) = _provision_bootstrap_login(
+                            bootstrap_boundary,
+                            plan,
+                            before_mutation=lambda: _revalidate_approval(
+                                approved, plan, _clock
+                            ),
+                        )
+                        if bootstrap_secret is previous_bootstrap_secret:
+                            raise PhaseBError(
+                                "phase_b_bootstrap_secret_replay_forbidden"
+                            )
+                        _zeroize(previous_bootstrap_secret)
+                        if bootstrap_authority["operation_type"] != "UPDATE_USER":
+                            raise PhaseBError(
+                                "phase_b_bootstrap_rotation_authority_missing"
+                            )
+                        journal.append(
+                            plan,
+                            approval=approved,
+                            event="bootstrap_authority",
+                            idempotency_key=(
+                                "bootstrap-authority:"
+                                + bootstrap_authority["receipt_sha256"]
+                            ),
+                            evidence={
+                                "authority_receipt": bootstrap_authority,
+                                "preterminal": True,
+                                "safe_to_start": False,
+                            },
+                            now_unix=int(_clock()),
+                        )
                     hba_receipt = _validate_hba_receipt(
-                        deps.hba_collector(plan, bootstrap_secret, bootstrap_authority),
+                        deps.hba_collector(
+                            plan,
+                            _require_secret(bootstrap_secret),
+                            bootstrap_authority,
+                        ),
                         plan=plan,
                         authority=bootstrap_authority,
                     )
@@ -4336,6 +8174,7 @@ def execute_approved_phase_b(
                         raise PhaseBError("phase_b_hba_receipt_stale")
                     journal.append(
                         plan,
+                        approval=approved,
                         event="bootstrap_hba_rejected",
                         idempotency_key="hba:" + hba_receipt["receipt_sha256"],
                         evidence={
@@ -4347,6 +8186,7 @@ def execute_approved_phase_b(
                     )
                     _recheck_services(
                         plan, deps, journal,
+                        approval=approved,
                         transition="bootstrap_password_self_disable",
                         clock=_clock,
                     )
@@ -4354,7 +8194,9 @@ def execute_approved_phase_b(
                     self_disable_receipt = _validate_self_disable_receipt(
                         deps.bootstrap_self_disable.disable_and_prove_denied(
                             plan=plan,
-                            provisional_password=bootstrap_secret,
+                            provisional_password=_require_secret(
+                                bootstrap_secret
+                            ),
                             authority_receipt=bootstrap_authority,
                             hba_rejection_receipt=hba_receipt,
                             statement=SELF_DISABLE_SQL,
@@ -4372,6 +8214,7 @@ def execute_approved_phase_b(
                         )
                     journal.append(
                         plan,
+                        approval=approved,
                         event="bootstrap_password_disabled",
                         idempotency_key=(
                             "bootstrap-disabled:"
@@ -4411,6 +8254,50 @@ def execute_approved_phase_b(
                 )
 
             if "predelete_verified" not in events:
+                if admin_session is None:
+                    _recheck_services(
+                        plan,
+                        deps,
+                        journal,
+                        approval=approved,
+                        transition="temporary_admin_initial_authority",
+                        clock=_clock,
+                    )
+                    initial_admin_boundary = deps.temporary_admin_factory(plan)
+                    _revalidate_approval(approved, plan, _clock)
+                    (
+                        initial_admin_authority,
+                        initial_admin_secret,
+                    ) = _provision_temporary_admin(
+                        initial_admin_boundary,
+                        plan,
+                        before_mutation=lambda: _revalidate_approval(
+                            approved, plan, _clock
+                        ),
+                    )
+                    journal.append(
+                        plan,
+                        approval=approved,
+                        event="temporary_admin_authority",
+                        idempotency_key=(
+                            "temporary-admin-initial:"
+                            + initial_admin_authority["receipt_sha256"]
+                        ),
+                        evidence={
+                            "purpose": "foundation_sql",
+                            "authority_receipt": initial_admin_authority,
+                            "preterminal": True,
+                            "safe_to_start": False,
+                        },
+                        now_unix=int(_clock()),
+                    )
+                    admin_session = deps.admin_session_factory(
+                        plan,
+                        plan.temporary_admin_username,
+                        initial_admin_secret,
+                    )
+                    if admin_session.username != plan.temporary_admin_username:
+                        raise PhaseBError("phase_b_admin_session_invalid")
                 if admin_session is None or role_receipt is None:
                     raise PhaseBError("phase_b_admin_session_missing")
                 predelete_receipt = _validate_predelete_receipt(
@@ -4428,6 +8315,7 @@ def execute_approved_phase_b(
                 )
                 journal.append(
                     plan,
+                    approval=approved,
                     event="predelete_verified",
                     idempotency_key="predelete:" + predelete_receipt["receipt_sha256"],
                     evidence={
@@ -4470,6 +8358,7 @@ def execute_approved_phase_b(
             ):
                 journal.append(
                     plan,
+                    approval=approved,
                     event="temporary_admin_closed",
                     idempotency_key=(
                         "temporary-admin-closed:"
@@ -4502,6 +8391,7 @@ def execute_approved_phase_b(
                 raise PhaseBError("phase_b_admin_session_close_unproven")
             journal.append(
                 plan,
+                approval=approved,
                 event="temporary_admin_closed",
                 idempotency_key="temporary-admin-closed:recovered-process",
                 evidence={
@@ -4524,21 +8414,30 @@ def execute_approved_phase_b(
             events = journal.events(plan)
 
         if "temporary_admin_absent" not in events:
+            deletion_reacquire_transition = (
+                "temporary_admin_delete"
+                if _pending_service_transition(journal, plan)
+                == "temporary_admin_delete"
+                else "temporary_admin_predelete_reacquire"
+            )
             _recheck_services(
                 plan, deps, journal,
-                transition="temporary_admin_predelete_reacquire",
+                approval=approved,
+                transition=deletion_reacquire_transition,
                 clock=_clock,
             )
             deletion_boundary = deps.temporary_admin_factory(plan)
             if deletion_boundary is initial_admin_boundary:
                 raise PhaseBError("phase_b_delete_boundary_not_fresh")
-            deletion_secret = _require_secret(deps.secret_factory())
+            deletion_secret: bytearray | None = None
             try:
                 _revalidate_approval(approved, plan, _clock)
-                deletion_admin_authority = _provision_temporary_admin(
+                (
+                    deletion_admin_authority,
+                    deletion_secret,
+                ) = _provision_temporary_admin(
                     deletion_boundary,
                     plan,
-                    deletion_secret,
                     before_mutation=lambda: _revalidate_approval(
                         approved, plan, _clock
                     ),
@@ -4549,6 +8448,7 @@ def execute_approved_phase_b(
                     raise PhaseBError("phase_b_delete_authority_not_fresh")
                 journal.append(
                     plan,
+                    approval=approved,
                     event="temporary_admin_predelete_authority",
                     idempotency_key=(
                         "temporary-admin-predelete:"
@@ -4566,6 +8466,7 @@ def execute_approved_phase_b(
                 _zeroize(deletion_secret)
             _recheck_services(
                 plan, deps, journal,
+                approval=approved,
                 transition="temporary_admin_delete",
                 clock=_clock,
             )
@@ -4580,6 +8481,7 @@ def execute_approved_phase_b(
             )
             journal.append(
                 plan,
+                approval=approved,
                 event="temporary_admin_absent",
                 idempotency_key="admin-absent:" + absence_receipt["evidence_sha256"],
                 evidence={
@@ -4632,11 +8534,14 @@ def execute_approved_phase_b(
                 ),
                 plan=plan,
                 execution_preflight_session_sha256=execution_session_sha,
+                expected_bootstrap_authority=post_disable_authority,
+                expected_absence_receipt=absence_receipt,
             )
         finally:
             _safe_close(terminal_writer)
         terminal_services = _recheck_services(
             plan, deps, journal,
+            approval=approved,
             transition="terminal_observation",
             clock=_clock,
         )
@@ -4644,8 +8549,17 @@ def execute_approved_phase_b(
             terminal_services
         ):
             raise PhaseBError("phase_b_terminal_services_drifted")
+        terminal_observed_at = int(_clock())
+        PhaseBApproval.from_mapping(
+            approved.to_mapping(),
+            plan=plan,
+            now_unix=terminal_observed_at,
+        )
+        if terminal_observation["observed_at_unix"] > terminal_observed_at:
+            raise PhaseBError("phase_b_terminal_observation_in_future")
         journal.append(
             plan,
+            approval=approved,
             event="terminal_observed",
             idempotency_key="terminal-observed:" + terminal_observation["observation_sha256"],
             evidence={
@@ -4653,10 +8567,16 @@ def execute_approved_phase_b(
                 "preterminal": True,
                 "safe_to_start": False,
             },
-            now_unix=int(_clock()),
+            now_unix=terminal_observed_at,
         )
         if initial_admin_authority is None or role_receipt is None or predelete_receipt is None:
             raise PhaseBError("phase_b_terminal_evidence_incomplete")
+        terminal_at = int(_clock())
+        PhaseBApproval.from_mapping(
+            approved.to_mapping(),
+            plan=plan,
+            now_unix=terminal_at,
+        )
         terminal_receipt = _terminal_receipt(
             plan=plan,
             approval=approved,
@@ -4671,37 +8591,64 @@ def execute_approved_phase_b(
             absence_receipt=absence_receipt,
             terminal_observation=terminal_observation,
             services=terminal_services,
-            now_unix=int(_clock()),
+            now_unix=terminal_at,
         )
         journal.append(
             plan,
+            approval=approved,
             event="terminal",
             idempotency_key="terminal:" + terminal_receipt["receipt_sha256"],
             evidence={"terminal_receipt": terminal_receipt},
-            now_unix=int(_clock()),
+            now_unix=terminal_at,
         )
-        return _json_copy(terminal_receipt)
+        durable = load_durable_phase_b_foundation(
+            plan,
+            approval=approval_values,
+            journal=journal,
+        )
+        return _json_copy(durable.terminal_receipt)
 
 
 __all__ = [
     "AppendOnlyPhaseBJournal",
+    "AppendOnlyPhaseBReadinessJournal",
     "PHASE_B_APPROVAL_SCHEMA",
+    "PHASE_B_APPROVAL_SSHSIG_NAMESPACE",
+    "PHASE_B_BOOTSTRAP_CONTINUITY_SCHEMA",
+    "PHASE_B_DURABLE_FOUNDATION_SCHEMA",
     "PHASE_B_HBA_RECEIPT_SCHEMA",
     "PHASE_B_PLAN_SCHEMA",
     "PHASE_B_PREFLIGHT_SCHEMA",
     "PHASE_B_PREDELETE_SCHEMA",
+    "PHASE_B_READINESS_MAX_AGE_SECONDS",
+    "PHASE_B_READINESS_OBSERVATION_SCHEMA",
+    "PHASE_B_READINESS_RECEIPT_SCHEMA",
     "PHASE_B_RECOVERY_SCHEMA",
     "PHASE_B_SELF_DISABLE_SCHEMA",
+    "PHASE_B_SOURCE_AUTH_SCHEMA",
+    "PHASE_B_SOURCE_AUTH_SSHSIG_NAMESPACE",
     "PHASE_B_TERMINAL_OBSERVATION_SCHEMA",
     "PHASE_B_TERMINAL_RECEIPT_SCHEMA",
     "PhaseBApproval",
+    "PhaseBBootstrapRuntimeContinuity",
     "PhaseBDependencies",
+    "PhaseBDurableFoundation",
     "PhaseBError",
     "PhaseBPlan",
     "PhaseBPreflight",
     "PhaseBRecoveryObservation",
+    "PhaseBReadinessReceipt",
     "SELF_DISABLE_SQL",
     "SERVICE_UNITS",
     "build_phase_b_plan",
+    "build_phase_b_terminal_bootstrap_continuity",
     "execute_approved_phase_b",
+    "load_durable_phase_b_foundation",
+    "phase_b_approval_signature_payload",
+    "phase_b_source_authentication_signature_payload",
+    "validate_phase_b_approval_chain",
+    "validate_phase_b_pending_source_authentication",
+    "validate_phase_b_source_authentication",
+    "validate_published_phase_b_readiness_receipt",
+    "verify_phase_b_sshsig",
 ]

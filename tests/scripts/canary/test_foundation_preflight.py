@@ -2,7 +2,15 @@ from __future__ import annotations
 
 import pytest
 
-from scripts.canary.foundation import FoundationSpec, build_plan
+from scripts.canary.foundation import (
+    CLOUDSQL_READINESS_CONDITION_DESCRIPTION,
+    CLOUDSQL_READINESS_CONDITION_TITLE,
+    CLOUDSQL_READINESS_PERMISSION,
+    CLOUDSQL_READINESS_ROLE_DESCRIPTION,
+    CLOUDSQL_READINESS_ROLE_TITLE,
+    FoundationSpec,
+    build_plan,
+)
 from scripts.canary.foundation_preflight import REQUIRED_SERVICES, collect, evaluate
 
 
@@ -13,6 +21,7 @@ def _evidence():
         "project": "adventico-ai-platform",
         "enabled_services": [{"config": {"name": name}} for name in REQUIRED_SERVICES],
         "service_accounts": [],
+        "custom_roles": [],
         "sql_instances": [{"name": "ai-platform-postgres"}],
         "secrets": [{"name": "projects/p/secrets/ai-platform-db-password"}],
         "planned_routes": [],
@@ -98,6 +107,14 @@ def _exact_foundation():
             "service_accounts": [
                 {"email": spec.service_account_email, "disabled": False}
             ],
+            "custom_roles": [{"name": spec.cloudsql_readiness_role}],
+            "planned_cloudsql_readiness_role": {
+                "name": spec.cloudsql_readiness_role,
+                "title": CLOUDSQL_READINESS_ROLE_TITLE,
+                "description": CLOUDSQL_READINESS_ROLE_DESCRIPTION,
+                "stage": "GA",
+                "includedPermissions": [CLOUDSQL_READINESS_PERMISSION],
+            },
             "planned_service_account_keys": [{"keyType": "SYSTEM_MANAGED"}],
             "project_iam_policy": {
                 "bindings": [
@@ -108,6 +125,15 @@ def _exact_foundation():
                     {
                         "role": "roles/monitoring.metricWriter",
                         "members": [f"serviceAccount:{spec.service_account_email}"],
+                    },
+                    {
+                        "role": spec.cloudsql_readiness_role,
+                        "members": [f"serviceAccount:{spec.service_account_email}"],
+                        "condition": {
+                            "title": CLOUDSQL_READINESS_CONDITION_TITLE,
+                            "description": CLOUDSQL_READINESS_CONDITION_DESCRIPTION,
+                            "expression": spec.cloudsql_readiness_condition_expression,
+                        },
                     },
                 ]
             },
@@ -205,6 +231,35 @@ def test_user_managed_runtime_service_account_key_fails_closed():
 
     failed = {check["name"] for check in report["checks"] if not check["passed"]}
     assert "resource.service_account_absent_or_exact" in failed
+
+
+def test_broad_or_unconditional_cloudsql_authority_fails_closed():
+    evidence = _exact_foundation()
+    spec = FoundationSpec()
+    binding = next(
+        item
+        for item in evidence["project_iam_policy"]["bindings"]
+        if item["role"] == spec.cloudsql_readiness_role
+    )
+    binding.pop("condition")
+
+    report = evaluate(evidence)
+
+    failed = {check["name"] for check in report["checks"] if not check["passed"]}
+    assert "resource.service_account_absent_or_exact" in failed
+
+
+def test_custom_readiness_role_with_extra_permission_fails_closed():
+    evidence = _exact_foundation()
+    evidence["planned_cloudsql_readiness_role"]["includedPermissions"].append(
+        "cloudsql.instances.update"
+    )
+
+    report = evaluate(evidence)
+
+    failed = {check["name"] for check in report["checks"] if not check["passed"]}
+    assert "resource.cloudsql_readiness_role_absent_or_exact" in failed
+    assert "resource.foundation_dependency_order_exact" in failed
 
 
 def test_production_vpc_peering_or_route_fails_closed():

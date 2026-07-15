@@ -7,7 +7,7 @@ import json
 import subprocess
 import time
 from dataclasses import asdict, dataclass
-from typing import Mapping, Sequence
+from typing import Callable, Mapping, Sequence
 
 from scripts.canary.foundation import (
     NETWORK,
@@ -187,7 +187,7 @@ def _foundation_complete(
     if not isinstance(report, Mapping):
         return False, False, None
     complete = bool(
-        report.get("schema") == "muncho-isolated-canary-foundation-preflight.v2"
+        report.get("schema") == "muncho-isolated-canary-foundation-preflight.v3"
         and report.get("ok") is True
         and report.get("plan_sha256") == plan.sha256
         and report.get("satisfied_steps") == expected_steps
@@ -350,14 +350,17 @@ def _run_json(argv: Sequence[str]) -> object:
     return json.loads(completed.stdout or "null")
 
 
-def collect() -> dict[str, object]:
+CommandRunner = Callable[[Sequence[str]], object]
+
+
+def collect(*, run_json: CommandRunner = _run_json) -> dict[str, object]:
     project_flag = f"--project={PROJECT}"
     service_account = f"{SERVICE_ACCOUNT_NAME}@{PROJECT}.iam.gserviceaccount.com"
-    foundation_report = evaluate_foundation(collect_foundation())
+    foundation_report = evaluate_foundation(collect_foundation(run_json=run_json))
     return {
         "collected_at_unix": int(time.time()),
         "foundation_report": foundation_report,
-        "sql": _run_json(
+        "sql": run_json(
             (
                 "gcloud",
                 "sql",
@@ -368,7 +371,7 @@ def collect() -> dict[str, object]:
                 "--format=json",
             )
         ),
-        "service_account": _run_json(
+        "service_account": run_json(
             (
                 "gcloud",
                 "iam",
@@ -379,7 +382,7 @@ def collect() -> dict[str, object]:
                 "--format=json",
             )
         ),
-        "firewalls": _run_json(
+        "firewalls": run_json(
             (
                 "gcloud",
                 "compute",
@@ -389,7 +392,7 @@ def collect() -> dict[str, object]:
                 "--format=json",
             )
         ),
-        "effective_firewalls": _run_json(
+        "effective_firewalls": run_json(
             (
                 "gcloud",
                 "compute",

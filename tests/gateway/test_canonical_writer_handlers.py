@@ -37,8 +37,9 @@ SOURCE_HASH = "c" * 64
 ROUTEBACK_CONTENT = "Exact handler route-back content"
 CONTENT_HASH = hashlib.sha256(ROUTEBACK_CONTENT.encode("utf-8")).hexdigest()
 CAPABILITY_EPOCH_HASH = "e" * 64
-DISCORD_GUILD_ID = "100000000000000001"
+DISCORD_GUILD_ID = "1282725267068157972"
 DISCORD_CHANNEL_ID = "100000000000000002"
+SYNTHETIC_CANARY_CHANNEL_ID = "1526858760100909066"
 DISCORD_MESSAGE_ID = "100000000000000003"
 DISCORD_BOT_ID = "100000000000000004"
 WRITER_PRIVATE_KEY = Ed25519PrivateKey.generate()
@@ -86,7 +87,8 @@ def _routeback_claim_payload(*, case_id="case:1", key="routeback:1"):
     return {
         "case_id": case_id,
         "target_ref": {
-            "target_type": "public_guild_channel",
+            "target_type": "guild_channel",
+            "channel_type": "guild_channel",
             "guild_id": DISCORD_GUILD_ID,
             "channel_id": DISCORD_CHANNEL_ID,
         },
@@ -100,7 +102,7 @@ def _routeback_claim_payload(*, case_id="case:1", key="routeback:1"):
         "discord_edge_intent": {
             "operation": "public.message.send",
             "target": {
-                "target_type": "public_guild_channel",
+                "target_type": "guild_channel",
                 "guild_id": DISCORD_GUILD_ID,
                 "channel_id": DISCORD_CHANNEL_ID,
             },
@@ -949,6 +951,98 @@ def test_routeback_claim_recursively_blocks_all_dm_reference_shapes(forbidden_ta
     assert response["error"]["code"] == "dm_forbidden"
 
 
+def test_routeback_claim_accepts_only_the_exact_synthetic_public_exception():
+    handlers, backend = _handlers()
+    claim = _routeback_claim_payload(key="routeback:synthetic-canary")
+    claim["target_ref"] = {
+        "target_type": "public_guild_channel",
+        "channel_type": "public_guild_channel",
+        "guild_id": DISCORD_GUILD_ID,
+        "channel_id": SYNTHETIC_CANARY_CHANNEL_ID,
+    }
+    claim["execution_binding"]["target_channel_id"] = SYNTHETIC_CANARY_CHANNEL_ID
+    claim["discord_edge_intent"]["target"] = {
+        "target_type": "public_guild_channel",
+        "guild_id": DISCORD_GUILD_ID,
+        "channel_id": SYNTHETIC_CANARY_CHANNEL_ID,
+    }
+
+    response = handlers.dispatch(
+        CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
+        claim,
+        runtime=_runtime(),
+    )
+
+    assert response["ok"] is True
+    assert response["result"]["target_ref"] == claim["target_ref"]
+    assert len(backend.store.routeback_authorizations) == 1
+
+
+@pytest.mark.parametrize(
+    "target_ref",
+    [
+        {
+            "target_type": "guild_channel",
+            "channel_type": "guild_channel",
+            "guild_id": "1282725267068157973",
+            "channel_id": DISCORD_CHANNEL_ID,
+        },
+        {
+            "target_type": "public_guild_channel",
+            "channel_type": "public_guild_channel",
+            "guild_id": DISCORD_GUILD_ID,
+            "channel_id": DISCORD_CHANNEL_ID,
+        },
+        {
+            "target_type": "public_guild_thread",
+            "channel_type": "public_guild_thread",
+            "guild_id": DISCORD_GUILD_ID,
+            "channel_id": SYNTHETIC_CANARY_CHANNEL_ID,
+            "parent_channel_id": DISCORD_CHANNEL_ID,
+        },
+        {
+            "target_type": "guild_thread",
+            "channel_type": "guild_thread",
+            "guild_id": DISCORD_GUILD_ID,
+            "channel_id": DISCORD_CHANNEL_ID,
+        },
+        {
+            "target_type": "guild_channel",
+            "channel_type": "guild_thread",
+            "guild_id": DISCORD_GUILD_ID,
+            "channel_id": DISCORD_CHANNEL_ID,
+        },
+        {
+            "target_type": "guild_channel",
+            "channel_type": "guild_channel",
+            "guild_id": DISCORD_GUILD_ID,
+            "channel_id": DISCORD_CHANNEL_ID,
+            "thread_id": "100000000000000099",
+        },
+        {
+            "target_type": "guild_channel",
+            "channel_type": "guild_channel",
+            "guild_id": DISCORD_GUILD_ID,
+            "channel_id": DISCORD_CHANNEL_ID,
+            "chat_id": "100000000000000099",
+        },
+    ],
+)
+def test_routeback_claim_rejects_invalid_guild_target_shapes(target_ref):
+    handlers, backend = _handlers()
+    claim = _routeback_claim_payload(key="routeback:invalid-target-shape")
+    claim["target_ref"] = target_ref
+
+    response = handlers.dispatch(
+        CanonicalWriterOperation.ROUTEBACK_CLAIM.value,
+        claim,
+        runtime=_runtime(),
+    )
+
+    assert response["error"]["code"] == "invalid_request"
+    assert backend.store.routeback_authorizations == {}
+
+
 def test_idempotency_key_uses_the_same_utf8_byte_bound_as_transport():
     handlers, _ = _handlers()
     payload = _routeback_claim_payload()
@@ -1226,7 +1320,7 @@ def test_active_plan_recheck_and_supersession_revoke_old_capability():
     assert backend.store.capabilities["approval:1"]["state"] == "revoked"
 
 
-def test_same_plan_later_revision_invalidates_exact_revision_capability():
+def test_same_plan_progress_revision_preserves_only_preapproved_command_hashes():
     handlers, backend = _handlers()
     runtime = _runtime()
     _seed_active_plan(handlers, runtime)
@@ -1244,14 +1338,25 @@ def test_same_plan_later_revision_invalidates_exact_revision_capability():
         key="plan:1:r2:active",
     )["ok"]
 
+    unapproved = handlers.dispatch(
+        CanonicalWriterOperation.CAPABILITY_CONSUME.value,
+        {
+            "command_sha256": "f" * 64,
+            "idempotency_key": "revision-two-unapproved-command",
+        },
+        runtime=runtime,
+    )
     consumed = handlers.dispatch(
         CanonicalWriterOperation.CAPABILITY_CONSUME.value,
-        _consume_payload(key="stale-revision"),
+        _consume_payload(key="same-plan-progress"),
         runtime=runtime,
     )
 
-    assert consumed["error"]["code"] == "capability_missing"
-    assert backend.store.capabilities["approval:1"]["state"] == "revoked"
+    assert unapproved["error"]["code"] == "capability_missing"
+    assert consumed["result"]["authorized"] is True
+    assert consumed["result"]["plan_revision"] == 1
+    assert consumed["result"]["active_plan_revision"] == 2
+    assert backend.store.capabilities["approval:1"]["state"] == "granted"
 
 
 def test_revoke_tombstone_blocks_later_grants_in_same_routing_epoch():
@@ -1322,7 +1427,6 @@ def test_session_revoke_and_projection_read_are_bounded_typed_ops():
         "inserted": True,
         "deduped": False,
         "revoked": 1,
-        "canary_scopes_revoked": 0,
     }
     assert projected["ok"] is True
     assert 1 <= len(projected["result"]["events"]) <= 10

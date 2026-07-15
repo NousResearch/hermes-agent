@@ -20,7 +20,7 @@ from typing import Any, Mapping
 _EFFORT_ORDER = ("low", "medium", "high", "xhigh", "max")
 _EFFORT_INDEX = {value: index for index, value in enumerate(_EFFORT_ORDER)}
 _DEFAULT_BASELINE = "high"
-_DEFAULT_CAP = "xhigh"
+_DEFAULT_CAP = "max"
 _MAX_CHANGES_PER_TURN = 4
 _CODEX_BASE_URL = "https://chatgpt.com/backend-api/codex"
 _POLICY_KEYS = frozenset({"enabled", "max_effort"})

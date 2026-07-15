@@ -451,6 +451,7 @@ def test_build_wires_existing_journal_token_adapter_runtime_and_exact_peer(
             "credentials_directory": config.credentials_directory,
             "expected_owner_uid": config.edge_uid,
             "timeout_seconds": config.api_timeout_seconds,
+            "target_policy": "public_only",
         },
     )]
     assert isinstance(built.runtime, DiscordEdgeRuntime)

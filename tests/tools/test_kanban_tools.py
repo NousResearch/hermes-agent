@@ -739,7 +739,7 @@ def test_block_goal_mode_rejects_missing_kind(monkeypatch, tmp_path):
 
 def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
     """`capability` / `transient` are valid kinds in general but must not
-    let a goal_mode worker exit the loop without going through the judge."""
+    let a goal_mode worker exit without an allowed structured terminal state."""
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 

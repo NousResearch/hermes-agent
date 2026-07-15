@@ -209,6 +209,54 @@ async def test_run_agent_passes_priority_processing_to_gateway_agent(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_runtime_resolution_failure_is_structured_and_secret_safe(
+    monkeypatch, tmp_path
+):
+    _install_fake_agent(monkeypatch)
+    runner = _make_runner()
+    runner._resolve_session_agent_runtime = MagicMock(
+        side_effect=RuntimeError(
+            "authentication rejected for sk-secret-must-not-leak"
+        )
+    )
+
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_env_path", tmp_path / ".env")
+    monkeypatch.setattr(
+        gateway_run, "load_dotenv", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(
+        gateway_run, "_load_gateway_runtime_config", lambda: {}
+    )
+
+    import hermes_cli.tools_config as tools_config
+
+    monkeypatch.setattr(
+        tools_config,
+        "_get_platform_tools",
+        lambda user_config, platform_key: {"core"},
+    )
+
+    result = await runner._run_agent(
+        message="ping",
+        context_prompt="",
+        history=[],
+        source=_make_source(),
+        session_id="session-1",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["completed"] is False
+    assert result["failed"] is True
+    assert result["partial"] is False
+    assert result["error"] == "provider_runtime_resolution_failed"
+    assert result["api_calls"] == 0
+    assert "Provider runtime unavailable" in result["final_response"]
+    assert "sk-secret-must-not-leak" not in result["final_response"]
+
+
+@pytest.mark.asyncio
 async def test_run_agent_passes_discord_auto_thread_title_callback(monkeypatch, tmp_path):
     _install_fake_agent(monkeypatch)
     runner = _make_runner()

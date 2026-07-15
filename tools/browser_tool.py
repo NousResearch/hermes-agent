@@ -51,6 +51,7 @@ Usage:
 
 import atexit
 import functools
+import hashlib
 import json
 import logging
 import os
@@ -144,9 +145,22 @@ from tools.tool_backend_helpers import normalize_browser_cloud_provider
 # When CAMOFOX_URL is set, all browser operations route through the
 # camofox REST API instead of the agent-browser CLI.
 try:
-    from tools.browser_camofox import is_camofox_mode as _is_camofox_mode
+    from tools.browser_camofox import is_camofox_mode as _configured_camofox_mode
 except ImportError:
-    _is_camofox_mode = lambda: False  # noqa: E731
+    _configured_camofox_mode = lambda: False  # noqa: E731
+
+
+def _is_camofox_mode() -> bool:
+    """Return Camofox mode unless the exclusive controller was requested."""
+
+    try:
+        from tools.browser_controller_client import controller_mode_requested
+
+        if controller_mode_requested():
+            return False
+    except Exception:
+        pass
+    return bool(_configured_camofox_mode())
 
 logger = logging.getLogger(__name__)
 
@@ -459,6 +473,17 @@ def _get_cdp_override() -> str:
     launcher and connect directly to the supplied Chrome DevTools Protocol
     endpoint.
     """
+    # A configured controller is the exclusive browser execution boundary.
+    # Never discover or expose a raw CDP endpoint in that mode; this also
+    # makes the service-gated browser_cdp tool disappear from the model schema.
+    try:
+        from tools.browser_controller_client import controller_mode_requested
+
+        if controller_mode_requested():
+            return ""
+    except Exception:
+        pass
+
     env_override = os.environ.get("BROWSER_CDP_URL", "").strip()
     if env_override:
         return _resolve_cdp_override(env_override)
@@ -780,6 +805,13 @@ def _termux_browser_install_error() -> str:
 
 def _is_local_mode() -> bool:
     """Return True when the browser tool will use a local browser backend."""
+    try:
+        from tools.browser_controller_client import controller_mode_requested
+
+        if controller_mode_requested():
+            return False
+    except Exception:
+        pass
     if _get_cdp_override():
         return False
     return _get_cloud_provider() is None
@@ -800,6 +832,16 @@ def _is_local_backend() -> bool:
     that the terminal cannot.  In this case, SSRF protection should be
     enabled even though the browser is technically "local".
     """
+    try:
+        from tools.browser_controller_client import controller_mode_requested
+
+        if controller_mode_requested():
+            # The dedicated controller has a stronger public-only network
+            # boundary than the historical trusted-local browser path.
+            return False
+    except Exception:
+        pass
+
     # A CDP override points the browser at a separate Chrome process whose
     # network position is not guaranteed to match the terminal (it may live
     # off-host). Don't treat it as a trusted local backend — otherwise a
@@ -1270,6 +1312,13 @@ def _navigation_session_key(task_id: str, url: str) -> str:
     """
     if task_id is None:
         task_id = "default"
+    try:
+        from tools.browser_controller_client import controller_mode_requested
+
+        if controller_mode_requested():
+            return task_id
+    except Exception:
+        pass
     if _get_cdp_override():
         return task_id
     if _is_camofox_mode():
@@ -2018,6 +2067,34 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, Any]:
     if task_id is None:
         task_id = "default"
 
+    try:
+        from tools.browser_controller_client import controller_mode_requested
+
+        controller_requested = controller_mode_requested()
+    except Exception:
+        controller_requested = False
+
+    if controller_requested:
+        # Track only ordinary browser-tool ownership/activity in the gateway.
+        # The real random agent-browser session, profile, daemon and Chrome
+        # lifecycle exist exclusively in the controller process.
+        _start_browser_cleanup_thread()
+        _update_session_activity(task_id)
+        with _cleanup_lock:
+            existing = _active_sessions.get(task_id)
+            if existing is not None:
+                return existing
+            session_info = {
+                "session_name": f"controller_{hashlib.sha256(task_id.encode('utf-8')).hexdigest()[:12]}",
+                "bb_session_id": None,
+                "cdp_url": None,
+                "features": {"controller": True},
+                "session_key": task_id,
+                "owner_task_id": _bare_task_id_for_session_key(task_id),
+            }
+            _active_sessions[task_id] = session_info
+            return session_info
+
     # Start the cleanup thread if not running (handles inactivity timeouts)
     _start_browser_cleanup_thread()
 
@@ -2280,6 +2357,24 @@ def _run_browser_command(
     if timeout is None:
         timeout = _safe_command_timeout()
     args = args or []
+
+    # The controller path is exclusive when its exact config key is present.
+    # A malformed config, unavailable socket, rejected peer, or controller
+    # restart returns an explicit failure and can never fall through to local
+    # Node, PATH, npx, cloud/CDP, install, or Lightpanda fallback paths.
+    try:
+        from tools.browser_controller_client import (
+            maybe_run_browser_controller_command,
+        )
+
+        controlled = maybe_run_browser_controller_command(task_id, command, args)
+    except Exception:
+        controlled = {
+            "success": False,
+            "error": "browser_controller_client_failed",
+        }
+    if controlled is not None:
+        return controlled
 
     # Build the command
     try:
@@ -2862,24 +2957,6 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # or snapshots to a newly-created but irrelevant session.
         _last_active_session_key[effective_task_id] = nav_session_key
         _copy_fallback_warning(response, result)
-
-        # Detect common "blocked" page patterns from title/url
-        blocked_patterns = [
-            "access denied", "access to this page has been denied",
-            "blocked", "bot detected", "verification required",
-            "please verify", "are you a robot", "captcha",
-            "cloudflare", "ddos protection", "checking your browser",
-            "just a moment", "attention required"
-        ]
-        title_lower = title.lower()
-
-        if any(pattern in title_lower for pattern in blocked_patterns):
-            response["bot_detection_warning"] = (
-                f"Page title '{title}' suggests bot detection. The site may have blocked this request. "
-                "Options: 1) Try adding delays between actions, 2) Access different pages first, "
-                "3) Enable advanced stealth (BROWSERBASE_ADVANCED_STEALTH=true, requires Scale plan), "
-                "4) Some sites have very aggressive bot detection that may be unavoidable."
-            )
 
         # Include feature info on first navigation so model knows what's active
         if is_first_nav and "features" in session_info:
@@ -3537,6 +3614,31 @@ def _enforce_browser_eval_policy(expression: str) -> Optional[str]:
 def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     """Evaluate a JavaScript expression in the page context and return the result."""
     effective_task_id = _last_session_key(task_id or "default")
+
+    # Exclusive controller mode deliberately has no arbitrary JavaScript
+    # protocol operation.  Check it before Camofox or the persistent CDP
+    # supervisor fast path: a stale supervisor from an earlier generic session
+    # must never regain Runtime.evaluate after the production latch is active.
+    try:
+        from tools.browser_controller_client import controller_mode_requested
+
+        controller_exclusive = controller_mode_requested()
+    except Exception:
+        controller_exclusive = True
+    if controller_exclusive:
+        result = _run_browser_command(effective_task_id, "eval", [expression])
+        if result.get("success") is not True:
+            return json.dumps(
+                {
+                    "success": False,
+                    "error": result.get(
+                        "error",
+                        "browser_controller_command_forbidden",
+                    ),
+                },
+                ensure_ascii=False,
+            )
+        return json.dumps(result, ensure_ascii=False, default=str)
 
     if _eval_ssrf_guard_active(effective_task_id):
         blocked_literal = _expression_targets_private_url(expression)
@@ -4370,6 +4472,15 @@ def cleanup_all_browsers() -> None:
     for task_id in task_ids:
         cleanup_browser(task_id)
 
+    try:
+        from tools.browser_controller_client import (
+            close_all_browser_controller_sessions,
+        )
+
+        close_all_browser_controller_sessions()
+    except Exception:
+        pass
+
     # Tear down CDP supervisors for all tasks so background threads exit.
     try:
         from tools.browser_supervisor import SUPERVISOR_REGISTRY  # type: ignore[import-not-found]
@@ -4592,6 +4703,20 @@ def check_browser_requirements() -> bool:
     Returns:
         True if all requirements are met, False otherwise
     """
+    try:
+        from tools.browser_controller_client import (
+            controller_mode_requested,
+            load_controller_client_config,
+        )
+
+        if controller_mode_requested():
+            # Schema assembly performs no socket probe or process spawn.  An
+            # exact config advertises the normal browser tools; drifted config
+            # hides them and command execution independently fails closed.
+            return load_controller_client_config() is not None
+    except Exception:
+        return False
+
     # Camofox backend — only needs the server URL, no agent-browser CLI
     if _is_camofox_mode():
         return True
@@ -4731,8 +4856,14 @@ registry.register(
     name="browser_snapshot",
     toolset="browser",
     schema=_BROWSER_SCHEMA_MAP["browser_snapshot"],
+    # The browser tool is a mechanical observation boundary.  Do not forward
+    # the surrounding user task into the snapshot helper: that value activates
+    # an auxiliary LLM summarizer which would make a second model decide what
+    # page content the primary agent is allowed to see.  Oversized snapshots
+    # therefore use the deterministic truncation path and GPT interprets the
+    # returned evidence itself.
     handler=lambda args, **kw: browser_snapshot(
-        full=args.get("full", False), task_id=kw.get("task_id"), user_task=kw.get("user_task")),
+        full=args.get("full", False), task_id=kw.get("task_id")),
     check_fn=check_browser_requirements,
     emoji="📸",
 )

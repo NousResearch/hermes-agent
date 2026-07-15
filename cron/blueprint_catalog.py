@@ -145,8 +145,9 @@ CATALOG: List[AutomationBlueprint] = [
             "Check the user's inbox for new messages since the last run. Surface "
             "ONLY mail matching: {criteria}. Judge each candidate yourself using "
             "the full task context; do not delegate importance or delivery "
-            "decisions to an auxiliary classifier. If nothing matches, respond "
-            "with exactly [SILENT]. Requires a connected mail source; if none is "
+            "decisions to an auxiliary classifier. If nothing matches, call "
+            "the todo tool with delivery_outcome action=suppress and a concrete "
+            "reason. Requires a connected mail source; if none is "
             "configured, explain how to connect one and stop."
         ),
         slots=[
@@ -251,7 +252,8 @@ CATALOG: List[AutomationBlueprint] = [
             "Dedupe against what you sent in previous runs — only include "
             "genuinely new developments. Deliver a tight digest of at most "
             "{count} bullets, each one line with a link. If nothing new since "
-            "last run, respond with [SILENT]."
+            "last run, call the todo tool with delivery_outcome "
+            "action=suppress and a concrete reason."
         ),
         slots=[
             BlueprintSlot(

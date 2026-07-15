@@ -8,32 +8,23 @@ transient provider failures (rate limits, read timeouts, connection
 resets) to silently drop the user's message — so the agent had no memory
 of the last turn on the next attempt.
 
-The gateway classifier must distinguish:
+The gateway uses structured state rather than an error-text classifier:
 
-* ``compression_exhausted=True`` OR context-keyword errors OR a generic
-  ``400`` on a long history  → context-overflow → skip transcript
+* ``compression_exhausted=True`` → context-overflow → skip transcript
 * everything else that fails → transient → persist the user message
 """
 
 
 
 def _classify(agent_result: dict, history_len: int) -> tuple[bool, bool]:
-    """Replicate the gateway classifier from GatewayRunner._run_agent.
+    """Replicate the structured gateway decision from GatewayRunner._run_agent.
 
     Returns ``(agent_failed_early, is_context_overflow_failure)``.
     """
+    del history_len
     agent_failed_early = bool(agent_result.get("failed"))
-    err = str(agent_result.get("error", "")).lower()
-    is_context_overflow_failure = agent_failed_early and (
-        bool(agent_result.get("compression_exhausted"))
-        or any(p in err for p in (
-            "context length", "context size", "context window",
-            "maximum context", "token limit", "too many tokens",
-            "reduce the length", "exceeds the limit",
-            "request entity too large", "prompt is too long",
-            "payload too large", "input is too long",
-        ))
-        or ("400" in err and history_len > 50)
+    is_context_overflow_failure = bool(
+        agent_failed_early and agent_result.get("compression_exhausted")
     )
     return agent_failed_early, is_context_overflow_failure
 
@@ -51,23 +42,23 @@ class TestContextOverflowStillSkipsTranscript:
         assert failed
         assert ctx_overflow
 
-    def test_explicit_context_length_error_is_context_overflow(self):
+    def test_context_wording_without_structured_state_is_not_authority(self):
         agent_result = {
             "failed": True,
             "error": "prompt is too long: 250000 tokens > 200000 maximum",
         }
         failed, ctx_overflow = _classify(agent_result, history_len=10)
         assert failed
-        assert ctx_overflow
+        assert not ctx_overflow
 
-    def test_generic_400_on_large_session_is_context_overflow(self):
+    def test_generic_400_on_large_session_is_not_text_classified(self):
         agent_result = {
             "failed": True,
             "error": "error code: 400 - {'type': 'error', 'message': 'Error'}",
         }
         failed, ctx_overflow = _classify(agent_result, history_len=100)
         assert failed
-        assert ctx_overflow
+        assert not ctx_overflow
 
 
 class TestTransientFailureKeepsUserMessage:

@@ -496,9 +496,9 @@ Hermes injects project-level instructions into the system prompt by reading cont
 
 Each context file is capped at 20,000 characters. Files longer than that get **head + tail** truncated (the middle is dropped, with a `[...truncated...]` marker). For large project rules, prefer splitting into multiple skills over cramming one file.
 
-### Security
+### Trust boundary
 
-All context files pass through the threat-pattern scanner before reaching the system prompt. Patterns matching prompt injection or promptware are replaced with a `[BLOCKED: ...]` placeholder. This means an `AGENTS.md` containing obvious injection attempts won't reach the model — the scanner blocks the content, not the file, so the rest of the file still loads.
+Context-file text is preserved for the model instead of being classified or replaced by keyword rules. Hermes still restricts discovery to the documented repository/workspace scope, labels each source, and enforces size caps. Review context files from repositories you do not trust; any file, terminal, network, or messaging mutation they influence still passes through its normal permission and credential boundaries.
 
 ### Disable for one session
 

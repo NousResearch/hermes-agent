@@ -388,6 +388,7 @@ def test_tools_writer_consume_requires_success_and_returns_plan_id(monkeypatch):
             "capability_epoch_sha256": CAPABILITY_EPOCH_HASH,
             "approved_by_user_id": "owner-1",
             "plan_revision": 1,
+            "active_plan_revision": 1,
         }
 
     monkeypatch.setattr(writer_boundary, "canonical_writer_call", call)
@@ -438,6 +439,7 @@ def test_tools_writer_consume_rejects_another_owners_receipt(monkeypatch):
             "authorized": True,
             "plan_id": "plan:owner-1",
             "plan_revision": 1,
+            "active_plan_revision": 1,
             "approved_by_user_id": "owner-1",
             "command_sha256": command_hash,
             "capability_epoch_sha256": CAPABILITY_EPOCH_HASH,
@@ -479,6 +481,7 @@ def test_tools_writer_consume_rejects_receipt_from_prior_routing_epoch(monkeypat
             "capability_epoch_sha256": "e" * 64,
             "approved_by_user_id": "owner-1",
             "plan_revision": 1,
+            "active_plan_revision": 1,
         },
     )
 

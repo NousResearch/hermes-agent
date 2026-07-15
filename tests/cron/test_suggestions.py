@@ -7,7 +7,6 @@ HERMES_HOME so the real suggestions.json is never touched.
 
 import importlib
 import json
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -140,17 +139,14 @@ class TestCatalog:
         assert second == []  # already present -> nothing new
 
     def test_monitor_entry_keeps_semantic_decision_in_primary_agent(self):
-        from cron.suggestion_catalog import CATALOG, classify_items_script_path
+        from cron.suggestion_catalog import CATALOG
 
         monitor = next(e for e in CATALOG if e.key == "catalog:important-mail-monitor")
         prompt = monitor.job_spec["prompt"]
         assert "cron.scripts.classify_items" not in prompt
         assert "auxiliary classifier" in prompt
         assert "full task context" in prompt
-        assert "exactly [SILENT]" in prompt
-        # Compatibility API remains available for old explicitly-authored jobs.
-        assert classify_items_script_path() not in monitor.job_spec["prompt"]
-        assert Path(classify_items_script_path()).name == "classify_items.py"
+        assert "delivery_outcome action=suppress" in prompt
 
     def test_stale_pending_monitor_is_reconciled_before_accept(self, store):
         from cron.suggestion_catalog import IMPORTANT_MAIL_CATALOG_KEY

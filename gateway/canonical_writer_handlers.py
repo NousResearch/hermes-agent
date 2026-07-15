@@ -22,10 +22,6 @@ import threading
 import uuid
 from typing import Any, Callable, Mapping, Protocol, runtime_checkable
 
-from gateway.canonical_canary_bootstrap import (
-    CanaryScopeBootstrapRequest,
-    CanaryScopePreclaimRetirementRequest,
-)
 from gateway.canonical_writer_protocol import (
     MAX_IDEMPOTENCY_KEY_BYTES,
     CanonicalWriterOperation,
@@ -40,10 +36,24 @@ from gateway.discord_edge_writer_authority import (
     DiscordEdgeWriterAuthorityError,
     derive_routeback_edge_idempotency_key,
 )
+from gateway.operational_edge_catalog import (
+    OperationalCatalogError,
+    build_operation_argv,
+    operation_catalog,
+)
+from gateway.operational_edge_protocol import (
+    OperationalAccess,
+    OperationalIntent,
+    OperationalProtocolError,
+    operational_command_sha256,
+)
+from gateway.support_ops_team_registry import (
+    SKYVISION_GUILD_ID,
+    SKYVISION_SYNTHETIC_CANARY_PUBLIC_CHANNEL_ID,
+)
 
 
 OP_PING = CanonicalWriterOperation.PING.value
-OP_CANARY_SCOPE_CLAIM = CanonicalWriterOperation.CANARY_SCOPE_CLAIM.value
 OP_EVENT_APPEND_MODEL = CanonicalWriterOperation.EVENT_APPEND_MODEL.value
 OP_PLAN_TRANSITION = CanonicalWriterOperation.PLAN_TRANSITION.value
 OP_VERIFICATION_APPEND = CanonicalWriterOperation.VERIFICATION_APPEND.value
@@ -71,13 +81,6 @@ OP_PROJECTOR_READ = OP_PROJECTION_READ_EVENTS
 SUPPORTED_OPERATIONS = frozenset(item.value for item in CanonicalWriterOperation)
 
 WRITER_OWNED_EVENT_TYPES = frozenset({
-    "canary.scope.bootstrap_authorized",
-    "canary.scope.bootstrap_consumed",
-    "canary.scope.bootstrap_retired",
-    "canary.scope.preapproved",
-    "canary.scope.preapproval_retired",
-    "canary.scope.claimed",
-    "canary.scope.revoked",
     "task.plan.updated",
     "task.verification.recorded",
     "route_back.intent.created",
@@ -96,6 +99,7 @@ MODEL_FORBIDDEN_EVENT_TYPES = WRITER_OWNED_EVENT_TYPES
 
 _ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:/-]{0,239}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_DISCORD_SNOWFLAKE_RE = re.compile(r"^[1-9][0-9]{16,19}$")
 _RUNTIME_PAYLOAD_KEYS = frozenset({
     "runtime",
     "runtime_context",
@@ -270,6 +274,62 @@ def _contains_forbidden_dm_ref(value: Any) -> bool:
     return False
 
 
+def _require_discord_guild_routeback_target(
+    value: Any,
+    path: str,
+) -> dict[str, Any]:
+    """Validate only the mechanical Discord target envelope.
+
+    The model remains responsible for choosing the person/lane/target.  This
+    boundary proves one exact guild shape before the writer can mint dispatch
+    authority; the token-owning edge independently re-fetches Discord and
+    proves live type and permissions immediately before sending.
+    """
+
+    target = _require_mapping(value, path)
+    if _contains_forbidden_dm_ref(target):
+        raise CanonicalWriterError(
+            "dm_forbidden",
+            "Discord DM route-back is forbidden",
+        )
+    guild_id = str(target.get("guild_id") or "").strip()
+    target_type = str(target.get("target_type") or "").strip()
+    channel_type = str(target.get("channel_type") or "").strip()
+    channel_id = str(target.get("channel_id") or "").strip()
+    parent_channel_id = str(target.get("parent_channel_id") or "").strip()
+    if (
+        guild_id != SKYVISION_GUILD_ID
+        or target_type != channel_type
+        or _DISCORD_SNOWFLAKE_RE.fullmatch(channel_id) is None
+        or str(target.get("thread_id") or "").strip()
+        or str(target.get("chat_id") or "").strip()
+    ):
+        raise CanonicalWriterError(
+            "invalid_request",
+            f"{path} has an invalid Discord guild target shape",
+        )
+    if target_type == "guild_channel":
+        valid = not parent_channel_id
+    elif target_type == "guild_thread":
+        valid = (
+            _DISCORD_SNOWFLAKE_RE.fullmatch(parent_channel_id) is not None
+            and parent_channel_id != channel_id
+        )
+    elif target_type == "public_guild_channel":
+        valid = (
+            channel_id == SKYVISION_SYNTHETIC_CANARY_PUBLIC_CHANNEL_ID
+            and not parent_channel_id
+        )
+    else:
+        valid = False
+    if not valid:
+        raise CanonicalWriterError(
+            "invalid_request",
+            f"{path} has an invalid Discord guild target shape",
+        )
+    return target
+
+
 @dataclass(frozen=True)
 class RuntimeContext:
     """Trusted server-owned envelope; never decoded from an operation payload."""
@@ -436,22 +496,11 @@ class ProjectorReadRequest:
     limit: int
 
 
-@dataclass(frozen=True)
-class CanaryScopeClaimRequest:
-    grant_id: str
-    case_id: str
-    release_sha256: str
-    fixture_sha256: str
-    run_id: str
-    approval_source_sha256: str
-
-
 @runtime_checkable
 class CanonicalWriterBackend(Protocol):
     """Production implementations make every mutation durable and atomic."""
 
     def ping(self, runtime: RuntimeContext) -> Mapping[str, Any]: ...
-    def canary_scope_claim(self, request: CanaryScopeClaimRequest, runtime: RuntimeContext) -> Mapping[str, Any]: ...
     def event_append(self, request: EventAppendRequest, runtime: RuntimeContext) -> Mapping[str, Any]: ...
     def query(self, request: QueryRequest, runtime: RuntimeContext) -> Mapping[str, Any]: ...
     def plan_active_match(self, request: PlanActiveMatchRequest, runtime: RuntimeContext) -> Mapping[str, Any]: ...
@@ -470,16 +519,6 @@ class CanonicalWriterBackend(Protocol):
 # Exported strict payload shapes for the protocol/service handshake and tests.
 REQUEST_SCHEMAS: Mapping[str, Mapping[str, frozenset[str]]] = {
     OP_PING: {"allowed": frozenset(), "required": frozenset()},
-    OP_CANARY_SCOPE_CLAIM: {
-        "allowed": frozenset({
-            "grant_id", "case_id", "release_sha256", "fixture_sha256",
-            "run_id", "approval_source_sha256",
-        }),
-        "required": frozenset({
-            "grant_id", "case_id", "release_sha256", "fixture_sha256",
-            "run_id", "approval_source_sha256",
-        }),
-    },
     OP_EVENT_APPEND_MODEL: {
         "allowed": frozenset({"event_type", "case_id", "summary", "source_refs", "actors", "payload", "safety", "idempotency_key"}),
         "required": frozenset({"event_type", "case_id", "summary", "source_refs"}),
@@ -529,7 +568,9 @@ REQUEST_SCHEMAS: Mapping[str, Mapping[str, frozenset[str]]] = {
         "required": frozenset({"approval_id", "case_id", "plan_id", "plan_revision", "approval_source_sha256", "command_hashes", "expires_at", "max_uses"}),
     },
     OP_CAPABILITY_CONSUME: {
-        "allowed": frozenset({"command_sha256", "idempotency_key"}),
+        "allowed": frozenset(
+            {"command_sha256", "idempotency_key", "operational_edge_intent"}
+        ),
         "required": frozenset({"command_sha256", "idempotency_key"}),
     },
     OP_CAPABILITY_REVOKE: {
@@ -570,7 +611,6 @@ class CanonicalWriterHandlers:
         self.discord_edge_authority = discord_edge_authority
         self._handlers: Mapping[str, Callable[[dict[str, Any], RuntimeContext], Mapping[str, Any]]] = {
             OP_PING: self._ping,
-            OP_CANARY_SCOPE_CLAIM: self._canary_scope_claim,
             OP_EVENT_APPEND_MODEL: self._event_append,
             OP_PLAN_TRANSITION: lambda payload, runtime: self._typed_event_append(
                 "task.plan.updated", payload, runtime
@@ -646,32 +686,6 @@ class CanonicalWriterHandlers:
 
     def _ping(self, payload: dict[str, Any], runtime: RuntimeContext) -> Mapping[str, Any]:
         return self.backend.ping(runtime)
-
-    def _canary_scope_claim(
-        self,
-        p: dict[str, Any],
-        runtime: RuntimeContext,
-    ) -> Mapping[str, Any]:
-        _require_exact_runtime_epoch(runtime)
-        if runtime.platform != "api_server" or runtime.service_internal:
-            raise CanonicalWriterError(
-                "invalid_runtime",
-                "canary scope claim requires the exact API server session generation",
-            )
-        return self.backend.canary_scope_claim(
-            CanaryScopeClaimRequest(
-                grant_id=_identifier(p["grant_id"], "payload.grant_id"),
-                case_id=_case_identifier(p["case_id"], "payload.case_id"),
-                release_sha256=_sha256(p["release_sha256"], "payload.release_sha256"),
-                fixture_sha256=_sha256(p["fixture_sha256"], "payload.fixture_sha256"),
-                run_id=_identifier(p["run_id"], "payload.run_id"),
-                approval_source_sha256=_sha256(
-                    p["approval_source_sha256"],
-                    "payload.approval_source_sha256",
-                ),
-            ),
-            runtime,
-        )
 
     def _event_append(self, p: dict[str, Any], runtime: RuntimeContext) -> Mapping[str, Any]:
         _require_exact_runtime_epoch(runtime)
@@ -780,8 +794,17 @@ class CanonicalWriterHandlers:
             limit=_positive_int(p.get("limit", 80), "payload.limit", maximum=200),
             view=str(p.get("view") or "summary"),
         )
-        if request.view not in {"summary", "resume_bundle"}:
+        if request.view not in {
+            "summary",
+            "workspace_candidates",
+            "resume_bundle",
+        }:
             raise CanonicalWriterError("invalid_request", "payload.view is invalid")
+        if request.view == "workspace_candidates" and not request.thread_id:
+            raise CanonicalWriterError(
+                "invalid_request",
+                "workspace candidate query requires an exact thread",
+            )
         return self.backend.query(request, runtime)
 
     def _plan_active_match(self, p: dict[str, Any], runtime: RuntimeContext) -> Mapping[str, Any]:
@@ -800,15 +823,11 @@ class CanonicalWriterHandlers:
     def _routeback_authorize(self, p: dict[str, Any], runtime: RuntimeContext) -> Mapping[str, Any]:
         _require_exact_runtime_epoch(runtime)
         authority = self._require_discord_edge_authority()
-        target = _require_mapping(p["target_ref"], "payload.target_ref")
-        if _contains_forbidden_dm_ref(target):
-            raise CanonicalWriterError("dm_forbidden", "Discord DM route-back is forbidden")
-        target_id = str(target.get("thread_id") or target.get("channel_id") or "").strip()
-        if not target_id:
-            raise CanonicalWriterError("invalid_request", "target_ref requires public thread_id or channel_id")
-        channel_type = str(target.get("channel_type") or target.get("target_type") or "").casefold()
-        if channel_type in {"dm", "direct_message", "private"}:
-            raise CanonicalWriterError("dm_forbidden", "Discord DM route-back is forbidden")
+        target = _require_discord_guild_routeback_target(
+            p["target_ref"],
+            "payload.target_ref",
+        )
+        target_id = str(target["channel_id"])
         binding = _require_mapping(p["execution_binding"], "payload.execution_binding")
         content_sha256 = _sha256(binding.get("content_sha256"), "payload.execution_binding.content_sha256")
         target_channel_id = _identifier(
@@ -892,20 +911,11 @@ class CanonicalWriterHandlers:
                 "invalid_request",
                 "route-back recovery kind is invalid",
             )
-        target = _require_mapping(p["target_ref"], "payload.target_ref")
-        if _contains_forbidden_dm_ref(target):
-            raise CanonicalWriterError(
-                "dm_forbidden",
-                "Discord DM route-back is forbidden",
-            )
-        target_id = str(
-            target.get("thread_id") or target.get("channel_id") or ""
-        ).strip()
-        if not target_id:
-            raise CanonicalWriterError(
-                "invalid_request",
-                "target_ref requires public thread_id or channel_id",
-            )
+        target = _require_discord_guild_routeback_target(
+            p["target_ref"],
+            "payload.target_ref",
+        )
+        target_id = str(target["channel_id"])
         binding = _require_mapping(
             p["execution_binding"],
             "payload.execution_binding",
@@ -1061,12 +1071,17 @@ class CanonicalWriterHandlers:
                 "scope_mismatch",
                 "Discord edge intent differs from the claimed target, content, or idempotency binding",
             )
-        optional_exact_bindings = {
+        exact_bindings = {
             "guild_id": intent.target.guild_id,
+            "target_type": intent.target.target_type.value,
+            "channel_type": intent.target.target_type.value,
             "parent_channel_id": intent.target.parent_channel_id,
         }
-        for key, expected in optional_exact_bindings.items():
-            if key in target_ref and target_ref.get(key) != expected:
+        for key, expected in exact_bindings.items():
+            observed = target_ref.get(key)
+            if key == "parent_channel_id":
+                observed = str(observed or "") or None
+            if observed != expected:
                 raise CanonicalWriterError(
                     "scope_mismatch",
                     f"Discord edge intent differs from target_ref.{key}",
@@ -1139,6 +1154,10 @@ class CanonicalWriterHandlers:
             authorization_id = ""
             receipt: Mapping[str, Any] = {}
         else:
+            target_ref = _require_discord_guild_routeback_target(
+                target_ref,
+                "payload.target_ref",
+            )
             if blocker:
                 raise CanonicalWriterError(
                     "invalid_request",
@@ -1170,7 +1189,7 @@ class CanonicalWriterHandlers:
                 "payload.execution_binding",
             )
             target_id = _identifier(
-                target_ref.get("thread_id") or target_ref.get("channel_id"),
+                target_ref.get("channel_id"),
                 "payload.target_ref.channel_id",
             )
             bound_channel_id = _identifier(
@@ -1316,13 +1335,63 @@ class CanonicalWriterHandlers:
                 "invalid_runtime",
                 "capability consume requires exact user, session, and epoch bindings",
             )
-        return self.backend.capability_consume(CapabilityConsumeRequest(
-            command_sha256=_sha256(p["command_sha256"], "payload.command_sha256"),
+        command_sha256 = _sha256(
+            p["command_sha256"], "payload.command_sha256"
+        )
+        operational_intent: OperationalIntent | None = None
+        if "operational_edge_intent" in p:
+            try:
+                operational_intent = OperationalIntent.from_mapping(
+                    p["operational_edge_intent"]
+                )
+                operation = operation_catalog().get(
+                    operational_intent.operation_id
+                )
+                if (
+                    operation is None
+                    or operation.access is not OperationalAccess.MUTATION
+                ):
+                    raise OperationalCatalogError(
+                        "operation is not an approved mutation boundary"
+                    )
+                build_operation_argv(operation, operational_intent.arguments)
+            except (OperationalProtocolError, OperationalCatalogError) as exc:
+                raise CanonicalWriterError(
+                    "invalid_operational_edge_intent",
+                    "operational edge intent failed its exact mutation schema",
+                ) from exc
+            if operational_command_sha256(operational_intent) != command_sha256:
+                raise CanonicalWriterError(
+                    "command_hash_mismatch",
+                    "approved command hash does not bind the operational edge intent",
+                )
+            if self.discord_edge_authority is None:
+                raise CanonicalWriterError(
+                    "operational_edge_authority_unavailable",
+                    "writer-owned operational edge signing authority is unavailable",
+                )
+        result = dict(self.backend.capability_consume(CapabilityConsumeRequest(
+            command_sha256=command_sha256,
             idempotency_key=_idempotency_key(
                 p["idempotency_key"],
                 "payload.idempotency_key",
             ),
-        ), runtime)
+        ), runtime))
+        if operational_intent is None:
+            return result
+        assert self.discord_edge_authority is not None
+        try:
+            capability = self.discord_edge_authority.issue_operational_edge_capability(
+                operational_intent,
+                authorization=result,
+            )
+        except DiscordEdgeWriterAuthorityError as exc:
+            raise CanonicalWriterError(exc.code, exc.message) from exc
+        return {
+            **result,
+            "operational_edge_intent_sha256": command_sha256,
+            "operational_edge_capability": capability.to_mapping(),
+        }
 
     def _capability_revoke(self, p: dict[str, Any], runtime: RuntimeContext) -> Mapping[str, Any]:
         if not runtime.session_key_sha256 or not runtime.capability_epoch_sha256:
@@ -1487,13 +1556,6 @@ class InMemoryCanonicalWriterStore:
     routeback_lifecycle_terminals: dict[str, dict[str, Any]] = field(
         default_factory=dict
     )
-    canary_scope_preapprovals: dict[str, dict[str, Any]] = field(
-        default_factory=dict
-    )
-    canary_scope_preapproval_retirements: dict[str, dict[str, Any]] = field(
-        default_factory=dict
-    )
-    canary_scope_claims: dict[str, dict[str, Any]] = field(default_factory=dict)
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
     def snapshot(self) -> dict[str, Any]:
@@ -1510,11 +1572,6 @@ class InMemoryCanonicalWriterStore:
                 "routeback_lifecycle_terminals": (
                     self.routeback_lifecycle_terminals
                 ),
-                "canary_scope_preapprovals": self.canary_scope_preapprovals,
-                "canary_scope_preapproval_retirements": (
-                    self.canary_scope_preapproval_retirements
-                ),
-                "canary_scope_claims": self.canary_scope_claims,
             })
 
     @classmethod
@@ -1534,13 +1591,6 @@ class InMemoryCanonicalWriterStore:
             routeback_lifecycle_terminals=dict(
                 data.get("routeback_lifecycle_terminals") or {}
             ),
-            canary_scope_preapprovals=dict(
-                data.get("canary_scope_preapprovals") or {}
-            ),
-            canary_scope_preapproval_retirements=dict(
-                data.get("canary_scope_preapproval_retirements") or {}
-            ),
-            canary_scope_claims=dict(data.get("canary_scope_claims") or {}),
         )
 
 
@@ -1552,15 +1602,9 @@ class InMemoryCanonicalWriterBackend:
         store: InMemoryCanonicalWriterStore | None = None,
         *,
         clock: Callable[[], dt.datetime] | None = None,
-        public_routeback_targets: frozenset[str] | None = None,
     ):
         self.store = store or InMemoryCanonicalWriterStore()
         self._clock = clock or (lambda: dt.datetime.now(dt.timezone.utc))
-        self._public_routeback_targets = (
-            None
-            if public_routeback_targets is None
-            else frozenset(str(value) for value in public_routeback_targets)
-        )
 
     def _now(self) -> dt.datetime:
         value = self._clock()
@@ -1570,396 +1614,6 @@ class InMemoryCanonicalWriterBackend:
 
     def ping(self, runtime: RuntimeContext) -> Mapping[str, Any]:
         return {"status": "ok", "request_id": runtime.request_id}
-
-    def bootstrap_canary_scope_preapprove(
-        self,
-        request: CanaryScopeBootstrapRequest,
-        runtime: RuntimeContext,
-    ) -> Mapping[str, Any]:
-        with self.store.lock:
-            now = self._now()
-            if request.expires_at <= now or request.expires_at > now + dt.timedelta(hours=1):
-                raise CanonicalWriterError(
-                    "invalid_expiry",
-                    "canary scope preapproval must expire within one hour",
-                )
-            candidate = {
-                "grant_id": request.grant_id,
-                "case_id": request.case_id,
-                "release_sha256": request.release_sha256,
-                "fixture_sha256": request.fixture_sha256,
-                "run_id": request.run_id,
-                "session_key_sha256": request.session_key_sha256,
-                "expires_at": request.expires_at.isoformat(),
-                "approved_by": request.approved_by,
-                "approval_source_sha256": request.approval_source_sha256,
-                "provisioning_receipt_sha256": (
-                    request.provisioning_receipt_sha256
-                ),
-            }
-            existing = self.store.canary_scope_preapprovals.get(request.grant_id)
-            if existing:
-                if any(existing.get(key) != value for key, value in candidate.items()):
-                    raise CanonicalWriterError(
-                        "idempotency_conflict",
-                        "canary grant identity is bound to another preapproval",
-                    )
-                if request.expires_at <= now:
-                    raise CanonicalWriterError(
-                        "canary_scope_expired",
-                        "canary scope preapproval has expired",
-                    )
-                return {
-                    "success": True,
-                    **copy.deepcopy(existing),
-                    "event_id": existing["receipt_event_id"],
-                    "inserted": False,
-                    "deduped": True,
-                }
-            if any(
-                row.get("case_id") == request.case_id
-                or row.get("run_id") == request.run_id
-                or row.get("approval_source_sha256") == request.approval_source_sha256
-                for row in self.store.canary_scope_preapprovals.values()
-            ):
-                raise CanonicalWriterError(
-                    "idempotency_conflict",
-                    "canary case, run, or approval receipt is already preapproved",
-                )
-            appended = self._append_locked(
-                event_type="canary.scope.preapproved",
-                case_id=request.case_id,
-                body={"canary_scope_preapproval": candidate},
-                runtime=runtime,
-                identity="canary-preapprove:" + request.grant_id,
-                origin="canary_scope_preapprove",
-            )
-            candidate["preapproved_at"] = now.isoformat()
-            candidate["receipt_event_id"] = appended["event_id"]
-            consumption = self._append_locked(
-                event_type="canary.scope.bootstrap_consumed",
-                case_id=request.case_id,
-                body={
-                    "canary_scope_bootstrap_consumption": {
-                        "grant_id": request.grant_id,
-                        "case_id": request.case_id,
-                        "provisioning_receipt_sha256": (
-                            request.provisioning_receipt_sha256
-                        ),
-                        "preapproval_event_id": appended["event_id"],
-                        "state": "consumed",
-                    }
-                },
-                runtime=runtime,
-                identity="canary-bootstrap-consume:" + request.grant_id,
-                origin="canary_scope_bootstrap_consume",
-            )
-            candidate["bootstrap_consumption_event_id"] = consumption[
-                "event_id"
-            ]
-            self.store.canary_scope_preapprovals[request.grant_id] = candidate
-            return {
-                "success": True,
-                **copy.deepcopy(candidate),
-                **appended,
-            }
-
-    def retire_canary_scope_preapproval(
-        self,
-        request: CanaryScopePreclaimRetirementRequest,
-        runtime: RuntimeContext,
-    ) -> Mapping[str, Any]:
-        if runtime.platform != "writer_service" or runtime.service_internal is not True:
-            raise CanonicalWriterError(
-                "service_internal_required",
-                "preclaim retirement requires the in-process writer boundary",
-            )
-        with self.store.lock:
-            common = {
-                "grant_id": request.grant_id,
-                "case_id": request.case_id,
-                "release_sha256": request.release_sha256,
-                "fixture_sha256": request.fixture_sha256,
-                "run_id": request.run_id,
-                "session_key_sha256": request.session_key_sha256,
-                "expires_at": request.expires_at.astimezone(
-                    dt.timezone.utc
-                ).isoformat(),
-                "approved_by": request.approved_by,
-                "approval_source_sha256": request.approval_source_sha256,
-                "provisioning_receipt_sha256": (
-                    request.provisioning_receipt_sha256
-                ),
-            }
-            preapproval = self.store.canary_scope_preapprovals.get(
-                request.grant_id
-            )
-            retirement = self.store.canary_scope_preapproval_retirements.get(
-                request.grant_id
-            )
-            claim = self.store.canary_scope_claims.get(request.grant_id)
-            if preapproval is None:
-                if retirement is not None or claim is not None:
-                    raise CanonicalWriterError(
-                        "canonical_truth_conflict",
-                        "canary preclaim truth exists without preapproval",
-                    )
-                return {
-                    "success": True,
-                    "outcome": "not_preapproved",
-                    **common,
-                    "preapproval_event_id": None,
-                    "bootstrap_consumption_event_id": None,
-                    "claim_event_id": None,
-                    "retirement_event_id": None,
-                    "revocation_event_id": None,
-                    "claimed_at": None,
-                    "retired_at": None,
-                    "reason": "preapproval_not_committed",
-                    "scope_retired": False,
-                    "authority_active": False,
-                    "inserted": False,
-                    "deduped": False,
-                }
-            if any(preapproval.get(key) != value for key, value in common.items()):
-                raise CanonicalWriterError(
-                    "scope_mismatch",
-                    "preclaim retirement differs from the sealed preapproval",
-                )
-            if retirement is not None and claim is not None:
-                raise CanonicalWriterError(
-                    "canonical_truth_conflict",
-                    "canary preclaim terminal truth is contradictory",
-                )
-            preapproval_event_id = str(preapproval["receipt_event_id"])
-            consumption_event_id = str(
-                preapproval["bootstrap_consumption_event_id"]
-            )
-            if claim is not None:
-                revoke_runtime = RuntimeContext(
-                    request_id=runtime.request_id,
-                    platform="writer_service",
-                    session_key_sha256=str(claim["session_key_sha256"]),
-                    capability_epoch_sha256=str(
-                        claim["capability_epoch_sha256"]
-                    ),
-                    service_internal=True,
-                )
-                revoked = self.capability_revoke_session(
-                    str(claim["session_key_sha256"]),
-                    "preclaim_reconciliation_after_claim",
-                    revoke_runtime,
-                )
-                if revoked.get("authority_active") is not False:
-                    raise CanonicalWriterError(
-                        "cleanup_blocked",
-                        "claimed canary authority was not durably retired",
-                    )
-                return {
-                    "success": True,
-                    "outcome": "claimed",
-                    **common,
-                    "preapproval_event_id": preapproval_event_id,
-                    "bootstrap_consumption_event_id": consumption_event_id,
-                    "claim_event_id": str(claim["claim_event_id"]),
-                    "retirement_event_id": None,
-                    "revocation_event_id": revoked["revocation_event_id"],
-                    "claimed_at": str(claim["claimed_at"]),
-                    "retired_at": None,
-                    "reason": "claim_already_committed_session_retired",
-                    "scope_retired": False,
-                    "authority_active": False,
-                    "inserted": bool(revoked["inserted"]),
-                    "deduped": bool(revoked["deduped"]),
-                }
-            if retirement is not None:
-                return {
-                    "success": True,
-                    "outcome": "retired",
-                    **common,
-                    "preapproval_event_id": preapproval_event_id,
-                    "bootstrap_consumption_event_id": consumption_event_id,
-                    "claim_event_id": None,
-                    "retirement_event_id": retirement[
-                        "retirement_event_id"
-                    ],
-                    "revocation_event_id": None,
-                    "claimed_at": None,
-                    "retired_at": retirement["retired_at"],
-                    "reason": "activation_failed_before_first_claim",
-                    "scope_retired": True,
-                    "authority_active": False,
-                    "inserted": False,
-                    "deduped": True,
-                }
-            retired_at = self._now().isoformat()
-            appended = self._append_locked(
-                event_type="canary.scope.preapproval_retired",
-                case_id=request.case_id,
-                body={
-                    "canary_scope_preapproval_retirement": {
-                        **common,
-                        "preapproval_event_id": preapproval_event_id,
-                        "bootstrap_consumption_event_id": consumption_event_id,
-                        "reason": "activation_failed_before_first_claim",
-                        "state": "retired",
-                    }
-                },
-                runtime=runtime,
-                identity="canary-preapproval-retire:" + request.grant_id,
-                origin="canary_scope_preapproval_retire",
-            )
-            self.store.canary_scope_preapproval_retirements[
-                request.grant_id
-            ] = {
-                **common,
-                "preapproval_event_id": preapproval_event_id,
-                "bootstrap_consumption_event_id": consumption_event_id,
-                "retired_at": retired_at,
-                "retirement_event_id": appended["event_id"],
-            }
-            return {
-                "success": True,
-                "outcome": "retired",
-                **common,
-                "preapproval_event_id": preapproval_event_id,
-                "bootstrap_consumption_event_id": consumption_event_id,
-                "claim_event_id": None,
-                "retirement_event_id": appended["event_id"],
-                "revocation_event_id": None,
-                "claimed_at": None,
-                "retired_at": retired_at,
-                "reason": "activation_failed_before_first_claim",
-                "scope_retired": True,
-                "authority_active": False,
-                "inserted": True,
-                "deduped": False,
-            }
-
-    def canary_scope_claim(
-        self,
-        request: CanaryScopeClaimRequest,
-        runtime: RuntimeContext,
-    ) -> Mapping[str, Any]:
-        with self.store.lock:
-            self._require_initiating_epoch_active_locked(runtime)
-            preapproval = self.store.canary_scope_preapprovals.get(request.grant_id)
-            if not preapproval:
-                raise CanonicalWriterError(
-                    "canary_scope_missing",
-                    "canary scope has no owner preapproval",
-                )
-            if request.grant_id in self.store.canary_scope_preapproval_retirements:
-                raise CanonicalWriterError(
-                    "canary_scope_preapproval_retired",
-                    "canary scope preapproval was durably retired before claim",
-                )
-            expected = {
-                "case_id": request.case_id,
-                "release_sha256": request.release_sha256,
-                "fixture_sha256": request.fixture_sha256,
-                "run_id": request.run_id,
-                "approval_source_sha256": request.approval_source_sha256,
-                "session_key_sha256": runtime.session_key_sha256,
-            }
-            if any(preapproval.get(key) != value for key, value in expected.items()):
-                raise CanonicalWriterError(
-                    "scope_mismatch",
-                    "canary scope claim differs from its exact preapproval",
-                )
-            existing = self.store.canary_scope_claims.get(request.grant_id)
-            candidate = {
-                "grant_id": request.grant_id,
-                **expected,
-                "capability_epoch_sha256": runtime.capability_epoch_sha256,
-                "expires_at": str(preapproval["expires_at"]),
-            }
-            if existing:
-                if any(existing.get(key) != value for key, value in candidate.items()):
-                    raise CanonicalWriterError(
-                        "canary_scope_replayed",
-                        "one-shot canary scope was already claimed by another session generation",
-                    )
-                active = (
-                    self._now()
-                    < _utc(preapproval["expires_at"], "canary.expires_at")
-                    and not self.store.capability_scope_revocations.get(
-                        "session:"
-                        + runtime.session_key_sha256
-                        + ":"
-                        + runtime.capability_epoch_sha256
-                    )
-                )
-                return {
-                    "success": True,
-                    **copy.deepcopy(existing),
-                    "event_id": existing["claim_event_id"],
-                    "authority_active": active,
-                    "inserted": False,
-                    "deduped": True,
-                }
-            if self._now() >= _utc(preapproval["expires_at"], "canary.expires_at"):
-                raise CanonicalWriterError(
-                    "canary_scope_expired",
-                    "canary scope preapproval has expired",
-                )
-            claimed_at = self._now().isoformat()
-            appended = self._append_locked(
-                event_type="canary.scope.claimed",
-                case_id=request.case_id,
-                body={"canary_scope_claim": candidate},
-                runtime=runtime,
-                identity="canary-claim:" + request.grant_id,
-                origin="canary_scope_claim",
-            )
-            candidate["claimed_at"] = claimed_at
-            candidate["claim_event_id"] = appended["event_id"]
-            self.store.canary_scope_claims[request.grant_id] = candidate
-            return {
-                "success": True,
-                **copy.deepcopy(candidate),
-                **appended,
-                "authority_active": True,
-            }
-
-    def _require_canary_case_scope_locked(
-        self,
-        case_id: str,
-        runtime: RuntimeContext,
-    ) -> None:
-        if runtime.platform != "api_server":
-            return
-        preapprovals = [
-            row
-            for row in self.store.canary_scope_preapprovals.values()
-            if row.get("case_id") == case_id
-        ]
-        if not preapprovals:
-            return
-        preapproval = preapprovals[0]
-        claim = self.store.canary_scope_claims.get(str(preapproval["grant_id"]))
-        if (
-            not claim
-            or claim.get("session_key_sha256") != runtime.session_key_sha256
-            or claim.get("capability_epoch_sha256")
-            != runtime.capability_epoch_sha256
-            or self._now() >= _utc(preapproval["expires_at"], "canary.expires_at")
-        ):
-            raise CanonicalWriterError(
-                "scope_mismatch",
-                "API server session does not hold the exact live canary scope",
-            )
-        session_scope = (
-            "session:"
-            + runtime.session_key_sha256
-            + ":"
-            + runtime.capability_epoch_sha256
-        )
-        if self.store.capability_scope_revocations.get(session_scope):
-            raise CanonicalWriterError(
-                "scope_mismatch",
-                "API server session does not hold the exact live canary scope",
-            )
 
     def _require_initiating_epoch_active_locked(
         self,
@@ -2033,7 +1687,6 @@ class InMemoryCanonicalWriterBackend:
             raise CanonicalWriterError("privileged_event_forbidden", "typed privileged operation required")
         with self.store.lock:
             self._require_initiating_epoch_active_locked(runtime)
-            self._require_canary_case_scope_locked(request.case_id, runtime)
             result = self._append_locked(
                 event_type=request.event_type,
                 case_id=request.case_id,
@@ -2075,12 +1728,6 @@ class InMemoryCanonicalWriterBackend:
         supersedes = str(plan.get("supersedes_plan_id") or "")
         if previous and plan_id != previous.get("plan_id") and supersedes == previous.get("plan_id"):
             self._revoke_plan_locked(case_id, previous["plan_id"], "plan_superseded")
-        elif (
-            previous
-            and plan_id == previous.get("plan_id")
-            and revision > int(previous.get("revision") or 0)
-        ):
-            self._revoke_plan_locked(case_id, plan_id, "plan_revision_advanced")
         if state == "active":
             self.store.active_plans[case_id] = {
                 "plan_id": plan_id,
@@ -2094,8 +1741,6 @@ class InMemoryCanonicalWriterBackend:
 
     def query(self, request: QueryRequest, runtime: RuntimeContext) -> Mapping[str, Any]:
         with self.store.lock:
-            if request.case_id:
-                self._require_canary_case_scope_locked(request.case_id, runtime)
             rows = []
             for event in self.store.events:
                 if not (
@@ -2109,19 +1754,33 @@ class InMemoryCanonicalWriterBackend:
                     )
                 ):
                     continue
-                try:
-                    self._require_canary_case_scope_locked(
-                        str(event["case_id"]),
-                        runtime,
-                    )
-                except CanonicalWriterError:
-                    continue
                 rows.append(copy.deepcopy(event))
+            if request.view == "workspace_candidates":
+                latest_by_case: dict[str, dict[str, Any]] = {}
+                for event in rows:
+                    if event.get("event_type") != "task.plan.updated":
+                        continue
+                    body = event.get("body")
+                    payload = body.get("payload") if isinstance(body, Mapping) else None
+                    plan = payload.get("plan") if isinstance(payload, Mapping) else None
+                    if not isinstance(plan, Mapping):
+                        continue
+                    latest_by_case[str(event.get("case_id") or "")] = event
+                rows = [
+                    event
+                    for event in latest_by_case.values()
+                    if (
+                        isinstance(event.get("body"), Mapping)
+                        and isinstance(event["body"].get("payload"), Mapping)
+                        and isinstance(event["body"]["payload"].get("plan"), Mapping)
+                        and event["body"]["payload"]["plan"].get("state")
+                        in {"active", "blocked"}
+                    )
+                ]
             return {"events": rows[-request.limit:], "view": request.view}
 
     def plan_active_match(self, request: PlanActiveMatchRequest, runtime: RuntimeContext) -> Mapping[str, Any]:
         with self.store.lock:
-            self._require_canary_case_scope_locked(request.case_id, runtime)
             plan = self.store.active_plans.get(request.case_id)
             matches = bool(plan and plan.get("plan_id") == request.plan_id)
             revision = int(plan.get("revision") or 0) if matches and plan else 0
@@ -2143,13 +1802,6 @@ class InMemoryCanonicalWriterBackend:
                     str(target.get("channel_id") or ""),
                 }:
                     continue
-                try:
-                    self._require_canary_case_scope_locked(
-                        str(authorization["case_id"]),
-                        runtime,
-                    )
-                except CanonicalWriterError:
-                    continue
                 source_refs = authorization.get("source_refs") or {}
                 source_thread_id = str(
                     source_refs.get("thread_id") or source_refs.get("chat_id") or ""
@@ -2164,7 +1816,6 @@ class InMemoryCanonicalWriterBackend:
     def routeback_authorize(self, request: RouteBackAuthorizeRequest, runtime: RuntimeContext) -> Mapping[str, Any]:
         with self.store.lock:
             self._require_initiating_epoch_active_locked(runtime)
-            self._require_canary_case_scope_locked(request.case_id, runtime)
             lifecycle_id = "routeblock:" + _digest({
                 "case_id": request.case_id,
                 "idempotency_key": request.idempotency_key,
@@ -2283,7 +1934,6 @@ class InMemoryCanonicalWriterBackend:
     ) -> Mapping[str, Any]:
         with self.store.lock:
             self._require_initiating_epoch_active_locked(runtime)
-            self._require_canary_case_scope_locked(request.case_id, runtime)
             if request.recovery_kind not in {"edge_evidence", "edge_no_record"}:
                 raise CanonicalWriterError(
                     "invalid_request",
@@ -2372,20 +2022,6 @@ class InMemoryCanonicalWriterBackend:
                     "scope_mismatch",
                     "route-back recovery cannot cross session or source lane",
                 )
-            target_id = str(
-                request.target_ref.get("thread_id")
-                or request.target_ref.get("channel_id")
-                or ""
-            )
-            if (
-                request.recovery_kind == "edge_no_record"
-                and self._public_routeback_targets is not None
-                and target_id not in self._public_routeback_targets
-            ):
-                raise CanonicalWriterError(
-                    "target_not_approved",
-                    "route-back recovery target is not currently approved",
-                )
             return {
                 "success": True,
                 "authorization_id": authorization_id,
@@ -2404,7 +2040,6 @@ class InMemoryCanonicalWriterBackend:
         with self.store.lock:
             if request.preclaim:
                 self._require_initiating_epoch_active_locked(runtime)
-                self._require_canary_case_scope_locked(request.case_id, runtime)
                 if request.authorization_id or request.outcome != "blocked" or request.receipt:
                     raise CanonicalWriterError(
                         "invalid_request",
@@ -2739,7 +2374,7 @@ class InMemoryCanonicalWriterBackend:
                     not active
                     or active.get("plan_id") != capability.get("plan_id")
                     or int(active.get("revision") or 0)
-                        != int(capability.get("plan_revision") or 0)
+                        < int(capability.get("plan_revision") or 0)
                 ):
                     capability["state"] = "revoked"
                     failure_code = "plan_not_active"
@@ -2760,6 +2395,9 @@ class InMemoryCanonicalWriterBackend:
             case_id = str(capability["case_id"])
             plan_id = str(capability["plan_id"])
             plan_revision = int(capability["plan_revision"])
+            active_plan_revision = int(
+                self.store.active_plans[case_id]["revision"]
+            )
             approval_id = str(capability["approval_id"])
             remaining = capability["remaining_uses"].get(request.command_sha256)
             if remaining is None:
@@ -2775,6 +2413,7 @@ class InMemoryCanonicalWriterBackend:
                     "approval_id": approval_id,
                     "plan_id": plan_id,
                     "plan_revision": plan_revision,
+                    "active_plan_revision": active_plan_revision,
                     "approved_by_user_id": runtime.user_id,
                     "session_key_sha256": runtime.session_key_sha256,
                     "capability_epoch_sha256": runtime.capability_epoch_sha256,
@@ -2793,6 +2432,7 @@ class InMemoryCanonicalWriterBackend:
                 "case_id": case_id,
                 "plan_id": plan_id,
                 "plan_revision": plan_revision,
+                "active_plan_revision": active_plan_revision,
                 "approved_by_user_id": runtime.user_id,
                 "capability_epoch_sha256": runtime.capability_epoch_sha256,
                 "command_sha256": request.command_sha256,
@@ -2959,38 +2599,6 @@ class InMemoryCanonicalWriterBackend:
                     ),
                     origin="capability_revoke_session",
                 )
-            canary_claims = [
-                claim
-                for claim in self.store.canary_scope_claims.values()
-                if claim.get("session_key_sha256") == session_key_sha256
-                and claim.get("capability_epoch_sha256")
-                == runtime.capability_epoch_sha256
-            ][:64]
-            for claim in sorted(
-                canary_claims,
-                key=lambda item: (str(item.get("case_id")), str(item.get("grant_id"))),
-            ):
-                self._append_locked(
-                    event_type="canary.scope.revoked",
-                    case_id=str(claim["case_id"]),
-                    body={
-                        "canary_scope_revocation": {
-                            "grant_id": str(claim["grant_id"]),
-                            "session_key_sha256": session_key_sha256,
-                            "capability_epoch_sha256": runtime.capability_epoch_sha256,
-                            "reason": effective_reason,
-                            "state": "revoked",
-                        }
-                    },
-                    runtime=runtime,
-                    identity=(
-                        "canary-scope-revoke:"
-                        + str(claim["grant_id"])
-                        + ":"
-                        + runtime.capability_epoch_sha256
-                    ),
-                    origin="capability_revoke_session",
-                )
             revoked = sum(len(items) for items in revoked_by_case.values())
             return {
                 "success": True,
@@ -3003,13 +2611,10 @@ class InMemoryCanonicalWriterBackend:
                 "inserted": scope_receipt["inserted"],
                 "deduped": scope_receipt["deduped"],
                 "revoked": revoked,
-                "canary_scopes_revoked": len(canary_claims),
             }
 
     def projector_read(self, request: ProjectorReadRequest, runtime: RuntimeContext) -> Mapping[str, Any]:
         with self.store.lock:
-            if request.case_id:
-                self._require_canary_case_scope_locked(request.case_id, runtime)
             rows = [event for event in self.store.events if event["case_id"] == request.case_id]
             if request.after_event_id:
                 indexes = [
@@ -3037,14 +2642,12 @@ __all__ = [
     "CapabilityConsumeRequest",
     "CapabilityRevokeRequest",
     "ProjectorReadRequest",
-    "CanaryScopeClaimRequest",
     "InMemoryCanonicalWriterBackend",
     "InMemoryCanonicalWriterStore",
     "SUPPORTED_OPERATIONS",
     "REQUEST_SCHEMAS",
     "MODEL_FORBIDDEN_EVENT_TYPES",
     "OP_PING",
-    "OP_CANARY_SCOPE_CLAIM",
     "OP_EVENT_APPEND",
     "OP_EVENT_APPEND_MODEL",
     "OP_PLAN_TRANSITION",

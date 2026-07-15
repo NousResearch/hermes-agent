@@ -1,6 +1,7 @@
-"""Gateway intentional-silence token behavior."""
+"""Gateway structured delivery-outcome behavior."""
 
 from datetime import datetime
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -9,10 +10,7 @@ import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform
 from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource
-from gateway.response_filters import (
-    is_intentional_silence_agent_result,
-    is_intentional_silence_response,
-)
+from gateway.response_filters import should_suppress_delivery
 
 
 def _source():
@@ -76,24 +74,61 @@ def _runner(monkeypatch, tmp_path):
     return runner
 
 
-def test_exact_silence_tokens_are_intentional_silence():
+class _SuppressingAgent:
+    """Primary-model result used to exercise the real gateway shape."""
+
+    def __init__(self, **kwargs):
+        self.tools = []
+        self.session_id = kwargs.get("session_id")
+        self.model = kwargs.get("model", "gpt-5.6-sol")
+        self.provider = kwargs.get("provider")
+        self.api_key = kwargs.get("api_key")
+        self.base_url = kwargs.get("base_url")
+        self.api_mode = kwargs.get("api_mode")
+        self.context_compressor = SimpleNamespace(
+            last_prompt_tokens=0,
+            context_length=100_000,
+        )
+        self.session_prompt_tokens = 0
+        self.session_completion_tokens = 0
+        self._current_goal_generation_id = ""
+
+    def run_conversation(self, _message, **_kwargs):
+        return {
+            "final_response": "model-authored quiet outcome",
+            "messages": [
+                {"role": "user", "content": "side chatter"},
+                {
+                    "role": "assistant",
+                    "content": "model-authored quiet outcome",
+                },
+            ],
+            "api_calls": 1,
+            "completed": True,
+            "failed": False,
+            "turn_id": "turn-real-run",
+            "delivery_outcome": {
+                "action": "suppress",
+                "reason": "the primary model chose not to post this turn",
+                "turn_id": "turn-real-run",
+            },
+        }
+
+
+def test_response_text_never_controls_delivery():
     for token in ("[SILENT]", " SILENT ", "NO_REPLY", "no reply"):
-        assert is_intentional_silence_response(token)
-
-
-def test_blank_and_prose_mentions_are_not_silence():
-    assert not is_intentional_silence_response("")
-    assert not is_intentional_silence_response("Use NO_REPLY when no answer is needed.")
-    assert not is_intentional_silence_response("The reply was [SILENT], intentionally.")
-
-
-def test_failed_agent_result_never_counts_as_intentional_silence():
-    assert is_intentional_silence_agent_result({"failed": False}, "NO_REPLY")
-    assert not is_intentional_silence_agent_result({"failed": True}, "NO_REPLY")
+        assert not should_suppress_delivery(
+            {
+                "failed": False,
+                "turn_id": "turn-1",
+                "delivery_outcome": None,
+                "final_response": token,
+            }
+        )
 
 
 @pytest.mark.asyncio
-async def test_silence_token_suppresses_delivery_but_preserves_transcript(monkeypatch, tmp_path):
+async def test_structured_outcome_suppresses_delivery_but_preserves_transcript(monkeypatch, tmp_path):
     runner = _runner(monkeypatch, tmp_path)
     runner._run_agent = AsyncMock(return_value={
         "final_response": "[SILENT]",
@@ -106,6 +141,12 @@ async def test_silence_token_suppresses_delivery_but_preserves_transcript(monkey
         "last_prompt_tokens": 0,
         "api_calls": 1,
         "failed": False,
+        "turn_id": "turn-1",
+        "delivery_outcome": {
+            "action": "suppress",
+            "reason": "the model decided this message needs no delivery",
+            "turn_id": "turn-1",
+        },
     })
 
     response = await runner._handle_message_with_agent(
@@ -116,6 +157,79 @@ async def test_silence_token_suppresses_delivery_but_preserves_transcript(monkey
     appended = [call.args[1] for call in runner.session_store.append_to_transcript.call_args_list]
     assert {"role": "assistant", "content": "[SILENT]"}.items() <= appended[-1].items()
     assert [msg["role"] for msg in appended if msg.get("role") in {"user", "assistant"}] == ["user", "assistant"]
+
+
+@pytest.mark.asyncio
+async def test_real_run_shape_preserves_model_outcome_for_normal_delivery(
+    monkeypatch, tmp_path
+):
+    """The non-streaming run/result boundary must not drop model control."""
+
+    runner = _runner(monkeypatch, tmp_path)
+    runner.session_store.get_model_override.return_value = None
+    monkeypatch.setattr("run_agent.AIAgent", _SuppressingAgent)
+    monkeypatch.setattr(gateway_run, "_load_gateway_config", lambda: {})
+    monkeypatch.setattr(
+        gateway_run,
+        "_load_gateway_runtime_config",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_gateway_model",
+        lambda config=None: "gpt-5.6-sol",
+    )
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "test-only",
+        },
+    )
+    monkeypatch.setattr(
+        "hermes_cli.tools_config._get_platform_tools",
+        lambda _config, _platform: {"core"},
+    )
+
+    source = _source()
+    session_key = "agent:main:telegram:group:-1001:12345"
+    shaped = await runner._run_agent(
+        message="side chatter",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-silent",
+        session_key=session_key,
+    )
+
+    assert shaped.get("failed") is False, shaped
+    assert shaped["delivery_outcome"] == {
+        "action": "suppress",
+        "reason": "the primary model chose not to post this turn",
+        "turn_id": "turn-real-run",
+    }
+    assert should_suppress_delivery(shaped) is True
+
+    # Continue through the normal handler with the exact result produced by
+    # the real run-shaping path.  The assistant transcript remains durable,
+    # while the public response is suppressed by the model-authored receipt.
+    runner._run_agent = AsyncMock(return_value=shaped)
+    response = await runner._handle_message_with_agent(
+        _event(), source, session_key, 1
+    )
+
+    assert response == ""
+    appended = [
+        call.args[1]
+        for call in runner.session_store.append_to_transcript.call_args_list
+    ]
+    assert {
+        "role": "assistant",
+        "content": "model-authored quiet outcome",
+    }.items() <= appended[-1].items()
 
 
 @pytest.mark.asyncio
@@ -163,3 +277,30 @@ async def test_prose_mentioning_silence_token_is_delivered(monkeypatch, tmp_path
     )
 
     assert response == text
+
+
+@pytest.mark.asyncio
+async def test_failed_turn_delivers_even_with_structured_suppress(monkeypatch, tmp_path):
+    runner = _runner(monkeypatch, tmp_path)
+    text = "The provider failed before the task completed."
+    runner._run_agent = AsyncMock(return_value={
+        "final_response": text,
+        "messages": [],
+        "tools": [],
+        "history_offset": 0,
+        "last_prompt_tokens": 0,
+        "api_calls": 1,
+        "failed": True,
+        "turn_id": "turn-1",
+        "delivery_outcome": {
+            "action": "suppress",
+            "reason": "stale choice before failure",
+            "turn_id": "turn-1",
+        },
+    })
+
+    response = await runner._handle_message_with_agent(
+        _event(), _source(), "agent:main:telegram:group:-1001:12345", 1
+    )
+
+    assert text in response

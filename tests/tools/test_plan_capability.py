@@ -98,25 +98,48 @@ def test_todo_schema_and_registry_expose_plan_approval_to_model(monkeypatch):
     properties = TODO_SCHEMA["parameters"]["properties"]
     assert "plan_approval" in properties
     assert "goal_outcome" in properties
+    assert "goal_contract" in properties
     assert "plan_revision" in properties["plan_approval"]["required"]
+    assert "ttl_seconds" in properties["plan_approval"]["required"]
+    assert "max_uses_per_command" in properties["plan_approval"]["required"]
+    assert properties["plan_approval"]["additionalProperties"] is False
+    assert {
+        "user_id",
+        "owner_user_id",
+        "session_key",
+        "message_id",
+    }.isdisjoint(properties["plan_approval"]["properties"])
 
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
         lambda: {"approvals": {"plan_owner_user_ids": ["owner-1"]}},
     )
     approval.clear_session("session-registry")
+    store = TodoStore()
+    todo_result = registry.dispatch(
+        "todo",
+        {
+            "todos": [
+                {"id": "1", "content": "approved step", "status": "pending"}
+            ],
+        },
+        store=store,
+        session_key="session-registry",
+        user_id="owner-1",
+    )
+    assert json.loads(todo_result)["summary"]["pending"] == 1
     result = registry.dispatch(
         "todo",
         {
-            "todos": [{"id": "1", "content": "approved step", "status": "pending"}],
             "plan_approval": {
                 "plan_id": "plan-registry",
                 "plan_revision": 1,
                 "exact_commands": ["git status --short"],
+                "ttl_seconds": 3600,
                 "max_uses_per_command": 1,
             },
         },
-        store=TodoStore(),
+        store=store,
         session_key="session-registry",
         user_id="owner-1",
     )
@@ -127,12 +150,109 @@ def test_todo_schema_and_registry_expose_plan_approval_to_model(monkeypatch):
     ) == "plan-registry"
 
 
+def test_todo_goal_state_uses_conversation_session_not_gateway_authority_key(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from hermes_cli import goals
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    goals._DB_CACHE.clear()
+
+    conversation_id = "conversation-session-1"
+    gateway_authority_key = "agent:main:discord:channel:123"
+    goal_mgr = goals.GoalManager(conversation_id)
+    goal_mgr.set("ship the verified change")
+    turn_id = "registry-model-turn"
+    generation_id = goal_mgr.begin_model_turn(turn_id)
+
+    store = TodoStore()
+    contract_result = registry.dispatch(
+        "todo",
+        {
+            "goal_contract": {
+                "outcome": "change is live",
+                "verification": "canary passes",
+                "constraints": "no unrelated changes",
+                "boundaries": "goal subsystem",
+                "stop_when": "owner-only credential is required",
+            },
+        },
+        store=store,
+        session_key=gateway_authority_key,
+        goal_session_id=conversation_id,
+        turn_id=turn_id,
+        goal_generation_id=generation_id,
+    )
+    outcome_result = registry.dispatch(
+        "todo",
+        {
+            "goal_outcome": {
+                "status": "continue",
+                "reason": "canary remains to run",
+            },
+        },
+        store=store,
+        session_key=gateway_authority_key,
+        goal_session_id=conversation_id,
+        turn_id=turn_id,
+        goal_generation_id=generation_id,
+    )
+
+    assert json.loads(contract_result)["goal_contract"]["recorded"] is True
+    assert json.loads(outcome_result)["goal_outcome"]["recorded"] is True
+    reloaded = goals.GoalManager(conversation_id).state
+    assert reloaded.contract.verification == "canary passes"
+    assert reloaded.pending_model_outcome == "continue"
+    assert goals.GoalManager(gateway_authority_key).state is None
+    goals._DB_CACHE.clear()
+
+
+def test_todo_registry_rejects_goal_write_without_exact_authority(
+    tmp_path, monkeypatch
+):
+    from pathlib import Path
+
+    from hermes_cli import goals
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    goals._DB_CACHE.clear()
+
+    session_id = "registry-authority-required"
+    mgr = goals.GoalManager(session_id)
+    mgr.set("ship safely")
+    mgr.begin_model_turn("bound-turn")
+
+    data = json.loads(
+        registry.dispatch(
+            "todo",
+            {"goal_outcome": {"status": "complete", "reason": "late"}},
+            store=TodoStore(),
+            goal_session_id=session_id,
+        )
+    )
+
+    assert "require exact turn" in data["error"]
+    durable = goals.GoalManager(session_id).state
+    assert durable.pending_model_outcome is None
+    goals._DB_CACHE.clear()
+
+
 def test_runtime_observed_user_must_match_approved_owner(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
         lambda: {"approvals": {"plan_owner_user_ids": ["owner-1"]}},
     )
     monkeypatch.setattr(approval, "_observed_session_user_id", lambda: "teammate")
+    monkeypatch.setattr(approval, "_observed_session_platform", lambda: "discord")
+    monkeypatch.setattr(approval, "_observed_session_message_id", lambda: "msg-owner")
     with pytest.raises(PermissionError, match="runtime-observed user"):
         approval.grant_plan_capability(
             session_key="session-observed-owner",
@@ -230,6 +350,10 @@ def test_gateway_owner_is_discord_bound_and_requires_current_observed_message(mo
         lambda **kwargs: True,
     )
     monkeypatch.setattr(
+        "tools.canonical_brain_tool.canonical_active_plan_revision",
+        lambda **kwargs: 1,
+    )
+    monkeypatch.setattr(
         "tools.canonical_brain_tool.record_plan_approval_receipt",
         lambda **kwargs: _inserted_receipt(),
     )
@@ -278,6 +402,10 @@ def test_existing_capability_cannot_be_consumed_by_same_id_on_another_platform(
     monkeypatch.setattr(
         "tools.canonical_brain_tool.canonical_active_plan_matches",
         lambda **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "tools.canonical_brain_tool.canonical_active_plan_revision",
+        lambda **kwargs: 1,
     )
     monkeypatch.setattr(
         "tools.canonical_brain_tool.record_plan_approval_receipt",
@@ -440,6 +568,10 @@ def test_canonical_runtime_requires_observed_owner_case_and_active_exact_plan(mo
         "tools.canonical_brain_tool.canonical_active_plan_matches",
         lambda **kwargs: False,
     )
+    monkeypatch.setattr(
+        "tools.canonical_brain_tool.canonical_active_plan_revision",
+        lambda **kwargs: None,
+    )
     with pytest.raises(PermissionError, match="exact active plan_id"):
         approval.grant_plan_capability(
             session_key="session-canonical",
@@ -453,6 +585,10 @@ def test_canonical_runtime_requires_observed_owner_case_and_active_exact_plan(mo
     monkeypatch.setattr(
         "tools.canonical_brain_tool.canonical_active_plan_matches",
         lambda **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "tools.canonical_brain_tool.canonical_active_plan_revision",
+        lambda **kwargs: 1,
     )
     monkeypatch.setattr(
         "tools.canonical_brain_tool.record_plan_approval_receipt",
@@ -484,6 +620,10 @@ def test_canonical_grant_requires_new_insert_and_verified_readback(monkeypatch):
     monkeypatch.setattr(
         "tools.canonical_brain_tool.canonical_active_plan_matches",
         lambda **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "tools.canonical_brain_tool.canonical_active_plan_revision",
+        lambda **kwargs: 1,
     )
     session_key = "session-grant-receipt"
     approval.clear_session(session_key)
@@ -563,6 +703,10 @@ def test_canonical_consume_revalidates_active_plan_and_rejects_deduped_receipt(m
         "tools.canonical_brain_tool.canonical_active_plan_matches",
         lambda **kwargs: False,
     )
+    monkeypatch.setattr(
+        "tools.canonical_brain_tool.canonical_active_plan_revision",
+        lambda **kwargs: None,
+    )
     check_calls = []
     monkeypatch.setattr(
         "tools.canonical_brain_tool.record_plan_capability_check",
@@ -574,6 +718,10 @@ def test_canonical_consume_revalidates_active_plan_and_rejects_deduped_receipt(m
     monkeypatch.setattr(
         "tools.canonical_brain_tool.canonical_active_plan_matches",
         lambda **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "tools.canonical_brain_tool.canonical_active_plan_revision",
+        lambda **kwargs: 1,
     )
     monkeypatch.setattr(
         "tools.canonical_brain_tool.record_plan_capability_check",
@@ -594,6 +742,54 @@ def test_canonical_consume_revalidates_active_plan_and_rejects_deduped_receipt(m
     assert approval.consume_plan_capability(session_key, command) is None
 
 
+def test_local_canonical_capability_survives_same_plan_progress_only_for_exact_command(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"approvals": {"plan_owner_user_ids": ["owner-progress"]}},
+    )
+    monkeypatch.setattr(
+        approval, "_observed_session_user_id", lambda: "owner-progress"
+    )
+    monkeypatch.setattr(approval, "_observed_session_platform", lambda: "discord")
+    monkeypatch.setattr(
+        approval, "_observed_session_message_id", lambda: "progress-approval-message"
+    )
+    monkeypatch.setattr(
+        "tools.canonical_brain_tool.canonical_active_plan_matches",
+        lambda **kwargs: kwargs.get("plan_revision") == 1,
+    )
+    monkeypatch.setattr(
+        "tools.canonical_brain_tool.canonical_active_plan_revision",
+        lambda **_kwargs: 2,
+    )
+    monkeypatch.setattr(
+        "tools.canonical_brain_tool.record_plan_approval_receipt",
+        lambda **kwargs: _inserted_receipt(),
+    )
+    monkeypatch.setattr(
+        "tools.canonical_brain_tool.record_plan_capability_check",
+        lambda **kwargs: _inserted_receipt(),
+    )
+    session_key = "session-progress-revision"
+    plan_id = "plan-progress-revision"
+    approved_command = "git status --short"
+    approval.clear_session(session_key)
+    approval.grant_plan_capability(
+        session_key=session_key,
+        plan_id=plan_id,
+        plan_revision=1,
+        exact_commands=[approved_command],
+        approved_by_user_id="owner-progress",
+        max_uses_per_command=1,
+        canonical_case_id="case:progress-revision",
+    )
+
+    assert approval.consume_plan_capability(session_key, "git status") is None
+    assert approval.consume_plan_capability(session_key, approved_command) == plan_id
+
+
 def test_concurrent_canonical_receipt_failure_cannot_overcredit_counter(monkeypatch):
     monkeypatch.setattr(
         "hermes_cli.config.load_config",
@@ -609,6 +805,10 @@ def test_concurrent_canonical_receipt_failure_cannot_overcredit_counter(monkeypa
     monkeypatch.setattr(
         "tools.canonical_brain_tool.canonical_active_plan_matches",
         lambda **kwargs: True,
+    )
+    monkeypatch.setattr(
+        "tools.canonical_brain_tool.canonical_active_plan_revision",
+        lambda **kwargs: 1,
     )
     session_key = "session-concurrent-receipt"
     plan_id = "plan-concurrent-receipt"

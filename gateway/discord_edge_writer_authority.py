@@ -37,11 +37,19 @@ from gateway.discord_edge_protocol import (
     DiscordEdgeRequest,
     SignedDiscordEdgeEnvelope,
     canonical_json_bytes,
+    ed25519_public_key_id,
     make_request,
     parse_request_for_reconciliation,
     sign_capability,
     verify_receipt,
     verify_request_capability_for_reconciliation,
+)
+from gateway.operational_edge_protocol import (
+    OperationalCapability,
+    OperationalIntent,
+    SignedEnvelope,
+    canonical_json_bytes as operational_canonical_json_bytes,
+    sign_envelope as sign_operational_envelope,
 )
 
 
@@ -123,6 +131,84 @@ class CanonicalWriterDiscordAuthority:
     @property
     def capability_public_key(self) -> Ed25519PublicKey:
         return self._capability_private_key.public_key()
+
+    def issue_operational_edge_capability(
+        self,
+        intent: OperationalIntent,
+        *,
+        authorization: Mapping[str, Any],
+    ) -> SignedEnvelope:
+        """Issue one short exact operation capability from a consumed plan lease.
+
+        The same writer-owned Ed25519 key used for Discord egress signs this
+        envelope.  The supplied authorization is the durable result of the
+        existing ``capability.consume`` transaction; this method never invents
+        or re-evaluates approval state.
+        """
+
+        if not isinstance(intent, OperationalIntent) or not isinstance(
+            authorization, Mapping
+        ):
+            raise DiscordEdgeWriterAuthorityError(
+                "invalid_operational_edge_authorization",
+                "operational edge authorization has an invalid shape",
+            )
+        required = {
+            "authorized",
+            "approval_id",
+            "case_id",
+            "plan_id",
+            "plan_revision",
+            "active_plan_revision",
+            "command_sha256",
+        }
+        if (
+            authorization.get("authorized") is not True
+            or not required <= set(authorization)
+            or any(
+                not isinstance(authorization.get(name), (str, int))
+                or isinstance(authorization.get(name), bool)
+                for name in required - {"authorized"}
+            )
+        ):
+            raise DiscordEdgeWriterAuthorityError(
+                "invalid_operational_edge_authorization",
+                "operational edge authorization is not a durable successful consume",
+            )
+        now = self._clock_unix_ms()
+        if isinstance(now, bool) or not isinstance(now, int) or now < 1:
+            raise DiscordEdgeWriterAuthorityError(
+                "discord_edge_authority_unavailable",
+                "writer authority clock is unavailable",
+            )
+        with self._sequence_lock:
+            now = max(now, self._last_issued_at_unix_ms + 1)
+            self._last_issued_at_unix_ms = now
+        reference_fields = {
+            "approval_id": authorization["approval_id"],
+            "case_id": authorization["case_id"],
+            "plan_id": authorization["plan_id"],
+            "plan_revision": authorization["plan_revision"],
+            "active_plan_revision": authorization["active_plan_revision"],
+            "command_sha256": authorization["command_sha256"],
+        }
+        authority_ref = "canonical-owner-plan:" + hashlib.sha256(
+            operational_canonical_json_bytes(reference_fields)
+        ).hexdigest()
+        capability = OperationalCapability(
+            authority_kind="canonical_owner_plan",
+            authority_ref=authority_ref,
+            operation_id=intent.operation_id,
+            arguments_sha256=intent.arguments_sha256,
+            idempotency_key=intent.idempotency_key,
+            issued_at_unix_ms=now,
+            expires_at_unix_ms=now + self._request_timeout_seconds * 1_000,
+        )
+        return sign_operational_envelope(
+            capability.to_mapping(),
+            key_id=ed25519_public_key_id(self._capability_private_key.public_key()),
+            private_key=self._capability_private_key,
+        )
 
     @staticmethod
     def parse_public_send_intent(value: Any) -> DiscordEdgeIntent:

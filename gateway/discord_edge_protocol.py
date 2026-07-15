@@ -110,11 +110,23 @@ class DiscordEdgeOperation(StrEnum):
 
 
 class DiscordPublicTargetType(StrEnum):
-    """Discord guild surfaces that can potentially be proven public live."""
+    """Explicit Discord guild surfaces and their proof policy."""
 
     PUBLIC_GUILD_CHANNEL = "public_guild_channel"
     PUBLIC_GUILD_THREAD = "public_guild_thread"
     PUBLIC_GUILD_FORUM = "public_guild_forum"
+    GUILD_CHANNEL = "guild_channel"
+    GUILD_THREAD = "guild_thread"
+
+
+_GUILD_CHANNEL_TARGET_TYPES = frozenset({
+    DiscordPublicTargetType.PUBLIC_GUILD_CHANNEL,
+    DiscordPublicTargetType.GUILD_CHANNEL,
+})
+_GUILD_THREAD_TARGET_TYPES = frozenset({
+    DiscordPublicTargetType.PUBLIC_GUILD_THREAD,
+    DiscordPublicTargetType.GUILD_THREAD,
+})
 
 
 class DiscordEdgeAuthorityKind(StrEnum):
@@ -158,18 +170,23 @@ _OPERATION_TARGET_TYPES: Mapping[
         {
             DiscordPublicTargetType.PUBLIC_GUILD_CHANNEL,
             DiscordPublicTargetType.PUBLIC_GUILD_THREAD,
+            DiscordPublicTargetType.GUILD_CHANNEL,
+            DiscordPublicTargetType.GUILD_THREAD,
         }
     ),
     DiscordEdgeOperation.PUBLIC_MESSAGE_EDIT: frozenset(
         {
             DiscordPublicTargetType.PUBLIC_GUILD_CHANNEL,
             DiscordPublicTargetType.PUBLIC_GUILD_THREAD,
+            DiscordPublicTargetType.GUILD_CHANNEL,
+            DiscordPublicTargetType.GUILD_THREAD,
         }
     ),
     DiscordEdgeOperation.PUBLIC_THREAD_CREATE: frozenset(
         {
             DiscordPublicTargetType.PUBLIC_GUILD_CHANNEL,
             DiscordPublicTargetType.PUBLIC_GUILD_FORUM,
+            DiscordPublicTargetType.GUILD_CHANNEL,
         }
     ),
 }
@@ -461,11 +478,11 @@ class DiscordPublicTarget:
                 "parent_channel_id",
                 _validate_snowflake(self.parent_channel_id, "parent_channel_id"),
             )
-        if self.target_type is DiscordPublicTargetType.PUBLIC_GUILD_THREAD:
+        if self.target_type in _GUILD_THREAD_TARGET_TYPES:
             if self.parent_channel_id is None:
                 _fail(
                     DiscordEdgeErrorCode.INVALID_TARGET,
-                    "public guild threads require parent_channel_id",
+                "guild threads require parent_channel_id",
                 )
             if self.parent_channel_id == self.channel_id:
                 _fail(
@@ -475,7 +492,7 @@ class DiscordPublicTarget:
         elif self.parent_channel_id is not None:
             _fail(
                 DiscordEdgeErrorCode.INVALID_TARGET,
-                "parent_channel_id is valid only for public guild threads",
+                "parent_channel_id is valid only for guild threads",
             )
 
     @classmethod
@@ -511,11 +528,11 @@ class DiscordPublicTarget:
             if raw_parent is not None
             else None
         )
-        if target_type is DiscordPublicTargetType.PUBLIC_GUILD_THREAD:
+        if target_type in _GUILD_THREAD_TARGET_TYPES:
             if parent_channel_id is None:
                 _fail(
                     DiscordEdgeErrorCode.INVALID_TARGET,
-                    "public guild threads require parent_channel_id",
+                    "guild threads require parent_channel_id",
                 )
             if parent_channel_id == channel_id:
                 _fail(
@@ -525,7 +542,7 @@ class DiscordPublicTarget:
         elif parent_channel_id is not None:
             _fail(
                 DiscordEdgeErrorCode.INVALID_TARGET,
-                "parent_channel_id is valid only for public guild threads",
+                "parent_channel_id is valid only for guild threads",
             )
         return cls(target_type, guild_id, channel_id, parent_channel_id)
 
@@ -641,8 +658,7 @@ class DiscordEdgeIntent:
             )
         if (
             self.operation is DiscordEdgeOperation.PUBLIC_THREAD_CREATE
-            and self.target.target_type
-            is DiscordPublicTargetType.PUBLIC_GUILD_CHANNEL
+            and self.target.target_type in _GUILD_CHANNEL_TARGET_TYPES
             and normalized_payload.get("initial_message")
         ):
             _fail(
@@ -1294,8 +1310,7 @@ class DiscordEdgeThreadReadback:
     def __post_init__(self) -> None:
         if (
             not isinstance(self.target, DiscordPublicTarget)
-            or self.target.target_type
-            is not DiscordPublicTargetType.PUBLIC_GUILD_THREAD
+            or self.target.target_type not in _GUILD_THREAD_TARGET_TYPES
         ):
             _fail(
                 DiscordEdgeErrorCode.INVALID_RECEIPT,

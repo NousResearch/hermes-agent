@@ -503,7 +503,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True,
                name_override: str = "") -> None:
-    """Fetch, quarantine, scan, confirm, and install a skill.
+    """Fetch, quarantine, structurally preflight, confirm, and install a skill.
 
     ``name_override`` lets non-interactive callers (slash commands, gateway,
     scripts) supply a skill name when the upstream SKILL.md lacks a valid
@@ -638,8 +638,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         return
     c.print(f"[dim]Quarantined to {q_path.relative_to(q_path.parent.parent.parent)}[/]")
 
-    # Scan
-    c.print("[bold]Running security scan...[/]")
+    # Mechanical package preflight
+    c.print("[bold]Running structural package preflight...[/]")
     if bundle.source == "official":
         scan_source = "official"
     else:
@@ -685,7 +685,8 @@ def do_install(identifier: str, category: str = "", force: bool = False,
             c.print(Panel(
                 "[bold yellow]You are installing a third-party skill at your own risk.[/]\n\n"
                 "External skills can contain instructions that influence agent behavior,\n"
-                "shell commands, and scripts. Even after automated scanning, you should\n"
+                "shell commands, and scripts. Automated checks validate package\n"
+                "boundaries, not the meaning of authored instructions; you should\n"
                 "review the installed files before use.\n\n"
                 f"Files will be at: [cyan]{display_hermes_home()}/skills/{category + '/' if category else ''}{bundle.name}/[/]",
                 title="Disclaimer",
@@ -1049,11 +1050,11 @@ def do_update(name: Optional[str] = None, console: Optional[Console] = None) -> 
 
 def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
              deep: bool = False) -> None:
-    """Re-run security scan on installed hub skills.
+    """Re-run the mechanical package preflight on installed hub skills.
 
     When ``deep=True``, also runs an opt-in AST-level diagnostic on Python
-    files (review aid only — not a security gate; skills_guard.py verdicts
-    are unchanged).
+    files as a separate review aid. It does not alter the package preflight
+    verdict or installation policy.
     """
     from tools.skills_hub import HubLockFile, SKILLS_DIR
     from tools.skills_guard import scan_skill, format_scan_report
@@ -1073,7 +1074,7 @@ def do_audit(name: Optional[str] = None, console: Optional[Console] = None,
             c.print(f"[bold red]Error:[/] '{name}' is not a hub-installed skill.\n")
             return
 
-    c.print(f"\n[bold]Auditing {len(targets)} skill(s)...[/]\n")
+    c.print(f"\n[bold]Checking {len(targets)} skill package(s)...[/]\n")
 
     if deep:
         from tools.skills_ast_audit import ast_scan_path, format_ast_report
@@ -1461,12 +1462,12 @@ def do_publish(skill_path: str, target: str = "github", repo: str = "",
         c.print("[bold red]Error:[/] SKILL.md must have a 'description' in frontmatter.\n")
         return
 
-    # Self-scan before publishing
-    c.print(f"[bold]Scanning '{name}' before publish...[/]")
+    # Mechanical package preflight before publishing
+    c.print(f"[bold]Checking '{name}' package before publish...[/]")
     result = scan_skill(path, source="self")
     c.print(format_scan_report(result))
     if result.verdict == "dangerous":
-        c.print("[bold red]Cannot publish a skill with DANGEROUS verdict.[/]\n")
+        c.print("[bold red]Cannot publish a mechanically unsafe skill package.[/]\n")
         return
 
     if target == "github":
@@ -1578,7 +1579,8 @@ def _github_publish(skill_path: Path, skill_name: str, target_repo: str,
             json={
                 "title": f"Add skill: {skill_name}",
                 "body": f"Submitting the `{skill_name}` skill via Hermes Skills Hub.\n\n"
-                        f"This skill was scanned by the Hermes Skills Guard before submission.",
+                        "Hermes completed its mechanical package preflight before submission; "
+                        "authored instructions were not classified.",
                 "head": f"{fork_repo.split('/')[0]}:{branch_name}",
                 "base": default_branch,
             },
@@ -1979,13 +1981,13 @@ def _print_skills_help(console: Console) -> None:
         "[bold]Skills Hub Commands:[/]\n\n"
         "  [cyan]browse[/] [--source official]   Browse all available skills (paginated)\n"
         "  [cyan]search[/] <query>              Search registries for skills\n"
-        "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
+        "  [cyan]install[/] <identifier>        Install a skill (with package preflight)\n"
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
         "  [cyan]list[/] [--source hub|builtin|local] [--enabled-only]\n"
         "       List installed skills; --enabled-only filters to the active profile's live set\n"
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
-        "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
+        "  [cyan]audit[/] [name]                Re-run package preflight\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
         "  [cyan]list-modified[/]               List bundled skills you've edited (kept by update)\n"
         "  [cyan]diff[/] <name>                 Diff your copy of a bundled skill vs the stock version\n"

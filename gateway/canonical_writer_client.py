@@ -32,9 +32,17 @@ from gateway.canonical_writer_protocol import (
 class CanonicalWriterClientError(RuntimeError):
     """A stable client/remote error safe to return through a tool boundary."""
 
-    def __init__(self, code: ErrorCode, message: str, *, retryable: bool = False) -> None:
+    def __init__(
+        self,
+        code: ErrorCode,
+        message: str,
+        *,
+        retryable: bool = False,
+        write_may_have_occurred: bool | None = None,
+    ) -> None:
         self.code = code
         self.retryable = retryable
+        self.write_may_have_occurred = write_may_have_occurred
         super().__init__(message)
 
 
@@ -235,6 +243,7 @@ class CanonicalWriterClient:
             raise CanonicalWriterClientError(
                 ErrorCode.UNAUTHORIZED_PEER,
                 "Canonical writer clients cannot be used from a child process.",
+                write_may_have_occurred=False,
             )
 
     def _connect(self, timeout_seconds: float) -> socket.socket:
@@ -248,6 +257,7 @@ class CanonicalWriterClient:
                 raise CanonicalWriterClientError(
                     ErrorCode.UNAUTHORIZED_PEER,
                     "Canonical writer server is not authorized.",
+                    write_may_have_occurred=False,
                 )
         except BaseException:
             sock.close()
@@ -274,18 +284,21 @@ class CanonicalWriterClient:
             raise CanonicalWriterClientError(
                 ErrorCode.UNAUTHORIZED_PEER,
                 "Canonical writer server identity is unavailable.",
+                write_may_have_occurred=False,
             ) from exc
         if self._server_peer is None or peer != self._server_peer:
             self._close_unlocked()
             raise CanonicalWriterClientError(
                 ErrorCode.UNAUTHORIZED_PEER,
                 "Canonical writer server identity changed.",
+                write_may_have_occurred=False,
             )
         if not self._server_is_authorized(peer):
             self._close_unlocked()
             raise CanonicalWriterClientError(
                 ErrorCode.UNAUTHORIZED_PEER,
                 "Canonical writer server is not authorized.",
+                write_may_have_occurred=False,
             )
 
     def _close_unlocked(self) -> None:
@@ -338,6 +351,7 @@ class CanonicalWriterClient:
             raise CanonicalWriterClientError(
                 ErrorCode.UNKNOWN_OPERATION,
                 "Canonical writer operation is not allowed.",
+                write_may_have_occurred=False,
             ) from exc
         built_runtime = self.request_context_builder(runtime)
         if not isinstance(built_runtime, Mapping):
@@ -345,6 +359,7 @@ class CanonicalWriterClient:
 
         overall_deadline = time.monotonic() + float(timeout)
         with self._lock:
+            aggregate_may_have_been_sent = False
             for attempt in range(self.max_reconnect_attempts + 1):
                 remaining = overall_deadline - time.monotonic()
                 if remaining <= 0:
@@ -353,6 +368,9 @@ class CanonicalWriterClient:
                         ErrorCode.TIMEOUT,
                         "Canonical writer request timed out.",
                         retryable=True,
+                        write_may_have_occurred=(
+                            aggregate_may_have_been_sent
+                        ),
                     )
 
                 request = make_request(
@@ -369,15 +387,25 @@ class CanonicalWriterClient:
                     sock.settimeout(remaining)
                     self._reauthorize_server(sock)
                     may_have_been_sent = True
+                    aggregate_may_have_been_sent = True
                     send_message(sock, request.to_message(), max_bytes=MAX_REQUEST_BYTES)
                     raw_response = receive_message(sock, max_bytes=MAX_RESPONSE_BYTES)
                     response = parse_response(raw_response)
+                except CanonicalWriterClientError as exc:
+                    # A later reconnect/reauthorization failure must not erase
+                    # evidence that an earlier attempt already reached send.
+                    if aggregate_may_have_been_sent:
+                        exc.write_may_have_occurred = True
+                    raise
                 except socket.timeout as exc:
                     self._close_unlocked()
                     failure = CanonicalWriterClientError(
                         ErrorCode.TIMEOUT,
                         "Canonical writer request timed out.",
                         retryable=True,
+                        write_may_have_occurred=(
+                            aggregate_may_have_been_sent
+                        ),
                     )
                     if not self._may_retry(
                         attempt, typed_operation, idempotency_key, may_have_been_sent
@@ -391,6 +419,9 @@ class CanonicalWriterClient:
                         code,
                         "Canonical writer transport failed.",
                         retryable=True,
+                        write_may_have_occurred=(
+                            aggregate_may_have_been_sent
+                        ),
                     )
                     if not self._may_retry(
                         attempt, typed_operation, idempotency_key, may_have_been_sent
@@ -404,12 +435,14 @@ class CanonicalWriterClient:
                         response.error_code,
                         response.error_message or "Canonical writer request failed.",
                         retryable=response.retryable,
+                        write_may_have_occurred=True,
                     )
                 if response.request_id != request.request_id:
                     self._close_unlocked()
                     raise CanonicalWriterClientError(
                         ErrorCode.RESPONSE_MISMATCH,
                         "Canonical writer response does not match the request.",
+                        write_may_have_occurred=True,
                     )
                 if not response.ok:
                     assert response.error_code is not None
@@ -417,6 +450,7 @@ class CanonicalWriterClient:
                         response.error_code,
                         response.error_message or "Canonical writer request failed.",
                         retryable=response.retryable,
+                        write_may_have_occurred=True,
                     )
                 assert response.status is not None and response.result is not None
                 return CanonicalWriterCallResult(

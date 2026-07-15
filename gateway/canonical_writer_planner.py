@@ -77,6 +77,7 @@ from gateway.canonical_writer_activation import (
     DEFAULT_STAGED_PLAN_PATH,
     DEFAULT_STAGED_GATEWAY_UNIT_PATH,
     DEFAULT_STAGED_NATIVE_PLAN_PATH,
+    DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH,
     DEFAULT_STAGED_WRITER_UNIT_PATH,
     DEFAULT_WRITER_CONFIG_SOURCE_PATH,
     InstallArtifact,
@@ -488,6 +489,7 @@ class NativeObservationDigests:
     """Content digests used to build a deployable native observation plan."""
 
     writer_unit_sha256: str
+    phase_b_readiness_unit_sha256: str
     gateway_unit_sha256: str
     exporter_unit_sha256: str
     tmpfiles_sha256: str
@@ -968,6 +970,8 @@ def build_native_observation_plan(
     bundle = render_systemd_units(release, unit_spec)
     if (
         _sha256_text(bundle.writer_service) != digests.writer_unit_sha256
+        or _sha256_text(bundle.phase_b_readiness_service)
+        != digests.phase_b_readiness_unit_sha256
         or _sha256_text(bundle.gateway_service) != digests.gateway_unit_sha256
         or _sha256_text(bundle.exporter_service) != digests.exporter_unit_sha256
         or _sha256_text(bundle.tmpfiles) != digests.tmpfiles_sha256
@@ -1176,6 +1180,9 @@ def build_activation_plan(
         "preapproved_kernel_executable_mappings"
     ] = list(observed["gateway_service"]["kernel_executable_mappings"])
     writer_unit_sha256 = _sha256_text(unit_bundle.writer_service)
+    phase_b_readiness_unit_sha256 = _sha256_text(
+        unit_bundle.phase_b_readiness_service
+    )
     gateway_unit_sha256 = _sha256_text(unit_bundle.gateway_service)
     exporter_unit_sha256 = _sha256_text(unit_bundle.exporter_service)
     tmpfiles_sha256 = _sha256_text(unit_bundle.tmpfiles)
@@ -1227,6 +1234,7 @@ def build_activation_plan(
         external_iam_policy_sha256=external_iam_policy_sha256,
         deployment_manifest_sha256=manifest_sha256,
         writer_unit_sha256=writer_unit_sha256,
+        phase_b_readiness_unit_sha256=phase_b_readiness_unit_sha256,
         gateway_unit_sha256=gateway_unit_sha256,
         exporter_unit_sha256=exporter_unit_sha256,
         tmpfiles_sha256=tmpfiles_sha256,
@@ -1247,6 +1255,15 @@ def build_activation_plan(
             source_path=None,
             target_path=paths.writer_unit_path,
             sha256=writer_unit_sha256,
+            mode=0o644,
+            uid=0,
+            gid=0,
+            maximum_bytes=256 * 1024,
+        ),
+        "phase_b_readiness_unit": InstallArtifact(
+            source_path=None,
+            target_path=paths.phase_b_readiness_unit_path,
+            sha256=phase_b_readiness_unit_sha256,
             mode=0o644,
             uid=0,
             gid=0,
@@ -1600,6 +1617,9 @@ def build_and_stage_native_observation_plan(
     bundle = render_systemd_units(release, unit_spec)
     digests = NativeObservationDigests(
         writer_unit_sha256=_sha256_text(bundle.writer_service),
+        phase_b_readiness_unit_sha256=_sha256_text(
+            bundle.phase_b_readiness_service
+        ),
         gateway_unit_sha256=_sha256_text(bundle.gateway_service),
         exporter_unit_sha256=_sha256_text(bundle.exporter_service),
         tmpfiles_sha256=_sha256_text(bundle.tmpfiles),
@@ -1690,6 +1710,10 @@ def build_and_stage_native_observation_plan(
         (
             DEFAULT_STAGED_WRITER_UNIT_PATH,
             bundle.writer_service.encode("utf-8"),
+        ),
+        (
+            DEFAULT_STAGED_PHASE_B_READINESS_UNIT_PATH,
+            bundle.phase_b_readiness_service.encode("utf-8"),
         ),
         (
             DEFAULT_STAGED_GATEWAY_UNIT_PATH,

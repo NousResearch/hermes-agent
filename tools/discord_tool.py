@@ -1245,7 +1245,9 @@ def _build_schema(
                 "Optional structured Support Ops recipient key or known alias, e.g. "
                 "emil_lomliev, alex, ivcho, fatih, emil_kozhuharov, plamenka. "
                 "Use this for handoff threads instead of relying on the title. "
-                "If the person is unknown, do not guess; ask for clarification."
+                "If the person is unknown, do not guess; ask for clarification. After the "
+                "requester answers, record person.alias.learned through canonical_event_append "
+                "and retry with its immediate_retry_target_person canonical key."
             ),
         },
         "limit": {

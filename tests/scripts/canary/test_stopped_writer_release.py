@@ -147,7 +147,7 @@ def test_plan_is_deterministic_fixed_and_self_digest_bound(monkeypatch):
     assert [item["path"] for item in first["activation_inventory"]] == [
         str(path) for path in writer_release._ACTIVATION_PATHS
     ]
-    assert len(first["activation_inventory"]) == 17
+    assert len(first["activation_inventory"]) == 19
     assert {item["state"] for item in first["activation_inventory"]} == {"absent"}
     assert [item["unit"] for item in first["service_states"]] == list(
         writer_release._STOPPED_SERVICE_UNITS
@@ -385,6 +385,24 @@ def _completed_release(tmp_path: Path, monkeypatch):
     spec.writer_module_origin.write_text("writer = True\n", encoding="utf-8")
     spec.gateway_module_origin.write_text("gateway = True\n", encoding="utf-8")
     spec.foundation_module_origin.write_text("foundation = True\n", encoding="utf-8")
+    spec.phase_b_foundation_module_origin.write_text(
+        "phase_b_foundation = True\n", encoding="utf-8"
+    )
+    spec.phase_b_runtime_module_origin.write_text(
+        "phase_b_runtime = True\n", encoding="utf-8"
+    )
+    spec.runtime_dependency_module_origin.write_text(
+        "runtime_dependencies = True\n", encoding="utf-8"
+    )
+    (spec.release_root / writer_release.SOURCE_COMMIT_MARKER_RELATIVE_PATH).write_text(
+        REVISION + "\n", encoding="ascii"
+    )
+    runtime_manifest = (
+        spec.release_root
+        / writer_release.RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH
+    )
+    runtime_manifest.parent.mkdir(parents=True, exist_ok=True)
+    runtime_manifest.write_text("{}\n", encoding="ascii")
     for relative_path in writer_release._TRACKED_RELEASE_ARTIFACTS:
         artifact = spec.release_root / relative_path
         artifact.parent.mkdir(parents=True, exist_ok=True)

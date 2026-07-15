@@ -12,6 +12,8 @@ from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 import gateway.canonical_full_canary_e2e as e2e_module
 from gateway.canonical_full_canary_e2e import (
+    CANONICAL_EVENT_LOG_RECEIPT_SCHEMA,
+    CANONICAL_TASK_WORKSPACE_RECEIPT_SCHEMA,
     CANONICAL_TRUTH_RECEIPT_SCHEMA,
     EVIDENCE_SCHEMA,
     FIXTURE_SCHEMA,
@@ -55,9 +57,6 @@ BOT_ID = "100000000000000004"
 OWNER_ID = "100000000000000005"
 NOW_MS = 2_000_000_000_000
 SESSION_KEY_SHA256 = "d" * 64
-CAPABILITY_EPOCH_SHA256 = "e" * 64
-APPROVAL_SOURCE_SHA256 = "8" * 64
-SCOPE_GRANT_ID = "canary-grant:full-canary:1"
 
 
 def _canonical_bytes(value):
@@ -235,6 +234,7 @@ def _bundle():
         "canary_run_id": RUN_ID,
         "release_sha": RELEASE_SHA,
         "release_artifact_sha256": RELEASE_ARTIFACT_SHA256,
+        "api_session_key_sha256": SESSION_KEY_SHA256,
         "valid_from_unix_ms": NOW_MS - 1_000,
         "valid_until_unix_ms": NOW_MS + 60_000,
         "case_id": CASE_ID,
@@ -253,7 +253,7 @@ def _bundle():
             "base_url": "https://chatgpt.com/backend-api/codex",
             "model": "gpt-5.6-sol",
             "initial_effort": "high",
-            "elevated_effort": "xhigh",
+            "elevated_effort": "max",
         },
         "task_policy": {
             "minimum_completed_steps": 3,
@@ -325,15 +325,14 @@ def _bundle():
             "loopback_peer_verified": True,
             "credential_provenance_receipt_sha256": "c" * 64,
             "session_key_sha256": SESSION_KEY_SHA256,
-            "capability_epoch_sha256": CAPABILITY_EPOCH_SHA256,
             "message_content_sha256": prompt_sha256,
             "observed_at_unix_ms": NOW_MS,
         },
         "model_calls": [
             _model_call(1, "high", ["call:reasoning", "call:step:collect"]),
-            _model_call(2, "xhigh", ["call:step:analyze"]),
-            _model_call(3, "xhigh", ["call:step:verify"]),
-            _model_call(4, "xhigh", []),
+            _model_call(2, "max", ["call:step:analyze"]),
+            _model_call(3, "max", ["call:step:verify"]),
+            _model_call(4, "max", []),
         ],
         "reasoning_directive": {
             "schema": REASONING_RECEIPT_SCHEMA,
@@ -345,12 +344,12 @@ def _bundle():
             "tool_name": "todo",
             "tool_call_id": "call:reasoning",
             "model_authored": True,
-            "directive": {"effort": "xhigh"},
+            "directive": {"effort": "max"},
             "reasoning_control": {
                 "status": "applied",
                 "scope": "current_turn",
                 "expires": "end_of_current_turn",
-                "effective": {"effort": "xhigh"},
+                "effective": {"effort": "max"},
                 "change_count": 1,
             },
             "produced_by_model_call_ordinal": 1,
@@ -371,73 +370,6 @@ def _bundle():
             "plan_projection_complete": True,
             "completion_receipts_satisfied": True,
             "missing_verification_event_ids": [],
-            "scope_events": [
-                {
-                    "event_id": "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-                    "event_type": "canary.scope.preapproved",
-                    "case_id": CASE_ID,
-                    "occurred_at_unix_ms": NOW_MS - 500,
-                    "readback_verified": True,
-                    "canonical_content_sha256": "1" * 64,
-                    "scope": {
-                        "grant_id": SCOPE_GRANT_ID,
-                        "case_id": CASE_ID,
-                        "release_sha256": RELEASE_ARTIFACT_SHA256,
-                        "fixture_sha256": fixture_sha,
-                        "run_id": RUN_ID,
-                        "session_key_sha256": SESSION_KEY_SHA256,
-                        "expires_at_unix_ms": NOW_MS + 60_000,
-                        "approved_by": OWNER_ID,
-                        "approval_source_sha256": APPROVAL_SOURCE_SHA256,
-                        "state": "preapproved",
-                    },
-                },
-                {
-                    "event_id": "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-                    "event_type": "canary.scope.claimed",
-                    "case_id": CASE_ID,
-                    "occurred_at_unix_ms": NOW_MS + 1,
-                    "readback_verified": True,
-                    "canonical_content_sha256": "2" * 64,
-                    "scope": {
-                        "grant_id": SCOPE_GRANT_ID,
-                        "case_id": CASE_ID,
-                        "release_sha256": RELEASE_ARTIFACT_SHA256,
-                        "fixture_sha256": fixture_sha,
-                        "run_id": RUN_ID,
-                        "approval_source_sha256": APPROVAL_SOURCE_SHA256,
-                        "session_key_sha256": SESSION_KEY_SHA256,
-                        "capability_epoch_sha256": CAPABILITY_EPOCH_SHA256,
-                        "expires_at_unix_ms": NOW_MS + 60_000,
-                        "state": "claimed",
-                    },
-                },
-                {
-                    "event_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-                    "event_type": "canary.scope.revoked",
-                    "case_id": CASE_ID,
-                    "occurred_at_unix_ms": NOW_MS + 10,
-                    "readback_verified": True,
-                    "canonical_content_sha256": "3" * 64,
-                    "scope": {
-                        "grant_id": SCOPE_GRANT_ID,
-                        "session_key_sha256": SESSION_KEY_SHA256,
-                        "capability_epoch_sha256": CAPABILITY_EPOCH_SHA256,
-                        "reason": "api_server_run_finished",
-                        "session_tombstone_recorded": True,
-                        "state": "revoked",
-                    },
-                },
-            ],
-            "scope_retirement": {
-                "grant_id": SCOPE_GRANT_ID,
-                "session_key_sha256": SESSION_KEY_SHA256,
-                "capability_epoch_sha256": CAPABILITY_EPOCH_SHA256,
-                "authority_active": False,
-                "revocation_event_id": "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
-                "session_tombstone_commit_receipt_verified": True,
-                "observed_at_unix_ms": NOW_MS + 11,
-            },
             "plan_events": [
                 _plan_event(
                     revision,
@@ -520,6 +452,50 @@ def _bundle():
             "final_response_sha256": "b" * 64,
         },
     }
+    truth = evidence["canonical_truth"]
+    known_events = [
+        *truth["plan_events"],
+        *truth["verification_events"],
+        truth["routeback_event"],
+    ]
+    event_receipts = [
+        {
+            "event_id": item["event_id"],
+            "event_type": item["event_type"],
+            "canonical_content_sha256": item["canonical_content_sha256"],
+        }
+        for item in known_events
+    ]
+    truth["event_log_receipt"] = {
+        "schema": CANONICAL_EVENT_LOG_RECEIPT_SCHEMA,
+        "case_id": CASE_ID,
+        "fixture_sha256": fixture_sha,
+        "event_count": len(event_receipts),
+        "event_receipts": event_receipts,
+        "event_receipts_sha256": _digest({"events": event_receipts}),
+        "canonical_projection_sha256": "a" * 64,
+        "live_readback_sha256": "b" * 64,
+        "readback_verified": True,
+    }
+    truth["task_workspace_receipt"] = {
+        "schema": CANONICAL_TASK_WORKSPACE_RECEIPT_SCHEMA,
+        "case_id": CASE_ID,
+        "plan_id": PLAN_ID,
+        "final_plan_revision": truth["plan_events"][-1]["plan"]["revision"],
+        "final_state": "completed",
+        "plan_event_ids": [item["event_id"] for item in truth["plan_events"]],
+        "verification_event_ids": [
+            item["event_id"] for item in truth["verification_events"]
+        ],
+        "routeback_event_id": truth["routeback_event"]["event_id"],
+        "completion_receipts_satisfied": True,
+        "readback_verified": True,
+        "workspace_sha256": _digest({
+            "plan_events": truth["plan_events"],
+            "verification_events": truth["verification_events"],
+            "routeback_event": truth["routeback_event"],
+        }),
+    }
     return fixture, evidence
 
 
@@ -553,46 +529,50 @@ def test_full_live_evidence_contract_passes_all_invariants():
 @pytest.mark.parametrize(
     "mutate",
     [
-        lambda truth: truth["scope_events"][0].update(
-            event_type="canary.scope.claimed"
+        lambda truth: truth["event_log_receipt"].update(readback_verified=False),
+        lambda truth: truth["event_log_receipt"]["event_receipts"][0].update(
+            canonical_content_sha256="0" * 64
         ),
-        lambda truth: truth["scope_events"][1]["scope"].update(
-            grant_id="canary-grant:another"
+        lambda truth: truth["task_workspace_receipt"].update(
+            final_state="active"
         ),
-        lambda truth: truth["scope_events"][1]["scope"].update(
-            capability_epoch_sha256="7" * 64
-        ),
-        lambda truth: truth["scope_events"][2]["scope"].update(
-            reason="gateway_session_boundary"
-        ),
-        lambda truth: truth["scope_events"][2]["scope"].update(
-            session_tombstone_recorded=False
-        ),
-        lambda truth: truth["scope_retirement"].update(authority_active=True),
-        lambda truth: truth["scope_retirement"].update(
-            session_tombstone_commit_receipt_verified=False
+        lambda truth: truth["task_workspace_receipt"].update(
+            routeback_event_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
         ),
     ],
 )
-def test_one_shot_scope_must_be_exactly_claimed_and_durably_retired(mutate):
+def test_canonical_workspace_and_event_log_receipts_are_exact(mutate):
     fixture, evidence = _bundle()
     mutate(evidence["canonical_truth"])
 
     with pytest.raises(CanaryEvidenceError) as exc:
         _verify(fixture, evidence)
 
-    assert exc.value.code == "canonical_scope_truth_invalid"
+    assert exc.value.code == "canonical_workspace_receipt_invalid"
 
 
-def test_scope_is_bound_to_the_sealed_release_artifact_digest():
+def test_api_session_digest_is_bound_to_the_sealed_fixture():
     fixture, evidence = _bundle()
-    fixture["release_artifact_sha256"] = "0" * 64
+    fixture["api_session_key_sha256"] = "0" * 64
     evidence["fixture_sha256"] = _digest(fixture)
+    evidence["canonical_truth"]["event_log_receipt"]["fixture_sha256"] = evidence[
+        "fixture_sha256"
+    ]
 
     with pytest.raises(CanaryEvidenceError) as exc:
         _verify(fixture, evidence)
 
-    assert exc.value.code == "canonical_scope_truth_invalid"
+    assert exc.value.code == "source_receipt_invalid"
+
+
+def test_xhigh_cannot_substitute_for_required_max_request():
+    fixture, evidence = _bundle()
+    evidence["model_calls"][1]["reasoning_effort"] = "xhigh"
+
+    with pytest.raises(CanaryEvidenceError) as exc:
+        _verify(fixture, evidence)
+
+    assert exc.value.code == "model_call_receipt_invalid"
 
 
 def test_library_api_recomputes_fixture_and_evidence_digests():
@@ -860,7 +840,7 @@ def test_signed_receipt_must_also_exist_as_canonical_routeback_sent():
     with pytest.raises(CanaryEvidenceError) as exc:
         _verify(fixture, evidence)
 
-    assert exc.value.code == "canonical_routeback_truth_invalid"
+    assert exc.value.code == "canonical_workspace_receipt_invalid"
 
 
 def test_cli_is_digest_bound_and_prints_only_canonical_receipt(

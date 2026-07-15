@@ -1469,12 +1469,11 @@ KANBAN_CREATE_SCHEMA = {
                 "type": "boolean",
                 "description": (
                     "Run the dispatched worker in a goal loop. When true, "
-                    "after each turn an auxiliary judge checks the worker's "
-                    "response against this card's title/body; if the work "
-                    "isn't done and budget remains, the worker keeps going "
-                    "in the same session until the judge agrees it's "
-                    "complete (or the goal-turn budget is exhausted, which "
-                    "blocks the task for human review). Use this for "
+                    "the primary worker keeps going in the same session while "
+                    "the card remains open. Only its structured lifecycle "
+                    "calls can complete or block the task; prose is never "
+                    "judged by an auxiliary model. Budget exhaustion blocks "
+                    "the task for human review. Use this for "
                     "open-ended cards where one shot rarely finishes the "
                     "work. Defaults to false (classic single-shot worker)."
                 ),

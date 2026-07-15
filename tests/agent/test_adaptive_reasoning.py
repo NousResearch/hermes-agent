@@ -93,7 +93,7 @@ def test_static_defaults_are_model_gated_bounded_and_pro_absent():
     assert DEFAULT_CONFIG["agent"]["reasoning_effort"] == ""
     assert DEFAULT_CONFIG["agent"]["adaptive_reasoning"] == {
         "enabled": True,
-        "max_effort": "xhigh",
+        "max_effort": "max",
     }
 
     agent = _agent()
@@ -111,6 +111,51 @@ def test_static_defaults_are_model_gated_bounded_and_pro_absent():
     receipt = _apply(agent, {"effort": "xhigh", "mode": "pro"})
     assert receipt["reason"] == "reasoning_mode_unverified"
     assert "mode" not in TODO_SCHEMA["parameters"]["properties"]["reasoning"]["properties"]
+
+
+def test_missing_and_explicit_production_caps_apply_max_to_next_codex_payload():
+    configs = (
+        None,
+        {},
+        {"adaptive_reasoning": dict(DEFAULT_CONFIG["agent"]["adaptive_reasoning"])},
+    )
+    transport = ResponsesApiTransport()
+    for config in configs:
+        agent = SimpleNamespace(
+            api_mode="codex_responses",
+            model="gpt-5.6-sol",
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            reasoning_config=None,
+            _current_turn_id="turn-max",
+        )
+        configure_adaptive_reasoning(agent, config)
+        reset_adaptive_reasoning_turn(agent, "turn-max")
+        receipt = _apply(agent, {"effort": "max"}, turn_id="turn-max")
+        assert receipt["status"] == "applied"
+        assert receipt["effective"] == {"effort": "max"}
+        request = transport.build_kwargs(
+            model=agent.model,
+            messages=[
+                {"role": "system", "content": "Stable system prompt"},
+                {"role": "user", "content": "Demanding task"},
+            ],
+            tools=[],
+            reasoning_config=effective_reasoning_config(agent),
+            session_id="session-max",
+            is_codex_backend=True,
+        )
+        assert request["model"] == "gpt-5.6-sol"
+        assert request["reasoning"] == {"effort": "max", "summary": "auto"}
+
+
+def test_lower_static_cap_rejects_model_authored_max():
+    agent = _agent(cap="xhigh")
+    receipt = _apply(agent, {"effort": "max"})
+    assert receipt["status"] == "rejected"
+    assert receipt["reason"] == "above_policy_cap"
+    assert receipt["max_effort"] == "xhigh"
+    assert effective_reasoning_config(agent) == {"enabled": True, "effort": "high"}
 
 
 def test_malformed_adaptive_policy_sections_and_caps_fail_closed():
@@ -383,6 +428,8 @@ def test_todo_schema_exposes_static_model_authored_effort_directive():
         "max",
     ]
     assert set(reasoning["properties"]) == {"effort"}
+    assert "You may choose max for the most demanding work" in reasoning["description"]
+    assert "policy receipt rejects" in reasoning["description"]
 
 
 def test_next_call_changes_effort_without_changing_cache_prefix_or_roles():

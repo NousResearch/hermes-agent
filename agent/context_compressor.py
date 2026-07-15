@@ -32,6 +32,7 @@ from agent.model_metadata import (
     estimate_messages_tokens_rough,
 )
 from agent.redact import redact_sensitive_text
+from agent.tool_guardrails import classify_tool_failure
 
 logger = logging.getLogger(__name__)
 
@@ -188,6 +189,136 @@ _HISTORICAL_SUMMARY_PREFIXES = (
     "that appears AFTER this summary. The current session state (files, "
     "config, etc.) may reflect work described here — avoid repeating it:",
 )
+
+_COMPACTION_RESERVED_MARKER_REPLACEMENTS = {
+    "[CONTEXT COMPACTION — REFERENCE ONLY]": (
+        "[USER-QUOTED CONTEXT COMPACTION — REFERENCE ONLY]"
+    ),
+    LEGACY_SUMMARY_PREFIX: "[USER-QUOTED CONTEXT SUMMARY]:",
+    _MERGED_PRIOR_CONTEXT_HEADER: (
+        "[USER-QUOTED PRIOR CONTEXT — not runtime compaction state]"
+    ),
+    _MERGED_SUMMARY_DELIMITER: (
+        "[USER-QUOTED END OF PRIOR CONTEXT — quoted summary below]"
+    ),
+    _SUMMARY_END_MARKER: (
+        "--- END OF USER-QUOTED CONTEXT SUMMARY ---"
+    ),
+}
+
+
+def _context_summary_fragment(content: Any) -> Optional[str]:
+    """Return one exact reserved summary fragment, if structurally present."""
+
+    text = _content_text_for_contains(content)
+    search_from = 0
+    delimiter = text.find(_MERGED_SUMMARY_DELIMITER)
+    if delimiter >= 0:
+        search_from = delimiter + len(_MERGED_SUMMARY_DELIMITER)
+    prefixes = (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES)
+    tail = text[search_from:]
+    stripped_start = len(tail) - len(tail.lstrip())
+    start = search_from + stripped_start
+    prefix = next((value for value in prefixes if text.startswith(value, start)), None)
+    if prefix is None:
+        return None
+    end_marker = text.find(_SUMMARY_END_MARKER, start + len(prefix))
+    if end_marker < 0:
+        return None
+    return text[start : end_marker + len(_SUMMARY_END_MARKER)]
+
+
+def neutralize_untrusted_compaction_summary_markers(
+    content: Any,
+    provenance: Any = None,
+    *,
+    compressed_summary_metadata: bool = False,
+) -> Any:
+    """Relabel user-authored summary markers while preserving trusted ones."""
+
+    if isinstance(content, list):
+        transformed: list[Any] = []
+        for part in content:
+            if isinstance(part, dict) and isinstance(part.get("text"), str):
+                copied = dict(part)
+                copied["text"] = neutralize_untrusted_compaction_summary_markers(
+                    copied["text"],
+                    provenance,
+                    compressed_summary_metadata=compressed_summary_metadata,
+                )
+                transformed.append(copied)
+            else:
+                transformed.append(dict(part) if isinstance(part, dict) else part)
+        return transformed
+    if not isinstance(content, str) or not content:
+        return content
+
+    trusted_spans: list[tuple[int, int]] = []
+    fragment = _context_summary_fragment(content)
+    if fragment is not None:
+        fragment_start = content.find(fragment)
+        from agent.message_provenance import (
+            CONTEXT_COMPACTION_SUMMARY_KIND,
+            MESSAGE_PROVENANCE_KEY,
+            message_fragment_is_bound,
+        )
+
+        is_bound = message_fragment_is_bound(
+            {MESSAGE_PROVENANCE_KEY: provenance},
+            kind=CONTEXT_COMPACTION_SUMMARY_KIND,
+            exact_text=fragment,
+        )
+        if is_bound or compressed_summary_metadata:
+            trusted_spans.append(
+                (fragment_start, fragment_start + len(fragment))
+            )
+            delimiter_start = content.rfind(
+                _MERGED_SUMMARY_DELIMITER,
+                0,
+                fragment_start,
+            )
+            if (
+                delimiter_start >= 0
+                and not content[
+                    delimiter_start + len(_MERGED_SUMMARY_DELIMITER) : fragment_start
+                ].strip()
+            ):
+                trusted_spans.append(
+                    (
+                        delimiter_start,
+                        delimiter_start + len(_MERGED_SUMMARY_DELIMITER),
+                    )
+                )
+                header_start = content.find(_MERGED_PRIOR_CONTEXT_HEADER)
+                if 0 <= header_start < delimiter_start:
+                    trusted_spans.append(
+                        (
+                            header_start,
+                            header_start + len(_MERGED_PRIOR_CONTEXT_HEADER),
+                        )
+                    )
+
+    def _trusted(index: int) -> bool:
+        return any(start <= index < end for start, end in trusted_spans)
+
+    rendered: list[str] = []
+    cursor = 0
+    markers = tuple(_COMPACTION_RESERVED_MARKER_REPLACEMENTS)
+    while cursor < len(content):
+        positions = [(content.find(marker, cursor), marker) for marker in markers]
+        positions = [(index, marker) for index, marker in positions if index >= 0]
+        if not positions:
+            rendered.append(content[cursor:])
+            break
+        index, marker = min(positions, key=lambda item: item[0])
+        rendered.append(content[cursor:index])
+        rendered.append(
+            marker
+            if _trusted(index)
+            else _COMPACTION_RESERVED_MARKER_REPLACEMENTS[marker]
+        )
+        cursor = index + len(marker)
+    return "".join(rendered)
 
 # Minimum tokens for the summary output
 _MIN_SUMMARY_TOKENS = 2000
@@ -387,6 +518,287 @@ def _content_text_for_contains(content: Any) -> str:
                     parts.append(text)
         return "\n".join(part for part in parts if part)
     return str(content)
+
+
+_CANONICAL_WORKSPACE_NOTE_MARKER = "[Canonical Task Workspace —"
+_CANONICAL_WORKSPACE_ANCHOR_START = (
+    "[CANONICAL TASK WORKSPACE REFERENCES — DETERMINISTIC COMPACTION ANCHOR]"
+)
+_CANONICAL_WORKSPACE_ANCHOR_END = (
+    "[END CANONICAL TASK WORKSPACE REFERENCES]"
+)
+_CANONICAL_WORKSPACE_ANCHOR_SCHEMA = (
+    "muncho.canonical-task-workspace.compaction-anchor.v1"
+)
+
+
+def _bounded_reference(value: Any, maximum: int = 240) -> str:
+    """Return one bounded opaque reference without interpreting its meaning."""
+
+    return str(value or "")[:maximum]
+
+
+def _project_canonical_workspace_references(
+    payload: Any,
+    *,
+    note_kind: str = "",
+) -> Optional[Dict[str, Any]]:
+    """Project exact continuity references from one Canonical workspace JSON.
+
+    This is deliberately a schema projection, not a task classifier.  It
+    carries opaque IDs, state enums and a source digest across lossy context
+    compaction while omitting authored prose and historical authority.  GPT
+    must re-read Canonical Brain before acting on the references.
+    """
+
+    if not isinstance(payload, dict):
+        return None
+    is_existing_anchor = (
+        payload.get("schema") == _CANONICAL_WORKSPACE_ANCHOR_SCHEMA
+    )
+
+    plan = payload.get("plan") if isinstance(payload.get("plan"), dict) else {}
+    cursor = (
+        plan.get("resume_cursor")
+        if isinstance(plan.get("resume_cursor"), dict)
+        else {}
+    )
+    reference: Dict[str, Any] = {
+        "schema": _CANONICAL_WORKSPACE_ANCHOR_SCHEMA,
+        "source_snapshot_sha256": (
+            _bounded_reference(payload.get("source_snapshot_sha256"), 64)
+            if is_existing_anchor
+            else hashlib.sha256(
+                json.dumps(
+                    payload,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                    default=str,
+                ).encode("utf-8")
+            ).hexdigest()
+        ),
+        "note_kind": _bounded_reference(
+            payload.get("note_kind") if is_existing_anchor else note_kind,
+            160,
+        ),
+        "status": _bounded_reference(payload.get("status"), 40),
+        "case_id": _bounded_reference(payload.get("case_id")),
+        "case_id_sha256": _bounded_reference(payload.get("case_id_sha256"), 64),
+        "plan_event_id": _bounded_reference(payload.get("plan_event_id"), 120),
+        "plan": {
+            "plan_id": _bounded_reference(plan.get("plan_id")),
+            "revision": plan.get("revision"),
+            "state": _bounded_reference(plan.get("state"), 40),
+            "current_step_id": _bounded_reference(plan.get("current_step_id")),
+            "next_step_id": _bounded_reference(
+                cursor.get("next_step_id")
+                or (plan.get("next_step_id") if is_existing_anchor else "")
+            ),
+        },
+        "remaining_step_ids": [],
+        "verification_event_ids": [],
+        "candidate_refs": [],
+        "unresolved_case_refs": [],
+        "approval_receipts_are_informational": True,
+        "source_of_truth": "canonical_brain",
+        "query_before_action": True,
+    }
+
+    remaining = payload.get("remaining_step_ids")
+    if isinstance(remaining, (list, tuple)):
+        reference["remaining_step_ids"] = [
+            _bounded_reference(value) for value in remaining[:32]
+        ]
+    verifications = payload.get("verification_event_ids")
+    if isinstance(verifications, (list, tuple)):
+        reference["verification_event_ids"] = [
+            _bounded_reference(value, 120) for value in verifications[:24]
+        ]
+
+    candidates = payload.get("candidates") or payload.get("candidate_refs") or []
+    if isinstance(candidates, list):
+        for candidate in candidates[:10]:
+            if not isinstance(candidate, dict):
+                continue
+            reference["candidate_refs"].append(
+                {
+                    "case_id": _bounded_reference(candidate.get("case_id")),
+                    "case_id_sha256": _bounded_reference(
+                        candidate.get("case_id_sha256"), 64
+                    ),
+                    "plan_id": _bounded_reference(candidate.get("plan_id")),
+                    "revision": candidate.get("revision"),
+                    "state": _bounded_reference(candidate.get("state"), 40),
+                    "current_step_id": _bounded_reference(
+                        candidate.get("current_step_id")
+                    ),
+                }
+            )
+
+    unresolved = (
+        payload.get("unresolved_cases")
+        or payload.get("unresolved_case_refs")
+        or []
+    )
+    if isinstance(unresolved, list):
+        for candidate in unresolved[:10]:
+            if isinstance(candidate, dict):
+                reference["unresolved_case_refs"].append(
+                    {
+                        "case_id": _bounded_reference(candidate.get("case_id")),
+                        "case_id_sha256": _bounded_reference(
+                            candidate.get("case_id_sha256"), 64
+                        ),
+                    }
+                )
+
+    has_exact_reference = bool(
+        reference["case_id"]
+        or reference["plan_event_id"]
+        or reference["plan"]["plan_id"]
+        or reference["candidate_refs"]
+        or reference["unresolved_case_refs"]
+        or reference["status"]
+    )
+    return reference if has_exact_reference else None
+
+
+def _latest_canonical_workspace_references(
+    messages: List[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Return the last provenance-bound workspace/anchor in message order."""
+
+    from agent.message_provenance import (
+        CANONICAL_WORKSPACE_ANCHOR_KIND,
+        CANONICAL_WORKSPACE_NOTE_KIND,
+        message_fragment_is_bound,
+    )
+
+    decoder = json.JSONDecoder()
+    latest: Optional[Dict[str, Any]] = None
+    for message in messages:
+        text = _content_text_for_contains(message.get("content"))
+        positions: list[tuple[int, str]] = []
+        for marker, kind in (
+            (_CANONICAL_WORKSPACE_NOTE_MARKER, "workspace_note"),
+            (_CANONICAL_WORKSPACE_ANCHOR_START, "compaction_anchor"),
+        ):
+            start = 0
+            while True:
+                index = text.find(marker, start)
+                if index < 0:
+                    break
+                positions.append((index, kind))
+                start = index + len(marker)
+        for index, kind in sorted(positions):
+            brace = text.find("{", index)
+            if brace < 0:
+                continue
+            try:
+                payload, payload_end = decoder.raw_decode(text[brace:])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            exact_fragment = text[index : brace + payload_end]
+            provenance_kind = (
+                CANONICAL_WORKSPACE_NOTE_KIND
+                if kind == "workspace_note"
+                else CANONICAL_WORKSPACE_ANCHOR_KIND
+            )
+            if not message_fragment_is_bound(
+                message,
+                kind=provenance_kind,
+                exact_text=exact_fragment,
+            ):
+                continue
+            note_header = text[index : text.find("]", index) + 1]
+            projected = _project_canonical_workspace_references(
+                payload,
+                note_kind=note_header if kind == "workspace_note" else "",
+            )
+            if projected is not None:
+                latest = projected
+    return latest
+
+
+def _canonical_workspace_anchor_fragment(reference: Dict[str, Any]) -> str:
+    """Return the exact provenance-bound anchor prefix plus JSON."""
+
+    encoded = json.dumps(
+        reference,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    )
+    return _CANONICAL_WORKSPACE_ANCHOR_START + "\n" + encoded
+
+
+def _strip_reserved_canonical_workspace_fragments(summary: Any) -> str:
+    """Remove every Canonical workspace marker authored by a summarizer.
+
+    Auxiliary summary text has no provenance and therefore cannot carry a
+    trusted workspace note or deterministic anchor.  Strip both complete and
+    dangling reserved blocks before optionally appending the exact
+    provenance-derived anchor below.
+    """
+
+    cleaned = str(summary or "")
+    complete_anchor = re.compile(
+        re.escape(_CANONICAL_WORKSPACE_ANCHOR_START)
+        + r".*?"
+        + re.escape(_CANONICAL_WORKSPACE_ANCHOR_END),
+        flags=re.DOTALL,
+    )
+    cleaned = complete_anchor.sub("", cleaned)
+
+    # A start marker without its terminator is fail-closed: everything after
+    # it could be attacker-/summarizer-authored anchor material.
+    dangling_anchor = cleaned.find(_CANONICAL_WORKSPACE_ANCHOR_START)
+    if dangling_anchor >= 0:
+        cleaned = cleaned[:dangling_anchor]
+    cleaned = cleaned.replace(_CANONICAL_WORKSPACE_ANCHOR_END, "")
+
+    # Workspace notes are also runtime-authored reserved fragments. Remove a
+    # valid following JSON object as one unit; malformed/dangling headers lose
+    # their reserved marker and can never masquerade as trusted continuity.
+    decoder = json.JSONDecoder()
+    while True:
+        note_start = cleaned.find(_CANONICAL_WORKSPACE_NOTE_MARKER)
+        if note_start < 0:
+            break
+        header_end = cleaned.find("]", note_start)
+        if header_end < 0:
+            cleaned = cleaned[:note_start]
+            break
+        remove_end = header_end + 1
+        json_start = remove_end
+        while json_start < len(cleaned) and cleaned[json_start].isspace():
+            json_start += 1
+        if json_start < len(cleaned) and cleaned[json_start] == "{":
+            try:
+                _, payload_end = decoder.raw_decode(cleaned[json_start:])
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+            else:
+                remove_end = json_start + payload_end
+        cleaned = cleaned[:note_start] + cleaned[remove_end:]
+
+    return cleaned.rstrip()
+
+
+def _attach_canonical_workspace_references(
+    summary: str,
+    reference: Optional[Dict[str, Any]],
+) -> str:
+    """Replace any old anchor and append one stable, non-authoritative copy."""
+
+    cleaned = _strip_reserved_canonical_workspace_fragments(summary)
+    if reference is None:
+        return cleaned
+    anchor_fragment = _canonical_workspace_anchor_fragment(reference)
+    separator = "\n\n" if cleaned else ""
+    return cleaned + separator + anchor_fragment + "\n" + _CANONICAL_WORKSPACE_ANCHOR_END
 
 
 def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -> Any:
@@ -1679,11 +2091,12 @@ class ContextCompressor(ContextEngine):
                 tool_actions.append(
                     _summarize_tool_result(tool_name, tool_args, text or "")
                 )
-                if re.search(
-                    r"\b(error|failed|exception|traceback|timeout|timed out|fatal)\b",
-                    text,
-                    re.I,
-                ):
+                raw_result = msg.get("content")
+                structured_failure, _ = classify_tool_failure(
+                    tool_name,
+                    raw_result if isinstance(raw_result, str) else None,
+                )
+                if structured_failure:
                     blockers.append(text[:500])
 
         def _bullets(items: list[str], limit: int = 8) -> str:
@@ -2269,6 +2682,12 @@ This compaction should PRIORITISE preserving all information related to the focu
 
     @staticmethod
     def _is_context_summary_content(content: Any) -> bool:
+        """Return whether content has the reserved summary shape.
+
+        This is a syntax helper only. Trust-sensitive consumers must call
+        ``_is_context_summary_message`` so user-authored lookalikes are not
+        promoted into runtime continuity state.
+        """
         text = _content_text_for_contains(content).lstrip()
         # Merge-into-tail summaries wrap prior tail content before the summary,
         # so the handoff prefix lands after _MERGED_SUMMARY_DELIMITER rather than
@@ -2280,6 +2699,37 @@ This compaction should PRIORITISE preserving all information related to the focu
         if text.startswith(SUMMARY_PREFIX) or text.startswith(LEGACY_SUMMARY_PREFIX):
             return True
         return any(text.startswith(p) for p in _HISTORICAL_SUMMARY_PREFIXES)
+
+    @classmethod
+    def _is_context_summary_message(cls, message: Any) -> bool:
+        """Return whether one message is provenance-bound compaction state."""
+
+        if not isinstance(message, dict):
+            return False
+        content = message.get("content")
+        if not cls._is_context_summary_content(content):
+            return False
+        if cls._has_compressed_summary_metadata(message):
+            return True
+
+        fragment = _context_summary_fragment(content)
+        if fragment is not None:
+            from agent.message_provenance import (
+                CONTEXT_COMPACTION_SUMMARY_KIND,
+                message_fragment_is_bound,
+            )
+
+            if message_fragment_is_bound(
+                message,
+                kind=CONTEXT_COMPACTION_SUMMARY_KIND,
+                exact_text=fragment,
+            ):
+                return True
+
+        # Role is not provenance.  API callers and persisted-history importers
+        # can supply assistant-role rows, so an unbound lookalike must never be
+        # promoted to runtime continuity state merely because of its role.
+        return False
 
     @staticmethod
     def _has_compressed_summary_metadata(message: Any) -> bool:
@@ -2306,7 +2756,7 @@ This compaction should PRIORITISE preserving all information related to the focu
             if msg.get("role") != "user":
                 continue
             content = msg.get("content")
-            if cls._is_context_summary_content(content):
+            if cls._is_context_summary_message(msg):
                 continue
             text = redact_sensitive_text(_content_text_for_contains(content).strip())
             if not text:
@@ -2336,8 +2786,9 @@ This compaction should PRIORITISE preserving all information related to the focu
     ) -> tuple[Optional[int], str]:
         """Find the newest handoff summary inside a compression window."""
         for idx in range(end - 1, start - 1, -1):
-            content = messages[idx].get("content")
-            if cls._is_context_summary_content(content):
+            message = messages[idx]
+            content = message.get("content")
+            if cls._is_context_summary_message(message):
                 return idx, cls._strip_summary_prefix(_content_text_for_contains(content))
         return None, ""
 
@@ -2525,9 +2976,7 @@ This compaction should PRIORITISE preserving all information related to the focu
         """
         for i in range(len(messages) - 1, head_end - 1, -1):
             msg = messages[i]
-            if msg.get("role") == "user" and not self._is_context_summary_content(
-                msg.get("content")
-            ):
+            if msg.get("role") == "user" and not self._is_context_summary_message(msg):
                 return i
         return -1
 
@@ -2902,6 +3351,13 @@ This compaction should PRIORITISE preserving all information related to the focu
         if force:
             self._clear_compression_failure_cooldown()
         n_messages = len(messages)
+        # Canonical Task Workspace is the durable task source of truth.  A
+        # lossy auxiliary summary may describe it, but it must never be the
+        # only carrier of its opaque case/plan/evidence references.  Capture
+        # the latest schema-valid reference before pruning or boundary moves.
+        canonical_workspace_references = _latest_canonical_workspace_references(
+            messages
+        )
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self._protect_head_size(messages) + 3 + 1
         if n_messages <= _min_for_compress:
@@ -3098,6 +3554,16 @@ This compaction should PRIORITISE preserving all information related to the focu
                 reason=self._last_summary_error,
             )
 
+        summary = _attach_canonical_workspace_references(
+            summary,
+            canonical_workspace_references,
+        )
+        canonical_anchor_fragment = (
+            _canonical_workspace_anchor_fragment(canonical_workspace_references)
+            if canonical_workspace_references is not None
+            else None
+        )
+
         _merge_summary_into_tail = False
         last_head_role = messages[compress_start - 1].get("role", "user") if compress_start > 0 else "user"
         first_tail_role = messages[compress_end].get("role", "user") if compress_end < n_messages else "user"
@@ -3164,13 +3630,40 @@ This compaction should PRIORITISE preserving all information related to the focu
         # here, respond to the message below" signal.
         if not _merge_summary_into_tail:
             summary = summary + "\n\n" + _SUMMARY_END_MARKER
+            summary_provenance_fragment = summary
+        else:
+            summary_provenance_fragment = (
+                summary + "\n\n" + _SUMMARY_END_MARKER
+            )
 
         if not _merge_summary_into_tail:
-            compressed.append({
+            summary_message = {
                 "role": summary_role,
                 "content": summary,
                 COMPRESSED_SUMMARY_METADATA_KEY: True,
-            })
+            }
+            from agent.message_provenance import (
+                CONTEXT_COMPACTION_SUMMARY_KIND,
+                MESSAGE_PROVENANCE_KEY,
+                bind_message_fragment,
+            )
+
+            summary_message[MESSAGE_PROVENANCE_KEY] = bind_message_fragment(
+                None,
+                kind=CONTEXT_COMPACTION_SUMMARY_KIND,
+                exact_text=summary_provenance_fragment,
+            )
+            if canonical_anchor_fragment is not None:
+                from agent.message_provenance import (
+                    CANONICAL_WORKSPACE_ANCHOR_KIND,
+                )
+
+                summary_message[MESSAGE_PROVENANCE_KEY] = bind_message_fragment(
+                    summary_message.get(MESSAGE_PROVENANCE_KEY),
+                    kind=CANONICAL_WORKSPACE_ANCHOR_KIND,
+                    exact_text=canonical_anchor_fragment,
+                )
+            compressed.append(summary_message)
 
         for i in range(compress_end, n_messages):
             msg = _fresh_compaction_message_copy(messages[i])
@@ -3199,6 +3692,27 @@ This compaction should PRIORITISE preserving all information related to the focu
                 # Mark the merged message so frontends can identify it as
                 # containing a compression summary prefix.
                 msg[COMPRESSED_SUMMARY_METADATA_KEY] = True
+                from agent.message_provenance import (
+                    CONTEXT_COMPACTION_SUMMARY_KIND,
+                    MESSAGE_PROVENANCE_KEY,
+                    bind_message_fragment,
+                )
+
+                msg[MESSAGE_PROVENANCE_KEY] = bind_message_fragment(
+                    msg.get(MESSAGE_PROVENANCE_KEY),
+                    kind=CONTEXT_COMPACTION_SUMMARY_KIND,
+                    exact_text=summary_provenance_fragment,
+                )
+                if canonical_anchor_fragment is not None:
+                    from agent.message_provenance import (
+                        CANONICAL_WORKSPACE_ANCHOR_KIND,
+                    )
+
+                    msg[MESSAGE_PROVENANCE_KEY] = bind_message_fragment(
+                        msg.get(MESSAGE_PROVENANCE_KEY),
+                        kind=CANONICAL_WORKSPACE_ANCHOR_KIND,
+                        exact_text=canonical_anchor_fragment,
+                    )
                 _merge_summary_into_tail = False
             compressed.append(msg)
 

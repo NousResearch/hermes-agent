@@ -301,8 +301,12 @@ class TestRunAgentViaProxy:
                         session_id="test",
                     )
 
-        assert "Proxy error (401)" in result["final_response"]
+        assert "HTTP 401" in result["final_response"]
         assert result["api_calls"] == 0
+        assert result["completed"] is False
+        assert result["failed"] is True
+        assert result["partial"] is False
+        assert result["error"] == "proxy_http_error:401"
 
     @pytest.mark.asyncio
     async def test_handles_connection_error(self, monkeypatch):
@@ -332,7 +336,11 @@ class TestRunAgentViaProxy:
                         session_id="test",
                     )
 
-        assert "Proxy connection error" in result["final_response"]
+        assert "Proxy connection failed" in result["final_response"]
+        assert result["completed"] is False
+        assert result["failed"] is True
+        assert result["partial"] is False
+        assert result["error"] == "proxy_connection_error"
 
     @pytest.mark.asyncio
     async def test_rejects_proxy_sse_without_line_boundary_after_buffer_cap(self, monkeypatch):
@@ -356,9 +364,10 @@ class TestRunAgentViaProxy:
                         session_id="test",
                     )
 
-        assert "Proxy connection error" in result["final_response"]
-        assert "exceeded max buffer size" in result["final_response"]
+        assert "Proxy connection failed" in result["final_response"]
         assert result["api_calls"] == 0
+        assert result["failed"] is True
+        assert result["error"] == "proxy_connection_error"
 
     @pytest.mark.asyncio
     async def test_skips_tool_messages_in_history(self, monkeypatch):

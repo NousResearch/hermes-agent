@@ -42,6 +42,8 @@ from gateway.canonical_writer_release_contract import (
     MAX_RELEASE_MANIFEST_BYTES,
     RELEASE_MANIFEST_NAME,
     RELEASE_SCHEMA,
+    RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH,
+    RUNTIME_DEPENDENCY_NPM_CACHE_RELATIVE_PATH,
     TMPFILES_NAME,
     UNIT_BUNDLE_SCHEMA,
     WRITER_MODULE,
@@ -95,11 +97,11 @@ _PACKAGED_DISCORD_EDGE_MODULES = (
 _PACKAGED_CANONICAL_WRITER_FOUNDATION_MODULE = Path(
     "gateway/canonical_writer_foundation.py"
 )
-CANARY_BOOTSTRAP_SQL_RELATIVE_PATH = Path(
-    "scripts/sql/canonical_writer_canary_bootstrap_v1.sql"
+_PACKAGED_CANONICAL_WRITER_PHASE_B_FOUNDATION_MODULE = Path(
+    "gateway/canonical_writer_foundation_phase_b.py"
 )
-CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE_PATH = Path(
-    "scripts/sql/canonical_writer_canary_bootstrap_retire_v1.sql"
+_PACKAGED_CANONICAL_WRITER_PHASE_B_RUNTIME_MODULE = Path(
+    "gateway/canonical_writer_phase_b_runtime.py"
 )
 CANONICAL_WRITER_BASE_MIGRATION_SQL_RELATIVE_PATH = Path(
     "scripts/sql/canonical_writer_v1.sql"
@@ -115,9 +117,15 @@ CANONICAL_WRITER_FOUNDATION_SQL_RELATIVE_PATHS = (
     Path("scripts/sql/canonical_writer_foundation_membership_v1.sql"),
     Path("scripts/sql/canonical_writer_foundation_retire_v1.sql"),
 )
+RUNTIME_DEPENDENCY_LOCK_RELATIVE_PATHS = (
+    Path("pyproject.toml"),
+    Path("uv.lock"),
+    Path("package.json"),
+    Path("package-lock.json"),
+)
+SOURCE_COMMIT_MARKER_RELATIVE_PATH = Path(".codex-source-commit")
 _TRACKED_RELEASE_ARTIFACTS = (
-    CANARY_BOOTSTRAP_SQL_RELATIVE_PATH,
-    CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE_PATH,
+    *RUNTIME_DEPENDENCY_LOCK_RELATIVE_PATHS,
     CANONICAL_WRITER_BASE_MIGRATION_SQL_RELATIVE_PATH,
     *CANONICAL_WRITER_FOUNDATION_SQL_RELATIVE_PATHS,
 )
@@ -150,11 +158,19 @@ _ACTIVATION_PATHS = (
     Path("/etc/muncho/writer-activation/staged/owner-approval.json"),
     Path("/etc/muncho/writer-activation/staged/external-iam-receipt.json"),
     Path("/etc/muncho/writer-activation/staged/muncho-canonical-writer.service"),
+    Path(
+        "/etc/muncho/writer-activation/staged/"
+        "muncho-canonical-writer-phase-b-readiness.service"
+    ),
     Path("/etc/muncho/writer-activation/staged/hermes-cloud-gateway.service"),
     Path("/etc/muncho/writer-activation/native-observation-plan.json"),
     Path("/etc/muncho/writer-activation/activation-plan.json"),
     Path("/etc/muncho/writer-activation/deployment-manifest.json"),
     Path("/etc/systemd/system/muncho-canonical-writer.service"),
+    Path(
+        "/etc/systemd/system/"
+        "muncho-canonical-writer-phase-b-readiness.service"
+    ),
     Path("/etc/systemd/system/hermes-cloud-gateway.service"),
     Path("/etc/systemd/system/muncho-canonical-writer-export.service"),
     Path("/etc/tmpfiles.d/muncho-canonical-writer.conf"),
@@ -271,6 +287,24 @@ class ReleaseBuildSpec:
     @property
     def foundation_module_origin(self) -> Path:
         return self.site_packages / _PACKAGED_CANONICAL_WRITER_FOUNDATION_MODULE
+
+    @property
+    def phase_b_runtime_module_origin(self) -> Path:
+        return (
+            self.site_packages
+            / _PACKAGED_CANONICAL_WRITER_PHASE_B_RUNTIME_MODULE
+        )
+
+    @property
+    def phase_b_foundation_module_origin(self) -> Path:
+        return (
+            self.site_packages
+            / _PACKAGED_CANONICAL_WRITER_PHASE_B_FOUNDATION_MODULE
+        )
+
+    @property
+    def runtime_dependency_module_origin(self) -> Path:
+        return self.site_packages / "gateway/production_runtime_dependencies.py"
 
     def validate(self) -> None:
         if (
@@ -576,6 +610,35 @@ def wheel_install_command(spec: ReleaseBuildSpec, wheel: Path) -> BuildCommand:
     )
 
 
+def runtime_dependency_commands(
+    spec: ReleaseBuildSpec,
+) -> tuple[BuildCommand, BuildCommand]:
+    """Run install and verification through the just-installed target wheel."""
+
+    spec.validate()
+    base = (
+        str(spec.interpreter),
+        "-B",
+        "-I",
+        "-m",
+        "gateway.production_runtime_dependencies",
+    )
+    arguments = (
+        "--release-root",
+        str(spec.release_root),
+        "--revision",
+        spec.revision,
+    )
+    return tuple(
+        BuildCommand(
+            (*base, action, *arguments),
+            cwd=spec.release_root,
+            env=_clean_environment(spec),
+        )
+        for action in ("install", "verify")
+    )
+
+
 Runner = Callable[[BuildCommand], subprocess.CompletedProcess[str]]
 
 
@@ -787,6 +850,11 @@ def create_release_manifest(spec: ReleaseBuildSpec) -> ReleaseManifest:
         spec.writer_module_origin,
         spec.gateway_module_origin,
         spec.foundation_module_origin,
+        spec.phase_b_foundation_module_origin,
+        spec.phase_b_runtime_module_origin,
+        spec.runtime_dependency_module_origin,
+        spec.release_root / SOURCE_COMMIT_MARKER_RELATIVE_PATH,
+        spec.release_root / RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH,
         *(spec.release_root / path for path in _TRACKED_RELEASE_ARTIFACTS),
     )
     for path in expected:
@@ -901,6 +969,41 @@ def _write_incomplete_marker(spec: ReleaseBuildSpec) -> None:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _write_source_commit_marker(spec: ReleaseBuildSpec) -> Path:
+    """Create one exact release identity marker without consulting mutable HEAD."""
+
+    path = spec.release_root / SOURCE_COMMIT_MARKER_RELATIVE_PATH
+    raw = (spec.revision + "\n").encode("ascii")
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_CLOEXEC", 0)
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = os.open(path, flags, 0o400)
+    try:
+        os.fchown(descriptor, _BUILD_OWNER_UID, _BUILD_OWNER_GID)
+        offset = 0
+        while offset < len(raw):
+            written = os.write(descriptor, raw[offset:])
+            if written <= 0:
+                raise OSError("source commit marker write made no progress")
+            offset += written
+        os.fchmod(descriptor, _SEALED_FILE_MODE)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+    item = os.lstat(path)
+    if (
+        not stat.S_ISREG(item.st_mode)
+        or stat.S_ISLNK(item.st_mode)
+        or item.st_uid != _BUILD_OWNER_UID
+        or item.st_gid != _BUILD_OWNER_GID
+        or item.st_nlink != 1
+        or stat.S_IMODE(item.st_mode) != _SEALED_FILE_MODE
+        or path.read_bytes() != raw
+    ):
+        raise RuntimeError("source commit marker identity is invalid")
+    return path
 
 
 def _scratch_provenance_bytes(
@@ -1407,6 +1510,42 @@ def _validate_installed_runtime(
         raise RuntimeError(
             "release packaged Canonical Writer foundation module is invalid"
         )
+    phase_b_runtime_path = spec.phase_b_runtime_module_origin
+    try:
+        phase_b_runtime_stat = os.lstat(phase_b_runtime_path)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "release is missing the packaged Canonical Writer Phase-B runtime module"
+        ) from exc
+    if (
+        not stat.S_ISREG(phase_b_runtime_stat.st_mode)
+        or stat.S_ISLNK(phase_b_runtime_stat.st_mode)
+        or phase_b_runtime_stat.st_nlink != 1
+        or phase_b_runtime_stat.st_uid != site_stat.st_uid
+        or phase_b_runtime_stat.st_gid != site_stat.st_gid
+        or stat.S_IMODE(phase_b_runtime_stat.st_mode) != 0o644
+        or phase_b_runtime_stat.st_size == 0
+    ):
+        raise RuntimeError(
+            "release packaged Canonical Writer Phase-B runtime module is invalid"
+        )
+    runtime_dependency_path = spec.runtime_dependency_module_origin
+    try:
+        runtime_dependency_stat = os.lstat(runtime_dependency_path)
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "release is missing the packaged runtime dependency module"
+        ) from exc
+    if (
+        not stat.S_ISREG(runtime_dependency_stat.st_mode)
+        or stat.S_ISLNK(runtime_dependency_stat.st_mode)
+        or runtime_dependency_stat.st_nlink != 1
+        or runtime_dependency_stat.st_uid != site_stat.st_uid
+        or runtime_dependency_stat.st_gid != site_stat.st_gid
+        or stat.S_IMODE(runtime_dependency_stat.st_mode) != 0o644
+        or runtime_dependency_stat.st_size == 0
+    ):
+        raise RuntimeError("release packaged runtime dependency module is invalid")
     for direct_url in spec.site_packages.glob("*.dist-info/direct_url.json"):
         raw = direct_url.read_bytes()
         if len(raw) > 64 * 1024:
@@ -1429,6 +1568,42 @@ def _validate_installed_runtime(
     )
     if any(path.exists() or path.is_symlink() for path in forbidden_scripts):
         raise RuntimeError("release contains a legacy scripts bootstrap")
+
+
+def _validate_runtime_dependency_outputs(spec: ReleaseBuildSpec) -> None:
+    """Require a verified manifest and no disposable npm state before seal."""
+
+    for path in (
+        spec.release_root / RUNTIME_DEPENDENCY_NPM_CACHE_RELATIVE_PATH,
+        spec.release_root / ".npm",
+        spec.release_root / ".cache",
+    ):
+        if os.path.lexists(path):
+            raise RuntimeError("release contains disposable dependency cache state")
+    marker = spec.release_root / SOURCE_COMMIT_MARKER_RELATIVE_PATH
+    marker_state = os.lstat(marker)
+    if (
+        not stat.S_ISREG(marker_state.st_mode)
+        or stat.S_ISLNK(marker_state.st_mode)
+        or marker_state.st_uid != _BUILD_OWNER_UID
+        or marker_state.st_gid != _BUILD_OWNER_GID
+        or marker_state.st_nlink != 1
+        or stat.S_IMODE(marker_state.st_mode) != _SEALED_FILE_MODE
+        or marker.read_bytes() != (spec.revision + "\n").encode("ascii")
+    ):
+        raise RuntimeError("release source commit marker drifted")
+    manifest = spec.release_root / RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH
+    manifest_state = os.lstat(manifest)
+    if (
+        not stat.S_ISREG(manifest_state.st_mode)
+        or stat.S_ISLNK(manifest_state.st_mode)
+        or manifest_state.st_uid != _BUILD_OWNER_UID
+        or manifest_state.st_gid != _BUILD_OWNER_GID
+        or manifest_state.st_nlink != 1
+        or stat.S_IMODE(manifest_state.st_mode) != _SEALED_FILE_MODE
+        or not 0 < manifest_state.st_size <= 2 * 1024 * 1024
+    ):
+        raise RuntimeError("release runtime dependency manifest is invalid")
 
 
 def _remove_exact_virtualenv_site_hook(spec: ReleaseBuildSpec) -> bool:
@@ -1745,6 +1920,7 @@ def build_release(
         _validate_root_source_tree(spec.build_project_root)
         _validate_build_constraints(spec)
         _copy_tracked_release_artifacts(spec)
+        _write_source_commit_marker(spec)
         install_steps = install_commands(spec, managed_python)
         _run_checked(
             install_steps[0],
@@ -1769,6 +1945,18 @@ def build_release(
         _materialize_copied_interpreter(spec, managed_python)
         _remove_exact_virtualenv_site_hook(spec)
         _validate_installed_runtime(spec, managed_python)
+        install_runtime, verify_runtime = runtime_dependency_commands(spec)
+        _run_checked(
+            install_runtime,
+            runner=runner,
+            label="release runtime dependency install",
+        )
+        _run_checked(
+            verify_runtime,
+            runner=runner,
+            label="release runtime dependency verification",
+        )
+        _validate_runtime_dependency_outputs(spec)
     except Exception as build_error:
         try:
             verify_clean_checkout(spec, runner=runner)
@@ -2881,8 +3069,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 __all__ = [
     "BUILD_CONSTRAINTS_RELATIVE_PATH",
     "BUILD_SCRATCH_NAME",
-    "CANARY_BOOTSTRAP_RETIRE_SQL_RELATIVE_PATH",
-    "CANARY_BOOTSTRAP_SQL_RELATIVE_PATH",
     "BuildCommand",
     "GATEWAY_MODULE",
     "GATEWAY_UNIT_NAME",
@@ -2896,6 +3082,9 @@ __all__ = [
     "INCOMPLETE_MARKER_NAME",
     "RELEASE_MANIFEST_NAME",
     "RELEASE_SCHEMA",
+    "RUNTIME_DEPENDENCY_LOCK_RELATIVE_PATHS",
+    "RUNTIME_DEPENDENCY_MANIFEST_RELATIVE_PATH",
+    "SOURCE_COMMIT_MARKER_RELATIVE_PATH",
     "SCRATCH_PROVENANCE_NAME",
     "SCRATCH_PROVENANCE_SCHEMA",
     "STOPPED_RELEASE_FAILURE_SCHEMA",
@@ -2920,6 +3109,7 @@ __all__ = [
     "plan_stopped_release",
     "python_bootstrap_commands",
     "render_systemd_units",
+    "runtime_dependency_commands",
     "source_snapshot_command",
     "verify_clean_checkout",
     "wheel_install_command",

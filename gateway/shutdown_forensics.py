@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import shutil
 import subprocess
 import sys
 import time
@@ -240,6 +241,33 @@ def spawn_async_diagnostic(
         "echo '=== end ==='"
     )
 
+    timeout_executable = shutil.which("timeout") or shutil.which("gtimeout")
+    if timeout_executable:
+        command = [
+            timeout_executable,
+            f"{timeout_seconds:.3f}",
+            "bash",
+            "-c",
+            script,
+        ]
+    else:
+        # macOS does not ship GNU coreutils' `timeout`.  Keep the same bound
+        # without making local/runtime diagnostics depend on an extra package.
+        watchdog = (
+            "import os, signal, subprocess, sys\n"
+            "proc = subprocess.Popen([\"bash\", \"-c\", sys.argv[2]], "
+            "start_new_session=True)\n"
+            "try:\n"
+            "    proc.wait(timeout=float(sys.argv[1]))\n"
+            "except subprocess.TimeoutExpired:\n"
+            "    try:\n"
+            "        os.killpg(proc.pid, signal.SIGKILL)\n"
+            "    except ProcessLookupError:\n"
+            "        pass\n"
+            "    proc.wait()\n"
+        )
+        command = [sys.executable, "-c", watchdog, str(timeout_seconds), script]
+
     try:
         # Open the log file in append mode and let the subprocess inherit.
         # We use os.O_APPEND so concurrent diagnostics from rapid signals
@@ -255,7 +283,7 @@ def spawn_async_diagnostic(
         # start_new_session, a SIGKILL on our cgroup takes the diag down
         # before it can flush.
         proc = subprocess.Popen(
-            ["timeout", f"{timeout_seconds:.0f}", "bash", "-c", script],
+            command,
             stdout=fd,
             stderr=subprocess.STDOUT,
             stdin=subprocess.DEVNULL,

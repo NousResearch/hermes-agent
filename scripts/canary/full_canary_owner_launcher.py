@@ -9,11 +9,17 @@ authorization:
 
 * reads the canary-only Discord credential from the owner's inherited stdin;
 * asks the sealed remote coordinator to install that opaque credential;
-* creates one approval-derived temporary Cloud SQL BUILT_IN administrator;
-* streams that administrator over IAP/SSH stdin and deletes it in ``finally``.
+* sends the exact plan-bound owner approval to that same coordinator process;
+* accepts success only after stopped terminal truth and token retirement.
+
+The separate explicit Phase-B action runs only behind the coordinator's exact
+stopped-service gate. It creates approval-bound Cloud SQL credentials solely
+in owner-process memory, streams them over IAP/SSH stdin, and reconciles their
+terminal state before success. The normal live action never creates or
+receives a database administrator or bootstrap credential.
 
 Secret values are never accepted on argv, placed in the environment, written
-to a file, logged, or included in a receipt.  The temporary administrator is
+to a file, logged, or included in a receipt. A temporary administrator is
 not considered cleaned up until a post-delete users.list proves it absent.
 The owner launcher is intentionally limited to Darwin and Linux and fails
 closed on every other platform before reading a secret.
@@ -53,7 +59,6 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, Callable, Mapping, Protocol, Sequence
 
-
 PROJECT = "adventico-ai-platform"
 ZONE = "europe-west3-a"
 VM_NAME = "muncho-canary-v2-01"
@@ -65,8 +70,50 @@ STOPPED_RELEASE_SOURCE_BASE = "/opt/muncho-canary-source"
 STOPPED_RELEASE_EVIDENCE_BASE = "/var/lib/muncho-canary-release-evidence"
 STOPPED_RELEASE_PLAN_SCHEMA = "muncho-canary-stopped-release-plan.v1"
 STOPPED_RELEASE_RECEIPT_SCHEMA = "muncho-canary-stopped-release-publication.v1"
+COORDINATOR_INPUT_PUBLICATION_SCHEMA = (
+    "muncho-full-canary-coordinator-input-publication.v1"
+)
+COORDINATOR_INPUT_PATH = "/etc/muncho/full-canary/coordinator-input.json"
+COORDINATOR_INPUT_PUBLICATION_RECEIPT_PATH = (
+    "/etc/muncho/full-canary/coordinator-input-publication.json"
+)
 STOPPED_RELEASE_HOST_RECEIPT_PATH = "/etc/muncho/full-canary/host-identity.json"
 STOPPED_RELEASE_PYTHON_VERSION = "3.11.15"
+HOST_RECEIPT_ROTATION_PLAN_SCHEMA = (
+    "muncho-full-canary-host-identity-rotation-plan.v1"
+)
+HOST_RECEIPT_ROTATION_RECEIPT_SCHEMA = (
+    "muncho-full-canary-host-identity-rotation-receipt.v1"
+)
+HOST_RECEIPT_ROTATION_ROOT = (
+    "/etc/muncho/full-canary/host-identity-rotations"
+)
+HOST_RECEIPT_ROTATION_MODULE = (
+    "scripts.canary.host_identity_receipt_rotation"
+)
+FIXTURE_PUBLICATION_PLAN_SCHEMA = "muncho-full-canary-fixture-publication-plan.v1"
+FIXTURE_PUBLICATION_RECEIPT_SCHEMA = (
+    "muncho-full-canary-fixture-publication-receipt.v1"
+)
+FIXTURE_PUBLICATION_MODULE = (
+    "gateway.canonical_full_canary_fixture_publisher"
+)
+FIXTURE_PUBLICATION_OWNER_DISCORD_USER_ID = "1279454038731264061"
+FIXTURE_PUBLICATION_GUILD_ID = "1282725267068157972"
+FIXTURE_PUBLICATION_CHANNEL_ID = "1526858760100909066"
+FIXTURE_PUBLICATION_PROMPT_SHA256 = (
+    "5e89bcb3442002097955b6e7fdb0b9baf2a520bb0a873515ee10c4023c600b0c"
+)
+FIXTURE_PUBLICATION_ROOT = (
+    "/var/lib/muncho-full-canary/fixture-publications"
+)
+FIXTURE_PUBLICATION_PATH = "/etc/muncho/full-canary/fixture.json"
+FIXTURE_WRITER_PUBLIC_KEY_PATH = (
+    "/etc/muncho/keys/writer-capability-public.pem"
+)
+FIXTURE_EDGE_PUBLIC_KEY_PATH = (
+    "/etc/muncho/keys/discord-edge-receipt-public.pem"
+)
 WRITER_PREFLIGHT_PLAN_SCHEMA = "muncho-writer-preflight-publication-plan.v2"
 WRITER_PREFLIGHT_RECEIPT_SCHEMA = "muncho-writer-preflight-publication.v3"
 WRITER_PREFLIGHT_MODULE = "gateway.canonical_writer_preflight_publisher"
@@ -77,6 +124,39 @@ WRITER_PREFLIGHT_OWNER_DISCORD_USER_ID = "1279454038731264061"
 WRITER_PREFLIGHT_DATABASE_TLS_SERVER_NAME = (
     "14-0d81ef63-2cac-4a64-84ad-c4f58c0cfd56.europe-west3.sql.goog"
 )
+WRITER_ACTIVATION_BRIDGE_MODULE = (
+    "gateway.canonical_writer_activation_bridge"
+)
+WRITER_ACTIVATION_MODULE = "gateway.canonical_writer_activation"
+WRITER_PLANNER_MODULE = "gateway.canonical_writer_planner"
+WRITER_AUTHORITY_FRAME_MAGIC = b"MWA1"
+WRITER_AUTHORITY_FRAME_SCHEMA = "muncho-writer-owner-authority-frame.v1"
+WRITER_AUTHORITY_STAGE_RECEIPT_SCHEMA = (
+    "muncho-writer-owner-authority-stage-receipt.v1"
+)
+WRITER_ACTIVATION_OWNER_RECEIPT_SCHEMA = (
+    "muncho-writer-stopped-owner-activation.v1"
+)
+WRITER_NATIVE_PLAN_PATH = (
+    "/etc/muncho/writer-activation/native-observation-plan.json"
+)
+WRITER_STAGED_NATIVE_PLAN_PATH = (
+    "/etc/muncho/writer-activation/staged/native-observation-plan.json"
+)
+WRITER_FINAL_PLAN_PATH = "/etc/muncho/writer-activation/activation-plan.json"
+WRITER_STAGED_FINAL_PLAN_PATH = (
+    "/etc/muncho/writer-activation/staged/activation-plan.json"
+)
+WRITER_STAGED_OWNER_APPROVAL_PATH = (
+    "/etc/muncho/writer-activation/staged/owner-approval.json"
+)
+WRITER_STAGED_EXTERNAL_IAM_PATH = (
+    "/etc/muncho/writer-activation/staged/external-iam-receipt.json"
+)
+WRITER_EXTERNAL_IAM_LIVE_PATH = (
+    "/run/muncho-canonical-preflight/external-iam-receipt.json"
+)
+WRITER_OWNER_APPROVAL_ROOT = "/etc/muncho/writer-activation/approvals"
 SQL_INSTANCE = "muncho-canary-pg18-v2"
 TEMPORARY_ADMIN_AUTHORITY_RECEIPT_SCHEMA = (
     "muncho-cloud-sql-temporary-admin-authority.v1"
@@ -92,7 +172,6 @@ CANARY_BOOTSTRAP_ABSENCE_EVIDENCE_SCHEMA = (
 DATABASE_HOST = "10.91.0.3"
 DATABASE_PORT = 5432
 DATABASE_NAME = "muncho_canary_brain"
-OWNER_GATE_SCHEMA = "muncho-full-canary-owner-launch-gate.v1"
 OWNER_RECEIPT_SCHEMA = "muncho-full-canary-owner-launch-receipt.v2"
 DISCORD_INSTALL_GATE_SCHEMA = "muncho-full-canary-discord-token-install-gate.v1"
 DISCORD_INSTALL_RECEIPT_SCHEMA = "muncho-full-canary-discord-token-install-receipt.v1"
@@ -115,8 +194,66 @@ RECOVERY_FINALIZE_PENDING_RECEIPT_SCHEMA = (
 RECOVERY_RECEIPT_SCHEMA = "muncho-full-canary-recovery-receipt.v2"
 COORDINATOR_SECRET_GATE_SCHEMA = "muncho-full-canary-coordinator-secret-gate.v1"
 COORDINATOR_RECEIPT_SCHEMA = "muncho-full-canary-coordinator-receipt.v1"
-COORDINATOR_FAILURE_SCHEMA = "muncho-full-canary-coordinator-failure.v1"
+COORDINATOR_FAILURE_SCHEMA = (
+    "muncho-full-canary-session-bound-coordinator-failure.v1"
+)
+BOOTSTRAP_INSTALL_COMPENSATION_PREFLIGHT_SCHEMA = (
+    "muncho-full-canary-bootstrap-install-compensation-preflight.v1"
+)
+BOOTSTRAP_INSTALL_COMPENSATION_FRAME_SCHEMA = (
+    "muncho-full-canary-owner-bootstrap-install-compensation-frame.v1"
+)
+BOOTSTRAP_INSTALL_COMPENSATION_FRAME_MAGIC = b"MCC1"
+PHASE_B_OWNER_REQUEST_SCHEMA = "muncho-canonical-writer-phase-b-owner-request.v2"
+PHASE_B_OWNER_RESPONSE_SCHEMA = "muncho-canonical-writer-phase-b-owner-response.v2"
+PHASE_B_APPLY_RECEIPT_SCHEMA = "muncho-canonical-writer-phase-b-apply-receipt.v1"
+PHASE_B_APPLY_GATE_SCHEMA = "muncho-canonical-writer-phase-b-owner-gate.v2"
+PHASE_B_LIVE_GATE_SCHEMA = "muncho-full-canary-phase-b-live-gate.v1"
+PHASE_B_OWNER_FRAME_MAGIC = b"MPB1"
+PHASE_B_OWNER_FRAME_SCHEMA = "MPB1-u32be-json-u32be-opaque.v1"
+PHASE_B_MAX_ROUNDS = 16
+PHASE_B_MAX_REQUEST_BYTES = 512 * 1024
+PHASE_B_MAX_RESPONSE_BYTES = 512 * 1024
+PHASE_B_CREDENTIAL_BYTES = 64
+PHASE_B_OWNER_PRIVATE_KEY_PATH = Path(
+    "/Users/emillomliev/.ssh/skyvision_mac_ops_ed25519"
+)
+PHASE_B_OWNER_PUBLIC_KEY_PATH = Path(
+    "/Users/emillomliev/.ssh/skyvision_mac_ops_ed25519.pub"
+)
+PHASE_B_OWNER_PUBLIC_KEY_COMMENT = "skyvision-mac-ops-emil-20260710"
+PHASE_B_OWNER_PUBLIC_KEY_FINGERPRINT = (
+    "SHA256:7Ea5WNys9ui7FL/p0FlOnL1ZLr6NPFuewekwqRw/rdw"
+)
+PHASE_B_PINNED_APPROVAL_SOURCE_SHA256 = hashlib.sha256(
+    PHASE_B_OWNER_PUBLIC_KEY_FINGERPRINT.encode("ascii")
+).hexdigest()
+PHASE_B_OWNER_PUBLIC_KEY_UID = 501
+PHASE_B_OWNER_PUBLIC_KEY_GID = 20
+PHASE_B_APPROVAL_SSHSIG_NAMESPACE = (
+    "muncho-canonical-writer-phase-b-owner-v2"
+)
+PHASE_B_SOURCE_AUTH_SSHSIG_NAMESPACE = (
+    "muncho-canonical-writer-phase-b-source-auth-v1"
+)
+PHASE_B_OWNER_AUTHORITY_KIND = "skyvision_mac_ops_ed25519"
+PHASE_B_OWNER_APPROVAL_ROOT = Path(
+    "/Users/emillomliev/.hermes/owner-approvals/phase-b"
+)
+PHASE_B_SSH_KEYGEN = Path("/usr/bin/ssh-keygen")
+PHASE_B_MAX_SSHSIG_BYTES = 4096
+PHASE_B_MAX_PUBLIC_KEY_BYTES = 4096
+PHASE_B_SIGN_TIMEOUT_SECONDS = 15.0
 OWNER_APPROVAL_REQUEST_SCHEMA = "muncho-full-canary-owner-approval-request.v1"
+SESSION_BOUND_APPROVAL_REQUEST_SCHEMA = (
+    "muncho-full-canary-session-bound-owner-approval-request.v1"
+)
+SESSION_BOUND_COORDINATOR_RECEIPT_SCHEMA = (
+    "muncho-full-canary-session-bound-coordinator-receipt.v1"
+)
+SESSION_BOUND_OWNER_RECEIPT_SCHEMA = (
+    "muncho-full-canary-session-bound-owner-receipt.v1"
+)
 FINAL_APPROVAL_INSTALL_RECEIPT_SCHEMA = (
     "muncho-full-canary-final-approval-install-receipt.v1"
 )
@@ -155,6 +292,7 @@ _ADMIN_PASSWORD_MIN_UTF8 = 24
 _ADMIN_PASSWORD_MAX_UTF8 = 4096
 _DISCORD_TOKEN_MAX_BYTES = 4096
 _HTTP_RESPONSE_MAX_BYTES = 2 * 1024 * 1024
+_CANARY_IAM_JSON_MAX_BYTES = 8 * 1024 * 1024
 _HTTP_TIMEOUT_SECONDS = 30.0
 _OPERATION_TIMEOUT_SECONDS = 180.0
 _GATE_MAX_FUTURE_SECONDS = 900
@@ -164,10 +302,14 @@ _FINAL_APPROVAL_TERMINAL_CLEANUP_GRACE_SECONDS = 300
 _HBA_EXPIRY_SAFETY_MARGIN_SECONDS = 30
 _SECRET_FRAME_TRANSMIT_MARGIN_SECONDS = 30
 _MAX_JSON_LINE_BYTES = 256 * 1024
+_WRITER_AUTHORITY_MAX_FRAME_BYTES = 192 * 1024
 # Exact upper bound for the largest secret frame the transport may carry:
 # MCB1's 76-byte header + 128 KiB authority receipt + 4 KiB password.
 # Individual frame decoders retain their own tighter semantic bounds.
-_MAX_REMOTE_SECRET_FRAME_BYTES = 76 + 128 * 1024 + 4 * 1024
+_MAX_REMOTE_SECRET_FRAME_BYTES = max(
+    76 + 128 * 1024 + 4 * 1024,
+    12 + PHASE_B_MAX_RESPONSE_BYTES + PHASE_B_CREDENTIAL_BYTES,
+)
 _STOPPED_RELEASE_ACTIVATION_PATHS = (
     "/etc/muncho/writer-activation/staged/writer.json",
     "/etc/muncho/writer-activation/staged/gateway.yaml",
@@ -274,20 +416,260 @@ _CLOUD_SQL_USER_OPERATION_TYPES = frozenset({
     "UPDATE_USER",
     "DELETE_USER",
 })
-_OWNER_GATE_KEYS = frozenset({
+_PHASE_B_AUTHORITY_CONTEXT_KEYS = frozenset({
+    "release_sha",
+    "coordinator_input_sha256",
+    "activation_plan_sha256",
+    "writer_activation_receipt_sha256",
+    "activation_owner_approval_sha256",
+    "activation_approval_issued_at_unix",
+    "activation_approval_expires_at_unix",
+    "native_observation_plan_sha256",
+    "native_observation_receipt_sha256",
+    "native_observation_approval_sha256",
+    "native_approval_issued_at_unix",
+    "native_approval_expires_at_unix",
+    "external_iam_policy_sha256",
+    "external_iam_receipt_sha256",
+    "config_collector_receipt_sha256",
+    "gateway_config_intent_sha256",
+    "edge_config_intent_sha256",
+    "fixture_intent_sha256",
+    "host_identity_receipt_sha256",
+    "authority_sources",
+    "authority_sources_sha256",
+    "approval_source_sha256",
+    "owner_subject_sha256",
+    "owner_resume_public_key_ed25519_hex",
+    "owner_resume_key_id",
+    "owner_resume_public_key_file_sha256",
+    "owner_resume_public_fingerprint",
+})
+_PHASE_B_AUTHORITY_SOURCE_LABELS = frozenset({
+    "coordinator_input",
+    "activation_plan",
+    "activation_receipt",
+    "activation_owner_approval",
+    "native_plan",
+    "native_receipt",
+    "native_owner_approval",
+    "external_iam_receipt",
+    "config_collector_receipt",
+    "gateway_config_intent",
+    "edge_config_intent",
+    "fixture_intent",
+    "host_identity_receipt",
+    "owner_resume_public_key",
+})
+_PHASE_B_AUTHORITY_SOURCE_KEYS = frozenset({
+    "path",
+    "file_sha256",
+    "device",
+    "inode",
+    "uid",
+    "gid",
+    "mode",
+    "size",
+})
+_PHASE_B_OWNER_RESUME_AUTHORITY_KEYS = frozenset({
+    "public_key_ed25519_hex",
+    "key_id",
+    "public_key_file_sha256",
+    "public_fingerprint",
+    "public_key_source",
+})
+_PHASE_B_REQUEST_KEYS = frozenset({
+    "schema",
+    "frame_schema",
+    "operation",
+    "sequence",
+    "previous_response_sha256",
+    "authority_context_sha256",
+    "authority_context",
+    "phase_b_plan_sha256",
+    "phase_b_approval_sha256",
+    "boundary_kind",
+    "boundary_ordinal",
+    "credential_expected",
+    "payload",
+    "issued_at_unix",
+    "expires_at_unix",
+    "idempotency_key",
+    "request_sha256",
+})
+_PHASE_B_OPERATIONS = frozenset({
+    "authority_observe_initial",
+    "authority_approve",
+    "authority_resume_approve",
+    "observe_initial",
+    "observe_recovery",
+    "temporary_create_or_rotate",
+    "temporary_delete",
+    "bootstrap_describe",
+    "bootstrap_create_or_rotate",
+    "observe_terminal",
+})
+_PHASE_B_APPLY_RECEIPT_KEYS = frozenset({
     "schema",
     "ok",
     "state",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
     "release_sha",
-    "database_host",
-    "database_port",
-    "database_name",
-    "admin_username",
+    "coordinator_input_sha256",
+    "phase_b_plan_sha256",
+    "phase_b_approval_sha256",
+    "phase_b_terminal_receipt_sha256",
+    "phase_b_readiness_receipt_sha256",
+    "safe_to_start",
+    "completed_at_unix",
+    "receipt_sha256",
+})
+_PHASE_B_APPLY_GATE_KEYS = frozenset({
+    "schema",
+    "ok",
+    "state",
+    "release_sha",
+    "coordinator_input_sha256",
+    "owner_subject_sha256",
+    "approval_source_sha256",
+    "authority_present",
+    "phase_b_plan_sha256",
+    "phase_b_approval_sha256",
+    "phase_b_approval_sequence",
+    "phase_b_incomplete_state",
+    "phase_b_inspection_sha256",
+    "phase_b_terminal",
+    "phase_b_requires_reapproval",
+    "issued_at_unix",
     "expires_at_unix",
     "gate_sha256",
+})
+_PHASE_B_LIVE_GATE_KEYS = frozenset({
+    "schema",
+    "ok",
+    "state",
+    "release_sha",
+    "coordinator_input_sha256",
+    "owner_subject_sha256",
+    "approval_source_sha256",
+    "phase_b_readiness_anchor",
+    "phase_b_readiness_anchor_sha256",
+    "issued_at_unix",
+    "expires_at_unix",
+    "gate_sha256",
+})
+_SESSION_BOUND_APPROVAL_REQUEST_KEYS = frozenset({
+    "schema",
+    "ok",
+    "state",
+    "release_sha",
+    "coordinator_input_sha256",
+    "full_canary_plan_sha256",
+    "staged_plan_path",
+    "staged_plan_file_sha256",
+    "fixture_sha256",
+    "phase_b_readiness_anchor_sha256",
+    "phase_b_approval_sha256",
+    "owner_subject_sha256",
+    "approval_source_sha256",
+    "requested_at_unix",
+    "owner_input_cutoff_unix",
+    "approval_deadline_unix",
+    "approval_path",
+    "final_approval_frame_schema",
+    "request_sha256",
+})
+_SESSION_BOUND_COORDINATOR_RECEIPT_KEYS = frozenset({
+    "schema",
+    "ok",
+    "state",
+    "release_sha",
+    "coordinator_input_sha256",
+    "full_canary_plan_sha256",
+    "owner_approval_sha256",
+    "phase_b_readiness_anchor_sha256",
+    "api_session_key_sha256",
+    "fixture_sha256",
+    "live_driver_result",
+    "live_driver_receipt_sha256",
+    "services_stopped",
+    "discord_token_retired",
+    "temporary_admin_created",
+    "bootstrap_credential_created",
+    "completed_at_unix",
+    "receipt_sha256",
+})
+_COORDINATOR_FAILURE_KEYS = frozenset({
+    "schema",
+    "ok",
+    "phase",
+    "command",
+    "error_code",
+    "release_sha",
+    "coordinator_input_sha256",
+    "cleanup_status",
+    "discord_token_removed",
+    "services_stopped",
+    "obsolete_process_journal_absent",
+    "completed_at_unix",
+    "receipt_sha256",
+})
+_COORDINATOR_INPUT_PUBLICATION_KEYS = frozenset({
+    "schema",
+    "ok",
+    "state",
+    "release_sha",
+    "coordinator_input_sha256",
+    "coordinator_input_path",
+    "coordinator_input_file_sha256",
+    "publication_receipt_path",
+    "owner_uid",
+    "group_gid",
+    "mode",
+    "published_at_unix",
+    "receipt_sha256",
+})
+_COORDINATOR_COMMANDS = frozenset({
+    "publish-coordinator-input",
+    "preflight-phase-b-apply",
+    "preflight-phase-b-live-run",
+    "phase-b-apply",
+    "run",
+    "install-discord-token",
+    "stop-and-retire-discord-token",
+})
+_PHASE_B_READINESS_ANCHOR_KEYS = frozenset({
+    "phase_b_release_revision",
+    "phase_b_plan_sha256",
+    "phase_b_approval_sha256",
+    "phase_b_terminal_receipt_sha256",
+    "phase_b_foundation_generation_sha256",
+    "phase_b_readiness_receipt_sha256",
+    "phase_b_readiness_handoff_file_sha256",
+    "phase_b_readiness_sequence",
+})
+_PHASE_B_INCOMPLETE_HEAD_KEYS = frozenset({
+    "schema",
+    "plan_sha256",
+    "intent_sha256",
+    "owner_subject_sha256",
+    "approval_source_sha256",
+    "approval_sequence",
+    "approval_sha256",
+    "approval_expires_at_unix",
+    "pending_source_sequence",
+    "pending_source_authentication_sha256",
+    "journal_entry_count",
+    "journal_head_sha256",
+    "journal_head_event",
+    "journal_head_recorded_at_unix",
+    "terminal",
+    "incomplete_state",
+    "resume_eligible",
+    "fresh_head",
+    "requires_reapproval",
+    "mutation_authorized",
+    "inspected_at_unix",
+    "inspection_sha256",
 })
 _DISCORD_INSTALL_GATE_KEYS = frozenset({
     "schema",
@@ -372,422 +754,6 @@ _DISCORD_RETIREMENT_ACK_KEYS = frozenset({
     "expires_at_unix",
     "ack_sha256",
 })
-_RECOVERY_GATE_KEYS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "predecessor_kind",
-    "predecessor_schema",
-    "predecessor_journal_sha256",
-    "predecessor_generation",
-    "original_run_process_lease_sha256",
-    "causal_recovery_state_sha256",
-    "target_pid",
-    "target_process_start_time_ticks",
-    "target_boot_id_sha256",
-    "target_boot_time_ns",
-    "target_uid",
-    "target_gid",
-    "target_module_origin",
-    "target_module_sha256",
-    "target_process_exe_sha256",
-    "target_process_cmdline_sha256",
-    "target_process_identity_state",
-    "discord_token_state",
-    "discord_token_install_receipt_sha256",
-    "discord_retirement_receipt_sha256",
-    "token_device",
-    "token_inode",
-    "db_secret_accepted",
-    "frame_schema",
-    "observed_at_unix",
-    "expires_at_unix",
-    "gate_sha256",
-})
-_RECOVERY_ACK_KEYS = frozenset({
-    "schema",
-    "scope",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "predecessor_kind",
-    "predecessor_schema",
-    "predecessor_journal_sha256",
-    "predecessor_generation",
-    "original_run_process_lease_sha256",
-    "causal_recovery_state_sha256",
-    "target_pid",
-    "target_process_start_time_ticks",
-    "target_boot_id_sha256",
-    "target_boot_time_ns",
-    "target_uid",
-    "target_gid",
-    "target_module_origin",
-    "target_module_sha256",
-    "target_process_exe_sha256",
-    "target_process_cmdline_sha256",
-    "target_process_identity_state",
-    "discord_token_state",
-    "discord_token_install_receipt_sha256",
-    "discord_retirement_receipt_sha256",
-    "token_device",
-    "token_inode",
-    "recovery_takeover_gate_sha256",
-    "nonce_sha256",
-    "approved_at_unix",
-    "expires_at_unix",
-    "ack_sha256",
-})
-_RECOVERY_SECRET_GATE_KEYS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "recovery_takeover_gate_sha256",
-    "owner_recovery_takeover_ack_sha256",
-    "predecessor_kind",
-    "predecessor_journal_sha256",
-    "predecessor_generation",
-    "original_run_process_lease_sha256",
-    "causal_recovery_state_sha256",
-    "recovery_worker_lease_sha256",
-    "recovery_worker_state",
-    "recovery_worker_transition_seq",
-    "recovery_worker_pid",
-    "recovery_worker_process_start_time_ticks",
-    "recovery_worker_boot_id_sha256",
-    "recovery_worker_boot_time_ns",
-    "recovery_worker_uid",
-    "recovery_worker_gid",
-    "recovery_worker_module_origin",
-    "recovery_worker_module_sha256",
-    "recovery_worker_process_exe_sha256",
-    "recovery_worker_process_cmdline_sha256",
-    "database_host",
-    "database_port",
-    "database_name",
-    "tls_server_name",
-    "tls_peer_certificate_sha256",
-    "gate_nonce_sha256",
-    "admin_frame_schema",
-    "expires_at_unix",
-    "gate_sha256",
-})
-_RECOVERY_WORKER_COMPLETION_KEYS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "original_run_process_lease",
-    "original_run_process_lease_sha256",
-    "causal_recovery_state_sha256",
-    "predecessor_kind",
-    "predecessor_journal_sha256",
-    "predecessor_generation",
-    "recovery_generation",
-    "recovery_takeover_gate_sha256",
-    "owner_recovery_takeover_ack_sha256",
-    "recovery_worker_lease_sha256",
-    "recovery_worker_pid",
-    "recovery_worker_process_start_time_ticks",
-    "recovery_worker_boot_id_sha256",
-    "recovery_worker_boot_time_ns",
-    "recovery_worker_uid",
-    "recovery_worker_gid",
-    "recovery_worker_module_origin",
-    "recovery_worker_module_sha256",
-    "recovery_worker_process_exe_sha256",
-    "recovery_worker_process_cmdline_sha256",
-    "predecessor_termination_proven",
-    "predecessor_process_lock_acquired",
-    "predecessor_journal_replaced",
-    "canonical_stop_receipt_sha256",
-    "preplan_stopped_report_sha256",
-    "preclaim_reconciliation_receipt_sha256",
-    "preclaim_reconciliation_state",
-    "admin_frame_zeroized",
-    "admin_session_closed",
-    "migration_owner_membership_removed",
-    "bootstrap_login_password_disabled",
-    "bootstrap_credential_removed",
-    "discord_token_removed",
-    "discord_install_receipt_removed",
-    "discord_retirement_receipt_sha256",
-    "services_stopped_proven",
-    "services_enabled",
-    "recovery_worker_exit_proven",
-    "safe_to_delete_temporary_admin",
-    "cleanup_completed_at_unix",
-    "completion_sha256",
-})
-_RECOVERY_RECEIPT_KEYS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "original_run_process_lease",
-    "original_run_process_lease_sha256",
-    "causal_recovery_state_sha256",
-    "predecessor_kind",
-    "predecessor_journal_sha256",
-    "predecessor_generation",
-    "recovery_generation",
-    "recovery_takeover_gate_sha256",
-    "owner_recovery_takeover_ack_sha256",
-    "recovery_worker_lease_sha256",
-    "recovery_worker_completion_sha256",
-    "recovery_worker_pid",
-    "recovery_worker_process_start_time_ticks",
-    "recovery_worker_boot_id_sha256",
-    "recovery_worker_boot_time_ns",
-    "recovery_worker_uid",
-    "recovery_worker_gid",
-    "recovery_worker_module_origin",
-    "recovery_worker_module_sha256",
-    "recovery_worker_process_exe_sha256",
-    "recovery_worker_process_cmdline_sha256",
-    "predecessor_termination_proven",
-    "predecessor_process_lock_acquired",
-    "predecessor_journal_replaced",
-    "canonical_stop_receipt_sha256",
-    "preplan_stopped_report_sha256",
-    "preclaim_reconciliation_receipt_sha256",
-    "preclaim_reconciliation_state",
-    "admin_frame_zeroized",
-    "admin_session_closed",
-    "migration_owner_membership_removed",
-    "bootstrap_login_password_disabled",
-    "bootstrap_credential_removed",
-    "discord_token_removed",
-    "discord_install_receipt_removed",
-    "discord_retirement_receipt_sha256",
-    "services_stopped_proven",
-    "services_enabled",
-    "recovery_worker_lock_acquired",
-    "recovery_worker_exit_proven",
-    "safe_to_delete_temporary_admin",
-    "cleanup_completed_at_unix",
-    "finalized_at_unix",
-    "receipt_sha256",
-})
-_RECOVERY_CONCURRENT_LOSER_RECEIPT_KEYS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "recovery_takeover_gate_sha256",
-    "owner_recovery_takeover_ack_sha256",
-    "predecessor_kind",
-    "predecessor_schema",
-    "predecessor_journal_sha256",
-    "predecessor_generation",
-    "original_run_process_lease_sha256",
-    "target_pid",
-    "target_process_start_time_ticks",
-    "target_boot_id_sha256",
-    "target_boot_time_ns",
-    "target_uid",
-    "target_gid",
-    "target_module_origin",
-    "target_module_sha256",
-    "target_process_exe_sha256",
-    "target_process_cmdline_sha256",
-    "target_signal_attempted_by_loser",
-    "target_termination_proven_by_loser",
-    "process_lock_acquired_by_loser",
-    "journal_cas_attempted_by_loser",
-    "journal_cas_succeeded_by_loser",
-    "observed_successor_schema",
-    "observed_successor_state",
-    "observed_successor_journal_sha256",
-    "observed_successor_generation",
-    "observed_successor_worker_pid",
-    "observed_successor_worker_process_start_time_ticks",
-    "observed_successor_worker_boot_id_sha256",
-    "observed_successor_worker_module_sha256",
-    "observed_successor_worker_process_exe_sha256",
-    "observed_successor_worker_process_cmdline_sha256",
-    "secret_gate_emitted_by_loser",
-    "admin_frame_bytes_received_by_loser",
-    "admin_session_opened_by_loser",
-    "admin_credential_mutation_performed_by_loser",
-    "worker_lease_published_by_loser",
-    "retryable",
-    "completed_at_unix",
-    "receipt_sha256",
-})
-_RECOVERY_FINALIZE_PENDING_RECEIPT_KEYS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "recovery_worker_completion_sha256",
-    "recovery_worker_pid",
-    "recovery_worker_process_start_time_ticks",
-    "recovery_worker_boot_id_sha256",
-    "recovery_worker_boot_time_ns",
-    "recovery_worker_uid",
-    "recovery_worker_gid",
-    "recovery_worker_module_origin",
-    "recovery_worker_module_sha256",
-    "recovery_worker_process_exe_sha256",
-    "recovery_worker_process_cmdline_sha256",
-    "completion_admin_authority_may_have_been_used",
-    "completion_admin_frame_zeroized",
-    "completion_admin_session_closed",
-    "worker_identity_state",
-    "target_signal_attempted_by_finalizer",
-    "target_termination_proven_by_finalizer",
-    "process_lock_acquired_by_finalizer",
-    "completion_cas_attempted_by_finalizer",
-    "completion_cas_succeeded_by_finalizer",
-    "observed_journal_sha256",
-    "secret_gate_emitted_by_finalizer",
-    "admin_frame_bytes_received_by_finalizer",
-    "admin_session_opened_by_finalizer",
-    "admin_credential_mutation_performed_by_finalizer",
-    "retryable",
-    "completed_at_unix",
-    "receipt_sha256",
-})
-_ORIGINAL_RUN_PROCESS_LEASE_KEYS = frozenset({
-    "schema",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "pid",
-    "process_start_time_ticks",
-    "boot_id_sha256",
-    "boot_time_ns",
-    "module_origin",
-    "module_sha256",
-    "process_exe_sha256",
-    "process_cmdline_sha256",
-    "created_at_unix",
-    "lease_sha256",
-})
-_COORDINATOR_SECRET_GATE_KEYS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "release_sha",
-    "admin_username",
-    "database_host",
-    "database_port",
-    "database_name",
-    "tls_server_name",
-    "tls_peer_certificate_sha256",
-    "coordinator_process_lease_sha256",
-    "coordinator_pid",
-    "coordinator_start_time_ticks",
-    "coordinator_boot_id_sha256",
-    "expires_at_unix",
-    "frame_schema",
-    "gate_sha256",
-})
-_COORDINATOR_RECEIPT_KEYS = frozenset({
-    "schema",
-    "ok",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "temporary_admin_delete_required",
-    "admin_session_closed",
-    "full_canary_plan_sha256",
-    "owner_approval_sha256",
-    "live_driver_result",
-    "live_driver_receipt_sha256",
-    "bootstrap_login_password_disabled",
-    "bootstrap_credential_removed",
-    "discord_token_removed",
-    "coordinator_process_lease_retired",
-    "services_enabled",
-    "completed_at_unix",
-    "receipt_sha256",
-})
-_COORDINATOR_FAILURE_KEYS = frozenset({
-    "schema",
-    "ok",
-    "phase",
-    "error_code",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "full_canary_plan_sha256",
-    "cleanup_status",
-    "recovery_material_preserved",
-    "admin_session_closed",
-    "bootstrap_login_password_disabled",
-    "bootstrap_credential_removed",
-    "discord_token_removed",
-    "coordinator_process_lease_retired",
-    "services_enabled",
-    "receipt_sha256",
-})
-_OWNER_APPROVAL_REQUEST_KEYS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "ephemeral_admin_username",
-    "full_canary_plan_sha256",
-    "staged_plan_path",
-    "staged_plan_file_sha256",
-    "approval_path",
-    "hba_receipt_sha256",
-    "hba_expires_at_unix",
-    "fixture_expires_at_unix",
-    "credential_approval_expires_at_unix",
-    "approval_deadline_unix",
-    "owner_input_cutoff_unix",
-    "final_approval_transmit_margin_seconds",
-    "max_wait_seconds",
-    "requested_at_unix",
-    "approval_source_sha256",
-    "approval_request_path",
-    "final_approval_frame_schema",
-    "prior_approval_file_sha256",
-    "request_sha256",
-})
 _FINAL_APPROVAL_KEYS = frozenset({
     "schema",
     "scope",
@@ -799,53 +765,6 @@ _FINAL_APPROVAL_KEYS = frozenset({
     "nonce_sha256",
     "approved_at_unix",
     "expires_at_unix",
-})
-_FINAL_APPROVAL_INSTALL_RECEIPT_KEYS = frozenset({
-    "schema",
-    "ok",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "full_canary_plan_sha256",
-    "approval_request_sha256",
-    "owner_approval_sha256",
-    "approval_path",
-    "installed_at_unix",
-    "receipt_sha256",
-})
-_FINAL_APPROVAL_CANCEL_RECEIPT_KEYS = frozenset({
-    "schema",
-    "ok",
-    "state",
-    "reason",
-    "release_sha",
-    "coordinator_input_sha256",
-    "credential_prepare_approval_sha256",
-    "owner_subject_sha256",
-    "full_canary_plan_sha256",
-    "approval_request_sha256",
-    "approval_request_path",
-    "expected_approval_request_file_sha256",
-    "observed_approval_request_file_sha256",
-    "approval_request_artifact_state",
-    "approval_request_present",
-    "approval_request_remains_active",
-    "staged_plan_path",
-    "expected_staged_plan_file_sha256",
-    "observed_staged_plan_file_sha256",
-    "staged_plan_artifact_state",
-    "staged_plan_present",
-    "approval_path",
-    "prior_approval_file_sha256",
-    "observed_approval_file_sha256",
-    "owner_approval_artifact_state",
-    "approval_path_matches_prior",
-    "new_owner_approval_installed",
-    "frame_bytes_received",
-    "owner_approval_mutation_performed_by_this_helper",
-    "cancelled_at_unix",
-    "receipt_sha256",
 })
 _LIVE_DRIVER_RESULT_KEYS = frozenset({
     "schema",
@@ -859,86 +778,6 @@ _LIVE_DRIVER_RESULT_KEYS = frozenset({
     "lifecycle_verification_receipt",
     "discord_ingress_claimed",
 })
-_INVARIANT_RECEIPT_KEYS = frozenset({
-    "schema",
-    "ok",
-    "fixture_sha256",
-    "evidence_sha256",
-    "full_canary_start_receipt_sha256",
-    "release_sha",
-    "canary_run_id",
-    "invariants",
-    "invariant_receipt_sha256",
-})
-_LIFECYCLE_RECEIPT_KEYS = frozenset({
-    "operation",
-    "full_canary_start_receipt_sha256",
-    "full_canary_start_receipt_internal_sha256",
-    "evidence_path",
-    "evidence_sha256",
-    "live_report_sha256",
-    "verifier_result",
-    "stop_order",
-    "preclaim_reconciliation",
-    "stopped_report_sha256",
-    "units_enabled",
-    "verified",
-    "error_type",
-    "error_sha256",
-    "completed_at_unix",
-    "schema",
-    "stage",
-    "revision",
-    "full_canary_plan_sha256",
-    "receipt_path",
-    "receipt_sha256",
-})
-_PRECLAIM_RECEIPT_KEYS = frozenset({
-    "version",
-    "observed_at_unix",
-    "source_config_path",
-    "source_config_sha256",
-    "database_identity",
-    "database_identity_sha256",
-    "result",
-    "receipt_sha256",
-})
-_PRECLAIM_RESULT_KEYS = frozenset({
-    "success",
-    "outcome",
-    "grant_id",
-    "case_id",
-    "release_sha256",
-    "fixture_sha256",
-    "run_id",
-    "session_key_sha256",
-    "expires_at",
-    "approved_by",
-    "approval_source_sha256",
-    "provisioning_receipt_sha256",
-    "preapproval_event_id",
-    "bootstrap_consumption_event_id",
-    "claim_event_id",
-    "retirement_event_id",
-    "revocation_event_id",
-    "claimed_at",
-    "retired_at",
-    "reason",
-    "scope_retired",
-    "authority_active",
-    "inserted",
-    "deduped",
-})
-_CANARY_INVARIANTS = (
-    "live_provenance_bound",
-    "canonical_writer_ready",
-    "owner_preapproved_one_shot_scope_claimed_and_durably_revoked",
-    "gpt56_model_authored_high_to_xhigh",
-    "canonical_plan_event_verification_truth_complete",
-    "public_discord_routeback_signed_and_readback_verified",
-    "discord_dm_private_target_denied_without_dispatch",
-    "sustained_multistep_task_completed_nonpartial",
-)
 _STABLE_CODE = re.compile(r"^[a-z][a-z0-9_]{2,127}$")
 _TLS_SERVER_NAME = re.compile(
     r"^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.europe-west3\.sql\.goog$"
@@ -952,8 +791,6 @@ _FORBIDDEN_RECEIPT_VALUE_KEYS = frozenset({
     "discord_token",
 })
 _ALLOWED_SECRET_STATUS_OR_BINDING_KEYS = frozenset({
-    "bootstrap_login_password_disabled",
-    "bootstrap_credential_removed",
     "discord_token_install_approval_sha256",
     "discord_token_removed",
 })
@@ -1046,188 +883,6 @@ def _close_session_preserving_primary(
 
 
 @dataclass
-class _RecoveryAttemptState:
-    """Outer-visible truth for a privileged recovery-admin attempt."""
-
-    gate: Mapping[str, Any] | None = None
-    takeover_ack: Mapping[str, Any] | None = None
-    secret_gate: Mapping[str, Any] | None = None
-    worker_completion: Mapping[str, Any] | None = None
-    final_receipt: Mapping[str, Any] | None = None
-    concurrent_loser_receipt: Mapping[str, Any] | None = None
-    finalize_pending_receipt: Mapping[str, Any] | None = None
-    username: str | None = None
-    password: bytearray | None = None
-    password_wiped: bool | None = None
-    admin_mutation_attempted: bool = False
-    admin_mutation_confirmed: bool = False
-    admin_mutation_ambiguous: bool = False
-    admin_mutation_explicitly_not_committed: bool = False
-    admin_mutation_ambiguity_observed: bool = False
-    admin_reconciliation_performed: bool = False
-    admin_reconciliation_evidence_sha256: str | None = None
-    admin_reconciliation_quiet_window_seconds: float | None = None
-    admin_response_known_candidate_observed: bool | None = None
-    admin_post_baseline_authority_operation_count: int | None = None
-    admin_delete_pending: bool = False
-    frame_write_attempted: bool = False
-    frame_disclosed_or_ambiguous: bool = False
-    remote_termination_proven: bool = False
-    terminal_receipt_validated: bool = False
-    admin_session_closed: bool | None = None
-    recovery_required: bool = False
-    cleanup_failure_codes: set[str] = field(default_factory=set)
-
-    def wipe_password(self) -> None:
-        if self.password is None:
-            return
-        _wipe(self.password)
-        self.password_wiped = True
-
-    def absorb(self, later: "_RecoveryAttemptState") -> None:
-        if (
-            self.username is not None
-            and later.username is not None
-            and self.username != later.username
-        ):
-            self.cleanup_failure_codes.add("recovery_admin_username_drifted")
-            self.recovery_required = True
-            return
-        self.gate = later.gate or self.gate
-        self.takeover_ack = later.takeover_ack or self.takeover_ack
-        self.secret_gate = later.secret_gate or self.secret_gate
-        self.worker_completion = later.worker_completion or self.worker_completion
-        self.final_receipt = later.final_receipt or self.final_receipt
-        self.concurrent_loser_receipt = (
-            later.concurrent_loser_receipt or self.concurrent_loser_receipt
-        )
-        self.finalize_pending_receipt = (
-            later.finalize_pending_receipt or self.finalize_pending_receipt
-        )
-        self.username = later.username or self.username
-        self.admin_mutation_attempted |= later.admin_mutation_attempted
-        self.admin_mutation_confirmed |= later.admin_mutation_confirmed
-        self.admin_mutation_ambiguous |= later.admin_mutation_ambiguous
-        self.admin_mutation_explicitly_not_committed |= (
-            later.admin_mutation_explicitly_not_committed
-        )
-        self.admin_mutation_ambiguity_observed |= (
-            later.admin_mutation_ambiguity_observed
-        )
-        self.admin_reconciliation_performed |= later.admin_reconciliation_performed
-        if later.admin_reconciliation_evidence_sha256 is not None:
-            if (
-                self.admin_reconciliation_evidence_sha256 is not None
-                and self.admin_reconciliation_evidence_sha256
-                != later.admin_reconciliation_evidence_sha256
-            ):
-                self.cleanup_failure_codes.add(
-                    "cloud_sql_reconciliation_evidence_drifted"
-                )
-                self.recovery_required = True
-            else:
-                self.admin_reconciliation_evidence_sha256 = (
-                    later.admin_reconciliation_evidence_sha256
-                )
-                self.admin_reconciliation_quiet_window_seconds = (
-                    later.admin_reconciliation_quiet_window_seconds
-                )
-                self.admin_response_known_candidate_observed = (
-                    later.admin_response_known_candidate_observed
-                )
-                self.admin_post_baseline_authority_operation_count = (
-                    later.admin_post_baseline_authority_operation_count
-                )
-        self.admin_delete_pending |= later.admin_delete_pending
-        self.frame_write_attempted |= later.frame_write_attempted
-        self.frame_disclosed_or_ambiguous |= later.frame_disclosed_or_ambiguous
-        self.remote_termination_proven |= later.remote_termination_proven
-        self.terminal_receipt_validated |= later.terminal_receipt_validated
-        if later.admin_session_closed is not None:
-            self.admin_session_closed = later.admin_session_closed
-        if later.final_receipt is not None:
-            self.recovery_required = False
-        else:
-            self.recovery_required |= later.recovery_required
-        if later.password_wiped is not None:
-            self.password_wiped = later.password_wiped
-        self.cleanup_failure_codes.update(later.cleanup_failure_codes)
-
-
-def _validated_sql_reconciliation_evidence(
-    sql_admin: Any,
-) -> Mapping[str, Any]:
-    value = sql_admin.reconciliation_evidence()
-    if not isinstance(value, Mapping) or set(value) != {
-        "mutation_ambiguity_observed",
-        "reconciliation_proven",
-        "reconciliation_evidence_sha256",
-        "quiet_window_seconds",
-        "response_known_candidate_observed",
-        "post_baseline_authority_operation_count",
-    }:
-        raise OwnerLauncherError("cloud_sql_reconciliation_evidence_invalid")
-    ambiguity = value.get("mutation_ambiguity_observed")
-    proven = value.get("reconciliation_proven")
-    digest = value.get("reconciliation_evidence_sha256")
-    quiet = value.get("quiet_window_seconds")
-    candidate_observed = value.get("response_known_candidate_observed")
-    operation_count = value.get("post_baseline_authority_operation_count")
-    if (
-        type(ambiguity) is not bool
-        or type(proven) is not bool
-        or (
-            proven
-            and (
-                not isinstance(digest, str)
-                or _SHA256.fullmatch(digest) is None
-                or not isinstance(quiet, (int, float))
-                or isinstance(quiet, bool)
-                or quiet <= 0
-                or type(candidate_observed) is not bool
-                or type(operation_count) is not int
-                or operation_count < 0
-                or candidate_observed
-                and operation_count < 1
-            )
-        )
-        or (
-            not proven
-            and (
-                digest is not None
-                or quiet is not None
-                or candidate_observed is not None
-                or operation_count is not None
-            )
-        )
-    ):
-        raise OwnerLauncherError("cloud_sql_reconciliation_evidence_invalid")
-    return value
-
-
-def _adopt_sql_reconciliation_evidence(
-    state: _RecoveryAttemptState,
-    evidence: Mapping[str, Any],
-) -> None:
-    state.admin_mutation_ambiguity_observed |= bool(
-        evidence["mutation_ambiguity_observed"]
-    )
-    if evidence["reconciliation_proven"] is True:
-        state.admin_reconciliation_performed = True
-        state.admin_reconciliation_evidence_sha256 = str(
-            evidence["reconciliation_evidence_sha256"]
-        )
-        state.admin_reconciliation_quiet_window_seconds = float(
-            evidence["quiet_window_seconds"]
-        )
-        state.admin_response_known_candidate_observed = bool(
-            evidence["response_known_candidate_observed"]
-        )
-        state.admin_post_baseline_authority_operation_count = int(
-            evidence["post_baseline_authority_operation_count"]
-        )
-
-
 class _OwnerLaunchSignal(BaseException):
     pass
 
@@ -1352,6 +1007,412 @@ def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
 
 
+def _wipe(value: bytearray | None) -> None:
+    """Best-effort in-place clearing for caller-owned secret material."""
+
+    if value is not None:
+        value[:] = b"\x00" * len(value)
+
+
+def build_discord_frame(token: bytearray) -> bytearray:
+    if (
+        not isinstance(token, bytearray)
+        or not token
+        or len(token) > _DISCORD_TOKEN_MAX_BYTES
+        or b"\x00" in token
+        or any(value < 0x20 or value == 0x7F for value in token)
+    ):
+        raise OwnerLauncherError("invalid_discord_token")
+    frame = bytearray(DISCORD_FRAME_MAGIC)
+    frame.extend(struct.pack(">I", len(token)))
+    frame.extend(token)
+    return frame
+
+
+def _new_admin_password() -> bytearray:
+    """Create a mutable high-entropy credential for the bounded Phase-B edge."""
+
+    return bytearray(
+        base64.urlsafe_b64encode(secrets.token_bytes(_ADMIN_PASSWORD_BYTES))
+    )
+
+
+def _ssh_wire_string(value: bytes) -> bytes:
+    return struct.pack(">I", len(value)) + value
+
+
+def _read_ssh_wire_string(
+    value: bytes,
+    offset: int,
+    *,
+    code: str,
+) -> tuple[bytes, int]:
+    if offset < 0 or offset + 4 > len(value):
+        raise OwnerLauncherError(code)
+    length = struct.unpack(">I", value[offset : offset + 4])[0]
+    start = offset + 4
+    end = start + length
+    if length > PHASE_B_MAX_PUBLIC_KEY_BYTES or end > len(value):
+        raise OwnerLauncherError(code)
+    return value[start:end], end
+
+
+def _phase_b_key_file_identity(
+    path: Path,
+    *,
+    mode: int,
+    maximum: int,
+    code: str,
+) -> os.stat_result:
+    """Attest one exact owner key file without opening private material."""
+
+    if not path.is_absolute() or path.name in {"", ".", ".."}:
+        raise OwnerLauncherError(code)
+    try:
+        parent = path.parent.lstat()
+        item = path.lstat()
+        resolved_parent = path.parent.resolve(strict=True)
+    except (OSError, RuntimeError):
+        raise OwnerLauncherError(code) from None
+    current_uid = os.geteuid()
+    if (
+        resolved_parent != path.parent
+        or not stat.S_ISDIR(parent.st_mode)
+        or stat.S_ISLNK(parent.st_mode)
+        or parent.st_uid != current_uid
+        or stat.S_IMODE(parent.st_mode) & 0o022
+        or not stat.S_ISREG(item.st_mode)
+        or stat.S_ISLNK(item.st_mode)
+        or item.st_uid != current_uid
+        or item.st_nlink != 1
+        or stat.S_IMODE(item.st_mode) != mode
+        or not 1 <= item.st_size <= maximum
+    ):
+        raise OwnerLauncherError(code)
+    return item
+
+
+def _phase_b_stat_identity(value: os.stat_result) -> tuple[int, ...]:
+    return (
+        value.st_dev,
+        value.st_ino,
+        value.st_mode,
+        value.st_nlink,
+        value.st_uid,
+        value.st_gid,
+        value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
+    )
+
+
+@dataclass(frozen=True)
+class _PhaseBOwnerPublicAuthority:
+    public_key_ed25519_hex: str
+    key_id: str
+    public_key_file_sha256: str
+    public_fingerprint: str
+    public_key_source: Mapping[str, Any]
+    _public_blob: bytes = field(repr=False, compare=True)
+    _public_item_identity: tuple[int, ...] = field(repr=False, compare=True)
+    _private_item_identity: tuple[int, ...] = field(repr=False, compare=True)
+
+    def to_mapping(self) -> Mapping[str, Any]:
+        return {
+            "public_key_ed25519_hex": self.public_key_ed25519_hex,
+            "key_id": self.key_id,
+            "public_key_file_sha256": self.public_key_file_sha256,
+            "public_fingerprint": self.public_fingerprint,
+            "public_key_source": copy.deepcopy(dict(self.public_key_source)),
+        }
+
+
+class _PhaseBOwnerExternalSigner:
+    """Use fixed OpenSSH signing without ever loading the private key in Python."""
+
+    def __init__(
+        self,
+        *,
+        private_key_path: Path = PHASE_B_OWNER_PRIVATE_KEY_PATH,
+        public_key_path: Path = PHASE_B_OWNER_PUBLIC_KEY_PATH,
+        expected_comment: str = PHASE_B_OWNER_PUBLIC_KEY_COMMENT,
+        expected_fingerprint: str = PHASE_B_OWNER_PUBLIC_KEY_FINGERPRINT,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        if (
+            not isinstance(private_key_path, Path)
+            or not isinstance(public_key_path, Path)
+            or not isinstance(expected_comment, str)
+            or not expected_comment
+            or not isinstance(expected_fingerprint, str)
+            or re.fullmatch(r"SHA256:[A-Za-z0-9+/]{43}", expected_fingerprint)
+            is None
+            or not callable(clock)
+        ):
+            raise OwnerLauncherError("phase_b_owner_signer_config_invalid")
+        self._private_key_path = private_key_path
+        self._public_key_path = public_key_path
+        self._expected_comment = expected_comment
+        self._expected_fingerprint = expected_fingerprint
+        self._clock = clock
+
+    def inspect(self) -> _PhaseBOwnerPublicAuthority:
+        private_item = _phase_b_key_file_identity(
+            self._private_key_path,
+            mode=0o600,
+            maximum=64 * 1024,
+            code="phase_b_owner_private_key_untrusted",
+        )
+        public_item = _phase_b_key_file_identity(
+            self._public_key_path,
+            mode=0o600,
+            maximum=PHASE_B_MAX_PUBLIC_KEY_BYTES,
+            code="phase_b_owner_public_key_untrusted",
+        )
+        flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(
+            os, "O_NOFOLLOW", 0
+        )
+        try:
+            descriptor = os.open(self._public_key_path, flags)
+            try:
+                opened = os.fstat(descriptor)
+                if _phase_b_stat_identity(opened) != _phase_b_stat_identity(
+                    public_item
+                ):
+                    raise OwnerLauncherError(
+                        "phase_b_owner_public_key_untrusted"
+                    )
+                raw = os.read(descriptor, PHASE_B_MAX_PUBLIC_KEY_BYTES + 1)
+                if os.read(descriptor, 1):
+                    raise OwnerLauncherError(
+                        "phase_b_owner_public_key_untrusted"
+                    )
+            finally:
+                os.close(descriptor)
+        except OwnerLauncherError:
+            raise
+        except OSError:
+            raise OwnerLauncherError("phase_b_owner_public_key_untrusted") from None
+        if (
+            not raw
+            or len(raw) > PHASE_B_MAX_PUBLIC_KEY_BYTES
+            or not raw.endswith(b"\n")
+            or b"\r" in raw
+            or raw.count(b"\n") != 1
+        ):
+            raise OwnerLauncherError("phase_b_owner_public_key_untrusted")
+        try:
+            line = raw[:-1].decode("ascii", errors="strict")
+            pieces = line.split(" ")
+            if len(pieces) != 3 or any(not piece for piece in pieces):
+                raise ValueError("invalid public key line")
+            key_type, encoded, comment = pieces
+            public_blob = base64.b64decode(encoded, validate=True)
+        except (UnicodeError, ValueError):
+            raise OwnerLauncherError("phase_b_owner_public_key_untrusted") from None
+        try:
+            blob_type, offset = _read_ssh_wire_string(
+                public_blob,
+                0,
+                code="phase_b_owner_public_key_untrusted",
+            )
+            public_bytes, offset = _read_ssh_wire_string(
+                public_blob,
+                offset,
+                code="phase_b_owner_public_key_untrusted",
+            )
+        except OwnerLauncherError:
+            raise
+        if (
+            key_type != "ssh-ed25519"
+            or blob_type != b"ssh-ed25519"
+            or offset != len(public_blob)
+            or len(public_bytes) != 32
+            or comment != self._expected_comment
+        ):
+            raise OwnerLauncherError("phase_b_owner_public_key_untrusted")
+        fingerprint = "SHA256:" + base64.b64encode(
+            hashlib.sha256(public_blob).digest()
+        ).decode("ascii").rstrip("=")
+        if fingerprint != self._expected_fingerprint:
+            raise OwnerLauncherError("phase_b_owner_public_key_untrusted")
+        file_sha256 = _sha256(raw)
+        return _PhaseBOwnerPublicAuthority(
+            public_key_ed25519_hex=public_bytes.hex(),
+            key_id=_sha256(public_bytes),
+            public_key_file_sha256=file_sha256,
+            public_fingerprint=fingerprint,
+            public_key_source={
+                "path": str(self._public_key_path),
+                "file_sha256": file_sha256,
+                "device": public_item.st_dev,
+                "inode": public_item.st_ino,
+                "uid": public_item.st_uid,
+                "gid": public_item.st_gid,
+                "mode": f"{stat.S_IMODE(public_item.st_mode):04o}",
+                "size": public_item.st_size,
+            },
+            _public_blob=public_blob,
+            _public_item_identity=_phase_b_stat_identity(public_item),
+            _private_item_identity=_phase_b_stat_identity(private_item),
+        )
+
+    def _run_signer(self, message: bytes, namespace: str) -> str:
+        if (
+            not isinstance(message, bytes)
+            or not message
+            or len(message) > 64 * 1024
+            or namespace
+            not in {
+                PHASE_B_APPROVAL_SSHSIG_NAMESPACE,
+                PHASE_B_SOURCE_AUTH_SSHSIG_NAMESPACE,
+            }
+        ):
+            raise OwnerLauncherError("phase_b_owner_signing_request_invalid")
+        try:
+            executable = PHASE_B_SSH_KEYGEN.lstat()
+        except OSError:
+            raise OwnerLauncherError("phase_b_owner_signer_unavailable") from None
+        if (
+            not stat.S_ISREG(executable.st_mode)
+            or stat.S_ISLNK(executable.st_mode)
+            or executable.st_uid != 0
+            or stat.S_IMODE(executable.st_mode) & 0o022
+        ):
+            raise OwnerLauncherError("phase_b_owner_signer_untrusted")
+        argv = [
+            str(PHASE_B_SSH_KEYGEN),
+            "-Y",
+            "sign",
+            "-q",
+            "-f",
+            str(self._private_key_path),
+            "-n",
+            namespace,
+        ]
+        try:
+            process = subprocess.Popen(
+                argv,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env={
+                    "PATH": "/usr/bin:/bin",
+                    "LANG": "C",
+                    "LC_ALL": "C",
+                },
+                close_fds=True,
+                shell=False,
+            )
+        except OSError:
+            raise OwnerLauncherError("phase_b_owner_signer_unavailable") from None
+        if process.stdin is None or process.stdout is None:
+            process.kill()
+            process.wait()
+            raise OwnerLauncherError("phase_b_owner_signer_unavailable")
+        selector = selectors.DefaultSelector()
+        stdin_fd = process.stdin.fileno()
+        stdout_fd = process.stdout.fileno()
+        output = bytearray()
+        input_offset = 0
+        deadline = self._clock() + PHASE_B_SIGN_TIMEOUT_SECONDS
+        try:
+            os.set_blocking(stdin_fd, False)
+            os.set_blocking(stdout_fd, False)
+            selector.register(stdin_fd, selectors.EVENT_WRITE, "stdin")
+            selector.register(stdout_fd, selectors.EVENT_READ, "stdout")
+            stdout_open = True
+            stdin_open = True
+            while stdout_open or process.poll() is None:
+                remaining = deadline - self._clock()
+                if remaining <= 0:
+                    raise OwnerLauncherError("phase_b_owner_signer_timeout")
+                events = selector.select(min(remaining, 0.25))
+                for key, _mask in events:
+                    if key.data == "stdin" and stdin_open:
+                        try:
+                            written = os.write(stdin_fd, message[input_offset:])
+                        except BlockingIOError:
+                            continue
+                        except BrokenPipeError:
+                            raise OwnerLauncherError(
+                                "phase_b_owner_signer_failed"
+                            ) from None
+                        input_offset += written
+                        if input_offset == len(message):
+                            selector.unregister(stdin_fd)
+                            process.stdin.close()
+                            stdin_open = False
+                    elif key.data == "stdout" and stdout_open:
+                        try:
+                            chunk = os.read(stdout_fd, 1024)
+                        except BlockingIOError:
+                            continue
+                        if not chunk:
+                            selector.unregister(stdout_fd)
+                            stdout_open = False
+                            continue
+                        output.extend(chunk)
+                        if len(output) > PHASE_B_MAX_SSHSIG_BYTES:
+                            raise OwnerLauncherError(
+                                "phase_b_owner_signature_oversized"
+                            )
+            remaining = deadline - self._clock()
+            if remaining <= 0:
+                raise OwnerLauncherError("phase_b_owner_signer_timeout")
+            return_code = process.wait(timeout=remaining)
+            if return_code != 0 or input_offset != len(message):
+                raise OwnerLauncherError("phase_b_owner_signer_failed")
+        except OwnerLauncherError:
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            raise
+        except (OSError, subprocess.SubprocessError):
+            if process.poll() is None:
+                process.kill()
+            process.wait()
+            raise OwnerLauncherError("phase_b_owner_signer_failed") from None
+        finally:
+            selector.close()
+            if not process.stdin.closed:
+                process.stdin.close()
+            process.stdout.close()
+        try:
+            return bytes(output).decode("ascii", errors="strict")
+        except UnicodeError:
+            raise OwnerLauncherError("phase_b_owner_signature_invalid") from None
+
+    def sign(
+        self,
+        message: bytes,
+        *,
+        namespace: str,
+        expected_authority: _PhaseBOwnerPublicAuthority,
+    ) -> str:
+        if not isinstance(expected_authority, _PhaseBOwnerPublicAuthority):
+            raise OwnerLauncherError("phase_b_owner_authority_unbound")
+        before = self.inspect()
+        if before != expected_authority:
+            raise OwnerLauncherError("phase_b_owner_key_changed")
+        signature = self._run_signer(message, namespace)
+        after = self.inspect()
+        if after != before:
+            raise OwnerLauncherError("phase_b_owner_key_changed")
+        from gateway import canonical_writer_foundation_phase_b as phase_b
+
+        try:
+            phase_b.verify_phase_b_sshsig(
+                signature,
+                message=message,
+                public_key_ed25519_hex=before.public_key_ed25519_hex,
+                namespace=namespace,
+            )
+        except (TypeError, ValueError) as exc:
+            raise OwnerLauncherError("phase_b_owner_signature_invalid") from exc
+        return signature
+
+
 def _object_without_duplicate_keys(
     pairs: list[tuple[str, Any]],
 ) -> dict[str, Any]:
@@ -1383,57 +1444,190 @@ def _decode_json_object(raw: bytes, *, maximum: int) -> Mapping[str, Any]:
     return value
 
 
+def _decode_json_value(raw: bytes, *, maximum: int) -> Any:
+    if not isinstance(raw, bytes) or not raw or len(raw) > maximum:
+        raise OwnerLauncherError("invalid_json")
+    try:
+        return json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_object_without_duplicate_keys,
+            parse_constant=lambda _value: (_ for _ in ()).throw(
+                OwnerLauncherError("invalid_json")
+            ),
+        )
+    except OwnerLauncherError:
+        raise
+    except (UnicodeDecodeError, json.JSONDecodeError, ValueError, TypeError):
+        raise OwnerLauncherError("invalid_json") from None
+
+
+def _canary_iam_read_only_inventory() -> frozenset[tuple[str, ...]]:
+    """Exact logical argv accepted from the three reviewed collectors."""
+
+    project = f"--project={PROJECT}"
+    service_account = (
+        "muncho-canary-v2-runtime@adventico-ai-platform.iam.gserviceaccount.com"
+    )
+    network = "muncho-canary-vpc"
+    subnet = "muncho-canary-europe-west3"
+    return frozenset({
+        ("gcloud", "auth", "list", "--filter=status:ACTIVE", "--format=json"),
+        ("gcloud", "iam", "service-accounts", "list", project, "--format=json"),
+        ("gcloud", "iam", "roles", "list", project, "--format=json"),
+        (
+            "gcloud",
+            "iam",
+            "roles",
+            "describe",
+            "munchoCanaryCloudSqlReadinessV1",
+            project,
+            "--format=json",
+        ),
+        ("gcloud", "sql", "instances", "list", project, "--format=json"),
+        ("gcloud", "compute", "networks", "list", project, "--format=json"),
+        (
+            "gcloud",
+            "compute",
+            "networks",
+            "subnets",
+            "list",
+            project,
+            "--format=json",
+        ),
+        (
+            "gcloud",
+            "compute",
+            "addresses",
+            "list",
+            "--global",
+            project,
+            "--format=json",
+        ),
+        ("gcloud", "services", "list", "--enabled", project, "--format=json"),
+        ("gcloud", "secrets", "list", project, "--format=json"),
+        ("gcloud", "projects", "get-iam-policy", PROJECT, "--format=json"),
+        (
+            "gcloud",
+            "compute",
+            "networks",
+            "describe",
+            network,
+            project,
+            "--format=json",
+        ),
+        ("gcloud", "compute", "routes", "list", project, "--format=json"),
+        (
+            "gcloud",
+            "services",
+            "vpc-peerings",
+            "list",
+            f"--network={network}",
+            "--service=servicenetworking.googleapis.com",
+            project,
+            "--format=json",
+        ),
+        (
+            "gcloud",
+            "compute",
+            "networks",
+            "subnets",
+            "describe",
+            subnet,
+            "--region=europe-west3",
+            project,
+            "--format=json",
+        ),
+        (
+            "gcloud",
+            "iam",
+            "service-accounts",
+            "keys",
+            "list",
+            f"--iam-account={service_account}",
+            project,
+            "--format=json",
+        ),
+        (
+            "gcloud",
+            "sql",
+            "instances",
+            "describe",
+            SQL_INSTANCE,
+            project,
+            "--format=json",
+        ),
+        (
+            "gcloud",
+            "sql",
+            "databases",
+            "list",
+            f"--instance={SQL_INSTANCE}",
+            project,
+            "--format=json",
+        ),
+        (
+            "gcloud",
+            "iam",
+            "service-accounts",
+            "describe",
+            service_account,
+            project,
+            "--format=json",
+        ),
+        (
+            "gcloud",
+            "compute",
+            "firewall-rules",
+            "list",
+            project,
+            "--format=json",
+        ),
+        (
+            "gcloud",
+            "compute",
+            "networks",
+            "get-effective-firewalls",
+            network,
+            project,
+            "--format=json",
+        ),
+        ("gcloud", "compute", "instances", "list", project, "--format=json"),
+        (
+            "gcloud",
+            "compute",
+            "images",
+            "describe",
+            "debian-12-bookworm-v20260609",
+            "--project=debian-cloud",
+            "--format=json",
+        ),
+        (
+            "gcloud",
+            "compute",
+            "instances",
+            "describe",
+            VM_NAME,
+            f"--zone={ZONE}",
+            project,
+            "--format=json",
+        ),
+        (
+            "gcloud",
+            "compute",
+            "disks",
+            "describe",
+            VM_NAME,
+            f"--zone={ZONE}",
+            project,
+            "--format=json",
+        ),
+    })
+
+
 def _require_sha256(value: object, code: str) -> str:
     if not isinstance(value, str) or not _SHA256.fullmatch(value):
         raise OwnerLauncherError(code)
     return value
-
-
-def validate_owner_launch_gate(
-    gate: Mapping[str, Any],
-    *,
-    expected_release_sha: str,
-    now_unix: int,
-) -> Mapping[str, Any]:
-    """Validate the exact read-only approval gate before any mutation."""
-
-    if not _RELEASE_SHA.fullmatch(expected_release_sha):
-        raise OwnerLauncherError("invalid_release_sha")
-    if type(now_unix) is not int or now_unix < 0:
-        raise OwnerLauncherError("invalid_clock")
-    if not isinstance(gate, Mapping) or set(gate) != _OWNER_GATE_KEYS:
-        raise OwnerLauncherError("invalid_owner_gate")
-    if (
-        gate.get("schema") != OWNER_GATE_SCHEMA
-        or gate.get("ok") is not True
-        or gate.get("state") != "credential_prepare_authorized"
-        or gate.get("release_sha") != expected_release_sha
-        or gate.get("database_host") != DATABASE_HOST
-        or gate.get("database_port") != DATABASE_PORT
-        or gate.get("database_name") != DATABASE_NAME
-    ):
-        raise OwnerLauncherError("invalid_owner_gate")
-    _require_sha256(gate.get("coordinator_input_sha256"), "invalid_owner_gate")
-    _require_sha256(gate.get("owner_subject_sha256"), "invalid_owner_gate")
-    approval_sha = _require_sha256(
-        gate.get("credential_prepare_approval_sha256"), "invalid_owner_gate"
-    )
-    expected_username = f"{ADMIN_USERNAME_PREFIX}{approval_sha[:16]}"
-    if gate.get("admin_username") != expected_username:
-        raise OwnerLauncherError("invalid_owner_gate")
-    expires = gate.get("expires_at_unix")
-    if (
-        type(expires) is not int
-        or expires <= now_unix
-        or expires - now_unix > _GATE_MAX_FUTURE_SECONDS
-    ):
-        raise OwnerLauncherError("stale_owner_gate")
-    gate_sha = _require_sha256(gate.get("gate_sha256"), "invalid_owner_gate")
-    unsigned = dict(gate)
-    del unsigned["gate_sha256"]
-    if gate_sha != _sha256(_canonical_bytes(unsigned)):
-        raise OwnerLauncherError("invalid_owner_gate")
-    return dict(gate)
 
 
 def _validate_self_digest(
@@ -1783,1245 +1977,6 @@ def build_discord_retirement_ack_frame(ack: Mapping[str, Any]) -> bytes:
     )
 
 
-def validate_recovery_gate(
-    gate: Mapping[str, Any],
-    *,
-    expected_release_sha: str,
-    owner_gate: Mapping[str, Any] | None,
-    now_unix: int,
-) -> Mapping[str, Any]:
-    value = _validate_self_digest(
-        gate,
-        expected_keys=_RECOVERY_GATE_KEYS,
-        digest_key="gate_sha256",
-        code="invalid_recovery_gate",
-    )
-    approval_sha = value.get("credential_prepare_approval_sha256")
-    expires = value.get("expires_at_unix")
-    module_origin = value.get("target_module_origin")
-    discord_token_state = value.get("discord_token_state")
-    discord_retirement_sha = value.get("discord_retirement_receipt_sha256")
-    token_identity = (value.get("token_device"), value.get("token_inode"))
-    token_identity_materialized = (
-        type(token_identity[0]) is int
-        and token_identity[0] > 0
-        and type(token_identity[1]) is int
-        and token_identity[1] > 0
-    )
-    token_identity_retired = token_identity == (None, None) or (
-        token_identity_materialized
-    )
-    module_pattern = re.compile(
-        rf"^/opt/muncho-canary-releases/{re.escape(expected_release_sha)}/"
-        r"venv/lib/python3\.[0-9]+/site-packages/gateway/"
-        r"canonical_full_canary_coordinator\.py$"
-    )
-    if (
-        value.get("schema") != RECOVERY_GATE_SCHEMA
-        or value.get("ok") is not True
-        or value.get("state") != "awaiting_owner_recovery_takeover_ack"
-        or value.get("release_sha") != expected_release_sha
-        or not isinstance(approval_sha, str)
-        or _SHA256.fullmatch(approval_sha) is None
-        or value.get("ephemeral_admin_username")
-        != f"{ADMIN_USERNAME_PREFIX}{approval_sha[:16]}"
-        or value.get("predecessor_kind")
-        not in {"run_process_lease", "recovery_worker_lease"}
-        or value.get("predecessor_schema")
-        not in {
-            "muncho-full-canary-coordinator-process-lease.v1",
-            "muncho-full-canary-recovery-worker-lease.v1",
-        }
-        or type(value.get("predecessor_generation")) is not int
-        or value["predecessor_generation"] < 0
-        or value.get("predecessor_kind") == "run_process_lease"
-        and (
-            value.get("predecessor_schema")
-            != "muncho-full-canary-coordinator-process-lease.v1"
-            or value["predecessor_generation"] != 0
-        )
-        or value.get("predecessor_kind") == "recovery_worker_lease"
-        and (
-            value.get("predecessor_schema") != RECOVERY_WORKER_LEASE_SCHEMA
-            or value["predecessor_generation"] < 1
-        )
-        or type(value.get("target_pid")) is not int
-        or value["target_pid"] <= 1
-        or type(value.get("target_process_start_time_ticks")) is not int
-        or value["target_process_start_time_ticks"] <= 0
-        or type(value.get("target_boot_time_ns")) is not int
-        or value["target_boot_time_ns"] < 0
-        or value.get("target_uid") != 0
-        or value.get("target_gid") != 0
-        or value.get("target_process_identity_state")
-        not in {"exact_alive", "not_alive"}
-        or discord_token_state not in {"installed", "retirement_prepared", "retired"}
-        or discord_token_state == "installed"
-        and (discord_retirement_sha is not None or not token_identity_materialized)
-        or discord_token_state == "retirement_prepared"
-        and (
-            not token_identity_retired
-            or not isinstance(discord_retirement_sha, str)
-            or _SHA256.fullmatch(discord_retirement_sha) is None
-        )
-        or discord_token_state == "retired"
-        and (
-            not token_identity_retired
-            or not isinstance(discord_retirement_sha, str)
-            or _SHA256.fullmatch(discord_retirement_sha) is None
-        )
-        or value.get("db_secret_accepted") is not False
-        or value.get("frame_schema") != RECOVERY_ACK_FRAME_SCHEMA
-        or not isinstance(module_origin, str)
-        or module_pattern.fullmatch(module_origin) is None
-        or type(value.get("observed_at_unix")) is not int
-        or type(expires) is not int
-        or not value["observed_at_unix"] <= now_unix < expires
-        or expires - value["observed_at_unix"] > 300
-    ):
-        raise OwnerLauncherError("invalid_recovery_gate")
-    for name in (
-        "coordinator_input_sha256",
-        "owner_subject_sha256",
-        "predecessor_journal_sha256",
-        "original_run_process_lease_sha256",
-        "causal_recovery_state_sha256",
-        "discord_token_install_receipt_sha256",
-        "target_boot_id_sha256",
-        "target_module_sha256",
-        "target_process_exe_sha256",
-        "target_process_cmdline_sha256",
-    ):
-        _require_sha256(value.get(name), "invalid_recovery_gate")
-    if owner_gate is not None and (
-        value.get("coordinator_input_sha256")
-        != owner_gate.get("coordinator_input_sha256")
-        or approval_sha != owner_gate.get("credential_prepare_approval_sha256")
-        or value.get("owner_subject_sha256") != owner_gate.get("owner_subject_sha256")
-        or value.get("ephemeral_admin_username") != owner_gate.get("admin_username")
-    ):
-        raise OwnerLauncherError("invalid_recovery_gate")
-    return value
-
-
-def build_recovery_ack(
-    gate: Mapping[str, Any],
-    *,
-    now_unix: int,
-    nonce: bytes | None = None,
-) -> Mapping[str, Any]:
-    nonce_value = secrets.token_bytes(32) if nonce is None else nonce
-    if not isinstance(nonce_value, bytes) or len(nonce_value) < 16:
-        raise OwnerLauncherError("invalid_recovery_ack")
-    observed_at = gate.get("observed_at_unix")
-    if type(observed_at) is not int or now_unix < observed_at:
-        raise OwnerLauncherError("invalid_recovery_ack")
-    expires = min(int(gate["expires_at_unix"]), now_unix + 300)
-    if expires <= now_unix:
-        raise OwnerLauncherError("invalid_recovery_ack")
-    unsigned = {
-        "schema": RECOVERY_ACK_SCHEMA,
-        "scope": "terminate_exact_recovery_predecessor_and_claim_worker",
-        "release_sha": gate["release_sha"],
-        "coordinator_input_sha256": gate["coordinator_input_sha256"],
-        "credential_prepare_approval_sha256": gate[
-            "credential_prepare_approval_sha256"
-        ],
-        "owner_subject_sha256": gate["owner_subject_sha256"],
-        "ephemeral_admin_username": gate["ephemeral_admin_username"],
-        "predecessor_kind": gate["predecessor_kind"],
-        "predecessor_schema": gate["predecessor_schema"],
-        "predecessor_journal_sha256": gate["predecessor_journal_sha256"],
-        "predecessor_generation": gate["predecessor_generation"],
-        "original_run_process_lease_sha256": gate["original_run_process_lease_sha256"],
-        "causal_recovery_state_sha256": gate["causal_recovery_state_sha256"],
-        "target_pid": gate["target_pid"],
-        "target_process_start_time_ticks": gate["target_process_start_time_ticks"],
-        "target_boot_id_sha256": gate["target_boot_id_sha256"],
-        "target_boot_time_ns": gate["target_boot_time_ns"],
-        "target_uid": gate["target_uid"],
-        "target_gid": gate["target_gid"],
-        "target_module_origin": gate["target_module_origin"],
-        "target_module_sha256": gate["target_module_sha256"],
-        "target_process_exe_sha256": gate["target_process_exe_sha256"],
-        "target_process_cmdline_sha256": gate["target_process_cmdline_sha256"],
-        "target_process_identity_state": gate["target_process_identity_state"],
-        "discord_token_state": gate["discord_token_state"],
-        "discord_token_install_receipt_sha256": gate[
-            "discord_token_install_receipt_sha256"
-        ],
-        "discord_retirement_receipt_sha256": gate["discord_retirement_receipt_sha256"],
-        "token_device": gate["token_device"],
-        "token_inode": gate["token_inode"],
-        "recovery_takeover_gate_sha256": gate["gate_sha256"],
-        "nonce_sha256": _sha256(nonce_value),
-        "approved_at_unix": now_unix,
-        "expires_at_unix": expires,
-    }
-    return {**unsigned, "ack_sha256": _sha256(_canonical_bytes(unsigned))}
-
-
-def build_recovery_ack_frame(
-    gate: Mapping[str, Any],
-    ack: Mapping[str, Any],
-    *,
-    password: bytearray | None = None,
-) -> bytearray:
-    if not isinstance(ack, Mapping) or set(ack) != _RECOVERY_ACK_KEYS:
-        raise OwnerLauncherError("invalid_recovery_ack")
-    expected = _require_sha256(ack.get("ack_sha256"), "invalid_recovery_ack")
-    unsigned = dict(ack)
-    del unsigned["ack_sha256"]
-    if expected != _sha256(_canonical_bytes(unsigned)):
-        raise OwnerLauncherError("invalid_recovery_ack")
-    payload = _canonical_bytes(ack)
-    frame = bytearray(RECOVERY_ACK_FRAME_MAGIC)
-    frame.extend(struct.pack(">I", len(payload)))
-    frame.extend(payload)
-    if password is not None:
-        raise OwnerLauncherError("unexpected_recovery_admin_credential")
-    if len(frame) > 128 * 1024 + 8:
-        raise OwnerLauncherError("invalid_recovery_ack")
-    return frame
-
-
-def validate_recovery_secret_gate(
-    secret_gate: Mapping[str, Any],
-    *,
-    takeover_gate: Mapping[str, Any],
-    takeover_ack: Mapping[str, Any],
-    now_unix: int,
-) -> Mapping[str, Any]:
-    value = _validate_self_digest(
-        secret_gate,
-        expected_keys=_RECOVERY_SECRET_GATE_KEYS,
-        digest_key="gate_sha256",
-        code="invalid_recovery_secret_gate",
-    )
-    module_origin = value.get("recovery_worker_module_origin")
-    expires = value.get("expires_at_unix")
-    if (
-        value.get("schema") != RECOVERY_SECRET_GATE_SCHEMA
-        or value.get("ok") is not True
-        or value.get("state") != "awaiting_recovery_admin_credential"
-        or value.get("release_sha") != takeover_gate.get("release_sha")
-        or value.get("coordinator_input_sha256")
-        != takeover_gate.get("coordinator_input_sha256")
-        or value.get("credential_prepare_approval_sha256")
-        != takeover_gate.get("credential_prepare_approval_sha256")
-        or value.get("owner_subject_sha256")
-        != takeover_gate.get("owner_subject_sha256")
-        or value.get("ephemeral_admin_username")
-        != takeover_gate.get("ephemeral_admin_username")
-        or value.get("recovery_takeover_gate_sha256")
-        != takeover_gate.get("gate_sha256")
-        or value.get("owner_recovery_takeover_ack_sha256")
-        != takeover_ack.get("ack_sha256")
-        or value.get("predecessor_kind") != takeover_gate.get("predecessor_kind")
-        or value.get("predecessor_journal_sha256")
-        != takeover_gate.get("predecessor_journal_sha256")
-        or value.get("predecessor_generation")
-        != takeover_gate.get("predecessor_generation")
-        or value.get("original_run_process_lease_sha256")
-        != takeover_gate.get("original_run_process_lease_sha256")
-        or value.get("causal_recovery_state_sha256")
-        != takeover_gate.get("causal_recovery_state_sha256")
-        or value.get("recovery_worker_state") != "admin_authority_may_be_in_use"
-        or value.get("recovery_worker_transition_seq") != 2
-        or type(value.get("recovery_worker_pid")) is not int
-        or value["recovery_worker_pid"] <= 1
-        or type(value.get("recovery_worker_process_start_time_ticks")) is not int
-        or value["recovery_worker_process_start_time_ticks"] <= 0
-        or type(value.get("recovery_worker_boot_time_ns")) is not int
-        or value["recovery_worker_boot_time_ns"] < 0
-        or value.get("recovery_worker_uid") != 0
-        or value.get("recovery_worker_gid") != 0
-        or not isinstance(module_origin, str)
-        or re.fullmatch(
-            rf"/opt/muncho-canary-releases/{re.escape(str(value['release_sha']))}/"
-            r"venv/lib/python3\.[0-9]+/site-packages/gateway/"
-            r"canonical_full_canary_coordinator\.py",
-            module_origin,
-        )
-        is None
-        or value.get("database_host") != DATABASE_HOST
-        or value.get("database_port") != DATABASE_PORT
-        or value.get("database_name") != DATABASE_NAME
-        or not isinstance(value.get("tls_server_name"), str)
-        or _TLS_SERVER_NAME.fullmatch(value["tls_server_name"]) is None
-        or value.get("admin_frame_schema") != RECOVERY_ADMIN_FRAME_SCHEMA
-        or type(expires) is not int
-        or not now_unix < expires
-        or expires > takeover_gate.get("expires_at_unix")
-        or expires > takeover_ack.get("expires_at_unix")
-    ):
-        raise OwnerLauncherError("invalid_recovery_secret_gate")
-    for name in (
-        "recovery_worker_lease_sha256",
-        "recovery_worker_boot_id_sha256",
-        "recovery_worker_module_sha256",
-        "recovery_worker_process_exe_sha256",
-        "recovery_worker_process_cmdline_sha256",
-        "tls_peer_certificate_sha256",
-        "gate_nonce_sha256",
-    ):
-        _require_sha256(value.get(name), "invalid_recovery_secret_gate")
-    return value
-
-
-def validate_recovery_concurrent_loser_receipt(
-    receipt: Mapping[str, Any],
-    *,
-    gate: Mapping[str, Any],
-    ack: Mapping[str, Any],
-    now_unix: int,
-) -> Mapping[str, Any]:
-    value = _validate_self_digest(
-        receipt,
-        expected_keys=_RECOVERY_CONCURRENT_LOSER_RECEIPT_KEYS,
-        digest_key="receipt_sha256",
-        code="invalid_recovery_concurrent_loser_receipt",
-    )
-    if (
-        value.get("schema") != RECOVERY_CONCURRENT_LOSER_RECEIPT_SCHEMA
-        or value.get("ok") is not False
-        or value.get("state") != "recovery_worker_claim_lost_no_secret"
-        or value.get("release_sha") != gate.get("release_sha")
-        or value.get("coordinator_input_sha256") != gate.get("coordinator_input_sha256")
-        or value.get("credential_prepare_approval_sha256")
-        != gate.get("credential_prepare_approval_sha256")
-        or value.get("owner_subject_sha256") != gate.get("owner_subject_sha256")
-        or value.get("ephemeral_admin_username") != gate.get("ephemeral_admin_username")
-        or value.get("recovery_takeover_gate_sha256") != gate.get("gate_sha256")
-        or value.get("owner_recovery_takeover_ack_sha256") != ack.get("ack_sha256")
-        or any(
-            value.get(receipt_name) != gate.get(gate_name)
-            for receipt_name, gate_name in (
-                ("predecessor_kind", "predecessor_kind"),
-                ("predecessor_schema", "predecessor_schema"),
-                ("predecessor_journal_sha256", "predecessor_journal_sha256"),
-                ("predecessor_generation", "predecessor_generation"),
-                (
-                    "original_run_process_lease_sha256",
-                    "original_run_process_lease_sha256",
-                ),
-                ("target_pid", "target_pid"),
-                (
-                    "target_process_start_time_ticks",
-                    "target_process_start_time_ticks",
-                ),
-                ("target_boot_id_sha256", "target_boot_id_sha256"),
-                ("target_boot_time_ns", "target_boot_time_ns"),
-                ("target_uid", "target_uid"),
-                ("target_gid", "target_gid"),
-                ("target_module_origin", "target_module_origin"),
-                ("target_module_sha256", "target_module_sha256"),
-                ("target_process_exe_sha256", "target_process_exe_sha256"),
-                (
-                    "target_process_cmdline_sha256",
-                    "target_process_cmdline_sha256",
-                ),
-            )
-        )
-        or type(value.get("target_signal_attempted_by_loser")) is not bool
-        or type(value.get("target_termination_proven_by_loser")) is not bool
-        or type(value.get("process_lock_acquired_by_loser")) is not bool
-        or type(value.get("journal_cas_attempted_by_loser")) is not bool
-        or value.get("journal_cas_succeeded_by_loser") is not False
-        or value.get("observed_successor_journal_sha256")
-        == gate.get("predecessor_journal_sha256")
-        or value.get("secret_gate_emitted_by_loser") is not False
-        or value.get("admin_frame_bytes_received_by_loser") != 0
-        or value.get("admin_session_opened_by_loser") is not False
-        or value.get("admin_credential_mutation_performed_by_loser") is not False
-        or value.get("worker_lease_published_by_loser") is not False
-        or value.get("retryable") is not True
-        or type(value.get("completed_at_unix")) is not int
-        or not 0 <= value["completed_at_unix"] <= now_unix + 30
-    ):
-        raise OwnerLauncherError("invalid_recovery_concurrent_loser_receipt")
-    for name in (
-        "observed_successor_journal_sha256",
-        "observed_successor_worker_boot_id_sha256",
-        "observed_successor_worker_module_sha256",
-        "observed_successor_worker_process_exe_sha256",
-        "observed_successor_worker_process_cmdline_sha256",
-    ):
-        _require_sha256(
-            value.get(name),
-            "invalid_recovery_concurrent_loser_receipt",
-        )
-    if (
-        not isinstance(value.get("observed_successor_schema"), str)
-        or not isinstance(value.get("observed_successor_state"), str)
-        or type(value.get("observed_successor_generation")) is not int
-        or value["observed_successor_generation"] < 1
-        or type(value.get("observed_successor_worker_pid")) is not int
-        or value["observed_successor_worker_pid"] <= 1
-        or type(value.get("observed_successor_worker_process_start_time_ticks"))
-        is not int
-        or value["observed_successor_worker_process_start_time_ticks"] <= 0
-    ):
-        raise OwnerLauncherError("invalid_recovery_concurrent_loser_receipt")
-    return value
-
-
-def validate_recovery_finalize_pending_receipt(
-    receipt: Mapping[str, Any],
-    *,
-    completion: Mapping[str, Any] | None = None,
-    expected_release_sha: str | None = None,
-    owner_gate: Mapping[str, Any] | None = None,
-    now_unix: int,
-) -> Mapping[str, Any]:
-    value = _validate_self_digest(
-        receipt,
-        expected_keys=_RECOVERY_FINALIZE_PENDING_RECEIPT_KEYS,
-        digest_key="receipt_sha256",
-        code="invalid_recovery_finalize_pending_receipt",
-    )
-    expected_release = (
-        completion.get("release_sha")
-        if completion is not None
-        else expected_release_sha
-    )
-    if (
-        not isinstance(expected_release, str)
-        or _RELEASE_SHA.fullmatch(expected_release) is None
-    ):
-        raise OwnerLauncherError("invalid_recovery_finalize_pending_receipt")
-    completion_bound = completion is not None
-    worker_identity_names = (
-        "recovery_worker_pid",
-        "recovery_worker_process_start_time_ticks",
-        "recovery_worker_boot_id_sha256",
-        "recovery_worker_boot_time_ns",
-        "recovery_worker_uid",
-        "recovery_worker_gid",
-        "recovery_worker_module_origin",
-        "recovery_worker_module_sha256",
-        "recovery_worker_process_exe_sha256",
-        "recovery_worker_process_cmdline_sha256",
-    )
-    module_origin = value.get("recovery_worker_module_origin")
-    approval_sha = value.get("credential_prepare_approval_sha256")
-    if (
-        value.get("schema") != RECOVERY_FINALIZE_PENDING_RECEIPT_SCHEMA
-        or value.get("ok") is not False
-        or value.get("state") != "recovery_finalization_pending_no_secret"
-        or value.get("release_sha") != expected_release
-        or not isinstance(approval_sha, str)
-        or _SHA256.fullmatch(approval_sha) is None
-        or value.get("ephemeral_admin_username")
-        != f"{ADMIN_USERNAME_PREFIX}{approval_sha[:16]}"
-        or completion_bound
-        and (
-            value.get("coordinator_input_sha256")
-            != completion.get("coordinator_input_sha256")
-            or approval_sha != completion.get("credential_prepare_approval_sha256")
-            or value.get("owner_subject_sha256")
-            != completion.get("owner_subject_sha256")
-            or value.get("ephemeral_admin_username")
-            != completion.get("ephemeral_admin_username")
-            or value.get("recovery_worker_completion_sha256")
-            != completion.get("completion_sha256")
-            or any(
-                value.get(name) != completion.get(name)
-                for name in worker_identity_names
-            )
-        )
-        or owner_gate is not None
-        and (
-            value.get("coordinator_input_sha256")
-            != owner_gate.get("coordinator_input_sha256")
-            or approval_sha != owner_gate.get("credential_prepare_approval_sha256")
-            or value.get("owner_subject_sha256")
-            != owner_gate.get("owner_subject_sha256")
-            or value.get("ephemeral_admin_username")
-            != owner_gate.get(
-                "admin_username",
-                owner_gate.get("ephemeral_admin_username"),
-            )
-        )
-        or type(value.get("recovery_worker_pid")) is not int
-        or value["recovery_worker_pid"] <= 1
-        or type(value.get("recovery_worker_process_start_time_ticks")) is not int
-        or value["recovery_worker_process_start_time_ticks"] <= 0
-        or type(value.get("recovery_worker_boot_time_ns")) is not int
-        or value["recovery_worker_boot_time_ns"] < 0
-        or value.get("recovery_worker_uid") != 0
-        or value.get("recovery_worker_gid") != 0
-        or not isinstance(module_origin, str)
-        or re.fullmatch(
-            rf"/opt/muncho-canary-releases/{re.escape(expected_release)}/"
-            r"venv/lib/python3\.[0-9]+/site-packages/gateway/"
-            r"canonical_full_canary_coordinator\.py",
-            module_origin,
-        )
-        is None
-        or value.get("completion_admin_authority_may_have_been_used") is not True
-        or value.get("completion_admin_frame_zeroized") is not True
-        or value.get("completion_admin_session_closed") is not True
-        or value.get("worker_identity_state") not in {"exact_alive", "not_alive"}
-        or type(value.get("target_signal_attempted_by_finalizer")) is not bool
-        or type(value.get("target_termination_proven_by_finalizer")) is not bool
-        or type(value.get("process_lock_acquired_by_finalizer")) is not bool
-        or type(value.get("completion_cas_attempted_by_finalizer")) is not bool
-        or value.get("completion_cas_succeeded_by_finalizer") is not False
-        or value.get("secret_gate_emitted_by_finalizer") is not False
-        or value.get("admin_frame_bytes_received_by_finalizer") != 0
-        or value.get("admin_session_opened_by_finalizer") is not False
-        or value.get("admin_credential_mutation_performed_by_finalizer") is not False
-        or value.get("retryable") is not True
-        or type(value.get("completed_at_unix")) is not int
-        or not 0 <= value["completed_at_unix"] <= now_unix + 30
-    ):
-        raise OwnerLauncherError("invalid_recovery_finalize_pending_receipt")
-    for name in (
-        "coordinator_input_sha256",
-        "credential_prepare_approval_sha256",
-        "owner_subject_sha256",
-        "recovery_worker_completion_sha256",
-        "recovery_worker_boot_id_sha256",
-        "recovery_worker_module_sha256",
-        "recovery_worker_process_exe_sha256",
-        "recovery_worker_process_cmdline_sha256",
-        "observed_journal_sha256",
-    ):
-        _require_sha256(
-            value.get(name),
-            "invalid_recovery_finalize_pending_receipt",
-        )
-    return value
-
-
-def _validate_original_run_process_lease(
-    lease: Any,
-    *,
-    value: Mapping[str, Any],
-    expected_release_sha: str,
-    code: str,
-) -> Mapping[str, Any]:
-    original = _validate_self_digest(
-        lease,
-        expected_keys=_ORIGINAL_RUN_PROCESS_LEASE_KEYS,
-        digest_key="lease_sha256",
-        code=code,
-    )
-    module_origin = original.get("module_origin")
-    approval_sha = original.get("credential_prepare_approval_sha256")
-    if (
-        original.get("schema") != "muncho-full-canary-coordinator-process-lease.v1"
-        or original.get("release_sha") != expected_release_sha
-        or original.get("coordinator_input_sha256")
-        != value.get("coordinator_input_sha256")
-        or approval_sha != value.get("credential_prepare_approval_sha256")
-        or original.get("owner_subject_sha256") != value.get("owner_subject_sha256")
-        or original.get("ephemeral_admin_username")
-        != value.get("ephemeral_admin_username")
-        or original.get("lease_sha256")
-        != value.get("original_run_process_lease_sha256")
-        or not isinstance(approval_sha, str)
-        or _SHA256.fullmatch(approval_sha) is None
-        or type(original.get("pid")) is not int
-        or original["pid"] <= 1
-        or type(original.get("process_start_time_ticks")) is not int
-        or original["process_start_time_ticks"] <= 0
-        or type(original.get("boot_time_ns")) is not int
-        or original["boot_time_ns"] < 0
-        or type(original.get("created_at_unix")) is not int
-        or original["created_at_unix"] < 0
-        or not isinstance(module_origin, str)
-        or re.fullmatch(
-            rf"/opt/muncho-canary-releases/{re.escape(expected_release_sha)}/"
-            r"venv/lib/python3\.[0-9]+/site-packages/gateway/"
-            r"canonical_full_canary_coordinator\.py",
-            module_origin,
-        )
-        is None
-    ):
-        raise OwnerLauncherError(code)
-    for name in (
-        "coordinator_input_sha256",
-        "credential_prepare_approval_sha256",
-        "owner_subject_sha256",
-        "boot_id_sha256",
-        "module_sha256",
-        "process_exe_sha256",
-        "process_cmdline_sha256",
-    ):
-        _require_sha256(original.get(name), code)
-    return original
-
-
-def _validate_recovery_cleanup_matrix(
-    value: Mapping[str, Any],
-    *,
-    expected_release_sha: str,
-    now_unix: int,
-    final: bool,
-    require_fresh: bool,
-    code: str,
-) -> None:
-    canonical_stop = value.get("canonical_stop_receipt_sha256")
-    preplan_stop = value.get("preplan_stopped_report_sha256")
-    preclaim_digest = value.get("preclaim_reconciliation_receipt_sha256")
-    preclaim_state = value.get("preclaim_reconciliation_state")
-    approval_sha = value.get("credential_prepare_approval_sha256")
-    _validate_original_run_process_lease(
-        value.get("original_run_process_lease"),
-        value=value,
-        expected_release_sha=expected_release_sha,
-        code=code,
-    )
-    if (
-        value.get("release_sha") != expected_release_sha
-        or not isinstance(approval_sha, str)
-        or _SHA256.fullmatch(approval_sha) is None
-        or value.get("ephemeral_admin_username")
-        != f"{ADMIN_USERNAME_PREFIX}{approval_sha[:16]}"
-        or value.get("predecessor_kind")
-        not in {"run_process_lease", "recovery_worker_lease"}
-        or type(value.get("predecessor_generation")) is not int
-        or type(value.get("recovery_generation")) is not int
-        or value["predecessor_generation"] < 0
-        or value.get("predecessor_kind") == "run_process_lease"
-        and value["predecessor_generation"] != 0
-        or value.get("predecessor_kind") == "recovery_worker_lease"
-        and value["predecessor_generation"] < 1
-        or value["recovery_generation"] != value["predecessor_generation"] + 1
-        or type(value.get("recovery_worker_pid")) is not int
-        or value["recovery_worker_pid"] <= 1
-        or type(value.get("recovery_worker_process_start_time_ticks")) is not int
-        or value["recovery_worker_process_start_time_ticks"] <= 0
-        or type(value.get("recovery_worker_boot_time_ns")) is not int
-        or value["recovery_worker_boot_time_ns"] < 0
-        or value.get("recovery_worker_uid") != 0
-        or value.get("recovery_worker_gid") != 0
-        or not isinstance(value.get("recovery_worker_module_origin"), str)
-        or re.fullmatch(
-            rf"/opt/muncho-canary-releases/{re.escape(expected_release_sha)}/"
-            r"venv/lib/python3\.[0-9]+/site-packages/gateway/"
-            r"canonical_full_canary_coordinator\.py",
-            value["recovery_worker_module_origin"],
-        )
-        is None
-        or (canonical_stop is None) == (preplan_stop is None)
-        or any(
-            value.get(name) is not True
-            for name in (
-                "predecessor_termination_proven",
-                "predecessor_process_lock_acquired",
-                "predecessor_journal_replaced",
-                "admin_frame_zeroized",
-                "admin_session_closed",
-                "migration_owner_membership_removed",
-                "bootstrap_login_password_disabled",
-                "bootstrap_credential_removed",
-                "discord_token_removed",
-                "discord_install_receipt_removed",
-                "services_stopped_proven",
-            )
-        )
-        or value.get("services_enabled") is not False
-        or value.get("recovery_worker_exit_proven") is not final
-        or value.get("safe_to_delete_temporary_admin") is not final
-    ):
-        raise OwnerLauncherError(code)
-    for name in (
-        "coordinator_input_sha256",
-        "owner_subject_sha256",
-        "original_run_process_lease_sha256",
-        "causal_recovery_state_sha256",
-        "predecessor_journal_sha256",
-        "recovery_takeover_gate_sha256",
-        "owner_recovery_takeover_ack_sha256",
-        "recovery_worker_lease_sha256",
-        "recovery_worker_boot_id_sha256",
-        "recovery_worker_module_sha256",
-        "recovery_worker_process_exe_sha256",
-        "recovery_worker_process_cmdline_sha256",
-        "discord_retirement_receipt_sha256",
-    ):
-        _require_sha256(value.get(name), code)
-    for digest in (canonical_stop, preplan_stop):
-        if digest is not None:
-            _require_sha256(digest, code)
-    if preplan_stop is not None:
-        if preclaim_digest is not None or preclaim_state is not None:
-            raise OwnerLauncherError(code)
-    else:
-        _require_sha256(preclaim_digest, code)
-        if preclaim_state not in {"retired", "claimed", "not_preapproved"}:
-            raise OwnerLauncherError(code)
-    completed = value.get("cleanup_completed_at_unix")
-    if (
-        type(completed) is not int
-        or completed < 0
-        or completed > now_unix + 30
-        or require_fresh
-        and now_unix - completed > _GATE_MAX_FUTURE_SECONDS
-    ):
-        raise OwnerLauncherError(code)
-
-
-def validate_recovery_worker_completion(
-    completion: Mapping[str, Any],
-    *,
-    gate: Mapping[str, Any],
-    ack: Mapping[str, Any],
-    secret_gate: Mapping[str, Any],
-    password: bytearray,
-    now_unix: int,
-) -> Mapping[str, Any]:
-    _reject_secret_echo(
-        completion,
-        active_secrets=(password,),
-        code="invalid_recovery_worker_completion",
-    )
-    value = _validate_self_digest(
-        completion,
-        expected_keys=_RECOVERY_WORKER_COMPLETION_KEYS,
-        digest_key="completion_sha256",
-        code="invalid_recovery_worker_completion",
-    )
-    if (
-        value.get("schema") != RECOVERY_WORKER_COMPLETION_SCHEMA
-        or value.get("ok") is not False
-        or value.get("state") != "cleanup_complete_awaiting_worker_exit"
-        or value.get("coordinator_input_sha256") != gate.get("coordinator_input_sha256")
-        or value.get("credential_prepare_approval_sha256")
-        != gate.get("credential_prepare_approval_sha256")
-        or value.get("owner_subject_sha256") != gate.get("owner_subject_sha256")
-        or value.get("ephemeral_admin_username") != gate.get("ephemeral_admin_username")
-        or value.get("original_run_process_lease_sha256")
-        != gate.get("original_run_process_lease_sha256")
-        or value.get("causal_recovery_state_sha256")
-        != gate.get("causal_recovery_state_sha256")
-        or value.get("predecessor_kind") != gate.get("predecessor_kind")
-        or value.get("predecessor_journal_sha256")
-        != gate.get("predecessor_journal_sha256")
-        or value.get("predecessor_generation") != gate.get("predecessor_generation")
-        or value.get("recovery_takeover_gate_sha256") != gate.get("gate_sha256")
-        or value.get("owner_recovery_takeover_ack_sha256") != ack.get("ack_sha256")
-        or value.get("recovery_worker_lease_sha256")
-        != secret_gate.get("recovery_worker_lease_sha256")
-        or any(
-            value.get(name) != secret_gate.get(name)
-            for name in (
-                "recovery_worker_pid",
-                "recovery_worker_process_start_time_ticks",
-                "recovery_worker_boot_id_sha256",
-                "recovery_worker_boot_time_ns",
-                "recovery_worker_uid",
-                "recovery_worker_gid",
-                "recovery_worker_module_origin",
-                "recovery_worker_module_sha256",
-                "recovery_worker_process_exe_sha256",
-                "recovery_worker_process_cmdline_sha256",
-            )
-        )
-    ):
-        raise OwnerLauncherError("invalid_recovery_worker_completion")
-    _validate_recovery_cleanup_matrix(
-        value,
-        expected_release_sha=str(gate.get("release_sha")),
-        now_unix=now_unix,
-        final=False,
-        require_fresh=True,
-        code="invalid_recovery_worker_completion",
-    )
-    return value
-
-
-def validate_persisted_recovery_worker_completion(
-    completion: Mapping[str, Any],
-    *,
-    expected_release_sha: str,
-    now_unix: int,
-) -> Mapping[str, Any]:
-    """Validate durable cleanup truth that still awaits worker-exit proof."""
-
-    value = _validate_self_digest(
-        completion,
-        expected_keys=_RECOVERY_WORKER_COMPLETION_KEYS,
-        digest_key="completion_sha256",
-        code="invalid_recovery_worker_completion",
-    )
-    if (
-        value.get("schema") != RECOVERY_WORKER_COMPLETION_SCHEMA
-        or value.get("ok") is not False
-        or value.get("state") != "cleanup_complete_awaiting_worker_exit"
-    ):
-        raise OwnerLauncherError("invalid_recovery_worker_completion")
-    _validate_recovery_cleanup_matrix(
-        value,
-        expected_release_sha=expected_release_sha,
-        now_unix=now_unix,
-        final=False,
-        require_fresh=False,
-        code="invalid_recovery_worker_completion",
-    )
-    return value
-
-
-def _reconstruct_worker_completion_from_final_receipt(
-    value: Mapping[str, Any],
-) -> Mapping[str, Any]:
-    reconstructed = {
-        name: value[name]
-        for name in _RECOVERY_WORKER_COMPLETION_KEYS
-        if name
-        not in {
-            "schema",
-            "ok",
-            "state",
-            "completion_sha256",
-            "recovery_worker_exit_proven",
-            "safe_to_delete_temporary_admin",
-        }
-    }
-    reconstructed.update({
-        "schema": RECOVERY_WORKER_COMPLETION_SCHEMA,
-        "ok": False,
-        "state": "cleanup_complete_awaiting_worker_exit",
-        "recovery_worker_exit_proven": False,
-        "safe_to_delete_temporary_admin": False,
-    })
-    reconstructed["completion_sha256"] = _sha256(_canonical_bytes(reconstructed))
-    return reconstructed
-
-
-def validate_recovery_receipt(
-    receipt: Mapping[str, Any],
-    *,
-    gate: Mapping[str, Any],
-    ack: Mapping[str, Any],
-    secret_gate: Mapping[str, Any],
-    completion: Mapping[str, Any],
-    password: bytearray | None,
-    now_unix: int,
-) -> Mapping[str, Any]:
-    active = () if password is None else (password,)
-    _reject_secret_echo(
-        receipt,
-        active_secrets=active,
-        code="invalid_recovery_receipt",
-    )
-    value = _validate_self_digest(
-        receipt,
-        expected_keys=_RECOVERY_RECEIPT_KEYS,
-        digest_key="receipt_sha256",
-        code="invalid_recovery_receipt",
-    )
-    reconstructed_completion = _reconstruct_worker_completion_from_final_receipt(value)
-    if (
-        value.get("schema") != RECOVERY_RECEIPT_SCHEMA
-        or value.get("ok") is not True
-        or value.get("state") != "recovered"
-        or value.get("coordinator_input_sha256") != gate.get("coordinator_input_sha256")
-        or value.get("credential_prepare_approval_sha256")
-        != gate.get("credential_prepare_approval_sha256")
-        or value.get("owner_subject_sha256") != gate.get("owner_subject_sha256")
-        or value.get("ephemeral_admin_username") != gate.get("ephemeral_admin_username")
-        or value.get("recovery_takeover_gate_sha256") != gate.get("gate_sha256")
-        or value.get("owner_recovery_takeover_ack_sha256") != ack.get("ack_sha256")
-        or value.get("recovery_worker_lease_sha256")
-        != secret_gate.get("recovery_worker_lease_sha256")
-        or value.get("recovery_worker_completion_sha256")
-        != completion.get("completion_sha256")
-        or value.get("recovery_worker_completion_sha256")
-        != reconstructed_completion.get("completion_sha256")
-        or reconstructed_completion != completion
-        or ack.get("discord_token_install_receipt_sha256")
-        != gate.get("discord_token_install_receipt_sha256")
-        or ack.get("discord_token_state") != gate.get("discord_token_state")
-        or ack.get("discord_retirement_receipt_sha256")
-        != gate.get("discord_retirement_receipt_sha256")
-        or ack.get("token_device") != gate.get("token_device")
-        or ack.get("token_inode") != gate.get("token_inode")
-    ):
-        raise OwnerLauncherError("invalid_recovery_receipt")
-    _validate_recovery_cleanup_matrix(
-        value,
-        expected_release_sha=str(gate.get("release_sha")),
-        now_unix=now_unix,
-        final=True,
-        require_fresh=True,
-        code="invalid_recovery_receipt",
-    )
-    finalized = value.get("finalized_at_unix")
-    if (
-        value.get("recovery_worker_lock_acquired") is not True
-        or type(finalized) is not int
-        or not value["cleanup_completed_at_unix"] <= finalized <= now_unix + 30
-    ):
-        raise OwnerLauncherError("invalid_recovery_receipt")
-    return value
-
-
-def validate_persisted_recovery_receipt(
-    receipt: Mapping[str, Any],
-    *,
-    expected_release_sha: str,
-    now_unix: int,
-) -> Mapping[str, Any]:
-    """Validate durable terminal recovery truth after owner-side interruption."""
-
-    _reject_secret_echo(
-        receipt,
-        active_secrets=(),
-        code="invalid_recovery_receipt",
-    )
-    value = _validate_self_digest(
-        receipt,
-        expected_keys=_RECOVERY_RECEIPT_KEYS,
-        digest_key="receipt_sha256",
-        code="invalid_recovery_receipt",
-    )
-    reconstructed_completion = _reconstruct_worker_completion_from_final_receipt(value)
-    finalized = value.get("finalized_at_unix")
-    if (
-        value.get("schema") != RECOVERY_RECEIPT_SCHEMA
-        or value.get("ok") is not True
-        or value.get("state") != "recovered"
-        or value.get("recovery_worker_lock_acquired") is not True
-        or value.get("recovery_worker_completion_sha256")
-        != reconstructed_completion.get("completion_sha256")
-        or type(finalized) is not int
-        or finalized < value.get("cleanup_completed_at_unix", -1)
-    ):
-        raise OwnerLauncherError("invalid_recovery_receipt")
-    _validate_recovery_cleanup_matrix(
-        value,
-        expected_release_sha=expected_release_sha,
-        now_unix=now_unix,
-        final=True,
-        require_fresh=False,
-        code="invalid_recovery_receipt",
-    )
-    return value
-
-
-def validate_coordinator_secret_gate(
-    gate: Mapping[str, Any],
-    *,
-    owner_gate: Mapping[str, Any],
-    now_unix: int,
-) -> Mapping[str, Any]:
-    value = _validate_self_digest(
-        gate,
-        expected_keys=_COORDINATOR_SECRET_GATE_KEYS,
-        digest_key="gate_sha256",
-        code="invalid_coordinator_secret_gate",
-    )
-    expires = value.get("expires_at_unix")
-    if (
-        value.get("schema") != COORDINATOR_SECRET_GATE_SCHEMA
-        or value.get("ok") is not True
-        or value.get("state") != "awaiting_admin_credential"
-        or value.get("coordinator_input_sha256")
-        != owner_gate.get("coordinator_input_sha256")
-        or value.get("credential_prepare_approval_sha256")
-        != owner_gate.get("credential_prepare_approval_sha256")
-        or value.get("owner_subject_sha256") != owner_gate.get("owner_subject_sha256")
-        or value.get("release_sha") != owner_gate.get("release_sha")
-        or value.get("admin_username") != owner_gate.get("admin_username")
-        or value.get("database_host") != DATABASE_HOST
-        or value.get("database_port") != DATABASE_PORT
-        or value.get("database_name") != DATABASE_NAME
-        or not isinstance(value.get("tls_server_name"), str)
-        or _TLS_SERVER_NAME.fullmatch(value["tls_server_name"]) is None
-        or value.get("frame_schema") != ADMIN_FRAME_SCHEMA
-        or type(value.get("coordinator_pid")) is not int
-        or value["coordinator_pid"] <= 1
-        or type(value.get("coordinator_start_time_ticks")) is not int
-        or value["coordinator_start_time_ticks"] <= 0
-        or type(expires) is not int
-        or expires <= now_unix
-        or expires > owner_gate.get("expires_at_unix")
-    ):
-        raise OwnerLauncherError("invalid_coordinator_secret_gate")
-    _require_sha256(
-        value.get("tls_peer_certificate_sha256"),
-        "invalid_coordinator_secret_gate",
-    )
-    _require_sha256(
-        value.get("coordinator_process_lease_sha256"),
-        "invalid_coordinator_secret_gate",
-    )
-    _require_sha256(
-        value.get("coordinator_boot_id_sha256"),
-        "invalid_coordinator_secret_gate",
-    )
-    return value
-
-
-def _validate_invariant_receipt(
-    value: Any,
-    *,
-    release_sha: str,
-    evidence_sha256: str,
-) -> Mapping[str, Any]:
-    receipt = _validate_self_digest(
-        value,
-        expected_keys=_INVARIANT_RECEIPT_KEYS,
-        digest_key="invariant_receipt_sha256",
-        code="invalid_coordinator_receipt",
-    )
-    if (
-        receipt.get("schema") != "muncho-full-canary-e2e-verification.v1"
-        or receipt.get("ok") is not True
-        or receipt.get("release_sha") != release_sha
-        or receipt.get("evidence_sha256") != evidence_sha256
-        or receipt.get("invariants") != list(_CANARY_INVARIANTS)
-        or not isinstance(receipt.get("canary_run_id"), str)
-        or not receipt["canary_run_id"]
-    ):
-        raise OwnerLauncherError("invalid_coordinator_receipt")
-    for name in ("fixture_sha256", "full_canary_start_receipt_sha256"):
-        _require_sha256(receipt.get(name), "invalid_coordinator_receipt")
-    return receipt
-
-
-def _validate_preclaim_receipt(value: Any) -> Mapping[str, Any]:
-    receipt = _validate_self_digest(
-        value,
-        expected_keys=_PRECLAIM_RECEIPT_KEYS,
-        digest_key="receipt_sha256",
-        code="invalid_coordinator_receipt",
-    )
-    result = receipt.get("result")
-    database = receipt.get("database_identity")
-    if (
-        receipt.get("version") != "canonical-canary-preclaim-reconciliation-v1"
-        or type(receipt.get("observed_at_unix")) is not int
-        or receipt["observed_at_unix"] < 0
-        or receipt.get("source_config_path")
-        != "/etc/muncho/full-canary/staged/writer.json"
-        or not isinstance(database, Mapping)
-        or set(database) != {"host", "tls_server_name", "port", "database", "user"}
-        or database.get("host") != DATABASE_HOST
-        or database.get("port") != DATABASE_PORT
-        or database.get("database") != DATABASE_NAME
-        or not isinstance(database.get("tls_server_name"), str)
-        or _TLS_SERVER_NAME.fullmatch(database["tls_server_name"]) is None
-        or not isinstance(database.get("user"), str)
-        or not database["user"]
-        or not isinstance(result, Mapping)
-        or set(result) != _PRECLAIM_RESULT_KEYS
-        or result.get("success") is not True
-        or result.get("outcome") != "claimed"
-        or result.get("reason") != "claim_already_committed_session_retired"
-        or result.get("authority_active") is not False
-        or result.get("scope_retired") is not False
-        or type(result.get("inserted")) is not bool
-        or type(result.get("deduped")) is not bool
-        or result.get("inserted") == result.get("deduped")
-    ):
-        raise OwnerLauncherError("invalid_coordinator_receipt")
-    for name in (
-        "source_config_sha256",
-        "database_identity_sha256",
-    ):
-        _require_sha256(receipt.get(name), "invalid_coordinator_receipt")
-    if receipt["database_identity_sha256"] != _sha256(_canonical_bytes(database)):
-        raise OwnerLauncherError("invalid_coordinator_receipt")
-    for name in (
-        "release_sha256",
-        "fixture_sha256",
-        "session_key_sha256",
-        "approval_source_sha256",
-        "provisioning_receipt_sha256",
-    ):
-        _require_sha256(result.get(name), "invalid_coordinator_receipt")
-    return receipt
-
-
-def _validate_lifecycle_receipt(
-    value: Any,
-    *,
-    release_sha: str,
-    full_canary_plan_sha256: str,
-    evidence_path: str,
-    evidence_sha256: str,
-    invariant_receipt: Mapping[str, Any],
-    now_unix: int,
-) -> Mapping[str, Any]:
-    receipt = _validate_self_digest(
-        value,
-        expected_keys=_LIFECYCLE_RECEIPT_KEYS,
-        digest_key="receipt_sha256",
-        code="invalid_coordinator_receipt",
-    )
-    if (
-        receipt.get("schema") != "muncho-full-canary-runtime-receipt.v1"
-        or receipt.get("stage") != "verified_stopped"
-        or receipt.get("operation") != "verify_and_stop"
-        or receipt.get("revision") != release_sha
-        or receipt.get("full_canary_plan_sha256") != full_canary_plan_sha256
-        or receipt.get("evidence_path") != evidence_path
-        or receipt.get("evidence_sha256") != evidence_sha256
-        or receipt.get("verifier_result") != invariant_receipt
-        or receipt.get("stop_order")
-        != [
-            "hermes-cloud-gateway.service",
-            "muncho-canonical-writer.service",
-            "muncho-discord-egress.service",
-        ]
-        or receipt.get("units_enabled") is not False
-        or receipt.get("verified") is not True
-        or receipt.get("error_type") is not None
-        or receipt.get("error_sha256") is not None
-    ):
-        raise OwnerLauncherError("invalid_coordinator_receipt")
-    receipt_path_raw = receipt.get("receipt_path")
-    if not isinstance(receipt_path_raw, str):
-        raise OwnerLauncherError("invalid_coordinator_receipt")
-    receipt_path = PurePosixPath(receipt_path_raw)
-    expected_parent = (
-        PurePosixPath("/var/lib/muncho-full-canary/plans")
-        / release_sha
-        / full_canary_plan_sha256
-        / "verified_stopped"
-    )
-    if (
-        receipt_path.parent != expected_parent
-        or re.fullmatch(r"[0-9]+-[1-9][0-9]*-[0-9a-f]{32}\.json", receipt_path.name)
-        is None
-    ):
-        raise OwnerLauncherError("invalid_coordinator_receipt")
-    for name in (
-        "full_canary_start_receipt_sha256",
-        "full_canary_start_receipt_internal_sha256",
-        "live_report_sha256",
-        "stopped_report_sha256",
-    ):
-        _require_sha256(receipt.get(name), "invalid_coordinator_receipt")
-    _validate_receipt_time(
-        receipt.get("completed_at_unix"),
-        now_unix=now_unix,
-        code="invalid_coordinator_receipt",
-    )
-    _validate_preclaim_receipt(receipt.get("preclaim_reconciliation"))
-    return receipt
-
-
-def validate_owner_approval_request(
-    request: Mapping[str, Any],
-    *,
-    gate: Mapping[str, Any],
-    now_unix: int,
-) -> Mapping[str, Any]:
-    value = _validate_self_digest(
-        request,
-        expected_keys=_OWNER_APPROVAL_REQUEST_KEYS,
-        digest_key="request_sha256",
-        code="invalid_owner_approval_request",
-    )
-    if (
-        value.get("schema") != OWNER_APPROVAL_REQUEST_SCHEMA
-        or value.get("ok") is not True
-        or value.get("state") != "awaiting_final_owner_approval"
-        or value.get("release_sha") != gate.get("release_sha")
-        or value.get("coordinator_input_sha256") != gate.get("coordinator_input_sha256")
-        or value.get("credential_prepare_approval_sha256")
-        != gate.get("credential_prepare_approval_sha256")
-        or value.get("owner_subject_sha256") != gate.get("owner_subject_sha256")
-        or value.get("ephemeral_admin_username") != gate.get("admin_username")
-        or value.get("staged_plan_path")
-        != "/etc/muncho/full-canary/staged/runtime-plan.json"
-        or value.get("approval_path") != FINAL_APPROVAL_PATH
-        or value.get("approval_request_path") != APPROVAL_REQUEST_PATH
-        or value.get("final_approval_frame_schema") != FINAL_APPROVAL_FRAME_SCHEMA
-        or (
-            value.get("prior_approval_file_sha256") is not None
-            and (
-                not isinstance(value.get("prior_approval_file_sha256"), str)
-                or _SHA256.fullmatch(value["prior_approval_file_sha256"]) is None
-            )
-        )
-    ):
-        raise OwnerLauncherError("invalid_owner_approval_request")
-    for name in (
-        "full_canary_plan_sha256",
-        "staged_plan_file_sha256",
-        "hba_receipt_sha256",
-        "approval_source_sha256",
-    ):
-        _require_sha256(value.get(name), "invalid_owner_approval_request")
-    hba_expires = value.get("hba_expires_at_unix")
-    fixture_expires = value.get("fixture_expires_at_unix")
-    credential_expires = value.get("credential_approval_expires_at_unix")
-    deadline = value.get("approval_deadline_unix")
-    input_cutoff = value.get("owner_input_cutoff_unix")
-    transmit_margin = value.get("final_approval_transmit_margin_seconds")
-    maximum_wait = value.get("max_wait_seconds")
-    requested_at = value.get("requested_at_unix")
-    if (
-        type(hba_expires) is not int
-        or type(fixture_expires) is not int
-        or type(credential_expires) is not int
-        or type(deadline) is not int
-        or type(input_cutoff) is not int
-        or type(transmit_margin) is not int
-        or type(maximum_wait) is not int
-        or type(requested_at) is not int
-        or transmit_margin != _FINAL_APPROVAL_DELIVERY_RESERVE_SECONDS
-        or not transmit_margin + 1 <= maximum_wait <= FINAL_APPROVAL_MAX_WAIT_SECONDS
-        or deadline != requested_at + maximum_wait
-        or input_cutoff != deadline - transmit_margin
-        or not requested_at <= now_unix < input_cutoff < deadline
-        or deadline > hba_expires - _HBA_EXPIRY_SAFETY_MARGIN_SECONDS
-        or deadline > fixture_expires
-        or type(gate.get("expires_at_unix")) is not int
-        or credential_expires != gate["expires_at_unix"]
-        or deadline > credential_expires - _FINAL_APPROVAL_DELIVERY_RESERVE_SECONDS
-        or deadline - now_unix > maximum_wait
-    ):
-        raise OwnerLauncherError("invalid_owner_approval_request")
-    return value
-
-
-def validate_final_owner_approval(
-    approval: Mapping[str, Any],
-    *,
-    request: Mapping[str, Any],
-    now_unix: int,
-) -> Mapping[str, Any]:
-    if not isinstance(approval, Mapping) or set(approval) != _FINAL_APPROVAL_KEYS:
-        raise OwnerLauncherError("invalid_final_owner_approval")
-    value = dict(approval)
-    if (
-        value.get("schema") != "muncho-full-canary-owner-approval.v1"
-        or value.get("scope") != "full_canary_runtime_start"
-        or value.get("plan_sha256") != request.get("full_canary_plan_sha256")
-        or value.get("authority_kind") != "trusted_root_bootstrap_out_of_band_owner"
-        or value.get("cryptographic_owner_proof") is not False
-        or value.get("owner_subject_sha256") != request.get("owner_subject_sha256")
-        or value.get("approval_source_sha256") != request.get("approval_source_sha256")
-    ):
-        raise OwnerLauncherError("invalid_final_owner_approval")
-    _require_sha256(value.get("nonce_sha256"), "invalid_final_owner_approval")
-    approved = value.get("approved_at_unix")
-    expires = value.get("expires_at_unix")
-    if (
-        type(approved) is not int
-        or type(expires) is not int
-        or not request["requested_at_unix"] <= approved <= now_unix <= expires
-        or approved > request["owner_input_cutoff_unix"]
-        or not 1 <= expires - approved <= 900
-        or expires
-        > min(
-            request["hba_expires_at_unix"],
-            request["fixture_expires_at_unix"],
-            request["credential_approval_expires_at_unix"],
-        )
-    ):
-        raise OwnerLauncherError("invalid_final_owner_approval")
-    return value
-
-
 def build_final_approval_frame(approval: Mapping[str, Any]) -> bytes:
     payload = _canonical_bytes(approval)
     if not payload or len(payload) > 128 * 1024:
@@ -3029,425 +1984,14 @@ def build_final_approval_frame(approval: Mapping[str, Any]) -> bytes:
     return FINAL_APPROVAL_FRAME_MAGIC + struct.pack(">I", len(payload)) + payload
 
 
-def validate_final_approval_install_receipt(
-    receipt: Mapping[str, Any],
-    *,
-    request: Mapping[str, Any],
-    approval: Mapping[str, Any],
-    now_unix: int,
-) -> Mapping[str, Any]:
-    value = _validate_self_digest(
-        receipt,
-        expected_keys=_FINAL_APPROVAL_INSTALL_RECEIPT_KEYS,
-        digest_key="receipt_sha256",
-        code="invalid_final_approval_install_receipt",
-    )
-    if (
-        value.get("schema") != FINAL_APPROVAL_INSTALL_RECEIPT_SCHEMA
-        or value.get("ok") is not True
-        or value.get("release_sha") != request.get("release_sha")
-        or value.get("coordinator_input_sha256")
-        != request.get("coordinator_input_sha256")
-        or value.get("credential_prepare_approval_sha256")
-        != request.get("credential_prepare_approval_sha256")
-        or value.get("owner_subject_sha256") != request.get("owner_subject_sha256")
-        or value.get("full_canary_plan_sha256")
-        != request.get("full_canary_plan_sha256")
-        or value.get("approval_request_sha256") != request.get("request_sha256")
-        or value.get("owner_approval_sha256") != _sha256(_canonical_bytes(approval))
-        or value.get("approval_path") != FINAL_APPROVAL_PATH
-    ):
-        raise OwnerLauncherError("invalid_final_approval_install_receipt")
-    _validate_receipt_time(
-        value.get("installed_at_unix"),
-        now_unix=now_unix,
-        code="invalid_final_approval_install_receipt",
-    )
-    return value
-
-
-def validate_final_approval_cancel_receipt(
-    receipt: Mapping[str, Any],
-    *,
-    request: Mapping[str, Any],
-    now_unix: int,
-) -> Mapping[str, Any]:
-    value = _validate_self_digest(
-        receipt,
-        expected_keys=_FINAL_APPROVAL_CANCEL_RECEIPT_KEYS,
-        digest_key="receipt_sha256",
-        code="invalid_final_approval_cancel_receipt",
-    )
-    prior = request.get("prior_approval_file_sha256")
-    request_state = value.get("approval_request_artifact_state")
-    staged_state = value.get("staged_plan_artifact_state")
-    owner_state = value.get("owner_approval_artifact_state")
-    expected_request_sha = _sha256(_canonical_bytes(request))
-    expected_staged_sha = request.get("staged_plan_file_sha256")
-    observed_request_sha = value.get("observed_approval_request_file_sha256")
-    observed_staged_sha = value.get("observed_staged_plan_file_sha256")
-    observed_owner_sha = value.get("observed_approval_file_sha256")
-    clean_request_states = {
-        "matching_active",
-        "matching_expired",
-        "retired_absent",
-    }
-    clean_staged_states = {"matching_present", "retired_absent"}
-    clean_owner_states = {"matching_prior"}
-    request_conflict_states = {"superseded", "drifted"}
-    staged_conflict_states = {"superseded", "drifted"}
-    owner_conflict_states = {"drifted"}
-    if (
-        value.get("schema") != FINAL_APPROVAL_CANCEL_RECEIPT_SCHEMA
-        or value.get("ok") is not False
-        or value.get("state")
-        not in {"cancelled_no_secret", "cancelled_no_secret_state_conflict"}
-        or value.get("reason") != "eof_before_mfa1"
-        or value.get("release_sha") != request.get("release_sha")
-        or value.get("coordinator_input_sha256")
-        != request.get("coordinator_input_sha256")
-        or value.get("credential_prepare_approval_sha256")
-        != request.get("credential_prepare_approval_sha256")
-        or value.get("owner_subject_sha256") != request.get("owner_subject_sha256")
-        or value.get("full_canary_plan_sha256")
-        != request.get("full_canary_plan_sha256")
-        or value.get("approval_request_sha256") != request.get("request_sha256")
-        or value.get("approval_request_path")
-        != request.get("approval_request_path", APPROVAL_REQUEST_PATH)
-        or value.get("expected_approval_request_file_sha256") != expected_request_sha
-        or value.get("staged_plan_path") != request.get("staged_plan_path")
-        or value.get("expected_staged_plan_file_sha256") != expected_staged_sha
-        or value.get("approval_path") != FINAL_APPROVAL_PATH
-        or value.get("prior_approval_file_sha256") != prior
-        or value.get("frame_bytes_received") != 0
-        or value.get("owner_approval_mutation_performed_by_this_helper") is not False
-        or type(value.get("approval_request_present")) is not bool
-        or type(value.get("approval_request_remains_active")) is not bool
-        or type(value.get("staged_plan_present")) is not bool
-        or value.get("approval_path_matches_prior") is not None
-        and type(value.get("approval_path_matches_prior")) is not bool
-        or value.get("new_owner_approval_installed") is not None
-        and type(value.get("new_owner_approval_installed")) is not bool
-        or request_state not in clean_request_states | request_conflict_states
-        or staged_state not in clean_staged_states | staged_conflict_states
-        or owner_state not in clean_owner_states | owner_conflict_states
-    ):
-        raise OwnerLauncherError("invalid_final_approval_cancel_receipt")
-    for observed in (observed_request_sha, observed_staged_sha, observed_owner_sha):
-        if observed is not None:
-            _require_sha256(observed, "invalid_final_approval_cancel_receipt")
-    cancelled = value.get("cancelled_at_unix")
-    if (
-        type(cancelled) is not int
-        or not request["requested_at_unix"] <= cancelled <= now_unix + 30
-    ):
-        raise OwnerLauncherError("invalid_final_approval_cancel_receipt")
-    request_clean = (
-        request_state == "matching_active"
-        and value.get("approval_request_present") is True
-        and value.get("approval_request_remains_active") is True
-        and observed_request_sha == expected_request_sha
-        and cancelled <= request["approval_deadline_unix"]
-        or request_state == "matching_expired"
-        and value.get("approval_request_present") is True
-        and value.get("approval_request_remains_active") is False
-        and observed_request_sha == expected_request_sha
-        and cancelled > request["approval_deadline_unix"]
-        or request_state == "retired_absent"
-        and value.get("approval_request_present") is False
-        and value.get("approval_request_remains_active") is False
-        and observed_request_sha is None
-    )
-    staged_clean = (
-        staged_state == "matching_present"
-        and value.get("staged_plan_present") is True
-        and observed_staged_sha == expected_staged_sha
-        or staged_state == "retired_absent"
-        and value.get("staged_plan_present") is False
-        and observed_staged_sha is None
-    )
-    owner_clean = (
-        owner_state == "matching_prior"
-        and observed_owner_sha == prior
-        and value.get("approval_path_matches_prior") is True
-        and value.get("new_owner_approval_installed") is False
-    )
-    request_shape_valid = (
-        (
-            request_state == "retired_absent"
-            and value.get("approval_request_present") is False
-            and observed_request_sha is None
-            or request_state != "retired_absent"
-            and value.get("approval_request_present") is True
-            and observed_request_sha is not None
-        )
-        and value.get("approval_request_remains_active")
-        is (request_state == "matching_active")
-        and not (
-            request_state == "superseded"
-            and observed_request_sha == expected_request_sha
-        )
-        and not (
-            request_state == "drifted" and observed_request_sha != expected_request_sha
-        )
-    )
-    staged_shape_valid = (
-        (
-            staged_state == "retired_absent"
-            and value.get("staged_plan_present") is False
-            and observed_staged_sha is None
-            or staged_state != "retired_absent"
-            and value.get("staged_plan_present") is True
-            and observed_staged_sha is not None
-        )
-        and not (
-            staged_state == "superseded" and observed_staged_sha == expected_staged_sha
-        )
-        and not (
-            staged_state == "drifted" and observed_staged_sha != expected_staged_sha
-        )
-    )
-    owner_shape_valid = owner_clean or (
-        owner_state == "drifted"
-        and value.get("approval_path_matches_prior") is False
-        and value.get("new_owner_approval_installed") is None
-        and (prior is not None or observed_owner_sha is not None)
-    )
-    artifact_pair_clean = (
-        request_state in {"matching_active", "matching_expired"}
-        and staged_state == "matching_present"
-        or request_state == "retired_absent"
-        and staged_state == "retired_absent"
-    )
-    all_clean = request_clean and staged_clean and owner_clean and artifact_pair_clean
-    has_conflict = (
-        request_state in request_conflict_states
-        or staged_state in staged_conflict_states
-        or owner_state in owner_conflict_states
-        or not artifact_pair_clean
-    )
-    if (
-        not request_shape_valid
-        or not staged_shape_valid
-        or not owner_shape_valid
-        or value.get("state") == "cancelled_no_secret"
-        and not all_clean
-        or value.get("state") == "cancelled_no_secret_state_conflict"
-        and (all_clean or not has_conflict)
-    ):
-        raise OwnerLauncherError("invalid_final_approval_cancel_receipt")
-    return value
-
-
-def validate_coordinator_receipt(
-    receipt: Mapping[str, Any],
-    *,
-    gate: Mapping[str, Any],
-    password: bytearray,
-    now_unix: int,
-) -> Mapping[str, Any]:
-    _reject_secret_echo(
-        receipt,
-        active_secrets=(password,),
-        code="invalid_coordinator_receipt",
-    )
-    schema = receipt.get("schema") if isinstance(receipt, Mapping) else None
-    if schema == COORDINATOR_FAILURE_SCHEMA:
-        value = _validate_self_digest(
-            receipt,
-            expected_keys=_COORDINATOR_FAILURE_KEYS,
-            digest_key="receipt_sha256",
-            code="invalid_coordinator_receipt",
-        )
-        phase = value.get("phase")
-        cleanup_status = value.get("cleanup_status")
-        plan_sha = value.get("full_canary_plan_sha256")
-        recovery = value.get("recovery_material_preserved")
-        session_closed = value.get("admin_session_closed")
-        password_disabled = value.get("bootstrap_login_password_disabled")
-        credential_removed = value.get("bootstrap_credential_removed")
-        discord_removed = value.get("discord_token_removed")
-        services_enabled = value.get("services_enabled")
-        process_lease_retired = value.get("coordinator_process_lease_retired")
-        allowed_phases = {
-            "process_hardening",
-            "coordinator_input",
-            "secret_gate",
-            "coordinator_secret_gate",
-            "admin_credential",
-            "credential_read",
-            "admin_connect",
-            "database_operation",
-            "bootstrap_credential",
-            "bootstrap_credential_cleanup",
-            "plan_and_final_approval",
-            "owner_approval_request",
-            "owner_approval_request_cleanup",
-            "root_publication_cleanup",
-            "root_snapshot_cleanup",
-            "secret_cleanup",
-            "discord_token_retirement",
-            "staged_writer_cleanup",
-            "signal",
-            "live_driver",
-            "terminal_cleanup",
-            "terminal",
-        }
-        null_plan_phases = {
-            "process_hardening",
-            "coordinator_input",
-            "secret_gate",
-            "coordinator_secret_gate",
-            "admin_credential",
-            "credential_read",
-            "admin_connect",
-            "database_operation",
-            "bootstrap_credential",
-            "bootstrap_credential_cleanup",
-            "plan_and_final_approval",
-            "root_publication_cleanup",
-            "root_snapshot_cleanup",
-            "secret_cleanup",
-            "discord_token_retirement",
-            "staged_writer_cleanup",
-            "signal",
-        }
-        if (
-            value.get("ok") is not False
-            or value.get("release_sha") != gate.get("release_sha")
-            or value.get("coordinator_input_sha256")
-            != gate.get("coordinator_input_sha256")
-            or value.get("credential_prepare_approval_sha256")
-            != gate.get("credential_prepare_approval_sha256")
-            or value.get("owner_subject_sha256") != gate.get("owner_subject_sha256")
-            or value.get("ephemeral_admin_username") != gate.get("admin_username")
-            or phase not in allowed_phases
-            or (plan_sha is None and phase not in null_plan_phases)
-            or (
-                plan_sha is not None
-                and (
-                    not isinstance(plan_sha, str) or _SHA256.fullmatch(plan_sha) is None
-                )
-            )
-            or not isinstance(value.get("error_code"), str)
-            or _STABLE_CODE.fullmatch(value["error_code"]) is None
-            or cleanup_status not in {"complete", "cleanup_blocked"}
-            or type(recovery) is not bool
-            or type(session_closed) is not bool
-            or type(password_disabled) is not bool
-            or type(credential_removed) is not bool
-            or type(discord_removed) is not bool
-            or type(process_lease_retired) is not bool
-            or credential_removed is True
-            and password_disabled is not True
-            or cleanup_status == "complete"
-            and (
-                recovery is not False
-                or session_closed is not True
-                or password_disabled != credential_removed
-                or discord_removed is not True
-                or process_lease_retired is not True
-            )
-            or recovery is True
-            and cleanup_status != "cleanup_blocked"
-            or discord_removed is False
-            and (cleanup_status != "cleanup_blocked" or recovery is not True)
-            or process_lease_retired is False
-            and (cleanup_status != "cleanup_blocked" or recovery is not True)
-            or session_closed is False
-            and (cleanup_status != "cleanup_blocked" or recovery is not True)
-            or services_enabled not in {False, None}
-            or services_enabled is None
-            and (cleanup_status != "cleanup_blocked" or recovery is not True)
-        ):
-            raise OwnerLauncherError("invalid_coordinator_receipt")
-        return value
-
-    value = _validate_self_digest(
-        receipt,
-        expected_keys=_COORDINATOR_RECEIPT_KEYS,
-        digest_key="receipt_sha256",
-        code="invalid_coordinator_receipt",
-    )
-    result = value.get("live_driver_result")
-    if (
-        value.get("schema") != COORDINATOR_RECEIPT_SCHEMA
-        or value.get("ok") is not True
-        or value.get("release_sha") != gate.get("release_sha")
-        or value.get("coordinator_input_sha256") != gate.get("coordinator_input_sha256")
-        or value.get("credential_prepare_approval_sha256")
-        != gate.get("credential_prepare_approval_sha256")
-        or value.get("owner_subject_sha256") != gate.get("owner_subject_sha256")
-        or value.get("ephemeral_admin_username") != gate.get("admin_username")
-        or value.get("temporary_admin_delete_required") is not True
-        or value.get("admin_session_closed") is not True
-        or value.get("bootstrap_login_password_disabled") is not True
-        or value.get("bootstrap_credential_removed") is not True
-        or value.get("discord_token_removed") is not True
-        or value.get("coordinator_process_lease_retired") is not True
-        or value.get("services_enabled") is not False
-        or not isinstance(result, Mapping)
-        or set(result) != _LIVE_DRIVER_RESULT_KEYS
-        or result.get("schema") != "muncho-full-canary-live-driver.v1"
-        or result.get("ok") is not True
-        or result.get("release_sha") != gate.get("release_sha")
-        or result.get("full_canary_plan_sha256") != value.get("full_canary_plan_sha256")
-        or result.get("discord_ingress_claimed") is not False
-        or not isinstance(result.get("offline_invariant_receipt"), Mapping)
-        or not isinstance(result.get("lifecycle_verification_receipt"), Mapping)
-    ):
-        raise OwnerLauncherError("invalid_coordinator_receipt")
-    for name in (
-        "full_canary_plan_sha256",
-        "owner_approval_sha256",
-        "live_driver_receipt_sha256",
-    ):
-        _require_sha256(value.get(name), "invalid_coordinator_receipt")
-    if _sha256(_canonical_bytes(result)) != value["live_driver_receipt_sha256"]:
-        raise OwnerLauncherError("invalid_coordinator_receipt")
-    evidence_sha256 = _require_sha256(
-        result.get("evidence_sha256"), "invalid_coordinator_receipt"
-    )
-    evidence_path = result.get("evidence_path")
-    expected_evidence_path = (
-        f"/var/lib/muncho-full-canary/plans/{gate['release_sha']}/"
-        f"{value['full_canary_plan_sha256']}/live/evidence.json"
-    )
-    if evidence_path != expected_evidence_path:
-        raise OwnerLauncherError("invalid_coordinator_receipt")
-    invariant = _validate_invariant_receipt(
-        result["offline_invariant_receipt"],
-        release_sha=str(gate["release_sha"]),
-        evidence_sha256=evidence_sha256,
-    )
-    _validate_lifecycle_receipt(
-        result["lifecycle_verification_receipt"],
-        release_sha=str(gate["release_sha"]),
-        full_canary_plan_sha256=str(value["full_canary_plan_sha256"]),
-        evidence_path=evidence_path,
-        evidence_sha256=evidence_sha256,
-        invariant_receipt=invariant,
-        now_unix=now_unix,
-    )
-    _validate_receipt_time(
-        value.get("completed_at_unix"),
-        now_unix=now_unix,
-        code="invalid_coordinator_receipt",
-    )
-    return value
-
-
 def validate_terminal_first_failure(
     receipt: Mapping[str, Any],
     *,
     owner_gate: Mapping[str, Any] | None,
-    token_lease_expected: bool,
-    process_lease_expected: bool,
     expected_release_sha: str | None = None,
-    admin_frame_disclosed: bool = False,
     active_secrets: Sequence[bytes | bytearray | memoryview] = (),
 ) -> Mapping[str, Any]:
-    """Validate an exact coordinator failure emitted before an input gate."""
+    """Validate the session-bound coordinator's exact terminal failure."""
 
     _reject_secret_echo(
         receipt,
@@ -3461,105 +2005,105 @@ def validate_terminal_first_failure(
         code="invalid_terminal_first_failure",
     )
     phase = value.get("phase")
+    command = value.get("command")
     error_code = value.get("error_code")
     cleanup_status = value.get("cleanup_status")
-    recovery = value.get("recovery_material_preserved")
     discord_removed = value.get("discord_token_removed")
-    services_enabled = value.get("services_enabled")
-    process_lease_retired = value.get("coordinator_process_lease_retired")
-    session_closed = value.get("admin_session_closed")
-    plan_sha = value.get("full_canary_plan_sha256")
-    password_disabled = value.get("bootstrap_login_password_disabled")
-    credential_removed = value.get("bootstrap_credential_removed")
-    binding_names = (
-        "release_sha",
-        "coordinator_input_sha256",
-        "credential_prepare_approval_sha256",
-        "owner_subject_sha256",
-        "ephemeral_admin_username",
-    )
-    bindings = tuple(value.get(name) for name in binding_names)
-    null_bindings = (None, None, None, None, None)
-    expected_bindings = None
+    services_stopped = value.get("services_stopped")
+    obsolete_journal_absent = value.get("obsolete_process_journal_absent")
+    release_sha = value.get("release_sha")
+    coordinator_input_sha256 = value.get("coordinator_input_sha256")
+    completed_at_unix = value.get("completed_at_unix")
+
     if owner_gate is not None:
-        expected_bindings = (
-            owner_gate.get("release_sha"),
-            owner_gate.get("coordinator_input_sha256"),
-            owner_gate.get("credential_prepare_approval_sha256"),
-            owner_gate.get("owner_subject_sha256"),
-            owner_gate.get("admin_username"),
-        )
-    elif bindings != null_bindings:
-        approval_sha = bindings[2]
         if (
-            expected_release_sha is None
-            or bindings[0] != expected_release_sha
-            or not isinstance(bindings[1], str)
-            or _SHA256.fullmatch(bindings[1]) is None
-            or not isinstance(approval_sha, str)
-            or _SHA256.fullmatch(approval_sha) is None
-            or not isinstance(bindings[3], str)
-            or _SHA256.fullmatch(bindings[3]) is None
+            release_sha != owner_gate.get("release_sha")
+            or coordinator_input_sha256
+            != owner_gate.get("coordinator_input_sha256")
         ):
             raise OwnerLauncherError("invalid_terminal_first_failure")
-        expected_bindings = (
-            expected_release_sha,
-            bindings[1],
-            approval_sha,
-            bindings[3],
-            f"{ADMIN_USERNAME_PREFIX}{approval_sha[:16]}",
-        )
+    elif release_sha is not None:
+        if (
+            expected_release_sha is not None
+            and release_sha != expected_release_sha
+        ) or (
+            not isinstance(release_sha, str)
+            or _RELEASE_SHA.fullmatch(release_sha) is None
+            or not isinstance(coordinator_input_sha256, str)
+            or _SHA256.fullmatch(coordinator_input_sha256) is None
+        ):
+            raise OwnerLauncherError("invalid_terminal_first_failure")
+    elif coordinator_input_sha256 is not None:
+        raise OwnerLauncherError("invalid_terminal_first_failure")
+
+    cleanup_complete = (
+        discord_removed is True
+        and services_stopped is True
+        and obsolete_journal_absent is True
+    )
     if (
         value.get("schema") != COORDINATOR_FAILURE_SCHEMA
         or value.get("ok") is not False
         or not isinstance(phase, str)
         or _STABLE_CODE.fullmatch(phase) is None
+        or command not in _COORDINATOR_COMMANDS
         or not isinstance(error_code, str)
         or _STABLE_CODE.fullmatch(error_code) is None
-        or bindings != null_bindings
-        and (expected_bindings is None or bindings != expected_bindings)
-        or (
-            plan_sha is not None
-            and (
-                not admin_frame_disclosed
-                or not isinstance(plan_sha, str)
-                or _SHA256.fullmatch(plan_sha) is None
-            )
-        )
         or cleanup_status not in {"complete", "cleanup_blocked"}
-        or type(recovery) is not bool
-        or type(session_closed) is not bool
-        or type(password_disabled) is not bool
-        or type(credential_removed) is not bool
-        or admin_frame_disclosed
-        and credential_removed is True
-        and password_disabled is not True
-        or not admin_frame_disclosed
-        and password_disabled is not False
         or type(discord_removed) is not bool
-        or type(process_lease_retired) is not bool
-        or services_enabled not in {False, None}
-        or cleanup_status == "complete"
-        and recovery is not False
-        or cleanup_status == "complete"
-        and session_closed is not True
-        or cleanup_status == "complete"
-        and admin_frame_disclosed
-        and password_disabled != credential_removed
-        or cleanup_status == "cleanup_blocked"
-        and recovery is not True
-        or services_enabled is None
-        and cleanup_status != "cleanup_blocked"
-        or session_closed is False
-        and (cleanup_status != "cleanup_blocked" or recovery is not True)
-        or token_lease_expected
-        and discord_removed is False
-        and (cleanup_status != "cleanup_blocked" or recovery is not True)
-        or process_lease_expected
-        and process_lease_retired is False
-        and (cleanup_status != "cleanup_blocked" or recovery is not True)
+        or type(services_stopped) is not bool
+        or type(obsolete_journal_absent) is not bool
+        or type(completed_at_unix) is not int
+        or completed_at_unix <= 0
+        or (cleanup_status == "complete") is not cleanup_complete
     ):
         raise OwnerLauncherError("invalid_terminal_first_failure")
+    return value
+
+
+def validate_coordinator_input_publication_receipt(
+    receipt: Mapping[str, Any],
+    *,
+    expected_release_sha: str,
+) -> Mapping[str, Any]:
+    """Validate the fixed-path, stopped-only coordinator input publication."""
+
+    if _RELEASE_SHA.fullmatch(expected_release_sha) is None:
+        raise OwnerLauncherError("invalid_release_sha")
+    value = _validate_self_digest(
+        receipt,
+        expected_keys=_COORDINATOR_INPUT_PUBLICATION_KEYS,
+        digest_key="receipt_sha256",
+        code="invalid_coordinator_input_publication_receipt",
+    )
+    if (
+        value.get("schema") != COORDINATOR_INPUT_PUBLICATION_SCHEMA
+        or value.get("ok") is not True
+        or value.get("state") != "published"
+        or value.get("release_sha") != expected_release_sha
+        or value.get("coordinator_input_path") != COORDINATOR_INPUT_PATH
+        or value.get("publication_receipt_path")
+        != COORDINATOR_INPUT_PUBLICATION_RECEIPT_PATH
+        or value.get("owner_uid") != 0
+        or value.get("group_gid") != 0
+        or value.get("mode") != "0400"
+        or type(value.get("published_at_unix")) is not int
+        or value["published_at_unix"] < 0
+    ):
+        raise OwnerLauncherError("invalid_coordinator_input_publication_receipt")
+    for name in (
+        "coordinator_input_sha256",
+        "coordinator_input_file_sha256",
+    ):
+        _require_sha256(
+            value.get(name),
+            "invalid_coordinator_input_publication_receipt",
+        )
+    _reject_secret_echo(
+        value,
+        active_secrets=(),
+        code="invalid_coordinator_input_publication_receipt",
+    )
     return value
 
 
@@ -5848,6 +4392,61 @@ class GcloudOwnerAccessToken:
             raise OwnerLauncherError("active_owner_identity_unavailable")
         return accounts[0]
 
+    def run_canary_iam_read_only_json(self, argv: Sequence[str]) -> Any:
+        """Run only the exact list/describe inventory used by IAM collectors."""
+
+        logical = tuple(argv)
+        if logical not in _canary_iam_read_only_inventory():
+            raise OwnerLauncherError("canary_iam_command_forbidden")
+        account = self.account_for_read_only_preflight()
+        command_prefix = self._gcloud_executable.trusted_command_prefix()
+        if (
+            len(command_prefix) != len(_GCLOUD_PYTHON_ISOLATION_ARGS) + 2
+            or command_prefix[1:-1] != _GCLOUD_PYTHON_ISOLATION_ARGS
+        ):
+            raise OwnerLauncherError("invalid_gcloud_command_prefix")
+        arguments = list(logical[1:])
+        if logical[1:3] != ("auth", "list"):
+            arguments.append(f"--account={account}")
+        arguments.append("--quiet")
+        environment = _owner_gcloud_environment(
+            self._gcloud_configuration,
+            command_prefix[0],
+        )
+        try:
+            try:
+                completed = self._runner(
+                    (*command_prefix, *arguments),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.DEVNULL,
+                    env=dict(environment),
+                    timeout=60.0,
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                raise OwnerLauncherError("canary_iam_collection_failed") from None
+        finally:
+            self._gcloud_executable.trusted_command_prefix()
+            self._gcloud_configuration.assert_stable()
+        output = completed.stdout
+        if (
+            completed.returncode != 0
+            or not isinstance(output, bytes)
+            or not output
+            or len(output) > _CANARY_IAM_JSON_MAX_BYTES
+        ):
+            raise OwnerLauncherError("canary_iam_collection_failed")
+        try:
+            value = _decode_json_value(
+                output,
+                maximum=_CANARY_IAM_JSON_MAX_BYTES,
+            )
+        except OwnerLauncherError:
+            raise OwnerLauncherError("canary_iam_collection_invalid") from None
+        self.require_stable()
+        return value
+
     def bind_approved_subject(self, expected_sha256: str) -> None:
         expected = _require_sha256(expected_sha256, "approved_owner_identity_invalid")
         account = self._active_account()
@@ -5875,8 +4474,7 @@ class GcloudOwnerAccessToken:
 
     def require_stable(self) -> None:
         if (
-            not self._approved
-            or self._pinned_account is None
+            self._pinned_account is None
             or self.owner_subject_sha256 is None
         ):
             raise OwnerLauncherError("approved_owner_identity_unbound")
@@ -7604,6 +6202,1585 @@ class CloudSqlCanaryBootstrapLogin(CloudSqlTemporaryAdmin):
         self._confirm_absent_without_delete(ambiguity_observed=True)
 
 
+def _phase_b_secret_free(value: Any) -> None:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            lowered = key.casefold() if isinstance(key, str) else ""
+            declarative_absence = lowered in {
+                "secret_material_recorded",
+                "password_or_digest_recorded",
+                "content_or_digest_recorded",
+            } and item is False
+            if not isinstance(key, str) or (
+                not declarative_absence
+                and any(
+                    marker in lowered
+                    for marker in (
+                        "password",
+                        "secret",
+                        "secret_digest",
+                        "credential_digest",
+                        "credential_value",
+                    )
+                )
+            ):
+                raise OwnerLauncherError("phase_b_secret_field_forbidden")
+            _phase_b_secret_free(item)
+    elif isinstance(value, Sequence) and not isinstance(
+        value, (str, bytes, bytearray, memoryview)
+    ):
+        for item in value:
+            _phase_b_secret_free(item)
+
+
+def _phase_b_operation_rows(
+    boundary: CloudSqlTemporaryAdmin,
+) -> list[list[Any]]:
+    operations = boundary._relevant_user_operations(
+        boundary._stable_instance_operations()
+    )
+    rows = [
+        [name, operation_type, status, actor_sha256, succeeded]
+        for name, (
+            operation_type,
+            status,
+            actor_sha256,
+            succeeded,
+        ) in sorted(operations.items())
+    ]
+    if any(row[2] != "DONE" or row[4] is not True for row in rows):
+        raise OwnerLauncherError("cloud_sql_user_operations_not_quiescent")
+    return rows
+
+
+def _phase_b_initial_cloud_observation(
+    boundary: CloudSqlTemporaryAdmin,
+) -> Mapping[str, Any]:
+    first = _phase_b_operation_rows(boundary)
+    names = sorted(boundary._user_names())
+    second = _phase_b_operation_rows(boundary)
+    if first != second:
+        raise OwnerLauncherError("cloud_sql_operations_evidence_incomplete")
+    temporary = sorted(name for name in names if _ADMIN_USERNAME.fullmatch(name))
+    if names != ["muncho_canary_writer_login", "postgres"] or temporary:
+        raise OwnerLauncherError("phase_b_cloud_not_pristine")
+    return {
+        "project": PROJECT,
+        "instance": SQL_INSTANCE,
+        "visible_users": names,
+        "user_inventory_sha256": _sha256(_canonical_bytes(names)),
+        "bootstrap_login_absent": True,
+        "temporary_admin_users": temporary,
+        "user_operations_quiescent": True,
+        "operation_ledger_sha256": _sha256(_canonical_bytes(second)),
+    }
+
+
+def _phase_b_recovery_cloud_observation(
+    boundary: CloudSqlTemporaryAdmin,
+    bootstrap: CloudSqlCanaryBootstrapLogin,
+    *,
+    temporary_admin_username: str,
+) -> Mapping[str, Any]:
+    first = _phase_b_operation_rows(boundary)
+    names = sorted(boundary._user_names())
+    resource = bootstrap.describe()
+    second = _phase_b_operation_rows(boundary)
+    if first != second:
+        raise OwnerLauncherError("cloud_sql_operations_evidence_incomplete")
+    temporary = sorted(name for name in names if _ADMIN_USERNAME.fullmatch(name))
+    if any(name != temporary_admin_username for name in temporary):
+        raise OwnerLauncherError("phase_b_cloud_unapproved_temporary_admin")
+    return {
+        "project": PROJECT,
+        "instance": SQL_INSTANCE,
+        "bootstrap_resource": resource,
+        "temporary_admin_users": temporary,
+        "user_inventory_sha256": _sha256(_canonical_bytes(names)),
+        "user_operations_quiescent": True,
+        "operation_ledger_sha256": _sha256(_canonical_bytes(second)),
+    }
+
+
+def _phase_b_complete_user_resource(
+    boundary: CloudSqlTemporaryAdmin,
+    username: str,
+    *,
+    expected_roles: list[str],
+) -> Mapping[str, Any]:
+    if username not in {"muncho_canary_writer_login", "postgres"}:
+        raise OwnerLauncherError("phase_b_cloud_user_target_invalid")
+    encoded = urllib.parse.quote(username, safe="")
+    query = urllib.parse.urlencode({"host": ""})
+    url = f"{boundary._users_url}/{encoded}?{query}"
+
+    def one() -> Mapping[str, Any]:
+        before = boundary._stable_instance_operations()
+        names = boundary._user_names(exact_admin_username=username)
+        if username not in names:
+            raise OwnerLauncherError("phase_b_cloud_user_missing")
+        raw = boundary._client.request_json("GET", url)
+        after = boundary._stable_instance_operations()
+        if before != after:
+            raise OwnerLauncherError("cloud_sql_operations_evidence_incomplete")
+        roles = raw.get("databaseRoles", [])
+        normalized = {
+            "databaseRoles": roles,
+            "etag": raw.get("etag"),
+            "host": raw.get("host", ""),
+            "instance": raw.get("instance"),
+            "name": raw.get("name"),
+            "project": raw.get("project"),
+            "type": raw.get("type", "BUILT_IN"),
+        }
+        if (
+            normalized["databaseRoles"] != expected_roles
+            or not isinstance(normalized["etag"], str)
+            or not normalized["etag"]
+            or normalized["host"] != ""
+            or normalized["instance"] != SQL_INSTANCE
+            or normalized["name"] != username
+            or normalized["project"] != PROJECT
+            or normalized["type"] != "BUILT_IN"
+            or "password" in raw
+        ):
+            raise OwnerLauncherError("phase_b_cloud_user_invalid")
+        return normalized
+
+    first = one()
+    second = one()
+    if first != second:
+        raise OwnerLauncherError("phase_b_cloud_user_drifted")
+    return second
+
+
+def _phase_b_terminal_cloud_observation(
+    boundary: CloudSqlTemporaryAdmin,
+    bootstrap: CloudSqlCanaryBootstrapLogin,
+    *,
+    temporary_admin_username: str,
+    expected_bootstrap_resource: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    first_rows = _phase_b_operation_rows(boundary)
+    names = sorted(boundary._user_names())
+    bootstrap_resource = bootstrap.describe()
+    if not isinstance(bootstrap_resource, Mapping):
+        raise OwnerLauncherError("phase_b_terminal_cloud_invalid")
+    writer_resource = _phase_b_complete_user_resource(
+        boundary,
+        "muncho_canary_writer_login",
+        expected_roles=[],
+    )
+    postgres_resource = _phase_b_complete_user_resource(
+        boundary,
+        "postgres",
+        expected_roles=[],
+    )
+    second_rows = _phase_b_operation_rows(boundary)
+    if (
+        first_rows != second_rows
+        or bootstrap_resource != expected_bootstrap_resource
+        or names
+        != sorted([
+            "muncho_canary_writer_login",
+            "postgres",
+            CANARY_BOOTSTRAP_LOGIN,
+        ])
+        or any(_ADMIN_USERNAME.fullmatch(name) for name in names)
+    ):
+        raise OwnerLauncherError("phase_b_terminal_cloud_invalid")
+    inventory = sorted(
+        [writer_resource, postgres_resource, dict(bootstrap_resource)],
+        key=lambda item: str(item["name"]),
+    )
+    return {
+        "project": PROJECT,
+        "instance": SQL_INSTANCE,
+        "bootstrap_resource": dict(bootstrap_resource),
+        "temporary_admin_absent": True,
+        "temporary_admin_username_sha256": _sha256(
+            temporary_admin_username.encode("ascii")
+        ),
+        "user_inventory": inventory,
+        "user_inventory_sha256": _sha256(_canonical_bytes(inventory)),
+        "user_operations_quiescent": True,
+        "relevant_user_operations": second_rows,
+        "operation_ledger_sha256": _sha256(_canonical_bytes(second_rows)),
+        "observed_at_unix": int(time.time()),
+    }
+
+
+def _phase_b_owner_source_directory(plan_sha256: str) -> int:
+    _require_sha256(plan_sha256, "phase_b_owner_source_path_invalid")
+    hermes_root = PHASE_B_OWNER_APPROVAL_ROOT.parents[1]
+    try:
+        root_item = hermes_root.lstat()
+        if (
+            hermes_root.resolve(strict=True) != hermes_root
+            or not stat.S_ISDIR(root_item.st_mode)
+            or stat.S_ISLNK(root_item.st_mode)
+            or root_item.st_uid != os.geteuid()
+            or stat.S_IMODE(root_item.st_mode) & 0o077
+        ):
+            raise OwnerLauncherError("phase_b_owner_source_root_untrusted")
+        descriptor = os.open(
+            hermes_root,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        for component in ("owner-approvals", "phase-b", plan_sha256):
+            try:
+                os.mkdir(component, 0o700, dir_fd=descriptor)
+            except FileExistsError:
+                pass
+            child = os.open(
+                component,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=descriptor,
+            )
+            item = os.fstat(child)
+            if (
+                not stat.S_ISDIR(item.st_mode)
+                or item.st_uid != os.geteuid()
+                or stat.S_IMODE(item.st_mode) != 0o700
+            ):
+                os.close(child)
+                raise OwnerLauncherError("phase_b_owner_source_root_untrusted")
+            os.close(descriptor)
+            descriptor = child
+        return descriptor
+    except OwnerLauncherError:
+        raise
+    except OSError:
+        raise OwnerLauncherError("phase_b_owner_source_root_untrusted") from None
+
+
+def _phase_b_owner_source_receipt(
+    *,
+    plan_sha256: str,
+    sequence: int,
+    candidate: Mapping[str, Any] | None = None,
+) -> Mapping[str, Any] | None:
+    if type(sequence) is not int or not 0 <= sequence <= 32:
+        raise OwnerLauncherError("phase_b_owner_source_path_invalid")
+    directory = _phase_b_owner_source_directory(plan_sha256)
+    name = f"{sequence:08d}.source.json"
+    try:
+        try:
+            before = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            before = None
+        if before is not None:
+            if (
+                not stat.S_ISREG(before.st_mode)
+                or stat.S_ISLNK(before.st_mode)
+                or before.st_uid != os.geteuid()
+                or before.st_nlink != 1
+                or stat.S_IMODE(before.st_mode) != 0o400
+                or not 1 <= before.st_size <= 64 * 1024
+            ):
+                raise OwnerLauncherError("phase_b_owner_source_untrusted")
+            descriptor = os.open(
+                name,
+                os.O_RDONLY
+                | getattr(os, "O_CLOEXEC", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+                dir_fd=directory,
+            )
+            try:
+                opened = os.fstat(descriptor)
+                raw = os.read(descriptor, 64 * 1024 + 1)
+                after = os.fstat(descriptor)
+            finally:
+                os.close(descriptor)
+            reachable = os.stat(name, dir_fd=directory, follow_symlinks=False)
+            if (
+                len(raw) != before.st_size
+                or _phase_b_stat_identity(before)
+                != _phase_b_stat_identity(opened)
+                or _phase_b_stat_identity(before)
+                != _phase_b_stat_identity(after)
+                or _phase_b_stat_identity(before)
+                != _phase_b_stat_identity(reachable)
+                or not raw.endswith(b"\n")
+            ):
+                raise OwnerLauncherError("phase_b_owner_source_untrusted")
+            loaded = _decode_json_object(raw[:-1], maximum=64 * 1024)
+            if raw != _canonical_bytes(loaded) + b"\n":
+                raise OwnerLauncherError("phase_b_owner_source_untrusted")
+            if candidate is not None and dict(loaded) != dict(candidate):
+                raise OwnerLauncherError("phase_b_owner_source_conflict")
+            return copy.deepcopy(dict(loaded))
+        if candidate is None:
+            return None
+        payload = _canonical_bytes(candidate) + b"\n"
+        if len(payload) > 64 * 1024:
+            raise OwnerLauncherError("phase_b_owner_source_oversized")
+        descriptor = os.open(
+            name,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o400,
+            dir_fd=directory,
+        )
+        try:
+            os.fchmod(descriptor, 0o400)
+            offset = 0
+            while offset < len(payload):
+                written = os.write(descriptor, payload[offset:])
+                if written <= 0:
+                    raise OSError("short owner source write")
+                offset += written
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.fsync(directory)
+        return _phase_b_owner_source_receipt(
+            plan_sha256=plan_sha256,
+            sequence=sequence,
+            candidate=candidate,
+        )
+    except OwnerLauncherError:
+        raise
+    except OSError:
+        raise OwnerLauncherError("phase_b_owner_source_write_failed") from None
+    finally:
+        os.close(directory)
+
+
+def _author_phase_b_signed_pair(
+    *,
+    plan: Any,
+    approval_source_sha256: str,
+    purpose: str,
+    sequence: int,
+    previous_approval_sha256: str | None,
+    issued_at_unix: int,
+    expires_at_unix: int,
+    signer: _PhaseBOwnerExternalSigner,
+    owner_authority: _PhaseBOwnerPublicAuthority,
+    existing_source: Mapping[str, Any] | None = None,
+) -> tuple[Any, Mapping[str, Any]]:
+    from gateway import canonical_writer_foundation_phase_b as phase_b
+
+    if (
+        purpose != ("initial_apply" if sequence == 0 else "resume_incomplete")
+        or (sequence == 0 and previous_approval_sha256 is not None)
+        or (sequence > 0 and not isinstance(previous_approval_sha256, str))
+        or not issued_at_unix < expires_at_unix
+        or expires_at_unix - issued_at_unix > 3600
+        or plan.value["owner_resume_public_key_ed25519_hex"]
+        != owner_authority.public_key_ed25519_hex
+        or plan.value["owner_resume_key_id"] != owner_authority.key_id
+        or plan.value["owner_resume_public_key_file_sha256"]
+        != owner_authority.public_key_file_sha256
+    ):
+        raise OwnerLauncherError("phase_b_owner_approval_invalid")
+    if previous_approval_sha256 is not None:
+        _require_sha256(
+            previous_approval_sha256,
+            "phase_b_owner_approval_invalid",
+        )
+    source_common = {
+        "schema": phase_b.PHASE_B_SOURCE_AUTH_SCHEMA,
+        "authority_kind": PHASE_B_OWNER_AUTHORITY_KIND,
+        "purpose": purpose,
+        "sequence": sequence,
+        "previous_approval_sha256": previous_approval_sha256,
+        "plan_sha256": plan.sha256,
+        "intent_sha256": plan.value["intent_sha256"],
+        "owner_subject_sha256": plan.owner_subject_sha256,
+        "approval_source_sha256": approval_source_sha256,
+        "owner_key_id": owner_authority.key_id,
+        "requested_at_unix": issued_at_unix,
+        "expires_at_unix": expires_at_unix,
+    }
+    if existing_source is None:
+        source_template = {
+            **source_common,
+            "nonce_sha256": _sha256(secrets.token_bytes(32)),
+            "signature_sshsig": "",
+            "receipt_sha256": "0" * 64,
+        }
+        source_signature = signer.sign(
+            phase_b.phase_b_source_authentication_signature_payload(
+                source_template
+            ),
+            namespace=PHASE_B_SOURCE_AUTH_SSHSIG_NAMESPACE,
+            expected_authority=owner_authority,
+        )
+        source_unsigned = {
+            **{
+                key: copy.deepcopy(value)
+                for key, value in source_template.items()
+                if key != "receipt_sha256"
+            },
+            "signature_sshsig": source_signature,
+        }
+        source = {
+            **source_unsigned,
+            "receipt_sha256": _sha256(_canonical_bytes(source_unsigned)),
+        }
+    else:
+        source = copy.deepcopy(dict(existing_source))
+        if any(source.get(key) != value for key, value in source_common.items()):
+            raise OwnerLauncherError("phase_b_owner_source_conflict")
+    approval_template = {
+        "schema": phase_b.PHASE_B_APPROVAL_SCHEMA,
+        "purpose": purpose,
+        "sequence": sequence,
+        "previous_approval_sha256": previous_approval_sha256,
+        "plan_sha256": plan.sha256,
+        "intent_sha256": plan.value["intent_sha256"],
+        "owner_subject_sha256": plan.owner_subject_sha256,
+        "approval_source_sha256": approval_source_sha256,
+        "owner_public_key_ed25519_hex": owner_authority.public_key_ed25519_hex,
+        "owner_key_id": owner_authority.key_id,
+        "owner_public_key_file_sha256": owner_authority.public_key_file_sha256,
+        "source_authentication_sha256": source["receipt_sha256"],
+        "approved": True,
+        "issued_at_unix": issued_at_unix,
+        "expires_at_unix": expires_at_unix,
+        "secret_material_recorded": False,
+        "signature_sshsig": "",
+        "approval_sha256": "0" * 64,
+    }
+    approval_signature = signer.sign(
+        phase_b.phase_b_approval_signature_payload(approval_template),
+        namespace=PHASE_B_APPROVAL_SSHSIG_NAMESPACE,
+        expected_authority=owner_authority,
+    )
+    approval_unsigned = {
+        **{
+            key: copy.deepcopy(value)
+            for key, value in approval_template.items()
+            if key != "approval_sha256"
+        },
+        "signature_sshsig": approval_signature,
+    }
+    try:
+        approval = phase_b.PhaseBApproval.from_mapping(
+            {
+                **approval_unsigned,
+                "approval_sha256": _sha256(
+                    _canonical_bytes(approval_unsigned)
+                ),
+            },
+            plan=plan,
+            now_unix=issued_at_unix,
+        )
+        validated_source = phase_b.validate_phase_b_source_authentication(
+            source,
+            plan=plan,
+            approval=approval,
+        )
+    except (phase_b.PhaseBError, TypeError, ValueError) as exc:
+        raise OwnerLauncherError("phase_b_owner_approval_invalid") from exc
+    return approval, validated_source
+
+
+def _read_phase_b_owner_source_at(
+    directory: int,
+    name: str,
+) -> Mapping[str, Any]:
+    try:
+        before = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if (
+            not stat.S_ISREG(before.st_mode)
+            or stat.S_ISLNK(before.st_mode)
+            or before.st_uid != os.geteuid()
+            or before.st_nlink != 1
+            or stat.S_IMODE(before.st_mode) != 0o400
+            or not 1 <= before.st_size <= 64 * 1024
+        ):
+            raise OwnerLauncherError("phase_b_owner_source_untrusted")
+        descriptor = os.open(
+            name,
+            os.O_RDONLY
+            | getattr(os, "O_CLOEXEC", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            dir_fd=directory,
+        )
+        try:
+            opened = os.fstat(descriptor)
+            raw = os.read(descriptor, 64 * 1024 + 1)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
+        reachable = os.stat(name, dir_fd=directory, follow_symlinks=False)
+    except OwnerLauncherError:
+        raise
+    except OSError:
+        raise OwnerLauncherError("phase_b_owner_source_untrusted") from None
+    if (
+        len(raw) != before.st_size
+        or _phase_b_stat_identity(before) != _phase_b_stat_identity(opened)
+        or _phase_b_stat_identity(before) != _phase_b_stat_identity(after)
+        or _phase_b_stat_identity(before) != _phase_b_stat_identity(reachable)
+        or not raw.endswith(b"\n")
+    ):
+        raise OwnerLauncherError("phase_b_owner_source_untrusted")
+    value = _decode_json_object(raw[:-1], maximum=64 * 1024)
+    if raw != _canonical_bytes(value) + b"\n":
+        raise OwnerLauncherError("phase_b_owner_source_untrusted")
+    return copy.deepcopy(dict(value))
+
+
+def _phase_b_owner_resume_source_receipts(
+    *,
+    plan_sha256: str,
+    sequence: int,
+    candidate: Mapping[str, Any] | None = None,
+) -> tuple[Mapping[str, Any], ...]:
+    """Append/list signed resume attempts without overwriting stale attempts."""
+
+    if type(sequence) is not int or not 1 <= sequence <= 32:
+        raise OwnerLauncherError("phase_b_owner_source_path_invalid")
+    directory = _phase_b_owner_source_directory(plan_sha256)
+    pattern = re.compile(
+        rf"^{sequence:08d}\.([0-9a-f]{{64}})\.source\.json$"
+    )
+    try:
+        names = sorted(name for name in os.listdir(directory) if pattern.fullmatch(name))
+        if candidate is not None:
+            receipt_sha = _require_sha256(
+                candidate.get("receipt_sha256"),
+                "phase_b_owner_source_invalid",
+            )
+            name = f"{sequence:08d}.{receipt_sha}.source.json"
+            if name not in names:
+                payload = _canonical_bytes(candidate) + b"\n"
+                if len(payload) > 64 * 1024:
+                    raise OwnerLauncherError("phase_b_owner_source_oversized")
+                descriptor = os.open(
+                    name,
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_CLOEXEC", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                    0o400,
+                    dir_fd=directory,
+                )
+                try:
+                    os.fchmod(descriptor, 0o400)
+                    offset = 0
+                    while offset < len(payload):
+                        written = os.write(descriptor, payload[offset:])
+                        if written <= 0:
+                            raise OSError("short owner source write")
+                        offset += written
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+                os.fsync(directory)
+                names.append(name)
+                names.sort()
+        values = tuple(_read_phase_b_owner_source_at(directory, name) for name in names)
+        if candidate is not None and not any(
+            dict(value) == dict(candidate) for value in values
+        ):
+            raise OwnerLauncherError("phase_b_owner_source_write_failed")
+        return values
+    except OwnerLauncherError:
+        raise
+    except OSError:
+        raise OwnerLauncherError("phase_b_owner_source_write_failed") from None
+    finally:
+        os.close(directory)
+
+
+class _PhaseBOwnerProtocol:
+    """Owner half of the exact, bounded Phase-B operation state machine."""
+
+    _MAX_COUNTS = {
+        "authority_observe_initial": 1,
+        "authority_approve": 1,
+        # At most one expired source-only crash residue may be completed as
+        # history, followed immediately by one fresh successor.  Neither step
+        # is repeatable beyond this exact two-frame recovery shape.
+        "authority_resume_approve": 2,
+        "observe_initial": 1,
+        "observe_recovery": 1,
+        "temporary_create_or_rotate": 4,
+        "temporary_delete": 1,
+        "bootstrap_describe": 1,
+        "bootstrap_create_or_rotate": 4,
+        "observe_terminal": 1,
+    }
+    _ALLOWED_AFTER = {
+        None: {
+            "authority_observe_initial",
+            "authority_resume_approve",
+            "observe_initial",
+            "observe_recovery",
+        },
+        "authority_observe_initial": {"authority_approve"},
+        "authority_approve": {"observe_initial", "observe_recovery"},
+        "authority_resume_approve": {
+            "authority_resume_approve",
+            "observe_initial",
+            "observe_recovery",
+        },
+        "observe_initial": {
+            "temporary_create_or_rotate",
+            "bootstrap_create_or_rotate",
+            "bootstrap_describe",
+        },
+        "observe_recovery": {
+            "temporary_create_or_rotate",
+            "bootstrap_create_or_rotate",
+            "bootstrap_describe",
+        },
+        "temporary_create_or_rotate": {
+            "temporary_create_or_rotate",
+            "bootstrap_create_or_rotate",
+            "temporary_delete",
+        },
+        "bootstrap_create_or_rotate": {
+            "bootstrap_create_or_rotate",
+            "temporary_create_or_rotate",
+            "bootstrap_describe",
+        },
+        "temporary_delete": {"bootstrap_describe"},
+        "bootstrap_describe": {"observe_terminal"},
+        "observe_terminal": set(),
+    }
+
+    def __init__(
+        self,
+        *,
+        gate: Mapping[str, Any],
+        cloud_sql_client: GoogleRestClient,
+        password_factory: Callable[[], bytearray] | None = None,
+        clock: Callable[[], float] = time.time,
+        authority_guard: Callable[[], None] = lambda: None,
+        owner_signer: _PhaseBOwnerExternalSigner | None = None,
+    ) -> None:
+        if not callable(authority_guard):
+            raise OwnerLauncherError("invalid_phase_b_authority_guard")
+        self._gate = dict(gate)
+        self._client = cloud_sql_client
+        # Resolve the secret generator at construction time.  The helper is
+        # intentionally colocated with the other secret functions later in
+        # this module, so a class-definition default would make import order a
+        # hidden authority dependency.
+        self._password_factory = password_factory or _new_admin_password
+        self._clock = clock
+        self._authority_guard = authority_guard
+        self._owner_signer = owner_signer or _PhaseBOwnerExternalSigner()
+        self._owner_resume_authority: _PhaseBOwnerPublicAuthority | None = None
+        self._context: Mapping[str, Any] | None = None
+        self._context_sha256: str | None = None
+        self._sequence = 0
+        self._previous_response_sha256: str | None = None
+        self._previous_operation: str | None = None
+        self._counts = {name: 0 for name in _PHASE_B_OPERATIONS}
+        self._plan: Any = None
+        self._approval: Any = None
+        self._initial_cloud: Mapping[str, Any] | None = None
+        self._temporary: dict[int, dict[str, Any]] = {}
+        self._bootstrap: dict[int, dict[str, Any]] = {}
+
+    def _validate_context(
+        self,
+        value: Any,
+        *,
+        allow_unbound_owner_authority: bool,
+    ) -> Mapping[str, Any]:
+        if not isinstance(value, Mapping) or set(value) != _PHASE_B_AUTHORITY_CONTEXT_KEYS:
+            raise OwnerLauncherError("invalid_phase_b_authority_context")
+        context = copy.deepcopy(dict(value))
+        if (
+            context["release_sha"] != self._gate["release_sha"]
+            or context["coordinator_input_sha256"]
+            != self._gate["coordinator_input_sha256"]
+            or context["owner_subject_sha256"]
+            != self._gate["owner_subject_sha256"]
+            or context["approval_source_sha256"]
+            != self._gate["approval_source_sha256"]
+        ):
+            raise OwnerLauncherError("invalid_phase_b_authority_context")
+        owner_authority_names = (
+            "owner_resume_public_key_ed25519_hex",
+            "owner_resume_key_id",
+            "owner_resume_public_key_file_sha256",
+            "owner_resume_public_fingerprint",
+        )
+        sources = context["authority_sources"]
+        if not isinstance(sources, Mapping):
+            raise OwnerLauncherError("invalid_phase_b_authority_context")
+        owner_source = sources.get("owner_resume_public_key")
+        owner_unbound = (
+            all(context[name] is None for name in owner_authority_names)
+            and owner_source is None
+        )
+        if owner_unbound is not allow_unbound_owner_authority:
+            raise OwnerLauncherError("invalid_phase_b_authority_context")
+        for name, item in context.items():
+            if (
+                name.endswith("_sha256")
+                and name not in {"authority_sources_sha256"}
+                and item is not None
+            ):
+                _require_sha256(item, "invalid_phase_b_authority_context")
+        for name in (
+            "activation_approval_issued_at_unix",
+            "activation_approval_expires_at_unix",
+            "native_approval_issued_at_unix",
+            "native_approval_expires_at_unix",
+        ):
+            if type(context[name]) is not int or context[name] < 0:
+                raise OwnerLauncherError("invalid_phase_b_authority_context")
+        if (
+            set(sources) != _PHASE_B_AUTHORITY_SOURCE_LABELS
+            or context["authority_sources_sha256"]
+            != _sha256(_canonical_bytes(sources))
+        ):
+            raise OwnerLauncherError("invalid_phase_b_authority_context")
+        for label, source in sources.items():
+            if label == "owner_resume_public_key" and owner_unbound:
+                continue
+            if (
+                not isinstance(source, Mapping)
+                or set(source) != _PHASE_B_AUTHORITY_SOURCE_KEYS
+                or not isinstance(source["path"], str)
+                or not os.path.isabs(source["path"])
+                or "\x00" in source["path"]
+                or not isinstance(source["mode"], str)
+                or re.fullmatch(r"0[0-7]{3}", source["mode"]) is None
+                or any(
+                    type(source[name]) is not int or source[name] < 0
+                    for name in ("device", "inode", "uid", "gid", "size")
+                )
+            ):
+                raise OwnerLauncherError("invalid_phase_b_authority_context")
+            _require_sha256(
+                source["file_sha256"],
+                "invalid_phase_b_authority_context",
+            )
+        if not owner_unbound:
+            public_hex = context["owner_resume_public_key_ed25519_hex"]
+            if (
+                not isinstance(public_hex, str)
+                or re.fullmatch(r"[0-9a-f]{64}", public_hex) is None
+                or context["owner_resume_key_id"]
+                != _sha256(bytes.fromhex(public_hex))
+                or context["owner_resume_public_key_file_sha256"]
+                != owner_source["file_sha256"]
+                or owner_source["path"] != str(PHASE_B_OWNER_PUBLIC_KEY_PATH)
+                or owner_source["uid"] != PHASE_B_OWNER_PUBLIC_KEY_UID
+                or owner_source["gid"] != PHASE_B_OWNER_PUBLIC_KEY_GID
+                or owner_source["mode"] != "0600"
+                or not 1 <= owner_source["size"] <= PHASE_B_MAX_PUBLIC_KEY_BYTES
+            ):
+                raise OwnerLauncherError("invalid_phase_b_authority_context")
+            public_blob = _ssh_wire_string(b"ssh-ed25519") + _ssh_wire_string(
+                bytes.fromhex(public_hex)
+            )
+            fingerprint = "SHA256:" + base64.b64encode(
+                hashlib.sha256(public_blob).digest()
+            ).decode("ascii").rstrip("=")
+            if (
+                context["owner_resume_public_fingerprint"] != fingerprint
+                or fingerprint != PHASE_B_OWNER_PUBLIC_KEY_FINGERPRINT
+            ):
+                raise OwnerLauncherError("invalid_phase_b_authority_context")
+        expected_paths = {
+            "coordinator_input": "/etc/muncho/full-canary/coordinator-input.json",
+            "activation_plan": "/etc/muncho/writer-activation/activation-plan.json",
+            "activation_receipt": (
+                "/var/lib/muncho-writer-activation/plans/"
+                f"{context['release_sha']}/{context['activation_plan_sha256']}"
+                "/success/activation.json"
+            ),
+            "activation_owner_approval": (
+                "/etc/muncho/writer-activation/approvals/activation/"
+                f"{context['activation_plan_sha256']}/"
+                f"{context['activation_owner_approval_sha256']}.json"
+            ),
+            "native_plan": (
+                "/etc/muncho/writer-activation/native-observation-plan.json"
+            ),
+            "native_receipt": (
+                "/var/lib/muncho-writer-canary-evidence/"
+                f"{context['release_sha']}/"
+                f"{context['native_observation_plan_sha256']}"
+                "/native-observation.json"
+            ),
+            "native_owner_approval": (
+                "/etc/muncho/writer-activation/approvals/native_observation/"
+                f"{context['native_observation_plan_sha256']}/"
+                f"{context['native_observation_approval_sha256']}.json"
+            ),
+            "external_iam_receipt": (
+                "/var/lib/muncho-writer-canary-evidence/"
+                f"{context['release_sha']}/"
+                f"{context['native_observation_plan_sha256']}/external-iam/"
+                f"{context['external_iam_receipt_sha256']}.json"
+            ),
+            "config_collector_receipt": (
+                "/var/lib/muncho-writer-canary-evidence/config-collector/"
+                f"{context['release_sha']}/"
+                f"{context['config_collector_receipt_sha256']}.json"
+            ),
+            "gateway_config_intent": (
+                "/etc/muncho/full-canary/staged/gateway.yaml"
+            ),
+            "edge_config_intent": (
+                "/etc/muncho/full-canary/staged/discord-edge.json"
+            ),
+            "fixture_intent": "/etc/muncho/full-canary/fixture.json",
+            "host_identity_receipt": (
+                "/etc/muncho/full-canary/host-identity.json"
+            ),
+        }
+        if any(
+            sources[label]["path"] != expected_path
+            for label, expected_path in expected_paths.items()
+        ) or any(
+            sources[label]["file_sha256"] != context[digest_name]
+            for label, digest_name in (
+                ("gateway_config_intent", "gateway_config_intent_sha256"),
+                ("edge_config_intent", "edge_config_intent_sha256"),
+            )
+        ):
+            raise OwnerLauncherError("invalid_phase_b_authority_context")
+        if not (
+            context["activation_approval_issued_at_unix"]
+            < context["activation_approval_expires_at_unix"]
+            and context["native_approval_issued_at_unix"]
+            < context["native_approval_expires_at_unix"]
+        ):
+            raise OwnerLauncherError("invalid_phase_b_authority_context")
+        _phase_b_secret_free(context)
+        return context
+
+    def validate_request(self, request: Any) -> Mapping[str, Any]:
+        if not isinstance(request, Mapping) or set(request) != _PHASE_B_REQUEST_KEYS:
+            raise OwnerLauncherError("invalid_phase_b_request")
+        value = copy.deepcopy(dict(request))
+        unsigned = {key: item for key, item in value.items() if key != "request_sha256"}
+        operation = value["operation"]
+        if (
+            value["schema"] != PHASE_B_OWNER_REQUEST_SCHEMA
+            or value["frame_schema"] != PHASE_B_OWNER_FRAME_SCHEMA
+            or operation not in _PHASE_B_OPERATIONS
+            or value["sequence"] != self._sequence
+            or value["previous_response_sha256"] != self._previous_response_sha256
+            or value["request_sha256"] != _sha256(_canonical_bytes(unsigned))
+            or type(value["issued_at_unix"]) is not int
+            or type(value["expires_at_unix"]) is not int
+            or not value["issued_at_unix"] <= int(self._clock()) < value[
+                "expires_at_unix"
+            ]
+            or value["expires_at_unix"] > self._gate["expires_at_unix"]
+            or operation not in self._ALLOWED_AFTER[self._previous_operation]
+            or self._counts[operation] >= self._MAX_COUNTS[operation]
+            or type(value["credential_expected"]) is not bool
+            or value["credential_expected"]
+            is not (operation in {
+                "temporary_create_or_rotate",
+                "bootstrap_create_or_rotate",
+            })
+            or not isinstance(value["payload"], Mapping)
+        ):
+            raise OwnerLauncherError("invalid_phase_b_request")
+        context = self._validate_context(
+            value["authority_context"],
+            allow_unbound_owner_authority=(
+                operation == "authority_observe_initial"
+                and self._context is None
+            ),
+        )
+        context_sha = _require_sha256(
+            value["authority_context_sha256"],
+            "invalid_phase_b_request",
+        )
+        if context_sha != _sha256(_canonical_bytes(context)):
+            raise OwnerLauncherError("invalid_phase_b_request")
+        if self._context is None:
+            self._context = context
+            self._context_sha256 = context_sha
+        elif context != self._context or context_sha != self._context_sha256:
+            if (
+                operation != "authority_approve"
+                or self._previous_operation != "authority_observe_initial"
+                or self._owner_resume_authority is None
+            ):
+                raise OwnerLauncherError("phase_b_authority_context_changed")
+            expected = copy.deepcopy(dict(self._context))
+            authority = self._owner_resume_authority.to_mapping()
+            expected_sources = copy.deepcopy(dict(expected["authority_sources"]))
+            expected_sources["owner_resume_public_key"] = authority[
+                "public_key_source"
+            ]
+            expected.update({
+                "owner_resume_public_key_ed25519_hex": authority[
+                    "public_key_ed25519_hex"
+                ],
+                "owner_resume_key_id": authority["key_id"],
+                "owner_resume_public_key_file_sha256": authority[
+                    "public_key_file_sha256"
+                ],
+                "owner_resume_public_fingerprint": authority[
+                    "public_fingerprint"
+                ],
+                "authority_sources": dict(sorted(expected_sources.items())),
+            })
+            expected["authority_sources_sha256"] = _sha256(
+                _canonical_bytes(expected["authority_sources"])
+            )
+            if context != expected:
+                raise OwnerLauncherError("phase_b_authority_context_changed")
+            self._context = context
+            self._context_sha256 = context_sha
+        expected_boundary = (
+            "temporary"
+            if operation.startswith("temporary_")
+            else "bootstrap"
+            if operation.startswith("bootstrap_")
+            else None
+        )
+        if (
+            value["boundary_kind"] != expected_boundary
+            or (
+                expected_boundary is None
+                and value["boundary_ordinal"] is not None
+                or expected_boundary is not None
+                and (
+                    type(value["boundary_ordinal"]) is not int
+                    or not 0 <= value["boundary_ordinal"] <= 7
+                )
+            )
+        ):
+            raise OwnerLauncherError("invalid_phase_b_request")
+        idempotency_projection = {
+            "authority_context_sha256": context_sha,
+            "phase_b_plan_sha256": value["phase_b_plan_sha256"],
+            "phase_b_approval_sha256": value["phase_b_approval_sha256"],
+            "operation": operation,
+            "sequence": value["sequence"],
+            "previous_response_sha256": value["previous_response_sha256"],
+            "payload": value["payload"],
+        }
+        if value["idempotency_key"] != _sha256(
+            _canonical_bytes(idempotency_projection)
+        ):
+            raise OwnerLauncherError("invalid_phase_b_request")
+        for name in ("phase_b_plan_sha256", "phase_b_approval_sha256"):
+            if value[name] is not None:
+                _require_sha256(value[name], "invalid_phase_b_request")
+        _phase_b_secret_free(value)
+        self._counts[operation] += 1
+        return value
+
+    def _observer(self) -> CloudSqlTemporaryAdmin:
+        return CloudSqlTemporaryAdmin(self._client)
+
+    def _bootstrap_boundary(self, ordinal: int) -> CloudSqlCanaryBootstrapLogin:
+        if self._plan is None:
+            raise OwnerLauncherError("phase_b_plan_missing")
+        state = self._bootstrap.get(ordinal)
+        if state is None:
+            state = {
+                "boundary": CloudSqlCanaryBootstrapLogin(
+                    self._client,
+                    expected_owner_subject_sha256=self._plan.owner_subject_sha256,
+                    expected_mutation_context_sha256=self._plan.sha256,
+                ),
+                "successful_mutations": 0,
+            }
+            self._bootstrap[ordinal] = state
+        return state["boundary"]
+
+    def _adopt_plan_approval(self, payload: Mapping[str, Any]) -> None:
+        from gateway import canonical_writer_foundation_phase_b as phase_b
+
+        if set(payload) != {"phase_b_plan", "phase_b_approval"}:
+            raise OwnerLauncherError("invalid_phase_b_observation_request")
+        plan = phase_b.PhaseBPlan.from_mapping(payload["phase_b_plan"])
+        approval = phase_b.PhaseBApproval.from_mapping(
+            payload["phase_b_approval"],
+            plan=plan,
+            now_unix=int(self._clock()),
+        )
+        if (
+            plan.owner_subject_sha256 != self._context["owner_subject_sha256"]
+            or approval.value["approval_source_sha256"]
+            != self._context["approval_source_sha256"]
+        ):
+            raise OwnerLauncherError("invalid_phase_b_observation_request")
+        if self._plan is not None and self._plan.to_mapping() != plan.to_mapping():
+            raise OwnerLauncherError("phase_b_plan_changed")
+        if self._approval is not None and self._approval.to_mapping() != approval.to_mapping():
+            raise OwnerLauncherError("phase_b_approval_changed")
+        self._plan = plan
+        self._approval = approval
+
+    def execute(
+        self,
+        request: Mapping[str, Any],
+    ) -> tuple[Mapping[str, Any], bytearray | None, bool]:
+        from gateway import canonical_writer_foundation_phase_b as phase_b
+
+        operation = request["operation"]
+        payload = request["payload"]
+        ordinal = request["boundary_ordinal"]
+        self._authority_guard()
+        if operation == "authority_observe_initial":
+            if set(payload) != {"local_preflight"} or self._initial_cloud is not None:
+                raise OwnerLauncherError("invalid_phase_b_authority_request")
+            local = payload["local_preflight"]
+            if not isinstance(local, Mapping):
+                raise OwnerLauncherError("invalid_phase_b_authority_request")
+            self._owner_resume_authority = self._owner_signer.inspect()
+            self._initial_cloud = _phase_b_initial_cloud_observation(self._observer())
+            return {
+                "cloud_observation": self._initial_cloud,
+                "owner_resume_authority": (
+                    self._owner_resume_authority.to_mapping()
+                ),
+            }, None, False
+        if operation == "authority_approve":
+            if (
+                set(payload) != {"phase_b_plan"}
+                or self._initial_cloud is None
+                or self._owner_resume_authority is None
+            ):
+                raise OwnerLauncherError("invalid_phase_b_authority_request")
+            plan = phase_b.PhaseBPlan.from_mapping(payload["phase_b_plan"])
+            owner_authority = self._owner_resume_authority
+            if (
+                plan.owner_subject_sha256 != self._context["owner_subject_sha256"]
+                or plan.revision != self._context["release_sha"]
+                or plan.preflight.value["cloud_sql"] != self._initial_cloud
+                or plan.value["owner_resume_public_key_ed25519_hex"]
+                != owner_authority.public_key_ed25519_hex
+                or plan.value["owner_resume_key_id"] != owner_authority.key_id
+                or plan.value["owner_resume_public_key_file_sha256"]
+                != owner_authority.public_key_file_sha256
+                or request["phase_b_plan_sha256"] != plan.sha256
+                or request["phase_b_approval_sha256"] is not None
+            ):
+                raise OwnerLauncherError("invalid_phase_b_authority_request")
+            now = int(self._clock())
+            expires = min(request["expires_at_unix"], now + 3600)
+            source_template = {
+                "schema": phase_b.PHASE_B_SOURCE_AUTH_SCHEMA,
+                "authority_kind": PHASE_B_OWNER_AUTHORITY_KIND,
+                "purpose": "initial_apply",
+                "sequence": 0,
+                "previous_approval_sha256": None,
+                "plan_sha256": plan.sha256,
+                "intent_sha256": plan.value["intent_sha256"],
+                "owner_subject_sha256": plan.owner_subject_sha256,
+                "approval_source_sha256": self._context[
+                    "approval_source_sha256"
+                ],
+                "owner_key_id": owner_authority.key_id,
+                "requested_at_unix": now,
+                "expires_at_unix": expires,
+                "nonce_sha256": _sha256(secrets.token_bytes(32)),
+                "signature_sshsig": "",
+                "receipt_sha256": "0" * 64,
+            }
+            try:
+                source_signature_payload = (
+                    phase_b.phase_b_source_authentication_signature_payload(
+                        source_template
+                    )
+                )
+            except (phase_b.PhaseBError, TypeError, ValueError) as exc:
+                raise OwnerLauncherError(
+                    "phase_b_owner_source_auth_invalid"
+                ) from exc
+            source_signature = self._owner_signer.sign(
+                source_signature_payload,
+                namespace=PHASE_B_SOURCE_AUTH_SSHSIG_NAMESPACE,
+                expected_authority=owner_authority,
+            )
+            source_unsigned = {
+                **{
+                    key: copy.deepcopy(value)
+                    for key, value in source_template.items()
+                    if key != "receipt_sha256"
+                },
+                "signature_sshsig": source_signature,
+            }
+            source_authentication = {
+                **source_unsigned,
+                "receipt_sha256": _sha256(_canonical_bytes(source_unsigned)),
+            }
+            approval_template = {
+                "schema": phase_b.PHASE_B_APPROVAL_SCHEMA,
+                "purpose": "initial_apply",
+                "sequence": 0,
+                "previous_approval_sha256": None,
+                "plan_sha256": plan.sha256,
+                "intent_sha256": plan.value["intent_sha256"],
+                "owner_subject_sha256": plan.owner_subject_sha256,
+                "approval_source_sha256": self._context["approval_source_sha256"],
+                "owner_public_key_ed25519_hex": (
+                    owner_authority.public_key_ed25519_hex
+                ),
+                "owner_key_id": owner_authority.key_id,
+                "owner_public_key_file_sha256": (
+                    owner_authority.public_key_file_sha256
+                ),
+                "source_authentication_sha256": source_authentication[
+                    "receipt_sha256"
+                ],
+                "approved": True,
+                "issued_at_unix": now,
+                "expires_at_unix": expires,
+                "secret_material_recorded": False,
+                "signature_sshsig": "",
+                "approval_sha256": "0" * 64,
+            }
+            try:
+                approval_signature_payload = (
+                    phase_b.phase_b_approval_signature_payload(
+                        approval_template
+                    )
+                )
+            except (phase_b.PhaseBError, TypeError, ValueError) as exc:
+                raise OwnerLauncherError("phase_b_owner_approval_invalid") from exc
+            approval_signature = self._owner_signer.sign(
+                approval_signature_payload,
+                namespace=PHASE_B_APPROVAL_SSHSIG_NAMESPACE,
+                expected_authority=owner_authority,
+            )
+            approval_unsigned = {
+                **{
+                    key: copy.deepcopy(value)
+                    for key, value in approval_template.items()
+                    if key != "approval_sha256"
+                },
+                "signature_sshsig": approval_signature,
+            }
+            try:
+                approval = phase_b.PhaseBApproval.from_mapping(
+                    {
+                        **approval_unsigned,
+                        "approval_sha256": _sha256(
+                            _canonical_bytes(approval_unsigned)
+                        ),
+                    },
+                    plan=plan,
+                    now_unix=now,
+                )
+                validated_source = phase_b.validate_phase_b_source_authentication(
+                    source_authentication,
+                    plan=plan,
+                    approval=approval,
+                )
+            except (phase_b.PhaseBError, TypeError, ValueError) as exc:
+                raise OwnerLauncherError("phase_b_owner_approval_invalid") from exc
+            _phase_b_owner_source_receipt(
+                plan_sha256=plan.sha256,
+                sequence=0,
+                candidate=validated_source,
+            )
+            self._plan = plan
+            self._approval = approval
+            return {
+                "phase_b_approval": approval.to_mapping(),
+                "phase_b_approval_source": validated_source,
+            }, None, False
+        if operation == "authority_resume_approve":
+            if set(payload) != {
+                "phase_b_plan",
+                "phase_b_approval_chain",
+                "phase_b_incomplete_head",
+            }:
+                raise OwnerLauncherError("invalid_phase_b_resume_request")
+            plan = phase_b.PhaseBPlan.from_mapping(payload["phase_b_plan"])
+            raw_chain = payload["phase_b_approval_chain"]
+            inspection = payload["phase_b_incomplete_head"]
+            if (
+                not isinstance(raw_chain, list)
+                or not raw_chain
+                or any(not isinstance(item, Mapping) for item in raw_chain)
+                or not isinstance(inspection, Mapping)
+                or set(inspection) != _PHASE_B_INCOMPLETE_HEAD_KEYS
+            ):
+                raise OwnerLauncherError("invalid_phase_b_resume_request")
+            inspection_unsigned = {
+                key: copy.deepcopy(value)
+                for key, value in inspection.items()
+                if key != "inspection_sha256"
+            }
+            if inspection["inspection_sha256"] != _sha256(
+                _canonical_bytes(inspection_unsigned)
+            ):
+                raise OwnerLauncherError("invalid_phase_b_resume_request")
+            try:
+                approvals = phase_b.validate_phase_b_approval_chain(
+                    raw_chain,
+                    plan=plan,
+                )
+            except (phase_b.PhaseBError, TypeError, ValueError) as exc:
+                raise OwnerLauncherError("invalid_phase_b_resume_request") from exc
+            head = approvals[-1]
+            if (
+                request["phase_b_plan_sha256"] != plan.sha256
+                or request["phase_b_approval_sha256"] != head.sha256
+                or plan.owner_subject_sha256
+                != self._context["owner_subject_sha256"]
+                or plan.revision != self._context["release_sha"]
+                or head.value["approval_source_sha256"]
+                != self._context["approval_source_sha256"]
+                or inspection["plan_sha256"] != plan.sha256
+                or inspection["intent_sha256"] != plan.value["intent_sha256"]
+                or inspection["owner_subject_sha256"]
+                != plan.owner_subject_sha256
+                or inspection["approval_source_sha256"]
+                != head.value["approval_source_sha256"]
+                or inspection["approval_sequence"] != head.sequence
+                or inspection["approval_sha256"] != head.sha256
+                or inspection["terminal"] is not False
+                or inspection["resume_eligible"] is not True
+                or inspection["requires_reapproval"] is not True
+                or inspection["mutation_authorized"] is not False
+                or inspection["incomplete_state"]
+                not in {
+                    "authority_published_no_intent",
+                    "journal_incomplete",
+                }
+            ):
+                raise OwnerLauncherError("invalid_phase_b_resume_request")
+            owner_authority = self._owner_signer.inspect()
+            owner_mapping = owner_authority.to_mapping()
+            if (
+                plan.value["owner_resume_public_key_ed25519_hex"]
+                != owner_authority.public_key_ed25519_hex
+                or plan.value["owner_resume_key_id"] != owner_authority.key_id
+                or plan.value["owner_resume_public_key_file_sha256"]
+                != owner_authority.public_key_file_sha256
+                or self._context["owner_resume_public_key_ed25519_hex"]
+                != owner_mapping["public_key_ed25519_hex"]
+                or self._context["owner_resume_key_id"]
+                != owner_mapping["key_id"]
+                or self._context["owner_resume_public_key_file_sha256"]
+                != owner_mapping["public_key_file_sha256"]
+                or self._context["owner_resume_public_fingerprint"]
+                != owner_mapping["public_fingerprint"]
+                or self._context["authority_sources"][
+                    "owner_resume_public_key"
+                ]
+                != owner_mapping["public_key_source"]
+            ):
+                raise OwnerLauncherError("invalid_phase_b_resume_request")
+            self._owner_resume_authority = owner_authority
+            sequence = head.sequence + 1
+            pending_sha = inspection[
+                "pending_source_authentication_sha256"
+            ]
+            pending_sequence = inspection["pending_source_sequence"]
+            candidates = _phase_b_owner_resume_source_receipts(
+                plan_sha256=plan.sha256,
+                sequence=sequence,
+            )
+            existing_source: Mapping[str, Any] | None = None
+            if pending_sha is not None:
+                if pending_sequence != sequence:
+                    raise OwnerLauncherError("invalid_phase_b_resume_request")
+                existing_source = next(
+                    (
+                        source
+                        for source in candidates
+                        if source.get("receipt_sha256") == pending_sha
+                    ),
+                    None,
+                )
+                if existing_source is None:
+                    raise OwnerLauncherError(
+                        "phase_b_owner_pending_source_missing"
+                    )
+            elif pending_sequence is not None:
+                raise OwnerLauncherError("invalid_phase_b_resume_request")
+            else:
+                now_unix = int(self._clock())
+                existing_source = next(
+                    (
+                        source
+                        for source in reversed(candidates)
+                        if source.get("previous_approval_sha256") == head.sha256
+                        and source.get("requested_at_unix", now_unix + 1)
+                        <= now_unix
+                        < source.get("expires_at_unix", -1)
+                    ),
+                    None,
+                )
+            if existing_source is None:
+                issued_at = int(self._clock())
+                expires_at = min(
+                    request["expires_at_unix"],
+                    issued_at + 3600,
+                )
+            else:
+                issued_at = existing_source.get("requested_at_unix")
+                expires_at = existing_source.get("expires_at_unix")
+                if type(issued_at) is not int or type(expires_at) is not int:
+                    raise OwnerLauncherError("phase_b_owner_source_invalid")
+            approval, source = _author_phase_b_signed_pair(
+                plan=plan,
+                approval_source_sha256=head.value[
+                    "approval_source_sha256"
+                ],
+                purpose="resume_incomplete",
+                sequence=sequence,
+                previous_approval_sha256=head.sha256,
+                issued_at_unix=issued_at,
+                expires_at_unix=expires_at,
+                signer=self._owner_signer,
+                owner_authority=owner_authority,
+                existing_source=existing_source,
+            )
+            _phase_b_owner_resume_source_receipts(
+                plan_sha256=plan.sha256,
+                sequence=sequence,
+                candidate=source,
+            )
+            self._plan = plan
+            self._approval = approval
+            return {
+                "phase_b_approval": approval.to_mapping(),
+                "phase_b_approval_source": source,
+            }, None, False
+        if operation in {"observe_initial", "observe_recovery"}:
+            self._adopt_plan_approval(payload)
+            if (
+                request["phase_b_plan_sha256"] != self._plan.sha256
+                or request["phase_b_approval_sha256"] != self._approval.sha256
+            ):
+                raise OwnerLauncherError("invalid_phase_b_observation_request")
+            if operation == "observe_initial":
+                observation = _phase_b_initial_cloud_observation(self._observer())
+            else:
+                observation = _phase_b_recovery_cloud_observation(
+                    self._observer(),
+                    self._bootstrap_boundary(7),
+                    temporary_admin_username=self._plan.temporary_admin_username,
+                )
+            return {"cloud_observation": observation}, None, False
+        if self._plan is None or self._approval is None:
+            raise OwnerLauncherError("phase_b_authority_missing")
+        if (
+            request["phase_b_plan_sha256"] != self._plan.sha256
+            or request["phase_b_approval_sha256"] != self._approval.sha256
+        ):
+            raise OwnerLauncherError("phase_b_authority_changed")
+        if operation == "temporary_create_or_rotate":
+            if set(payload) != {
+                "username",
+                "expected_owner_subject_sha256",
+                "expected_mutation_context_sha256",
+            } or payload != {
+                "username": self._plan.temporary_admin_username,
+                "expected_owner_subject_sha256": self._plan.owner_subject_sha256,
+                "expected_mutation_context_sha256": self._plan.sha256,
+            }:
+                raise OwnerLauncherError("invalid_phase_b_temporary_request")
+            state = self._temporary.get(ordinal)
+            if state is None:
+                state = {
+                    "boundary": CloudSqlTemporaryAdmin(self._client),
+                    "successful_mutations": 0,
+                }
+                self._temporary[ordinal] = state
+            boundary = state["boundary"]
+            if boundary.mutation_reconciliation_required():
+                boundary.reconcile_ambiguous_mutation_and_confirm_absent(
+                    self._plan.temporary_admin_username
+                )
+                boundary = CloudSqlTemporaryAdmin(self._client)
+                state["boundary"] = boundary
+            if state["successful_mutations"] != 0:
+                raise OwnerLauncherError("phase_b_temporary_mutation_replay")
+            secret = self._password_factory()
+            if not isinstance(secret, bytearray) or len(secret) != PHASE_B_CREDENTIAL_BYTES:
+                _wipe(secret if isinstance(secret, bytearray) else None)
+                raise OwnerLauncherError("invalid_phase_b_credential")
+            try:
+                boundary.begin_mutation_observation(
+                    expected_owner_subject_sha256=self._plan.owner_subject_sha256,
+                    expected_mutation_context_sha256=self._plan.sha256,
+                )
+                boundary.create_or_rotate_recovery(
+                    self._plan.temporary_admin_username,
+                    secret.decode("ascii"),
+                )
+                authority = boundary.temporary_admin_authority_receipt(
+                    self._plan.temporary_admin_username
+                )
+                self._authority_guard()
+            except BaseException:
+                _wipe(secret)
+                raise
+            state["successful_mutations"] += 1
+            state["authority"] = authority
+            return {"authority_receipt": authority}, secret, False
+        if operation == "temporary_delete":
+            if set(payload) != {"username", "authority_receipt_sha256"}:
+                raise OwnerLauncherError("invalid_phase_b_temporary_request")
+            state = self._temporary.get(ordinal)
+            if (
+                state is None
+                or payload["username"] != self._plan.temporary_admin_username
+                or not isinstance(state.get("authority"), Mapping)
+                or payload["authority_receipt_sha256"]
+                != state["authority"].get("receipt_sha256")
+            ):
+                raise OwnerLauncherError("invalid_phase_b_temporary_request")
+            boundary = state["boundary"]
+            boundary.delete_and_confirm_absent(self._plan.temporary_admin_username)
+            absence = boundary.reconciliation_receipt()
+            self._authority_guard()
+            return {"absence_receipt": absence}, None, False
+        if operation == "bootstrap_create_or_rotate":
+            if payload != {}:
+                raise OwnerLauncherError("invalid_phase_b_bootstrap_request")
+            boundary = self._bootstrap_boundary(ordinal)
+            state = self._bootstrap[ordinal]
+            if boundary.mutation_reconciliation_required():
+                boundary.reconcile_ambiguous_mutation_and_confirm_absent()
+                boundary = CloudSqlCanaryBootstrapLogin(
+                    self._client,
+                    expected_owner_subject_sha256=self._plan.owner_subject_sha256,
+                    expected_mutation_context_sha256=self._plan.sha256,
+                )
+                state["boundary"] = boundary
+            if state["successful_mutations"] >= 2:
+                raise OwnerLauncherError("phase_b_bootstrap_mutation_replay")
+            secret = self._password_factory()
+            if not isinstance(secret, bytearray) or len(secret) != PHASE_B_CREDENTIAL_BYTES:
+                _wipe(secret if isinstance(secret, bytearray) else None)
+                raise OwnerLauncherError("invalid_phase_b_credential")
+            try:
+                boundary.create_or_rotate_recovery(secret.decode("ascii"))
+                authority = boundary.authority_receipt()
+                self._authority_guard()
+            except BaseException:
+                _wipe(secret)
+                raise
+            state["successful_mutations"] += 1
+            state["authority"] = authority
+            return {"authority_receipt": authority}, secret, False
+        if operation == "bootstrap_describe":
+            if payload != {}:
+                raise OwnerLauncherError("invalid_phase_b_bootstrap_request")
+            return {"resource": self._bootstrap_boundary(ordinal).describe()}, None, False
+        if operation == "observe_terminal":
+            if set(payload) != {"bootstrap_resource", "absence_receipt"}:
+                raise OwnerLauncherError("invalid_phase_b_terminal_request")
+            observation = _phase_b_terminal_cloud_observation(
+                self._observer(),
+                self._bootstrap_boundary(7),
+                temporary_admin_username=self._plan.temporary_admin_username,
+                expected_bootstrap_resource=payload["bootstrap_resource"],
+            )
+            return {"cloud_observation": observation}, None, True
+        raise AssertionError("unreachable Phase-B owner operation")
+
+    def response_frame(
+        self,
+        request: Mapping[str, Any],
+    ) -> tuple[bytearray, bool]:
+        credential: bytearray | None = None
+        terminal = False
+        try:
+            try:
+                result, credential, terminal = self.execute(request)
+                ok = True
+                error_code = None
+            except BaseException as exc:
+                result = {
+                    "mutation_reconciliation_required": bool(
+                        request["operation"] in {
+                            "temporary_create_or_rotate",
+                            "bootstrap_create_or_rotate",
+                        }
+                        and self._mutation_reconciliation_required(request)
+                    )
+                }
+                ok = False
+                error_code = (
+                    exc.code
+                    if isinstance(exc, OwnerLauncherError)
+                    else "phase_b_owner_operation_failed"
+                )
+            if credential is not None and (
+                not ok or len(credential) != PHASE_B_CREDENTIAL_BYTES
+            ):
+                raise OwnerLauncherError("invalid_phase_b_credential")
+            if ok and (credential is not None) is not request["credential_expected"]:
+                raise OwnerLauncherError("invalid_phase_b_credential")
+            unsigned = {
+                "schema": PHASE_B_OWNER_RESPONSE_SCHEMA,
+                "frame_schema": PHASE_B_OWNER_FRAME_SCHEMA,
+                "ok": ok,
+                "operation": request["operation"],
+                "sequence": request["sequence"],
+                "request_sha256": request["request_sha256"],
+                "idempotency_key": request["idempotency_key"],
+                "authority_context_sha256": request["authority_context_sha256"],
+                "phase_b_plan_sha256": request["phase_b_plan_sha256"],
+                "phase_b_approval_sha256": request["phase_b_approval_sha256"],
+                "credential_present": credential is not None,
+                "credential_length": 0 if credential is None else len(credential),
+                "result": copy.deepcopy(dict(result)),
+                "error_code": error_code,
+                "completed_at_unix": int(self._clock()),
+            }
+            receipt = {
+                **unsigned,
+                "response_sha256": _sha256(_canonical_bytes(unsigned)),
+            }
+            _phase_b_secret_free(receipt)
+            encoded = _canonical_bytes(receipt)
+            if len(encoded) > PHASE_B_MAX_RESPONSE_BYTES:
+                raise OwnerLauncherError("phase_b_owner_response_oversized")
+            frame = bytearray(
+                PHASE_B_OWNER_FRAME_MAGIC
+                + struct.pack(">II", len(encoded), 0 if credential is None else len(credential))
+                + encoded
+            )
+            if credential is not None:
+                frame.extend(credential)
+            self._sequence += 1
+            self._previous_response_sha256 = receipt["response_sha256"]
+            self._previous_operation = request["operation"]
+            return frame, terminal
+        finally:
+            _wipe(credential)
+
+    def _mutation_reconciliation_required(
+        self,
+        request: Mapping[str, Any],
+    ) -> bool:
+        ordinal = request["boundary_ordinal"]
+        state = (
+            self._temporary.get(ordinal)
+            if request["operation"] == "temporary_create_or_rotate"
+            else self._bootstrap.get(ordinal)
+        )
+        boundary = None if state is None else state.get("boundary")
+        return bool(
+            boundary is not None
+            and boundary.mutation_reconciliation_required()
+        )
+
+
 class DiscordTokenSource(Protocol):
     def read_discord_token(self) -> bytearray: ...
 
@@ -7714,11 +7891,21 @@ class FixedLocalFinalApprovalFile:
         deadline = request.get("approval_deadline_unix")
         delivery_deadline = request.get("owner_input_cutoff_unix")
         margin = request.get("final_approval_transmit_margin_seconds")
+        legacy_window = (
+            margin == _FINAL_APPROVAL_DELIVERY_RESERVE_SECONDS
+            and delivery_deadline == deadline - margin
+        )
+        session_bound_window = (
+            request.get("schema") == SESSION_BOUND_APPROVAL_REQUEST_SCHEMA
+            and margin is None
+            and type(deadline) is int
+            and type(delivery_deadline) is int
+            and delivery_deadline == deadline - 5
+        )
         if (
             type(deadline) is not int
             or type(delivery_deadline) is not int
-            or margin != _FINAL_APPROVAL_DELIVERY_RESERVE_SECONDS
-            or delivery_deadline != deadline - margin
+            or not (legacy_window or session_bound_window)
         ):
             raise OwnerLauncherError("invalid_owner_approval_request")
         if delivery_deadline < 0:
@@ -7814,6 +8001,13 @@ class RemoteSecretSession(Protocol):
         on_first_write: Callable[[], None],
     ) -> Mapping[str, Any]: ...
 
+    def phase_b_exchange(
+        self,
+        frame: bytes | bytearray | memoryview,
+        *,
+        terminal: bool,
+    ) -> Mapping[str, Any]: ...
+
     def finish(self, frame: bytes | bytearray | memoryview) -> Mapping[str, Any]: ...
 
     def finish_before(
@@ -7836,21 +8030,17 @@ class RemoteSecretSession(Protocol):
 
 
 class CoordinatorTransport(Protocol):
-    def preflight_recovery(self, release_sha: str) -> Mapping[str, Any]: ...
+    def preflight_phase_b_apply(self, release_sha: str) -> Mapping[str, Any]: ...
 
-    def preflight_owner_launch(self, release_sha: str) -> Mapping[str, Any]: ...
+    def preflight_phase_b_live_run(self, release_sha: str) -> Mapping[str, Any]: ...
+
+    def open_phase_b_apply(self, release_sha: str) -> RemoteSecretSession: ...
 
     def open_discord_install(self, release_sha: str) -> RemoteSecretSession: ...
 
     def open_run(self, release_sha: str) -> RemoteSecretSession: ...
 
-    def open_final_approval_install(self, release_sha: str) -> RemoteSecretSession: ...
-
     def open_discord_retirement(self, release_sha: str) -> RemoteSecretSession: ...
-
-    def open_recovery(self, release_sha: str) -> RemoteSecretSession: ...
-
-    def open_recovery_finalizer(self, release_sha: str) -> RemoteSecretSession: ...
 
 
 def _validated_input_gate(
@@ -7858,9 +8048,6 @@ def _validated_input_gate(
     raw: Mapping[str, Any],
     *,
     owner_gate: Mapping[str, Any] | None,
-    token_lease_expected: bool,
-    process_lease_expected: bool = False,
-    admin_frame_disclosed: bool = False,
     active_secrets: Sequence[bytes | bytearray | memoryview] = (),
 ) -> Mapping[str, Any]:
     if raw.get("schema") != COORDINATOR_FAILURE_SCHEMA:
@@ -7868,9 +8055,6 @@ def _validated_input_gate(
     terminal = validate_terminal_first_failure(
         raw,
         owner_gate=owner_gate,
-        token_lease_expected=token_lease_expected,
-        process_lease_expected=process_lease_expected,
-        admin_frame_disclosed=admin_frame_disclosed,
         active_secrets=active_secrets,
     )
     session.mark_validated(terminal)
@@ -7897,6 +8081,7 @@ class _IapRemoteSession:
         post_frame_timeout_seconds: float = 300.0,
         terminal_timeout_seconds: float = 2_400.0,
         termination_timeout_seconds: float = 15.0,
+        maximum_line_bytes: int = _MAX_JSON_LINE_BYTES,
         postflight_guard: Callable[[], None] | None = None,
     ) -> None:
         if (
@@ -7916,6 +8101,12 @@ class _IapRemoteSession:
         self._post_frame_timeout = post_frame_timeout_seconds
         self._terminal_timeout = terminal_timeout_seconds
         self._termination_timeout = termination_timeout_seconds
+        if (
+            type(maximum_line_bytes) is not int
+            or not _MAX_JSON_LINE_BYTES <= maximum_line_bytes <= PHASE_B_MAX_RESPONSE_BYTES
+        ):
+            raise OwnerLauncherError("remote_ndjson_limit_invalid")
+        self._maximum_line_bytes = maximum_line_bytes
         self._postflight_guard = postflight_guard or (lambda: None)
         self._postflight_completed = False
         try:
@@ -7968,13 +8159,13 @@ class _IapRemoteSession:
                     del self._buffer[: newline + 1]
                     if not raw or raw.endswith(b"\r"):
                         raise OwnerLauncherError("remote_ndjson_invalid")
-                    value = _decode_json_object(raw, maximum=_MAX_JSON_LINE_BYTES)
+                    value = _decode_json_object(raw, maximum=self._maximum_line_bytes)
                     if raw != _canonical_bytes(value):
                         raise OwnerLauncherError("remote_ndjson_noncanonical")
                     self._messages_read += 1
                     self._last_mapping = dict(value)
                     return dict(value)
-                if len(self._buffer) > _MAX_JSON_LINE_BYTES:
+                if len(self._buffer) > self._maximum_line_bytes:
                     raise OwnerLauncherError("remote_ndjson_oversized")
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
@@ -8112,6 +8303,40 @@ class _IapRemoteSession:
             write_guard=write_guard,
             on_first_write=on_first_write,
         )
+
+    def phase_b_exchange(
+        self,
+        frame: bytes | bytearray | memoryview,
+        *,
+        terminal: bool,
+    ) -> Mapping[str, Any]:
+        """Exchange one exact MPB1 frame in the bounded Phase-B dialogue."""
+
+        if (
+            type(terminal) is not bool
+            or self._stdin_closed
+            or self._frames_written >= PHASE_B_MAX_ROUNDS
+            or self._messages_read != self._frames_written + 1
+        ):
+            raise OwnerLauncherError("phase_b_remote_frame_state_invalid")
+        try:
+            view = memoryview(frame).cast("B")
+        except (TypeError, ValueError):
+            raise OwnerLauncherError("phase_b_remote_frame_invalid") from None
+        try:
+            if view.nbytes < 12 or view.nbytes > 12 + PHASE_B_MAX_RESPONSE_BYTES + PHASE_B_CREDENTIAL_BYTES:
+                raise OwnerLauncherError("phase_b_remote_frame_invalid")
+            magic, receipt_size, credential_size = struct.unpack(">4sII", view[:12])
+            if (
+                magic != PHASE_B_OWNER_FRAME_MAGIC
+                or not 2 <= receipt_size <= PHASE_B_MAX_RESPONSE_BYTES
+                or credential_size not in {0, PHASE_B_CREDENTIAL_BYTES}
+                or view.nbytes != 12 + receipt_size + credential_size
+            ):
+                raise OwnerLauncherError("phase_b_remote_frame_invalid")
+        finally:
+            view.release()
+        return self._write_frame(frame, close_stdin=terminal)
 
     def finish(self, frame: bytes | bytearray | memoryview) -> Mapping[str, Any]:
         if (
@@ -8332,14 +8557,13 @@ class IapCoordinatorTransport:
         if not _RELEASE_SHA.fullmatch(release_sha):
             raise OwnerLauncherError("invalid_release_sha")
         if command not in {
-            "preflight-owner-launch",
+            "publish-coordinator-input",
+            "preflight-phase-b-apply",
+            "preflight-phase-b-live-run",
             "install-discord-token",
+            "phase-b-apply",
             "run",
-            "install-final-approval",
             "stop-and-retire-discord-token",
-            "preflight-recovery",
-            "recover",
-            "finalize-recovery",
         }:
             raise OwnerLauncherError("invalid_coordinator_command")
         command_prefix = self._gcloud_executable.trusted_command_prefix()
@@ -8643,6 +8867,7 @@ class IapCoordinatorTransport:
         approved: bool,
         gate_timeout_seconds: float = 300.0,
         post_frame_timeout_seconds: float = 300.0,
+        maximum_line_bytes: int = _MAX_JSON_LINE_BYTES,
     ) -> _IapRemoteSession:
         argv = self._argv(release_sha, command, approved=approved)
         account = next(
@@ -8668,6 +8893,7 @@ class IapCoordinatorTransport:
             popen_factory=self._popen_factory,
             gate_timeout_seconds=gate_timeout_seconds,
             post_frame_timeout_seconds=post_frame_timeout_seconds,
+            maximum_line_bytes=maximum_line_bytes,
             postflight_guard=postflight,
         )
 
@@ -8678,10 +8904,12 @@ class IapCoordinatorTransport:
         self._known_hosts.private_key_path()
         self._known_hosts.public_key_line()
 
-    def preflight_owner_launch(self, release_sha: str) -> Mapping[str, Any]:
+    def publish_coordinator_input(self, release_sha: str) -> Mapping[str, Any]:
+        """Publish the fixed coordinator input after packaged activation truth."""
+
         session = self._open(
             release_sha,
-            "preflight-owner-launch",
+            "publish-coordinator-input",
             approved=False,
         )
         primary: BaseException | None = None
@@ -8691,8 +8919,36 @@ class IapCoordinatorTransport:
                 terminal = validate_terminal_first_failure(
                     value,
                     owner_gate=None,
-                    token_lease_expected=False,
-                    process_lease_expected=False,
+                    expected_release_sha=release_sha,
+                )
+                session.mark_validated(terminal)
+                raise RemoteCommandFailed(terminal)
+            receipt = validate_coordinator_input_publication_receipt(
+                value,
+                expected_release_sha=release_sha,
+            )
+            session.mark_validated(receipt)
+            self._owner_identity.require_stable()
+            return receipt
+        except BaseException as exc:
+            primary = exc
+            raise
+        finally:
+            _close_session_preserving_primary(session, primary)
+
+    def preflight_phase_b_apply(self, release_sha: str) -> Mapping[str, Any]:
+        session = self._open(
+            release_sha,
+            "preflight-phase-b-apply",
+            approved=False,
+        )
+        primary: BaseException | None = None
+        try:
+            value = session.read_gate()
+            if value.get("schema") == COORDINATOR_FAILURE_SCHEMA:
+                terminal = validate_terminal_first_failure(
+                    value,
+                    owner_gate=None,
                     expected_release_sha=release_sha,
                 )
                 session.mark_validated(terminal)
@@ -8705,8 +8961,12 @@ class IapCoordinatorTransport:
         finally:
             _close_session_preserving_primary(session, primary)
 
-    def preflight_recovery(self, release_sha: str) -> Mapping[str, Any]:
-        session = self._open(release_sha, "preflight-recovery", approved=False)
+    def preflight_phase_b_live_run(self, release_sha: str) -> Mapping[str, Any]:
+        session = self._open(
+            release_sha,
+            "preflight-phase-b-live-run",
+            approved=False,
+        )
         primary: BaseException | None = None
         try:
             value = session.read_gate()
@@ -8714,12 +8974,10 @@ class IapCoordinatorTransport:
                 terminal = validate_terminal_first_failure(
                     value,
                     owner_gate=None,
-                    token_lease_expected=False,
-                    process_lease_expected=False,
                     expected_release_sha=release_sha,
                 )
                 session.mark_validated(terminal)
-                return terminal
+                raise RemoteCommandFailed(terminal)
             session.complete_read_only()
             return value
         except BaseException as exc:
@@ -8731,17 +8989,17 @@ class IapCoordinatorTransport:
     def open_discord_install(self, release_sha: str) -> RemoteSecretSession:
         return self._open(release_sha, "install-discord-token", approved=True)
 
-    def open_run(self, release_sha: str) -> RemoteSecretSession:
-        return self._open(release_sha, "run", approved=True)
-
-    def open_final_approval_install(self, release_sha: str) -> RemoteSecretSession:
+    def open_phase_b_apply(self, release_sha: str) -> RemoteSecretSession:
         return self._open(
             release_sha,
-            "install-final-approval",
+            "phase-b-apply",
             approved=True,
-            gate_timeout_seconds=30.0,
-            post_frame_timeout_seconds=30.0,
+            post_frame_timeout_seconds=2_400.0,
+            maximum_line_bytes=PHASE_B_MAX_REQUEST_BYTES,
         )
+
+    def open_run(self, release_sha: str) -> RemoteSecretSession:
+        return self._open(release_sha, "run", approved=True)
 
     def open_discord_retirement(self, release_sha: str) -> RemoteSecretSession:
         return self._open(
@@ -8751,21 +9009,517 @@ class IapCoordinatorTransport:
             post_frame_timeout_seconds=2_400.0,
         )
 
-    def open_recovery(self, release_sha: str) -> RemoteSecretSession:
-        return self._open(
-            release_sha,
-            "recover",
-            approved=True,
-            post_frame_timeout_seconds=2_400.0,
-        )
+def validate_phase_b_apply_gate(
+    value: Any,
+    *,
+    expected_release_sha: str,
+    now_unix: int,
+) -> Mapping[str, Any]:
+    gate = _validate_self_digest(
+        value,
+        expected_keys=_PHASE_B_APPLY_GATE_KEYS,
+        digest_key="gate_sha256",
+        code="invalid_phase_b_apply_gate",
+    )
+    authority_present = gate.get("authority_present")
+    state = gate.get("state")
+    if (
+        gate.get("schema") != PHASE_B_APPLY_GATE_SCHEMA
+        or gate.get("ok") is not True
+        or state
+        not in {"initial_apply_ready", "same_plan_resume_or_replay"}
+        or gate.get("release_sha") != expected_release_sha
+        or type(authority_present) is not bool
+        or authority_present is not (state == "same_plan_resume_or_replay")
+        or type(gate.get("phase_b_terminal")) is not bool
+        or type(gate.get("phase_b_requires_reapproval")) is not bool
+        or type(gate.get("issued_at_unix")) is not int
+        or not gate["issued_at_unix"] <= now_unix
+        or type(gate.get("expires_at_unix")) is not int
+        or not now_unix < gate["expires_at_unix"]
+        or gate["expires_at_unix"] - gate["issued_at_unix"] > 3600
+        or gate["expires_at_unix"] - now_unix > 3600
+    ):
+        raise OwnerLauncherError("invalid_phase_b_apply_gate")
+    for name in (
+        "coordinator_input_sha256",
+        "owner_subject_sha256",
+        "approval_source_sha256",
+    ):
+        _require_sha256(gate.get(name), "invalid_phase_b_apply_gate")
+    if not authority_present:
+        if (
+            any(
+                gate.get(name) is not None
+                for name in (
+                    "phase_b_plan_sha256",
+                    "phase_b_approval_sha256",
+                    "phase_b_approval_sequence",
+                    "phase_b_incomplete_state",
+                    "phase_b_inspection_sha256",
+                )
+            )
+            or gate["phase_b_terminal"] is not False
+            or gate["phase_b_requires_reapproval"] is not False
+        ):
+            raise OwnerLauncherError("invalid_phase_b_apply_gate")
+    else:
+        for name in (
+            "phase_b_plan_sha256",
+            "phase_b_approval_sha256",
+            "phase_b_inspection_sha256",
+        ):
+            _require_sha256(gate.get(name), "invalid_phase_b_apply_gate")
+        if (
+            type(gate.get("phase_b_approval_sequence")) is not int
+            or gate["phase_b_approval_sequence"] < 0
+            or gate.get("phase_b_incomplete_state")
+            not in {
+                "authority_published_no_intent",
+                "journal_incomplete",
+                "terminal",
+            }
+            or gate["phase_b_terminal"]
+            is not (gate["phase_b_incomplete_state"] == "terminal")
+            or gate["phase_b_terminal"]
+            and gate["phase_b_requires_reapproval"]
+        ):
+            raise OwnerLauncherError("invalid_phase_b_apply_gate")
+    _phase_b_secret_free(gate)
+    return gate
 
-    def open_recovery_finalizer(self, release_sha: str) -> RemoteSecretSession:
-        return self._open(
-            release_sha,
-            "finalize-recovery",
-            approved=True,
-            post_frame_timeout_seconds=2_400.0,
+
+def validate_phase_b_apply_receipt(
+    value: Any,
+    *,
+    owner_gate: Mapping[str, Any],
+    now_unix: int,
+) -> Mapping[str, Any]:
+    """Validate the terminal, secret-free Phase-B handoff receipt."""
+
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != _PHASE_B_APPLY_RECEIPT_KEYS
+        or value.get("schema") != PHASE_B_APPLY_RECEIPT_SCHEMA
+        or value.get("ok") is not True
+        or value.get("state") != "terminal_ready"
+        or value.get("release_sha") != owner_gate.get("release_sha")
+        or value.get("coordinator_input_sha256")
+        != owner_gate.get("coordinator_input_sha256")
+        or value.get("safe_to_start") is not True
+    ):
+        raise OwnerLauncherError("invalid_phase_b_apply_receipt")
+    for name in (
+        "phase_b_plan_sha256",
+        "phase_b_approval_sha256",
+        "phase_b_terminal_receipt_sha256",
+        "phase_b_readiness_receipt_sha256",
+    ):
+        _require_sha256(value.get(name), "invalid_phase_b_apply_receipt")
+    _validate_receipt_time(
+        value.get("completed_at_unix"),
+        now_unix=now_unix,
+        code="invalid_phase_b_apply_receipt",
+    )
+    expected = _require_sha256(
+        value.get("receipt_sha256"),
+        "invalid_phase_b_apply_receipt",
+    )
+    unsigned = dict(value)
+    del unsigned["receipt_sha256"]
+    if expected != _sha256(_canonical_bytes(unsigned)):
+        raise OwnerLauncherError("invalid_phase_b_apply_receipt")
+    _phase_b_secret_free(value)
+    return copy.deepcopy(dict(value))
+
+
+def validate_phase_b_live_gate(
+    value: Any,
+    *,
+    expected_release_sha: str,
+    expected_phase_b_apply_receipt: Mapping[str, Any],
+    now_unix: int,
+) -> Mapping[str, Any]:
+    """Validate the read-only terminal-Phase-B authority for live work."""
+
+    gate = _validate_self_digest(
+        value,
+        expected_keys=_PHASE_B_LIVE_GATE_KEYS,
+        digest_key="gate_sha256",
+        code="invalid_phase_b_live_gate",
+    )
+    anchor = gate.get("phase_b_readiness_anchor")
+    if (
+        gate.get("schema") != PHASE_B_LIVE_GATE_SCHEMA
+        or gate.get("ok") is not True
+        or gate.get("state") != "phase_b_terminal_ready"
+        or gate.get("release_sha") != expected_release_sha
+        or gate.get("coordinator_input_sha256")
+        != expected_phase_b_apply_receipt.get("coordinator_input_sha256")
+        or not isinstance(anchor, Mapping)
+        or set(anchor) != _PHASE_B_READINESS_ANCHOR_KEYS
+        or gate.get("phase_b_readiness_anchor_sha256")
+        != _sha256(_canonical_bytes(anchor))
+        or anchor.get("phase_b_release_revision") != expected_release_sha
+        or anchor.get("phase_b_plan_sha256")
+        != expected_phase_b_apply_receipt.get("phase_b_plan_sha256")
+        or anchor.get("phase_b_approval_sha256")
+        != expected_phase_b_apply_receipt.get("phase_b_approval_sha256")
+        or anchor.get("phase_b_terminal_receipt_sha256")
+        != expected_phase_b_apply_receipt.get("phase_b_terminal_receipt_sha256")
+        or type(anchor.get("phase_b_readiness_sequence")) is not int
+        or anchor["phase_b_readiness_sequence"] < 0
+        or type(gate.get("issued_at_unix")) is not int
+        or not gate["issued_at_unix"] <= now_unix
+        or type(gate.get("expires_at_unix")) is not int
+        or not now_unix < gate["expires_at_unix"]
+        or gate["expires_at_unix"] - gate["issued_at_unix"] != 300
+        or gate["expires_at_unix"] - now_unix > 300
+    ):
+        raise OwnerLauncherError("invalid_phase_b_live_gate")
+    for name in (
+        "owner_subject_sha256",
+        "approval_source_sha256",
+        "phase_b_readiness_anchor_sha256",
+    ):
+        _require_sha256(gate.get(name), "invalid_phase_b_live_gate")
+    for name in _PHASE_B_READINESS_ANCHOR_KEYS - {
+        "phase_b_release_revision",
+        "phase_b_readiness_sequence",
+    }:
+        _require_sha256(anchor.get(name), "invalid_phase_b_live_gate")
+    _phase_b_secret_free(gate)
+    return gate
+
+
+def validate_current_phase_b_live_gate(
+    value: Any,
+    *,
+    expected_release_sha: str,
+    now_unix: int,
+) -> Mapping[str, Any]:
+    """Validate current terminal Phase-B truth without a historical apply receipt.
+
+    The live gate is a read-only descendant of the pinned Phase-B owner
+    authority.  Requiring a launcher-local copy of an earlier apply receipt
+    would make durable Cloud truth depend on transient workstation state, so
+    the current anchor is validated directly and exactly instead.
+    """
+
+    gate = _validate_self_digest(
+        value,
+        expected_keys=_PHASE_B_LIVE_GATE_KEYS,
+        digest_key="gate_sha256",
+        code="invalid_phase_b_live_gate",
+    )
+    anchor = gate.get("phase_b_readiness_anchor")
+    if (
+        gate.get("schema") != PHASE_B_LIVE_GATE_SCHEMA
+        or gate.get("ok") is not True
+        or gate.get("state") != "phase_b_terminal_ready"
+        or gate.get("release_sha") != expected_release_sha
+        or not isinstance(anchor, Mapping)
+        or set(anchor) != _PHASE_B_READINESS_ANCHOR_KEYS
+        or gate.get("phase_b_readiness_anchor_sha256")
+        != _sha256(_canonical_bytes(anchor))
+        or anchor.get("phase_b_release_revision") != expected_release_sha
+        or anchor.get("phase_b_approval_sha256") is None
+        or type(anchor.get("phase_b_readiness_sequence")) is not int
+        or anchor["phase_b_readiness_sequence"] < 0
+        or gate.get("approval_source_sha256")
+        != PHASE_B_PINNED_APPROVAL_SOURCE_SHA256
+        or type(gate.get("issued_at_unix")) is not int
+        or not gate["issued_at_unix"] <= now_unix
+        or type(gate.get("expires_at_unix")) is not int
+        or not now_unix < gate["expires_at_unix"]
+        or gate["expires_at_unix"] - gate["issued_at_unix"] != 300
+        or gate["expires_at_unix"] - now_unix > 300
+    ):
+        raise OwnerLauncherError("invalid_phase_b_live_gate")
+    for name in (
+        "coordinator_input_sha256",
+        "owner_subject_sha256",
+        "approval_source_sha256",
+        "phase_b_readiness_anchor_sha256",
+    ):
+        _require_sha256(gate.get(name), "invalid_phase_b_live_gate")
+    for name in _PHASE_B_READINESS_ANCHOR_KEYS - {
+        "phase_b_release_revision",
+        "phase_b_readiness_sequence",
+    }:
+        _require_sha256(anchor.get(name), "invalid_phase_b_live_gate")
+    _phase_b_secret_free(gate)
+    return gate
+
+
+def validate_session_bound_approval_request(
+    value: Any,
+    *,
+    live_gate: Mapping[str, Any],
+    now_unix: int,
+) -> Mapping[str, Any]:
+    """Validate the in-process approval request emitted by the target run."""
+
+    request = _validate_self_digest(
+        value,
+        expected_keys=_SESSION_BOUND_APPROVAL_REQUEST_KEYS,
+        digest_key="request_sha256",
+        code="invalid_owner_approval_request",
+    )
+    requested = request.get("requested_at_unix")
+    cutoff = request.get("owner_input_cutoff_unix")
+    deadline = request.get("approval_deadline_unix")
+    anchor = live_gate.get("phase_b_readiness_anchor")
+    if (
+        request.get("schema") != SESSION_BOUND_APPROVAL_REQUEST_SCHEMA
+        or request.get("ok") is not True
+        or request.get("state") != "awaiting_session_bound_owner_approval"
+        or request.get("release_sha") != live_gate.get("release_sha")
+        or request.get("coordinator_input_sha256")
+        != live_gate.get("coordinator_input_sha256")
+        or request.get("owner_subject_sha256")
+        != live_gate.get("owner_subject_sha256")
+        or request.get("approval_source_sha256")
+        != PHASE_B_PINNED_APPROVAL_SOURCE_SHA256
+        or request.get("approval_source_sha256")
+        != live_gate.get("approval_source_sha256")
+        or request.get("phase_b_readiness_anchor_sha256")
+        != live_gate.get("phase_b_readiness_anchor_sha256")
+        or not isinstance(anchor, Mapping)
+        or request.get("phase_b_approval_sha256")
+        != anchor.get("phase_b_approval_sha256")
+        or request.get("staged_plan_path")
+        != "/etc/muncho/full-canary/staged/runtime-plan.json"
+        or request.get("approval_path") is not None
+        or request.get("final_approval_frame_schema")
+        != FINAL_APPROVAL_FRAME_SCHEMA
+        or type(requested) is not int
+        or type(cutoff) is not int
+        or type(deadline) is not int
+        or not requested <= now_unix <= cutoff < deadline
+        or cutoff != deadline - 5
+        or not 30 <= deadline - requested <= 900
+    ):
+        raise OwnerLauncherError("invalid_owner_approval_request")
+    for name in (
+        "full_canary_plan_sha256",
+        "staged_plan_file_sha256",
+        "fixture_sha256",
+        "phase_b_readiness_anchor_sha256",
+        "phase_b_approval_sha256",
+        "owner_subject_sha256",
+        "approval_source_sha256",
+    ):
+        _require_sha256(request.get(name), "invalid_owner_approval_request")
+    return request
+
+
+def validate_session_bound_final_owner_approval(
+    value: Any,
+    *,
+    request: Mapping[str, Any],
+    now_unix: int,
+) -> Mapping[str, Any]:
+    """Validate one final owner decision bound to the just-built plan."""
+
+    if not isinstance(value, Mapping) or set(value) != _FINAL_APPROVAL_KEYS:
+        raise OwnerLauncherError("invalid_final_owner_approval")
+    approval = copy.deepcopy(dict(value))
+    approved = approval.get("approved_at_unix")
+    expires = approval.get("expires_at_unix")
+    if (
+        approval.get("schema") != "muncho-full-canary-owner-approval.v1"
+        or approval.get("scope") != "full_canary_runtime_start"
+        or approval.get("plan_sha256")
+        != request.get("full_canary_plan_sha256")
+        or approval.get("authority_kind")
+        != "trusted_root_bootstrap_out_of_band_owner"
+        or approval.get("cryptographic_owner_proof") is not False
+        or approval.get("owner_subject_sha256")
+        != request.get("owner_subject_sha256")
+        or approval.get("approval_source_sha256")
+        != PHASE_B_PINNED_APPROVAL_SOURCE_SHA256
+        or approval.get("approval_source_sha256")
+        != request.get("approval_source_sha256")
+        or type(approved) is not int
+        or type(expires) is not int
+        or not request["requested_at_unix"] <= approved <= now_unix <= expires
+        or approved > request["owner_input_cutoff_unix"]
+        or not 1 <= expires - approved <= 900
+        or expires > request["approval_deadline_unix"]
+    ):
+        raise OwnerLauncherError("invalid_final_owner_approval")
+    _require_sha256(approval.get("nonce_sha256"), "invalid_final_owner_approval")
+    return approval
+
+
+def validate_session_bound_coordinator_receipt(
+    value: Any,
+    *,
+    live_gate: Mapping[str, Any],
+    request: Mapping[str, Any],
+    approval: Mapping[str, Any],
+    now_unix: int,
+) -> Mapping[str, Any]:
+    """Validate terminal live truth for the admin-free session-bound run."""
+
+    _reject_secret_echo(
+        value,
+        active_secrets=(),
+        code="invalid_coordinator_receipt",
+    )
+    receipt = _validate_self_digest(
+        value,
+        expected_keys=_SESSION_BOUND_COORDINATOR_RECEIPT_KEYS,
+        digest_key="receipt_sha256",
+        code="invalid_coordinator_receipt",
+    )
+    result = receipt.get("live_driver_result")
+    if (
+        receipt.get("schema") != SESSION_BOUND_COORDINATOR_RECEIPT_SCHEMA
+        or receipt.get("ok") is not True
+        or receipt.get("state")
+        != "verified_stopped_and_credentials_retired"
+        or receipt.get("release_sha") != live_gate.get("release_sha")
+        or receipt.get("coordinator_input_sha256")
+        != live_gate.get("coordinator_input_sha256")
+        or receipt.get("full_canary_plan_sha256")
+        != request.get("full_canary_plan_sha256")
+        or receipt.get("owner_approval_sha256")
+        != _sha256(_canonical_bytes(approval))
+        or receipt.get("phase_b_readiness_anchor_sha256")
+        != live_gate.get("phase_b_readiness_anchor_sha256")
+        or receipt.get("fixture_sha256") != request.get("fixture_sha256")
+        or receipt.get("services_stopped") is not True
+        or receipt.get("discord_token_retired") is not True
+        or receipt.get("temporary_admin_created") is not False
+        or receipt.get("bootstrap_credential_created") is not False
+        or not isinstance(result, Mapping)
+        or set(result) != _LIVE_DRIVER_RESULT_KEYS
+        or result.get("schema") != "muncho-full-canary-live-driver.v1"
+        or result.get("ok") is not True
+        or result.get("release_sha") != live_gate.get("release_sha")
+        or result.get("full_canary_plan_sha256")
+        != receipt.get("full_canary_plan_sha256")
+        or result.get("discord_ingress_claimed") is not False
+        or not isinstance(result.get("offline_invariant_receipt"), Mapping)
+        or not isinstance(result.get("lifecycle_verification_receipt"), Mapping)
+        or receipt.get("live_driver_receipt_sha256")
+        != _sha256(_canonical_bytes(result))
+    ):
+        raise OwnerLauncherError("invalid_coordinator_receipt")
+    for name in (
+        "full_canary_plan_sha256",
+        "owner_approval_sha256",
+        "phase_b_readiness_anchor_sha256",
+        "api_session_key_sha256",
+        "fixture_sha256",
+        "live_driver_receipt_sha256",
+    ):
+        _require_sha256(receipt.get(name), "invalid_coordinator_receipt")
+    evidence_path = result.get("evidence_path")
+    expected_evidence_path = (
+        f"/var/lib/muncho-full-canary/plans/{live_gate['release_sha']}/"
+        f"{receipt['full_canary_plan_sha256']}/live/evidence.json"
+    )
+    if evidence_path != expected_evidence_path:
+        raise OwnerLauncherError("invalid_coordinator_receipt")
+    _require_sha256(result.get("evidence_sha256"), "invalid_coordinator_receipt")
+    _validate_receipt_time(
+        receipt.get("completed_at_unix"),
+        now_unix=now_unix,
+        code="invalid_coordinator_receipt",
+    )
+    return receipt
+
+
+def apply_phase_b_foundation(
+    *,
+    release_sha: str,
+    transport: CoordinatorTransport,
+    cloud_sql_client: GoogleRestClient,
+    owner_identity: ApprovedOwnerIdentity,
+    now: Callable[[], int] = lambda: int(time.time()),
+    password_factory: Callable[[], bytearray] | None = None,
+    secret_hardener: Callable[[], None] = harden_owner_secret_process,
+    provenance_guard: Callable[
+        [str], None
+    ] = require_owner_runtime_and_launcher_provenance,
+) -> Mapping[str, Any]:
+    """Drive only the standalone, bounded owner/VM Phase-B protocol."""
+
+    if not _RELEASE_SHA.fullmatch(release_sha):
+        raise OwnerLauncherError("invalid_release_sha")
+    provenance_guard(release_sha)
+    secret_hardener()
+    gate = validate_phase_b_apply_gate(
+        transport.preflight_phase_b_apply(release_sha),
+        expected_release_sha=release_sha,
+        now_unix=now(),
+    )
+    owner_identity.bind_approved_subject(str(gate["owner_subject_sha256"]))
+    owner_identity.require_stable()
+    session = transport.open_phase_b_apply(release_sha)
+    primary: BaseException | None = None
+    try:
+        current = session.read_gate()
+        if current.get("schema") == COORDINATOR_FAILURE_SCHEMA:
+            _validated_input_gate(
+                session,
+                current,
+                owner_gate=gate,
+            )
+            raise AssertionError("unreachable terminal Phase-B failure")
+        if current.get("schema") == PHASE_B_APPLY_RECEIPT_SCHEMA:
+            receipt = validate_phase_b_apply_receipt(
+                current,
+                owner_gate=gate,
+                now_unix=now(),
+            )
+            session.mark_validated(receipt)
+            owner_identity.require_stable()
+            return receipt
+
+        protocol = _PhaseBOwnerProtocol(
+            gate=gate,
+            cloud_sql_client=cloud_sql_client,
+            password_factory=password_factory,
+            clock=lambda: float(now()),
+            authority_guard=owner_identity.require_stable,
         )
+        for _round in range(PHASE_B_MAX_ROUNDS):
+            owner_identity.require_stable()
+            request = protocol.validate_request(current)
+            frame, terminal = protocol.response_frame(request)
+            try:
+                owner_identity.require_stable()
+                current = session.phase_b_exchange(frame, terminal=terminal)
+            finally:
+                _wipe(frame)
+            if current.get("schema") == COORDINATOR_FAILURE_SCHEMA:
+                _validated_input_gate(
+                    session,
+                    current,
+                    owner_gate=gate,
+                )
+                raise AssertionError("unreachable terminal Phase-B failure")
+            if terminal:
+                receipt = validate_phase_b_apply_receipt(
+                    current,
+                    owner_gate=gate,
+                    now_unix=now(),
+                )
+                session.mark_validated(receipt)
+                owner_identity.require_stable()
+                return receipt
+            if current.get("schema") == PHASE_B_APPLY_RECEIPT_SCHEMA:
+                raise OwnerLauncherError("phase_b_terminal_response_out_of_order")
+        raise OwnerLauncherError("phase_b_round_limit_exceeded")
+    except BaseException as exc:
+        primary = exc
+        raise
+    finally:
+        _close_session_preserving_primary(session, primary)
 
 
 def _validate_stopped_release_service_states(value: Any) -> list[dict[str, Any]]:
@@ -9059,6 +9813,681 @@ def validate_stopped_release_receipt(
     return copy.deepcopy(dict(value))
 
 
+def _host_receipt_rotation_id(
+    *,
+    release_sha: str,
+    external_iam_policy_sha256: str,
+    prior_file_sha256: str,
+    prior_receipt_sha256: str,
+    prior_boot_id_sha256: str,
+    current_boot_id_sha256: str,
+) -> str:
+    return _sha256(_canonical_bytes({
+        "external_iam_policy_sha256": external_iam_policy_sha256,
+        "prior_boot_id_sha256": prior_boot_id_sha256,
+        "prior_host_identity_receipt_file_sha256": prior_file_sha256,
+        "prior_host_identity_receipt_sha256": prior_receipt_sha256,
+        "release_revision": release_sha,
+        "target_boot_id_sha256": current_boot_id_sha256,
+    }))
+
+
+def validate_host_receipt_rotation_plan(
+    value: Mapping[str, Any],
+    *,
+    expected_release_sha: str,
+    expected_external_iam_policy_sha256: str,
+    expected_prior_file_sha256: str,
+    expected_prior_receipt_sha256: str,
+    expected_prior_boot_id_sha256: str,
+    expected_current_boot_id_sha256: str,
+) -> Mapping[str, Any]:
+    """Validate the exact secret-free reboot transition before owner apply."""
+
+    fields = {
+        "schema",
+        "release_revision",
+        "external_iam_policy_sha256",
+        "rotation_id",
+        "rotation_root",
+        "intent_path",
+        "prior_archive_path",
+        "tombstone_path",
+        "completion_path",
+        "host_identity_receipt_path",
+        "prior_host_identity_receipt_file_sha256",
+        "prior_host_identity_receipt_sha256",
+        "prior_boot_id_sha256",
+        "prior_observed_at_unix",
+        "target_host",
+        "target_boot_id_sha256",
+        "service_states",
+        "invariants",
+        "plan_sha256",
+    }
+    expected = {
+        "external_iam_policy_sha256": _require_sha256(
+            expected_external_iam_policy_sha256,
+            "host_receipt_rotation_plan_invalid",
+        ),
+        "prior_host_identity_receipt_file_sha256": _require_sha256(
+            expected_prior_file_sha256,
+            "host_receipt_rotation_plan_invalid",
+        ),
+        "prior_host_identity_receipt_sha256": _require_sha256(
+            expected_prior_receipt_sha256,
+            "host_receipt_rotation_plan_invalid",
+        ),
+        "prior_boot_id_sha256": _require_sha256(
+            expected_prior_boot_id_sha256,
+            "host_receipt_rotation_plan_invalid",
+        ),
+        "target_boot_id_sha256": _require_sha256(
+            expected_current_boot_id_sha256,
+            "host_receipt_rotation_plan_invalid",
+        ),
+    }
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or value.get("schema") != HOST_RECEIPT_ROTATION_PLAN_SCHEMA
+        or value.get("release_revision") != expected_release_sha
+        or _RELEASE_SHA.fullmatch(expected_release_sha) is None
+        or any(value.get(name) != item for name, item in expected.items())
+        or type(value.get("prior_observed_at_unix")) is not int
+        or value["prior_observed_at_unix"] < 0
+    ):
+        raise OwnerLauncherError("host_receipt_rotation_plan_invalid")
+    host = _validate_stopped_release_host(value.get("target_host"))
+    if host["boot_id_sha256"] != expected["target_boot_id_sha256"]:
+        raise OwnerLauncherError("host_receipt_rotation_plan_invalid")
+    service_states = _validate_stopped_release_service_states(
+        value.get("service_states")
+    )
+    rotation_id = _host_receipt_rotation_id(
+        release_sha=expected_release_sha,
+        external_iam_policy_sha256=expected["external_iam_policy_sha256"],
+        prior_file_sha256=expected["prior_host_identity_receipt_file_sha256"],
+        prior_receipt_sha256=expected["prior_host_identity_receipt_sha256"],
+        prior_boot_id_sha256=expected["prior_boot_id_sha256"],
+        current_boot_id_sha256=expected["target_boot_id_sha256"],
+    )
+    root = f"{HOST_RECEIPT_ROTATION_ROOT}/{rotation_id}"
+    if (
+        value.get("rotation_id") != rotation_id
+        or value.get("rotation_root") != root
+        or value.get("intent_path") != f"{root}/intent.json"
+        or value.get("prior_archive_path")
+        != f"{root}/prior-host-identity.json"
+        or value.get("tombstone_path") != f"{root}/tombstone.json"
+        or value.get("completion_path") != f"{root}/completion.json"
+        or value.get("host_identity_receipt_path")
+        != STOPPED_RELEASE_HOST_RECEIPT_PATH
+        or value.get("invariants")
+        != {
+            "services_started": False,
+            "service_units_changed": False,
+            "iam_mutated": False,
+            "prior_receipt_archived_no_replace": True,
+            "prior_receipt_tombstoned_before_retirement": True,
+            "fresh_receipt_collected_on_target_boot": True,
+        }
+    ):
+        raise OwnerLauncherError("host_receipt_rotation_plan_invalid")
+    plan_sha256 = _require_sha256(
+        value.get("plan_sha256"),
+        "host_receipt_rotation_plan_invalid",
+    )
+    unsigned = {name: item for name, item in value.items() if name != "plan_sha256"}
+    if plan_sha256 != _sha256(_canonical_bytes(unsigned)):
+        raise OwnerLauncherError("host_receipt_rotation_plan_invalid")
+    result = copy.deepcopy(dict(value))
+    result["target_host"] = host
+    result["service_states"] = service_states
+    return result
+
+
+def validate_host_receipt_rotation_receipt(
+    value: Mapping[str, Any],
+    *,
+    plan: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    fields = {
+        "schema",
+        "ok",
+        "state",
+        "release_revision",
+        "external_iam_policy_sha256",
+        "rotation_id",
+        "plan_sha256",
+        "prior_archive_path",
+        "prior_host_identity_receipt_file_sha256",
+        "prior_host_identity_receipt_sha256",
+        "prior_boot_id_sha256",
+        "tombstone_path",
+        "tombstone_receipt_sha256",
+        "host_identity_receipt_path",
+        "host_identity_receipt_file_sha256",
+        "host_identity_receipt_sha256",
+        "target_boot_id_sha256",
+        "fresh_observed_at_unix",
+        "service_states_before",
+        "service_states_after",
+        "services_started",
+        "service_units_changed",
+        "iam_mutated",
+        "completion_path",
+        "receipt_sha256",
+    }
+    validated_plan = validate_host_receipt_rotation_plan(
+        plan,
+        expected_release_sha=str(plan.get("release_revision")),
+        expected_external_iam_policy_sha256=str(
+            plan.get("external_iam_policy_sha256")
+        ),
+        expected_prior_file_sha256=str(
+            plan.get("prior_host_identity_receipt_file_sha256")
+        ),
+        expected_prior_receipt_sha256=str(
+            plan.get("prior_host_identity_receipt_sha256")
+        ),
+        expected_prior_boot_id_sha256=str(plan.get("prior_boot_id_sha256")),
+        expected_current_boot_id_sha256=str(plan.get("target_boot_id_sha256")),
+    )
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or value.get("schema") != HOST_RECEIPT_ROTATION_RECEIPT_SCHEMA
+        or value.get("ok") is not True
+        or value.get("state")
+        != "target_boot_receipt_published_services_stopped"
+        or value.get("release_revision") != validated_plan["release_revision"]
+        or value.get("external_iam_policy_sha256")
+        != validated_plan["external_iam_policy_sha256"]
+        or value.get("rotation_id") != validated_plan["rotation_id"]
+        or value.get("plan_sha256") != validated_plan["plan_sha256"]
+        or value.get("prior_archive_path")
+        != validated_plan["prior_archive_path"]
+        or value.get("prior_host_identity_receipt_file_sha256")
+        != validated_plan["prior_host_identity_receipt_file_sha256"]
+        or value.get("prior_host_identity_receipt_sha256")
+        != validated_plan["prior_host_identity_receipt_sha256"]
+        or value.get("prior_boot_id_sha256")
+        != validated_plan["prior_boot_id_sha256"]
+        or value.get("tombstone_path") != validated_plan["tombstone_path"]
+        or value.get("host_identity_receipt_path")
+        != STOPPED_RELEASE_HOST_RECEIPT_PATH
+        or value.get("target_boot_id_sha256")
+        != validated_plan["target_boot_id_sha256"]
+        or value.get("completion_path") != validated_plan["completion_path"]
+        or value.get("service_states_before") != validated_plan["service_states"]
+        or value.get("services_started") is not False
+        or value.get("service_units_changed") is not False
+        or value.get("iam_mutated") is not False
+        or type(value.get("fresh_observed_at_unix")) is not int
+        or value["fresh_observed_at_unix"] < 0
+    ):
+        raise OwnerLauncherError("host_receipt_rotation_receipt_invalid")
+    service_states_after = _validate_stopped_release_service_states(
+        value.get("service_states_after")
+    )
+    if service_states_after != validated_plan["service_states"]:
+        raise OwnerLauncherError("host_receipt_rotation_receipt_invalid")
+    for name in (
+        "tombstone_receipt_sha256",
+        "host_identity_receipt_file_sha256",
+        "host_identity_receipt_sha256",
+        "receipt_sha256",
+    ):
+        _require_sha256(
+            value.get(name),
+            "host_receipt_rotation_receipt_invalid",
+        )
+    unsigned = {name: item for name, item in value.items() if name != "receipt_sha256"}
+    if value["receipt_sha256"] != _sha256(_canonical_bytes(unsigned)):
+        raise OwnerLauncherError("host_receipt_rotation_receipt_invalid")
+    return copy.deepcopy(dict(value))
+
+
+def _validate_fixture_public_key(
+    value: Any,
+    *,
+    expected_path: str,
+) -> Mapping[str, Any]:
+    fields = {
+        "path",
+        "file_sha256",
+        "public_key_ed25519_hex",
+        "key_id",
+        "device",
+        "inode",
+        "uid",
+        "gid",
+        "mode",
+        "size",
+    }
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or value.get("path") != expected_path
+        or value.get("uid") != 0
+        or type(value.get("gid")) is not int
+        or value["gid"] <= 0
+        or value.get("mode") != "0440"
+        or type(value.get("device")) is not int
+        or value["device"] < 0
+        or type(value.get("inode")) is not int
+        or value["inode"] <= 0
+        or type(value.get("size")) is not int
+        or not 1 <= value["size"] <= 16 * 1024
+        or not isinstance(value.get("public_key_ed25519_hex"), str)
+        or re.fullmatch(r"[0-9a-f]{64}", value["public_key_ed25519_hex"])
+        is None
+    ):
+        raise OwnerLauncherError("fixture_publication_plan_invalid")
+    _require_sha256(value.get("file_sha256"), "fixture_publication_plan_invalid")
+    key_id = _require_sha256(
+        value.get("key_id"),
+        "fixture_publication_plan_invalid",
+    )
+    if key_id != _sha256(bytes.fromhex(value["public_key_ed25519_hex"])):
+        raise OwnerLauncherError("fixture_publication_plan_invalid")
+    return copy.deepcopy(dict(value))
+
+
+def _validate_fixture_publication_service_states(value: Any) -> Mapping[str, Any]:
+    units = (
+        "muncho-discord-egress.service",
+        "muncho-canonical-writer.service",
+        "hermes-cloud-gateway.service",
+    )
+    properties = {
+        "LoadState",
+        "ActiveState",
+        "SubState",
+        "UnitFileState",
+        "MainPID",
+        "FragmentPath",
+        "DropInPaths",
+        "Type",
+        "NotifyAccess",
+        "StatusText",
+    }
+    if not isinstance(value, Mapping) or set(value) != set(units):
+        raise OwnerLauncherError("fixture_publication_plan_invalid")
+    result: dict[str, Mapping[str, Any]] = {}
+    for unit in units:
+        state = value.get(unit)
+        if (
+            not isinstance(state, Mapping)
+            or set(state) != properties
+            or type(state.get("MainPID")) is not int
+            or state["MainPID"] != 0
+            or any(
+                not isinstance(item, str)
+                or _CONTROL_RE.search(item) is not None
+                for name, item in state.items()
+                if name != "MainPID"
+            )
+            or state.get("LoadState") not in {"loaded", "not-found"}
+            or state.get("UnitFileState") not in {"disabled", ""}
+            or state.get("ActiveState") not in {"inactive", "failed"}
+            or state.get("DropInPaths") not in {"", "[]"}
+        ):
+            raise OwnerLauncherError("fixture_publication_plan_invalid")
+        result[unit] = copy.deepcopy(dict(state))
+    return result
+
+
+def _validate_fixture_publication_fixture(
+    value: Any,
+    *,
+    release_sha: str,
+    release_artifact_sha256: str,
+    canary_run_id: str,
+    valid_from_unix_ms: int,
+    valid_until_unix_ms: int,
+    writer_public_hex: str,
+    edge_public_hex: str,
+) -> Mapping[str, Any]:
+    fields = {
+        "schema",
+        "canary_run_id",
+        "release_sha",
+        "release_artifact_sha256",
+        "valid_from_unix_ms",
+        "valid_until_unix_ms",
+        "case_id",
+        "owner_discord_user_id",
+        "source",
+        "model_route",
+        "task_policy",
+        "public_routeback",
+        "discord_public_keys",
+    }
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or "api_session_key_sha256" in value
+        or value.get("schema") != "muncho-full-canary-e2e-fixture.v1"
+        or value.get("canary_run_id") != canary_run_id
+        or value.get("release_sha") != release_sha
+        or value.get("release_artifact_sha256") != release_artifact_sha256
+        or value.get("valid_from_unix_ms") != valid_from_unix_ms
+        or value.get("valid_until_unix_ms") != valid_until_unix_ms
+        or value.get("case_id") != f"case:full-canary:{canary_run_id}"
+        or value.get("owner_discord_user_id")
+        != FIXTURE_PUBLICATION_OWNER_DISCORD_USER_ID
+        or value.get("source")
+        != {
+            "platform": "api_server",
+            "control_protocol": "authenticated_loopback_api_server.v1",
+            "host": "127.0.0.1",
+            "port": 8642,
+            "session_create_endpoint": "/api/sessions",
+            "chat_stream_endpoint_template": (
+                "/api/sessions/{session_id}/chat/stream"
+            ),
+        }
+        or value.get("model_route")
+        != {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "model": "gpt-5.6-sol",
+            "initial_effort": "high",
+            "elevated_effort": "max",
+        }
+    ):
+        raise OwnerLauncherError("fixture_publication_plan_invalid")
+    policy = value.get("task_policy")
+    if (
+        not isinstance(policy, Mapping)
+        or set(policy)
+        != {"minimum_completed_steps", "prompt", "prompt_sha256"}
+        or policy.get("minimum_completed_steps") != 5
+        or not isinstance(policy.get("prompt"), str)
+        or not policy["prompt"].strip()
+        or len(policy["prompt"]) > 16_000
+        or policy.get("prompt_sha256") != FIXTURE_PUBLICATION_PROMPT_SHA256
+        or _sha256(policy["prompt"].encode("utf-8"))
+        != FIXTURE_PUBLICATION_PROMPT_SHA256
+    ):
+        raise OwnerLauncherError("fixture_publication_plan_invalid")
+    if value.get("public_routeback") != {
+        "target": {
+            "target_type": "public_guild_channel",
+            "guild_id": FIXTURE_PUBLICATION_GUILD_ID,
+            "channel_id": FIXTURE_PUBLICATION_CHANNEL_ID,
+        },
+        "canonical_idempotency_key": f"full-canary-routeback:{canary_run_id}",
+    } or value.get("discord_public_keys") != {
+        "writer_capability_ed25519_hex": writer_public_hex,
+        "edge_receipt_ed25519_hex": edge_public_hex,
+    }:
+        raise OwnerLauncherError("fixture_publication_plan_invalid")
+    return copy.deepcopy(dict(value))
+
+
+def validate_fixture_publication_plan(
+    value: Mapping[str, Any],
+    *,
+    expected_release_sha: str,
+    expected_external_iam_policy_sha256: str,
+    expected_canary_run_id: str,
+    now_unix_ms: int,
+) -> Mapping[str, Any]:
+    fields = {
+        "schema",
+        "release_sha",
+        "release_artifact_sha256",
+        "activation_plan_sha256",
+        "external_iam_policy_sha256",
+        "canary_run_id",
+        "valid_from_unix_ms",
+        "valid_until_unix_ms",
+        "owner_discord_user_id",
+        "public_target",
+        "prompt_sha256",
+        "api_session_key_present",
+        "fixture",
+        "fixture_sha256",
+        "fixture_path",
+        "fixture_gid",
+        "writer_public_key",
+        "edge_public_key",
+        "config_binding",
+        "service_states",
+        "publication_receipt_path",
+        "invariants",
+        "plan_sha256",
+    }
+    policy_sha256 = _require_sha256(
+        expected_external_iam_policy_sha256,
+        "fixture_publication_plan_invalid",
+    )
+    try:
+        parsed_run = uuid.UUID(expected_canary_run_id)
+    except (TypeError, ValueError, AttributeError) as exc:
+        raise OwnerLauncherError("fixture_publication_plan_invalid") from exc
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or value.get("schema") != FIXTURE_PUBLICATION_PLAN_SCHEMA
+        or value.get("release_sha") != expected_release_sha
+        or _RELEASE_SHA.fullmatch(expected_release_sha) is None
+        or value.get("external_iam_policy_sha256") != policy_sha256
+        or value.get("canary_run_id") != expected_canary_run_id
+        or parsed_run.int == 0
+        or str(parsed_run) != expected_canary_run_id
+        or value.get("owner_discord_user_id")
+        != FIXTURE_PUBLICATION_OWNER_DISCORD_USER_ID
+        or value.get("public_target")
+        != {
+            "target_type": "public_guild_channel",
+            "guild_id": FIXTURE_PUBLICATION_GUILD_ID,
+            "channel_id": FIXTURE_PUBLICATION_CHANNEL_ID,
+        }
+        or value.get("prompt_sha256") != FIXTURE_PUBLICATION_PROMPT_SHA256
+        or value.get("api_session_key_present") is not False
+        or value.get("fixture_path") != FIXTURE_PUBLICATION_PATH
+        or type(value.get("fixture_gid")) is not int
+        or value["fixture_gid"] <= 0
+        or value.get("invariants")
+        != {
+            "services_started": False,
+            "service_units_changed": False,
+            "discord_dispatched": False,
+            "iam_mutated": False,
+            "private_keys_read": False,
+            "api_session_secret_present": False,
+        }
+    ):
+        raise OwnerLauncherError("fixture_publication_plan_invalid")
+    for name in (
+        "release_artifact_sha256",
+        "activation_plan_sha256",
+        "fixture_sha256",
+        "plan_sha256",
+    ):
+        _require_sha256(value.get(name), "fixture_publication_plan_invalid")
+    valid_from = value.get("valid_from_unix_ms")
+    valid_until = value.get("valid_until_unix_ms")
+    if (
+        type(now_unix_ms) is not int
+        or type(valid_from) is not int
+        or type(valid_until) is not int
+        or valid_until <= valid_from
+        or valid_until - valid_from > 3_600_000
+        or not valid_from <= now_unix_ms < valid_until
+        or valid_until - now_unix_ms < 10 * 60 * 1000
+    ):
+        raise OwnerLauncherError("fixture_publication_plan_invalid")
+    writer_key = _validate_fixture_public_key(
+        value.get("writer_public_key"),
+        expected_path=FIXTURE_WRITER_PUBLIC_KEY_PATH,
+    )
+    edge_key = _validate_fixture_public_key(
+        value.get("edge_public_key"),
+        expected_path=FIXTURE_EDGE_PUBLIC_KEY_PATH,
+    )
+    if writer_key["key_id"] == edge_key["key_id"]:
+        raise OwnerLauncherError("fixture_publication_plan_invalid")
+    config = value.get("config_binding")
+    if (
+        not isinstance(config, Mapping)
+        or set(config)
+        != {
+            "writer_config_file_sha256",
+            "gateway_config_file_sha256",
+            "edge_config_file_sha256",
+            "writer_edge_receipt_public_key_file",
+            "writer_edge_receipt_public_key_id",
+            "edge_writer_capability_public_key_file",
+            "edge_writer_capability_public_key_id",
+            "edge_receipt_public_key_id",
+        }
+        or config.get("writer_edge_receipt_public_key_file")
+        != FIXTURE_EDGE_PUBLIC_KEY_PATH
+        or config.get("writer_edge_receipt_public_key_id") != edge_key["key_id"]
+        or config.get("edge_writer_capability_public_key_file")
+        != FIXTURE_WRITER_PUBLIC_KEY_PATH
+        or config.get("edge_writer_capability_public_key_id")
+        != writer_key["key_id"]
+        or config.get("edge_receipt_public_key_id") != edge_key["key_id"]
+    ):
+        raise OwnerLauncherError("fixture_publication_plan_invalid")
+    for name in (
+        "writer_config_file_sha256",
+        "gateway_config_file_sha256",
+        "edge_config_file_sha256",
+    ):
+        _require_sha256(config.get(name), "fixture_publication_plan_invalid")
+    fixture = _validate_fixture_publication_fixture(
+        value.get("fixture"),
+        release_sha=expected_release_sha,
+        release_artifact_sha256=value["release_artifact_sha256"],
+        canary_run_id=expected_canary_run_id,
+        valid_from_unix_ms=valid_from,
+        valid_until_unix_ms=valid_until,
+        writer_public_hex=writer_key["public_key_ed25519_hex"],
+        edge_public_hex=edge_key["public_key_ed25519_hex"],
+    )
+    if (
+        value.get("fixture_sha256") != _sha256(_canonical_bytes(fixture))
+        or value.get("publication_receipt_path")
+        != f"{FIXTURE_PUBLICATION_ROOT}/{value['fixture_sha256']}.json"
+    ):
+        raise OwnerLauncherError("fixture_publication_plan_invalid")
+    service_states = _validate_fixture_publication_service_states(
+        value.get("service_states")
+    )
+    unsigned = {name: item for name, item in value.items() if name != "plan_sha256"}
+    if value["plan_sha256"] != _sha256(_canonical_bytes(unsigned)):
+        raise OwnerLauncherError("fixture_publication_plan_invalid")
+    result = copy.deepcopy(dict(value))
+    result["fixture"] = fixture
+    result["writer_public_key"] = writer_key
+    result["edge_public_key"] = edge_key
+    result["service_states"] = service_states
+    return result
+
+
+def validate_fixture_publication_receipt(
+    value: Mapping[str, Any],
+    *,
+    plan: Mapping[str, Any],
+) -> Mapping[str, Any]:
+    fields = {
+        "schema",
+        "ok",
+        "state",
+        "release_sha",
+        "release_artifact_sha256",
+        "activation_plan_sha256",
+        "external_iam_policy_sha256",
+        "canary_run_id",
+        "owner_discord_user_id",
+        "public_target",
+        "prompt_sha256",
+        "api_session_key_present",
+        "fixture_path",
+        "fixture_gid",
+        "fixture_sha256",
+        "fixture_file_sha256",
+        "writer_public_key_id",
+        "edge_public_key_id",
+        "service_states_before",
+        "service_states_after",
+        "services_started",
+        "discord_dispatched",
+        "iam_mutated",
+        "private_keys_read",
+        "api_session_secret_present",
+        "approved_plan_sha256",
+        "publication_receipt_path",
+        "published_at_unix_ms",
+        "receipt_sha256",
+    }
+    if not isinstance(plan, Mapping):
+        raise OwnerLauncherError("fixture_publication_receipt_invalid")
+    if (
+        not isinstance(value, Mapping)
+        or set(value) != fields
+        or value.get("schema") != FIXTURE_PUBLICATION_RECEIPT_SCHEMA
+        or value.get("ok") is not True
+        or value.get("state") != "base_fixture_published_services_stopped"
+        or value.get("release_sha") != plan.get("release_sha")
+        or value.get("release_artifact_sha256")
+        != plan.get("release_artifact_sha256")
+        or value.get("activation_plan_sha256")
+        != plan.get("activation_plan_sha256")
+        or value.get("external_iam_policy_sha256")
+        != plan.get("external_iam_policy_sha256")
+        or value.get("canary_run_id") != plan.get("canary_run_id")
+        or value.get("owner_discord_user_id")
+        != plan.get("owner_discord_user_id")
+        or value.get("public_target") != plan.get("public_target")
+        or value.get("prompt_sha256") != plan.get("prompt_sha256")
+        or value.get("api_session_key_present") is not False
+        or value.get("fixture_path") != plan.get("fixture_path")
+        or value.get("fixture_gid") != plan.get("fixture_gid")
+        or value.get("fixture_sha256") != plan.get("fixture_sha256")
+        or value.get("fixture_file_sha256") != plan.get("fixture_sha256")
+        or value.get("writer_public_key_id")
+        != plan.get("writer_public_key", {}).get("key_id")
+        or value.get("edge_public_key_id")
+        != plan.get("edge_public_key", {}).get("key_id")
+        or value.get("service_states_before") != plan.get("service_states")
+        or value.get("services_started") is not False
+        or value.get("discord_dispatched") is not False
+        or value.get("iam_mutated") is not False
+        or value.get("private_keys_read") is not False
+        or value.get("api_session_secret_present") is not False
+        or value.get("approved_plan_sha256") != plan.get("plan_sha256")
+        or value.get("publication_receipt_path")
+        != plan.get("publication_receipt_path")
+        or type(value.get("published_at_unix_ms")) is not int
+        or not plan.get("valid_from_unix_ms")
+        <= value["published_at_unix_ms"]
+        < plan.get("valid_until_unix_ms")
+    ):
+        raise OwnerLauncherError("fixture_publication_receipt_invalid")
+    after = _validate_fixture_publication_service_states(
+        value.get("service_states_after")
+    )
+    if after != plan["service_states"]:
+        raise OwnerLauncherError("fixture_publication_receipt_invalid")
+    receipt_sha = _require_sha256(
+        value.get("receipt_sha256"),
+        "fixture_publication_receipt_invalid",
+    )
+    unsigned = {name: item for name, item in value.items() if name != "receipt_sha256"}
+    if receipt_sha != _sha256(_canonical_bytes(unsigned)):
+        raise OwnerLauncherError("fixture_publication_receipt_invalid")
+    return copy.deepcopy(dict(value))
+
+
 class IapStoppedReleaseTransport(IapCoordinatorTransport):
     """Publish one stopped, revision-addressed release through fixed IAP argv."""
 
@@ -9190,6 +10619,62 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
             raise OwnerLauncherError("iap_ssh_authorization_changed")
         if (
             completed.returncode not in allowed_returncodes
+            or not isinstance(completed.stdout, bytes)
+            or len(completed.stdout) > maximum_output_bytes
+        ):
+            raise OwnerLauncherError("stopped_release_remote_failed")
+        return completed
+
+    def _run_remote_input(
+        self,
+        remote_argv: Sequence[str],
+        *,
+        account: str,
+        input_bytes: bytes,
+        timeout_seconds: float = 300.0,
+        maximum_input_bytes: int = _WRITER_AUTHORITY_MAX_FRAME_BYTES + 8,
+        maximum_output_bytes: int = _HTTP_RESPONSE_MAX_BYTES,
+    ) -> subprocess.CompletedProcess[bytes]:
+        """Run one exact remote command with bounded, secret-free framed stdin."""
+
+        if (
+            not isinstance(input_bytes, bytes)
+            or not input_bytes
+            or len(input_bytes) > maximum_input_bytes
+            or not 0 < timeout_seconds <= 2_400
+            or not 0 < maximum_output_bytes <= _HTTP_RESPONSE_MAX_BYTES
+        ):
+            raise OwnerLauncherError("stopped_release_remote_input_invalid")
+        authorization_before = self._authorization_snapshot(account)
+        argv = self._remote_argv(remote_argv, account=account)
+        self._validate_dry_run(argv)
+        if self._authorization_snapshot(account) != authorization_before:
+            raise OwnerLauncherError("iap_ssh_authorization_changed")
+        command_prefix = self._gcloud_executable.trusted_command_prefix()
+        try:
+            completed = self._preflight_runner(
+                argv,
+                input=input_bytes,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.DEVNULL,
+                env=dict(
+                    _owner_gcloud_environment(
+                        self._gcloud_configuration,
+                        command_prefix[0],
+                    )
+                ),
+                shell=False,
+                timeout=timeout_seconds,
+                check=False,
+            )
+        except (OSError, subprocess.SubprocessError):
+            self._postflight()
+            raise OwnerLauncherError("stopped_release_remote_unavailable") from None
+        self._postflight()
+        if self._authorization_snapshot(account) != authorization_before:
+            raise OwnerLauncherError("iap_ssh_authorization_changed")
+        if (
+            completed.returncode != 0
             or not isinstance(completed.stdout, bytes)
             or len(completed.stdout) > maximum_output_bytes
         ):
@@ -9331,6 +10816,288 @@ class IapStoppedReleaseTransport(IapCoordinatorTransport):
             ),
             plan=plan,
         )
+
+
+class IapHostReceiptRotationTransport(IapStoppedReleaseTransport):
+    """Drive one exact stale-boot receipt transition before stopped release."""
+
+    def _run_host_receipt_rotation_command(
+        self,
+        release_sha: str,
+        command: str,
+        *,
+        account: str,
+        external_iam_policy_sha256: str,
+        expected_prior_file_sha256: str,
+        expected_prior_receipt_sha256: str,
+        expected_prior_boot_id_sha256: str,
+        expected_current_boot_id_sha256: str,
+        approved_plan_sha256: str | None = None,
+    ) -> Mapping[str, Any]:
+        if command not in {"plan", "apply"}:
+            raise OwnerLauncherError("host_receipt_rotation_command_invalid")
+        intent = tuple(
+            _require_sha256(item, "host_receipt_rotation_plan_invalid")
+            for item in (
+                external_iam_policy_sha256,
+                expected_prior_file_sha256,
+                expected_prior_receipt_sha256,
+                expected_prior_boot_id_sha256,
+                expected_current_boot_id_sha256,
+            )
+        )
+        if command == "apply":
+            approved = _require_sha256(
+                approved_plan_sha256,
+                "host_receipt_rotation_plan_invalid",
+            )
+        elif approved_plan_sha256 is not None:
+            raise OwnerLauncherError("host_receipt_rotation_plan_invalid")
+        else:
+            approved = None
+        source_root = self._source_root(release_sha)
+        remote = (
+            *self._fixed_remote_environment(chdir=source_root),
+            self._REMOTE_PYTHON,
+            "-B",
+            "-E",
+            "-s",
+            "-m",
+            HOST_RECEIPT_ROTATION_MODULE,
+            command,
+            "--revision",
+            release_sha,
+            "--external-iam-policy-sha256",
+            intent[0],
+            "--expected-prior-file-sha256",
+            intent[1],
+            "--expected-prior-receipt-sha256",
+            intent[2],
+            "--expected-prior-boot-id-sha256",
+            intent[3],
+            "--expected-current-boot-id-sha256",
+            intent[4],
+            *(() if approved is None else ("--approved-plan-sha256", approved)),
+        )
+        completed = self._run_remote(
+            remote,
+            account=account,
+            timeout_seconds=300.0,
+        )
+        if (
+            not completed.stdout
+            or not completed.stdout.endswith(b"\n")
+            or b"\n" in completed.stdout[:-1]
+        ):
+            raise OwnerLauncherError("host_receipt_rotation_output_invalid")
+        try:
+            return _decode_json_object(
+                completed.stdout,
+                maximum=_HTTP_RESPONSE_MAX_BYTES,
+            )
+        except OwnerLauncherError:
+            raise OwnerLauncherError("host_receipt_rotation_output_invalid") from None
+
+    def rotate(
+        self,
+        release_sha: str,
+        *,
+        external_iam_policy_sha256: str,
+        expected_prior_file_sha256: str,
+        expected_prior_receipt_sha256: str,
+        expected_prior_boot_id_sha256: str,
+        expected_current_boot_id_sha256: str,
+    ) -> Mapping[str, Any]:
+        if not _RELEASE_SHA.fullmatch(release_sha):
+            raise OwnerLauncherError("invalid_release_sha")
+        exact = {
+            "expected_release_sha": release_sha,
+            "expected_external_iam_policy_sha256": external_iam_policy_sha256,
+            "expected_prior_file_sha256": expected_prior_file_sha256,
+            "expected_prior_receipt_sha256": expected_prior_receipt_sha256,
+            "expected_prior_boot_id_sha256": expected_prior_boot_id_sha256,
+            "expected_current_boot_id_sha256": expected_current_boot_id_sha256,
+        }
+        account = self._owner_identity.account_for_read_only_preflight()
+        self._prepare_source(release_sha, account=account)
+        remote_intent = {
+            "external_iam_policy_sha256": external_iam_policy_sha256,
+            "expected_prior_file_sha256": expected_prior_file_sha256,
+            "expected_prior_receipt_sha256": expected_prior_receipt_sha256,
+            "expected_prior_boot_id_sha256": expected_prior_boot_id_sha256,
+            "expected_current_boot_id_sha256": expected_current_boot_id_sha256,
+        }
+        plan = validate_host_receipt_rotation_plan(
+            self._run_host_receipt_rotation_command(
+                release_sha,
+                "plan",
+                account=account,
+                **remote_intent,
+            ),
+            **exact,
+        )
+        receipt = validate_host_receipt_rotation_receipt(
+            self._run_host_receipt_rotation_command(
+                release_sha,
+                "apply",
+                account=account,
+                approved_plan_sha256=str(plan["plan_sha256"]),
+                **remote_intent,
+            ),
+            plan=plan,
+        )
+        self._owner_identity.require_stable()
+        return receipt
+
+
+class IapFixturePublicationTransport(IapStoppedReleaseTransport):
+    """Publish one fixed public-channel base fixture from the sealed release."""
+
+    def _run_fixture_publication_command(
+        self,
+        release_sha: str,
+        command: str,
+        *,
+        account: str,
+        external_iam_policy_sha256: str,
+        canary_run_id: str,
+        valid_from_unix_ms: int,
+        valid_until_unix_ms: int,
+        approved_plan_sha256: str | None = None,
+    ) -> Mapping[str, Any]:
+        if command not in {"plan", "apply"}:
+            raise OwnerLauncherError("fixture_publication_command_invalid")
+        external_digest = _require_sha256(
+            external_iam_policy_sha256,
+            "fixture_publication_plan_invalid",
+        )
+        try:
+            parsed_run_id = uuid.UUID(canary_run_id)
+        except (TypeError, ValueError, AttributeError) as exc:
+            raise OwnerLauncherError("fixture_publication_plan_invalid") from exc
+        if parsed_run_id.int == 0 or str(parsed_run_id) != canary_run_id:
+            raise OwnerLauncherError("fixture_publication_plan_invalid")
+        if (
+            type(valid_from_unix_ms) is not int
+            or type(valid_until_unix_ms) is not int
+            or valid_from_unix_ms < 1
+            or valid_until_unix_ms <= valid_from_unix_ms
+            or valid_until_unix_ms - valid_from_unix_ms > 3_600_000
+        ):
+            raise OwnerLauncherError("fixture_publication_plan_invalid")
+        if command == "apply":
+            approved = _require_sha256(
+                approved_plan_sha256,
+                "fixture_publication_plan_invalid",
+            )
+        elif approved_plan_sha256 is not None:
+            raise OwnerLauncherError("fixture_publication_plan_invalid")
+        else:
+            approved = None
+        interpreter = f"{self._RELEASE_BASE}/{release_sha}/venv/bin/python"
+        remote = (
+            *self._fixed_remote_environment(),
+            interpreter,
+            "-B",
+            "-I",
+            "-m",
+            FIXTURE_PUBLICATION_MODULE,
+            command,
+            "--release-sha",
+            release_sha,
+            "--external-iam-policy-sha256",
+            external_digest,
+            "--canary-run-id",
+            canary_run_id,
+            "--valid-from-unix-ms",
+            str(valid_from_unix_ms),
+            "--valid-until-unix-ms",
+            str(valid_until_unix_ms),
+            "--owner-discord-user-id",
+            FIXTURE_PUBLICATION_OWNER_DISCORD_USER_ID,
+            "--guild-id",
+            FIXTURE_PUBLICATION_GUILD_ID,
+            "--channel-id",
+            FIXTURE_PUBLICATION_CHANNEL_ID,
+            "--expected-prompt-sha256",
+            FIXTURE_PUBLICATION_PROMPT_SHA256,
+            *(
+                ()
+                if approved is None
+                else ("--approved-plan-sha256", approved)
+            ),
+        )
+        completed = self._run_remote(
+            remote,
+            account=account,
+            timeout_seconds=300.0,
+        )
+        if (
+            not completed.stdout
+            or not completed.stdout.endswith(b"\n")
+            or b"\n" in completed.stdout[:-1]
+        ):
+            raise OwnerLauncherError("fixture_publication_output_invalid")
+        try:
+            return _decode_json_object(
+                completed.stdout,
+                maximum=_HTTP_RESPONSE_MAX_BYTES,
+            )
+        except OwnerLauncherError:
+            raise OwnerLauncherError("fixture_publication_output_invalid") from None
+
+    def publish(
+        self,
+        release_sha: str,
+        *,
+        external_iam_policy_sha256: str,
+        clock: Callable[[], float] = time.time,
+    ) -> Mapping[str, Any]:
+        if not _RELEASE_SHA.fullmatch(release_sha):
+            raise OwnerLauncherError("invalid_release_sha")
+        external_digest = _require_sha256(
+            external_iam_policy_sha256,
+            "fixture_publication_plan_invalid",
+        )
+        first_now = clock()
+        if not isinstance(first_now, (int, float)) or not first_now > 0:
+            raise OwnerLauncherError("fixture_publication_plan_invalid")
+        now_unix_ms = int(first_now * 1000)
+        valid_from_unix_ms = now_unix_ms - 30_000
+        valid_until_unix_ms = valid_from_unix_ms + 3_600_000
+        canary_run_id = str(uuid.uuid4())
+        account = self._owner_identity.account_for_read_only_preflight()
+        exact = {
+            "external_iam_policy_sha256": external_digest,
+            "canary_run_id": canary_run_id,
+            "valid_from_unix_ms": valid_from_unix_ms,
+            "valid_until_unix_ms": valid_until_unix_ms,
+        }
+        plan_now = int(clock() * 1000)
+        plan = validate_fixture_publication_plan(
+            self._run_fixture_publication_command(
+                release_sha,
+                "plan",
+                account=account,
+                **exact,
+            ),
+            expected_release_sha=release_sha,
+            expected_external_iam_policy_sha256=external_digest,
+            expected_canary_run_id=canary_run_id,
+            now_unix_ms=plan_now,
+        )
+        receipt = validate_fixture_publication_receipt(
+            self._run_fixture_publication_command(
+                release_sha,
+                "apply",
+                account=account,
+                approved_plan_sha256=str(plan["plan_sha256"]),
+                **exact,
+            ),
+            plan=plan,
+        )
+        self._owner_identity.require_stable()
+        return receipt
 
 
 _WRITER_PREFLIGHT_SYSTEMD_FIELDS = frozenset({
@@ -9824,6 +11591,227 @@ def validate_writer_preflight_receipt(
     return copy.deepcopy(dict(value))
 
 
+def _writer_owner_approval_path(
+    *,
+    scope: str,
+    plan_sha256: str,
+    receipt_sha256: str,
+) -> str:
+    if scope not in {"native_observation", "activation"}:
+        raise OwnerLauncherError("writer_owner_approval_invalid")
+    plan = _require_sha256(plan_sha256, "writer_owner_approval_invalid")
+    receipt = _require_sha256(receipt_sha256, "writer_owner_approval_invalid")
+    return f"{WRITER_OWNER_APPROVAL_ROOT}/{scope}/{plan}/{receipt}.json"
+
+
+def build_writer_owner_approval(
+    *,
+    scope: str,
+    plan_sha256: str,
+    owner_identity: GcloudOwnerAccessToken,
+    now_unix: int,
+    nonce_factory: Callable[[int], bytes] = secrets.token_bytes,
+) -> Mapping[str, Any]:
+    """Author the existing honest out-of-band approval for one exact plan."""
+
+    if scope not in {"native_observation", "activation"}:
+        raise OwnerLauncherError("writer_owner_approval_invalid")
+    plan = _require_sha256(plan_sha256, "writer_owner_approval_invalid")
+    if type(now_unix) is not int or now_unix < 0:
+        raise OwnerLauncherError("writer_owner_approval_invalid")
+    account = owner_identity.account_for_read_only_preflight()
+    owner_identity.require_stable()
+    owner_subject = _sha256(account.encode("utf-8"))
+    if owner_identity.owner_subject_sha256 != owner_subject:
+        raise OwnerLauncherError("writer_owner_identity_invalid")
+    authority = _PhaseBOwnerExternalSigner().inspect()
+    if (
+        authority.public_fingerprint != PHASE_B_OWNER_PUBLIC_KEY_FINGERPRINT
+        or _sha256(authority.public_fingerprint.encode("ascii"))
+        != PHASE_B_PINNED_APPROVAL_SOURCE_SHA256
+    ):
+        raise OwnerLauncherError("writer_owner_approval_source_invalid")
+    try:
+        nonce = nonce_factory(32)
+    except BaseException:
+        raise OwnerLauncherError("writer_owner_nonce_failed") from None
+    if not isinstance(nonce, bytes) or len(nonce) != 32:
+        raise OwnerLauncherError("writer_owner_nonce_failed")
+    value = {
+        "schema": "muncho-writer-owner-approval.v1",
+        "scope": scope,
+        "plan_sha256": plan,
+        "authority_kind": "trusted_root_bootstrap_out_of_band_owner",
+        "cryptographic_owner_proof": False,
+        "owner_subject_sha256": owner_subject,
+        "approval_source_sha256": PHASE_B_PINNED_APPROVAL_SOURCE_SHA256,
+        "nonce_sha256": _sha256(nonce),
+        "approved_at_unix": now_unix,
+        "expires_at_unix": now_unix + 900,
+    }
+    try:
+        from gateway.canonical_writer_host_authority import OwnerApprovalReceipt
+
+        approval = OwnerApprovalReceipt.from_mapping(value)
+        approval.require(scope=scope, plan_sha256=plan, now_unix=now_unix)
+    except (ImportError, PermissionError, TypeError, ValueError):
+        raise OwnerLauncherError("writer_owner_approval_invalid") from None
+    owner_identity.require_stable()
+    return approval.to_mapping()
+
+
+def collect_fresh_writer_external_iam(
+    *,
+    owner_identity: GcloudOwnerAccessToken,
+    source_approval_sha256: str,
+    now_unix: int | None = None,
+) -> Mapping[str, Any]:
+    """Project fresh evidence through the exact injected read-only inventory."""
+
+    source = _require_sha256(
+        source_approval_sha256,
+        "writer_external_iam_invalid",
+    )
+    if now_unix is not None and (type(now_unix) is not int or now_unix < 0):
+        raise OwnerLauncherError("writer_external_iam_invalid")
+    owner_identity.require_stable()
+    try:
+        from gateway.canonical_writer_host_authority import (
+            build_external_iam_receipt,
+        )
+        from scripts.canary.foundation_preflight import (
+            collect as collect_foundation,
+            evaluate as evaluate_foundation,
+        )
+        from scripts.canary.host_preflight import (
+            collect as collect_host,
+            evaluate as evaluate_host,
+        )
+
+        runner = owner_identity.run_canary_iam_read_only_json
+        foundation_report = evaluate_foundation(
+            collect_foundation(run_json=runner)
+        )
+        host_report = evaluate_host(collect_host(run_json=runner))
+        current = int(time.time()) if now_unix is None else now_unix
+        receipt = build_external_iam_receipt(
+            foundation_report,
+            host_report,
+            source_approval_sha256=source,
+            now_unix=current,
+        )
+        receipt.require_fresh(current, minimum_remaining_seconds=720)
+    except OwnerLauncherError:
+        raise
+    except (ImportError, KeyError, RuntimeError, TypeError, ValueError):
+        raise OwnerLauncherError("writer_external_iam_invalid") from None
+    owner_identity.require_stable()
+    return receipt.to_mapping()
+
+
+def build_writer_authority_frame(
+    *,
+    action: str,
+    revision: str,
+    plan_sha256: str,
+    owner_approval: Mapping[str, Any],
+    external_iam_receipt: Mapping[str, Any],
+    previous_owner_approval_sha256: str | None,
+    previous_external_iam_receipt_sha256: str | None,
+    now_unix: int,
+) -> bytes:
+    if action == "stage-native-authority":
+        scope = "native_observation"
+        if (
+            previous_owner_approval_sha256 is not None
+            or previous_external_iam_receipt_sha256 is not None
+        ):
+            raise OwnerLauncherError("writer_authority_frame_invalid")
+    elif action == "replace-final-authority":
+        scope = "activation"
+        _require_sha256(
+            previous_owner_approval_sha256,
+            "writer_authority_frame_invalid",
+        )
+        _require_sha256(
+            previous_external_iam_receipt_sha256,
+            "writer_authority_frame_invalid",
+        )
+    else:
+        raise OwnerLauncherError("writer_authority_frame_invalid")
+    if _RELEASE_SHA.fullmatch(revision) is None or type(now_unix) is not int:
+        raise OwnerLauncherError("writer_authority_frame_invalid")
+    try:
+        from gateway.canonical_writer_host_authority import (
+            ExternalIAMReceipt,
+            OwnerApprovalReceipt,
+        )
+
+        approval = OwnerApprovalReceipt.from_mapping(owner_approval)
+        approval.require(
+            scope=scope,
+            plan_sha256=plan_sha256,
+            now_unix=now_unix,
+        )
+        iam = ExternalIAMReceipt.from_mapping(external_iam_receipt)
+        iam.require_fresh(now_unix, minimum_remaining_seconds=720)
+    except (ImportError, PermissionError, TypeError, ValueError):
+        raise OwnerLauncherError("writer_authority_frame_invalid") from None
+    if (
+        approval.value.get("approval_source_sha256")
+        != PHASE_B_PINNED_APPROVAL_SOURCE_SHA256
+        or iam.value.get("source_approval_sha256") != approval.sha256
+    ):
+        raise OwnerLauncherError("writer_authority_frame_invalid")
+    unsigned = {
+        "schema": WRITER_AUTHORITY_FRAME_SCHEMA,
+        "action": action,
+        "scope": scope,
+        "revision": revision,
+        "plan_sha256": _require_sha256(
+            plan_sha256,
+            "writer_authority_frame_invalid",
+        ),
+        "owner_subject_sha256": approval.value["owner_subject_sha256"],
+        "approval_source_sha256": approval.value["approval_source_sha256"],
+        "owner_approval": approval.to_mapping(),
+        "external_iam_receipt": iam.to_mapping(),
+        "previous_owner_approval_sha256": previous_owner_approval_sha256,
+        "previous_external_iam_receipt_sha256": (
+            previous_external_iam_receipt_sha256
+        ),
+        "framed_at_unix": now_unix,
+    }
+    payload = _canonical_bytes({
+        **unsigned,
+        "frame_sha256": _sha256(_canonical_bytes(unsigned)),
+    })
+    if len(payload) > _WRITER_AUTHORITY_MAX_FRAME_BYTES:
+        raise OwnerLauncherError("writer_authority_frame_invalid")
+    return WRITER_AUTHORITY_FRAME_MAGIC + struct.pack(">I", len(payload)) + payload
+
+
+def _writer_authority_frame_sha256(frame: bytes) -> str:
+    if (
+        not isinstance(frame, bytes)
+        or len(frame) < 9
+        or frame[:4] != WRITER_AUTHORITY_FRAME_MAGIC
+        or struct.unpack(">I", frame[4:8])[0] != len(frame) - 8
+    ):
+        raise OwnerLauncherError("writer_authority_frame_invalid")
+    try:
+        value = _decode_json_object(
+            frame[8:],
+            maximum=_WRITER_AUTHORITY_MAX_FRAME_BYTES,
+        )
+    except OwnerLauncherError:
+        raise OwnerLauncherError("writer_authority_frame_invalid") from None
+    return _require_sha256(
+        value.get("frame_sha256"),
+        "writer_authority_frame_invalid",
+    )
+
+
 class IapWriterPreflightTransport(IapStoppedReleaseTransport):
     """Run the sealed, no-service-start writer staging publisher over IAP."""
 
@@ -9916,150 +11904,877 @@ class IapWriterPreflightTransport(IapStoppedReleaseTransport):
         )
 
 
-def _validate_admin_credential(username: str, password: bytearray) -> bytes:
-    if not _ADMIN_USERNAME.fullmatch(username):
-        raise OwnerLauncherError("invalid_admin_username")
-    if not isinstance(password, bytearray):
-        raise OwnerLauncherError("invalid_admin_password")
-    username_bytes = username.encode("ascii")
-    if (
-        not _ADMIN_PASSWORD_MIN_UTF8 <= len(password) <= _ADMIN_PASSWORD_MAX_UTF8
-        or b"\x00" in password
-        or password != password.strip()
-        or any(value < 0x20 or value == 0x7F for value in password)
-    ):
-        raise OwnerLauncherError("invalid_admin_password")
-    try:
-        password.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise OwnerLauncherError("invalid_admin_password") from exc
-    return username_bytes
+class IapWriterActivationBridgeTransport(IapStoppedReleaseTransport):
+    """Drive the fixed packaged native/final stopped-only activation sequence."""
 
+    _MODULES = frozenset({
+        WRITER_ACTIVATION_BRIDGE_MODULE,
+        WRITER_ACTIVATION_MODULE,
+        WRITER_PLANNER_MODULE,
+    })
 
-def build_admin_frame(username: str, password: bytearray) -> bytearray:
-    """Build the exact MCA2 frame consumed only through remote stdin."""
-
-    username_bytes = _validate_admin_credential(username, password)
-    frame = bytearray(ADMIN_FRAME_MAGIC)
-    frame.extend(struct.pack(">H", len(username_bytes)))
-    frame.extend(struct.pack(">I", len(password)))
-    frame.extend(username_bytes)
-    frame.extend(password)
-    return frame
-
-
-def build_recovery_admin_frame(
-    secret_gate: Mapping[str, Any],
-    username: str,
-    password: bytearray,
-) -> bytearray:
-    """Build MRC2 bound to the one validated stage-two worker gate."""
-
-    username_bytes = _validate_admin_credential(username, password)
-    if (
-        not isinstance(secret_gate, Mapping)
-        or secret_gate.get("schema") != RECOVERY_SECRET_GATE_SCHEMA
-        or secret_gate.get("admin_frame_schema") != RECOVERY_ADMIN_FRAME_SCHEMA
-        or secret_gate.get("ephemeral_admin_username") != username
-    ):
-        raise OwnerLauncherError("invalid_recovery_secret_gate")
-    gate_sha256 = _require_sha256(
-        secret_gate.get("gate_sha256"),
-        "invalid_recovery_secret_gate",
-    )
-    gate_nonce_sha256 = _require_sha256(
-        secret_gate.get("gate_nonce_sha256"),
-        "invalid_recovery_secret_gate",
-    )
-    try:
-        gate_digest = bytes.fromhex(gate_sha256)
-        nonce_digest = bytes.fromhex(gate_nonce_sha256)
-    except ValueError:
-        raise OwnerLauncherError("invalid_recovery_secret_gate") from None
-    frame = bytearray(
-        struct.pack(
-            "!4s32s32sHI",
-            RECOVERY_ADMIN_FRAME_MAGIC,
-            gate_digest,
-            nonce_digest,
-            len(username_bytes),
-            len(password),
+    def _run_packaged_json(
+        self,
+        release_sha: str,
+        *,
+        module: str,
+        arguments: Sequence[str],
+        account: str,
+        stdin_frame: bytes | None = None,
+        timeout_seconds: float = 900.0,
+        allowed_returncodes: frozenset[int] = frozenset({0}),
+    ) -> Mapping[str, Any]:
+        if (
+            _RELEASE_SHA.fullmatch(release_sha) is None
+            or module not in self._MODULES
+            or not arguments
+            or any(
+                not isinstance(item, str)
+                or not item
+                or _CONTROL_RE.search(item) is not None
+                for item in arguments
+            )
+        ):
+            raise OwnerLauncherError("writer_activation_command_invalid")
+        interpreter = f"/opt/muncho-canary-releases/{release_sha}/venv/bin/python"
+        remote = (
+            *self._fixed_remote_environment(chdir="/"),
+            interpreter,
+            "-B",
+            "-I",
+            "-m",
+            module,
+            *arguments,
         )
-    )
-    frame.extend(username_bytes)
-    frame.extend(password)
-    return frame
+        if stdin_frame is None:
+            completed = self._run_remote(
+                remote,
+                account=account,
+                allowed_returncodes=allowed_returncodes,
+                timeout_seconds=timeout_seconds,
+            )
+        else:
+            if allowed_returncodes != frozenset({0}):
+                raise OwnerLauncherError("writer_activation_command_invalid")
+            completed = self._run_remote_input(
+                remote,
+                account=account,
+                input_bytes=stdin_frame,
+                timeout_seconds=timeout_seconds,
+            )
+        if (
+            not completed.stdout
+            or not completed.stdout.endswith(b"\n")
+            or b"\n" in completed.stdout[:-1]
+        ):
+            raise OwnerLauncherError("writer_activation_output_invalid")
+        try:
+            decoded = _decode_json_object(
+                completed.stdout,
+                maximum=_HTTP_RESPONSE_MAX_BYTES,
+            )
+        except OwnerLauncherError:
+            raise OwnerLauncherError("writer_activation_output_invalid") from None
+        if completed.stdout[:-1] != _canonical_bytes(decoded):
+            raise OwnerLauncherError("writer_activation_output_invalid")
+        return decoded
 
+    @staticmethod
+    def _approval_receipt(value: Mapping[str, Any]) -> tuple[Mapping[str, Any], str]:
+        try:
+            from gateway.canonical_writer_host_authority import OwnerApprovalReceipt
 
-def build_discord_frame(token: bytearray) -> bytearray:
-    if (
-        not isinstance(token, bytearray)
-        or not token
-        or len(token) > _DISCORD_TOKEN_MAX_BYTES
-    ):
-        raise OwnerLauncherError("invalid_discord_token")
-    if b"\x00" in token or any(value < 0x20 or value == 0x7F for value in token):
-        raise OwnerLauncherError("invalid_discord_token")
-    frame = bytearray(DISCORD_FRAME_MAGIC)
-    frame.extend(struct.pack(">I", len(token)))
-    frame.extend(token)
-    return frame
+            receipt = OwnerApprovalReceipt.from_mapping(value)
+        except (ImportError, TypeError, ValueError):
+            raise OwnerLauncherError("writer_owner_approval_invalid") from None
+        return receipt.to_mapping(), receipt.sha256
 
+    @staticmethod
+    def _external_iam_receipt(value: Mapping[str, Any]) -> tuple[Mapping[str, Any], str, str]:
+        try:
+            from gateway.canonical_writer_host_authority import ExternalIAMReceipt
 
-def _wipe(value: bytearray | None) -> None:
-    if value is not None:
-        value[:] = b"\x00" * len(value)
+            receipt = ExternalIAMReceipt.from_mapping(value)
+        except (ImportError, TypeError, ValueError):
+            raise OwnerLauncherError("writer_external_iam_invalid") from None
+        return receipt.to_mapping(), receipt.sha256, receipt.policy_sha256
 
+    @staticmethod
+    def _validate_install_plan(
+        value: Mapping[str, Any],
+        *,
+        final: bool,
+        release_sha: str,
+    ) -> str:
+        if final:
+            expected_keys = {
+                "ok",
+                "schema",
+                "revision",
+                "activation_plan_sha256",
+                "installed_path",
+            }
+            digest_key = "activation_plan_sha256"
+            schema = "muncho-writer-only-activation-plan.v4"
+            path = WRITER_FINAL_PLAN_PATH
+        else:
+            expected_keys = {
+                "ok",
+                "schema",
+                "revision",
+                "native_observation_plan_sha256",
+                "installed_path",
+            }
+            digest_key = "native_observation_plan_sha256"
+            schema = "muncho-writer-native-observation-plan.v2"
+            path = WRITER_NATIVE_PLAN_PATH
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != expected_keys
+            or value.get("ok") is not True
+            or value.get("schema") != schema
+            or value.get("revision") != release_sha
+            or value.get("installed_path") != path
+        ):
+            raise OwnerLauncherError("writer_activation_plan_install_invalid")
+        return _require_sha256(
+            value.get(digest_key),
+            "writer_activation_plan_install_invalid",
+        )
 
-def _new_admin_password() -> bytearray:
-    # URL-safe base64 has no controls or surrounding whitespace and is accepted
-    # by Cloud SQL.  Keep the mutable representation so the launcher can wipe it.
-    return bytearray(
-        base64.urlsafe_b64encode(secrets.token_bytes(_ADMIN_PASSWORD_BYTES))
-    )
+    @staticmethod
+    def _validate_authority_stage(
+        value: Mapping[str, Any],
+        *,
+        action: str,
+        release_sha: str,
+        plan_sha256: str,
+        owner_subject_sha256: str,
+        owner_approval_sha256: str,
+        external_iam_receipt_sha256: str,
+        external_iam_policy_sha256: str,
+        frame_sha256: str,
+        previous_owner_approval_sha256: str | None,
+        previous_external_iam_receipt_sha256: str | None,
+    ) -> Mapping[str, Any]:
+        expected_keys = {
+            "schema",
+            "ok",
+            "state",
+            "action",
+            "scope",
+            "revision",
+            "plan_sha256",
+            "frame_sha256",
+            "owner_subject_sha256",
+            "approval_source_sha256",
+            "owner_approval_sha256",
+            "external_iam_receipt_sha256",
+            "external_iam_policy_sha256",
+            "previous_owner_approval_sha256",
+            "previous_external_iam_receipt_sha256",
+            "archive",
+            "owner_staged_present",
+            "external_iam_staged_present",
+            "services_started",
+            "services_stopped",
+            "intent_path",
+            "intent_sha256",
+            "receipt_path",
+            "completed_at_unix",
+            "receipt_sha256",
+        }
+        scope = (
+            "native_observation"
+            if action == "stage-native-authority"
+            else "activation"
+        )
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != expected_keys
+            or value.get("schema") != WRITER_AUTHORITY_STAGE_RECEIPT_SCHEMA
+            or value.get("ok") is not True
+            or value.get("state") != "authority_staged_services_stopped"
+            or value.get("action") != action
+            or value.get("scope") != scope
+            or value.get("revision") != release_sha
+            or value.get("plan_sha256") != plan_sha256
+            or value.get("frame_sha256") != frame_sha256
+            or value.get("owner_subject_sha256") != owner_subject_sha256
+            or value.get("approval_source_sha256")
+            != PHASE_B_PINNED_APPROVAL_SOURCE_SHA256
+            or value.get("owner_approval_sha256") != owner_approval_sha256
+            or value.get("external_iam_receipt_sha256")
+            != external_iam_receipt_sha256
+            or value.get("external_iam_policy_sha256")
+            != external_iam_policy_sha256
+            or value.get("previous_owner_approval_sha256")
+            != previous_owner_approval_sha256
+            or value.get("previous_external_iam_receipt_sha256")
+            != previous_external_iam_receipt_sha256
+            or value.get("owner_staged_present") is not True
+            or value.get("external_iam_staged_present") is not True
+            or value.get("services_started") is not False
+            or value.get("services_stopped") is not True
+            or type(value.get("completed_at_unix")) is not int
+        ):
+            raise OwnerLauncherError("writer_authority_stage_invalid")
+        for name in ("frame_sha256", "intent_sha256", "receipt_sha256"):
+            _require_sha256(value.get(name), "writer_authority_stage_invalid")
+        unsigned = {
+            name: copy.deepcopy(item)
+            for name, item in value.items()
+            if name != "receipt_sha256"
+        }
+        if value["receipt_sha256"] != _sha256(_canonical_bytes(unsigned)):
+            raise OwnerLauncherError("writer_authority_stage_invalid")
+        expected_root = (
+            "/var/lib/muncho-writer-canary-evidence/authority-bridge/"
+            f"{release_sha}/{plan_sha256}/{frame_sha256}"
+        )
+        if (
+            value.get("intent_path") != f"{expected_root}/intent.json"
+            or value.get("receipt_path") != f"{expected_root}/receipt.json"
+            or (
+                action == "stage-native-authority"
+                and value.get("archive") is not None
+            )
+            or (
+                action == "replace-final-authority"
+                and not isinstance(value.get("archive"), Mapping)
+            )
+        ):
+            raise OwnerLauncherError("writer_authority_stage_invalid")
+        if action == "replace-final-authority":
+            archive = value["archive"]
+            expected_archive_root = (
+                "/var/lib/muncho-writer-canary-evidence/authority-bridge/retired/"
+                f"{previous_owner_approval_sha256}/"
+                f"{previous_external_iam_receipt_sha256}"
+            )
+            if archive != {
+                "owner_approval_path": f"{expected_archive_root}/owner-approval.json",
+                "owner_approval_file_sha256": previous_owner_approval_sha256,
+                "external_iam_path": (
+                    f"{expected_archive_root}/external-iam-receipt.json"
+                ),
+                "external_iam_file_sha256": (
+                    previous_external_iam_receipt_sha256
+                ),
+            }:
+                raise OwnerLauncherError("writer_authority_stage_invalid")
+        return copy.deepcopy(dict(value))
 
+    @staticmethod
+    def _validate_install_approval(
+        value: Mapping[str, Any],
+        *,
+        scope: str,
+        plan_sha256: str,
+        approval_sha256: str,
+    ) -> str:
+        path = _writer_owner_approval_path(
+            scope=scope,
+            plan_sha256=plan_sha256,
+            receipt_sha256=approval_sha256,
+        )
+        if value != {
+            "ok": True,
+            "schema": "muncho-writer-owner-approval.v1",
+            "scope": scope,
+            "plan_sha256": plan_sha256,
+            "owner_approval_receipt_sha256": approval_sha256,
+            "installed_path": path,
+        }:
+            raise OwnerLauncherError("writer_approval_install_invalid")
+        return path
 
-def _owner_binding_view(value: Mapping[str, Any]) -> Mapping[str, Any]:
-    return {
-        "release_sha": value.get("release_sha"),
-        "coordinator_input_sha256": value.get("coordinator_input_sha256"),
-        "credential_prepare_approval_sha256": value.get(
-            "credential_prepare_approval_sha256"
-        ),
-        "owner_subject_sha256": value.get("owner_subject_sha256"),
-        "admin_username": value.get(
-            "admin_username", value.get("ephemeral_admin_username")
-        ),
-    }
+    @staticmethod
+    def _validate_install_iam(
+        value: Mapping[str, Any],
+        *,
+        scope: str,
+        plan_sha256: str,
+        approval_sha256: str,
+        iam_sha256: str,
+        policy_sha256: str,
+    ) -> Mapping[str, Any]:
+        expected_keys = {
+            "ok",
+            "schema",
+            "scope",
+            "plan_sha256",
+            "owner_approval_receipt_sha256",
+            "external_iam_receipt_sha256",
+            "external_iam_policy_sha256",
+            "archive",
+            "live_path",
+            "live_replaced",
+        }
+        archive = value.get("archive")
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != expected_keys
+            or value.get("ok") is not True
+            or value.get("schema") != "muncho-writer-external-iam-evidence.v1"
+            or value.get("scope") != scope
+            or value.get("plan_sha256") != plan_sha256
+            or value.get("owner_approval_receipt_sha256") != approval_sha256
+            or value.get("external_iam_receipt_sha256") != iam_sha256
+            or value.get("external_iam_policy_sha256") != policy_sha256
+            or value.get("live_path") != WRITER_EXTERNAL_IAM_LIVE_PATH
+            or type(value.get("live_replaced")) is not bool
+            or not isinstance(archive, Mapping)
+            or set(archive)
+            != {"path", "sha256", "policy_sha256", "mode", "owner_uid", "group_gid"}
+            or archive.get("path")
+            != (
+                "/etc/muncho/writer-activation/external-iam/"
+                f"{policy_sha256}/{iam_sha256}.json"
+            )
+            or archive.get("sha256") != iam_sha256
+            or archive.get("policy_sha256") != policy_sha256
+            or archive.get("mode") != "0400"
+            or archive.get("owner_uid") != 0
+            or archive.get("group_gid") != 0
+        ):
+            raise OwnerLauncherError("writer_iam_install_invalid")
+        return copy.deepcopy(dict(value))
 
+    @staticmethod
+    def _validate_native_observation(
+        value: Mapping[str, Any],
+        *,
+        release_sha: str,
+        plan_sha256: str,
+        iam_sha256: str,
+    ) -> str:
+        expected_keys = {
+            "ok",
+            "schema",
+            "revision",
+            "native_observation_plan_sha256",
+            "native_observation_receipt_sha256",
+            "idempotent",
+            "host_preparation_receipt_path",
+            "host_preparation_receipt_sha256",
+            "external_iam_evidence",
+        }
+        evidence = value.get("external_iam_evidence")
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != expected_keys
+            or value.get("ok") is not True
+            or value.get("schema") != "muncho-writer-native-observation.v1"
+            or value.get("revision") != release_sha
+            or value.get("native_observation_plan_sha256") != plan_sha256
+            or type(value.get("idempotent")) is not bool
+            or not isinstance(evidence, Mapping)
+            or evidence.get("sha256") != iam_sha256
+        ):
+            raise OwnerLauncherError("writer_native_observation_invalid")
+        _require_sha256(
+            value.get("host_preparation_receipt_sha256"),
+            "writer_native_observation_invalid",
+        )
+        return _require_sha256(
+            value.get("native_observation_receipt_sha256"),
+            "writer_native_observation_invalid",
+        )
 
-def _adopt_persisted_recovery_completion(
-    state: _RecoveryAttemptState,
-    completion: Mapping[str, Any],
-) -> None:
-    state.gate = {
-        "release_sha": completion["release_sha"],
-        "coordinator_input_sha256": completion["coordinator_input_sha256"],
-        "credential_prepare_approval_sha256": completion[
-            "credential_prepare_approval_sha256"
-        ],
-        "owner_subject_sha256": completion["owner_subject_sha256"],
-        "ephemeral_admin_username": completion["ephemeral_admin_username"],
-        "original_run_process_lease_sha256": completion[
-            "original_run_process_lease_sha256"
-        ],
-        "causal_recovery_state_sha256": completion["causal_recovery_state_sha256"],
-        "gate_sha256": completion["recovery_takeover_gate_sha256"],
-    }
-    state.worker_completion = completion
-    state.username = str(completion["ephemeral_admin_username"])
-    state.admin_mutation_attempted = True
-    state.admin_mutation_confirmed = True
-    state.admin_delete_pending = True
-    state.frame_write_attempted = True
-    state.frame_disclosed_or_ambiguous = True
-    state.admin_session_closed = True
-    state.recovery_required = True
+    @staticmethod
+    def _validate_final_plan_build(
+        value: Mapping[str, Any],
+        *,
+        native_plan_sha256: str,
+        native_receipt_sha256: str,
+    ) -> str:
+        expected_keys = {
+            "activation_plan_sha256",
+            "artifact_sha256",
+            "config_collector_receipt_sha256",
+            "native_observation_plan_sha256",
+            "native_observation_receipt_sha256",
+            "release_manifest_file_sha256",
+        }
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != expected_keys
+            or value.get("native_observation_plan_sha256")
+            != native_plan_sha256
+            or value.get("native_observation_receipt_sha256")
+            != native_receipt_sha256
+        ):
+            raise OwnerLauncherError("writer_final_plan_invalid")
+        for name in expected_keys:
+            _require_sha256(value.get(name), "writer_final_plan_invalid")
+        return str(value["activation_plan_sha256"])
+
+    @staticmethod
+    def _validate_read_only_preflight(
+        value: Mapping[str, Any],
+        *,
+        release_sha: str,
+        plan_sha256: str,
+    ) -> Mapping[str, Any]:
+        expected_keys = {
+            "schema",
+            "ok",
+            "revision",
+            "activation_plan_sha256",
+            "checks",
+            "failed_checks",
+            "checked_at_unix",
+            "report_sha256",
+            "evidence",
+        }
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != expected_keys
+            or value.get("schema")
+            != "muncho-writer-activation-read-only-preflight.v1"
+            or value.get("ok") is not True
+            or value.get("revision") != release_sha
+            or value.get("activation_plan_sha256") != plan_sha256
+            or value.get("failed_checks") != []
+            or not isinstance(value.get("checks"), list)
+            or any(
+                not isinstance(item, Mapping)
+                or set(item) != {"name", "passed"}
+                or item.get("passed") is not True
+                for item in value["checks"]
+            )
+        ):
+            raise OwnerLauncherError("writer_activation_preflight_invalid")
+        report_sha = _require_sha256(
+            value.get("report_sha256"),
+            "writer_activation_preflight_invalid",
+        )
+        unsigned = {
+            name: copy.deepcopy(item)
+            for name, item in value.items()
+            if name not in {"report_sha256", "evidence"}
+        }
+        evidence = value.get("evidence")
+        if (
+            report_sha != _sha256(_canonical_bytes(unsigned))
+            or not isinstance(evidence, Mapping)
+            or evidence.get("report_sha256") != report_sha
+        ):
+            raise OwnerLauncherError("writer_activation_preflight_invalid")
+        return copy.deepcopy(dict(value))
+
+    @staticmethod
+    def _validate_terminal_activation(
+        value: Mapping[str, Any],
+        *,
+        release_sha: str,
+        plan_sha256: str,
+        native_plan_sha256: str,
+        native_receipt_sha256: str,
+        approval: Mapping[str, Any],
+        approval_sha256: str,
+        iam_sha256: str,
+    ) -> Mapping[str, Any]:
+        expected_keys = {
+            "schema",
+            "revision",
+            "activation_plan_sha256",
+            "approved_plan_sha256",
+            "native_observation_plan_sha256",
+            "native_observation_receipt_sha256",
+            "owner_approval_receipt_sha256",
+            "owner_approval_receipt",
+            "external_iam_evidence",
+            "read_only_preflight",
+            "projection_export",
+            "live_preflight",
+            "services_stopped",
+            "discord_started",
+            "completed_at_unix",
+            "activation_receipt_path",
+            "receipt_sha256",
+        }
+        evidence = value.get("external_iam_evidence")
+        if (
+            not isinstance(value, Mapping)
+            or set(value) != expected_keys
+            or value.get("schema") != "muncho-writer-only-activation-receipt.v1"
+            or value.get("revision") != release_sha
+            or value.get("activation_plan_sha256") != plan_sha256
+            or value.get("approved_plan_sha256") != plan_sha256
+            or value.get("native_observation_plan_sha256")
+            != native_plan_sha256
+            or value.get("native_observation_receipt_sha256")
+            != native_receipt_sha256
+            or value.get("owner_approval_receipt_sha256") != approval_sha256
+            or value.get("owner_approval_receipt") != approval
+            or not isinstance(evidence, Mapping)
+            or evidence.get("sha256") != iam_sha256
+            or not isinstance(value.get("read_only_preflight"), Mapping)
+            or not isinstance(value.get("projection_export"), Mapping)
+            or not isinstance(value.get("live_preflight"), Mapping)
+            or value.get("services_stopped") is not True
+            or value.get("discord_started") is not False
+            or type(value.get("completed_at_unix")) is not int
+            or value.get("activation_receipt_path")
+            != (
+                "/var/lib/muncho-writer-activation/plans/"
+                f"{release_sha}/{plan_sha256}/success/activation.json"
+            )
+        ):
+            raise OwnerLauncherError("writer_activation_terminal_invalid")
+        receipt_sha = _require_sha256(
+            value.get("receipt_sha256"),
+            "writer_activation_terminal_invalid",
+        )
+        unsigned = {
+            name: copy.deepcopy(item)
+            for name, item in value.items()
+            if name != "receipt_sha256"
+        }
+        if receipt_sha != _sha256(_canonical_bytes(unsigned)):
+            raise OwnerLauncherError("writer_activation_terminal_invalid")
+        return copy.deepcopy(dict(value))
+
+    def activate(
+        self,
+        release_sha: str,
+        *,
+        external_iam_policy_sha256: str,
+        now: Callable[[], int] = lambda: int(time.time()),
+    ) -> Mapping[str, Any]:
+        """Complete native observation and final activation, ending stopped."""
+
+        if _RELEASE_SHA.fullmatch(release_sha) is None:
+            raise OwnerLauncherError("invalid_release_sha")
+        policy_sha = _require_sha256(
+            external_iam_policy_sha256,
+            "writer_activation_policy_invalid",
+        )
+        account = self._owner_identity.account_for_read_only_preflight()
+        self._owner_identity.require_stable()
+
+        native_install = self._run_packaged_json(
+            release_sha,
+            module=WRITER_ACTIVATION_MODULE,
+            arguments=(
+                "install-native-plan",
+                "--plan",
+                WRITER_STAGED_NATIVE_PLAN_PATH,
+            ),
+            account=account,
+        )
+        native_plan_sha = self._validate_install_plan(
+            native_install,
+            final=False,
+            release_sha=release_sha,
+        )
+        native_approval = build_writer_owner_approval(
+            scope="native_observation",
+            plan_sha256=native_plan_sha,
+            owner_identity=self._owner_identity,
+            now_unix=now(),
+        )
+        native_approval, native_approval_sha = self._approval_receipt(
+            native_approval
+        )
+        native_iam = collect_fresh_writer_external_iam(
+            owner_identity=self._owner_identity,
+            source_approval_sha256=native_approval_sha,
+        )
+        native_iam, native_iam_sha, native_policy = self._external_iam_receipt(
+            native_iam
+        )
+        if native_policy != policy_sha:
+            raise OwnerLauncherError("writer_activation_policy_mismatch")
+        frame_now = now()
+        native_frame = build_writer_authority_frame(
+            action="stage-native-authority",
+            revision=release_sha,
+            plan_sha256=native_plan_sha,
+            owner_approval=native_approval,
+            external_iam_receipt=native_iam,
+            previous_owner_approval_sha256=None,
+            previous_external_iam_receipt_sha256=None,
+            now_unix=frame_now,
+        )
+        native_stage = self._validate_authority_stage(
+            self._run_packaged_json(
+                release_sha,
+                module=WRITER_ACTIVATION_BRIDGE_MODULE,
+                arguments=("stage-native-authority",),
+                account=account,
+                stdin_frame=native_frame,
+            ),
+            action="stage-native-authority",
+            release_sha=release_sha,
+            plan_sha256=native_plan_sha,
+            owner_subject_sha256=str(
+                native_approval["owner_subject_sha256"]
+            ),
+            owner_approval_sha256=native_approval_sha,
+            external_iam_receipt_sha256=native_iam_sha,
+            external_iam_policy_sha256=policy_sha,
+            frame_sha256=_writer_authority_frame_sha256(native_frame),
+            previous_owner_approval_sha256=None,
+            previous_external_iam_receipt_sha256=None,
+        )
+        native_approval_path = self._validate_install_approval(
+            self._run_packaged_json(
+                release_sha,
+                module=WRITER_ACTIVATION_MODULE,
+                arguments=(
+                    "install-approval",
+                    "--staged-receipt",
+                    WRITER_STAGED_OWNER_APPROVAL_PATH,
+                ),
+                account=account,
+            ),
+            scope="native_observation",
+            plan_sha256=native_plan_sha,
+            approval_sha256=native_approval_sha,
+        )
+        native_iam_install = self._validate_install_iam(
+            self._run_packaged_json(
+                release_sha,
+                module=WRITER_ACTIVATION_MODULE,
+                arguments=(
+                    "install-external-iam",
+                    "--staged-receipt",
+                    WRITER_STAGED_EXTERNAL_IAM_PATH,
+                    "--external-iam-policy-sha256",
+                    policy_sha,
+                    "--plan",
+                    WRITER_NATIVE_PLAN_PATH,
+                    "--approved-plan-sha256",
+                    native_plan_sha,
+                    "--owner-approval-receipt",
+                    native_approval_path,
+                ),
+                account=account,
+            ),
+            scope="native_observation",
+            plan_sha256=native_plan_sha,
+            approval_sha256=native_approval_sha,
+            iam_sha256=native_iam_sha,
+            policy_sha256=policy_sha,
+        )
+        native_receipt_sha = self._validate_native_observation(
+            self._run_packaged_json(
+                release_sha,
+                module=WRITER_ACTIVATION_MODULE,
+                arguments=(
+                    "observe-native",
+                    "--plan",
+                    WRITER_NATIVE_PLAN_PATH,
+                    "--approved-plan-sha256",
+                    native_plan_sha,
+                    "--owner-approval-receipt",
+                    native_approval_path,
+                    "--external-iam-receipt",
+                    WRITER_EXTERNAL_IAM_LIVE_PATH,
+                ),
+                account=account,
+                timeout_seconds=2_400.0,
+            ),
+            release_sha=release_sha,
+            plan_sha256=native_plan_sha,
+            iam_sha256=native_iam_sha,
+        )
+        final_plan_sha = self._validate_final_plan_build(
+            self._run_packaged_json(
+                release_sha,
+                module=WRITER_PLANNER_MODULE,
+                arguments=(
+                    "build-final-plan",
+                    "--native-observation-receipt-sha256",
+                    native_receipt_sha,
+                ),
+                account=account,
+            ),
+            native_plan_sha256=native_plan_sha,
+            native_receipt_sha256=native_receipt_sha,
+        )
+        installed_final_sha = self._validate_install_plan(
+            self._run_packaged_json(
+                release_sha,
+                module=WRITER_ACTIVATION_MODULE,
+                arguments=(
+                    "install-plan",
+                    "--plan",
+                    WRITER_STAGED_FINAL_PLAN_PATH,
+                ),
+                account=account,
+            ),
+            final=True,
+            release_sha=release_sha,
+        )
+        if installed_final_sha != final_plan_sha:
+            raise OwnerLauncherError("writer_final_plan_install_invalid")
+        final_approval = build_writer_owner_approval(
+            scope="activation",
+            plan_sha256=final_plan_sha,
+            owner_identity=self._owner_identity,
+            now_unix=now(),
+        )
+        final_approval, final_approval_sha = self._approval_receipt(final_approval)
+        final_iam = collect_fresh_writer_external_iam(
+            owner_identity=self._owner_identity,
+            source_approval_sha256=final_approval_sha,
+        )
+        final_iam, final_iam_sha, final_policy = self._external_iam_receipt(final_iam)
+        if final_policy != policy_sha:
+            raise OwnerLauncherError("writer_activation_policy_mismatch")
+        final_frame = build_writer_authority_frame(
+            action="replace-final-authority",
+            revision=release_sha,
+            plan_sha256=final_plan_sha,
+            owner_approval=final_approval,
+            external_iam_receipt=final_iam,
+            previous_owner_approval_sha256=native_approval_sha,
+            previous_external_iam_receipt_sha256=native_iam_sha,
+            now_unix=now(),
+        )
+        final_stage = self._validate_authority_stage(
+            self._run_packaged_json(
+                release_sha,
+                module=WRITER_ACTIVATION_BRIDGE_MODULE,
+                arguments=("replace-final-authority",),
+                account=account,
+                stdin_frame=final_frame,
+            ),
+            action="replace-final-authority",
+            release_sha=release_sha,
+            plan_sha256=final_plan_sha,
+            owner_subject_sha256=str(final_approval["owner_subject_sha256"]),
+            owner_approval_sha256=final_approval_sha,
+            external_iam_receipt_sha256=final_iam_sha,
+            external_iam_policy_sha256=policy_sha,
+            frame_sha256=_writer_authority_frame_sha256(final_frame),
+            previous_owner_approval_sha256=native_approval_sha,
+            previous_external_iam_receipt_sha256=native_iam_sha,
+        )
+        final_approval_path = self._validate_install_approval(
+            self._run_packaged_json(
+                release_sha,
+                module=WRITER_ACTIVATION_MODULE,
+                arguments=(
+                    "install-approval",
+                    "--staged-receipt",
+                    WRITER_STAGED_OWNER_APPROVAL_PATH,
+                ),
+                account=account,
+            ),
+            scope="activation",
+            plan_sha256=final_plan_sha,
+            approval_sha256=final_approval_sha,
+        )
+        final_iam_install = self._validate_install_iam(
+            self._run_packaged_json(
+                release_sha,
+                module=WRITER_ACTIVATION_MODULE,
+                arguments=(
+                    "install-external-iam",
+                    "--staged-receipt",
+                    WRITER_STAGED_EXTERNAL_IAM_PATH,
+                    "--external-iam-policy-sha256",
+                    policy_sha,
+                    "--plan",
+                    WRITER_FINAL_PLAN_PATH,
+                    "--approved-plan-sha256",
+                    final_plan_sha,
+                    "--owner-approval-receipt",
+                    final_approval_path,
+                ),
+                account=account,
+            ),
+            scope="activation",
+            plan_sha256=final_plan_sha,
+            approval_sha256=final_approval_sha,
+            iam_sha256=final_iam_sha,
+            policy_sha256=policy_sha,
+        )
+        preflight = self._validate_read_only_preflight(
+            self._run_packaged_json(
+                release_sha,
+                module=WRITER_ACTIVATION_MODULE,
+                arguments=(
+                    "validate-plan",
+                    "--plan",
+                    WRITER_FINAL_PLAN_PATH,
+                    "--approved-plan-sha256",
+                    final_plan_sha,
+                    "--owner-approval-receipt",
+                    final_approval_path,
+                ),
+                account=account,
+            ),
+            release_sha=release_sha,
+            plan_sha256=final_plan_sha,
+        )
+        terminal = self._validate_terminal_activation(
+            self._run_packaged_json(
+                release_sha,
+                module=WRITER_ACTIVATION_MODULE,
+                arguments=(
+                    "apply",
+                    "--plan",
+                    WRITER_FINAL_PLAN_PATH,
+                    "--approved-plan-sha256",
+                    final_plan_sha,
+                    "--owner-approval-receipt",
+                    final_approval_path,
+                ),
+                account=account,
+                timeout_seconds=2_400.0,
+            ),
+            release_sha=release_sha,
+            plan_sha256=final_plan_sha,
+            native_plan_sha256=native_plan_sha,
+            native_receipt_sha256=native_receipt_sha,
+            approval=final_approval,
+            approval_sha256=final_approval_sha,
+            iam_sha256=final_iam_sha,
+        )
+        self._owner_identity.require_stable()
+        unsigned = {
+            "schema": WRITER_ACTIVATION_OWNER_RECEIPT_SCHEMA,
+            "ok": True,
+            "state": "writer_activation_verified_stopped",
+            "release_sha": release_sha,
+            "owner_subject_sha256": final_approval["owner_subject_sha256"],
+            "approval_source_sha256": PHASE_B_PINNED_APPROVAL_SOURCE_SHA256,
+            "external_iam_policy_sha256": policy_sha,
+            "native_observation_plan_sha256": native_plan_sha,
+            "native_owner_approval_sha256": native_approval_sha,
+            "native_external_iam_receipt_sha256": native_iam_sha,
+            "native_authority_stage_receipt_sha256": native_stage[
+                "receipt_sha256"
+            ],
+            "native_external_iam_install_receipt_sha256": _sha256(
+                _canonical_bytes(native_iam_install)
+            ),
+            "native_observation_receipt_sha256": native_receipt_sha,
+            "activation_plan_sha256": final_plan_sha,
+            "activation_owner_approval_sha256": final_approval_sha,
+            "activation_external_iam_receipt_sha256": final_iam_sha,
+            "activation_authority_stage_receipt_sha256": final_stage[
+                "receipt_sha256"
+            ],
+            "activation_external_iam_install_receipt_sha256": _sha256(
+                _canonical_bytes(final_iam_install)
+            ),
+            "activation_preflight_report_sha256": preflight["report_sha256"],
+            "activation_terminal_receipt_sha256": terminal["receipt_sha256"],
+            "services_stopped": True,
+            "discord_started": False,
+            "completed_at_unix": int(terminal["completed_at_unix"]),
+        }
+        return {
+            **unsigned,
+            "receipt_sha256": _sha256(_canonical_bytes(unsigned)),
+        }
 
 
 def _retire_discord_token_only(
@@ -10079,8 +12794,6 @@ def _retire_discord_token_only(
             session,
             session.read_gate(),
             owner_gate=owner_gate,
-            token_lease_expected=True,
-            process_lease_expected=False,
         )
         gate = validate_discord_retirement_gate(
             raw_gate,
@@ -10094,8 +12807,6 @@ def _retire_discord_token_only(
             session,
             session.finish(build_discord_retirement_ack_frame(ack)),
             owner_gate=owner_gate,
-            token_lease_expected=True,
-            process_lease_expected=False,
         )
         receipt = validate_discord_retirement_receipt(
             raw_receipt,
@@ -10117,1153 +12828,61 @@ def _retire_discord_token_only(
             _close_session_preserving_primary(session, primary)
 
 
-def _finalize_recovery_worker(
+def launch_session_bound_full_canary(
     *,
     release_sha: str,
     transport: CoordinatorTransport,
-    owner_identity: ApprovedOwnerIdentity,
-    now: Callable[[], int],
-    state: _RecoveryAttemptState,
-) -> Mapping[str, Any]:
-    """Finish one durable worker completion without sending any secret."""
-
-    if state.gate is None:
-        raise OwnerLauncherError("recovery_finalization_context_missing")
-    owner_gate = _owner_binding_view(state.gate)
-    session = transport.open_recovery_finalizer(release_sha)
-    closed = False
-    primary: BaseException | None = None
-    try:
-        raw = _validated_input_gate(
-            session,
-            session.read_gate(),
-            owner_gate=owner_gate,
-            token_lease_expected=False,
-            process_lease_expected=True,
-            admin_frame_disclosed=state.frame_disclosed_or_ambiguous,
-            active_secrets=(
-                (state.password,)
-                if state.password is not None and state.password_wiped is not True
-                else ()
-            ),
-        )
-        if raw.get("schema") == RECOVERY_FINALIZE_PENDING_RECEIPT_SCHEMA:
-            pending = validate_recovery_finalize_pending_receipt(
-                raw,
-                completion=state.worker_completion,
-                expected_release_sha=release_sha,
-                owner_gate=owner_gate,
-                now_unix=now(),
-            )
-            state.finalize_pending_receipt = pending
-            state.recovery_required = True
-            session.mark_validated(pending)
-            state.remote_termination_proven = bool(
-                state.remote_termination_proven or session.termination_proven
-            )
-            state.terminal_receipt_validated = bool(
-                state.terminal_receipt_validated or session.terminal_receipt_validated
-            )
-            session.close()
-            closed = True
-            raise OwnerLauncherError("recovery_finalization_pending_no_secret")
-        if (
-            state.takeover_ack is not None
-            and state.secret_gate is not None
-            and state.worker_completion is not None
-            and state.password is not None
-            and state.password_wiped is not True
-        ):
-            receipt = validate_recovery_receipt(
-                raw,
-                gate=state.gate,
-                ack=state.takeover_ack,
-                secret_gate=state.secret_gate,
-                completion=state.worker_completion,
-                password=state.password,
-                now_unix=now(),
-            )
-        else:
-            receipt = validate_persisted_recovery_receipt(
-                raw,
-                expected_release_sha=release_sha,
-                now_unix=now(),
-            )
-            if state.worker_completion is not None:
-                reconstructed_completion = (
-                    _reconstruct_worker_completion_from_final_receipt(receipt)
-                )
-                if (
-                    receipt.get("recovery_worker_completion_sha256")
-                    != state.worker_completion.get("completion_sha256")
-                    or reconstructed_completion != state.worker_completion
-                ):
-                    raise OwnerLauncherError(
-                        "recovery_final_receipt_completion_drifted"
-                    )
-            if any(
-                receipt.get(receipt_name) != state.gate.get(gate_name)
-                for receipt_name, gate_name in (
-                    ("coordinator_input_sha256", "coordinator_input_sha256"),
-                    (
-                        "credential_prepare_approval_sha256",
-                        "credential_prepare_approval_sha256",
-                    ),
-                    ("owner_subject_sha256", "owner_subject_sha256"),
-                    ("ephemeral_admin_username", "ephemeral_admin_username"),
-                    (
-                        "original_run_process_lease_sha256",
-                        "original_run_process_lease_sha256",
-                    ),
-                    (
-                        "causal_recovery_state_sha256",
-                        "causal_recovery_state_sha256",
-                    ),
-                )
-            ):
-                raise OwnerLauncherError("recovery_final_receipt_drifted")
-        state.final_receipt = receipt
-        state.admin_session_closed = True
-        state.recovery_required = False
-        session.mark_validated(receipt)
-        owner_identity.require_stable()
-        state.remote_termination_proven = bool(
-            state.remote_termination_proven or session.termination_proven
-        )
-        state.terminal_receipt_validated = bool(
-            state.terminal_receipt_validated or session.terminal_receipt_validated
-        )
-        session.close()
-        closed = True
-        return receipt
-    except BaseException as exc:
-        primary = exc
-        raise
-    finally:
-        if not closed:
-            _close_session_preserving_primary(session, primary)
-        if primary is not None:
-            state.cleanup_failure_codes.update(_attached_cleanup_failure_codes(primary))
-
-
-def _recover_stale_process(
-    *,
-    release_sha: str,
-    preflight_gate: Mapping[str, Any],
-    transport: CoordinatorTransport,
-    sql_admin: CloudSqlTemporaryAdmin,
-    owner_identity: ApprovedOwnerIdentity,
-    now: Callable[[], int],
-    password_factory: Callable[[], bytearray],
-    state: _RecoveryAttemptState,
-) -> tuple[Mapping[str, Any], bytearray]:
-    owner_gate = _owner_binding_view(preflight_gate)
-    gate = validate_recovery_gate(
-        preflight_gate,
-        expected_release_sha=release_sha,
-        owner_gate=owner_gate,
-        now_unix=now(),
-    )
-    state.gate = gate
-    state.username = str(gate["ephemeral_admin_username"])
-    state.recovery_required = True
-    session: RemoteSecretSession | None = None
-    closed = False
-    primary: BaseException | None = None
-    try:
-        session = transport.open_recovery(release_sha)
-        raw_gate = _validated_input_gate(
-            session,
-            session.read_gate(),
-            owner_gate=owner_gate,
-            token_lease_expected=True,
-            process_lease_expected=True,
-        )
-        gate = validate_recovery_gate(
-            raw_gate,
-            expected_release_sha=release_sha,
-            owner_gate=owner_gate,
-            now_unix=now(),
-        )
-        state.gate = gate
-        state.username = str(gate["ephemeral_admin_username"])
-        stable_names = (
-            "release_sha",
-            "coordinator_input_sha256",
-            "credential_prepare_approval_sha256",
-            "owner_subject_sha256",
-            "ephemeral_admin_username",
-            "predecessor_kind",
-            "predecessor_schema",
-            "predecessor_journal_sha256",
-            "predecessor_generation",
-            "original_run_process_lease_sha256",
-            "causal_recovery_state_sha256",
-            "target_pid",
-            "target_process_start_time_ticks",
-            "target_boot_id_sha256",
-            "target_boot_time_ns",
-            "target_uid",
-            "target_gid",
-            "target_module_origin",
-            "target_module_sha256",
-            "target_process_exe_sha256",
-            "target_process_cmdline_sha256",
-            "target_process_identity_state",
-            "discord_token_state",
-            "discord_token_install_receipt_sha256",
-            "discord_retirement_receipt_sha256",
-            "token_device",
-            "token_inode",
-            "db_secret_accepted",
-            "frame_schema",
-        )
-        if any(gate.get(name) != preflight_gate.get(name) for name in stable_names):
-            raise OwnerLauncherError("recovery_gate_drifted")
-        owner_identity.require_stable()
-        ack = build_recovery_ack(gate, now_unix=now())
-        state.takeover_ack = ack
-        ack_frame = build_recovery_ack_frame(gate, ack)
-        try:
-            raw_secret_gate = session.exchange(ack_frame)
-        finally:
-            _wipe(ack_frame)
-        if raw_secret_gate.get("schema") == RECOVERY_CONCURRENT_LOSER_RECEIPT_SCHEMA:
-            concurrent = validate_recovery_concurrent_loser_receipt(
-                raw_secret_gate,
-                gate=gate,
-                ack=ack,
-                now_unix=now(),
-            )
-            state.concurrent_loser_receipt = concurrent
-            state.recovery_required = True
-            session.mark_validated(concurrent)
-            state.remote_termination_proven = session.termination_proven
-            state.terminal_receipt_validated = session.terminal_receipt_validated
-            session.close()
-            closed = True
-            raise OwnerLauncherError("recovery_worker_claim_lost_no_secret")
-        raw_secret_gate = _validated_input_gate(
-            session,
-            raw_secret_gate,
-            owner_gate=owner_gate,
-            token_lease_expected=True,
-            process_lease_expected=True,
-        )
-        secret_gate = validate_recovery_secret_gate(
-            raw_secret_gate,
-            takeover_gate=gate,
-            takeover_ack=ack,
-            now_unix=now(),
-        )
-        state.secret_gate = secret_gate
-        owner_identity.require_stable()
-        password = password_factory()
-        state.password = password
-        if not isinstance(password, bytearray):
-            raise OwnerLauncherError("invalid_admin_password")
-        _validate_admin_credential(state.username, password)
-        sql_admin.begin_mutation_observation(
-            expected_owner_subject_sha256=str(gate["owner_subject_sha256"]),
-        )
-        state.admin_delete_pending = True
-        state.admin_mutation_attempted = True
-        state.admin_mutation_ambiguous = True
-        try:
-            sql_admin.create_or_rotate_recovery(
-                state.username,
-                password.decode("utf-8"),
-            )
-        except CloudSqlCreateNotCommitted:
-            state.admin_mutation_ambiguous = False
-            state.admin_mutation_explicitly_not_committed = True
-            state.admin_delete_pending = False
-            state.recovery_required = True
-            raise
-        except BaseException:
-            state.admin_mutation_ambiguous = bool(
-                state.admin_mutation_ambiguous
-                or sql_admin.mutation_reconciliation_required()
-            )
-            state.admin_mutation_ambiguity_observed = True
-            raise
-        state.admin_mutation_confirmed = True
-        state.admin_mutation_ambiguous = bool(
-            sql_admin.mutation_reconciliation_required()
-        )
-        state.admin_mutation_ambiguity_observed = bool(
-            _validated_sql_reconciliation_evidence(sql_admin)[
-                "mutation_ambiguity_observed"
-            ]
-        )
-        owner_identity.require_stable()
-        if state.admin_mutation_ambiguous:
-            raise OwnerLauncherError("cloud_sql_mutation_ambiguous")
-        if (
-            now() + _SECRET_FRAME_TRANSMIT_MARGIN_SECONDS
-            >= secret_gate["expires_at_unix"]
-        ):
-            raise OwnerLauncherError("recovery_secret_gate_expired")
-        frame = build_recovery_admin_frame(secret_gate, state.username, password)
-
-        def guard_recovery_admin_write() -> None:
-            owner_identity.require_stable()
-            if (
-                state.admin_mutation_ambiguous
-                or sql_admin.mutation_reconciliation_required()
-            ):
-                raise OwnerLauncherError("cloud_sql_mutation_ambiguous")
-            sql_admin.require_current_authority(state.username)
-            owner_identity.require_stable()
-            if (
-                now() + _SECRET_FRAME_TRANSMIT_MARGIN_SECONDS
-                >= secret_gate["expires_at_unix"]
-            ):
-                raise OwnerLauncherError("recovery_secret_gate_expired")
-
-        def mark_recovery_admin_write() -> None:
-            state.frame_write_attempted = True
-            state.frame_disclosed_or_ambiguous = True
-
-        try:
-            try:
-                raw_completion = session.finish_before(
-                    frame,
-                    write_guard=guard_recovery_admin_write,
-                    on_first_write=mark_recovery_admin_write,
-                )
-            finally:
-                _wipe(frame)
-        except BaseException:
-            state.admin_mutation_ambiguous = bool(
-                state.admin_mutation_ambiguous
-                or sql_admin.mutation_reconciliation_required()
-            )
-            state.admin_mutation_ambiguity_observed = bool(
-                state.admin_mutation_ambiguity_observed
-                or sql_admin.mutation_reconciliation_required()
-            )
-            raise
-        raw_completion = _validated_input_gate(
-            session,
-            raw_completion,
-            owner_gate=owner_gate,
-            token_lease_expected=True,
-            process_lease_expected=True,
-            admin_frame_disclosed=True,
-            active_secrets=(password,),
-        )
-        completion = validate_recovery_worker_completion(
-            raw_completion,
-            gate=gate,
-            ack=ack,
-            secret_gate=secret_gate,
-            password=password,
-            now_unix=now(),
-        )
-        state.worker_completion = completion
-        state.admin_session_closed = True
-        state.recovery_required = True
-        session.mark_validated(completion)
-        state.remote_termination_proven = session.termination_proven
-        state.terminal_receipt_validated = session.terminal_receipt_validated
-        owner_identity.require_stable()
-        session.close()
-        closed = True
-        receipt = _finalize_recovery_worker(
-            release_sha=release_sha,
-            transport=transport,
-            owner_identity=owner_identity,
-            now=now,
-            state=state,
-        )
-        return receipt, password
-    except BaseException as exc:
-        primary = exc
-        raise
-    finally:
-        if session is not None and not closed:
-            _close_session_preserving_primary(session, primary)
-        if primary is not None:
-            state.cleanup_failure_codes.update(_attached_cleanup_failure_codes(primary))
-        if session is not None:
-            state.remote_termination_proven = bool(
-                state.remote_termination_proven or session.termination_proven
-            )
-            state.terminal_receipt_validated = bool(
-                state.terminal_receipt_validated or session.terminal_receipt_validated
-            )
-
-
-def _resume_recovery_attempt(
-    *,
-    release_sha: str,
-    transport: CoordinatorTransport,
-    sql_admin: CloudSqlTemporaryAdmin,
-    owner_identity: ApprovedOwnerIdentity,
-    now: Callable[[], int],
-    password_factory: Callable[[], bytearray],
-    state: _RecoveryAttemptState,
-) -> Mapping[str, Any]:
-    """Use only durable recovery truth to reach the final v2 receipt."""
-
-    if state.final_receipt is not None:
-        return state.final_receipt
-    if state.gate is None:
-        raise OwnerLauncherError("recovery_resume_context_missing")
-    if state.worker_completion is not None:
-        return _finalize_recovery_worker(
-            release_sha=release_sha,
-            transport=transport,
-            owner_identity=owner_identity,
-            now=now,
-            state=state,
-        )
-    probe = transport.preflight_recovery(release_sha)
-    if probe.get("schema") == RECOVERY_RECEIPT_SCHEMA:
-        receipt = validate_persisted_recovery_receipt(
-            probe,
-            expected_release_sha=release_sha,
-            now_unix=now(),
-        )
-        if any(
-            receipt.get(receipt_name) != state.gate.get(gate_name)
-            for receipt_name, gate_name in (
-                ("coordinator_input_sha256", "coordinator_input_sha256"),
-                (
-                    "credential_prepare_approval_sha256",
-                    "credential_prepare_approval_sha256",
-                ),
-                ("owner_subject_sha256", "owner_subject_sha256"),
-                ("ephemeral_admin_username", "ephemeral_admin_username"),
-                (
-                    "original_run_process_lease_sha256",
-                    "original_run_process_lease_sha256",
-                ),
-                (
-                    "causal_recovery_state_sha256",
-                    "causal_recovery_state_sha256",
-                ),
-            )
-        ):
-            raise OwnerLauncherError("persisted_recovery_receipt_drifted")
-        state.final_receipt = receipt
-        state.admin_session_closed = True
-        state.remote_termination_proven = True
-        state.terminal_receipt_validated = True
-        state.recovery_required = False
-        return receipt
-    if probe.get("schema") == RECOVERY_WORKER_COMPLETION_SCHEMA:
-        completion = validate_persisted_recovery_worker_completion(
-            probe,
-            expected_release_sha=release_sha,
-            now_unix=now(),
-        )
-        if any(
-            completion.get(completion_name) != state.gate.get(gate_name)
-            for completion_name, gate_name in (
-                ("coordinator_input_sha256", "coordinator_input_sha256"),
-                (
-                    "credential_prepare_approval_sha256",
-                    "credential_prepare_approval_sha256",
-                ),
-                ("owner_subject_sha256", "owner_subject_sha256"),
-                ("ephemeral_admin_username", "ephemeral_admin_username"),
-                (
-                    "original_run_process_lease_sha256",
-                    "original_run_process_lease_sha256",
-                ),
-                (
-                    "causal_recovery_state_sha256",
-                    "causal_recovery_state_sha256",
-                ),
-            )
-        ):
-            raise OwnerLauncherError("persisted_recovery_completion_drifted")
-        _adopt_persisted_recovery_completion(state, completion)
-        owner_identity.require_stable()
-        return _finalize_recovery_worker(
-            release_sha=release_sha,
-            transport=transport,
-            owner_identity=owner_identity,
-            now=now,
-            state=state,
-        )
-    if probe.get("schema") == COORDINATOR_FAILURE_SCHEMA:
-        terminal = validate_terminal_first_failure(
-            probe,
-            owner_gate=_owner_binding_view(state.gate),
-            token_lease_expected=True,
-            process_lease_expected=True,
-            expected_release_sha=release_sha,
-            admin_frame_disclosed=state.frame_disclosed_or_ambiguous,
-        )
-        if terminal.get("error_code") == "recovery_completion_requires_finalization":
-            return _finalize_recovery_worker(
-                release_sha=release_sha,
-                transport=transport,
-                owner_identity=owner_identity,
-                now=now,
-                state=state,
-            )
-        raise RemoteCommandFailed(terminal)
-    takeover_gate = validate_recovery_gate(
-        probe,
-        expected_release_sha=release_sha,
-        owner_gate=_owner_binding_view(state.gate),
-        now_unix=now(),
-    )
-    owner_identity.require_stable()
-    later = _RecoveryAttemptState()
-    try:
-        receipt, _ = _recover_stale_process(
-            release_sha=release_sha,
-            preflight_gate=takeover_gate,
-            transport=transport,
-            sql_admin=sql_admin,
-            owner_identity=owner_identity,
-            now=now,
-            password_factory=password_factory,
-            state=later,
-        )
-        return receipt
-    finally:
-        later.wipe_password()
-        state.absorb(later)
-
-
-def _receipt(
-    *,
-    ok: bool,
-    state: str,
-    release_sha: str,
-    gate: Mapping[str, Any] | None,
-    discord_install_receipt: Mapping[str, Any] | None,
-    final_approval_install_receipt: Mapping[str, Any] | None,
-    final_approval_cancel_receipt: Mapping[str, Any] | None,
-    coordinator_receipt: Mapping[str, Any] | None,
-    remote_failure_receipt: Mapping[str, Any] | None,
-    recovery_preflight_receipt: Mapping[str, Any] | None,
-    recovery_receipt: Mapping[str, Any] | None,
-    discord_retirement_receipt: Mapping[str, Any] | None,
-    discord_token_retired: bool | None,
-    failure_code: str | None,
-    primary_failure_code: str | None,
-    cleanup_failure_codes: Sequence[str],
-    recovery_attempt: _RecoveryAttemptState | None,
-    admin_mutation_ambiguous: bool,
-    admin_mutation_ambiguity_observed: bool,
-    admin_reconciliation_performed: bool,
-    admin_reconciliation_evidence_sha256: str | None,
-    admin_reconciliation_quiet_window_seconds: float | None,
-    admin_response_known_candidate_observed: bool | None,
-    admin_post_baseline_authority_operation_count: int | None,
-    temporary_admin_absent: bool | None,
-    remote_coordinator_terminated: bool | None,
-    terminal_receipt_validated: bool | None,
-    admin_frame_disclosed: bool,
-    discord_frame_disclosed: bool,
-    final_approval_frame_disclosed: bool,
-    coordinator_admin_session_closed: bool | None,
-) -> Mapping[str, Any]:
-    normalized_cleanup_codes = sorted(set(cleanup_failure_codes))
-    if (
-        any(_STABLE_CODE.fullmatch(item) is None for item in normalized_cleanup_codes)
-        or primary_failure_code is not None
-        and _STABLE_CODE.fullmatch(primary_failure_code) is None
-        or admin_reconciliation_performed
-        and (
-            admin_reconciliation_evidence_sha256 is None
-            or _SHA256.fullmatch(admin_reconciliation_evidence_sha256) is None
-            or not isinstance(admin_reconciliation_quiet_window_seconds, (int, float))
-            or isinstance(admin_reconciliation_quiet_window_seconds, bool)
-            or admin_reconciliation_quiet_window_seconds <= 0
-            or type(admin_response_known_candidate_observed) is not bool
-            or type(admin_post_baseline_authority_operation_count) is not int
-            or admin_post_baseline_authority_operation_count < 0
-            or admin_response_known_candidate_observed
-            and admin_post_baseline_authority_operation_count < 1
-        )
-        or not admin_reconciliation_performed
-        and (
-            admin_reconciliation_evidence_sha256 is not None
-            or admin_reconciliation_quiet_window_seconds is not None
-            or admin_response_known_candidate_observed is not None
-            or admin_post_baseline_authority_operation_count is not None
-        )
-        or recovery_attempt is not None
-        and recovery_attempt.admin_reconciliation_performed
-        and (
-            recovery_attempt.admin_reconciliation_evidence_sha256 is None
-            or _SHA256.fullmatch(recovery_attempt.admin_reconciliation_evidence_sha256)
-            is None
-            or not isinstance(
-                recovery_attempt.admin_reconciliation_quiet_window_seconds,
-                (int, float),
-            )
-            or isinstance(
-                recovery_attempt.admin_reconciliation_quiet_window_seconds,
-                bool,
-            )
-            or recovery_attempt.admin_reconciliation_quiet_window_seconds <= 0
-            or type(recovery_attempt.admin_response_known_candidate_observed)
-            is not bool
-            or type(recovery_attempt.admin_post_baseline_authority_operation_count)
-            is not int
-            or recovery_attempt.admin_post_baseline_authority_operation_count < 0
-            or recovery_attempt.admin_response_known_candidate_observed
-            and recovery_attempt.admin_post_baseline_authority_operation_count < 1
-        )
-        or recovery_attempt is not None
-        and not recovery_attempt.admin_reconciliation_performed
-        and (
-            recovery_attempt.admin_reconciliation_evidence_sha256 is not None
-            or recovery_attempt.admin_reconciliation_quiet_window_seconds is not None
-            or recovery_attempt.admin_response_known_candidate_observed is not None
-            or recovery_attempt.admin_post_baseline_authority_operation_count
-            is not None
-        )
-        or temporary_admin_absent is True
-        and not admin_reconciliation_performed
-        or admin_mutation_ambiguity_observed
-        and temporary_admin_absent is None
-    ):
-        raise OwnerLauncherError("owner_receipt_failure_truth_invalid")
-    value: dict[str, Any] = {
-        "schema": OWNER_RECEIPT_SCHEMA,
-        "ok": ok,
-        "state": state,
-        "release_sha": release_sha,
-        "coordinator_input_sha256": None
-        if gate is None
-        else gate.get("coordinator_input_sha256"),
-        "credential_prepare_approval_sha256": None
-        if gate is None
-        else gate.get("credential_prepare_approval_sha256"),
-        "owner_gate_sha256": None if gate is None else gate.get("gate_sha256"),
-        "admin_username": None if gate is None else gate.get("admin_username"),
-        "discord_install_receipt_sha256": None
-        if discord_install_receipt is None
-        else discord_install_receipt.get("receipt_sha256"),
-        "final_approval_install_receipt_sha256": None
-        if final_approval_install_receipt is None
-        else final_approval_install_receipt.get("receipt_sha256"),
-        "final_approval_cancel_receipt_sha256": None
-        if final_approval_cancel_receipt is None
-        else final_approval_cancel_receipt.get("receipt_sha256"),
-        "coordinator_receipt_sha256": None
-        if coordinator_receipt is None
-        else coordinator_receipt.get("receipt_sha256"),
-        "remote_failure_receipt_sha256": None
-        if remote_failure_receipt is None
-        else remote_failure_receipt.get("receipt_sha256"),
-        "recovery_preflight_receipt_sha256": None
-        if recovery_preflight_receipt is None
-        else recovery_preflight_receipt.get("receipt_sha256"),
-        "recovery_receipt_sha256": None
-        if recovery_receipt is None
-        else recovery_receipt.get("receipt_sha256"),
-        "discord_retirement_receipt_sha256": None
-        if discord_retirement_receipt is None
-        else discord_retirement_receipt.get("receipt_sha256"),
-        "discord_token_retired": discord_token_retired,
-        "temporary_admin_absent": temporary_admin_absent,
-        "admin_mutation_ambiguous": admin_mutation_ambiguous,
-        "admin_mutation_ambiguity_observed": (admin_mutation_ambiguity_observed),
-        "admin_reconciliation_performed": admin_reconciliation_performed,
-        "admin_reconciliation_evidence_sha256": (admin_reconciliation_evidence_sha256),
-        "admin_reconciliation_quiet_window_seconds": (
-            admin_reconciliation_quiet_window_seconds
-        ),
-        "admin_response_known_candidate_observed": (
-            admin_response_known_candidate_observed
-        ),
-        "admin_post_baseline_authority_operation_count": (
-            admin_post_baseline_authority_operation_count
-        ),
-        "temporary_admin_preserved_for_recovery": temporary_admin_absent is False,
-        "admin_cleanup_status": (
-            "not_required"
-            if temporary_admin_absent is None
-            else (
-                "absent_proven"
-                if temporary_admin_absent is True
-                else (
-                    "preserved_remote_unconfirmed"
-                    if remote_coordinator_terminated is False
-                    else "delete_unconfirmed"
-                )
-            )
-        ),
-        "remote_coordinator_terminated": remote_coordinator_terminated,
-        "terminal_receipt_validated": terminal_receipt_validated,
-        "admin_frame_disclosed": admin_frame_disclosed,
-        "discord_frame_disclosed": discord_frame_disclosed,
-        "final_approval_frame_disclosed": final_approval_frame_disclosed,
-        "coordinator_admin_session_closed": coordinator_admin_session_closed,
-        "remote_cleanup_status": (
-            "not_started"
-            if remote_coordinator_terminated is None
-            else (
-                "terminated_proven"
-                if remote_coordinator_terminated is True
-                else "termination_unconfirmed"
-            )
-        ),
-        "failure_code": failure_code,
-        "primary_failure_code": primary_failure_code,
-        "cleanup_failure_codes": normalized_cleanup_codes,
-        "recovery_gate_sha256": (
-            None
-            if recovery_attempt is None or recovery_attempt.gate is None
-            else recovery_attempt.gate.get("gate_sha256")
-        ),
-        "recovery_secret_gate_sha256": (
-            None
-            if recovery_attempt is None or recovery_attempt.secret_gate is None
-            else recovery_attempt.secret_gate.get("gate_sha256")
-        ),
-        "recovery_takeover_ack_sha256": (
-            None
-            if recovery_attempt is None or recovery_attempt.takeover_ack is None
-            else recovery_attempt.takeover_ack.get("ack_sha256")
-        ),
-        "recovery_worker_completion_sha256": (
-            None
-            if recovery_attempt is None or recovery_attempt.worker_completion is None
-            else recovery_attempt.worker_completion.get("completion_sha256")
-        ),
-        "recovery_final_receipt_sha256": (
-            None
-            if recovery_attempt is None or recovery_attempt.final_receipt is None
-            else recovery_attempt.final_receipt.get("receipt_sha256")
-        ),
-        "recovery_concurrent_loser_receipt_sha256": (
-            None
-            if recovery_attempt is None
-            or recovery_attempt.concurrent_loser_receipt is None
-            else recovery_attempt.concurrent_loser_receipt.get("receipt_sha256")
-        ),
-        "recovery_finalize_pending_receipt_sha256": (
-            None
-            if recovery_attempt is None
-            or recovery_attempt.finalize_pending_receipt is None
-            else recovery_attempt.finalize_pending_receipt.get("receipt_sha256")
-        ),
-        "recovery_admin_username": (
-            None if recovery_attempt is None else recovery_attempt.username
-        ),
-        "recovery_admin_mutation_attempted": bool(
-            recovery_attempt is not None and recovery_attempt.admin_mutation_attempted
-        ),
-        "recovery_admin_mutation_confirmed": bool(
-            recovery_attempt is not None and recovery_attempt.admin_mutation_confirmed
-        ),
-        "recovery_admin_mutation_ambiguous": bool(
-            recovery_attempt is not None and recovery_attempt.admin_mutation_ambiguous
-        ),
-        "recovery_admin_mutation_explicitly_not_committed": bool(
-            recovery_attempt is not None
-            and recovery_attempt.admin_mutation_explicitly_not_committed
-        ),
-        "recovery_admin_mutation_ambiguity_observed": bool(
-            recovery_attempt is not None
-            and recovery_attempt.admin_mutation_ambiguity_observed
-        ),
-        "recovery_admin_reconciliation_performed": bool(
-            recovery_attempt is not None
-            and recovery_attempt.admin_reconciliation_performed
-        ),
-        "recovery_admin_reconciliation_evidence_sha256": (
-            None
-            if recovery_attempt is None
-            else recovery_attempt.admin_reconciliation_evidence_sha256
-        ),
-        "recovery_admin_reconciliation_quiet_window_seconds": (
-            None
-            if recovery_attempt is None
-            else recovery_attempt.admin_reconciliation_quiet_window_seconds
-        ),
-        "recovery_admin_response_known_candidate_observed": (
-            None
-            if recovery_attempt is None
-            else recovery_attempt.admin_response_known_candidate_observed
-        ),
-        "recovery_admin_post_baseline_authority_operation_count": (
-            None
-            if recovery_attempt is None
-            else recovery_attempt.admin_post_baseline_authority_operation_count
-        ),
-        "recovery_admin_delete_pending": bool(
-            recovery_attempt is not None and recovery_attempt.admin_delete_pending
-        ),
-        "recovery_frame_write_attempted": bool(
-            recovery_attempt is not None and recovery_attempt.frame_write_attempted
-        ),
-        "recovery_frame_disclosed_or_ambiguous": bool(
-            recovery_attempt is not None
-            and recovery_attempt.frame_disclosed_or_ambiguous
-        ),
-        "recovery_remote_termination_proven": bool(
-            recovery_attempt is not None and recovery_attempt.remote_termination_proven
-        ),
-        "recovery_terminal_receipt_validated": bool(
-            recovery_attempt is not None and recovery_attempt.terminal_receipt_validated
-        ),
-        "recovery_admin_session_closed": (
-            None if recovery_attempt is None else recovery_attempt.admin_session_closed
-        ),
-        "recovery_password_wiped": (
-            None if recovery_attempt is None else recovery_attempt.password_wiped
-        ),
-        "recovery_required": bool(
-            recovery_attempt is not None and recovery_attempt.recovery_required
-        ),
-    }
-    value["receipt_sha256"] = _sha256(_canonical_bytes(value))
-    return value
-
-
-def launch_full_canary(
-    *,
-    release_sha: str,
-    transport: CoordinatorTransport,
-    sql_admin: CloudSqlTemporaryAdmin,
     token_source: DiscordTokenSource,
     owner_identity: ApprovedOwnerIdentity,
     final_approval_source: FinalApprovalSource,
     approval_request_sink: Callable[[Mapping[str, Any]], None],
     now: Callable[[], int] = lambda: int(time.time()),
-    password_factory: Callable[[], bytearray] = _new_admin_password,
     secret_hardener: Callable[[], None] = harden_owner_secret_process,
     provenance_guard: Callable[
         [str], None
     ] = require_owner_runtime_and_launcher_provenance,
 ) -> Mapping[str, Any]:
-    """Run the exact approved owner edge and always clean the temporary admin."""
+    """Run the target canary without Cloud SQL admin or bootstrap authority.
 
-    if not _RELEASE_SHA.fullmatch(release_sha):
+    The same sealed coordinator process builds the final plan, emits its
+    approval request, receives MFA1, executes the live driver, proves stopped
+    terminal truth, and retires the Discord credential.  The launcher never
+    creates a database principal and never receives the API session key.
+    """
+
+    if not isinstance(release_sha, str) or _RELEASE_SHA.fullmatch(release_sha) is None:
         raise OwnerLauncherError("invalid_release_sha")
+
     signal_fence = _OwnerSignalFence()
     signal_fence.install()
-    gate: Mapping[str, Any] | None = None
+    live_gate: Mapping[str, Any] | None = None
     discord_install_receipt: Mapping[str, Any] | None = None
-    final_approval_install_receipt: Mapping[str, Any] | None = None
-    final_approval_cancel_receipt: Mapping[str, Any] | None = None
+    request: Mapping[str, Any] | None = None
+    approval: Mapping[str, Any] | None = None
     coordinator_receipt: Mapping[str, Any] | None = None
-    remote_failure_receipt: Mapping[str, Any] | None = None
-    recovery_preflight_receipt: Mapping[str, Any] | None = None
-    recovery_receipt: Mapping[str, Any] | None = None
-    discord_retirement_receipt: Mapping[str, Any] | None = None
-    secret_gate: Mapping[str, Any] | None = None
-    approval_request: Mapping[str, Any] | None = None
-    recovery_attempt: _RecoveryAttemptState | None = None
     discord_session: RemoteSecretSession | None = None
-    approval_session: RemoteSecretSession | None = None
     run_session: RemoteSecretSession | None = None
     token: bytearray | None = None
-    password: bytearray | None = None
-    admin_create_attempted = False
-    admin_mutation_ambiguous = False
-    admin_mutation_ambiguity_observed = False
-    admin_reconciliation_performed = False
-    admin_reconciliation_evidence_sha256: str | None = None
-    admin_reconciliation_quiet_window_seconds: float | None = None
-    admin_response_known_candidate_observed: bool | None = None
-    admin_post_baseline_authority_operation_count: int | None = None
-    admin_frame_disclosed = False
-    discord_frame_disclosed = False
-    final_approval_frame_disclosed = False
-    temporary_admin_absent: bool | None = None
-    remote_coordinator_terminated: bool | None = None
-    terminal_receipt_validated: bool | None = None
-    coordinator_admin_session_closed: bool | None = None
-    remote_cleanup_blocked = False
-    admin_cleanup_blocked = False
-    admin_preserved_remote = False
-    token_cleanup_blocked = False
-    cleanup_failure_codes: set[str] = set()
-    current_discord_token_retired: bool | None = None
-    failure: OwnerLauncherError | None = None
-    secrets_hardened = False
-    recovery_safe_to_delete = False
-
-    def capture_sql_reconciliation_evidence(
-        state: _RecoveryAttemptState | None = None,
-    ) -> None:
-        nonlocal admin_mutation_ambiguity_observed
-        nonlocal admin_reconciliation_performed
-        nonlocal admin_reconciliation_evidence_sha256
-        nonlocal admin_reconciliation_quiet_window_seconds
-        nonlocal admin_response_known_candidate_observed
-        nonlocal admin_post_baseline_authority_operation_count
-        evidence = _validated_sql_reconciliation_evidence(sql_admin)
-        admin_mutation_ambiguity_observed = bool(
-            admin_mutation_ambiguity_observed or evidence["mutation_ambiguity_observed"]
-        )
-        if evidence["reconciliation_proven"] is True:
-            admin_reconciliation_performed = True
-            admin_reconciliation_evidence_sha256 = str(
-                evidence["reconciliation_evidence_sha256"]
-            )
-            admin_reconciliation_quiet_window_seconds = float(
-                evidence["quiet_window_seconds"]
-            )
-            admin_response_known_candidate_observed = bool(
-                evidence["response_known_candidate_observed"]
-            )
-            admin_post_baseline_authority_operation_count = int(
-                evidence["post_baseline_authority_operation_count"]
-            )
-        if state is not None:
-            _adopt_sql_reconciliation_evidence(state, evidence)
-
-    def recovery_cleanup_state(username: str) -> _RecoveryAttemptState:
-        nonlocal recovery_attempt
-        if recovery_attempt is None:
-            recovery_attempt = _RecoveryAttemptState(username=username)
-        elif recovery_attempt.username is None:
-            recovery_attempt.username = username
-        elif recovery_attempt.username != username:
-            raise OwnerLauncherError("recovery_admin_username_drifted")
-        return recovery_attempt
-
+    discord_frame: bytearray | None = None
+    approval_frame: bytes | None = None
+    primary: BaseException | None = None
+    token_installed = False
+    token_retired = False
     try:
         provenance_guard(release_sha)
-        # Read-only gcloud/IAP and Cloud SQL calls still acquire bearer
-        # credentials. Make the owner process non-dumpable before any such
-        # authentication, not merely before reading the Discord/admin values.
         secret_hardener()
-        secrets_hardened = True
-        recovery_probe = transport.preflight_recovery(release_sha)
-        if recovery_probe.get("schema") == RECOVERY_RECEIPT_SCHEMA:
-            recovery_receipt = validate_persisted_recovery_receipt(
-                recovery_probe,
-                expected_release_sha=release_sha,
-                now_unix=now(),
-            )
-            current_discord_token_retired = True
-            owner_identity.bind_approved_subject(
-                str(recovery_receipt["owner_subject_sha256"])
-            )
-            owner_identity.require_stable()
-            recovery_safe_to_delete = True
-            persisted_recovery_state = recovery_cleanup_state(
-                str(recovery_receipt["ephemeral_admin_username"])
-            )
-            try:
-                sql_admin.delete_and_confirm_absent(
-                    str(recovery_receipt["ephemeral_admin_username"])
-                )
-                capture_sql_reconciliation_evidence(persisted_recovery_state)
-                temporary_admin_absent = True
-            except BaseException:
-                temporary_admin_absent = False
-                admin_cleanup_blocked = True
-                raise
-            owner_identity.require_stable()
-        elif recovery_probe.get("schema") == RECOVERY_WORKER_COMPLETION_SCHEMA:
-            persisted_completion = validate_persisted_recovery_worker_completion(
-                recovery_probe,
-                expected_release_sha=release_sha,
-                now_unix=now(),
-            )
-            recovery_attempt = _RecoveryAttemptState()
-            _adopt_persisted_recovery_completion(
-                recovery_attempt,
-                persisted_completion,
-            )
-            owner_identity.bind_approved_subject(
-                str(persisted_completion["owner_subject_sha256"])
-            )
-            owner_identity.require_stable()
-            recovery_receipt = _finalize_recovery_worker(
-                release_sha=release_sha,
-                transport=transport,
-                owner_identity=owner_identity,
-                now=now,
-                state=recovery_attempt,
-            )
-            current_discord_token_retired = True
-            recovery_safe_to_delete = True
-            try:
-                sql_admin.delete_and_confirm_absent(
-                    str(persisted_completion["ephemeral_admin_username"])
-                )
-                capture_sql_reconciliation_evidence(recovery_attempt)
-                temporary_admin_absent = True
-                recovery_attempt.admin_delete_pending = False
-                recovery_attempt.recovery_required = False
-            except BaseException:
-                temporary_admin_absent = False
-                admin_cleanup_blocked = True
-                raise
-            owner_identity.require_stable()
-        elif recovery_probe.get("schema") == COORDINATOR_FAILURE_SCHEMA:
-            recovery_preflight_receipt = validate_terminal_first_failure(
-                recovery_probe,
-                owner_gate=None,
-                token_lease_expected=False,
-                process_lease_expected=False,
-                expected_release_sha=release_sha,
-            )
-            no_recovery_required = (
-                recovery_preflight_receipt.get("phase") == "recovery_preflight"
-                and recovery_preflight_receipt.get("error_code")
-                == "coordinator_process_recovery_not_required"
-                and recovery_preflight_receipt.get("cleanup_status") == "complete"
-                and recovery_preflight_receipt.get("recovery_material_preserved")
-                is False
-                and recovery_preflight_receipt.get("admin_session_closed") is True
-                and recovery_preflight_receipt.get("bootstrap_login_password_disabled")
-                is False
-                and recovery_preflight_receipt.get("bootstrap_credential_removed")
-                is False
-                and recovery_preflight_receipt.get("discord_token_removed") is True
-                and recovery_preflight_receipt.get("coordinator_process_lease_retired")
-                is True
-                and recovery_preflight_receipt.get("services_enabled") is False
-            )
-            token_only_required = (
-                recovery_preflight_receipt.get("cleanup_status") == "cleanup_blocked"
-                and recovery_preflight_receipt.get("recovery_material_preserved")
-                is True
-                and recovery_preflight_receipt.get("discord_token_removed") is False
-                and recovery_preflight_receipt.get("coordinator_process_lease_retired")
-                is True
-            )
-            if token_only_required:
-                recovery_owner_gate = _owner_binding_view(recovery_preflight_receipt)
-                owner_identity.bind_approved_subject(
-                    str(recovery_preflight_receipt["owner_subject_sha256"])
-                )
-                owner_identity.require_stable()
-                discord_retirement_receipt = _retire_discord_token_only(
-                    release_sha=release_sha,
-                    transport=transport,
-                    owner_gate=recovery_owner_gate,
-                    install_receipt=None,
-                    owner_identity=owner_identity,
-                    now=now,
-                )
-                current_discord_token_retired = True
-                token_only_state = recovery_cleanup_state(
-                    str(recovery_preflight_receipt["ephemeral_admin_username"])
-                )
-                # The run command durably publishes its process lease before
-                # accepting MCA2. Lease absence therefore proves no remote
-                # admin session received this credential. After exact token
-                # retirement it is safe to reconcile the approval-derived
-                # local Cloud SQL user in this same invocation.
-                try:
-                    sql_admin.delete_and_confirm_absent(
-                        str(recovery_preflight_receipt["ephemeral_admin_username"])
-                    )
-                    capture_sql_reconciliation_evidence(token_only_state)
-                    temporary_admin_absent = True
-                except BaseException:
-                    temporary_admin_absent = False
-                    admin_cleanup_blocked = True
-                    raise
-                owner_identity.require_stable()
-            elif no_recovery_required:
-                current_discord_token_retired = True
-                owner_identity.bind_approved_subject(
-                    str(recovery_preflight_receipt["owner_subject_sha256"])
-                )
-                owner_identity.require_stable()
-                no_recovery_state = recovery_cleanup_state(
-                    str(recovery_preflight_receipt["ephemeral_admin_username"])
-                )
-                try:
-                    sql_admin.delete_and_confirm_absent(
-                        str(recovery_preflight_receipt["ephemeral_admin_username"])
-                    )
-                    capture_sql_reconciliation_evidence(no_recovery_state)
-                    temporary_admin_absent = True
-                except BaseException:
-                    temporary_admin_absent = False
-                    admin_cleanup_blocked = True
-                    raise
-                owner_identity.require_stable()
-            elif not no_recovery_required:
-                raise RemoteCommandFailed(recovery_preflight_receipt)
-        else:
-            recovery_gate = validate_recovery_gate(
-                recovery_probe,
-                expected_release_sha=release_sha,
-                owner_gate=None,
-                now_unix=now(),
-            )
-            owner_identity.bind_approved_subject(
-                str(recovery_gate["owner_subject_sha256"])
-            )
-            owner_identity.require_stable()
-            recovery_attempt = _RecoveryAttemptState()
-            try:
-                recovery_receipt, _ = _recover_stale_process(
-                    release_sha=release_sha,
-                    preflight_gate=recovery_gate,
-                    transport=transport,
-                    sql_admin=sql_admin,
-                    owner_identity=owner_identity,
-                    now=now,
-                    password_factory=password_factory,
-                    state=recovery_attempt,
-                )
-                current_discord_token_retired = True
-                recovery_safe_to_delete = True
-                try:
-                    sql_admin.delete_and_confirm_absent(
-                        str(recovery_gate["ephemeral_admin_username"])
-                    )
-                    capture_sql_reconciliation_evidence(recovery_attempt)
-                    temporary_admin_absent = True
-                    recovery_attempt.admin_delete_pending = False
-                except BaseException:
-                    temporary_admin_absent = False
-                    admin_cleanup_blocked = True
-                    raise
-                owner_identity.require_stable()
-            finally:
-                recovery_attempt.wipe_password()
-
-        # Any stale user authorized by the recovery receipt was handled above.
-        # A fresh temporary admin created below needs its own termination proof.
-        recovery_safe_to_delete = False
-        temporary_admin_absent = None
-        admin_mutation_ambiguous = False
-        admin_mutation_ambiguity_observed = False
-        admin_reconciliation_performed = False
-        admin_reconciliation_evidence_sha256 = None
-        admin_reconciliation_quiet_window_seconds = None
-        admin_response_known_candidate_observed = None
-        admin_post_baseline_authority_operation_count = None
-
-        # After bounded stale-state reconciliation, this fresh read-only proof
-        # must still precede every mutation belonging to the new canary run.
-        gate = validate_owner_launch_gate(
-            transport.preflight_owner_launch(release_sha),
+        live_gate = validate_current_phase_b_live_gate(
+            transport.preflight_phase_b_live_run(release_sha),
             expected_release_sha=release_sha,
             now_unix=now(),
         )
-        username = str(gate["admin_username"])
-        owner_identity.bind_approved_subject(str(gate["owner_subject_sha256"]))
+        owner_identity.bind_approved_subject(str(live_gate["owner_subject_sha256"]))
         owner_identity.require_stable()
-        if not secrets_hardened:
-            secret_hardener()
-            secrets_hardened = True
 
         discord_session = transport.open_discord_install(release_sha)
-        raw_discord_gate = _validated_input_gate(
-            discord_session,
-            discord_session.read_gate(),
-            owner_gate=gate,
-            token_lease_expected=False,
-        )
         discord_gate = validate_discord_install_gate(
-            raw_discord_gate,
-            owner_gate=gate,
+            discord_session.read_gate(),
+            owner_gate=live_gate,
             now_unix=now(),
         )
         owner_identity.require_stable()
@@ -11278,24 +12897,10 @@ def launch_full_canary(
             ):
                 raise OwnerLauncherError("discord_install_gate_expired")
 
-        def mark_discord_write() -> None:
-            nonlocal discord_frame_disclosed
-            discord_frame_disclosed = True
-
-        try:
-            raw_discord_receipt = discord_session.finish_before(
-                discord_frame,
-                write_guard=guard_discord_write,
-                on_first_write=mark_discord_write,
-            )
-        finally:
-            _wipe(discord_frame)
-        raw_install_receipt = _validated_input_gate(
-            discord_session,
-            raw_discord_receipt,
-            owner_gate=gate,
-            token_lease_expected=True,
-            active_secrets=(token,),
+        raw_install_receipt = discord_session.finish_before(
+            discord_frame,
+            write_guard=guard_discord_write,
+            on_first_write=lambda: None,
         )
         discord_install_receipt = validate_discord_install_receipt(
             raw_install_receipt,
@@ -11303,781 +12908,152 @@ def launch_full_canary(
             token=token,
             now_unix=now(),
         )
-        current_discord_token_retired = False
+        token_installed = True
         discord_session.mark_validated(discord_install_receipt)
         owner_identity.require_stable()
         discord_session.close()
         discord_session = None
         _wipe(token)
         token = None
+        _wipe(discord_frame)
+        discord_frame = None
 
-        owner_identity.require_stable()
-        sql_admin.require_absent(username)
-        owner_identity.require_stable()
-        password = password_factory()
-        if not isinstance(password, bytearray):
-            raise OwnerLauncherError("invalid_admin_password")
-        # Validate before serializing the process-memory HTTPS request.
-        validation_frame = build_admin_frame(username, password)
-        _wipe(validation_frame)
-        # A complete paginated operations snapshot is the causal baseline
-        # for any later lost-response reconciliation.
-        sql_admin.begin_mutation_observation(
-            expected_owner_subject_sha256=str(gate["owner_subject_sha256"]),
-        )
-        # From this point onward a transport failure may be ambiguous: cleanup
-        # is mandatory even when the create response never reaches us.
-        admin_create_attempted = True
-        admin_mutation_ambiguous = True
-        temporary_admin_absent = None
-        owner_identity.require_stable()
-        try:
-            sql_admin.create(username, password.decode("utf-8"))
-        except CloudSqlCreateNotCommitted:
-            admin_mutation_ambiguous = False
-            raise
-        except BaseException:
-            admin_mutation_ambiguous = bool(
-                admin_mutation_ambiguous or sql_admin.mutation_reconciliation_required()
-            )
-            admin_mutation_ambiguity_observed = True
-            raise
-        admin_mutation_ambiguous = bool(sql_admin.mutation_reconciliation_required())
-        admin_mutation_ambiguity_observed = bool(
-            _validated_sql_reconciliation_evidence(sql_admin)[
-                "mutation_ambiguity_observed"
-            ]
-        )
-        owner_identity.require_stable()
-        if admin_mutation_ambiguous:
-            raise OwnerLauncherError("cloud_sql_mutation_ambiguous")
-
-        remote_coordinator_terminated = False
-        terminal_receipt_validated = False
         run_session = transport.open_run(release_sha)
-        try:
-            raw_secret_gate = _validated_input_gate(
-                run_session,
-                run_session.read_gate(),
-                owner_gate=gate,
-                token_lease_expected=True,
-                process_lease_expected=True,
-                active_secrets=(password,),
-            )
-        except RemoteCommandFailed as exc:
-            coordinator_receipt = exc.receipt
-            current_discord_token_retired = bool(
-                exc.receipt.get("discord_token_removed")
-            )
-            remote_failure_receipt = exc.receipt
-            coordinator_admin_session_closed = bool(
-                exc.receipt.get("admin_session_closed")
-            )
-            remote_coordinator_terminated = run_session.termination_proven
-            terminal_receipt_validated = run_session.terminal_receipt_validated
-            raise
-        except BaseException:
-            admin_mutation_ambiguous = bool(
-                admin_mutation_ambiguous or sql_admin.mutation_reconciliation_required()
-            )
-            admin_mutation_ambiguity_observed = bool(
-                admin_mutation_ambiguity_observed
-                or sql_admin.mutation_reconciliation_required()
-            )
-            raise
-        secret_gate = validate_coordinator_secret_gate(
-            raw_secret_gate,
-            owner_gate=gate,
+        request = validate_session_bound_approval_request(
+            run_session.read_gate(),
+            live_gate=live_gate,
+            now_unix=now(),
+        )
+        approval_request_sink(request)
+        owner_identity.require_stable()
+        if now() > request["owner_input_cutoff_unix"]:
+            raise OwnerLauncherError("final_approval_delivery_window_exhausted")
+        approval = validate_session_bound_final_owner_approval(
+            final_approval_source.read_final_approval(request),
+            request=request,
             now_unix=now(),
         )
         owner_identity.require_stable()
-        if (
-            now() + _SECRET_FRAME_TRANSMIT_MARGIN_SECONDS
-            >= secret_gate["expires_at_unix"]
-        ):
-            raise OwnerLauncherError("coordinator_secret_gate_expired")
-        admin_frame = build_admin_frame(username, password)
-
-        def guard_admin_write() -> None:
-            owner_identity.require_stable()
-            if admin_mutation_ambiguous or sql_admin.mutation_reconciliation_required():
-                raise OwnerLauncherError("cloud_sql_mutation_ambiguous")
-            sql_admin.require_current_authority(username)
-            owner_identity.require_stable()
-            if (
-                now() + _SECRET_FRAME_TRANSMIT_MARGIN_SECONDS
-                >= secret_gate["expires_at_unix"]
-            ):
-                raise OwnerLauncherError("coordinator_secret_gate_expired")
-
-        def mark_admin_write() -> None:
-            nonlocal admin_frame_disclosed
-            admin_frame_disclosed = True
-
-        try:
-            try:
-                raw_admin_result = run_session.finish_before(
-                    admin_frame,
-                    write_guard=guard_admin_write,
-                    on_first_write=mark_admin_write,
-                )
-            finally:
-                _wipe(admin_frame)
-            raw_approval_request = _validated_input_gate(
-                run_session,
-                raw_admin_result,
-                owner_gate=gate,
-                token_lease_expected=True,
-                process_lease_expected=True,
-                admin_frame_disclosed=True,
-                active_secrets=(password,),
-            )
-        except RemoteCommandFailed as exc:
-            coordinator_receipt = exc.receipt
-            current_discord_token_retired = bool(
-                exc.receipt.get("discord_token_removed")
-            )
-            remote_failure_receipt = exc.receipt
-            coordinator_admin_session_closed = bool(
-                exc.receipt.get("admin_session_closed")
-            )
-            remote_coordinator_terminated = run_session.termination_proven
-            terminal_receipt_validated = run_session.terminal_receipt_validated
-            raise
-        except BaseException:
-            # require_current_authority() marks its SQL observation ambiguous
-            # before failing. Preserve that original baseline through cleanup
-            # instead of silently starting a generic delete baseline.
-            admin_mutation_ambiguous = bool(
-                admin_mutation_ambiguous or sql_admin.mutation_reconciliation_required()
-            )
-            admin_mutation_ambiguity_observed = bool(
-                admin_mutation_ambiguity_observed
-                or sql_admin.mutation_reconciliation_required()
-            )
-            raise
-        approval_request = validate_owner_approval_request(
-            raw_approval_request,
-            gate=secret_gate,
-            now_unix=now(),
-        )
-        owner_identity.require_stable()
-        approval_deadline = approval_request.get("approval_deadline_unix")
-        owner_input_cutoff = approval_request.get("owner_input_cutoff_unix")
-        if (
-            type(approval_deadline) is not int
-            or type(owner_input_cutoff) is not int
-            or now() > owner_input_cutoff
-        ):
-            raise OwnerLauncherError("final_approval_delivery_window_exhausted")
-        # Publish the coordinator-authored window immediately.  The remote
-        # install transport is then opened while the owner may decide, but the
-        # local approval is not read and no MFA1 byte can be disclosed until
-        # that independent session returns the exact matching read-only gate.
-        approval_request_sink(approval_request)
-        approval_session = transport.open_final_approval_install(release_sha)
-        try:
-            install_gate = _validated_input_gate(
-                approval_session,
-                approval_session.read_gate(),
-                owner_gate=gate,
-                token_lease_expected=False,
-                active_secrets=(password,),
-            )
-        except RemoteCommandFailed as exc:
-            remote_failure_receipt = exc.receipt
-            raise
-        if install_gate != approval_request:
-            raise OwnerLauncherError("invalid_final_approval_install_gate")
-        if now() > owner_input_cutoff:
-            raise OwnerLauncherError("final_approval_delivery_window_exhausted")
-        owner_identity.require_stable()
-        if now() > owner_input_cutoff:
-            raise OwnerLauncherError("final_approval_delivery_window_exhausted")
-        final_approval = validate_final_owner_approval(
-            final_approval_source.read_final_approval(approval_request),
-            request=approval_request,
-            now_unix=now(),
-        )
-        owner_identity.require_stable()
-        if now() > owner_input_cutoff:
-            raise OwnerLauncherError("final_approval_delivery_window_exhausted")
-        final_approval_frame = build_final_approval_frame(final_approval)
-        if now() > owner_input_cutoff:
-            raise OwnerLauncherError("final_approval_delivery_window_exhausted")
+        approval_frame = build_final_approval_frame(approval)
 
         def guard_final_approval_write() -> None:
             owner_identity.require_stable()
-            if now() > owner_input_cutoff:
+            if now() > request["owner_input_cutoff_unix"]:
                 raise OwnerLauncherError("final_approval_delivery_window_exhausted")
 
-        def mark_final_approval_write() -> None:
-            nonlocal final_approval_frame_disclosed
-            final_approval_frame_disclosed = True
-
-        raw_approval_install_receipt = _validated_input_gate(
-            approval_session,
-            approval_session.finish_before(
-                final_approval_frame,
-                write_guard=guard_final_approval_write,
-                on_first_write=mark_final_approval_write,
-            ),
-            owner_gate=gate,
-            token_lease_expected=False,
-            active_secrets=(password,),
+        raw_coordinator_receipt = run_session.finish_before(
+            approval_frame,
+            write_guard=guard_final_approval_write,
+            on_first_write=lambda: None,
         )
-        final_approval_install_receipt = validate_final_approval_install_receipt(
-            raw_approval_install_receipt,
-            request=approval_request,
-            approval=final_approval,
-            now_unix=now(),
-        )
-        approval_session.mark_validated(final_approval_install_receipt)
-        approval_session.close()
-        approval_session = None
-        owner_identity.require_stable()
-
-        raw_coordinator_receipt = run_session.read_next()
-        coordinator_receipt = validate_coordinator_receipt(
+        coordinator_receipt = validate_session_bound_coordinator_receipt(
             raw_coordinator_receipt,
-            gate=secret_gate,
-            password=password,
+            live_gate=live_gate,
+            request=request,
+            approval=approval,
             now_unix=now(),
         )
-        current_discord_token_retired = bool(
-            coordinator_receipt.get("discord_token_removed")
-        )
-        coordinator_admin_session_closed = bool(
-            coordinator_receipt.get("admin_session_closed")
-        )
+        token_retired = True
         run_session.mark_validated(coordinator_receipt)
-        remote_coordinator_terminated = run_session.termination_proven
-        terminal_receipt_validated = run_session.terminal_receipt_validated
         owner_identity.require_stable()
         run_session.close()
         run_session = None
-        if coordinator_receipt.get("ok") is not True:
-            raise OwnerLauncherError("coordinator_failed")
-    except RemoteCommandFailed as exc:
-        remote_failure_receipt = exc.receipt
-        cleanup_failure_codes.update(_attached_cleanup_failure_codes(exc))
-        if "remote_termination_unconfirmed" in cleanup_failure_codes:
-            remote_cleanup_blocked = True
-        failure = exc
-    except CloudSqlCreateNotCommitted as exc:
-        # An explicit create rejection proves this launcher never acquired
-        # authority over any same-named account that may have raced into view.
-        # Do not delete that account in owner cleanup.
-        admin_create_attempted = False
-        temporary_admin_absent = None
-        failure = exc
-    except OwnerLauncherError as exc:
-        cleanup_failure_codes.update(_attached_cleanup_failure_codes(exc))
-        cleanup_cause = _cleanup_blocked_cause(exc)
-        if cleanup_cause not in {None, "cleanup_blocked"}:
-            cleanup_failure_codes.add(cleanup_cause)
-        if "remote_termination_unconfirmed" in cleanup_failure_codes:
-            remote_cleanup_blocked = True
-        failure = exc
+        provenance_guard(release_sha)
     except BaseException as exc:
-        cleanup_failure_codes.update(_attached_cleanup_failure_codes(exc))
-        if "remote_termination_unconfirmed" in cleanup_failure_codes:
-            remote_cleanup_blocked = True
-        failure = OwnerLauncherError("owner_launcher_interrupted")
+        primary = exc
     finally:
         signal_fence.begin_cleanup()
-        if (
-            approval_session is not None
-            and approval_request is not None
-            and not final_approval_frame_disclosed
-            and not approval_session.terminal_receipt_validated
-        ):
-            try:
-                raw_cancel = approval_session.cancel_no_secret()
-                final_approval_cancel_receipt = validate_final_approval_cancel_receipt(
-                    raw_cancel,
-                    request=approval_request,
-                    now_unix=now(),
-                )
-                approval_session.mark_validated(final_approval_cancel_receipt)
-                approval_session.close()
-                approval_session = None
-                if (
-                    final_approval_cancel_receipt.get("state")
-                    == "cancelled_no_secret_state_conflict"
-                ):
-                    cleanup_failure_codes.add("final_approval_cancel_state_conflict")
-            except BaseException as exc:
-                cleanup_failure_codes.update(_attached_cleanup_failure_codes(exc))
-                cleanup_failure_codes.add(
-                    exc.code
-                    if isinstance(exc, OwnerLauncherError)
-                    else "final_approval_cancel_unconfirmed"
-                )
-                if not approval_session.termination_proven:
-                    remote_cleanup_blocked = True
-        for session in (approval_session,):
-            if session is not None:
-                try:
-                    session.close()
-                except BaseException:
-                    remote_cleanup_blocked = True
-        if (
-            run_session is not None
-            and approval_request is not None
-            and secret_gate is not None
-            and not run_session.terminal_receipt_validated
-            and password is not None
-        ):
-            try:
-                deadline = approval_request.get("approval_deadline_unix")
-                margin = approval_request.get("final_approval_transmit_margin_seconds")
-                if type(deadline) is not int or margin != (
-                    _FINAL_APPROVAL_DELIVERY_RESERVE_SECONDS
-                ):
-                    raise OwnerLauncherError("invalid_owner_approval_request")
-                cleanup_wait = max(
-                    1.0,
-                    min(
-                        float(
-                            FINAL_APPROVAL_MAX_WAIT_SECONDS
-                            + _FINAL_APPROVAL_TERMINAL_CLEANUP_GRACE_SECONDS
-                        ),
-                        float(
-                            deadline
-                            - now()
-                            + _FINAL_APPROVAL_TERMINAL_CLEANUP_GRACE_SECONDS
-                        ),
-                    ),
-                )
-                drained = run_session.read_next_bounded(cleanup_wait)
-                coordinator_receipt = validate_coordinator_receipt(
-                    drained,
-                    gate=secret_gate,
-                    password=password,
-                    now_unix=now(),
-                )
-                current_discord_token_retired = bool(
-                    coordinator_receipt.get("discord_token_removed")
-                )
-                coordinator_admin_session_closed = bool(
-                    coordinator_receipt.get("admin_session_closed")
-                )
-                run_session.mark_validated(coordinator_receipt)
-                remote_coordinator_terminated = run_session.termination_proven
-                terminal_receipt_validated = run_session.terminal_receipt_validated
-            except BaseException:
-                pass
+        _wipe(token)
+        _wipe(discord_frame)
+        token = None
+        discord_frame = None
+        approval_frame = None
         for session in (run_session, discord_session):
             if session is not None:
-                try:
-                    session.close()
-                except BaseException:
-                    remote_cleanup_blocked = True
-                    if session is run_session:
-                        remote_coordinator_terminated = False
-                        terminal_receipt_validated = False
-        if run_session is not None and not remote_cleanup_blocked:
-            remote_coordinator_terminated = run_session.termination_proven
-            terminal_receipt_validated = run_session.terminal_receipt_validated
-        if (
-            (discord_install_receipt is not None or discord_frame_disclosed)
-            and discord_retirement_receipt is None
-            and gate is not None
-            and not (
-                coordinator_receipt is not None
-                and coordinator_receipt.get("discord_token_removed") is True
-                and coordinator_receipt.get("coordinator_process_lease_retired") is True
-            )
-        ):
-            cleanup_recovery_attempt = _RecoveryAttemptState()
+                _close_session_preserving_primary(session, primary)
+        if token_installed and not token_retired and live_gate is not None:
             try:
-                owner_identity.require_stable()
-                cleanup_probe = transport.preflight_recovery(release_sha)
-                if cleanup_probe.get("schema") == RECOVERY_RECEIPT_SCHEMA:
-                    persisted_cleanup_receipt = validate_persisted_recovery_receipt(
-                        cleanup_probe,
-                        expected_release_sha=release_sha,
-                        now_unix=now(),
-                    )
-                    if recovery_receipt is None or persisted_cleanup_receipt.get(
-                        "receipt_sha256"
-                    ) != recovery_receipt.get("receipt_sha256"):
-                        raise OwnerLauncherError("persisted_recovery_receipt_drifted")
-                    discord_retirement_receipt = _retire_discord_token_only(
-                        release_sha=release_sha,
-                        transport=transport,
-                        owner_gate=gate,
-                        install_receipt=discord_install_receipt,
-                        owner_identity=owner_identity,
-                        now=now,
-                    )
-                    current_discord_token_retired = True
-                    if not admin_frame_disclosed:
-                        recovery_safe_to_delete = True
-                elif cleanup_probe.get("schema") == COORDINATOR_FAILURE_SCHEMA:
-                    recovery_preflight_receipt = validate_terminal_first_failure(
-                        cleanup_probe,
-                        owner_gate=gate,
-                        token_lease_expected=False,
-                        process_lease_expected=False,
-                        expected_release_sha=release_sha,
-                        active_secrets=(password,) if password is not None else (),
-                    )
-                    if (
-                        recovery_preflight_receipt.get(
-                            "coordinator_process_lease_retired"
-                        )
-                        is not True
-                    ):
-                        raise OwnerLauncherError("recovery_process_lease_state_invalid")
-                    discord_retirement_receipt = _retire_discord_token_only(
-                        release_sha=release_sha,
-                        transport=transport,
-                        owner_gate=gate,
-                        install_receipt=discord_install_receipt,
-                        owner_identity=owner_identity,
-                        now=now,
-                    )
-                    current_discord_token_retired = True
-                    if not admin_frame_disclosed:
-                        recovery_safe_to_delete = True
-                else:
-                    cleanup_recovery_gate = validate_recovery_gate(
-                        cleanup_probe,
-                        expected_release_sha=release_sha,
-                        owner_gate=gate,
-                        now_unix=now(),
-                    )
-                    recovery_receipt, _ = _recover_stale_process(
-                        release_sha=release_sha,
-                        preflight_gate=cleanup_recovery_gate,
-                        transport=transport,
-                        sql_admin=sql_admin,
-                        owner_identity=owner_identity,
-                        now=now,
-                        password_factory=password_factory,
-                        state=cleanup_recovery_attempt,
-                    )
-                    current_discord_token_retired = True
-                    recovery_safe_to_delete = True
-                    coordinator_admin_session_closed = True
-                    remote_coordinator_terminated = True
-                    terminal_receipt_validated = True
-            except BaseException as exc:
-                token_cleanup_blocked = True
-                cleanup_failure_codes.update(_attached_cleanup_failure_codes(exc))
-                cleanup_cause = _cleanup_blocked_cause(exc)
-                if cleanup_cause not in {None, "cleanup_blocked"}:
-                    cleanup_failure_codes.add(cleanup_cause)
-                if failure is None:
-                    failure = (
-                        exc
-                        if isinstance(exc, OwnerLauncherError)
-                        else OwnerLauncherError("discord_token_cleanup_blocked")
-                    )
-            finally:
-                cleanup_recovery_attempt.wipe_password()
-                if (
-                    cleanup_recovery_attempt.gate is not None
-                    or cleanup_recovery_attempt.concurrent_loser_receipt is not None
-                ):
-                    if recovery_attempt is None:
-                        recovery_attempt = cleanup_recovery_attempt
-                    else:
-                        recovery_attempt.absorb(cleanup_recovery_attempt)
-        if recovery_attempt is not None:
-            cleanup_failure_codes.update(recovery_attempt.cleanup_failure_codes)
-            if recovery_attempt.admin_delete_pending:
-                recovery_delete_safe = recovery_attempt.final_receipt is not None
-                if (
-                    not recovery_delete_safe
-                    and not recovery_attempt.frame_write_attempted
-                ):
-                    # The rotated credential was never offered to any remote
-                    # process.  The exact approval-derived user is therefore
-                    # safe to remove even if the SQL response itself failed.
-                    recovery_delete_safe = True
-                elif not recovery_delete_safe:
-                    try:
-                        recovery_receipt = _resume_recovery_attempt(
-                            release_sha=release_sha,
-                            transport=transport,
-                            sql_admin=sql_admin,
-                            owner_identity=owner_identity,
-                            now=now,
-                            password_factory=password_factory,
-                            state=recovery_attempt,
-                        )
-                        recovery_delete_safe = True
-                        recovery_safe_to_delete = True
-                        current_discord_token_retired = True
-                        recovery_attempt.cleanup_failure_codes.discard(
-                            "remote_termination_unconfirmed"
-                        )
-                        cleanup_failure_codes.discard("remote_termination_unconfirmed")
-                        remote_cleanup_blocked = False
-                        remote_coordinator_terminated = True
-                        terminal_receipt_validated = True
-                    except BaseException as exc:
-                        recovery_attempt.recovery_required = True
-                        cleanup_failure_codes.update(
-                            _attached_cleanup_failure_codes(exc)
-                        )
-                        cleanup_failure_codes.add(
-                            exc.code
-                            if isinstance(exc, OwnerLauncherError)
-                            else "recovery_reconciliation_blocked"
-                        )
-                if recovery_delete_safe:
-                    try:
-                        owner_identity.require_stable()
-                        if recovery_attempt.admin_mutation_ambiguous:
-                            sql_admin.reconcile_ambiguous_mutation_and_confirm_absent(
-                                str(recovery_attempt.username)
-                            )
-                        else:
-                            sql_admin.delete_and_confirm_absent(
-                                str(recovery_attempt.username)
-                            )
-                        capture_sql_reconciliation_evidence(recovery_attempt)
-                        owner_identity.require_stable()
-                    except BaseException as exc:
-                        temporary_admin_absent = False
-                        admin_cleanup_blocked = True
-                        recovery_attempt.recovery_required = True
-                        cleanup_failure_codes.update(
-                            _attached_cleanup_failure_codes(exc)
-                        )
-                        cleanup_cause = _cleanup_blocked_cause(exc)
-                        if cleanup_cause not in {None, "cleanup_blocked"}:
-                            cleanup_failure_codes.add(cleanup_cause)
-                    else:
-                        recovery_attempt.admin_delete_pending = False
-                        recovery_attempt.admin_mutation_ambiguous = False
-                        recovery_attempt.recovery_required = (
-                            recovery_attempt.final_receipt is None
-                        )
-                        temporary_admin_absent = True
-                        if (
-                            gate is not None
-                            and gate.get("admin_username") == recovery_attempt.username
-                        ):
-                            admin_create_attempted = False
-                else:
-                    temporary_admin_absent = False
-                    admin_preserved_remote = True
-            recovery_attempt.wipe_password()
-            cleanup_failure_codes.update(recovery_attempt.cleanup_failure_codes)
-        _wipe(token)
-        _wipe(password)
-        if admin_create_attempted and gate is not None:
-            safe_to_delete = (
-                recovery_safe_to_delete
-                or remote_coordinator_terminated is None
-                or (
-                    remote_coordinator_terminated is True
-                    and terminal_receipt_validated is True
-                    and (
-                        not admin_frame_disclosed
-                        or coordinator_admin_session_closed is True
-                    )
+                _retire_discord_token_only(
+                    release_sha=release_sha,
+                    transport=transport,
+                    owner_gate=live_gate,
+                    install_receipt=discord_install_receipt,
+                    owner_identity=owner_identity,
+                    now=now,
                 )
-            )
-            if not safe_to_delete:
-                temporary_admin_absent = False
-                admin_preserved_remote = True
-            else:
-                try:
-                    if admin_mutation_ambiguous:
-                        sql_admin.reconcile_ambiguous_mutation_and_confirm_absent(
-                            str(gate["admin_username"])
-                        )
-                    else:
-                        sql_admin.delete_and_confirm_absent(str(gate["admin_username"]))
-                    # This is the fresh run's admin, not the earlier recovery
-                    # admin. Keep the recovery evidence bound to its own
-                    # phase instead of overwriting it with this digest.
-                    capture_sql_reconciliation_evidence()
-                    temporary_admin_absent = True
-                    admin_mutation_ambiguous = False
-                    if (
-                        recovery_attempt is not None
-                        and recovery_attempt.username == gate.get("admin_username")
-                    ):
-                        recovery_attempt.admin_delete_pending = False
-                        recovery_attempt.recovery_required = False
-                except BaseException as exc:
-                    temporary_admin_absent = False
-                    admin_cleanup_blocked = True
-                    cleanup_cause = _cleanup_blocked_cause(exc)
-                    if cleanup_cause not in {None, "cleanup_blocked"}:
-                        cleanup_failure_codes.add(cleanup_cause)
+                token_retired = True
+            except BaseException as cleanup_error:
+                if primary is None:
+                    primary = cleanup_error
                 else:
-                    try:
-                        owner_identity.require_stable()
-                    except BaseException:
-                        if failure is None:
-                            failure = OwnerLauncherError(
-                                "approved_owner_identity_changed"
-                            )
-    if admin_create_attempted:
+                    _attach_cleanup_failure(primary, cleanup_error)
         try:
-            # The SQL object exposes the most recent fresh phase. Recovery
-            # evidence was adopted at its own cleanup boundary and is immutable.
-            capture_sql_reconciliation_evidence()
-        except BaseException:
-            admin_cleanup_blocked = True
-            cleanup_failure_codes.add("cloud_sql_reconciliation_evidence_invalid")
-    if signal_fence.received and failure is None:
-        failure = OwnerLauncherError("owner_launcher_interrupted")
-    try:
-        signal_fence.restore()
-    except OwnerLauncherError as exc:
-        if failure is None:
-            failure = exc
+            signal_fence.restore()
+        except BaseException as cleanup_error:
+            if primary is None:
+                primary = cleanup_error
+            else:
+                _attach_cleanup_failure(primary, cleanup_error)
 
-    cleanup_blocked = (
-        admin_cleanup_blocked
-        or admin_preserved_remote
-        or remote_cleanup_blocked
-        or token_cleanup_blocked
-        or bool(cleanup_failure_codes)
-    )
-    if admin_cleanup_blocked:
-        cleanup_failure_codes.add("admin_cleanup_blocked")
-    if admin_preserved_remote:
-        cleanup_failure_codes.add("temporary_admin_preserved_remote")
-    if remote_cleanup_blocked:
-        cleanup_failure_codes.add("remote_termination_unconfirmed")
-    if token_cleanup_blocked:
-        cleanup_failure_codes.add("discord_token_cleanup_blocked")
-    primary_failure_code = None if failure is None else failure.code
-    cleanup_failure_code = (
-        next(iter(cleanup_failure_codes))
-        if len(cleanup_failure_codes) == 1
-        else "multiple_cleanup_blocked"
-    )
-    if cleanup_blocked:
-        return _receipt(
-            ok=False,
-            state="cleanup_blocked",
-            release_sha=release_sha,
-            gate=gate,
-            discord_install_receipt=discord_install_receipt,
-            final_approval_install_receipt=final_approval_install_receipt,
-            final_approval_cancel_receipt=final_approval_cancel_receipt,
-            coordinator_receipt=coordinator_receipt,
-            remote_failure_receipt=remote_failure_receipt,
-            recovery_preflight_receipt=recovery_preflight_receipt,
-            recovery_receipt=recovery_receipt,
-            discord_retirement_receipt=discord_retirement_receipt,
-            discord_token_retired=current_discord_token_retired,
-            failure_code=cleanup_failure_code,
-            primary_failure_code=primary_failure_code,
-            cleanup_failure_codes=cleanup_failure_codes,
-            recovery_attempt=recovery_attempt,
-            admin_mutation_ambiguous=admin_mutation_ambiguous,
-            admin_mutation_ambiguity_observed=(admin_mutation_ambiguity_observed),
-            admin_reconciliation_performed=admin_reconciliation_performed,
-            admin_reconciliation_evidence_sha256=(admin_reconciliation_evidence_sha256),
-            admin_reconciliation_quiet_window_seconds=(
-                admin_reconciliation_quiet_window_seconds
-            ),
-            admin_response_known_candidate_observed=(
-                admin_response_known_candidate_observed
-            ),
-            admin_post_baseline_authority_operation_count=(
-                admin_post_baseline_authority_operation_count
-            ),
-            temporary_admin_absent=temporary_admin_absent,
-            remote_coordinator_terminated=remote_coordinator_terminated,
-            terminal_receipt_validated=terminal_receipt_validated,
-            admin_frame_disclosed=admin_frame_disclosed,
-            discord_frame_disclosed=discord_frame_disclosed,
-            final_approval_frame_disclosed=final_approval_frame_disclosed,
-            coordinator_admin_session_closed=coordinator_admin_session_closed,
-        )
+    if primary is not None:
+        raise primary
+    if (
+        live_gate is None
+        or discord_install_receipt is None
+        or request is None
+        or approval is None
+        or coordinator_receipt is None
+        or not token_retired
+    ):
+        raise OwnerLauncherError("owner_launcher_terminal_truth_incomplete")
+    unsigned = {
+        "schema": SESSION_BOUND_OWNER_RECEIPT_SCHEMA,
+        "ok": True,
+        "state": "verified_stopped_and_credentials_retired",
+        "release_sha": release_sha,
+        "coordinator_input_sha256": live_gate["coordinator_input_sha256"],
+        "full_canary_plan_sha256": request["full_canary_plan_sha256"],
+        "owner_approval_sha256": _sha256(_canonical_bytes(approval)),
+        "phase_b_readiness_anchor_sha256": live_gate[
+            "phase_b_readiness_anchor_sha256"
+        ],
+        "api_session_key_sha256": coordinator_receipt["api_session_key_sha256"],
+        "fixture_sha256": coordinator_receipt["fixture_sha256"],
+        "discord_token_install_receipt_sha256": discord_install_receipt[
+            "receipt_sha256"
+        ],
+        "coordinator_receipt_sha256": coordinator_receipt["receipt_sha256"],
+        "live_driver_receipt_sha256": coordinator_receipt[
+            "live_driver_receipt_sha256"
+        ],
+        "services_stopped": True,
+        "discord_token_retired": True,
+        "temporary_admin_created": False,
+        "bootstrap_credential_created": False,
+        "completed_at_unix": now(),
+    }
+    return {**unsigned, "receipt_sha256": _sha256(_canonical_bytes(unsigned))}
 
-    if failure is not None:
-        return _receipt(
-            ok=False,
-            state="blocked",
-            release_sha=release_sha,
-            gate=gate,
-            discord_install_receipt=discord_install_receipt,
-            final_approval_install_receipt=final_approval_install_receipt,
-            final_approval_cancel_receipt=final_approval_cancel_receipt,
-            coordinator_receipt=coordinator_receipt,
-            remote_failure_receipt=remote_failure_receipt,
-            recovery_preflight_receipt=recovery_preflight_receipt,
-            recovery_receipt=recovery_receipt,
-            discord_retirement_receipt=discord_retirement_receipt,
-            discord_token_retired=current_discord_token_retired,
-            failure_code=failure.code,
-            primary_failure_code=primary_failure_code,
-            cleanup_failure_codes=cleanup_failure_codes,
-            recovery_attempt=recovery_attempt,
-            admin_mutation_ambiguous=admin_mutation_ambiguous,
-            admin_mutation_ambiguity_observed=(admin_mutation_ambiguity_observed),
-            admin_reconciliation_performed=admin_reconciliation_performed,
-            admin_reconciliation_evidence_sha256=(admin_reconciliation_evidence_sha256),
-            admin_reconciliation_quiet_window_seconds=(
-                admin_reconciliation_quiet_window_seconds
-            ),
-            admin_response_known_candidate_observed=(
-                admin_response_known_candidate_observed
-            ),
-            admin_post_baseline_authority_operation_count=(
-                admin_post_baseline_authority_operation_count
-            ),
-            temporary_admin_absent=temporary_admin_absent,
-            remote_coordinator_terminated=remote_coordinator_terminated,
-            terminal_receipt_validated=terminal_receipt_validated,
-            admin_frame_disclosed=admin_frame_disclosed,
-            discord_frame_disclosed=discord_frame_disclosed,
-            final_approval_frame_disclosed=final_approval_frame_disclosed,
-            coordinator_admin_session_closed=coordinator_admin_session_closed,
-        )
-    return _receipt(
-        ok=True,
-        state="completed",
-        release_sha=release_sha,
-        gate=gate,
-        discord_install_receipt=discord_install_receipt,
-        final_approval_install_receipt=final_approval_install_receipt,
-        final_approval_cancel_receipt=final_approval_cancel_receipt,
-        coordinator_receipt=coordinator_receipt,
-        remote_failure_receipt=remote_failure_receipt,
-        recovery_preflight_receipt=recovery_preflight_receipt,
-        recovery_receipt=recovery_receipt,
-        discord_retirement_receipt=discord_retirement_receipt,
-        discord_token_retired=current_discord_token_retired,
-        failure_code=None,
-        primary_failure_code=None,
-        cleanup_failure_codes=cleanup_failure_codes,
-        recovery_attempt=recovery_attempt,
-        admin_mutation_ambiguous=admin_mutation_ambiguous,
-        admin_mutation_ambiguity_observed=admin_mutation_ambiguity_observed,
-        admin_reconciliation_performed=admin_reconciliation_performed,
-        admin_reconciliation_evidence_sha256=(admin_reconciliation_evidence_sha256),
-        admin_reconciliation_quiet_window_seconds=(
-            admin_reconciliation_quiet_window_seconds
-        ),
-        admin_response_known_candidate_observed=(
-            admin_response_known_candidate_observed
-        ),
-        admin_post_baseline_authority_operation_count=(
-            admin_post_baseline_authority_operation_count
-        ),
-        temporary_admin_absent=temporary_admin_absent,
-        remote_coordinator_terminated=remote_coordinator_terminated,
-        terminal_receipt_validated=terminal_receipt_validated,
-        admin_frame_disclosed=admin_frame_disclosed,
-        discord_frame_disclosed=discord_frame_disclosed,
-        final_approval_frame_disclosed=final_approval_frame_disclosed,
-        coordinator_admin_session_closed=coordinator_admin_session_closed,
-    )
+
+# The session-bound implementation is the only live owner target.
+launch_full_canary = launch_session_bound_full_canary
+
+
+class _OwnerStoreOnce(argparse.Action):
+    def __call__(
+        self,
+        parser: argparse.ArgumentParser,
+        namespace: argparse.Namespace,
+        values: Any,
+        option_string: str | None = None,
+    ) -> None:
+        del parser
+        if getattr(namespace, self.dest, None) is not None:
+            raise argparse.ArgumentError(
+                self,
+                f"{option_string or self.dest} was repeated",
+            )
+        setattr(namespace, self.dest, values)
 
 
 def _cli_parser() -> argparse.ArgumentParser:
@@ -12102,13 +13078,74 @@ def _cli_parser() -> argparse.ArgumentParser:
         help="publish the exact fork revision while every canary service is stopped",
     )
     actions.add_argument(
+        "--rotate-host-identity-receipt",
+        action="store_true",
+        help=(
+            "archive one exact stale boot receipt and publish the exact current "
+            "VM boot receipt while services stay stopped"
+        ),
+    )
+    actions.add_argument(
+        "--publish-full-canary-fixture",
+        action="store_true",
+        help=(
+            "publish the fixed public-channel, secret-free base fixture while "
+            "all canary services remain stopped"
+        ),
+    )
+    actions.add_argument(
         "--publish-writer-preflight",
         action="store_true",
         help="stage and attest writer-only inputs without starting services",
     )
+    actions.add_argument(
+        "--activate-writer-stopped",
+        action="store_true",
+        help=(
+            "run the packaged native/final writer activation and require its "
+            "terminal stopped receipt"
+        ),
+    )
+    actions.add_argument(
+        "--apply-phase-b-foundation",
+        action="store_true",
+        help=(
+            "apply the reviewed writer foundation through the stopped-only "
+            "owner protocol"
+        ),
+    )
+    actions.add_argument(
+        "--publish-coordinator-input",
+        action="store_true",
+        help=(
+            "publish the fixed coordinator input after terminal writer-only "
+            "activation"
+        ),
+    )
     parser.add_argument(
         "--external-iam-policy-sha256",
         help="exact external IAM policy digest bound into writer staging",
+        action=_OwnerStoreOnce,
+    )
+    parser.add_argument(
+        "--expected-prior-host-receipt-file-sha256",
+        help="exact immutable file digest of the stale host receipt",
+        action=_OwnerStoreOnce,
+    )
+    parser.add_argument(
+        "--expected-prior-host-receipt-sha256",
+        help="exact self-digest inside the stale host receipt",
+        action=_OwnerStoreOnce,
+    )
+    parser.add_argument(
+        "--expected-prior-boot-id-sha256",
+        help="exact stale boot-id digest being retired",
+        action=_OwnerStoreOnce,
+    )
+    parser.add_argument(
+        "--expected-current-boot-id-sha256",
+        help="exact current dedicated-VM boot-id digest being published",
+        action=_OwnerStoreOnce,
     )
     return parser
 
@@ -12136,7 +13173,33 @@ def main(argv: Sequence[str] | None = None) -> int:
         })
         return 2
     try:
+        host_rotation_bindings = (
+            arguments.expected_prior_host_receipt_file_sha256,
+            arguments.expected_prior_host_receipt_sha256,
+            arguments.expected_prior_boot_id_sha256,
+            arguments.expected_current_boot_id_sha256,
+        )
+        if (
+            not arguments.rotate_host_identity_receipt
+            and any(item is not None for item in host_rotation_bindings)
+        ):
+            raise OwnerLauncherError("host_receipt_rotation_plan_invalid")
+        if (
+            (
+                arguments.apply_phase_b_foundation
+                or arguments.publish_coordinator_input
+            )
+            and arguments.external_iam_policy_sha256 is not None
+        ):
+            code = (
+                "phase_b_owner_cli_invalid"
+                if arguments.apply_phase_b_foundation
+                else "coordinator_input_owner_cli_invalid"
+            )
+            raise OwnerLauncherError(code)
         if arguments.bootstrap_trusted_runtime:
+            if arguments.external_iam_policy_sha256 is not None:
+                raise OwnerLauncherError("host_receipt_rotation_plan_invalid")
             require_trusted_bootstrap_interpreter()
             launcher_sha256 = require_local_launcher_provenance(release_sha)
             receipt = bootstrap_trusted_gcloud_runtime(
@@ -12162,6 +13225,34 @@ def main(argv: Sequence[str] | None = None) -> int:
             _validate_owner_interpreter_invocation(command[0])
             require_local_launcher_provenance(exact_release)
 
+        if arguments.rotate_host_identity_receipt:
+            external_iam_policy_sha256 = _require_sha256(
+                arguments.external_iam_policy_sha256,
+                "host_receipt_rotation_plan_invalid",
+            )
+            prior_file_sha256, prior_receipt_sha256, prior_boot_sha256, current_boot_sha256 = (
+                _require_sha256(
+                    item,
+                    "host_receipt_rotation_plan_invalid",
+                )
+                for item in host_rotation_bindings
+            )
+            rotation_transport = IapHostReceiptRotationTransport(
+                owner_identity,
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+            )
+            receipt = rotation_transport.rotate(
+                release_sha,
+                external_iam_policy_sha256=external_iam_policy_sha256,
+                expected_prior_file_sha256=prior_file_sha256,
+                expected_prior_receipt_sha256=prior_receipt_sha256,
+                expected_prior_boot_id_sha256=prior_boot_sha256,
+                expected_current_boot_id_sha256=current_boot_sha256,
+            )
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
         if arguments.publish_stopped_release:
             if arguments.external_iam_policy_sha256 is not None:
                 raise OwnerLauncherError("writer_preflight_plan_invalid")
@@ -12171,6 +13262,23 @@ def main(argv: Sequence[str] | None = None) -> int:
                 gcloud_configuration=gcloud_configuration,
             )
             receipt = release_transport.publish(release_sha)
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
+        if arguments.publish_full_canary_fixture:
+            external_iam_policy_sha256 = _require_sha256(
+                arguments.external_iam_policy_sha256,
+                "fixture_publication_plan_invalid",
+            )
+            fixture_transport = IapFixturePublicationTransport(
+                owner_identity,
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+            )
+            receipt = fixture_transport.publish(
+                release_sha,
+                external_iam_policy_sha256=external_iam_policy_sha256,
+            )
             runtime_and_provenance_guard(release_sha)
             _emit_canonical_line(receipt)
             return 0
@@ -12191,6 +13299,49 @@ def main(argv: Sequence[str] | None = None) -> int:
             runtime_and_provenance_guard(release_sha)
             _emit_canonical_line(receipt)
             return 0
+        if arguments.activate_writer_stopped:
+            external_iam_policy_sha256 = _require_sha256(
+                arguments.external_iam_policy_sha256,
+                "writer_activation_policy_invalid",
+            )
+            transport = IapWriterActivationBridgeTransport(
+                owner_identity,
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+            )
+            receipt = transport.activate(
+                release_sha,
+                external_iam_policy_sha256=external_iam_policy_sha256,
+            )
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
+        if arguments.apply_phase_b_foundation:
+            transport = IapCoordinatorTransport(
+                owner_identity,
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+            )
+            receipt = apply_phase_b_foundation(
+                release_sha=release_sha,
+                transport=transport,
+                cloud_sql_client=GoogleRestClient(owner_identity),
+                owner_identity=owner_identity,
+                provenance_guard=runtime_and_provenance_guard,
+            )
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
+        if arguments.publish_coordinator_input:
+            transport = IapCoordinatorTransport(
+                owner_identity,
+                gcloud_executable=gcloud_executable,
+                gcloud_configuration=gcloud_configuration,
+            )
+            receipt = transport.publish_coordinator_input(release_sha)
+            runtime_and_provenance_guard(release_sha)
+            _emit_canonical_line(receipt)
+            return 0
         if arguments.external_iam_policy_sha256 is not None:
             raise OwnerLauncherError("writer_preflight_plan_invalid")
         transport = IapCoordinatorTransport(
@@ -12198,13 +13349,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             gcloud_executable=gcloud_executable,
             gcloud_configuration=gcloud_configuration,
         )
-        sql_admin = CloudSqlTemporaryAdmin(GoogleRestClient(owner_identity))
-
         try:
             receipt = launch_full_canary(
                 release_sha=release_sha,
                 transport=transport,
-                sql_admin=sql_admin,
                 token_source=OwnerDiscordTokenReader(),
                 owner_identity=owner_identity,
                 final_approval_source=FixedLocalFinalApprovalFile(),
@@ -12274,6 +13422,7 @@ __all__ = [
     "CloudSqlCreateNotCommitted",
     "CloudSqlTemporaryAdmin",
     "COORDINATOR_FAILURE_SCHEMA",
+    "COORDINATOR_INPUT_PUBLICATION_SCHEMA",
     "COORDINATOR_RECEIPT_SCHEMA",
     "COORDINATOR_SECRET_GATE_SCHEMA",
     "CoordinatorTransport",
@@ -12293,15 +13442,24 @@ __all__ = [
     "FINAL_APPROVAL_INSTALL_RECEIPT_SCHEMA",
     "FINAL_APPROVAL_MAX_WAIT_SECONDS",
     "FINAL_APPROVAL_PATH",
+    "FIXTURE_PUBLICATION_MODULE",
+    "FIXTURE_PUBLICATION_PLAN_SCHEMA",
+    "FIXTURE_PUBLICATION_RECEIPT_SCHEMA",
     "FixedLocalFinalApprovalFile",
     "GoogleRestClient",
     "GcloudOwnerAccessToken",
+    "HOST_RECEIPT_ROTATION_MODULE",
+    "HOST_RECEIPT_ROTATION_PLAN_SCHEMA",
+    "HOST_RECEIPT_ROTATION_RECEIPT_SCHEMA",
+    "HOST_RECEIPT_ROTATION_ROOT",
     "IapCoordinatorTransport",
+    "IapFixturePublicationTransport",
+    "IapHostReceiptRotationTransport",
     "IapStoppedReleaseTransport",
+    "IapWriterActivationBridgeTransport",
     "IapWriterPreflightTransport",
     "HttpResponse",
     "LocalLauncherProvenance",
-    "OWNER_GATE_SCHEMA",
     "OWNER_DISCORD_INPUT_MAGIC",
     "OWNER_RECEIPT_SCHEMA",
     "OwnerDiscordTokenReader",
@@ -12322,6 +13480,9 @@ __all__ = [
     "RECOVERY_SECRET_GATE_SCHEMA",
     "RECOVERY_WORKER_COMPLETION_SCHEMA",
     "RECOVERY_WORKER_LEASE_SCHEMA",
+    "SESSION_BOUND_APPROVAL_REQUEST_SCHEMA",
+    "SESSION_BOUND_COORDINATOR_RECEIPT_SCHEMA",
+    "SESSION_BOUND_OWNER_RECEIPT_SCHEMA",
     "SQL_INSTANCE",
     "TEMPORARY_ADMIN_AUTHORITY_RECEIPT_SCHEMA",
     "STOPPED_RELEASE_EVIDENCE_BASE",
@@ -12341,36 +13502,35 @@ __all__ = [
     "OS_LOGIN_PROFILE_ID",
     "OS_LOGIN_USERNAME",
     "ZONE",
-    "build_admin_frame",
     "build_discord_frame",
     "build_discord_retirement_ack",
     "build_discord_retirement_ack_frame",
     "build_final_approval_frame",
-    "build_recovery_ack",
-    "build_recovery_ack_frame",
-    "build_recovery_admin_frame",
+    "build_writer_authority_frame",
+    "build_writer_owner_approval",
     "bootstrap_trusted_gcloud_runtime",
     "harden_owner_secret_process",
     "launch_full_canary",
+    "launch_session_bound_full_canary",
+    "apply_phase_b_foundation",
+    "collect_fresh_writer_external_iam",
     "main",
     "require_local_launcher_provenance",
-    "validate_coordinator_receipt",
-    "validate_coordinator_secret_gate",
+    "validate_current_phase_b_live_gate",
+    "validate_coordinator_input_publication_receipt",
     "validate_discord_install_gate",
     "validate_discord_install_receipt",
     "validate_discord_retirement_gate",
     "validate_discord_retirement_receipt",
-    "validate_final_approval_install_receipt",
-    "validate_final_approval_cancel_receipt",
-    "validate_final_owner_approval",
-    "validate_owner_launch_gate",
-    "validate_owner_approval_request",
-    "validate_persisted_recovery_receipt",
-    "validate_persisted_recovery_worker_completion",
-    "validate_recovery_gate",
-    "validate_recovery_secret_gate",
-    "validate_recovery_worker_completion",
-    "validate_recovery_receipt",
+    "validate_fixture_publication_plan",
+    "validate_fixture_publication_receipt",
+    "validate_host_receipt_rotation_plan",
+    "validate_host_receipt_rotation_receipt",
+    "validate_phase_b_apply_gate",
+    "validate_phase_b_apply_receipt",
+    "validate_session_bound_approval_request",
+    "validate_session_bound_coordinator_receipt",
+    "validate_session_bound_final_owner_approval",
     "validate_stopped_release_plan",
     "validate_stopped_release_receipt",
     "validate_writer_preflight_plan",

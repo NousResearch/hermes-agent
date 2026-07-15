@@ -164,7 +164,7 @@ TIPS = [
 
     # --- Memory ---
     "Memory is a frozen snapshot — changes appear in the system prompt only at next session start.",
-    "Memory entries are automatically scanned for prompt injection and exfiltration patterns.",
+    "Memory text is preserved for the model; deterministic code only enforces store size and write boundaries.",
     "The agent has two memory stores: personal notes (~2200 chars) and user profile (~1375 chars).",
     "Corrections you give the agent (\"no, do it this way\") are often auto-saved to memory.",
 
@@ -180,7 +180,7 @@ TIPS = [
     # --- Cron & Scheduling ---
     "Cron jobs can attach skills: hermes cron add --skill blogwatcher \"Check for new posts\".",
     "Cron delivery targets include telegram, discord, slack, email, sms, and 12+ more platforms.",
-    "If a cron response starts with [SILENT], delivery is suppressed — useful for monitoring-only jobs.",
+    "Cron agents can use todo.delivery_outcome to suppress an uneventful monitoring result without text markers.",
     "Cron supports relative delays (30m), intervals (every 2h), cron expressions, and ISO timestamps.",
     "Cron jobs run in completely fresh agent sessions — prompts must be self-contained.",
 
@@ -209,7 +209,7 @@ TIPS = [
     "SSRF protection blocks private networks, loopback, link-local, and cloud metadata addresses.",
     "Tirith pre-exec scanning detects homograph URL spoofing and pipe-to-interpreter patterns.",
     "MCP subprocesses receive a filtered environment — only safe system vars pass through.",
-    "Context files (.hermes.md, AGENTS.md) are security-scanned for prompt injection before loading.",
+    "Context files preserve authored text and carry explicit source labels plus configured size limits.",
     "command_allowlist in config.yaml permanently approves specific shell command patterns.",
 
     # --- Context & Compression ---
@@ -324,7 +324,7 @@ TIPS = [
     "hermes profile create backup --clone-all copies everything (config, keys, SOUL.md, memories, skills, sessions).",
     "The voice record key is configurable via voice.record_key in config.yaml — not just Ctrl+B.",
     ".cursorrules and .cursor/rules/*.mdc files are auto-detected and loaded as project context.",
-    "Context files support 10+ prompt injection patterns — invisible Unicode, 'ignore instructions', exfil attempts.",
+    "AGENTS.md, SOUL.md, and related context keep authored wording and invisible Unicode intact.",
     "GPT-5 and Codex use 'developer' role instead of 'system' in the message format.",
     "Per-task auxiliary overrides: auxiliary.vision.provider, auxiliary.compression.model, etc. in config.yaml.",
     "The auxiliary client treats 'main' as a provider alias — resolves to your actual primary provider + model.",
@@ -335,12 +335,12 @@ TIPS = [
     "HERMES_DEV=1 bypasses container mode detection for local development.",
     "Each MCP server gets its own toolset (mcp-servername) that can be toggled independently via hermes tools.",
     "MCP ${ENV_VAR} placeholders in config are resolved at server spawn — including vars from ~/.hermes/.env.",
-    "Skills from trusted repos (NousResearch) get a 'trusted' security level; community skills get extra scanning.",
-    "The skills quarantine at ~/.hermes/skills/.hub/quarantine/ holds skills pending security review.",
+    "Skill source provenance sets the trust tier; package preflight never classifies authored instructions.",
+    "The skills quarantine holds fetched packages while path, symlink, type, size, and hash checks run.",
 
     # --- Advanced Slash Commands ---
     '/steer <prompt> injects a note after the next tool call — nudge direction mid-task without interrupting.',
-    '/goal <text> sets a standing Ralph-loop objective — Hermes auto-continues turn after turn until a judge says done.',
+    '/goal <text> sets a standing objective — the primary model works it turn by turn and records its verified outcome.',
     '/snapshot create [label] saves a full state snapshot of Hermes config; /snapshot restore <id> reverts later.',
     '/copy [N] copies the last assistant response to your clipboard, or the Nth-from-last with a number.',
     '/redraw forces a full UI repaint, fixing terminal drift after tmux resize or mouse selection artifacts.',
@@ -392,7 +392,6 @@ TIPS = [
     'HERMES_WRITE_SAFE_ROOT restricts write_file/patch to directory prefixes; multiple paths via os.pathsep (: or ;).',
     'HERMES_IGNORE_RULES skips auto-injection of AGENTS.md, SOUL.md, .cursorrules, memory, and preloaded skills.',
     'HERMES_ACCEPT_HOOKS auto-approves unseen shell hooks declared in config.yaml without a TTY prompt.',
-    'auxiliary.goal_judge.model routes the /goal judge to a cheap fast model to keep loop cost near zero.',
     'Checkpoints skip directories with more than 50,000 files to avoid slow git operations on massive monorepos.',
 
     # --- TTS ---

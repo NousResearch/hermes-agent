@@ -156,6 +156,7 @@ def test_run_conversation_empty_exhausted_surfaces_explanation():
         result = agent.run_conversation("do something")
 
     assert result["turn_exit_reason"] == "empty_response_exhausted"
+    assert result["failed"] is True
     # The user must NOT be left with a bare sentinel; the explanation wins.
     assert result["final_response"] != "(empty)"
     assert result["final_response"].strip() != ""

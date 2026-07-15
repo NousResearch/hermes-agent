@@ -35,6 +35,7 @@ from tools.delegate_tool import (
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
     _inherit_parent_base_url,
+    _looks_like_error_output,
 )
 
 
@@ -413,6 +414,32 @@ class TestDelegateTask(unittest.TestCase):
             self.assertEqual(kwargs["provider"], parent.provider)
             self.assertEqual(kwargs["api_mode"], parent.api_mode)
 
+    def test_child_inherits_exact_parent_execution_lease(self):
+        from agent.iteration_budget import ExecutionLease
+
+        parent = _make_mock_parent(depth=0)
+        lease = ExecutionLease(max_total=25)
+        parent.execution_lease = lease
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            MockAgent.return_value = mock_child
+
+            _build_child_agent(
+                task_index=0,
+                goal="share aggregate authority",
+                context=None,
+                toolsets=None,
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        _, kwargs = MockAgent.call_args
+        self.assertIs(kwargs["execution_lease"], lease)
+        self.assertIsNone(kwargs["iteration_budget"])
+
     def test_child_inherits_parent_print_fn(self):
         parent = _make_mock_parent(depth=0)
         sink = MagicMock()
@@ -731,7 +758,7 @@ class TestDelegateObservability(unittest.TestCase):
                     {"id": "t1", "function": {"name": "terminal", "arguments": "{}"}}
                 ]},
                 {"role": "tool", "tool_call_id": "t1", "content": [
-                    {"type": "text", "text": "Error: command not found"},
+                    {"type": "text", "text": '{"exit_code":127,"error":"command not found"}'},
                 ]},
                 {"role": "assistant", "tool_calls": [
                     {"id": "t2", "function": {"name": "vision", "arguments": "{}"}}
@@ -747,7 +774,7 @@ class TestDelegateObservability(unittest.TestCase):
 
         # Block-wrapped error is correctly flagged (crude str() would miss it).
         self.assertTrue(by_tool["terminal"]["is_error"])
-        self.assertEqual(by_tool["terminal"]["preview"], "Error: command not found")
+        self.assertIn("command not found", by_tool["terminal"]["preview"])
         # Non-error multimodal result is not flagged, and the text is readable.
         self.assertFalse(by_tool["vision"]["is_error"])
         self.assertIn("all good", by_tool["vision"]["preview"])
@@ -755,8 +782,8 @@ class TestDelegateObservability(unittest.TestCase):
         for entry in tail:
             self.assertNotIn("'type'", entry["preview"])
 
-    def test_tool_trace_detects_error(self):
-        """Tool results containing 'error' should be marked as error status."""
+    def test_tool_trace_detects_structured_error(self):
+        """Explicit terminal exit status is reflected in trace metadata."""
         parent = _make_mock_parent(depth=0)
 
         with patch("run_agent.AIAgent") as MockAgent:
@@ -773,7 +800,11 @@ class TestDelegateObservability(unittest.TestCase):
                     {"role": "assistant", "tool_calls": [
                         {"id": "tc_1", "function": {"name": "terminal", "arguments": '{"cmd": "ls"}'}}
                     ]},
-                    {"role": "tool", "tool_call_id": "tc_1", "content": "Error: command not found"},
+                    {
+                        "role": "tool",
+                        "tool_call_id": "tc_1",
+                        "content": '{"exit_code":127,"error":"command not found"}',
+                    },
                 ],
             }
             MockAgent.return_value = mock_child
@@ -781,6 +812,14 @@ class TestDelegateObservability(unittest.TestCase):
             result = json.loads(delegate_task(goal="Test error trace", parent_agent=parent))
             trace = result["results"][0]["tool_trace"]
             self.assertEqual(trace[0]["status"], "error")
+
+    def test_opaque_error_prose_is_not_trace_routing_authority(self):
+        for content in (
+            "Error: this chapter documents an old incident",
+            "failed: quoted output from a prior run",
+            "Traceback examples are explained below",
+        ):
+            self.assertFalse(_looks_like_error_output("read_file", content))
 
     def test_parallel_tool_calls_paired_correctly(self):
         """Parallel tool calls should each get their own result via tool_call_id matching."""
@@ -803,8 +842,12 @@ class TestDelegateObservability(unittest.TestCase):
                         {"id": "tc_c", "function": {"name": "terminal", "arguments": '{"cmd": "ls"}'}},
                     ]},
                     {"role": "tool", "tool_call_id": "tc_a", "content": '{"ok": true}'},
-                    {"role": "tool", "tool_call_id": "tc_b", "content": "Error: rate limited"},
-                    {"role": "tool", "tool_call_id": "tc_c", "content": "file1.txt\nfile2.txt"},
+                    {
+                        "role": "tool",
+                        "tool_call_id": "tc_b",
+                        "content": '{"status":"error","error":"rate limited"}',
+                    },
+                    {"role": "tool", "tool_call_id": "tc_c", "content": '{"exit_code":2}'},
                     {"role": "assistant", "content": "done"},
                 ],
             }
@@ -821,14 +864,14 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertEqual(trace[0]["status"], "ok")
             self.assertIn("result_bytes", trace[0])
 
-            # Second: web_search → error
+            # Second: arbitrary business-shaped fields are opaque to runtime.
             self.assertEqual(trace[1]["tool"], "web_search")
-            self.assertEqual(trace[1]["status"], "error")
+            self.assertEqual(trace[1]["status"], "ok")
             self.assertIn("result_bytes", trace[1])
 
-            # Third: terminal → ok
+            # Third: terminal's registered exit-code adapter is mechanical.
             self.assertEqual(trace[2]["tool"], "terminal")
-            self.assertEqual(trace[2]["status"], "ok")
+            self.assertEqual(trace[2]["status"], "error")
             self.assertIn("result_bytes", trace[2])
 
     def test_exit_reason_interrupted(self):
@@ -872,6 +915,38 @@ class TestDelegateObservability(unittest.TestCase):
 
             result = json.loads(delegate_task(goal="Test max iter", parent_agent=parent))
             self.assertEqual(result["results"][0]["exit_reason"], "max_iterations")
+
+    def test_execution_lease_receipt_is_partial_not_completed(self):
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "gpt-5.6-sol"
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.run_conversation.return_value = {
+                "final_response": (
+                    "[RUNTIME EXECUTION LEASE RECEIPT — NOT MODEL-AUTHORED]\n"
+                    "Task remains open."
+                ),
+                "completed": False,
+                "failed": True,
+                "partial": True,
+                "interrupted": False,
+                "turn_exit_reason": "execution_lease_exhausted",
+                "api_calls": 25,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(
+                delegate_task(goal="Test aggregate lease", parent_agent=parent)
+            )
+
+        entry = result["results"][0]
+        self.assertEqual(entry["status"], "partial")
+        self.assertEqual(entry["exit_reason"], "execution_lease_exhausted")
+        self.assertIn("Task remains open", entry["summary"])
 
     def test_empty_sentinel_marks_status_failed(self):
         """Regression: a child that returns the literal '(empty)' sentinel

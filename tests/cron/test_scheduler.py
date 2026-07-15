@@ -9,7 +9,17 @@ from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
 
-from cron.scheduler import _resolve_origin, _resolve_delivery_target, _deliver_result, _send_media_via_adapter, run_job, SILENT_MARKER, _build_job_prompt, _resolve_cron_enabled_toolsets, _merge_mcp_into_per_job_toolsets
+from cron.scheduler import (
+    CronJobRunResult,
+    _build_job_prompt,
+    _deliver_result,
+    _merge_mcp_into_per_job_toolsets,
+    _resolve_cron_enabled_toolsets,
+    _resolve_delivery_target,
+    _resolve_origin,
+    _send_media_via_adapter,
+    run_job,
+)
 from tools.env_passthrough import clear_env_passthrough
 from tools.credential_files import clear_credential_files
 
@@ -997,6 +1007,38 @@ class TestDeliverResultErrorReturns:
         assert result is not None
         assert "no delivery target" in result
 
+    def test_standalone_none_result_is_not_a_delivery_receipt(self):
+        from gateway.config import Platform
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
+        observation = {}
+        job = {
+            "id": "standalone-unconfirmed",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        with (
+            patch("gateway.config.load_gateway_config", return_value=mock_cfg),
+            patch(
+                "tools.send_message_tool._send_to_platform",
+                new=AsyncMock(return_value=None),
+            ),
+        ):
+            result = _deliver_result(
+                job,
+                "Output.",
+                delivery_observation=observation,
+            )
+
+        assert result is not None
+        assert "no explicit success receipt" in result
+        assert observation["attempted"] is True
+        assert observation["confirmed"] is False
+
 
 class TestRunJobSessionPersistence:
     def test_run_job_passes_session_db_and_cron_platform(self, tmp_path):
@@ -1044,10 +1086,10 @@ class TestRunJobSessionPersistence:
         fake_db.close.assert_called_once()
         mock_agent.close.assert_called_once()
 
-    def test_run_job_suppresses_empty_turn_explainer(self, tmp_path):
+    def test_run_job_does_not_classify_empty_turn_explainer(self, tmp_path):
         """An empty model turn becomes the '⚠️ No reply…' explainer (#34452).
-        For cron, that abnormal-empty explainer must be treated as empty so it
-        is suppressed instead of delivered (Manfredi's Telegram symptom)."""
+        Cron must treat it as ordinary response content; only a structured
+        model-authored delivery outcome may suppress a successful turn."""
         from run_agent import AIAgent
         explainer = AIAgent._format_turn_completion_explanation("empty_response_exhausted")
         assert explainer  # sanity: the explainer text exists
@@ -1085,11 +1127,9 @@ class TestRunJobSessionPersistence:
 
             success, output, final_response, error = run_job(job)
 
-        # The explainer is stripped to empty inside run_job; the downstream
-        # firing body (process_job) then suppresses delivery and marks the run
-        # a soft failure via its empty-response guard.  Here we assert the
-        # load-bearing transform: the "⚠️ No reply…" text never reaches delivery.
-        assert final_response == ""
+        assert final_response == explainer
+        assert success is True
+        assert error is None
 
     def test_run_job_real_report_on_empty_reason_still_delivers(self, tmp_path):
         """Defensive: a real report must NOT be suppressed even if the result
@@ -1293,6 +1333,62 @@ class TestRunJobSessionPersistence:
 
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["enabled_toolsets"] == ["web", "terminal", "file"]
+
+    def test_run_job_binds_exact_reviewed_discord_history_authority(self, tmp_path):
+        from gateway.discord_history_authority import (
+            DiscordHistoryAuthorityError,
+            VOICE_DIGEST_THREAD_ID,
+            resolve_discord_history_authority,
+        )
+
+        job = {
+            "id": "e62f55ca93ca",
+            "name": "voice digest",
+            "prompt": "read the exact reviewed thread",
+            "enabled_toolsets": ["discord_guild_read"],
+        }
+        observed = {}
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            def _run(_prompt):
+                observed["authority"] = resolve_discord_history_authority(
+                    VOICE_DIGEST_THREAD_ID
+                )
+                return {"final_response": "ok"}
+
+            mock_agent_cls.return_value.run_conversation.side_effect = _run
+            success, _output, _final, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert observed["authority"].cron_job_id == "e62f55ca93ca"
+        with pytest.raises(
+            DiscordHistoryAuthorityError,
+            match="discord_history_requester_context_missing",
+        ):
+            resolve_discord_history_authority(VOICE_DIGEST_THREAD_ID)
+
+    def test_run_job_unknown_cron_history_authority_fails_inside_real_worker_context(
+        self, tmp_path
+    ):
+        from gateway.discord_history_authority import (
+            CONTROL_TOWER_CHANNEL_ID,
+            resolve_discord_history_authority,
+        )
+
+        job = {
+            "id": "deadbeef0000",
+            "name": "unknown",
+            "prompt": "must fail closed",
+            "enabled_toolsets": ["discord_guild_read"],
+        }
+        with self._run_job_patches(tmp_path) as (_fake_db, mock_agent_cls):
+            mock_agent_cls.return_value.run_conversation.side_effect = lambda _prompt: (
+                resolve_discord_history_authority(CONTROL_TOWER_CHANNEL_ID)
+            )
+            success, _output, _final, error = run_job(job)
+
+        assert success is False
+        assert "discord_history_cron_not_reviewed" in str(error)
 
     def test_run_job_disabled_toolsets_layer_user_config_on_baseline(self, tmp_path):
         """agent.disabled_toolsets must be honoured in cron — issue #25752.
@@ -2527,8 +2623,8 @@ class TestRunJobSkillBacked:
         assert "Combine the results." in prompt_arg
 
 
-class TestSilentDelivery:
-    """Verify that [SILENT] responses suppress delivery while still saving output."""
+class TestStructuredDeliveryOutcome:
+    """Cron delivery uses only the primary model's turn-bound outcome."""
 
     def _make_job(self):
         return {
@@ -2538,9 +2634,24 @@ class TestSilentDelivery:
             "origin": {"platform": "telegram", "chat_id": "123"},
         }
 
-    def test_silent_response_suppresses_delivery(self, caplog):
+    def _run_result(self, *, action="suppress", response="nothing new", failed=False):
+        turn_id = "cron-turn-1"
+        return CronJobRunResult(
+            not failed,
+            "# output",
+            response,
+            "some error" if failed else None,
+            delivery_outcome={
+                "action": action,
+                "reason": "model-authored delivery decision",
+                "turn_id": turn_id,
+            },
+            turn_id=turn_id,
+        )
+
+    def test_structured_suppress_skips_delivery(self, caplog):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT]", None)), \
+             patch("cron.scheduler.run_job", return_value=self._run_result()), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
@@ -2548,59 +2659,35 @@ class TestSilentDelivery:
             with caplog.at_level(logging.INFO, logger="cron.scheduler"):
                 tick(verbose=False)
         deliver_mock.assert_not_called()
-        assert any(SILENT_MARKER in r.message for r in caplog.records)
+        assert any("structured delivery outcome" in r.message for r in caplog.records)
 
-    def test_silent_with_note_suppresses_delivery(self):
+    def test_structured_deliver_sends_content(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", "[SILENT] No changes detected", None)), \
+             patch("cron.scheduler.run_job", return_value=self._run_result(action="deliver", response="report")), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
             from cron.scheduler import tick
             tick(verbose=False)
-        deliver_mock.assert_not_called()
+        deliver_mock.assert_called_once()
+        assert deliver_mock.call_args.args[1] == "report"
 
-    def test_silent_trailing_suppresses_delivery(self):
-        """Agent appended [SILENT] after explanation text — must still suppress."""
-        response = "2 deals filtered out (like<10, reply<15).\n\n[SILENT]"
-        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
-             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
-             patch("cron.scheduler.mark_job_run"):
-            from cron.scheduler import tick
-            tick(verbose=False)
-        deliver_mock.assert_not_called()
-
-    def test_silent_is_case_insensitive(self):
-        with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", "[silent] nothing new", None)), \
-             patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
-             patch("cron.scheduler._deliver_result") as deliver_mock, \
-             patch("cron.scheduler.mark_job_run"):
-            from cron.scheduler import tick
-            tick(verbose=False)
-        deliver_mock.assert_not_called()
-
-    def test_bracketless_silent_variants_suppress(self):
-        """Bracketless near-markers the model emits when it drops brackets
-        must still suppress delivery (#51438, #46917)."""
+    def test_response_control_words_have_no_authority(self):
         from cron.scheduler import tick
-        for marker in ("SILENT", "NO_REPLY", "NO REPLY", "no_reply"):
+        for text in ("[SILENT]", "NO_REPLY", "NO REPLY", ".NO_REPLY"):
             with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-                 patch("cron.scheduler.run_job", return_value=(True, "# output", marker, None)), \
+                 patch("cron.scheduler.run_job", return_value=(True, "# output", text, None)), \
                  patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
                  patch("cron.scheduler._deliver_result") as deliver_mock, \
                  patch("cron.scheduler.mark_job_run"):
                 tick(verbose=False)
-            deliver_mock.assert_not_called()
+            deliver_mock.assert_called_once()
 
-    def test_report_quoting_marker_mid_sentence_still_delivers(self):
-        """A genuine report that merely mentions the token mid-sentence must
-        be delivered — the old substring check wrongly swallowed it."""
-        response = "I considered staying [SILENT] but here is the summary: 3 items merged."
+    def test_stale_outcome_turn_id_delivers(self):
+        run_result = self._run_result()
+        run_result.delivery_outcome["turn_id"] = "older-turn"
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# output", response, None)), \
+             patch("cron.scheduler.run_job", return_value=run_result), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
@@ -2608,30 +2695,10 @@ class TestSilentDelivery:
             tick(verbose=False)
         deliver_mock.assert_called_once()
 
-    def test_is_cron_silence_response_contract(self):
-        """Direct behavior contract for the cron silence matcher."""
-        from cron.scheduler import _is_cron_silence_response as sil
-        # Suppress: bare/bracketed/bracketless tokens, prefix, trailing-line.
-        assert sil("[SILENT]")
-        assert sil("[silent] nothing new")
-        assert sil("[SILENT] No changes detected")
-        assert sil("2 deals filtered.\n\n[SILENT]")
-        assert sil("SILENT")
-        assert sil("NO_REPLY")
-        assert sil("NO REPLY")
-        assert sil("Summary.\nSILENT")
-        # Deliver: real content, mid-sentence quotes, bare words, junk.
-        assert not sil("Daily report: 4 PRs merged.")
-        assert not sil("I stayed [SILENT] but here is the report: 3 items.")
-        assert not sil("Silent retry succeeded after 2 attempts.")
-        assert not sil("[SILENT")  # malformed open-bracket is not the sentinel
-        assert not sil("")
-        assert not sil("   \n\t ")
-
     def test_failed_job_always_delivers(self):
-        """Failed jobs deliver regardless of [SILENT] in output."""
+        """A failed job cannot be suppressed by a prior structured choice."""
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(False, "# output", "", "some error")), \
+             patch("cron.scheduler.run_job", return_value=self._run_result(failed=True)), \
              patch("cron.scheduler.save_job_output", return_value="/tmp/out.md"), \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
@@ -2641,14 +2708,14 @@ class TestSilentDelivery:
 
     def test_output_saved_even_when_delivery_suppressed(self):
         with patch("cron.scheduler.get_due_jobs", return_value=[self._make_job()]), \
-             patch("cron.scheduler.run_job", return_value=(True, "# full output", "[SILENT]", None)), \
+             patch("cron.scheduler.run_job", return_value=self._run_result()), \
              patch("cron.scheduler.save_job_output") as save_mock, \
              patch("cron.scheduler._deliver_result") as deliver_mock, \
              patch("cron.scheduler.mark_job_run"):
             save_mock.return_value = "/tmp/out.md"
             from cron.scheduler import tick
             tick(verbose=False)
-        save_mock.assert_called_once_with("monitor-job", "# full output")
+        save_mock.assert_called_once_with("monitor-job", "# output")
         deliver_mock.assert_not_called()
 
     def test_whitespace_only_response_is_marked_failed_not_delivered(self):
@@ -2667,6 +2734,7 @@ class TestSilentDelivery:
             False,
             "Agent completed but produced empty response (model error, timeout, or misconfiguration)",
             delivery_error=None,
+            delivery_status="none",
         )
 
 
@@ -2710,24 +2778,25 @@ class TestOneShotDispatchClaim:
         mark_mock.assert_not_called()
 
 
-class TestBuildJobPromptSilentHint:
-    """Verify _build_job_prompt always injects [SILENT] guidance."""
+class TestBuildJobPromptDeliveryOutcomeHint:
+    """Verify _build_job_prompt always injects structured guidance."""
 
     def test_hint_always_present(self):
         job = {"prompt": "Check for updates"}
         result = _build_job_prompt(job)
-        assert "[SILENT]" in result
+        assert "delivery_outcome" in result
+        assert '"suppress"' in result
         assert "Check for updates" in result
 
     def test_hint_present_even_without_prompt(self):
         job = {"prompt": ""}
         result = _build_job_prompt(job)
-        assert "[SILENT]" in result
+        assert "delivery_outcome" in result
 
     def test_hint_present_when_legacy_prompt_is_null(self):
         job = {"id": "abc123deadbe", "name": None, "prompt": None}
         result = _build_job_prompt(job)
-        assert "[SILENT]" in result
+        assert "delivery_outcome" in result
 
     def test_delivery_guidance_present(self):
         """Cron hint tells agents their final response is auto-delivered."""
@@ -2843,21 +2912,22 @@ class TestRunJobWakeGate:
             "script": script,
         }
 
-    def test_wake_false_skips_agent_and_returns_silent(self, caplog):
+    def test_wake_false_skips_agent_and_returns_structured_suppress(self, caplog):
         """When _run_job_script output ends with {wakeAgent: false}, the agent
-        is not invoked and run_job returns the SILENT marker so delivery is
-        suppressed."""
-        from cron.scheduler import SILENT_MARKER
+        is not invoked and run_job returns a mechanical suppression receipt."""
         import cron.scheduler as scheduler
 
         with patch.object(scheduler, "_run_job_script",
                           return_value=(True, '{"wakeAgent": false}')), \
              patch("run_agent.AIAgent") as agent_cls:
-            success, doc, final, err = scheduler.run_job(self._make_job())
+            run_result = scheduler.run_job(self._make_job())
+            success, doc, final, err = run_result
 
         assert success is True
         assert err is None
-        assert final == SILENT_MARKER
+        assert final == ""
+        assert run_result.delivery_outcome["action"] == "suppress"
+        assert run_result.delivery_outcome["turn_id"] == run_result.turn_id
         assert "Script gate returned `wakeAgent=false`" in doc
         agent_cls.assert_not_called()
 
@@ -2892,9 +2962,10 @@ class TestRunJobWakeGate:
         import cron.scheduler as scheduler
 
         call_count = 0
-        def _script_stub(path):
+        def _script_stub(path, *, job=None):
             nonlocal call_count
             call_count += 1
+            assert job is not None
             return (True, "regular output")
 
         agent = MagicMock()
@@ -3240,17 +3311,18 @@ class TestDeliverResultTimeoutCancelsFuture:
     """When future.result(timeout=60) raises TimeoutError in the live adapter
     delivery path, the outcome depends on whether the coroutine was already
     running.  future.cancel() returning False means it is in flight on the wire
-    (cannot be un-sent) → treat as DELIVERED and skip the standalone fallback to
-    avoid a duplicate (#38922).  future.cancel() returning True means it never
+    (cannot be un-sent) → skip the standalone fallback to avoid a duplicate,
+    while keeping the delivery receipt unconfirmed (#38922).
+    future.cancel() returning True means it never
     started (wedged loop) → nothing was sent, so fall through to standalone or
     the message is silently dropped.  Regression for #38922.
     """
 
     def test_live_adapter_timeout_assumes_delivered_no_duplicate(self):
         """End-to-end: live adapter confirmation times out past the 60s budget.
-        The fix (#38922) treats the send as already-dispatched/delivered and
-        does NOT run the standalone fallback — otherwise the message is sent
-        twice."""
+        The fix (#38922) treats the send as already dispatched and does NOT run
+        the standalone fallback — otherwise the message may be sent twice. It
+        still must not invent a confirmed receipt."""
         from gateway.config import Platform
         from concurrent.futures import Future
 
@@ -3297,11 +3369,13 @@ class TestDeliverResultTimeoutCancelsFuture:
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
              patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            observation = {}
             result = _deliver_result(
                 job,
                 "Hello world",
                 adapters={Platform.TELEGRAM: adapter},
                 loop=loop,
+                delivery_observation=observation,
             )
 
         # 1. cancel() was attempted (returned False = in flight).
@@ -3311,6 +3385,11 @@ class TestDeliverResultTimeoutCancelsFuture:
         # 3. The standalone fallback must NOT run — that is the #38922 fix:
         #    an in-flight confirmation timeout is assume-delivered, not a resend.
         standalone_send.assert_not_awaited()
+        # No duplicate fallback is attempted, but an in-flight timeout is not
+        # an adapter-confirmed delivery receipt.
+        assert observation["attempted"] is True
+        assert observation["confirmed"] is False
+        assert observation["unconfirmed"] is True
 
     def test_live_adapter_timeout_before_dispatch_falls_back_to_standalone(self):
         """When the coroutine never started (loop wedged) — future.cancel()
@@ -3446,8 +3525,6 @@ class TestDeliverResultTimeoutCancelsFuture:
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
-        mock_cfg.filter_silence_narration = False
-
         loop = MagicMock()
         loop.is_running.return_value = True
 
@@ -3508,8 +3585,6 @@ class TestDeliverResultTimeoutCancelsFuture:
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
-        mock_cfg.filter_silence_narration = False
-
         loop = MagicMock()
         loop.is_running.return_value = True
 
@@ -3570,8 +3645,6 @@ class TestDeliverResultTimeoutCancelsFuture:
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
-        mock_cfg.filter_silence_narration = False
-
         loop = MagicMock()
         loop.is_running.return_value = True
 
@@ -3631,8 +3704,6 @@ class TestDeliverResultTimeoutCancelsFuture:
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
-        mock_cfg.filter_silence_narration = False
-
         loop = MagicMock()
         loop.is_running.return_value = True
 
@@ -3690,8 +3761,6 @@ class TestDeliverResultTimeoutCancelsFuture:
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
-        mock_cfg.filter_silence_narration = False
-
         loop = MagicMock()
         loop.is_running.return_value = True
 
@@ -3760,8 +3829,6 @@ class TestDeliverResultTimeoutCancelsFuture:
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
-        mock_cfg.filter_silence_narration = False
-
         loop = MagicMock()
         loop.is_running.return_value = True
 
@@ -3826,8 +3893,6 @@ class TestDeliverResultTimeoutCancelsFuture:
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
-        mock_cfg.filter_silence_narration = False
-
         loop = MagicMock()
         loop.is_running.return_value = True
 
@@ -3887,8 +3952,6 @@ class TestDeliverResultTimeoutCancelsFuture:
         pconfig.enabled = True
         mock_cfg = MagicMock()
         mock_cfg.platforms = {Platform.TELEGRAM: pconfig}
-        mock_cfg.filter_silence_narration = False
-
         loop = MagicMock()
         loop.is_running.return_value = True
 
@@ -3972,20 +4035,23 @@ class TestDeliverResultLiveAdapterUnconfirmed:
              patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
              patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro), \
              patch("tools.send_message_tool._send_to_platform", new=standalone_send):
+            observation = {}
             result = _deliver_result(
                 job,
                 "Hello world",
                 adapters={Platform.TELEGRAM: adapter},
                 loop=loop,
+                delivery_observation=observation,
             )
-        return result, standalone_send
+        return result, standalone_send, observation
 
     def test_none_result_falls_through_to_standalone(self):
         """send() returning None must trigger the standalone fallback, not a
         silent "delivered" log."""
-        result, standalone_send = self._run(None)
+        result, standalone_send, observation = self._run(None)
         assert result is None, f"standalone should have delivered, got: {result!r}"
         standalone_send.assert_awaited_once()
+        assert observation["confirmed"] is True
 
     def test_result_missing_success_attr_falls_through(self):
         """A result object with no ``success`` attribute is a contract
@@ -3994,16 +4060,29 @@ class TestDeliverResultLiveAdapterUnconfirmed:
         class _NoSuccess:
             pass
 
-        result, standalone_send = self._run(_NoSuccess())
+        result, standalone_send, observation = self._run(_NoSuccess())
         assert result is None, f"standalone should have delivered, got: {result!r}"
         standalone_send.assert_awaited_once()
+        assert observation["confirmed"] is True
+
+    def test_explicit_not_delivered_dict_falls_through(self):
+        """success=True cannot forge a receipt when delivered is explicitly false."""
+        result, standalone_send, observation = self._run(
+            {"success": True, "delivered": False}
+        )
+        assert result is None, f"standalone should have delivered, got: {result!r}"
+        standalone_send.assert_awaited_once()
+        assert observation["confirmed"] is True
 
     def test_confirmed_success_does_not_fall_through(self):
         """A genuine SendResult(success=True) is confirmed — the standalone
         path must NOT run (no duplicate)."""
-        result, standalone_send = self._run(MagicMock(success=True, raw_response=None))
+        result, standalone_send, observation = self._run(
+            MagicMock(success=True, raw_response=None)
+        )
         assert result is None
         standalone_send.assert_not_awaited()
+        assert observation["confirmed"] is True
 
 
 class TestDeliverOriginUnresolvableIsLocal:
@@ -4025,7 +4104,22 @@ class TestDeliverOriginUnresolvableIsLocal:
 
     def test_origin_with_no_home_channels_returns_none(self, monkeypatch):
         job = {"id": "cli-job", "deliver": "origin", "origin": "cli-session-provenance"}
-        assert self._deliver(job, monkeypatch) is None
+        monkeypatch.setattr(
+            "cron.scheduler._get_home_target_chat_id", lambda *_: ""
+        )
+        observation = {}
+        assert _deliver_result(
+            job,
+            "CLI bulletin",
+            delivery_observation=observation,
+        ) is None
+        assert observation == {
+            "target_count": 0,
+            "attempted": False,
+            "confirmed_target_count": 0,
+            "confirmed": False,
+            "unconfirmed": False,
+        }
 
     def test_omitted_deliver_autodetect_returns_none(self, monkeypatch):
         # deliver key present but None (auto-detect) previously errored with

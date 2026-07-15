@@ -274,6 +274,12 @@ def _get_enabled_plugins() -> Optional[set]:
 
 _VALID_PLUGIN_KINDS: Set[str] = {"standalone", "backend", "exclusive", "platform", "model-provider"}
 
+# Bundled backend plugins are normally auto-loaded by broad discovery.  Strict
+# discovery keeps that surface closed; only backends audited as pure mechanical
+# executors may be named by an isolated allowlist.  ``web/ddgs`` registers one
+# provider object and no tools, hooks, middleware, prompts, or commands.
+_ISOLATED_BUNDLED_BACKEND_KEYS = frozenset({"web/ddgs"})
+
 
 @dataclass
 class PluginManifest:
@@ -1477,9 +1483,21 @@ class PluginManager:
                 continue
 
             if isolated_allowlist is not None:
-                if manifest.source != "bundled" or manifest.kind != "standalone":
+                # Strict discovery may include an explicitly named, audited
+                # bundled backend as well as a standalone observer.  These are
+                # existing mechanical executors behind core tool schemas;
+                # allowing one here does not enumerate user/project/entry-point
+                # code and does not add a model tool.  The caller's exact
+                # allowlist remains the capability and production separately
+                # attests every surface the backend registered before READY.
+                allowed_kind = manifest.kind == "standalone" or (
+                    manifest.kind == "backend"
+                    and lookup_key in _ISOLATED_BUNDLED_BACKEND_KEYS
+                )
+                if manifest.source != "bundled" or not allowed_kind:
                     raise RuntimeError(
-                        "isolated plugin must be a bundled standalone plugin: "
+                        "isolated plugin must be bundled standalone or an audited "
+                        "mechanical backend: "
                         + lookup_key
                     )
                 self._load_plugin(manifest)

@@ -2,7 +2,17 @@
 
 from unittest.mock import MagicMock, patch
 
-from agent.context_compressor import ContextCompressor, SUMMARY_PREFIX
+from agent.context_compressor import (
+    COMPRESSED_SUMMARY_METADATA_KEY,
+    ContextCompressor,
+    SUMMARY_PREFIX,
+    _SUMMARY_END_MARKER,
+)
+from agent.message_provenance import (
+    CONTEXT_COMPACTION_SUMMARY_KIND,
+    MESSAGE_PROVENANCE_KEY,
+    bind_message_fragment,
+)
 
 
 def _compressor() -> ContextCompressor:
@@ -24,9 +34,19 @@ def _response(content: str):
 
 
 def _messages_with_handoff(summary_body: str):
+    handoff = f"{SUMMARY_PREFIX}\n{summary_body}\n\n{_SUMMARY_END_MARKER}"
     return [
         {"role": "system", "content": "system prompt"},
-        {"role": "user", "content": f"{SUMMARY_PREFIX}\n{summary_body}"},
+        {
+            "role": "user",
+            "content": handoff,
+            COMPRESSED_SUMMARY_METADATA_KEY: True,
+            MESSAGE_PROVENANCE_KEY: bind_message_fragment(
+                None,
+                kind=CONTEXT_COMPACTION_SUMMARY_KIND,
+                exact_text=handoff,
+            ),
+        },
         {"role": "assistant", "content": "handoff acknowledged after resume"},
         {"role": "user", "content": "new user turn after resume"},
         {"role": "assistant", "content": "new assistant work after resume"},

@@ -20,10 +20,130 @@ from typing import Iterable, Literal
 
 SKYVISION_GUILD_ID = "1282725267068157972"
 SKYVISION_CONTROL_TOWER_CHANNEL_ID = "1504852355588423801"
+SKYVISION_CHATBOT_WEB_MONITORING_CHANNEL_ID = "1510888721614901358"
 SKYVISION_BACKEND_CHANNEL_ID = "1504852408227069993"
 SKYVISION_FRONTEND_CHANNEL_ID = "1504852444407140402"
 SKYVISION_DEVOPS_CHANNEL_ID = "1504852485083496561"
 SKYVISION_BOOKING_OPS_CHANNEL_ID = "1504852553031221391"
+SKYVISION_BUSINESS_ACCOUNTING_LEGAL_CHANNEL_ID = "1504852628373373028"
+SKYVISION_NASI_AI_OPS_CHANNEL_ID = "1505499746939174993"
+SKYVISION_MARKETING_GROWTH_CHANNEL_ID = "1507239177350283274"
+SKYVISION_SUPPLIERS_CHANNEL_ID = "1507239385010016308"
+
+# Dedicated public target for the isolated synthetic canary only.  It is not a
+# production operational lane and must never be added to the team routing
+# registry.  The canary edge independently proves @everyone visibility.
+SKYVISION_SYNTHETIC_CANARY_PUBLIC_CHANNEL_ID = "1526858760100909066"
+
+# This lane was created during an abandoned public-only cutover design.  The
+# owner has explicitly marked it unused/non-production.  Keep the identifier
+# only so audits can prove that it is not accidentally admitted by the
+# production registry; do not delete the Discord channel automatically.
+SKYVISION_UNUSED_MUNCHO_OPS_PUBLIC_CHANNEL_ID = "1526870121677848636"
+
+
+@dataclass(frozen=True)
+class ApprovedGuildLane:
+    """One owner-approved Discord guild lane.
+
+    Visibility is intentionally absent from this registry.  Existing Discord
+    channel/role ACLs remain authoritative.  The privileged edge proves the
+    current guild, channel type and bot permissions before every operation.
+    """
+
+    key: str
+    channel_id: str
+    channel_name: str
+    aliases: tuple[str, ...] = ()
+    target_type: Literal["guild_channel", "guild_thread"] = "guild_channel"
+    parent_channel_id: str | None = None
+
+
+@dataclass(frozen=True)
+class ApprovedGuildLaneResolution:
+    status: Literal["resolved", "unknown", "ambiguous"]
+    lane: ApprovedGuildLane | None = None
+    candidates: tuple[ApprovedGuildLane, ...] = ()
+
+
+APPROVED_OPERATIONAL_GUILD_LANES: tuple[ApprovedGuildLane, ...] = (
+    ApprovedGuildLane(
+        "control_tower",
+        SKYVISION_CONTROL_TOWER_CHANNEL_ID,
+        "control-tower",
+        ("control tower", "контролна кула"),
+    ),
+    ApprovedGuildLane(
+        "chatbot_web_monitoring",
+        SKYVISION_CHATBOT_WEB_MONITORING_CHANNEL_ID,
+        "chatbot-web-monitoring",
+        ("chatbot web monitoring",),
+    ),
+    ApprovedGuildLane(
+        "backend",
+        SKYVISION_BACKEND_CHANNEL_ID,
+        "backend",
+    ),
+    ApprovedGuildLane(
+        "frontend",
+        SKYVISION_FRONTEND_CHANNEL_ID,
+        "frontend",
+    ),
+    ApprovedGuildLane(
+        "devops",
+        SKYVISION_DEVOPS_CHANNEL_ID,
+        "devops",
+        ("dev ops",),
+    ),
+    ApprovedGuildLane(
+        "booking_ops",
+        SKYVISION_BOOKING_OPS_CHANNEL_ID,
+        "booking-ops",
+        (
+            "booking ops",
+            "call center",
+            "call-center",
+            "колцентър",
+        ),
+    ),
+    ApprovedGuildLane(
+        "business_accounting_legal",
+        SKYVISION_BUSINESS_ACCOUNTING_LEGAL_CHANNEL_ID,
+        "business-accounting-legal",
+        ("business accounting legal",),
+    ),
+    ApprovedGuildLane(
+        "nasi_ai_ops",
+        SKYVISION_NASI_AI_OPS_CHANNEL_ID,
+        "nasi-ai-ops",
+        ("nasi ai ops",),
+    ),
+    ApprovedGuildLane(
+        "marketing_growth",
+        SKYVISION_MARKETING_GROWTH_CHANNEL_ID,
+        "marketing-growth",
+        ("marketing growth",),
+    ),
+    ApprovedGuildLane(
+        "suppliers",
+        SKYVISION_SUPPLIERS_CHANNEL_ID,
+        "suppliers",
+    ),
+)
+APPROVED_OPERATIONAL_GUILD_LANES_BY_KEY = {
+    lane.key: lane for lane in APPROVED_OPERATIONAL_GUILD_LANES
+}
+APPROVED_OPERATIONAL_GUILD_LANES_BY_CHANNEL_ID = {
+    lane.channel_id: lane for lane in APPROVED_OPERATIONAL_GUILD_LANES
+}
+SKYVISION_APPROVED_OPERATIONAL_CHANNEL_IDS = frozenset(
+    APPROVED_OPERATIONAL_GUILD_LANES_BY_CHANNEL_ID
+)
+# Compatibility name used only by the isolated synthetic canary to prove that
+# production operational lanes cannot be substituted for its dedicated public
+# fixture channel.  These IDs are approved in production; they are not
+# globally "locked" or forbidden.
+SKYVISION_LOCKED_NONPUBLIC_CHANNEL_IDS = SKYVISION_APPROVED_OPERATIONAL_CHANNEL_IDS
 
 
 @dataclass(frozen=True)
@@ -130,6 +250,106 @@ def _normalize(value: str) -> str:
     return re.sub(r"\s+", " ", text).strip()
 
 
+def normalize_team_member_alias(value: str) -> str:
+    """Return the mechanical exact-match representation used by projections."""
+
+    return _normalize(value)
+
+
+def _approved_lane_alias_entries() -> tuple[tuple[str, ApprovedGuildLane], ...]:
+    entries: list[tuple[str, ApprovedGuildLane]] = []
+    for lane in APPROVED_OPERATIONAL_GUILD_LANES:
+        for value in (
+            lane.key,
+            lane.channel_id,
+            lane.channel_name,
+            f"#{lane.channel_name}",
+            *lane.aliases,
+        ):
+            normalized = _normalize(value)
+            if normalized:
+                entries.append((normalized, lane))
+    return tuple(entries)
+
+
+APPROVED_LANE_ALIAS_ENTRIES = _approved_lane_alias_entries()
+STATIC_ALIAS_CHANNEL_IDS = {
+    alias: lane.channel_id for alias, lane in APPROVED_LANE_ALIAS_ENTRIES
+}
+
+
+def _canonical_channel_aliases() -> dict[str, dict[str, str]]:
+    """Load only the privileged Canonical channel-alias projection."""
+
+    try:
+        from gateway.support_ops_alias_projection import (
+            AliasProjectionError,
+            load_channel_alias_projection,
+        )
+
+        return load_channel_alias_projection(
+            _canonical_alias_projection_path(),
+            normalize_alias=normalize_team_member_alias,
+            valid_member_keys=TEAM_MEMBERS_BY_KEY,
+            static_alias_member_keys=STATIC_ALIAS_MEMBER_KEYS,
+            expected_channel_guild_id=SKYVISION_GUILD_ID,
+            static_channel_alias_ids=STATIC_ALIAS_CHANNEL_IDS,
+        )
+    except FileNotFoundError:
+        return {}
+    except (AliasProjectionError, OSError):
+        return {}
+
+
+def resolve_approved_guild_lane(value: str) -> ApprovedGuildLaneResolution:
+    """Resolve one exact model-authored lane key/alias/ID.
+
+    There is deliberately no substring, token, keyword or prose matching.  A
+    model-authored structured lane must normalize to an entire registered
+    identity; otherwise Hermes asks the requester to clarify.
+    """
+
+    normalized = _normalize(value)
+    if not normalized:
+        return ApprovedGuildLaneResolution("unknown")
+    matches = {
+        lane.channel_id: lane
+        for alias, lane in APPROVED_LANE_ALIAS_ENTRIES
+        if alias == normalized
+    }
+    candidates = tuple(
+        sorted(matches.values(), key=lambda lane: (lane.channel_name, lane.channel_id))
+    )
+    if len(candidates) == 1:
+        return ApprovedGuildLaneResolution("resolved", lane=candidates[0])
+    if candidates:
+        return ApprovedGuildLaneResolution("ambiguous", candidates=candidates)
+    learned = _canonical_channel_aliases().get(normalized)
+    if learned is not None:
+        return ApprovedGuildLaneResolution(
+            "resolved",
+            lane=ApprovedGuildLane(
+                key=f"canonical:{learned['channel_id']}",
+                channel_id=learned["channel_id"],
+                channel_name=normalized,
+                aliases=(normalized,),
+                target_type=learned["target_type"],
+                parent_channel_id=learned.get("parent_channel_id"),
+            ),
+        )
+    return ApprovedGuildLaneResolution("unknown")
+
+
+def approved_guild_lane_for_channel_id(
+    channel_id: str,
+) -> ApprovedGuildLane | None:
+    """Return the exact approved root lane for a numeric channel ID."""
+
+    return APPROVED_OPERATIONAL_GUILD_LANES_BY_CHANNEL_ID.get(
+        str(channel_id or "").strip()
+    )
+
+
 def _alias_entries() -> list[tuple[str, TeamMember]]:
     entries: list[tuple[str, TeamMember]] = []
     for member in TEAM_MEMBERS:
@@ -142,6 +362,9 @@ def _alias_entries() -> list[tuple[str, TeamMember]]:
 
 
 ALIAS_ENTRIES = _alias_entries()
+STATIC_ALIAS_MEMBER_KEYS = {
+    alias: member.key for alias, member in ALIAS_ENTRIES
+}
 
 
 def _learned_alias_path() -> pathlib.Path:
@@ -154,8 +377,16 @@ def _learned_alias_path() -> pathlib.Path:
     return root / "state" / "team-member-aliases.json"
 
 
-def _load_learned_aliases(path: pathlib.Path | None = None) -> dict[str, str]:
-    target = path or _learned_alias_path()
+def _canonical_alias_projection_path() -> pathlib.Path:
+    from gateway.support_ops_alias_projection import (
+        DEFAULT_PUBLIC_ALIAS_PROJECTION_PATH,
+    )
+
+    return DEFAULT_PUBLIC_ALIAS_PROJECTION_PATH
+
+
+def _load_legacy_learned_aliases(path: pathlib.Path) -> dict[str, str]:
+    target = pathlib.Path(path)
     try:
         raw = json.loads(target.read_text(encoding="utf-8"))
     except (FileNotFoundError, OSError, json.JSONDecodeError):
@@ -168,6 +399,51 @@ def _load_learned_aliases(path: pathlib.Path | None = None) -> dict[str, str]:
         for alias, member_key in aliases.items()
         if _normalize(alias) and str(member_key).strip() in TEAM_MEMBERS_BY_KEY
     }
+
+
+def _load_learned_aliases(path: pathlib.Path | None = None) -> dict[str, str]:
+    """Load the Canonical person projection, with a development-only fallback.
+
+    An explicitly supplied path is always the legacy derived cache used by the
+    verified writer append path and tests.  Normal resolution first consumes
+    the isolated projector's minimal public document.  A present but invalid
+    Canonical projection fails closed instead of falling back to stale local
+    state.
+    """
+
+    if path is not None:
+        return _load_legacy_learned_aliases(pathlib.Path(path))
+    projection_path = _canonical_alias_projection_path()
+    try:
+        from gateway.support_ops_alias_projection import (
+            AliasProjectionError,
+            load_alias_projection,
+        )
+
+        return load_alias_projection(
+            projection_path,
+            normalize_alias=normalize_team_member_alias,
+            valid_member_keys=TEAM_MEMBERS_BY_KEY,
+            static_alias_member_keys=STATIC_ALIAS_MEMBER_KEYS,
+            expected_channel_guild_id=SKYVISION_GUILD_ID,
+            static_channel_alias_ids=STATIC_ALIAS_CHANNEL_IDS,
+        )
+    except FileNotFoundError:
+        # A production writer boundary makes the Canonical public projection
+        # the only normal authority. The mutable legacy file remains available
+        # only through an explicitly supplied path for migration/import/tests.
+        try:
+            from gateway.canonical_writer_boundary import (
+                writer_boundary_policy_required,
+            )
+
+            if writer_boundary_policy_required():
+                return {}
+        except Exception:
+            return {}
+        return _load_legacy_learned_aliases(_learned_alias_path())
+    except (AliasProjectionError, OSError):
+        return {}
 
 
 def learn_team_member_alias(

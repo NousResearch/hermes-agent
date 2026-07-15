@@ -45,6 +45,13 @@ from gateway.discord_edge_runtime import (
     DiscordMutationAccepted,
     DiscordMutationReadback,
 )
+from gateway.systemd_credentials import (
+    DISCORD_EDGE_UNIT,
+    DISCORD_TOKEN_CREDENTIAL,
+    SystemdCredentialError,
+    is_expected_systemd_credential,
+    read_systemd_credential,
+)
 
 _DISCORD_API_V10 = "https://discord.com/api/v10"
 _USER_AGENT = "Muncho-Privileged-Discord-Edge/1"
@@ -85,9 +92,7 @@ _GUILD_FORUM = 15
 _PUBLIC_MESSAGE_CHANNEL_TYPES = frozenset(
     {
         _GUILD_TEXT,
-        _GUILD_VOICE,
         _GUILD_ANNOUNCEMENT,
-        _GUILD_STAGE_VOICE,
     }
 )
 _PUBLIC_THREAD_TYPES = frozenset({_ANNOUNCEMENT_THREAD, _PUBLIC_THREAD})
@@ -95,6 +100,19 @@ _PUBLIC_THREAD_PARENT_TYPES = frozenset(
     {_GUILD_TEXT, _GUILD_ANNOUNCEMENT, _GUILD_FORUM}
 )
 _FORBIDDEN_CHANNEL_TYPES = frozenset({_DM, _GROUP_DM, _PRIVATE_THREAD})
+_GUILD_CHANNEL_TARGET_TYPES = frozenset({
+    DiscordPublicTargetType.PUBLIC_GUILD_CHANNEL,
+    DiscordPublicTargetType.GUILD_CHANNEL,
+})
+_GUILD_THREAD_TARGET_TYPES = frozenset({
+    DiscordPublicTargetType.PUBLIC_GUILD_THREAD,
+    DiscordPublicTargetType.GUILD_THREAD,
+})
+_PUBLIC_VISIBILITY_TARGET_TYPES = frozenset({
+    DiscordPublicTargetType.PUBLIC_GUILD_CHANNEL,
+    DiscordPublicTargetType.PUBLIC_GUILD_THREAD,
+    DiscordPublicTargetType.PUBLIC_GUILD_FORUM,
+})
 _SAFE_ALLOWED_MENTIONS: Mapping[str, object] = {
     "parse": [],
     "roles": [],
@@ -204,13 +222,13 @@ def _credential_identity(file_stat: os.stat_result) -> tuple[int, ...]:
     )
 
 
-def _load_bot_token(
+def _load_legacy_bot_token(
     credential_path: str | os.PathLike[str],
     *,
     credentials_directory: str | os.PathLike[str],
     expected_owner_uid: int,
 ) -> _DiscordBotToken:
-    """Load one explicit systemd/root credential through a TOCTOU-safe read."""
+    """Load one arbitrary fixed credential through the legacy strict path."""
 
     if (
         isinstance(expected_owner_uid, bool)
@@ -313,6 +331,63 @@ def _load_bot_token(
         invalid_encoding = True
         token = ""
     if invalid_encoding:
+        _fail(
+            DiscordRestEdgeErrorCode.CREDENTIAL_INVALID,
+            "Discord credential is not valid ASCII",
+        )
+    if not _TOKEN_RE.fullmatch(token):
+        _fail(
+            DiscordRestEdgeErrorCode.CREDENTIAL_INVALID,
+            "Discord credential has an invalid bounded format",
+        )
+    return _DiscordBotToken(token)
+
+
+def _load_bot_token(
+    credential_path: str | os.PathLike[str],
+    *,
+    credentials_directory: str | os.PathLike[str],
+    expected_owner_uid: int,
+) -> _DiscordBotToken:
+    """Load one exact systemd credential or one strict legacy fixed file."""
+
+    path = _normalized_absolute_path(credential_path, "credential path")
+    directory = _normalized_absolute_path(
+        credentials_directory,
+        "credentials directory",
+    )
+    try:
+        systemd_bound = is_expected_systemd_credential(
+            path,
+            unit=DISCORD_EDGE_UNIT,
+            name=DISCORD_TOKEN_CREDENTIAL,
+        )
+        if systemd_bound:
+            body = read_systemd_credential(
+                path,
+                unit=DISCORD_EDGE_UNIT,
+                name=DISCORD_TOKEN_CREDENTIAL,
+                service_uid=expected_owner_uid,
+                maximum=_MAX_CREDENTIAL_BYTES,
+                credentials_directory=directory,
+            )
+        else:
+            return _load_legacy_bot_token(
+                path,
+                credentials_directory=directory,
+                expected_owner_uid=expected_owner_uid,
+            )
+    except SystemdCredentialError as exc:
+        raise DiscordRestEdgeError(
+            DiscordRestEdgeErrorCode.CREDENTIAL_INVALID,
+            "Discord systemd credential provenance is invalid",
+        ) from exc
+
+    if body.endswith(b"\n"):
+        body = body[:-1]
+    try:
+        token = body.decode("ascii", errors="strict")
+    except UnicodeDecodeError:
         _fail(
             DiscordRestEdgeErrorCode.CREDENTIAL_INVALID,
             "Discord credential is not valid ASCII",
@@ -1002,13 +1077,28 @@ class DiscordRestEdgeAdapter:
         api: _DiscordApiV10,
         *,
         clock_ms: Callable[[], int] = lambda: int(time.time() * 1000),
+        target_policy: str = "public_only",
     ) -> None:
         if not isinstance(api, _DiscordApiV10):
             raise TypeError("api must be the private Discord API v10 client")
         if not callable(clock_ms):
             raise TypeError("clock_ms must be callable")
+        if target_policy not in {"public_only", "guild_acl"}:
+            raise ValueError("Discord edge target policy is invalid")
         self._api = api
         self._clock_ms = clock_ms
+        self.target_policy = target_policy
+
+    @property
+    def allowed_target_types(self) -> tuple[str, ...]:
+        if self.target_policy == "public_only":
+            values = _PUBLIC_VISIBILITY_TARGET_TYPES
+        else:
+            values = {
+                DiscordPublicTargetType.GUILD_CHANNEL,
+                DiscordPublicTargetType.GUILD_THREAD,
+            }
+        return tuple(sorted(item.value for item in values))
 
     def close(self) -> None:
         close = getattr(self._api._opener, "close", None)
@@ -1026,6 +1116,7 @@ class DiscordRestEdgeAdapter:
         _opener: _OpenerLike | None = None,
         _sleeper: Callable[[float], None] = time.sleep,
         _clock_ms: Callable[[], int] = lambda: int(time.time() * 1000),
+        target_policy: str = "public_only",
     ) -> DiscordRestEdgeAdapter:
         """Construct from one explicit, strictly checked credential file."""
 
@@ -1042,6 +1133,7 @@ class DiscordRestEdgeAdapter:
                 sleeper=_sleeper,
             ),
             clock_ms=_clock_ms,
+            target_policy=target_policy,
         )
 
     @staticmethod
@@ -1067,7 +1159,7 @@ class DiscordRestEdgeAdapter:
                 DiscordRestEdgeErrorCode.TARGET_NOT_PUBLIC,
                 "Discord DMs and private threads are forbidden",
             )
-        if target.target_type is DiscordPublicTargetType.PUBLIC_GUILD_CHANNEL:
+        if target.target_type in _GUILD_CHANNEL_TARGET_TYPES:
             allowed = _PUBLIC_MESSAGE_CHANNEL_TYPES
         elif target.target_type is DiscordPublicTargetType.PUBLIC_GUILD_FORUM:
             allowed = frozenset({_GUILD_FORUM})
@@ -1079,7 +1171,7 @@ class DiscordRestEdgeAdapter:
                 "Discord channel type does not match the authorized public target",
             )
         raw_parent = channel.get("parent_id")
-        if target.target_type is DiscordPublicTargetType.PUBLIC_GUILD_THREAD:
+        if target.target_type in _GUILD_THREAD_TARGET_TYPES:
             parent_id = _snowflake(raw_parent, "channel.parent_id")
             if parent_id != target.parent_channel_id:
                 _fail(
@@ -1186,6 +1278,28 @@ class DiscordRestEdgeAdapter:
     ) -> _TargetContext:
         if not isinstance(target, DiscordPublicTarget):
             raise TypeError("target must be DiscordPublicTarget")
+        if self.target_policy == "public_only":
+            if target.target_type not in _PUBLIC_VISIBILITY_TARGET_TYPES:
+                _fail(
+                    DiscordRestEdgeErrorCode.TARGET_MISMATCH,
+                    "Discord canary edge accepts only public target types",
+                )
+        elif target.target_type not in {
+            DiscordPublicTargetType.GUILD_CHANNEL,
+            DiscordPublicTargetType.GUILD_THREAD,
+        }:
+            _fail(
+                DiscordRestEdgeErrorCode.TARGET_MISMATCH,
+                "Discord production edge accepts only guild-ACL target types",
+            )
+        if self.target_policy == "guild_acl":
+            from gateway.support_ops_team_registry import SKYVISION_GUILD_ID
+
+            if target.guild_id != SKYVISION_GUILD_ID:
+                _fail(
+                    DiscordRestEdgeErrorCode.TARGET_MISMATCH,
+                    "Discord production target is outside the approved guild",
+                )
 
         def remaining_timeout() -> float | None:
             if deadline_unix_ms is None:
@@ -1281,7 +1395,7 @@ class DiscordRestEdgeAdapter:
         )
         channel_type = self._validate_channel_binding(target, target_channel)
         permission_channel = target_channel
-        if target.target_type is DiscordPublicTargetType.PUBLIC_GUILD_THREAD:
+        if target.target_type in _GUILD_THREAD_TARGET_TYPES:
             assert target.parent_channel_id is not None
             permission_channel = self._api.channel(
                 target.parent_channel_id,
@@ -1346,7 +1460,7 @@ class DiscordRestEdgeAdapter:
         if operation is DiscordEdgeOperation.PUBLIC_MESSAGE_EDIT:
             return base
         if operation is DiscordEdgeOperation.PUBLIC_MESSAGE_SEND:
-            if target.target_type is DiscordPublicTargetType.PUBLIC_GUILD_THREAD:
+            if target.target_type in _GUILD_THREAD_TARGET_TYPES:
                 return base | _SEND_MESSAGES_IN_THREADS
             return base | _SEND_MESSAGES
         if channel_type == _GUILD_FORUM:
@@ -1391,7 +1505,7 @@ class DiscordRestEdgeAdapter:
             has_required = False
         if (
             operation is DiscordEdgeOperation.PUBLIC_MESSAGE_SEND
-            and target.target_type is DiscordPublicTargetType.PUBLIC_GUILD_THREAD
+            and target.target_type in _GUILD_THREAD_TARGET_TYPES
         ):
             metadata = context.target_channel.get("thread_metadata")
             if not isinstance(metadata, dict):
@@ -1524,7 +1638,10 @@ class DiscordRestEdgeAdapter:
             deadline_unix_ms=deadline_unix_ms,
             has_initial_message=has_initial_message,
         )
-        if not proof.publicly_viewable:
+        if (
+            target.target_type in _PUBLIC_VISIBILITY_TARGET_TYPES
+            and not proof.publicly_viewable
+        ):
             _fail(
                 DiscordRestEdgeErrorCode.TARGET_NOT_PUBLIC,
                 "Discord target is not currently visible to @everyone",
@@ -1556,10 +1673,13 @@ class DiscordRestEdgeAdapter:
         *,
         require_message_history: bool = True,
     ) -> str:
-        """Require current public visibility and only the permissions needed to read."""
+        """Require policy visibility and the permissions needed to read."""
 
         context = self._target_context(target)
-        if not context.everyone_permissions & _VIEW_CHANNEL:
+        if (
+            target.target_type in _PUBLIC_VISIBILITY_TARGET_TYPES
+            and not context.everyone_permissions & _VIEW_CHANNEL
+        ):
             _fail(
                 DiscordRestEdgeErrorCode.TARGET_NOT_PUBLIC,
                 "Discord target is not currently visible to @everyone",
@@ -1844,7 +1964,7 @@ class DiscordRestEdgeAdapter:
     ) -> DiscordMutationAccepted:
         if (
             target.target_type
-            is DiscordPublicTargetType.PUBLIC_GUILD_CHANNEL
+            in _GUILD_CHANNEL_TARGET_TYPES
             and initial_message
         ):
             _fail(
@@ -1907,7 +2027,11 @@ class DiscordRestEdgeAdapter:
                     "Discord forum starter message is not bound to the thread id",
                 )
             thread_target = DiscordPublicTarget(
-                DiscordPublicTargetType.PUBLIC_GUILD_THREAD,
+                (
+                    DiscordPublicTargetType.PUBLIC_GUILD_THREAD
+                    if target.target_type in _PUBLIC_VISIBILITY_TARGET_TYPES
+                    else DiscordPublicTargetType.GUILD_THREAD
+                ),
                 target.guild_id,
                 thread_id,
                 target.channel_id,
@@ -1981,7 +2105,11 @@ class DiscordRestEdgeAdapter:
         thread_id = _snowflake(thread_id, "thread_id")
         thread = self._api.channel(thread_id)
         thread_target = DiscordPublicTarget(
-            DiscordPublicTargetType.PUBLIC_GUILD_THREAD,
+            (
+                DiscordPublicTargetType.PUBLIC_GUILD_THREAD
+                if target.target_type in _PUBLIC_VISIBILITY_TARGET_TYPES
+                else DiscordPublicTargetType.GUILD_THREAD
+            ),
             target.guild_id,
             thread_id,
             target.channel_id,

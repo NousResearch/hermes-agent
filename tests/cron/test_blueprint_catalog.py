@@ -118,7 +118,7 @@ class TestValidation:
         assert "full task context" in spec["prompt"]
         assert "auxiliary classifier" in spec["prompt"]
         assert "classify_items" not in spec["prompt"]
-        assert "exactly [SILENT]" in spec["prompt"]
+        assert "delivery_outcome action=suppress" in spec["prompt"]
 
     def test_origin_threads_through(self):
         spec = fill_blueprint(

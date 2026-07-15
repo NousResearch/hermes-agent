@@ -19,7 +19,7 @@ GPT/Hermes alone owns:
 - choosing which available tool or skill to use;
 - deciding whether live DB, Bitrix, browser, file, or channel evidence is
   needed;
-- choosing a model-authored `high` to `xhigh` effort escalation;
+- choosing a model-authored `high` to `max` effort escalation;
 - deciding that an ambiguity must be explained to the user;
 - deciding the content of a handoff and its explicitly selected recipient.
 
@@ -49,8 +49,11 @@ Required first-wave capabilities:
    verifications, handoffs, and exact-plan approval receipts.
 2. `clarify` so unresolved people, channels, and intentions are explained and
    learned after the owner's answer.
-3. `file` and `terminal` for the reviewed Cloud workspaces. Read-only work is
-   not approval-gated merely because it is operational.
+3. `file` and `terminal` through the isolated-worker AF_UNIX boundary. Each
+   worker session receives an ephemeral `/workspace` tmpfs lease with no host
+   filesystem projection. Read-only operational work is not approval-gated
+   merely because it is operational, but host access must arrive through a
+   separately reviewed edge rather than an implicit bind.
 4. `browser` and `web` for public or separately authenticated Cloud browser
    work.
 5. `skills` and `session_search` for existing operational procedures and
@@ -59,9 +62,16 @@ Required first-wave capabilities:
    of truth for cases, plans, handoffs, approvals, and route-back outcomes.
 7. `delegation` only when GPT explicitly authors the delegation. No auxiliary
    decomposer or dispatcher may manufacture or assign subtasks.
-8. Public Discord channel/thread delivery through the privileged egress
-   boundary. The gateway never receives the Discord token and a DM target is
-   rejected before dispatch.
+8. `mac_ops` as a service-gated, read-only handoff for explicitly selected
+   Mac files, CLI state, code, or an authenticated local browser. GPT authors
+   the complete task contract; the edge validates and carries it without
+   interpreting its meaning.
+9. Public Discord traffic through two separately sealed privileged leases with
+   disjoint mechanical operation classes. The connector owns ordinary public
+   ingress/session replies over the Discord Gateway websocket; the signed
+   egress owns Canonical `route_back` over REST only. The Hermes gateway owns
+   neither token, and both boundaries reject DM/private/unallowlisted targets
+   before dispatch.
 
 The first production-shaped canary excludes `kanban` from the model toolset and
 requires all of the following even if upstream defaults change:
@@ -81,12 +91,17 @@ working capability.
 
 ## Files and terminal
 
-The canary runs as a distinct identity against a disposable copy or an exact
-read-only bind of representative workspaces. It proves:
+The gateway never runs a local shell and never receives Docker or container
+root authority. It connects as an exact client-group identity to
+`muncho-isolated-worker.socket`; the distinct worker identity executes inside
+a systemd-owned tmpfs and bubblewrap boundary. There are no `/srv/skyvision`,
+`/srv/adventico`, source-tree, home-directory, or other host binds. It proves:
 
-- read, search, git inspection, and test execution without owner prompts;
-- writes only inside an explicitly writable canary root;
+- read, write, search, and test execution inside one ephemeral `/workspace`;
+- no host workspace is required, hashed, mounted, or claimed as evidence;
+- the lease disappears across worker restart and cleanup proves it is empty;
 - no read access to Discord, database, browser-session, or provider secrets;
+- no network access from terminal execution;
 - no environment-variable passthrough beyond an exact allowlist;
 - exact-plan command capabilities bypass repeated prompts only for the
   approved command hashes, session epoch, owner identity, TTL, and use count;
@@ -94,11 +109,60 @@ read-only bind of representative workspaces. It proves:
 - a failed approach is reported to GPT as tool evidence so GPT can choose a
   different safe approach instead of the runtime declaring the task complete.
 
-Access to files on the owner's personal computer is a separate local-edge
-gate. Cloud filesystem authority does not imply Mac filesystem authority. A
-future local bridge must expose explicit roots and operations, keep secrets
-out of Cloud, and execute only an exact GPT-authored handoff or owner-approved
-mutation.
+Access to files on the owner's personal computer remains a separate local-edge
+gate; Cloud filesystem authority does not imply Mac filesystem authority. The
+first-wave read-only bridge is now packaged as the service-gated `mac_ops`
+toolset, a credential-free gateway client, a privileged GitLab transport, and
+a protected local-worker skill. GPT selects an explicit read-only class and
+authors the full handoff contract. Deterministic code validates its exact
+shape, deadline, idempotency key, peer identity, and receipts without reading
+task prose. The GitLab token remains in the privileged edge, while the Mac
+worker retains its local/browser credentials and returns bounded evidence
+through the confidential issue. An open issue is not success: GPT must read
+the returned evidence and decide how to continue. General Mac filesystem
+access and every Mac mutation remain disabled until a separately approved,
+root-bounded, receipt-backed protocol is installed.
+
+## Discord credential topology
+
+The release intentionally uses two separate, sealed Discord credential leases;
+it does not claim a single token holder:
+
+- `muncho-discord-connector.service` is the only Discord Gateway websocket
+  consumer. It handles ordinary allowlisted public ingress and session replies
+  through the credential-free local Relay socket.
+- `muncho-discord-egress.service` accepts no inbound gateway session and opens
+  no Discord Gateway websocket. It performs only signed Canonical `route_back`
+  sends through Discord REST and returns the receipt required before
+  `route_back.sent` can be appended.
+- `hermes-cloud-gateway.service` has neither lease, no direct Discord adapter,
+  and no readable Discord credential path.
+
+The leases, service identities, journals, idempotency namespaces, and operation
+classes are distinct. Cleanup evidence must name and retire both leases; a
+canary fails if either privileged service crosses into the other's operation
+class, if both attempt to consume the Discord Gateway websocket, or if the
+Hermes gateway can read either credential.
+
+For this boundary, `public` means a guild channel or public thread whose live
+Discord permission calculation grants `VIEW_CHANNEL` to `@everyone`; merely
+being a non-DM guild channel is insufficient. Locked team channels therefore
+remain ineligible even when a canary bot role can see them. The canary uses a
+dedicated publicly visible channel containing synthetic, non-sensitive test
+content, re-proves both public visibility and the bot's operation-specific
+permissions immediately before send/readback, and keeps every other channel
+outside the exact allowlist.
+
+The reviewed staging binding is exact: guild `1282725267068157972`, public
+channel `1526858760100909066`, production bot `1501976597455044801`, connector
+bot `1526849374007853086`, and route-back bot `1526850127921283222`. The three
+bot identities must remain pairwise distinct and be re-attested from their live
+Discord transports. The known private lanes `1504852355588423801`
+(`control-tower`), `1504852408227069993` (`backend`),
+`1504852444407140402` (`frontend`), `1504852485083496561` (`devops`),
+`1504852553031221391` (`booking-ops`), and `1505499746939174993`
+(`nasi-ai-ops`) are explicitly ineligible even if a bot-specific role can view
+them.
 
 ## Database and business systems
 
@@ -114,13 +178,17 @@ Database and business-system access stays at the edge:
 - Canonical Brain receives the intent, approval, outcome, and evidence refs,
   not raw credentials or customer secrets.
 
-Bitrix currently depends on a separately authenticated browser session. The
-Cloud browser must not pretend that it owns that session. GPT may explicitly
-author a handoff to the pinned local browser worker; deterministic delivery
-may send that exact handoff to the selected worker, but may not select the
-worker from keywords. The local worker returns evidence and the originating
-GPT/Hermes instance decides the next step. Bitrix mutations remain separately
-approved and receipt-backed.
+The canary uses the real, explicitly selected Bitrix operational edge. Its
+webhook is a short-lived root-installed credential projected only into
+`muncho-operational-edge-bitrix.service`; the gateway, browser, worker, and
+other edges cannot read it. The business-edge producer performs two signed
+`bitrix.crm.status_list` reads with the exact `{"entity_id":"STATUS"}`
+arguments and proves stable normalized equality while excluding only
+`generated_at_utc`. The Canonical Writer separately invokes the schema-valid
+`bitrix.crm.lead_add` dry-run without a mutation capability and requires the
+signed pre-dispatch denial. Thus a read signer cannot attest the mutation
+denial, and no executable or Bitrix mutation starts. Real Bitrix mutations
+remain separately approved, idempotent, and receipt-backed.
 
 ## Cron and unattended work
 
@@ -141,13 +209,137 @@ No cron job may invoke the retired Kanban semantic decomposer. Unattended
 dangerous mutations remain denied unless a separate standing approval contract
 is explicitly reviewed and installed.
 
+## Packaged lifecycle
+
+The release contains one fixed, disabled lifecycle. It never enables a unit,
+creates Cloud resources, discovers a target from prose, or interprets a task.
+It accepts only the sealed full-canary plan, the exact capability plan, and two
+fresh owner approvals. A wrong, expired, replayed, or drifted approval reaches
+no filesystem or service mutation.
+
+The capability plan binds all six external leases by exact owner and target:
+
+1. API control key — full-canary coordinator owned.
+2. Bitrix operational-edge webhook — Bitrix edge owned and projected through
+   systemd credentials only.
+3. Canonical Discord route-back token — signed egress owned.
+4. Public Discord session token — public connector owned.
+5. Mac operations GitLab lease — Mac edge owned.
+6. Access-token-only OpenAI Codex lease — gateway owned, with no refresh token.
+
+The Bitrix receipt-signing private key is deliberately outside those six
+leases. It is created by a pre-plan, owner-bound bootstrap with no capability
+plan digest dependency, while its public key ID and bootstrap receipt are
+inputs to the final plan. The private key must be retired after services stop
+and its final absence is independently evidenced; neither its content nor a
+private-key digest may enter a plan or receipt.
+
+The gateway reads its leased Codex auth store through a read-only bind. The
+connector, Mac edge, browser, and signed route-back edge are explicitly blind
+to that file. The gateway is explicitly blind to both Discord credentials and
+the Mac credential. The connector token file is connector-owned `0400`; no
+secret value or secret digest appears in a plan, journal, or lifecycle receipt.
+
+Start order is exact and bounded to 900 seconds:
+
+1. Phase-B root readiness.
+2. Signed Canonical Discord route-back egress.
+3. Public Discord connector, after real Discord Gateway readiness and local
+   socket readiness are attested.
+4. Mac operations edge.
+5. Isolated-worker socket.
+6. Isolated-worker service, with the exact systemd 252 tmpfs contract.
+7. Dedicated browser-controller AF_UNIX service. Only this identity can see
+   the release-local Node, agent-browser, and Chromium executables.
+8. Canonical Writer.
+9. Bitrix operational edge.
+10. Business-edge receipt producer.
+11. Canonical-Writer receipt producer.
+12. Discord-edge receipt producer.
+13. Gateway-observer receipt producer.
+14. Normal Hermes gateway with exactly API Server plus the credential-free
+   public Discord Relay connected.
+
+Stop is deliberately phased, including after a partial start failure. The
+gateway and every non-observer service/producer stop first. The still-isolated
+gateway-observer producer can then sign only what it has actually observed:
+the durable connector journal has no `dispatching`/`uncertain` send, all six
+install-bound external leases and the internal Bitrix receipt key pair are
+retired, byte-identical overlays are removed, and the sealed full-canary
+gateway unit is restored. After that receipt is durably published, the
+observer producer itself stops, the per-run producer activation is retired,
+and a digest-bound root finalization proves total stopped state and activation
+absence to the offline verifier. No receipt claims that its own signer was
+already stopped. Cleanup is also scheduled independently against the earliest
+lease/bootstrap expiry so an owner disconnect or failed live driver cannot
+leave credentials behind.
+
+The trusted owner launcher exposes only these fixed packaged actions:
+
+```text
+contract
+storage-preflight
+bootstrap-bitrix-foundation
+bootstrap-producer-foundation
+publish-plan
+preflight-stopped
+install-approval
+provision-api-control
+provision-bitrix-operational-edge
+provision-discord-routeback
+provision-codex
+provision-mac-ops
+provision-discord-connector
+publish-live-fixture
+start
+preflight-live
+run-live
+run-live-observed
+stop
+retire-secrets
+```
+
+Opaque credentials enter through protected owner files or inherited stdin,
+never argv or environment variables. `install-approval` first binds a fresh
+five-minute owner approval to the stopped preflight's timestamp-independent
+state digest, records the exact observed report in the install receipt, and
+consumes its nonce once; the approval is never accepted from argv or
+environment.
+`storage-preflight` runs before packaging with the host Python, performs no
+cleanup, and returns an identity-bound list of managed stale-release
+candidates. Packaging remains blocked below 8 GiB free. The target release and
+the newest rollback release are always protected; deleting any listed path
+still requires a fresh owner-approved mutation, and arbitrary paths are never
+eligible.
+`start` consumes that root-owned exact capability approval and the existing
+full-canary approval from their fixed paths. `stop` needs no semantic approval:
+it is the fail-safe transition back to the proved stopped foundation.
+
+`run-live-observed` is the owner-side production-observation gate. It starts
+the packaged `run-live` command, waits for the exact immutable before/after
+markers, collects and owner-signs the pinned read-only production observations,
+and stages them through the fixed remote runtime actions. It succeeds only when
+the live evidence binds the staged before observation and the published
+no-change diff. The marker-wait and observation-staging actions are internal
+transport operations, not independent owner CLI choices.
+
+The canary keeps the normal Hermes agent loop, memory, and context behavior,
+but extension discovery is independently fail-closed. Only the sealed
+`muncho_canary_evidence` observer may load, with exactly five observer hooks.
+Plugin middleware, plugin-provided tools/commands/skills/platforms/auxiliary
+tasks/context engines, shell hooks, gateway event hooks, MCP auto-discovery,
+and the auxiliary goal judge/goal continuation loop are absent. This prevents
+an extension from rewriting or dropping inbound text, model messages, tool
+arguments, approval decisions, continuation prompts, or the final response.
+
 ## Canary scenarios
 
 The production-shaped canary must complete all scenarios through the normal
 gateway/model loop, not by calling the implementation functions directly:
 
-1. Inspect two workspaces, compare live git/runtime facts, and produce a
-   verified answer without an approval prompt.
+1. Complete a multi-step read/write/test task inside the ephemeral worker
+   lease, produce verified evidence without an approval prompt, and prove no
+   host workspace was projected.
 2. Diagnose a deliberately missing fact, obtain it through a second available
    read path, and continue rather than stopping at the first blocker.
 3. Execute a sustained multi-step task with a model-authored Canonical Task
@@ -155,7 +347,7 @@ gateway/model loop, not by calling the implementation functions directly:
    without replaying completed mutations.
 4. Give GPT a genuinely difficult multi-step objective without mentioning an
    effort level, reasoning control, or a required `todo` call. Prove GPT itself
-   requests `xhigh` through the existing `todo.reasoning` field and that the
+   requests `max` through the existing `todo.reasoning` field and that the
    later same-turn Codex request uses it. No task-text classifier participates.
 5. Present one exact mutation plan, consume one durable command capability for
    all approved steps, and finish without repeated micro-approvals.
@@ -173,6 +365,75 @@ gateway/model loop, not by calling the implementation functions directly:
     semantic control, try other safe evidence paths where available, and leave
     the durable plan either completed or honestly blocked.
 
+## Offline evidence contract
+
+The eleven scenarios are collected as six live execution bundles without
+weakening any scenario:
+
+1. `workspace_continuation` is the Canonical Task Workspace continuation
+   evidence bundle: it combines an alternate evidence path, a sustained
+   model-authored plan, the `high` to `max` transition, exact plan capability,
+   controlled restart, and replay-free completion. Its name does not imply or
+   permit a host filesystem workspace bind.
+2. `capability_denials` contains the six exact negative capability probes.
+3. `database_reconciliation` contains the read, idempotent write, lost-response
+   reconciliation, and live readback.
+4. `bitrix_boundary` contains the explicitly selected authenticated edge read
+   and the separately unapproved mutation denial.
+5. `discord_routeback` contains the verified public send/readback plus the
+   private-target pre-dispatch denial.
+6. `failure_recovery` contains the tool, browser, database, writer, and egress
+   failures and the model's safe alternative attempts where an alternative was
+   available.
+
+`gateway.canonical_capability_canary_e2e` is the packaged offline verifier for
+these bundles. It does not run GPT, open a browser, query PostgreSQL or Bitrix,
+send to Discord, or control a service. The separate live driver must produce
+the evidence through the normal gateway/model loop.
+
+The reviewed fixture binds the exact release, installed-wheel manifest,
+effective configuration, static tool inventory, host, execution window,
+public Discord target, and five Ed25519 authority keys: owner, gateway
+observer, Canonical Writer, Discord edge, and business-system edge. The
+owner signature uses the existing purpose-bound OpenSSH SSHSIG/Ed25519 flow;
+service receipts use raw Ed25519 signatures, and no authority key may be reused
+for a second role. The fixture digest is supplied independently to the
+verifier. Every runtime and scenario receipt is signed by its applicable
+authority and repeats the exact fixture, run, and release binding. Unknown
+fields are rejected, so raw tokens, passwords, cookies, task content, customer
+records, and other unreviewed data cannot be smuggled into the promotion
+receipt.
+
+The business-system bundle accepts the generic Mac operations edge contract
+without importing or executing that edge: the signed bundle must contain an
+exact self-digested `muncho-mac-ops-edge-receipt.v1` bound to the current
+request, stable intent, fixture-pinned service identity, issue ID, and external
+update timestamp. It also carries only digest projections of the confidential
+GitLab readback notes, requires at least one untruncated note receipt, and
+keeps the separately unapproved mutation undispatched.
+
+Every bundle that changes or tests durable work carries a writer-signed
+terminal Canonical Task Workspace projection. Ordinary scenarios must be
+`completed`; the deliberate failure scenario may be `completed` or honestly
+`blocked` with an explicit blocker event and receipt. A pending plan, replayed
+mutation, missing verification receipt, unsigned assertion, synthetic mode,
+microapproval, unretired credential lease, or unstopped service fails closed.
+
+Invoke the verifier from the sealed interpreter with bytecode disabled and
+isolated imports:
+
+```bash
+<sealed-python> -B -I -m gateway.canonical_capability_canary_e2e verify \
+  --fixture <absolute-reviewed-fixture.json> \
+  --fixture-sha256 <exact-fixture-sha256> \
+  --evidence <absolute-live-evidence.json> \
+  --evidence-sha256 <exact-evidence-sha256>
+```
+
+Success exits `0` and emits only a canonical verification receipt. Failure
+exits `2` and emits only a fixed non-secret failure code. Local fixtures and
+unit tests prove the verifier contract, never live execution.
+
 ## Promotion evidence
 
 Promotion requires one digest-bound evidence bundle containing:
@@ -188,6 +449,12 @@ Promotion requires one digest-bound evidence bundle containing:
 - service stop/cleanup receipts and absence of canary credentials;
 - a read-only production diff of code, config, identities, permissions, jobs,
   and data migrations.
+
+The production-diff digest is accepted only when it is the artifact digest of
+a real read-only before/after collector with an independently verified native
+receipt. It may not be synthesized from the canary fixture, cleanup booleans,
+or expected values. If that collector is unavailable, live promotion remains
+blocked.
 
 Only after that bundle is reviewed is a fresh owner approval requested for the
 exact production mutation plan. Clean-room canary success, this document, a PR

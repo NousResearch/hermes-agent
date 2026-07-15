@@ -2418,25 +2418,20 @@ class GatewaySlashCommandsMixin:
                 return "▶ Wait barrier cleared — goal loop resumes."
             return "No wait barrier set."
 
-        # /goal draft <objective> → draft a structured completion contract,
-        # then set it. The aux LLM call is sync; run it off the event loop.
-        draft_contract_obj = None
-        if lower.startswith("draft"):
+        # /goal draft <objective> starts an ordinary primary-model turn. The
+        # same Hermes/GPT instance authors the durable plan and goal contract
+        # through the todo tool; no auxiliary semantic planner participates.
+        draft_requested = lower.startswith("draft")
+        kickoff_text = args
+        if draft_requested:
             objective = args[len("draft"):].strip()
             if not objective:
                 return "Usage: /goal draft <objective in plain language>"
-            try:
-                import asyncio
-                from hermes_cli.goals import draft_contract
+            from hermes_cli.goals import PRIMARY_MODEL_DRAFT_PROMPT_TEMPLATE
 
-                draft_contract_obj = await asyncio.get_running_loop().run_in_executor(
-                    None, draft_contract, objective
-                )
-            except Exception as exc:
-                logger.debug("goal draft failed: %s", exc)
-                draft_contract_obj = None
-            args = objective  # the goal text is the objective
-            contract = draft_contract_obj
+            args = objective
+            contract = None
+            kickoff_text = PRIMARY_MODEL_DRAFT_PROMPT_TEMPLATE.format(goal=objective)
         else:
             # Inline `field: value` lines parse into a completion contract;
             # the remaining prose is the goal headline. Plain free-form goals
@@ -2446,12 +2441,15 @@ class GatewaySlashCommandsMixin:
             headline, parsed = parse_contract(args)
             args = headline or args
             contract = parsed if not parsed.is_empty() else None
+            kickoff_text = args
 
         # Otherwise — treat the remaining text as the new goal.
         try:
             state = mgr.set(args, contract=contract)
         except ValueError as exc:
             return t("gateway.goal.invalid", error=str(exc))
+        if not draft_requested:
+            kickoff_text = mgr.next_kickoff_prompt() or args
 
         # Queue the goal text as an immediate first turn so the agent
         # starts making progress. The post-turn hook takes over after.
@@ -2460,7 +2458,7 @@ class GatewaySlashCommandsMixin:
         if adapter and _quick_key:
             try:
                 kickoff_event = MessageEvent(
-                    text=state.goal,
+                    text=kickoff_text,
                     message_type=MessageType.TEXT,
                     source=event.source,
                     message_id=event.message_id,
@@ -2470,12 +2468,23 @@ class GatewaySlashCommandsMixin:
             except Exception as exc:
                 logger.debug("goal kickoff enqueue failed: %s", exc)
 
-        base = t("gateway.goal.set", budget=state.max_turns, goal=state.goal)
+        if state.max_turns == 0:
+            base = (
+                f"⊙ Goal set (no automatic turn cap): {state.goal}\n"
+                "I'll keep working until the goal is verified complete, the model "
+                "exhausts every safe approach and records a real blocker, or you "
+                "pause/clear it.\n"
+                "Controls: /goal status · /goal pause · /goal clear"
+            )
+        else:
+            base = t("gateway.goal.set", budget=state.max_turns, goal=state.goal)
         if state.has_contract():
             return f"{base}\nCompletion contract:\n{state.contract.render_block()}"
-        if lower.startswith("draft"):
-            # Drafting was requested but the aux model couldn't produce one.
-            return f"{base}\n(Couldn't draft a contract — running as a free-form goal.)"
+        if draft_requested:
+            return (
+                f"{base}\nHermes will author the completion contract and begin "
+                "the first concrete step in the queued primary-model turn."
+            )
         return base
 
     async def _handle_subgoal_command(self, event: "MessageEvent") -> str:
@@ -4481,21 +4490,44 @@ class GatewaySlashCommandsMixin:
         async def _on_confirm(choice: str) -> Optional[str]:
             if choice == "cancel":
                 return t("gateway.reload_mcp.cancelled")
+            always_persisted = False
+            always_blocked_by_pin = False
             if choice == "always":
                 # Persist the opt-out and run the reload.
                 try:
                     from cli import save_config_value
-                    save_config_value("approvals.mcp_reload_confirm", False)
-                    logger.info(
-                        "User opted out of /reload-mcp confirmation (session=%s)",
-                        session_key,
+                    from hermes_cli.config import (
+                        effective_config_projection_is_pinned,
                     )
+
+                    always_persisted = bool(
+                        save_config_value("approvals.mcp_reload_confirm", False)
+                    )
+                    always_blocked_by_pin = (
+                        effective_config_projection_is_pinned()
+                        and not always_persisted
+                    )
+                    if always_persisted:
+                        logger.info(
+                            "User opted out of /reload-mcp confirmation (session=%s)",
+                            session_key,
+                        )
                 except Exception as exc:
                     logger.warning("Failed to persist mcp_reload_confirm=false: %s", exc)
             # once / always → run the reload
             result = await self._execute_mcp_reload(event)
             if choice == "always":
-                return f"{result}\n\n" + t("gateway.reload_mcp.always_followup")
+                if always_persisted:
+                    return f"{result}\n\n" + t("gateway.reload_mcp.always_followup")
+                if always_blocked_by_pin:
+                    return (
+                        f"{result}\n\nThe action ran once; the confirmation setting "
+                        "was not changed because production configuration is sealed."
+                    )
+                return (
+                    f"{result}\n\nThe action ran once; the confirmation setting "
+                    "could not be changed."
+                )
             return result
 
         prompt_message = t("gateway.reload_mcp.confirm_prompt")
@@ -4661,24 +4693,57 @@ class GatewaySlashCommandsMixin:
             /approve all session  — approve all + remember for session
             /approve always       — approve oldest + remember permanently
             /approve all always   — approve all + remember permanently
+            /approve <id>         — approve one exact pending command
         """
         source = event.source
+        production_boundary = getattr(
+            self,
+            "_require_production_model_sovereignty",
+            False,
+        )
+        if production_boundary:
+            from gateway.production_access_policy import (
+                OWNER_ROLE,
+                production_discord_role,
+            )
+
+            if production_discord_role(source) != OWNER_ROLE:
+                return "⛔ /approve is owner-only in Cloud Muncho."
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            has_blocking_approval,
+            resolve_gateway_approval,
+            resolve_gateway_approval_by_id,
+            resolve_gateway_owner_escalation_by_id,
         )
-
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
-                return t("gateway.approval_expired")
-            return t("gateway.approve.no_pending")
 
         # Parse args: support "all", "all session", "all always", "session", "always"
         args = event.get_command_args().strip().lower().split()
         resolve_all = "all" in args
-        remaining = [a for a in args if a != "all"]
+        approval_ids = [value for value in args if re.fullmatch(r"[0-9a-f]{32}", value)]
+        if len(approval_ids) > 1 or (resolve_all and approval_ids):
+            return "Invalid approval selector: choose either one approval_id or `all`."
+        approval_id = approval_ids[0] if approval_ids else ""
+        remaining = [
+            value
+            for value in args
+            if value != "all" and value != approval_id
+        ]
+
+        # Sealed production never converts slash-command prose into a
+        # reusable command grant.  A reviewed plan capability is the only
+        # scoped authority mechanism there; /approve remains an exact
+        # one-shot control for one ID (or the currently visible pending set).
+        # Reject unknown/scope tokens instead of silently approving the oldest
+        # command on a typo.
+        if production_boundary and remaining:
+            return (
+                "Invalid production approval selector: use `/approve`, "
+                "`/approve all`, or `/approve <approval_id>`. Session and "
+                "permanent command authority must come from an owner-approved "
+                "Canonical plan capability."
+            )
 
         if any(a in {"always", "permanent", "permanently"} for a in remaining):
             choice = "always"
@@ -4687,7 +4752,35 @@ class GatewaySlashCommandsMixin:
         else:
             choice = "once"
 
-        count = resolve_gateway_approval(session_key, choice, resolve_all=resolve_all)
+        has_local_pending = has_blocking_approval(session_key)
+        if not has_local_pending and not (production_boundary and approval_id):
+            if session_key in self._pending_approvals:
+                self._pending_approvals.pop(session_key)
+                return t("gateway.approval_expired")
+            return t("gateway.approve.no_pending")
+
+        count = (
+            resolve_gateway_approval_by_id(
+                session_key,
+                approval_id,
+                choice,
+            )
+            if approval_id
+            else resolve_gateway_approval(
+                session_key,
+                choice,
+                resolve_all=resolve_all,
+            )
+        )
+        if not count and production_boundary and approval_id:
+            count = await asyncio.to_thread(
+                resolve_gateway_owner_escalation_by_id,
+                approval_id,
+                choice,
+                owner_user_id=str(source.user_id or ""),
+                owner_guild_id=str(source.scope_id or source.guild_id or ""),
+                response_lane_id=str(source.thread_id or source.chat_id or ""),
+            )
         if not count:
             return t("gateway.approve.no_pending")
 
@@ -4707,22 +4800,33 @@ class GatewaySlashCommandsMixin:
         a definitive BLOCKED message, same as the CLI deny flow.
 
         ``/deny`` denies the oldest; ``/deny all`` denies everything.
+        ``/deny <approval_id> [reason]`` denies one exact pending command.
         ``/deny <reason>`` (or ``/deny all <reason>``) attaches a one-line
         reason that is relayed back to the agent so it can adapt instead of
         only hearing "denied". Ported from qwibitai/nanoclaw#2832.
         """
         source = event.source
+        production_boundary = getattr(
+            self,
+            "_require_production_model_sovereignty",
+            False,
+        )
+        if production_boundary:
+            from gateway.production_access_policy import (
+                OWNER_ROLE,
+                production_discord_role,
+            )
+
+            if production_discord_role(source) != OWNER_ROLE:
+                return "⛔ /deny is owner-only in Cloud Muncho."
         session_key = self._session_key_for_source(source)
 
         from tools.approval import (
-            resolve_gateway_approval, has_blocking_approval,
+            has_blocking_approval,
+            resolve_gateway_approval,
+            resolve_gateway_approval_by_id,
+            resolve_gateway_owner_escalation_by_id,
         )
-
-        if not has_blocking_approval(session_key):
-            if session_key in self._pending_approvals:
-                self._pending_approvals.pop(session_key)
-                return t("gateway.deny.stale")
-            return t("gateway.deny.no_pending")
 
         # Parse args: a leading "all" token denies every pending command;
         # anything after it (or the whole arg string when "all" is absent) is
@@ -4730,7 +4834,14 @@ class GatewaySlashCommandsMixin:
         raw_args = event.get_command_args().strip()
         tokens = raw_args.split()
         resolve_all = bool(tokens) and tokens[0].lower() == "all"
+        approval_id = (
+            tokens[0].lower()
+            if tokens and re.fullmatch(r"[0-9a-fA-F]{32}", tokens[0])
+            else ""
+        )
         if resolve_all:
+            reason = raw_args[len(tokens[0]):].strip()
+        elif approval_id:
             reason = raw_args[len(tokens[0]):].strip()
         else:
             reason = raw_args
@@ -4738,10 +4849,38 @@ class GatewaySlashCommandsMixin:
         if reason:
             reason = reason[:280].strip()
 
-        count = resolve_gateway_approval(
-            session_key, "deny", resolve_all=resolve_all,
-            reason=reason or None,
+        has_local_pending = has_blocking_approval(session_key)
+        if not has_local_pending and not (production_boundary and approval_id):
+            if session_key in self._pending_approvals:
+                self._pending_approvals.pop(session_key)
+                return t("gateway.deny.stale")
+            return t("gateway.deny.no_pending")
+
+        count = (
+            resolve_gateway_approval_by_id(
+                session_key,
+                approval_id,
+                "deny",
+                reason=reason or None,
+            )
+            if approval_id
+            else resolve_gateway_approval(
+                session_key,
+                "deny",
+                resolve_all=resolve_all,
+                reason=reason or None,
+            )
         )
+        if not count and production_boundary and approval_id:
+            count = await asyncio.to_thread(
+                resolve_gateway_owner_escalation_by_id,
+                approval_id,
+                "deny",
+                owner_user_id=str(source.user_id or ""),
+                owner_guild_id=str(source.scope_id or source.guild_id or ""),
+                response_lane_id=str(source.thread_id or source.chat_id or ""),
+                reason=reason or None,
+            )
         if not count:
             return t("gateway.deny.no_pending")
 

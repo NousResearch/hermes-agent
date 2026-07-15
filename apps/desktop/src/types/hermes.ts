@@ -964,7 +964,7 @@ export interface SkillHubScanFinding {
   description: string
 }
 
-/** `GET /api/skills/hub/scan` — install-time security scan verdict. */
+/** `GET /api/skills/hub/scan` — install-time mechanical package preflight. */
 export interface SkillHubScanResult {
   name: string
   identifier: string

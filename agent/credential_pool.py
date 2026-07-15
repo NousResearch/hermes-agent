@@ -522,6 +522,28 @@ class CredentialPool:
         """True if at least one entry is not currently in exhaustion cooldown."""
         return bool(self._available_entries())
 
+    def has_available_alternative(self, api_key_hint: str) -> bool:
+        """True when a usable entry differs from the credential that failed.
+
+        This is an exact credential-identity check used by reactive auth
+        recovery after another process updates ``auth.json``.  It deliberately
+        does not choose an entry or infer whether an error is recoverable; the
+        caller has already established an authoritative auth failure.  Token
+        values are compared only in memory and are never logged.
+        """
+
+        if not isinstance(api_key_hint, str) or not api_key_hint:
+            return False
+        with self._lock:
+            return any(
+                bool(entry.runtime_api_key)
+                and entry.runtime_api_key != api_key_hint
+                for entry in self._available_entries(
+                    clear_expired=True,
+                    refresh=False,
+                )
+            )
+
     def entries(self) -> List[PooledCredential]:
         return list(self._entries)
 
@@ -1539,6 +1561,12 @@ class CredentialPool:
                     (e for e in self._entries if e.runtime_api_key == api_key_hint),
                     None,
                 )
+                # An exact hint is authority, not a preference.  If it no
+                # longer identifies an entry, fail closed instead of marking
+                # whichever credential happens to be current in this freshly
+                # loaded pool.
+                if entry is None:
+                    return None
             if entry is None:
                 entry = self.current() or self._select_unlocked()
             if entry is None:
@@ -1624,6 +1652,12 @@ class CredentialPool:
         count = 0
         new_entries = []
         for entry in self._entries:
+            # ``auth reset`` is a cooldown reset.  A terminally invalidated
+            # credential is not in cooldown and must never re-enter rotation
+            # without a real re-auth that replaces its token material.
+            if entry.last_status == STATUS_DEAD:
+                new_entries.append(entry)
+                continue
             if entry.last_status or entry.last_status_at or entry.last_error_code:
                 new_entries.append(
                     replace(

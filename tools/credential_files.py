@@ -54,6 +54,27 @@ def _resolve_hermes_home() -> Path:
     return get_hermes_home()
 
 
+def _is_protected_hermes_credential_path(path: Path) -> bool:
+    """Return whether *path* is an internal Hermes secret/control store.
+
+    Skill frontmatter is model-authored data.  It may request a dedicated
+    credential file that the operator placed under ``HERMES_HOME``, but it
+    must never turn Hermes's own auth/configuration stores into sandbox
+    mounts.  Reuse the shared read boundary so profile and global-root
+    credential names stay aligned with file tools instead of maintaining a
+    second, weaker denylist here.
+    """
+
+    try:
+        from agent.file_safety import get_read_block_error
+
+        return get_read_block_error(str(path)) is not None
+    except Exception:
+        # Registration widens a sandbox's authority.  If the shared boundary
+        # cannot be evaluated, fail closed rather than mounting the file.
+        return True
+
+
 def register_credential_file(
     relative_path: str,
     container_base: str = "/root/.hermes",
@@ -96,6 +117,12 @@ def register_credential_file(
     resolved = host_path.resolve()
     if not resolved.is_file():
         logger.debug("credential_files: skipping %s (not found)", resolved)
+        return False
+    if _is_protected_hermes_credential_path(resolved):
+        logger.warning(
+            "credential_files: rejected protected Hermes credential path %r",
+            relative_path,
+        )
         return False
 
     container_path = f"{container_base.rstrip('/')}/{relative_path}"
@@ -161,12 +188,20 @@ def _load_config_files() -> List[Dict[str, str]]:
                         )
                         continue
                     resolved_path = host_path.resolve()
-                    if resolved_path.is_file():
+                    if (
+                        resolved_path.is_file()
+                        and not _is_protected_hermes_credential_path(resolved_path)
+                    ):
                         container_path = f"/root/.hermes/{rel}"
                         result.append({
                             "host_path": str(resolved_path),
                             "container_path": container_path,
                         })
+                    elif resolved_path.is_file():
+                        logger.warning(
+                            "credential_files: rejected protected config path %r",
+                            rel,
+                        )
     except Exception as e:
         logger.warning("Could not read terminal.credential_files from config: %s", e)
 
@@ -477,5 +512,4 @@ def iter_cache_files(
 def clear_credential_files() -> None:
     """Reset the skill-scoped registry (e.g. on session reset)."""
     _get_registered().clear()
-
 

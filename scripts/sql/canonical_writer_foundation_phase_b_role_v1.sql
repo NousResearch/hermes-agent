@@ -671,17 +671,25 @@ WITH receipt AS (
         ),
         'secret_material_recorded', false
     ) AS value
+), serialized AS (
+    SELECT receipt.value,
+           receipt.value::text AS unsigned_receipt_jsonb_text
+      FROM receipt
 )
-SELECT (
-    receipt.value || pg_catalog.jsonb_build_object(
+SELECT pg_catalog.jsonb_build_object(
+    'unsigned_receipt_jsonb_text', serialized.unsigned_receipt_jsonb_text,
+    'receipt', serialized.value || pg_catalog.jsonb_build_object(
         'receipt_sha256', pg_catalog.encode(
             pg_catalog.sha256(
-                pg_catalog.convert_to(receipt.value::text, 'UTF8')
+                pg_catalog.convert_to(
+                    serialized.unsigned_receipt_jsonb_text,
+                    'UTF8'
+                )
             ),
             'hex'
         )
     )
 )::text AS phase_b_role_receipt
-FROM receipt;
+FROM serialized;
 
 COMMIT;

@@ -2019,11 +2019,9 @@ class CLICommandsMixin:
             _cprint(f"  {mgr.render_contract()}")
             return
 
-        # /goal draft <objective> → expand plain text into a structured
-        # completion contract (outcome / verification / constraints /
-        # boundaries / stop_when) and set it as the active goal. Adapted
-        # from Codex's "let the agent draft the goal" guidance: the contract
-        # makes "done" evidence-based instead of a loose vibe check.
+        # /goal draft <objective> → start a normal primary-model turn that
+        # authors the structured contract and todo plan from full context,
+        # then begins the first safe step.
         if lower.startswith("draft"):
             objective = arg[len("draft"):].strip()
             if not objective:
@@ -2107,67 +2105,64 @@ class CLICommandsMixin:
             _cprint(f"  Invalid goal: {exc}")
             return
 
-        _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
+        _budget = (
+            "no automatic turn cap"
+            if state.max_turns == 0
+            else f"{state.max_turns}-turn budget"
+        )
+        _cprint(f"  ⊙ Goal set ({_budget}): {state.goal}")
         if state.has_contract():
             _cprint(f"  {_DIM}Completion contract:{_RST}")
             for line in state.contract.render_block().splitlines():
                 _cprint(f"    {line}")
+        _limit_note = (
+            "No arbitrary cross-turn pause is applied."
+            if state.max_turns == 0
+            else "The configured turn budget remains a mechanical safety boundary."
+        )
         _cprint(
-            f"  {_DIM}After each turn, a judge model checks if the goal is done"
-            f"{' against the contract above' if state.has_contract() else ''}. "
-            f"Hermes keeps working until it is, you pause/clear it, or the budget is "
-            f"exhausted. Use /goal status, /goal show, /goal pause, /goal resume, /goal clear.{_RST}"
+            f"  {_DIM}After each turn, the same primary model records whether to "
+            f"continue, complete, or stop after exhausting safe approaches. Hermes "
+            f"continues mechanically until then or you pause/clear it. {_limit_note} "
+            f"Use /goal status, /goal show, /goal pause, /goal resume, /goal clear.{_RST}"
         )
         # Kick the loop off immediately so the user doesn't have to send a
         # separate message after setting the goal.
         try:
-            self._pending_input.put(state.goal)
+            self._pending_input.put(mgr.next_kickoff_prompt() or state.goal)
         except Exception:
             pass
 
     def _handle_goal_draft(self, objective: str) -> None:
-        """Draft a structured completion contract from a plain objective and
-        set it as the active goal. Falls back to a bare goal if the aux model
-        can't produce a contract."""
+        """Queue a primary-model turn to author and start a durable goal."""
         from cli import _DIM, _RST, _cprint
-        from hermes_cli.goals import draft_contract
+        from hermes_cli.goals import PRIMARY_MODEL_DRAFT_PROMPT_TEMPLATE
 
         mgr = self._get_goal_manager()
         if mgr is None:
             _cprint(f"  {_DIM}Goals unavailable (no active session).{_RST}")
             return
 
-        _cprint(f"  {_DIM}Drafting completion contract…{_RST}")
         try:
-            contract = draft_contract(objective)
-        except Exception as exc:
-            import logging as _logging
-            _logging.getLogger(__name__).debug("goal draft failed: %s", exc)
-            contract = None
-
-        try:
-            state = mgr.set(objective, contract=contract)
+            state = mgr.set(objective)
         except ValueError as exc:
             _cprint(f"  Invalid goal: {exc}")
             return
 
-        _cprint(f"  ⊙ Goal set ({state.max_turns}-turn budget): {state.goal}")
-        if state.has_contract():
-            _cprint(f"  {_DIM}Drafted completion contract:{_RST}")
-            for line in state.contract.render_block().splitlines():
-                _cprint(f"    {line}")
-            _cprint(
-                f"  {_DIM}Tighten any field by re-setting the goal with inline "
-                f"lines (e.g. verify: <command>), then /goal resume. "
-                f"Use /goal show to review.{_RST}"
-            )
-        else:
-            _cprint(
-                f"  {_DIM}Couldn't draft a contract (aux model unavailable) — "
-                f"running as a free-form goal. The per-turn judge still applies.{_RST}"
-            )
+        _budget = (
+            "no automatic turn cap"
+            if state.max_turns == 0
+            else f"{state.max_turns}-turn budget"
+        )
+        _cprint(f"  ⊙ Goal set ({_budget}): {state.goal}")
+        _cprint(
+            f"  {_DIM}The same primary Hermes model will now author the todo plan "
+            f"and completion contract, then begin the first concrete step.{_RST}"
+        )
         try:
-            self._pending_input.put(state.goal)
+            self._pending_input.put(
+                PRIMARY_MODEL_DRAFT_PROMPT_TEMPLATE.format(goal=state.goal)
+            )
         except Exception:
             pass
 
@@ -2180,11 +2175,10 @@ class CLICommandsMixin:
           /subgoal remove <n>                   drop subgoal n (1-based)
           /subgoal clear                        wipe all subgoals
 
-        Subgoals are extra criteria the user adds mid-loop. They get
-        appended to both the judge prompt (verdict must consider them)
-        and the continuation prompt (agent sees them) on the next turn
-        boundary. No special kick — the running turn finishes, the next
-        judge call includes them.
+        Subgoals are extra criteria the user adds mid-loop. They are appended
+        to the continuation prompt on the next turn boundary so the primary
+        model sees and evaluates them. No special kick is needed: the running
+        turn finishes and the next continuation includes them.
         """
         from cli import _DIM, _RST, _cprint
         parts = (cmd or "").strip().split(None, 2)

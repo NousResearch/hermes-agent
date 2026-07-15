@@ -252,7 +252,7 @@ async def test_start_gateway_does_not_start_cron_after_aborted_startup(tmp_path,
     cron_started = False
 
     class AbortedStartupRunner:
-        def __init__(self, config):
+        def __init__(self, config, **_kwargs):
             self.config = config
             self.adapters = {}
             self._running = False

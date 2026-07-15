@@ -49,6 +49,10 @@ INVARIANT_RECEIPT_SCHEMA = "muncho-full-canary-e2e-verification.v1"
 MODEL_CALL_RECEIPT_SCHEMA = "muncho-live-model-call-receipt.v1"
 REASONING_RECEIPT_SCHEMA = "muncho-model-reasoning-directive-receipt.v1"
 CANONICAL_TRUTH_RECEIPT_SCHEMA = "muncho-canonical-truth-readback-receipt.v1"
+CANONICAL_EVENT_LOG_RECEIPT_SCHEMA = "muncho-canonical-event-log-receipt.v1"
+CANONICAL_TASK_WORKSPACE_RECEIPT_SCHEMA = (
+    "muncho-canonical-task-workspace-receipt.v1"
+)
 TASK_OUTCOME_RECEIPT_SCHEMA = "muncho-full-canary-task-outcome-receipt.v1"
 PRIVATE_DENIAL_RECEIPT_SCHEMA = "muncho-discord-private-denial-receipt.v1"
 SOURCE_RECEIPT_SCHEMA = "muncho-live-api-source-receipt.v1"
@@ -72,14 +76,14 @@ _MODEL_ROUTE = {
     "base_url": "https://chatgpt.com/backend-api/codex",
     "model": "gpt-5.6-sol",
     "initial_effort": "high",
-    "elevated_effort": "xhigh",
+    "elevated_effort": "max",
 }
 _INVARIANTS = (
     "live_provenance_bound",
     "canonical_writer_ready",
-    "owner_preapproved_one_shot_scope_claimed_and_durably_revoked",
-    "gpt56_model_authored_high_to_xhigh",
-    "canonical_plan_event_verification_truth_complete",
+    "api_session_digest_bound_to_live_gateway",
+    "gpt56_model_authored_high_to_max",
+    "canonical_task_workspace_and_event_log_truth_complete",
     "public_discord_routeback_signed_and_readback_verified",
     "discord_dm_private_target_denied_without_dispatch",
     "sustained_multistep_task_completed_nonpartial",
@@ -309,6 +313,7 @@ def _validate_fixture(value: Any) -> dict[str, Any]:
             "canary_run_id",
             "release_sha",
             "release_artifact_sha256",
+            "api_session_key_sha256",
             "valid_from_unix_ms",
             "valid_until_unix_ms",
             "case_id",
@@ -326,6 +331,7 @@ def _validate_fixture(value: Any) -> dict[str, Any]:
     _uuid(fixture["canary_run_id"], "fixture_run_id_invalid")
     _git_sha(fixture["release_sha"], "fixture_release_invalid")
     _sha256(fixture["release_artifact_sha256"], "fixture_release_invalid")
+    _sha256(fixture["api_session_key_sha256"], "fixture_session_binding_invalid")
     valid_from = _positive_int(fixture["valid_from_unix_ms"], "fixture_window_invalid")
     valid_until = _positive_int(
         fixture["valid_until_unix_ms"], "fixture_window_invalid"
@@ -483,7 +489,6 @@ def _validate_source_receipt(
             "loopback_peer_verified",
             "credential_provenance_receipt_sha256",
             "session_key_sha256",
-            "capability_epoch_sha256",
             "message_content_sha256",
             "observed_at_unix_ms",
         ),
@@ -524,8 +529,11 @@ def _validate_source_receipt(
         receipt["credential_provenance_receipt_sha256"],
         "source_receipt_invalid",
     )
-    _sha256(receipt["session_key_sha256"], "source_receipt_invalid")
-    _sha256(receipt["capability_epoch_sha256"], "source_receipt_invalid")
+    if (
+        _sha256(receipt["session_key_sha256"], "source_receipt_invalid")
+        != fixture["api_session_key_sha256"]
+    ):
+        _fail("source_receipt_invalid")
     _sha256(receipt["message_content_sha256"], "source_receipt_invalid")
     observed_at = _positive_int(
         receipt["observed_at_unix_ms"], "source_receipt_invalid"
@@ -702,7 +710,7 @@ def _validate_reasoning_transition(
         fixture,
         calls[1],
         ordinal=2,
-        effort="xhigh",
+        effort="max",
         source_receipt=source_receipt,
     )
     validated_calls = [first, second]
@@ -712,7 +720,7 @@ def _validate_reasoning_transition(
                 fixture,
                 call,
                 ordinal=ordinal,
-                effort="xhigh",
+                effort="max",
                 source_receipt=source_receipt,
             )
         )
@@ -765,11 +773,11 @@ def _validate_reasoning_transition(
         or directive["turn_id"] != source_receipt["turn_id"]
         or directive["tool_name"] != "todo"
         or directive["model_authored"] is not True
-        or directive["directive"] != {"effort": "xhigh"}
+        or directive["directive"] != {"effort": "max"}
         or control.get("status") != "applied"
         or control.get("scope") != "current_turn"
         or control.get("expires") != "end_of_current_turn"
-        or control.get("effective") != {"effort": "xhigh"}
+        or control.get("effective") != {"effort": "max"}
         or control.get("change_count") != 1
         or directive["produced_by_model_call_ordinal"] != 1
         or directive["applied_before_model_call_ordinal"] != 2
@@ -1003,182 +1011,9 @@ def _validate_plan_sequence(
         "criterion_ids": criterion_ids,
         "verification_event_ids": list(normalized[-1][1]["verification_event_ids"]),
         "verification_revision": len(normalized) - 1,
+        "final_revision": normalized[-1][1]["revision"],
         "completion_order": completion_order,
     }
-
-
-def _validate_scope_lifecycle(
-    fixture: Mapping[str, Any],
-    events_value: Any,
-    retirement_value: Any,
-    *,
-    fixture_sha256: str,
-    source_receipt: Mapping[str, Any],
-) -> None:
-    """Prove that the one-shot owner scope existed only for this API run."""
-
-    code = "canonical_scope_truth_invalid"
-    if not isinstance(events_value, list) or len(events_value) != 3:
-        _fail(code)
-    expected_types = (
-        "canary.scope.preapproved",
-        "canary.scope.claimed",
-        "canary.scope.revoked",
-    )
-    normalized_events: list[tuple[dict[str, Any], dict[str, Any]]] = []
-    occurred_at_values: list[int] = []
-    for event_value, expected_type in zip(
-        events_value, expected_types, strict=True
-    ):
-        event = _strict_object(
-            event_value,
-            required=(
-                "event_id",
-                "event_type",
-                "case_id",
-                "occurred_at_unix_ms",
-                "readback_verified",
-                "canonical_content_sha256",
-                "scope",
-            ),
-            code=code,
-        )
-        occurred_at = _positive_int(event["occurred_at_unix_ms"], code)
-        if (
-            event["event_type"] != expected_type
-            or event["case_id"] != fixture["case_id"]
-            or event["readback_verified"] is not True
-            or not fixture["valid_from_unix_ms"]
-            <= occurred_at
-            <= fixture["valid_until_unix_ms"]
-        ):
-            _fail(code)
-        _uuid(event["event_id"], code)
-        _sha256(event["canonical_content_sha256"], code)
-        scope_required = {
-            "canary.scope.preapproved": (
-                "grant_id",
-                "case_id",
-                "release_sha256",
-                "fixture_sha256",
-                "run_id",
-                "session_key_sha256",
-                "expires_at_unix_ms",
-                "approved_by",
-                "approval_source_sha256",
-                "state",
-            ),
-            "canary.scope.claimed": (
-                "grant_id",
-                "case_id",
-                "release_sha256",
-                "fixture_sha256",
-                "run_id",
-                "approval_source_sha256",
-                "session_key_sha256",
-                "capability_epoch_sha256",
-                "expires_at_unix_ms",
-                "state",
-            ),
-            "canary.scope.revoked": (
-                "grant_id",
-                "session_key_sha256",
-                "capability_epoch_sha256",
-                "reason",
-                "session_tombstone_recorded",
-                "state",
-            ),
-        }[expected_type]
-        scope = _strict_object(event["scope"], required=scope_required, code=code)
-        normalized_events.append((event, scope))
-        occurred_at_values.append(occurred_at)
-
-    if occurred_at_values != sorted(occurred_at_values):
-        _fail(code)
-    if len({event["event_id"] for event, _scope in normalized_events}) != 3:
-        _fail(code)
-
-    preapproval = normalized_events[0][1]
-    claim = normalized_events[1][1]
-    revocation = normalized_events[2][1]
-    grant_id = _safe_id(preapproval["grant_id"], code)
-    approval_source = _sha256(preapproval["approval_source_sha256"], code)
-    session_key = _sha256(preapproval["session_key_sha256"], code)
-    capability_epoch = _sha256(claim["capability_epoch_sha256"], code)
-    expires_at = _positive_int(preapproval["expires_at_unix_ms"], code)
-    if (
-        preapproval["case_id"] != fixture["case_id"]
-        or preapproval["release_sha256"]
-        != fixture["release_artifact_sha256"]
-        or preapproval["fixture_sha256"] != fixture_sha256
-        or preapproval["run_id"] != fixture["canary_run_id"]
-        or preapproval["approved_by"] != fixture["owner_discord_user_id"]
-        or preapproval["state"] != "preapproved"
-        or expires_at != fixture["valid_until_unix_ms"]
-        or session_key != source_receipt["session_key_sha256"]
-    ):
-        _fail(code)
-
-    for name in (
-        "release_sha256",
-        "fixture_sha256",
-        "approval_source_sha256",
-        "session_key_sha256",
-    ):
-        _sha256(claim[name], code)
-    if (
-        claim["grant_id"] != grant_id
-        or claim["case_id"] != fixture["case_id"]
-        or claim["release_sha256"] != preapproval["release_sha256"]
-        or claim["fixture_sha256"] != fixture_sha256
-        or claim["run_id"] != fixture["canary_run_id"]
-        or claim["approval_source_sha256"] != approval_source
-        or claim["session_key_sha256"] != session_key
-        or claim["capability_epoch_sha256"]
-        != source_receipt["capability_epoch_sha256"]
-        or claim["expires_at_unix_ms"] != expires_at
-        or claim["state"] != "claimed"
-    ):
-        _fail(code)
-
-    if (
-        revocation["grant_id"] != grant_id
-        or _sha256(revocation["session_key_sha256"], code) != session_key
-        or _sha256(revocation["capability_epoch_sha256"], code)
-        != capability_epoch
-        or revocation["reason"] != "api_server_run_finished"
-        or revocation["session_tombstone_recorded"] is not True
-        or revocation["state"] != "revoked"
-    ):
-        _fail(code)
-
-    retirement = _strict_object(
-        retirement_value,
-        required=(
-            "grant_id",
-            "session_key_sha256",
-            "capability_epoch_sha256",
-            "authority_active",
-            "revocation_event_id",
-            "session_tombstone_commit_receipt_verified",
-            "observed_at_unix_ms",
-        ),
-        code=code,
-    )
-    retirement_observed_at = _positive_int(retirement["observed_at_unix_ms"], code)
-    if (
-        retirement["grant_id"] != grant_id
-        or _sha256(retirement["session_key_sha256"], code) != session_key
-        or _sha256(retirement["capability_epoch_sha256"], code)
-        != capability_epoch
-        or retirement["authority_active"] is not False
-        or retirement["revocation_event_id"] != normalized_events[2][0]["event_id"]
-        or retirement["session_tombstone_commit_receipt_verified"] is not True
-        or not occurred_at_values[-1]
-        <= retirement_observed_at
-        <= fixture["valid_until_unix_ms"]
-    ):
-        _fail(code)
 
 
 def _validate_canonical_truth(
@@ -1204,8 +1039,8 @@ def _validate_canonical_truth(
             "plan_projection_complete",
             "completion_receipts_satisfied",
             "missing_verification_event_ids",
-            "scope_events",
-            "scope_retirement",
+            "event_log_receipt",
+            "task_workspace_receipt",
             "plan_events",
             "verification_events",
             "routeback_event",
@@ -1236,13 +1071,6 @@ def _validate_canonical_truth(
         <= fixture["valid_until_unix_ms"]
     ):
         _fail("canonical_truth_invalid")
-    _validate_scope_lifecycle(
-        fixture,
-        receipt["scope_events"],
-        receipt["scope_retirement"],
-        fixture_sha256=fixture_sha256,
-        source_receipt=source_receipt,
-    )
     plan_summary = _validate_plan_sequence(fixture, receipt["plan_events"])
     verification_events = receipt["verification_events"]
     expected_event_ids = plan_summary["verification_event_ids"]
@@ -1308,7 +1136,131 @@ def _validate_canonical_truth(
         covered_criteria.extend(verification["criterion_ids"])
     if sorted(covered_criteria) != sorted(plan_summary["criterion_ids"]):
         _fail("canonical_verification_truth_invalid")
+    _validate_canonical_workspace_receipts(
+        fixture,
+        receipt,
+        fixture_sha256=fixture_sha256,
+        plan_summary=plan_summary,
+    )
     return receipt, plan_summary
+
+
+def _validate_canonical_workspace_receipts(
+    fixture: Mapping[str, Any],
+    truth: Mapping[str, Any],
+    *,
+    fixture_sha256: str,
+    plan_summary: Mapping[str, Any],
+) -> None:
+    """Bind Task Workspace projections to the exact append-only event ledger."""
+
+    code = "canonical_workspace_receipt_invalid"
+    event_log = _strict_object(
+        truth.get("event_log_receipt"),
+        required=(
+            "schema",
+            "case_id",
+            "fixture_sha256",
+            "event_count",
+            "event_receipts",
+            "event_receipts_sha256",
+            "canonical_projection_sha256",
+            "live_readback_sha256",
+            "readback_verified",
+        ),
+        code=code,
+    )
+    raw_receipts = event_log["event_receipts"]
+    if (
+        event_log["schema"] != CANONICAL_EVENT_LOG_RECEIPT_SCHEMA
+        or event_log["case_id"] != fixture["case_id"]
+        or event_log["fixture_sha256"] != fixture_sha256
+        or event_log["readback_verified"] is not True
+        or type(event_log["event_count"]) is not int
+        or not isinstance(raw_receipts, list)
+        or event_log["event_count"] != len(raw_receipts)
+    ):
+        _fail(code)
+    normalized_receipts: list[dict[str, Any]] = []
+    for value in raw_receipts:
+        item = _strict_object(
+            value,
+            required=("event_id", "event_type", "canonical_content_sha256"),
+            code=code,
+        )
+        _uuid(item["event_id"], code)
+        _safe_id(item["event_type"], code)
+        _sha256(item["canonical_content_sha256"], code)
+        normalized_receipts.append(item)
+    by_id = {item["event_id"]: item for item in normalized_receipts}
+    if len(by_id) != len(normalized_receipts):
+        _fail(code)
+    if (
+        _sha256(event_log["event_receipts_sha256"], code)
+        != _digest_mapping({"events": normalized_receipts})
+    ):
+        _fail(code)
+    _sha256(event_log["canonical_projection_sha256"], code)
+    _sha256(event_log["live_readback_sha256"], code)
+
+    known_events = [
+        *truth["plan_events"],
+        *truth["verification_events"],
+        truth["routeback_event"],
+    ]
+    for known in known_events:
+        logged = by_id.get(known.get("event_id"))
+        if (
+            logged is None
+            or logged["event_type"] != known.get("event_type")
+            or logged["canonical_content_sha256"]
+            != known.get("canonical_content_sha256")
+        ):
+            _fail(code)
+
+    workspace = _strict_object(
+        truth.get("task_workspace_receipt"),
+        required=(
+            "schema",
+            "case_id",
+            "plan_id",
+            "final_plan_revision",
+            "final_state",
+            "plan_event_ids",
+            "verification_event_ids",
+            "routeback_event_id",
+            "completion_receipts_satisfied",
+            "readback_verified",
+            "workspace_sha256",
+        ),
+        code=code,
+    )
+    plan_event_ids = [item["event_id"] for item in truth["plan_events"]]
+    verification_event_ids = [
+        item["event_id"] for item in truth["verification_events"]
+    ]
+    workspace_projection = {
+        "plan_events": truth["plan_events"],
+        "verification_events": truth["verification_events"],
+        "routeback_event": truth["routeback_event"],
+    }
+    if (
+        workspace["schema"] != CANONICAL_TASK_WORKSPACE_RECEIPT_SCHEMA
+        or workspace["case_id"] != fixture["case_id"]
+        or workspace["plan_id"] != plan_summary["plan_id"]
+        or workspace["final_plan_revision"]
+        != plan_summary["final_revision"]
+        or workspace["final_state"] != "completed"
+        or workspace["plan_event_ids"] != plan_event_ids
+        or workspace["verification_event_ids"] != verification_event_ids
+        or workspace["routeback_event_id"]
+        != truth["routeback_event"].get("event_id")
+        or workspace["completion_receipts_satisfied"] is not True
+        or workspace["readback_verified"] is not True
+        or _sha256(workspace["workspace_sha256"], code)
+        != _digest_mapping(workspace_projection)
+    ):
+        _fail(code)
 
 
 def _public_key(value: str, code: str) -> Ed25519PublicKey:
@@ -1808,6 +1760,8 @@ if __name__ == "__main__":
 
 
 __all__ = [
+    "CANONICAL_EVENT_LOG_RECEIPT_SCHEMA",
+    "CANONICAL_TASK_WORKSPACE_RECEIPT_SCHEMA",
     "CANONICAL_TRUTH_RECEIPT_SCHEMA",
     "CanaryEvidenceError",
     "EVIDENCE_SCHEMA",

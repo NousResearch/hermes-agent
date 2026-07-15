@@ -30,6 +30,8 @@ def test_phase_one_plan_is_dedicated_private_and_contains_no_host_or_secret_step
     assert "--no-storage-auto-increase" in rendered
     assert "--deletion-protection" in rendered
     assert "roles/cloudsql.client" not in rendered
+    assert "cloudsql.instances.get" in rendered
+    assert "cloudsql.instances.update" not in rendered
     assert "roles/secretmanager.secretAccessor" not in rendered
     assert not any(step.argv[:4] == ("gcloud", "compute", "instances", "create") for step in plan.steps)
     assert not any(value == "firewall-rules" for value in argv)
@@ -48,9 +50,11 @@ def test_phase_one_step_order_is_dependency_bounded():
         "create_isolated_subnet",
         "reserve_private_service_range",
         "connect_private_service_networking",
+        "create_cloudsql_readiness_role",
         "create_runtime_service_account",
         "grant_logging_writer",
         "grant_monitoring_writer",
+        "grant_cloudsql_readiness",
         "create_isolated_postgres",
         "create_canonical_database",
     ]
@@ -100,7 +104,7 @@ def test_apply_executes_exact_steps_after_fresh_bound_preflight():
         plan,
         approved_plan_sha256=plan.sha256,
         preflight={
-            "schema": "muncho-isolated-canary-foundation-preflight.v2",
+            "schema": "muncho-isolated-canary-foundation-preflight.v3",
             "ok": True,
             "plan_sha256": plan.sha256,
             "collected_at_unix": 1_000,
@@ -132,7 +136,7 @@ def test_apply_skips_only_preflight_verified_existing_steps():
         plan,
         approved_plan_sha256=plan.sha256,
         preflight={
-            "schema": "muncho-isolated-canary-foundation-preflight.v2",
+            "schema": "muncho-isolated-canary-foundation-preflight.v3",
             "ok": True,
             "plan_sha256": plan.sha256,
             "collected_at_unix": 1_000,

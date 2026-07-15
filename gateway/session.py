@@ -754,14 +754,20 @@ class SessionEntry:
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
 
-    # Set by reset_session() when the user explicitly sends /new or /reset.
+    # Set by reset_session() for a fresh manual or involuntary reset boundary.
     # Consumed once by _handle_message_with_agent to trigger topic/channel
     # skill re-injection on the first message of the new session.  We can't
     # reuse was_auto_reset for this because that flag fires the "session
     # expired due to inactivity" user-facing notice and a misleading
-    # context-note prepend — both wrong for an explicit manual reset.
+    # context-note prepend — both wrong for an explicit manual reset. The
+    # exact cause below keeps that manual boundary distinct from involuntary
+    # compression exhaustion.
     # See issue #6508.
     is_fresh_reset: bool = False
+    # Exact mechanical cause for ``is_fresh_reset``. Persist this so a
+    # gateway restart between reset and the next real user turn cannot
+    # confuse an explicit /new with compression-exhaustion recovery.
+    fresh_reset_reason: Optional[str] = None
     
     # Set by the background expiry watcher after it finalizes an expired
     # session (invoking on_session_finalize hooks and evicting the cached
@@ -828,6 +834,7 @@ class SessionEntry:
                 else None
             ),
             "is_fresh_reset": self.is_fresh_reset,
+            "fresh_reset_reason": self.fresh_reset_reason,
             "was_auto_reset": self.was_auto_reset,
             "auto_reset_reason": self.auto_reset_reason,
             "reset_had_activity": self.reset_had_activity,
@@ -903,6 +910,7 @@ class SessionEntry:
             resume_reason=data.get("resume_reason"),
             last_resume_marked_at=last_resume_marked_at,
             is_fresh_reset=data.get("is_fresh_reset", False),
+            fresh_reset_reason=data.get("fresh_reset_reason"),
             was_auto_reset=data.get("was_auto_reset", False),
             auto_reset_reason=data.get("auto_reset_reason"),
             reset_had_activity=data.get("reset_had_activity", False),
@@ -2562,6 +2570,7 @@ class SessionStore:
         *,
         source: Optional[SessionSource] = None,
         create_if_missing: bool = False,
+        fresh_reset_reason: str = "explicit_new",
     ) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID.
 
@@ -2569,6 +2578,11 @@ class SessionStore:
         boundary. Creating that initial route inside this method closes the gap
         where the reset handler previously exposed its running slot and only
         later called ``get_or_create_session(force_new=True)``.
+
+        ``fresh_reset_reason`` is persisted exact lifecycle metadata. Unknown
+        values are intentionally treated as manual choice boundaries by the
+        Canonical Task Workspace resolver, so only a recognized involuntary
+        cause can auto-recover an active plan.
         """
         db_end_session_id = None
         db_create_kwargs = None
@@ -2599,6 +2613,7 @@ class SessionStore:
                     platform=source.platform,
                     chat_type=source.chat_type,
                     is_fresh_reset=True,
+                    fresh_reset_reason=fresh_reset_reason,
                 )
                 self._entries[session_key] = new_entry
                 self._save()
@@ -2654,6 +2669,7 @@ class SessionStore:
                 platform=old_entry.platform,
                 chat_type=old_entry.chat_type,
                 is_fresh_reset=True,
+                fresh_reset_reason=fresh_reset_reason,
             )
 
             self._entries[session_key] = new_entry

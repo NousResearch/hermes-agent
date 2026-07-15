@@ -1,4 +1,4 @@
-"""End-to-end regression coverage for verification budget exhaustion (#61631)."""
+"""Model-sovereignty coverage for legacy verification continuation hooks."""
 
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -46,14 +46,12 @@ def agent(tmp_path, monkeypatch):
     return instance
 
 
-def _assert_pending_response_survives(agent, result):
+def _assert_model_response_stays_sovereign(agent, result):
     assert result["final_response"] == "composed report"
-    assert result["turn_exit_reason"] == "max_iterations_reached(1/1)"
-    assert result["completed"] is False
+    assert result["turn_exit_reason"] == "text_response(finish_reason=stop)"
+    assert result["completed"] is True
     assert agent._handle_max_iterations.call_count == 0
     assert [message["role"] for message in result["messages"]] == [
-        "user",
-        "assistant",
         "user",
         "assistant",
     ]
@@ -74,9 +72,11 @@ def test_verify_on_stop_preserves_composed_report_at_budget_limit(agent, monkeyp
     ):
         result = agent.run_conversation("edit changed.py")
 
-    _assert_pending_response_survives(agent, result)
-    assert result["messages"][1]["_verification_stop_synthetic"] is True
-    assert result["messages"][2]["_verification_stop_synthetic"] is True
+    _assert_model_response_stays_sovereign(agent, result)
+    assert all(
+        "_verification_stop_synthetic" not in message
+        for message in result["messages"]
+    )
 
 
 def test_pre_verify_preserves_composed_report_at_budget_limit(agent, monkeypatch):
@@ -99,9 +99,11 @@ def test_pre_verify_preserves_composed_report_at_budget_limit(agent, monkeypatch
     ):
         result = agent.run_conversation("edit changed.py")
 
-    _assert_pending_response_survives(agent, result)
-    assert result["messages"][1]["_pre_verify_synthetic"] is True
-    assert result["messages"][2]["_pre_verify_synthetic"] is True
+    _assert_model_response_stays_sovereign(agent, result)
+    assert all(
+        "_pre_verify_synthetic" not in message
+        for message in result["messages"]
+    )
 
 
 def test_free_text_ack_is_not_keyword_classified_or_synthetically_continued(agent, monkeypatch):
@@ -121,7 +123,7 @@ def test_free_text_ack_is_not_keyword_classified_or_synthetically_continued(agen
     agent._handle_max_iterations.assert_not_called()
 
 
-def test_later_verified_response_supersedes_pending_report(agent, monkeypatch):
+def test_runtime_does_not_synthetically_replace_model_report(agent, monkeypatch):
     agent.max_iterations = 2
     agent.iteration_budget.max_total = 2
     answers = iter([_response("premature report"), _response("verified final report")])
@@ -138,7 +140,8 @@ def test_later_verified_response_supersedes_pending_report(agent, monkeypatch):
     ):
         result = agent.run_conversation("edit changed.py")
 
-    assert result["final_response"] == "verified final report"
+    assert result["final_response"] == "premature report"
     assert result["turn_exit_reason"] == "text_response(finish_reason=stop)"
     assert result["completed"] is True
+    assert result["api_calls"] == 1
     agent._handle_max_iterations.assert_not_called()

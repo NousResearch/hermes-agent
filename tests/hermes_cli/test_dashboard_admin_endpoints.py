@@ -678,13 +678,13 @@ class TestSkillsHubScanEndpoint:
             verdict="caution",
             findings=[
                 Finding(
-                    pattern_id="p",
+                    pattern_id="oversized_skill",
                     severity="high",
-                    category="exfiltration",
-                    file="SKILL.md",
-                    line=10,
-                    match="m",
-                    description="leaks data",
+                    category="structural",
+                    file="(directory)",
+                    line=0,
+                    match="2048KB total",
+                    description="package exceeds the configured size limit",
                 )
             ],
             summary="s",
@@ -706,8 +706,8 @@ class TestSkillsHubScanEndpoint:
         # community + caution => blocked by install policy.
         assert body["policy"] == "block"
         assert body["severity_counts"]["high"] == 1
-        assert body["findings"][0]["category"] == "exfiltration"
-        assert body["findings"][0]["file"] == "SKILL.md"
+        assert body["findings"][0]["category"] == "structural"
+        assert body["findings"][0]["file"] == "(directory)"
 
     def test_scan_404_when_no_bundle(self, monkeypatch):
         monkeypatch.setattr(

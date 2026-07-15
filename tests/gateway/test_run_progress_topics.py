@@ -145,6 +145,30 @@ class FakeAgent:
         }
 
 
+class ApprovalSourceCaptureAgent:
+    """Invoke the real per-turn approval callback from the worker thread."""
+
+    def __init__(self, **kwargs):
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        from tools import approval
+
+        callbacks = list(approval._gateway_notify_cbs.values())
+        assert len(callbacks) == 1
+        callbacks[0](
+            {
+                "command": "safe-test-command",
+                "description": "source capture regression",
+            }
+        )
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class ThinkingAgent:
     """Agent that emits _thinking scratch text (no tool calls).
 
@@ -268,6 +292,65 @@ def _make_runner(adapter):
         stt_enabled=False,
     )
     return runner
+
+
+@pytest.mark.asyncio
+async def test_gateway_approval_callback_uses_lexically_captured_source(
+    monkeypatch,
+    tmp_path,
+):
+    """A worker callback must not depend on an out-of-scope ``event`` name."""
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = ApprovalSourceCaptureAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        gateway_run,
+        "_resolve_runtime_agent_kwargs",
+        lambda: {"api_key": "fake"},
+    )
+
+    observed_sources = []
+
+    def decide(_config, source):
+        observed_sources.append(source)
+        return SimpleNamespace(restricted=False, allowed=True, reason="allowed")
+
+    monkeypatch.setattr(
+        "gateway.approval_authority.gateway_approval_authority_decision",
+        decide,
+    )
+
+    adapter = ProgressCaptureAdapter(platform=Platform.DISCORD)
+    runner = _make_runner(adapter)
+    source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="222222222222222222",
+        chat_type="channel",
+        user_id="1279454038731264061",
+        delivered_via_upstream_relay=True,
+    )
+
+    result = await runner._run_agent(
+        message="exercise approval callback",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="approval-source-capture",
+        session_key="agent:main:discord:channel:222222222222222222",
+    )
+
+    assert result["final_response"] == "done"
+    assert observed_sources == [source]
+    assert adapter.sent
+    assert "Dangerous command requires approval" in adapter.sent[-1]["content"]
 
 
 @pytest.mark.asyncio

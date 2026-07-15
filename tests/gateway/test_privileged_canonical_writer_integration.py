@@ -57,13 +57,13 @@ def _enable_boundary(monkeypatch, call):
     monkeypatch.setattr(writer_boundary, "canonical_writer_call", call)
 
 
-def _public_target(_target_ref):
+def _guild_target(_target_ref):
     return {
         "channel_id": DISCORD_CHANNEL_ID,
-        "channel_type": "public_channel",
-        "target_type": "public_guild_channel",
+        "channel_type": "guild_channel",
+        "target_type": "guild_channel",
         "guild_id": DISCORD_GUILD_ID,
-        "target_kind": "exact_public_directory_target",
+        "target_kind": "exact_guild_acl_channel",
         "target_member_key": None,
         "target_member_id": None,
         "target_mention": None,
@@ -74,8 +74,8 @@ def _routeback_kwargs():
     return {
         "case_id": "case:writer-boundary",
         "target_ref": {"channel_id": DISCORD_CHANNEL_ID},
-        "message": "A verified public route-back",
-        "message_summary": "public route-back",
+        "message": "A verified guild route-back",
+        "message_summary": "guild route-back",
         "source_refs": {
             "platform": "discord",
             "thread_id": "requester-thread-1",
@@ -86,7 +86,7 @@ def _routeback_kwargs():
 
 
 def _prepare_routeback_execution(monkeypatch):
-    monkeypatch.setattr(canonical_tool, "_resolve_route_back_public_target", _public_target)
+    monkeypatch.setattr(canonical_tool, "_resolve_route_back_public_target", _guild_target)
     monkeypatch.setattr(
         canonical_tool,
         "_discord_expected_content_sha256",
@@ -115,11 +115,11 @@ def _signed_edge_request():
         "deadline_unix_ms": 4_000_000_000_000,
         "operation": "public.message.send",
         "target": {
-            "target_type": "public_guild_channel",
+            "target_type": "guild_channel",
             "guild_id": DISCORD_GUILD_ID,
             "channel_id": DISCORD_CHANNEL_ID,
         },
-        "payload": {"content": "A verified public route-back"},
+        "payload": {"content": "A verified guild route-back"},
         "idempotency_key": derive_routeback_edge_idempotency_key(
             case_id="case:writer-boundary",
             canonical_idempotency_key="routeback:writer-boundary:1",
@@ -144,7 +144,7 @@ def _signed_edge_receipt(*, outcome="blocked_before_dispatch"):
             "edge_request_id": EDGE_REQUEST_ID,
             "operation": "public.message.send",
             "target": {
-                "target_type": "public_guild_channel",
+                "target_type": "guild_channel",
                 "guild_id": DISCORD_GUILD_ID,
                 "channel_id": DISCORD_CHANNEL_ID,
             },
@@ -227,7 +227,7 @@ def test_model_append_runs_authoritative_validation_before_writer(monkeypatch):
     )]
 
 
-def test_verified_writer_alias_event_materializes_local_alias_projection(monkeypatch):
+def test_verified_writer_alias_event_returns_retry_target_without_local_write(monkeypatch):
     learned = []
 
     def call(operation, payload, *, idempotency_key=None):
@@ -254,13 +254,200 @@ def test_verified_writer_alias_event_materializes_local_alias_projection(monkeyp
         case_id="case:alias",
         summary="Requester clarified the teammate alias",
         source_refs={"platform": "discord", "message_id": "message-alias-1"},
-        payload={"alias": "Niki", "member_key": "nikolay"},
+        payload={"alias": "Niki", "member_key": "alex"},
         idempotency_key="alias:event:1",
     ))
 
-    assert learned == [("Niki", "nikolay")]
+    assert learned == []
     assert result["success"] is True
-    assert result["alias"]["member_key"] == "nikolay"
+    assert result["alias"]["member_key"] == "alex"
+    assert result["immediate_retry_target_person"] == "alex"
+    assert (
+        result["alias_projection_status"]
+        == "canonical_event_committed_projector_pending"
+    )
+
+
+@pytest.mark.parametrize(
+    "payload, expected_error",
+    [
+        (
+            {"alias": "Niki", "member_key": "unknown-person"},
+            "payload.member_key is unknown",
+        ),
+        (
+            {"alias": "Niki", "member_key": "alex", "note": "extra"},
+            "must contain exactly alias and member_key",
+        ),
+        (
+            {"alias": "alex", "member_key": "ivcho"},
+            "conflicts with the static registry",
+        ),
+    ],
+)
+def test_alias_event_rejects_projector_poisoning_before_writer(
+    monkeypatch,
+    payload,
+    expected_error,
+):
+    calls = []
+    _enable_boundary(
+        monkeypatch,
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    result = json.loads(canonical_tool.canonical_event_append_tool(
+        event_type="person.alias.learned",
+        case_id="case:alias",
+        summary="Requester clarified the teammate alias",
+        source_refs={"platform": "discord", "message_id": "message-alias-invalid"},
+        payload=payload,
+        idempotency_key="alias:event:invalid",
+    ))
+
+    assert expected_error in result["error"]
+    assert calls == []
+
+
+def test_committed_alias_event_does_not_consult_mutable_local_cache(
+    monkeypatch,
+):
+    def call(operation, payload, *, idempotency_key=None):
+        assert operation == CanonicalWriterOperation.EVENT_APPEND_MODEL.value
+        return {
+            "success": True,
+            "event_id": "11111111-1111-4111-8111-111111111111",
+            "inserted": True,
+            "deduped": False,
+        }
+
+    _enable_boundary(monkeypatch, call)
+    monkeypatch.setattr(
+        "gateway.support_ops_team_registry.learn_team_member_alias",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            OSError("derived cache unavailable")
+        ),
+    )
+
+    result = json.loads(canonical_tool.canonical_event_append_tool(
+        event_type="person.alias.learned",
+        case_id="case:alias",
+        summary="Requester clarified the teammate alias",
+        source_refs={"platform": "discord", "message_id": "message-alias-2"},
+        payload={"alias": "Niki", "member_key": "alex"},
+        idempotency_key="alias:event:2",
+    ))
+
+    assert result["success"] is True
+    assert result["immediate_retry_target_person"] == "alex"
+    assert result["alias"] == {"alias": "niki", "member_key": "alex"}
+    assert (
+        result["alias_projection_status"]
+        == "canonical_event_committed_projector_pending"
+    )
+
+
+def test_verified_channel_alias_event_returns_structured_thread_retry_target(
+    monkeypatch,
+):
+    calls = []
+
+    def call(operation, payload, *, idempotency_key=None):
+        calls.append((operation, payload, idempotency_key))
+        return {
+            "success": True,
+            "event_id": "11111111-1111-4111-8111-111111111111",
+            "inserted": True,
+            "deduped": False,
+        }
+
+    _enable_boundary(monkeypatch, call)
+    payload = {
+        "alias": "July incidents",
+        "guild_id": DISCORD_GUILD_ID,
+        "target_type": "guild_thread",
+        "channel_id": "1527000000000000002",
+        "parent_channel_id": "1527000000000000001",
+    }
+
+    result = json.loads(canonical_tool.canonical_event_append_tool(
+        event_type="channel.alias.learned",
+        case_id="case:alias",
+        summary="Requester clarified the exact guild thread",
+        source_refs={"platform": "discord", "message_id": "message-alias-3"},
+        payload=payload,
+        idempotency_key="alias:event:3",
+    ))
+
+    assert len(calls) == 1
+    assert result["success"] is True
+    assert result["immediate_retry_target_channel"] == {
+        key: payload[key]
+        for key in (
+            "guild_id",
+            "target_type",
+            "channel_id",
+            "parent_channel_id",
+        )
+    }
+    assert result["alias"]["alias"] == "july incidents"
+    assert result["alias_projection_status"] == (
+        "canonical_event_committed_projector_pending"
+    )
+
+
+@pytest.mark.parametrize(
+    "payload,error",
+    [
+        (
+            {
+                "alias": "incidents",
+                "guild_id": "1282725267068157973",
+                "target_type": "guild_channel",
+                "channel_id": "1527000000000000001",
+            },
+            "not the production guild",
+        ),
+        (
+            {
+                "alias": "incidents",
+                "guild_id": DISCORD_GUILD_ID,
+                "target_type": "guild_thread",
+                "channel_id": "1527000000000000002",
+            },
+            "shape does not match",
+        ),
+        (
+            {
+                "alias": "incidents",
+                "guild_id": DISCORD_GUILD_ID,
+                "target_type": "private_thread",
+                "channel_id": "1527000000000000002",
+            },
+            "target_type",
+        ),
+    ],
+)
+def test_channel_alias_event_rejects_wrong_guild_or_private_shape_before_writer(
+    monkeypatch, payload, error
+):
+    calls = []
+    _enable_boundary(
+        monkeypatch,
+        lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    result = json.loads(canonical_tool.canonical_event_append_tool(
+        event_type="channel.alias.learned",
+        case_id="case:alias",
+        summary="Requester clarified the lane",
+        source_refs={"platform": "discord", "message_id": "message-invalid"},
+        payload=payload,
+        idempotency_key="alias:event:invalid-channel",
+    ))
+
+    assert error in result["error"]
+    assert calls == []
 
 
 def test_gateway_and_projector_have_no_legacy_helper_or_secret_path():
@@ -307,11 +494,11 @@ def test_routeback_never_sends_without_new_durable_claim(monkeypatch, claim):
         assert payload["discord_edge_intent"] == {
             "operation": "public.message.send",
             "target": {
-                "target_type": "public_guild_channel",
+                "target_type": "guild_channel",
                 "guild_id": DISCORD_GUILD_ID,
                 "channel_id": DISCORD_CHANNEL_ID,
             },
-            "payload": {"content": "A verified public route-back"},
+            "payload": {"content": "A verified guild route-back"},
             "idempotency_key": derive_routeback_edge_idempotency_key(
                 case_id="case:writer-boundary",
                 canonical_idempotency_key="routeback:writer-boundary:1",

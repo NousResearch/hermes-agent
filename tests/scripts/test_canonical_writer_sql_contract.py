@@ -13,12 +13,6 @@ from gateway.canonical_writer_postgres_backend import (
 
 ROOT = Path(__file__).resolve().parents[2]
 SQL_PATH = ROOT / "scripts" / "sql" / "canonical_writer_v1.sql"
-BOOTSTRAP_SQL_PATH = (
-    ROOT / "scripts" / "sql" / "canonical_writer_canary_bootstrap_v1.sql"
-)
-BOOTSTRAP_RETIRE_SQL_PATH = (
-    ROOT / "scripts" / "sql" / "canonical_writer_canary_bootstrap_retire_v1.sql"
-)
 FOUNDATION_PREREQUISITES_SQL_PATH = (
     ROOT / "scripts" / "sql" / "canonical_writer_foundation_prerequisites_v1.sql"
 )
@@ -33,8 +27,6 @@ FOUNDATION_PHASE_B_ROLE_SQL_PATH = (
 )
 HELPERS_PATH = ROOT / "scripts" / "sql" / "canonical_writer_v1_helpers.json"
 SQL = SQL_PATH.read_text(encoding="utf-8")
-BOOTSTRAP_SQL = BOOTSTRAP_SQL_PATH.read_text(encoding="utf-8")
-BOOTSTRAP_RETIRE_SQL = BOOTSTRAP_RETIRE_SQL_PATH.read_text(encoding="utf-8")
 FOUNDATION_PREREQUISITES_SQL = FOUNDATION_PREREQUISITES_SQL_PATH.read_text(
     encoding="utf-8"
 )
@@ -89,12 +81,12 @@ def _dollar_block(name: str) -> str:
     return SQL.split(start, 1)[1].split(f"${name}$;", 1)[0]
 
 
-def test_fixed_catalog_has_eighteen_public_routines_and_private_bootstrap():
+def test_fixed_catalog_has_seventeen_public_routines():
     expected = set(POSTGRES_ROUTINE_BY_OPERATION.values())
 
-    assert len(expected) == 18
-    assert _writer_names() == expected | {"writer_canary_scope_preapprove"}
-    assert SQL.count("-- Fixed public routine ") == 18
+    assert len(expected) == 17
+    assert _writer_names() == expected
+    assert SQL.count("-- Fixed public routine ") == 17
 
 
 def test_private_writer_tables_have_exact_ordered_columns_without_duplicates():
@@ -142,18 +134,6 @@ def test_private_writer_tables_have_exact_ordered_columns_without_duplicates():
             "capability_epoch_sha256", "idempotency_key", "request_sha256",
             "remaining_uses", "consumed_at", "receipt_event_id", "response",
         ),
-        "writer_canary_scope_preapprovals": (
-            "grant_id", "case_id", "release_sha256", "fixture_sha256",
-            "run_id", "session_key_sha256", "expires_at", "approved_by",
-            "approval_source_sha256", "request_sha256", "preapproved_at",
-            "receipt_event_id",
-        ),
-        "writer_canary_scope_claims": (
-            "grant_id", "case_id", "release_sha256", "fixture_sha256",
-            "run_id", "approval_source_sha256", "session_key_sha256",
-            "capability_epoch_sha256", "expires_at", "request_sha256",
-            "claimed_at", "claim_event_id",
-        ),
     }
 
     for table, columns in expected.items():
@@ -189,7 +169,7 @@ def test_public_routines_reraise_only_retryable_transaction_aborts():
         assert definition.count(retry_clause) == 1
         assert "RETURN canonical_brain._fail('database_failure'" in definition
 
-    assert SQL.count(retry_clause) == 19
+    assert SQL.count(retry_clause) == 17
 
 
 def test_owner_and_execute_acl_cover_exactly_public_catalog():
@@ -209,12 +189,8 @@ def test_owner_and_execute_acl_cover_exactly_public_catalog():
         )
     )
 
-    assert owners == expected | {
-        "writer_canary_scope_preapprove",
-        "writer_canary_scope_preapproval_retire",
-    }
-    assert grants == expected | {"writer_canary_scope_preapproval_retire"}
-    assert "writer_canary_scope_preapproval_retire" not in expected
+    assert owners == expected
+    assert grants == expected
     retire_acl = _dollar_block("retire_canonical_acl")
     direct_acl = _dollar_block("canonical_direct_acl_contract")
     assert "namespace.nspname = 'canonical_brain'" in retire_acl
@@ -230,62 +206,6 @@ def test_owner_and_execute_acl_cover_exactly_public_catalog():
     )
     assert not re.search(
         r"GRANT EXECUTE[\s\S]{0,120}\bTO PUBLIC\b", SQL
-    )
-
-
-def test_canary_preapproval_acl_is_separate_one_shot_and_base_rerun_inert():
-    assert not re.search(
-        r"GRANT EXECUTE ON FUNCTION canonical_brain\."
-        r"writer_canary_scope_preapprove\(jsonb,jsonb\)\s+"
-        r"TO canonical_brain_writer;",
-        SQL,
-    )
-    assert "DO $retire_canonical_acl$" in SQL
-    assert "canonical_brain_canary_bootstrap" not in _dollar_block(
-        "canonical_direct_acl_contract"
-    )
-    assert BOOTSTRAP_SQL.count(
-        "GRANT EXECUTE ON FUNCTION\n"
-        "    canonical_brain.writer_canary_scope_preapprove(jsonb,jsonb)"
-    ) == 1
-    assert "TO canonical_brain_canary_bootstrap" in BOOTSTRAP_SQL
-    assert "canary.scope.bootstrap_authorized" in BOOTSTRAP_SQL
-    assert "canary.scope.bootstrap_retired" in BOOTSTRAP_SQL
-    assert (
-        "event.payload->'canary_scope_bootstrap_retirement'->>'grant_id'"
-        in BOOTSTRAP_SQL
-    )
-    assert re.search(
-        r"event\.payload->'canary_scope_bootstrap_retirement'\s*"
-        r"->>'provisioning_receipt_sha256'",
-        BOOTSTRAP_SQL,
-    )
-    assert "canary_scope_bootstrap_provision" in BOOTSTRAP_SQL
-    assert "stale canary bootstrap ACL already exists" in BOOTSTRAP_SQL
-
-
-def test_persistent_memberships_use_provider_native_inherit_without_set():
-    bootstrap_pair = "granted_role.rolname = 'canonical_brain_canary_bootstrap'"
-    for contract in (SQL, BOOTSTRAP_SQL, BOOTSTRAP_RETIRE_SQL):
-        assert bootstrap_pair in contract
-        assert re.search(
-            r"granted_role\.rolname = 'canonical_brain_canary_bootstrap'"
-            r"[\s\S]{0,320}"
-            r"member_role\.rolname =\s*"
-            r"'canonical_brain_canary_bootstrap_login'"
-            r"[\s\S]{0,180}"
-            r"NOT membership\.admin_option"
-            r"[\s\S]{0,100}membership\.inherit_option"
-            r"[\s\S]{0,100}NOT membership\.set_option",
-            contract,
-        )
-
-    assert "false, true, false" in FOUNDATION_PREREQUISITES_SQL
-    assert "AND NOT membership.set_option" in FOUNDATION_PREREQUISITES_SQL
-    assert "WITH ADMIN FALSE, INHERIT TRUE, SET FALSE;" in FOUNDATION_MEMBERSHIP_SQL
-    assert "AND NOT membership.set_option" in FOUNDATION_MEMBERSHIP_SQL
-    assert "WITH ADMIN FALSE, INHERIT TRUE, SET TRUE;" not in (
-        FOUNDATION_MEMBERSHIP_SQL
     )
 
 
@@ -329,6 +249,15 @@ def test_phase_b_role_artifact_is_fixed_preterminal_and_minimal():
     )
     assert "preterminal', true" in FOUNDATION_PHASE_B_ROLE_SQL
     assert "secret_material_recorded', false" in FOUNDATION_PHASE_B_ROLE_SQL
+    assert "receipt.value::text AS unsigned_receipt_jsonb_text" in (
+        FOUNDATION_PHASE_B_ROLE_SQL
+    )
+    assert "'unsigned_receipt_jsonb_text'" in FOUNDATION_PHASE_B_ROLE_SQL
+    assert "'receipt', serialized.value" in FOUNDATION_PHASE_B_ROLE_SQL
+    assert re.search(
+        r"convert_to\(\s*serialized\.unsigned_receipt_jsonb_text,\s*'UTF8'\s*\)",
+        FOUNDATION_PHASE_B_ROLE_SQL,
+    )
     assert "grantor.rolname = 'cloudsqladmin'" in FOUNDATION_PHASE_B_ROLE_SQL
     assert "grantor', 'cloudsqlsuperuser'" in FOUNDATION_PHASE_B_ROLE_SQL
     assert "pg_catalog.pg_shdepend" in FOUNDATION_PHASE_B_ROLE_SQL
@@ -359,70 +288,6 @@ def test_phase_b_role_artifact_is_fixed_preterminal_and_minimal():
         assert forbidden not in FOUNDATION_PHASE_B_ROLE_SQL
 
 
-def test_canary_bootstrap_retirement_is_exact_idempotent_canonical_truth():
-    expected_gucs = {
-        "database",
-        "grant_id",
-        "case_id",
-        "release_sha256",
-        "fixture_sha256",
-        "run_id",
-        "session_key_sha256",
-        "expires_at",
-        "approved_by",
-        "approval_source_sha256",
-        "provisioning_receipt_sha256",
-        "plan_sha256",
-        "owner_approval_sha256",
-        "executor_session_identity_sha256",
-    }
-    observed_gucs = set(re.findall(
-        r"muncho\.canonical_canary_bootstrap_([a-z0-9_]+)",
-        BOOTSTRAP_RETIRE_SQL,
-    )) - {
-        "retire_admin",
-        "retire_outcome",
-        "retire_authorization_event_id",
-        "retire_consumption_event_id",
-        "retire_retirement_event_id",
-        "retire_inserted",
-        "retire_reason",
-    }
-    assert observed_gucs == expected_gucs
-    assert "canary.scope.bootstrap_retired" in BOOTSTRAP_RETIRE_SQL
-    assert "canary_scope_bootstrap_retirement" in BOOTSTRAP_RETIRE_SQL
-    assert "canary-bootstrap-retire:" in BOOTSTRAP_RETIRE_SQL
-    assert "canary_scope_bootstrap_retire" in BOOTSTRAP_RETIRE_SQL
-    assert BOOTSTRAP_RETIRE_SQL.count(
-        "activation_failed_before_consumption"
-    ) >= 3
-    assert "canonical_canary_bootstrap_reason" not in BOOTSTRAP_RETIRE_SQL
-    assert "consumption_count = 1" in BOOTSTRAP_RETIRE_SQL
-    assert "retirement_count = 1" in BOOTSTRAP_RETIRE_SQL
-    assert "consumption_count = 1 AND retirement_count = 1" in (
-        BOOTSTRAP_RETIRE_SQL
-    )
-    assert "authorization_count = 0" in BOOTSTRAP_RETIRE_SQL
-    assert "'not_authorized', true" in BOOTSTRAP_RETIRE_SQL
-    assert "'provisioning_not_committed', true" in BOOTSTRAP_RETIRE_SQL
-    assert "'bootstrap_consumed', true" in BOOTSTRAP_RETIRE_SQL
-    assert (
-        "unauthorized canary bootstrap has contradictory durable truth"
-        in BOOTSTRAP_RETIRE_SQL
-    )
-    assert "retirement_record - 'executor_session_identity_sha256'" in (
-        BOOTSTRAP_RETIRE_SQL
-    )
-    assert "retirement_payload - 'executor_session_identity_sha256'" in (
-        BOOTSTRAP_RETIRE_SQL
-    )
-    assert "unconsumed canary bootstrap unexpectedly has a preapproval row" in (
-        BOOTSTRAP_RETIRE_SQL
-    )
-    assert "REVOKE EXECUTE ON FUNCTION" in BOOTSTRAP_RETIRE_SQL
-    assert "REVOKE USAGE ON SCHEMA canonical_brain" in BOOTSTRAP_RETIRE_SQL
-
-
 def test_helper_manifest_is_complete_owned_pinned_and_non_executable():
     manifest = json.loads(HELPERS_PATH.read_text(encoding="utf-8"))
     signatures = manifest["signatures"]
@@ -435,7 +300,7 @@ def test_helper_manifest_is_complete_owned_pinned_and_non_executable():
     assert manifest["owner"] == "canonical_brain_migration_owner"
     assert manifest["owner"] == CANONICAL_WRITER_MIGRATION_OWNER
     assert manifest["runtime_execute"] is False
-    assert len(signatures) == len(set(signatures)) == 12
+    assert len(signatures) == len(set(signatures)) == 13
     assert tuple(sorted(signatures)) == EXPECTED_HELPER_ROUTINE_SIGNATURES
     assert {item.split("(", 1)[0].split(".", 1)[1] for item in signatures} == sql_helpers
     for helper in sql_helpers:
@@ -677,8 +542,6 @@ def test_rerun_attestation_uses_exact_default_check_and_index_templates():
         ("writer_capability_revocation_scopes", "revoked_at", "clock_timestamp()"),
         ("writer_capability_revocations", "revoked_at", "clock_timestamp()"),
         ("writer_capability_consumptions", "consumed_at", "clock_timestamp()"),
-        ("writer_canary_scope_preapprovals", "preapproved_at", "clock_timestamp()"),
-        ("writer_canary_scope_claims", "claimed_at", "clock_timestamp()"),
     }
 
     checks = contract.split(
@@ -718,26 +581,7 @@ def test_rerun_attestation_uses_exact_default_check_and_index_templates():
         ("writer_capability_consumptions", "idempotency_key"),
         ("writer_capability_consumptions", "request_sha256"),
         ("writer_capability_consumptions", "remaining_uses"),
-        ("writer_canary_scope_preapprovals", "release_sha256"),
-        ("writer_canary_scope_preapprovals", "fixture_sha256"),
-        ("writer_canary_scope_preapprovals", "session_key_sha256"),
-        ("writer_canary_scope_preapprovals", "approval_source_sha256"),
-        ("writer_canary_scope_preapprovals", "request_sha256"),
-        ("writer_canary_scope_claims", "release_sha256"),
-        ("writer_canary_scope_claims", "fixture_sha256"),
-        ("writer_canary_scope_claims", "approval_source_sha256"),
-        ("writer_canary_scope_claims", "session_key_sha256"),
-        ("writer_canary_scope_claims", "capability_epoch_sha256"),
-            ("writer_canary_scope_claims", "request_sha256"),
-            ("writer_canary_scope_preapproval_retirements", "release_sha256"),
-            ("writer_canary_scope_preapproval_retirements", "fixture_sha256"),
-            (
-                "writer_canary_scope_preapproval_retirements",
-                "session_key_sha256",
-            ),
-            ("writer_canary_scope_preapproval_retirements", "request_sha256"),
-            ("writer_canary_scope_preapproval_retirements", "reason"),
-        }
+    }
     assert "CREATE TEMPORARY TABLE canonical_writer_check_contract" in SQL
     assert "pg_catalog.pg_get_constraintdef(constraint_row.oid, false)" in contract
     assert "preexisting writer table CHECK contract mismatch" in contract
@@ -759,12 +603,6 @@ def test_rerun_attestation_uses_exact_default_check_and_index_templates():
         ("writer_capability_scope_idx", "contract_capability_scope_idx"),
         ("writer_capability_command_idx", "contract_capability_command_idx"),
         ("writer_capability_use_idx", "contract_capability_use_idx"),
-        ("writer_canary_preapproval_scope_idx", "contract_canary_preapproval_scope_idx"),
-        ("writer_canary_claim_scope_idx", "contract_canary_claim_scope_idx"),
-        (
-            "writer_canary_preapproval_retirement_scope_idx",
-            "contract_canary_preapproval_retirement_scope_idx",
-        ),
     }
     assert "CREATE TEMPORARY TABLE canonical_writer_index_contract" in SQL
     for property_name in (
@@ -841,9 +679,8 @@ def test_case_scope_is_server_observed_and_rechecked_under_case_lock():
     assert "writer_routeback_authorizations" in scope
     assert "writer_routeback_terminals" in scope
     assert "terminal.outcome = 'sent'" in scope
-    assert "writer_public_routeback_targets" in scope
-    assert "allowed.enabled" in scope
-    assert "allowed.target_type IN ('public_channel', 'public_thread')" in scope
+    assert "_discord_guild_routeback_target_valid" in scope
+    assert "writer_public_routeback_targets" not in scope
     assert "terminal.outcome = 'blocked'" not in scope
 
     for name, allow_new in (
@@ -875,15 +712,14 @@ def test_thread_reads_cannot_use_model_authored_source_refs_as_authority():
     assert "authorization_row.source_refs" not in route_context
 
 
-def test_routeback_claim_is_acl_only_atomic_and_returns_claim_time():
+def test_routeback_claim_uses_exact_guild_shape_and_returns_claim_time():
     claim = _function_definition("writer_routeback_claim")
     sent = _function_definition("writer_routeback_finalize_sent")
     blocked = _function_definition("writer_routeback_finalize_blocked")
 
-    assert "writer_public_routeback_targets" in claim
-    assert "allowed.enabled" in claim
-    assert "allowed.target_type IN ('public_channel', 'public_thread')" in claim
-    assert "owner-provisioned public target ACL" in claim
+    assert "_discord_guild_routeback_target_valid(target_value)" in claim
+    assert "writer_public_routeback_targets" not in claim
+    assert "target_not_approved" not in claim
     assert "case-linked" not in claim
     assert "routeback-lifecycle:" in claim
     lifecycle_identity = claim.split("authorization_value :=", 1)[1].split(
@@ -912,14 +748,11 @@ def test_routeback_claim_is_acl_only_atomic_and_returns_claim_time():
     assert "pending route-back authorization belongs to another exact runtime scope" in (
         pending_dedupe
     )
-    assert "writer_public_routeback_targets" in pending_dedupe
-    assert "allowed.enabled" in pending_dedupe
-    assert "allowed.target_type IN ('public_channel', 'public_thread')" in (
-        pending_dedupe
-    )
+    assert "writer_public_routeback_targets" not in pending_dedupe
+    assert "target_not_approved" not in pending_dedupe
     assert pending_dedupe.index("'scope_mismatch'") < pending_dedupe.index(
-        "'target_not_approved'"
-    ) < pending_dedupe.index("RETURN canonical_brain._ok")
+        "RETURN canonical_brain._ok"
+    )
     for definition in (claim, sent, blocked):
         assert "_contains_forbidden_dm_ref" in definition
     dm_helper = _function_definition("_contains_forbidden_dm_ref")
@@ -935,6 +768,20 @@ def test_routeback_claim_is_acl_only_atomic_and_returns_claim_time():
         "'private_thread'",
     ):
         assert forbidden in dm_helper
+    target_helper = _function_definition("_discord_guild_routeback_target_valid")
+    assert "value->>'guild_id' = '1282725267068157972'" in target_helper
+    assert "value->>'channel_type' = value->>'target_type'" in target_helper
+    assert "COALESCE(value->>'thread_id', '') = ''" in target_helper
+    assert "COALESCE(value->>'chat_id', '') = ''" in target_helper
+    assert "NOT canonical_brain._contains_forbidden_dm_ref(value)" in target_helper
+    assert "WHEN 'guild_channel'" in target_helper
+    assert "NOT (value ? 'parent_channel_id')" in target_helper
+    assert "WHEN 'guild_thread'" in target_helper
+    assert "value->>'parent_channel_id' <> value->>'channel_id'" in target_helper
+    assert "WHEN 'public_guild_channel'" in target_helper
+    assert "value->>'channel_id' = '1526858760100909066'" in target_helper
+    assert "WHEN 'public_guild_thread'" not in target_helper
+    assert "ELSE false" in target_helper
     for field in ("platform", "adapter_receipt", "receipt_readback_verified"):
         assert f"receipt_value->'{field}'" in sent or f"receipt_value->>'{field}'" in sent
     assert "receipt_value->>'platform' <> 'discord'" in sent
@@ -994,9 +841,9 @@ def test_routeback_restart_recovery_is_exact_lane_and_append_only():
     assert "authorization_record.session_key_sha256 <> session_value" in recover
     assert "authorization_record.runtime_platform <> platform_value" in recover
     assert "authorization_record.source_thread_id <> source_thread_value" in recover
-    assert "recovery_value = 'edge_no_record'" in recover
-    assert "writer_public_routeback_targets" in recover
-    assert "allowed.enabled" in recover
+    assert "_discord_guild_routeback_target_valid(target_value)" in recover
+    assert "writer_public_routeback_targets" not in recover
+    assert "target_not_approved" not in recover
     assert "'recovered_epoch_sha256', epoch_value" in recover
     assert "INSERT INTO canonical_brain.writer_" not in recover
     assert "UPDATE canonical_brain.writer_" not in recover
@@ -1006,6 +853,19 @@ def test_routeback_restart_recovery_is_exact_lane_and_append_only():
         assert "authorization_record.source_thread_id <> COALESCE(" in finalizer
         assert "_case_scope_authorized(" in finalizer
         assert "authorization_record.capability_epoch_sha256" not in finalizer
+
+
+def test_legacy_public_routeback_target_table_is_schema_only_and_inert():
+    assert "CREATE TABLE IF NOT EXISTS canonical_brain.writer_public_routeback_targets" in SQL
+    assert "target_type IN ('public_channel', 'public_thread')" in SQL
+    for name in (
+        "_case_scope_authorized",
+        "writer_routeback_claim",
+        "writer_routeback_recover",
+        "writer_routeback_finalize_sent",
+        "writer_routeback_finalize_blocked",
+    ):
+        assert "writer_public_routeback_targets" not in _function_definition(name)
 
 
 def test_plan_and_capability_transactions_are_exact_and_non_replenishing():
@@ -1018,8 +878,9 @@ def test_plan_and_capability_transactions_are_exact_and_non_replenishing():
     assert "plan_cas_conflict" in plan
     assert "verification_receipt_missing" in plan
     assert "ON CONFLICT (approval_id) DO NOTHING" in plan
-    for reason in ("'plan_superseded'", "'plan_revision_advanced'", "'plan_' || state_value"):
+    for reason in ("'plan_superseded'", "'plan_' || state_value"):
         assert reason in plan
+    assert "'plan_revision_advanced'" not in plan
     assert plan_head.count("FROM public.canonical_event_log AS event") == plan_head.count(
         "JOIN canonical_brain.writer_event_provenance AS provenance"
     )
@@ -1030,7 +891,7 @@ def test_plan_and_capability_transactions_are_exact_and_non_replenishing():
         plan,
         flags=re.DOTALL,
     )
-    assert len(revocation_inserts) == 3
+    assert len(revocation_inserts) == 2
     for columns in revocation_inserts:
         assert re.sub(r"\s+", "", columns) == (
             "approval_id,reason,revoked_by_session_sha256,revoked_at"
@@ -1038,6 +899,8 @@ def test_plan_and_capability_transactions_are_exact_and_non_replenishing():
 
     assert "runtime->>'owner_authenticated' <> 'true'" in grant
     assert "INTERVAL '8 hours'" in grant
+    assert "(head_plan->>'revision')::integer < grant_record.plan_revision" in consume
+    assert "'active_plan_revision', (head_plan->>'revision')::integer" in consume
     assert "^([1-9][0-9]{0,2}|1000)$" in grant
     immutable_hash = grant.split("request_hash :=", 1)[1].split(
         "SELECT * INTO existing_record", 1
@@ -1077,7 +940,7 @@ def test_capabilities_are_bound_to_exact_runtime_epoch_across_all_sql_paths():
 
     assert "'capability_epoch_sha256'" in runtime
     assert "runtime->>'capability_epoch_sha256' ~ '^[0-9a-f]{64}$'" in runtime
-    assert SQL.count("capability_epoch_sha256 text NOT NULL") == 6
+    assert SQL.count("capability_epoch_sha256 text NOT NULL") == 5
     assert (
         "UNIQUE (session_key_sha256, capability_epoch_sha256, idempotency_key)"
         in SQL
@@ -1291,9 +1154,6 @@ def test_resume_bundle_support_is_bounded_explicit_and_no_unsafe_uuid_cast():
         "route_back.sent",
         "route_back.blocked",
         "lease.shadow.recorded",
-        "canary.scope.preapproved",
-        "canary.scope.claimed",
-        "canary.scope.revoked",
     ):
         assert event_type in query
     assert "CASE\n                        WHEN required.event_id ~" in query
@@ -1319,52 +1179,6 @@ def test_projection_read_is_case_scoped_or_internal_and_strictly_paginated():
     assert "writer_event_provenance" in projection
 
 
-def test_isolated_canary_scope_is_preapproved_claimed_and_retired_mechanically():
-    preapprove = _function_definition("writer_canary_scope_preapprove")
-    claim = _function_definition("writer_canary_scope_claim")
-    scope = _function_definition("_case_scope_authorized")
-    revoke_session = _function_definition("writer_capability_revoke_session")
-
-    assert "runtime->>'service_internal' <> 'true'" in preapprove
-    assert "runtime->>'platform' <> 'writer_service'" in preapprove
-    assert "SESSION_USER <> 'canonical_brain_canary_bootstrap_login'" in preapprove
-    assert "canary.scope.bootstrap_authorized" in preapprove
-    assert "provisioning_receipt_sha256" in preapprove
-    assert "canary.scope.bootstrap_consumed" in preapprove
-    assert "canary.scope.bootstrap_retired" in preapprove
-    assert "REVOKE EXECUTE ON FUNCTION" in preapprove
-    assert "REVOKE USAGE ON SCHEMA canonical_brain" in preapprove
-    assert "INTERVAL '1 hour'" in preapprove
-    assert "writer_canary_scope_preapprovals" in preapprove
-    assert "'canary.scope.preapproved'" in preapprove
-    assert "preapproved_value := pg_catalog.clock_timestamp()" in preapprove
-    assert "request_sha256, preapproved_at, receipt_event_id" in preapprove
-    assert "'preapproved_at', preapproved_value" in preapprove
-
-    assert "runtime->>'platform' <> 'api_server'" in claim
-    assert "writer_canary_scope_preapprovals" in claim
-    assert "FOR UPDATE" in claim
-    assert "writer_canary_scope_claims" in claim
-    assert "'canary.scope.claimed'" in claim
-    assert "'canary_scope_replayed'" in claim
-    assert "'expires_at', existing_claim.expires_at" in claim
-    assert "'expires_at', preapproval_record.expires_at" in claim
-    assert "claimed_value := pg_catalog.clock_timestamp()" in claim
-    assert "expires_at, request_sha256, claimed_at" in claim
-    assert "'claimed_at', claimed_value" in claim
-
-    assert "runtime_value->>'platform' = 'api_server'" in scope
-    assert "writer_canary_scope_preapprovals" in scope
-    assert "writer_canary_scope_claims" in scope
-    assert "writer_capability_revocation_scopes" in scope
-    assert "preapproval.expires_at > pg_catalog.statement_timestamp()" in scope
-
-    assert "writer_canary_scope_claims" in revoke_session
-    assert "'canary.scope.revoked'" in revoke_session
-    assert "'canary_scopes_revoked', canary_scope_count" in revoke_session
-    assert "LIMIT 64" in revoke_session
-
-
 def test_thread_only_reads_recheck_each_candidate_case_scope():
     query = _function_definition("writer_case_query")
     routeback_context = _function_definition("writer_routeback_context")
@@ -1377,6 +1191,19 @@ def test_thread_only_reads_recheck_each_candidate_case_scope():
     assert routeback_context.count(
         "canonical_brain._case_scope_authorized("
     ) == 2
+
+
+def test_workspace_candidate_index_cannot_be_starved_by_terminal_case_events():
+    query = _function_definition("writer_case_query")
+    branch = query.split("IF view_value = 'workspace_candidates' THEN", 1)[1]
+    branch = branch.split("END IF;", 1)[0]
+
+    assert "event.event_type = 'task.plan.updated'" in branch
+    assert "latest_plan.plan->>'state' IN ('active', 'blocked')" in branch
+    assert "ORDER BY event.case_id, event.occurred_at DESC" in branch
+    assert "canonical_brain._event_envelope(event)" in branch
+    assert "candidate_cases_truncated" in branch
+    assert "summary" not in branch.casefold()
 
 
 def test_model_append_reserves_the_complete_privileged_writer_event_catalog():
@@ -1393,15 +1220,8 @@ def test_model_append_reserves_the_complete_privileged_writer_event_catalog():
         "approval.capability.recorded",
         "approval.capability.revoked",
         "approval.capability.session_revoked",
-            "capability.check.recorded",
-            "lease.shadow.recorded",
-            "canary.scope.bootstrap_authorized",
-            "canary.scope.bootstrap_consumed",
-                "canary.scope.bootstrap_retired",
-                "canary.scope.preapproved",
-                "canary.scope.preapproval_retired",
-            "canary.scope.claimed",
-        "canary.scope.revoked",
+        "capability.check.recorded",
+        "lease.shadow.recorded",
     }
     assert "privileged_event_forbidden" in model_append
     assert "event type requires its fixed privileged routine" in model_append

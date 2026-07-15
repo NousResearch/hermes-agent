@@ -60,33 +60,6 @@ _DISCORD_NONCONVERSATIONAL_METADATA_KEYS = frozenset({
     "non_conversational",
     "non_conversational_history",
 })
-# Upgrade-bridge fallback only. The primary mechanism is the persisted
-# non-conversational message-ID set populated from explicitly marked sends
-# (metadata["non_conversational"]). These regexes exist solely to recognize
-# status bumps emitted by an older gateway version that pre-dates the marking,
-# so they don't partition history after an upgrade. New emitters should set the
-# metadata flag, not rely on a regex here.
-_DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
-    re.compile(r"^\s*💾\s*Self-improvement review:\s+\S[\s\S]*$", re.IGNORECASE),
-    # Legacy/background-review test doubles used this shorter form before the
-    # self-improvement prefix became the stable emitter contract.
-    re.compile(
-        r"^\s*💾\s+Skill\s+['\"].+?['\"]\s+(?:created|updated|improved|patched)\.?\s*$",
-        re.IGNORECASE,
-    ),
-    re.compile(r"^\s*⏳\s+Working\s+—\s+\d+\s+min(?:\s|$)", re.IGNORECASE),
-    re.compile(
-        r"^\s*\[Background process\s+\S+\s+"
-        r"(?:finished with exit code|is still running~)[\s\S]*\]\s*$",
-        re.IGNORECASE,
-    ),
-    re.compile(
-        r"^\s*(?:✅|❌)\s+Hermes update\s+"
-        r"(?:finished|failed|timed out)[\s\S]*$",
-        re.IGNORECASE,
-    ),
-    re.compile(r"^\s*♻️?\s+Gateway\s+(?:restarted successfully|online\b)[\s\S]*$", re.IGNORECASE),
-)
 
 try:
     import discord
@@ -249,12 +222,6 @@ def _metadata_marks_nonconversational(metadata: Optional[Dict[str, Any]]) -> boo
     if not isinstance(metadata, dict):
         return False
     return any(bool(metadata.get(key)) for key in _DISCORD_NONCONVERSATIONAL_METADATA_KEYS)
-
-
-def _looks_like_nonconversational_history_message(content: str) -> bool:
-    """Fallback recognizer for legacy status bumps missing persisted IDs."""
-    text = content or ""
-    return any(pattern.match(text) for pattern in _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS)
 
 
 def _clean_discord_id(entry: str) -> str:
@@ -2328,7 +2295,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 _target_id = thread_id or chat_id
                 if nonconversational:
                     self._nonconversational_messages.mark_many(message_ids)
-                elif not _looks_like_nonconversational_history_message(content):
+                else:
                     self._last_self_message_id[_target_id] = message_ids[-1]
 
             return SendResult(
@@ -2749,8 +2716,7 @@ class DiscordAdapter(BasePlatformAdapter):
         last_id = continuation_ids[-1] if continuation_ids else message_id
         # Keep the history-backfill fast path pointed at the final visible
         # chunk so a later non-streaming send threads below the full reply.
-        if not _looks_like_nonconversational_history_message(content):
-            self._last_self_message_id[str(channel.id)] = last_id
+        self._last_self_message_id[str(channel.id)] = last_id
         logger.debug(
             "[%s] Overflow split delivered %d chunks; last_id=%s",
             self.name, delivered, last_id,
@@ -5891,10 +5857,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 if msg.type not in {discord.MessageType.default, discord.MessageType.reply}:
                     return None
                 content = getattr(msg, "clean_content", msg.content) or ""
-                if (
-                    str(getattr(msg, "id", "")) in self._nonconversational_messages
-                    or _looks_like_nonconversational_history_message(content)
-                ):
+                if str(getattr(msg, "id", "")) in self._nonconversational_messages:
                     return None
                 # Respect DISCORD_ALLOW_BOTS for other bots.  For history
                 # context, "mentions" is treated as "all" — we are deciding
@@ -5957,10 +5920,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 # status bump authored by us would be mistaken for the real
                 # last bot turn and hide messages that came after it.
                 _content = getattr(msg, "clean_content", msg.content) or ""
-                if (
-                    str(getattr(msg, "id", "")) in self._nonconversational_messages
-                    or _looks_like_nonconversational_history_message(_content)
-                ):
+                if str(getattr(msg, "id", "")) in self._nonconversational_messages:
                     continue
                 # Stop at our own (conversational) message — this is the
                 # partition point.  Everything before this is already in the

@@ -49,9 +49,7 @@ TURN_ID = "turn-full-canary-1"
 TASK_ID = "task-full-canary-1"
 RELEASE_SHA = "a" * 40
 RELEASE_SHA256 = "b" * 64
-APPROVAL_SHA256 = "c" * 64
 SESSION_SHA256 = "d" * 64
-EPOCH_SHA256 = "e" * 64
 SERVICE_SHA256 = "f" * 64
 SOCKET_SHA256 = "1" * 64
 MODULE_SHA256 = "2" * 64
@@ -76,6 +74,7 @@ def _fixture() -> dict[str, Any]:
         "canary_run_id": RUN_ID,
         "release_sha": RELEASE_SHA,
         "release_artifact_sha256": RELEASE_SHA256,
+        "api_session_key_sha256": SESSION_SHA256,
         "valid_from_unix_ms": NOW_MS - 10_000,
         "valid_until_unix_ms": NOW_MS + 120_000,
         "case_id": CASE_ID,
@@ -96,7 +95,7 @@ def _fixture() -> dict[str, Any]:
             "base_url": "https://chatgpt.com/backend-api/codex",
             "model": "gpt-5.6-sol",
             "initial_effort": "high",
-            "elevated_effort": "xhigh",
+            "elevated_effort": "max",
         },
         "task_policy": {
             "minimum_completed_steps": 3,
@@ -126,7 +125,6 @@ def _write_config(tmp_path: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]
     fixture_path.write_bytes(fixture_body)
     os.chown(fixture_path, -1, os.getgid())
     fixture_path.chmod(0o440)
-    grant_id = "canary-grant-1"
     config = {
         "schema": CONFIG_SCHEMA,
         "release_sha": RELEASE_SHA,
@@ -135,15 +133,6 @@ def _write_config(tmp_path: Path) -> tuple[Path, dict[str, Any], dict[str, Any]]
         "case_id": CASE_ID,
         "fixture_path": str(fixture_path),
         "fixture_sha256": fixture_sha256,
-        "canonical_scope": {
-            "grant_id": grant_id,
-            "case_id": CASE_ID,
-            "release_sha256": RELEASE_SHA256,
-            "fixture_sha256": fixture_sha256,
-            "run_id": RUN_ID,
-            "approval_source_sha256": APPROVAL_SHA256,
-            "idempotency_key": "canary-scope-claim:" + grant_id,
-        },
         "collector": {
             "socket_path": "/run/muncho-full-canary/collector.sock",
             "expected_pid": 41,
@@ -233,36 +222,12 @@ class RecordingCollector:
 
 
 class Writer:
-    def __init__(self, config, *, fail_claim: bool = False) -> None:
+    def __init__(self, config) -> None:
         self.config = config
-        self.fail_claim = fail_claim
         self.calls: list[tuple[Any, dict[str, Any], dict[str, Any]]] = []
 
     def __call__(self, operation, payload, **kwargs):
         self.calls.append((operation, dict(payload), dict(kwargs)))
-        if operation is CanonicalWriterOperation.CANARY_SCOPE_CLAIM:
-            if self.fail_claim:
-                return {"success": False, "status": "blocked"}
-            return {
-                "request_id": REQUEST_ID,
-                "status": "inserted",
-                "success": True,
-                "grant_id": self.config.canonical_scope.grant_id,
-                "case_id": CASE_ID,
-                "release_sha256": RELEASE_SHA256,
-                "fixture_sha256": self.config.fixture.sha256,
-                "run_id": RUN_ID,
-                "approval_source_sha256": APPROVAL_SHA256,
-                "session_key_sha256": SESSION_SHA256,
-                "capability_epoch_sha256": EPOCH_SHA256,
-                "expires_at": (NOW + dt.timedelta(seconds=60)).isoformat(),
-                "claimed_at": (NOW - dt.timedelta(seconds=1)).isoformat(),
-                "event_id": EVENT_ID,
-                "claim_event_id": EVENT_ID,
-                "authority_active": True,
-                "inserted": True,
-                "deduped": False,
-            }
         if operation is CanonicalWriterOperation.CASE_QUERY:
             return {
                 "request_id": "44444444-4444-4444-8444-444444444444",
@@ -279,7 +244,6 @@ def _runtime_envelope() -> Mapping[str, Any]:
         "platform": "api_server",
         "session_id": SESSION_ID,
         "session_key_sha256": SESSION_SHA256,
-        "capability_epoch_sha256": EPOCH_SHA256,
     }
 
 
@@ -296,17 +260,21 @@ def _probe(_endpoint, _fixture, identity, observed_at):
     }
 
 
-def _plugin(tmp_path: Path, *, fail_claim: bool = False):
+def _plugin(
+    tmp_path: Path,
+    *,
+    runtime_envelope=_runtime_envelope,
+):
     config = _loaded_config(tmp_path)
     collector = RecordingCollector()
-    writer = Writer(config, fail_claim=fail_claim)
+    writer = Writer(config)
     plugin = CanaryEvidencePlugin(
         config,
         collector_transport=collector,
         socket_inspector=lambda _path, _identity: SOCKET_SHA256,
         edge_probe=_probe,
         writer_call=writer,
-        runtime_envelope=_runtime_envelope,
+        runtime_envelope=runtime_envelope,
         clock_ms=lambda: NOW_MS,
     )
     plugin.start(module_origin="/sealed/release/plugin.py", module_sha256=MODULE_SHA256)
@@ -394,7 +362,7 @@ def test_config_is_exact_root_gateway_dac_and_read_only(tmp_path, monkeypatch):
         )
 
 
-def test_config_rejects_gid_scope_and_release_binding_drift(tmp_path):
+def test_config_rejects_gid_session_digest_and_release_binding_drift(tmp_path):
     config_path, config, fixture = _write_config(tmp_path)
     with pytest.raises(CanaryEvidenceError, match="config_invalid"):
         load_config(
@@ -403,23 +371,23 @@ def test_config_rejects_gid_scope_and_release_binding_drift(tmp_path):
             expected_owner_gid=os.getgid() + 1,
         )
 
-    config["canonical_scope"]["idempotency_key"] = "wrong"
+    fixture["api_session_key_sha256"] = "wrong"
+    fixture_body = _canonical_bytes(fixture)
+    _rewrite_sealed(Path(config["fixture_path"]), fixture_body)
+    config["fixture_sha256"] = hashlib.sha256(fixture_body).hexdigest()
     _rewrite_sealed(config_path, _canonical_bytes(config))
-    with pytest.raises(CanaryEvidenceError, match="config_scope_binding_invalid"):
+    with pytest.raises(CanaryEvidenceError, match="fixture_invalid"):
         load_config(
             config_path,
             expected_owner_uid=os.getuid(),
             expected_owner_gid=os.getgid(),
         )
 
-    config["canonical_scope"]["idempotency_key"] = (
-        "canary-scope-claim:" + config["canonical_scope"]["grant_id"]
-    )
+    fixture["api_session_key_sha256"] = SESSION_SHA256
     fixture["release_artifact_sha256"] = "9" * 64
     fixture_body = _canonical_bytes(fixture)
     _rewrite_sealed(Path(config["fixture_path"]), fixture_body)
     config["fixture_sha256"] = hashlib.sha256(fixture_body).hexdigest()
-    config["canonical_scope"]["fixture_sha256"] = config["fixture_sha256"]
     _rewrite_sealed(config_path, _canonical_bytes(config))
     with pytest.raises(CanaryEvidenceError, match="config_fixture_binding_invalid"):
         load_config(
@@ -492,13 +460,13 @@ def test_peer_and_socket_identity_are_separate_and_substitution_is_rejected(
     assert not worker.is_alive()
 
 
-def test_plugin_ready_precedes_claim_and_private_probe_ack_barrier(tmp_path):
+def test_plugin_ready_precedes_session_binding_and_private_probe_ack_barrier(tmp_path):
     plugin, collector, _writer = _plugin(tmp_path)
     _start(plugin)
 
     assert [frame["event"] for frame in collector.frames] == [
         "plugin_ready",
-        "canonical_scope_claim",
+        "api_session_bound",
         "private_target_probe_ready",
         "private_target_probe_result",
     ]
@@ -513,22 +481,29 @@ def test_plugin_ready_precedes_claim_and_private_probe_ack_barrier(tmp_path):
     assert collector.frames[3]["payload"]["connection_closed_without_response"] is True
 
 
-def test_claim_failure_is_evidenced_and_stops_boundary_probe(tmp_path):
-    plugin, collector, writer = _plugin(tmp_path, fail_claim=True)
+def test_session_binding_failure_is_evidenced_and_stops_boundary_probe(tmp_path):
+    plugin, collector, writer = _plugin(
+        tmp_path,
+        runtime_envelope=lambda: {
+            "platform": "api_server",
+            "session_id": SESSION_ID,
+            "session_key_sha256": "0" * 64,
+        },
+    )
     _start(plugin)
 
     assert [frame["event"] for frame in collector.frames] == [
         "plugin_ready",
-        "canonical_scope_claim",
+        "api_session_bound",
     ]
     assert collector.frames[-1]["payload"] == {
         "success": False,
-        "failure_code": "writer_claim_failed",
+        "failure_code": "session_binding_failed",
     }
-    assert len(writer.calls) == 1
+    assert writer.calls == []
 
 
-def test_high_to_xhigh_hooks_project_receipts_and_end_with_case_readback(tmp_path):
+def test_high_to_max_hooks_project_receipts_and_end_with_case_readback(tmp_path):
     plugin, collector, writer = _plugin(tmp_path)
     _start(plugin)
     private_semantic_step = "do-not-copy-this-model-authored-step"
@@ -544,20 +519,20 @@ def test_high_to_xhigh_hooks_project_receipts_and_end_with_case_readback(tmp_pat
         tool_name="todo",
         args={
             "todos": [{"content": private_semantic_step, "status": "pending"}],
-            "reasoning": {"effort": "xhigh", "reason_code": "complexity"},
+            "reasoning": {"effort": "max", "reason_code": "complexity"},
         },
         result={
             "success": True,
             "reasoning_control": {
-                "requested_effort": "xhigh",
-                "applied_effort": "xhigh",
+                "requested_effort": "max",
+                "applied_effort": "max",
             },
         },
         duration_ms=4,
         status="success",
     )
 
-    _pre(plugin, "api-request-2", 1, "xhigh")
+    _pre(plugin, "api-request-2", 1, "max")
     _post(plugin, "api-request-2", ["canonical-call-1", "routeback-call-1"])
     plugin.post_tool_call(
         session_id=SESSION_ID,
@@ -600,10 +575,10 @@ def test_high_to_xhigh_hooks_project_receipts_and_end_with_case_readback(tmp_pat
     pre_frames = [frame for frame in collector.frames if frame["event"] == "pre_api_request"]
     assert [frame["payload"]["reasoning_effort"] for frame in pre_frames] == [
         "high",
-        "xhigh",
+        "max",
     ]
     tool_frames = [frame for frame in collector.frames if frame["event"] == "post_tool_call"]
-    assert tool_frames[0]["payload"]["reasoning_control"]["applied_effort"] == "xhigh"
+    assert tool_frames[0]["payload"]["reasoning_control"]["applied_effort"] == "max"
     assert "todos" not in tool_frames[0]["payload"]
     assert private_semantic_step.encode() not in b"\n".join(collector.raw)
     assert tool_frames[1]["payload"]["result_projection"]["event_id"] == EVENT_ID

@@ -31,6 +31,11 @@ _TICKET_CREATE_PATH = "/api/tickets/create"
 _IDEMPOTENCY_FILE = "journal-approvals.json"
 _idempotency_lock = threading.Lock()
 
+# Daily-dispatcher date guard: prevents re-posting the same day's [Approve]
+# embeds when the Discord gateway restarts mid-day. Separate from
+# _IDEMPOTENCY_FILE (which tracks approved *tickets*, not posted *embeds*).
+_APPROVALS_POSTED_FILE = "journal-approvals-posted.date"
+
 
 class ApproveResult(TypedDict):
     success: bool
@@ -59,6 +64,26 @@ def load_dev_todos(brief_path: str) -> list[dict]:
     except (json.JSONDecodeError, AttributeError, TypeError) as exc:
         _log.warning("journal_brief parse error: %s", exc)
         return []
+
+
+def map_dev_todos_for_send(todos: list[dict]) -> list[dict]:
+    """Map journal-contract dev todos to the {id, title, body} shape that
+    ``DiscordAdapter.send_journal_dev_todos`` expects.
+
+    title = todo["content"], falling back to todo["text"] when content is
+    empty. body = todo["note"], defaulting to "". Malformed entries (e.g.
+    non-dict items) are skipped rather than raising.
+    """
+    mapped: list[dict] = []
+    for todo in todos:
+        try:
+            todo_id = str(todo.get("id") or "")
+            title = str(todo.get("content") or todo.get("text") or "")
+            body = str(todo.get("note") or "")
+        except AttributeError:
+            continue
+        mapped.append({"id": todo_id, "title": title, "body": body})
+    return mapped
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +122,45 @@ def _save_approved_id(todo_id: str) -> None:
 def is_todo_approved(todo_id: str) -> bool:
     """Return True when this todo id has already been approved and a ticket created."""
     return todo_id in _load_approved_ids()
+
+
+# ---------------------------------------------------------------------------
+# Daily-dispatcher date guard
+# ---------------------------------------------------------------------------
+
+def _resolve_approvals_posted_file() -> Path:
+    home = os.environ.get("HERMES_HOME") or str(Path.home() / ".hermes")
+    return Path(home) / _APPROVALS_POSTED_FILE
+
+
+def has_posted_approvals_today(today: str) -> bool:
+    """Return True when ``today`` (a "YYYY-MM-DD" UTC date string) was
+    already recorded as posted.
+
+    Never raises: a missing or unreadable file is treated as "not yet
+    posted" so the dispatcher fires normally.
+    """
+    path = _resolve_approvals_posted_file()
+    try:
+        last = path.read_text(encoding="utf-8").strip()
+    except (FileNotFoundError, OSError):
+        return False
+    return last == today
+
+
+def mark_approvals_posted(today: str) -> None:
+    """Record ``today`` (a "YYYY-MM-DD" UTC date string) as posted.
+
+    Never raises; a write failure is logged and otherwise ignored — worst
+    case the next gateway restart re-posts the same day's embeds, which is
+    the existing idempotency-store behavior for the underlying approvals.
+    """
+    path = _resolve_approvals_posted_file()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(today, encoding="utf-8")
+    except Exception as exc:
+        _log.warning("Could not persist journal-approvals posted date: %s", exc)
 
 
 # ---------------------------------------------------------------------------

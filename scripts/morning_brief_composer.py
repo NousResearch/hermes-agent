@@ -102,6 +102,15 @@ def normalize_todo_text(text: str) -> str:
     return text
 
 
+def get_todo_text(item: dict) -> str:
+    """Return an item's display text.
+
+    The journal contract's canonical field is "content"; "text" is kept as
+    a fallback for older/alternate producers.
+    """
+    return item.get("content") or item.get("text", "")
+
+
 def filter_todos(todos: list) -> list:
     """Filter, dedup, sort, and annotate todos.
 
@@ -118,7 +127,7 @@ def filter_todos(todos: list) -> list:
         confidence = item.get("confidence")
         if confidence is None or confidence < 0.6:
             continue
-        key = normalize_todo_text(item.get("text", ""))
+        key = normalize_todo_text(get_todo_text(item))
         if key in seen:
             continue
         seen.add(key)
@@ -162,11 +171,47 @@ def render_todo_section(data: dict | None, reason: str) -> str:
         return "\n".join(lines)
 
     for todo in todos:
-        text = todo.get("text", "")
+        text = get_todo_text(todo)
         suffix = " <!-- route: approval -->" if todo.get("_approval_route") else ""
         lines.append(f"- {text}{suffix}")
 
     return "\n".join(lines)
+
+
+def render_advisory(advisory) -> str:
+    """Render a single perf-coach advisory as a readable bullet.
+
+    Advisories are dicts of the shape {key, severity: "info"|"warn", text}.
+    Plain strings are accepted too (legacy producers) and rendered verbatim.
+    """
+    if isinstance(advisory, dict):
+        text = advisory.get("text", "")
+        prefix = "⚠️ " if advisory.get("severity") == "warn" else ""
+        return f"- {prefix}{text}"
+    return f"- {advisory}"
+
+
+def render_session_value(value) -> str:
+    """Render a today/tomorrow/recent_wrap session object as a readable line.
+
+    Sessions are dicts with session_type, intensity, duration_min, notes,
+    and a "planned" flag. Null/missing fields are skipped. Plain strings
+    (legacy producers) are rendered verbatim.
+    """
+    if not isinstance(value, dict):
+        return str(value)
+
+    if value.get("planned") is False:
+        return "Rest / nothing planned"
+
+    parts: list[str] = []
+    for field in ("session_type", "intensity", "duration_min", "notes"):
+        field_value = value.get(field)
+        if field_value is None or field_value == "":
+            continue
+        parts.append(f"{field.replace('_', ' ')}: {field_value}")
+
+    return ", ".join(parts) if parts else "—"
 
 
 def render_training_section(data: dict | None, reason: str) -> str:
@@ -178,15 +223,16 @@ def render_training_section(data: dict | None, reason: str) -> str:
     advisories = data.get("advisories")
     if advisories:
         for advisory in advisories:
-            lines.append(f"- {advisory}")
+            lines.append(render_advisory(advisory))
         return "\n".join(lines)
 
     # Fall back to raw fields
     fallback_parts: list[str] = []
     for field in ("today", "tomorrow", "form", "recent_wrap"):
         value = data.get(field)
-        if value:
-            fallback_parts.append(f"**{field}:** {value}")
+        if not value:
+            continue
+        fallback_parts.append(f"**{field}:** {render_session_value(value)}")
 
     if fallback_parts:
         lines.extend(fallback_parts)
@@ -258,6 +304,28 @@ def compose_brief(
     return "\n".join(sections)
 
 
+def compose_brief_from_paths(
+    journal_path: str | Path,
+    perfcoach_path: str | Path,
+    commander_path: str | Path,
+) -> str:
+    """Load the three upstream contracts from disk and compose the brief.
+
+    This is the shared entry point used by both this module's CLI and other
+    callers (e.g. the Discord delivery cron script) that just want the
+    finished markdown for a given set of contract paths.
+    """
+    journal_data, journal_reason = load_contract(journal_path)
+    perfcoach_data, perfcoach_reason = load_contract(perfcoach_path)
+    commander_data, commander_reason = load_contract(commander_path)
+
+    return compose_brief(
+        journal_data, journal_reason,
+        perfcoach_data, perfcoach_reason,
+        commander_data, commander_reason,
+    )
+
+
 # ---------------------------------------------------------------------------
 # CLI entry point
 # ---------------------------------------------------------------------------
@@ -297,15 +365,7 @@ def _parse_args(argv=None) -> argparse.Namespace:
 def main(argv=None) -> None:
     args = _parse_args(argv)
 
-    journal_data, journal_reason = load_contract(args.journal_path)
-    perfcoach_data, perfcoach_reason = load_contract(args.perfcoach_path)
-    commander_data, commander_reason = load_contract(args.commander_path)
-
-    brief = compose_brief(
-        journal_data, journal_reason,
-        perfcoach_data, perfcoach_reason,
-        commander_data, commander_reason,
-    )
+    brief = compose_brief_from_paths(args.journal_path, args.perfcoach_path, args.commander_path)
 
     if args.dry_run:
         print(brief)

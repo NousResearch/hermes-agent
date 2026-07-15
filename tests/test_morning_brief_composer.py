@@ -26,10 +26,13 @@ from scripts.morning_brief_composer import (
     compose_brief,
     filter_todos,
     get_today_bangkok,
+    get_todo_text,
     load_contract,
     normalize_todo_text,
+    render_advisory,
     render_dev_report_section,
     render_journal_section,
+    render_session_value,
     render_todo_section,
     render_training_section,
     validate_freshness,
@@ -217,6 +220,72 @@ class TestTodoDedup:
         normalized = normalize_todo_text("do it, now!")
         assert "," not in normalized
         assert "!" not in normalized
+
+
+# ---------------------------------------------------------------------------
+# get_todo_text — "content" is canonical, "text" is a fallback
+# ---------------------------------------------------------------------------
+
+class TestTodoContentField:
+    """The journal contract's canonical todo field is "content"; "text" is
+    kept only as a fallback for older/alternate producers."""
+
+    def test_content_key_used_when_present(self):
+        assert get_todo_text({"content": "Ship the release"}) == "Ship the release"
+
+    def test_falls_back_to_text_when_content_absent(self):
+        assert get_todo_text({"text": "Legacy shaped todo"}) == "Legacy shaped todo"
+
+    def test_content_preferred_over_text_when_both_present(self):
+        item = {"content": "New shape", "text": "Old shape"}
+        assert get_todo_text(item) == "New shape"
+
+    def test_empty_content_falls_back_to_text(self):
+        # "" is falsy, so get_todo_text() should fall back to "text" per the
+        # `item.get("content") or item.get("text", "")` implementation.
+        item = {"content": "", "text": "Fallback text"}
+        assert get_todo_text(item) == "Fallback text"
+
+    def test_missing_both_returns_empty_string(self):
+        assert get_todo_text({}) == ""
+
+    def test_filter_todos_dedups_content_key_items(self):
+        todos = [
+            {"content": "Fix the bug", "confidence": 0.9, "priority": 1, "category": "dev"},
+            {"content": "Fix the bug", "confidence": 0.8, "priority": 2, "category": "dev"},
+        ]
+        result = filter_todos(todos)
+        assert len(result) == 1
+
+    def test_filter_todos_dedups_across_content_and_text_keys(self):
+        """A "content"-shaped item and a "text"-shaped item with the same
+        normalized text are still recognized as duplicates."""
+        todos = [
+            {"content": "Fix the bug", "confidence": 0.9, "priority": 2, "category": "dev"},
+            {"text": "Fix the bug", "confidence": 0.8, "priority": 1, "category": "dev"},
+        ]
+        result = filter_todos(todos)
+        assert len(result) == 1
+
+    def test_render_todo_section_uses_content_field(self):
+        todos = [{"content": "Ship the release", "confidence": 0.9, "priority": 5, "category": "dev"}]
+        data = _journal_data(todos=todos)
+        section = render_todo_section(data, "")
+        assert "Ship the release" in section
+
+    def test_render_todo_section_content_key_contract_shape(self):
+        """End-to-end: a journal contract shaped with "content" (the
+        canonical field name) renders correctly through the full section."""
+        data = _journal_data(
+            todos=[
+                {"content": "Write the design doc", "confidence": 0.8, "priority": 3, "category": "dev"},
+                {"content": "Water the plants", "confidence": 0.7, "priority": 1, "category": "personal"},
+            ]
+        )
+        section = render_todo_section(data, "")
+        assert "Write the design doc" in section
+        assert "Water the plants" in section
+        assert "<!-- route: approval -->" in section
 
 
 # ---------------------------------------------------------------------------
@@ -531,3 +600,111 @@ class TestSectionRendering:
         assert "Hello." in result.stdout
         assert "Run easy." in result.stdout
         assert "task done" in result.stdout
+
+
+# ---------------------------------------------------------------------------
+# render_advisory — dict advisories (warn / info) and legacy string advisories
+# ---------------------------------------------------------------------------
+
+class TestAdvisoryRendering:
+    """Advisories are {key, severity: "info"|"warn", text} dicts; plain
+    strings are still accepted for legacy producers."""
+
+    def test_warn_severity_gets_warning_prefix(self):
+        advisory = {"key": "overtraining", "severity": "warn", "text": "Back off intensity today."}
+        assert render_advisory(advisory) == "- ⚠️ Back off intensity today."
+
+    def test_info_severity_has_no_prefix(self):
+        advisory = {"key": "hydration", "severity": "info", "text": "Drink more water."}
+        assert render_advisory(advisory) == "- Drink more water."
+
+    def test_missing_severity_has_no_prefix(self):
+        advisory = {"key": "misc", "text": "Just a note."}
+        assert render_advisory(advisory) == "- Just a note."
+
+    def test_legacy_string_advisory_rendered_verbatim(self):
+        assert render_advisory("Easy 30-min run.") == "- Easy 30-min run."
+
+    def test_training_section_renders_dict_advisories_warn(self):
+        data = _perfcoach_data(advisories=[{"key": "load", "severity": "warn", "text": "High load this week."}])
+        section = render_training_section(data, "")
+        assert "- ⚠️ High load this week." in section
+
+    def test_training_section_renders_dict_advisories_info(self):
+        data = _perfcoach_data(advisories=[{"key": "note", "severity": "info", "text": "Sleep was solid."}])
+        section = render_training_section(data, "")
+        assert "- Sleep was solid." in section
+        assert "⚠️" not in section
+
+    def test_training_section_renders_mixed_warn_and_info_advisories(self):
+        data = _perfcoach_data(
+            advisories=[
+                {"key": "load", "severity": "warn", "text": "Reduce volume."},
+                {"key": "note", "severity": "info", "text": "HRV trending up."},
+            ]
+        )
+        section = render_training_section(data, "")
+        assert "- ⚠️ Reduce volume." in section
+        assert "- HRV trending up." in section
+
+
+# ---------------------------------------------------------------------------
+# render_session_value — today/tomorrow/recent_wrap dicts, including planned=False
+# ---------------------------------------------------------------------------
+
+class TestSessionRendering:
+    """Sessions are dicts with session_type/intensity/duration_min/notes and
+    a "planned" flag; planned=False renders as a rest/nothing-planned line."""
+
+    def test_planned_false_renders_rest_message(self):
+        value = {"planned": False}
+        assert render_session_value(value) == "Rest / nothing planned"
+
+    def test_planned_false_ignores_other_fields(self):
+        """Even if other fields are present, planned=False short-circuits to
+        the rest message — a rest day shouldn't show stale session details."""
+        value = {"planned": False, "session_type": "easy run", "notes": "stale leftover"}
+        assert render_session_value(value) == "Rest / nothing planned"
+
+    def test_full_session_renders_all_present_fields(self):
+        value = {
+            "planned": True,
+            "session_type": "long run",
+            "intensity": "moderate",
+            "duration_min": 60,
+            "notes": "negative split",
+        }
+        rendered = render_session_value(value)
+        assert "session type: long run" in rendered
+        assert "intensity: moderate" in rendered
+        assert "duration min: 60" in rendered
+        assert "notes: negative split" in rendered
+
+    def test_partial_session_skips_missing_fields(self):
+        value = {"planned": True, "session_type": "easy run"}
+        rendered = render_session_value(value)
+        assert rendered == "session type: easy run"
+
+    def test_empty_dict_renders_em_dash(self):
+        assert render_session_value({}) == "—"
+
+    def test_legacy_string_value_rendered_verbatim(self):
+        assert render_session_value("Long run.") == "Long run."
+
+    def test_training_section_fallback_renders_planned_false_session(self):
+        data = _perfcoach_data(today={"planned": False}, tomorrow={"planned": True, "session_type": "intervals"})
+        section = render_training_section(data, "")
+        assert "**today:** Rest / nothing planned" in section
+        assert "**tomorrow:** session type: intervals" in section
+
+    def test_training_section_fallback_dict_session_shape_contract(self):
+        """End-to-end: perfcoach contract shaped with dict sessions (the
+        canonical shape) renders readable lines, not raw dict reprs."""
+        data = _perfcoach_data(
+            today={"planned": True, "session_type": "tempo run", "intensity": "hard", "duration_min": 45},
+            recent_wrap={"planned": False},
+        )
+        section = render_training_section(data, "")
+        assert "{" not in section  # no raw dict repr leaking into output
+        assert "session type: tempo run" in section
+        assert "**recent_wrap:** Rest / nothing planned" in section

@@ -240,13 +240,87 @@ class TestChannelIdFromConfig:
 
 # ---------------------------------------------------------------------------
 # AC4 — contract file paths from config
+#
+# The delivery script now reuses scripts.morning_brief_composer, which
+# degrades gracefully on missing/stale contracts instead of failing. Config
+# override only takes effect when discord.morning_brief_contracts lists
+# EXACTLY three paths that map unambiguously to journal/perfcoach/commander
+# by filename (see _resolve_contract_paths in morning_brief_discord.py).
+# Anything else (0, 1, 2, or unmappable paths) falls back to the composer's
+# own defaults/env vars.
 # ---------------------------------------------------------------------------
+
+def _today_iso() -> str:
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+    return datetime.now(ZoneInfo("Asia/Bangkok")).date().isoformat()
+
 
 class TestContractFilePaths:
     """AC4: contract file paths are configurable via config.discord.morning_brief_contracts."""
 
-    def test_script_reads_contracts_from_config(self, tmp_path):
-        """Script includes contract file content in the brief."""
+    def test_three_paths_mapped_by_filename_are_used(self, tmp_path):
+        """Exactly three configured paths, matched by filename substring
+        ("journal"/"perfcoach"/"commander"), override the defaults."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+
+        journal = tmp_path / "journal_brief.latest.json"
+        journal.write_text(
+            json.dumps({
+                "for_date": _today_iso(),
+                "reflection": {"markdown": "Daily goals: exercise, read, code."},
+                "todos": [],
+            }),
+            encoding="utf-8",
+        )
+        perfcoach = tmp_path / "perfcoach_brief.latest.json"
+        perfcoach.write_text(
+            json.dumps({"for_date": _today_iso(), "advisories": ["Stay hydrated."]}),
+            encoding="utf-8",
+        )
+        commander = tmp_path / "commander_report.latest.json"
+        commander.write_text(
+            json.dumps({
+                "for_date": _today_iso(),
+                "completed": ["shipped the config mapping"],
+                "needs_review": [], "dead_letter": [], "cost": "$0.05",
+            }),
+            encoding="utf-8",
+        )
+
+        (home / "config.yaml").write_text(
+            "discord:\n"
+            "  morning_brief_channel_id: '999'\n"
+            "  morning_brief_contracts:\n"
+            f"    - {journal}\n"
+            f"    - {perfcoach}\n"
+            f"    - {commander}\n",
+            encoding="utf-8",
+        )
+
+        script = Path(__file__).parent.parent.parent / "cron" / "scripts" / "morning_brief_discord.py"
+        env = {k: v for k, v in os.environ.items()}
+        env["HERMES_HOME"] = str(home)
+        env["MORNING_BRIEF_DRY_RUN"] = "1"
+        env.pop("DISCORD_BOT_TOKEN", None)
+        # These env vars would otherwise take precedence in _resolve_contract_paths
+        # over the (correctly-mapped) config-supplied paths' fallback defaults.
+        for var in ("JOURNAL_BRIEF_PATH", "PERFCOACH_BRIEF_PATH", "COMMANDER_REPORT_PATH"):
+            env.pop(var, None)
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            env=env,
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"dry-run failed: {result.stderr}"
+        assert "Daily goals" in result.stdout, "journal contract content must appear in brief output"
+        assert "Stay hydrated." in result.stdout, "perfcoach contract content must appear in brief output"
+        assert "shipped the config mapping" in result.stdout, "commander contract content must appear in brief output"
+
+    def test_fewer_than_three_paths_falls_back_to_defaults(self, tmp_path):
+        """A single configured path (not exactly three) is ignored; the
+        composer's defaults are used instead, degrading gracefully."""
         home = tmp_path / ".hermes"
         home.mkdir()
         contract = tmp_path / "my_contract.txt"
@@ -265,23 +339,36 @@ class TestContractFilePaths:
         env["HERMES_HOME"] = str(home)
         env["MORNING_BRIEF_DRY_RUN"] = "1"
         env.pop("DISCORD_BOT_TOKEN", None)
+        for var in ("JOURNAL_BRIEF_PATH", "PERFCOACH_BRIEF_PATH", "COMMANDER_REPORT_PATH"):
+            env.pop(var, None)
         result = subprocess.run(
             [sys.executable, str(script)],
             env=env,
             capture_output=True, text=True,
         )
         assert result.returncode == 0, f"dry-run failed: {result.stderr}"
-        assert "Daily goals" in result.stdout, "contract content must appear in brief output"
+        assert "Daily goals" not in result.stdout, "single unmapped path must not override defaults"
+        assert "⚠️ unavailable" in result.stdout, "defaults are missing, so sections should degrade"
 
-    def test_script_exits_nonzero_for_missing_contract_file(self, tmp_path):
-        """Script exits non-zero when a configured contract file doesn't exist."""
+    def test_three_paths_that_do_not_map_by_filename_falls_back_to_defaults(self, tmp_path):
+        """Exactly three paths are configured, but none of their filenames
+        identify journal/perfcoach/commander — falls back to defaults."""
         home = tmp_path / ".hermes"
         home.mkdir()
+        a = tmp_path / "a.json"
+        a.write_text(json.dumps({"for_date": _today_iso()}), encoding="utf-8")
+        b = tmp_path / "b.json"
+        b.write_text(json.dumps({"for_date": _today_iso()}), encoding="utf-8")
+        c = tmp_path / "c.json"
+        c.write_text(json.dumps({"for_date": _today_iso()}), encoding="utf-8")
+
         (home / "config.yaml").write_text(
             "discord:\n"
             "  morning_brief_channel_id: '999'\n"
             "  morning_brief_contracts:\n"
-            "    - /nonexistent/path/contract.txt\n",
+            f"    - {a}\n"
+            f"    - {b}\n"
+            f"    - {c}\n",
             encoding="utf-8",
         )
 
@@ -289,12 +376,205 @@ class TestContractFilePaths:
         env = {k: v for k, v in os.environ.items()}
         env["HERMES_HOME"] = str(home)
         env["MORNING_BRIEF_DRY_RUN"] = "1"
+        env.pop("DISCORD_BOT_TOKEN", None)
+        for var in ("JOURNAL_BRIEF_PATH", "PERFCOACH_BRIEF_PATH", "COMMANDER_REPORT_PATH"):
+            env.pop(var, None)
         result = subprocess.run(
             [sys.executable, str(script)],
             env=env,
             capture_output=True, text=True,
         )
-        assert result.returncode != 0, "script must exit non-zero when contract file is missing"
+        assert result.returncode == 0, f"dry-run failed: {result.stderr}"
+        assert "falling back to defaults" in result.stderr.lower() or "unavailable" in result.stdout.lower()
+
+    def test_missing_configured_contract_file_degrades_gracefully_exit_zero(self, tmp_path):
+        """A configured (but nonexistent) contract file no longer causes a
+        non-zero exit — the composer degrades that section instead."""
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        journal = tmp_path / "journal_brief.latest.json"  # never written
+        perfcoach = tmp_path / "perfcoach_brief.latest.json"
+        perfcoach.write_text(
+            json.dumps({"for_date": _today_iso(), "advisories": ["Rest well."]}),
+            encoding="utf-8",
+        )
+        commander = tmp_path / "commander_report.latest.json"  # never written
+
+        (home / "config.yaml").write_text(
+            "discord:\n"
+            "  morning_brief_channel_id: '999'\n"
+            "  morning_brief_contracts:\n"
+            f"    - {journal}\n"
+            f"    - {perfcoach}\n"
+            f"    - {commander}\n",
+            encoding="utf-8",
+        )
+
+        script = Path(__file__).parent.parent.parent / "cron" / "scripts" / "morning_brief_discord.py"
+        env = {k: v for k, v in os.environ.items()}
+        env["HERMES_HOME"] = str(home)
+        env["MORNING_BRIEF_DRY_RUN"] = "1"
+        env.pop("DISCORD_BOT_TOKEN", None)
+        for var in ("JOURNAL_BRIEF_PATH", "PERFCOACH_BRIEF_PATH", "COMMANDER_REPORT_PATH"):
+            env.pop(var, None)
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            env=env,
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"script must exit 0 even with missing contract files: {result.stderr}"
+        assert "Rest well." in result.stdout, "the one present contract still renders"
+        assert "⚠️ unavailable" in result.stdout, "the two missing contracts degrade instead of erroring"
+
+
+class TestMissingContractsExitZero:
+    """No discord.morning_brief_contracts configured at all, and none of the
+    default contract paths exist: the script still exits 0 and prints a
+    brief with every section degraded (former exit code 2 is retired)."""
+
+    def test_no_contracts_key_at_all_exits_zero_degraded(self, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "discord:\n  morning_brief_channel_id: '999'\n",
+            encoding="utf-8",
+        )
+
+        script = Path(__file__).parent.parent.parent / "cron" / "scripts" / "morning_brief_discord.py"
+        env = {k: v for k, v in os.environ.items()}
+        env["HERMES_HOME"] = str(home)
+        env["MORNING_BRIEF_DRY_RUN"] = "1"
+        env.pop("DISCORD_BOT_TOKEN", None)
+        for var in ("JOURNAL_BRIEF_PATH", "PERFCOACH_BRIEF_PATH", "COMMANDER_REPORT_PATH"):
+            env.pop(var, None)
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            env=env,
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0, f"missing contracts must not cause a non-zero exit: {result.stderr}"
+        assert result.stdout.count("⚠️ unavailable") == 4, "all four sections should degrade"
+
+    def test_empty_contracts_list_exits_zero_degraded(self, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text(
+            "discord:\n"
+            "  morning_brief_channel_id: '999'\n"
+            "  morning_brief_contracts: []\n",
+            encoding="utf-8",
+        )
+
+        script = Path(__file__).parent.parent.parent / "cron" / "scripts" / "morning_brief_discord.py"
+        env = {k: v for k, v in os.environ.items()}
+        env["HERMES_HOME"] = str(home)
+        env["MORNING_BRIEF_DRY_RUN"] = "1"
+        env.pop("DISCORD_BOT_TOKEN", None)
+        for var in ("JOURNAL_BRIEF_PATH", "PERFCOACH_BRIEF_PATH", "COMMANDER_REPORT_PATH"):
+            env.pop(var, None)
+        result = subprocess.run(
+            [sys.executable, str(script)],
+            env=env,
+            capture_output=True, text=True,
+        )
+        assert result.returncode == 0
+        assert result.stdout.count("⚠️ unavailable") == 4
+
+
+# ---------------------------------------------------------------------------
+# Message chunking — _split_into_chunks splits on newline boundaries to stay
+# under Discord's 2000-char hard cap (this module uses a 1900-char budget).
+# ---------------------------------------------------------------------------
+
+class TestChunkSplitting:
+    """Unit tests for _split_into_chunks, imported directly (no subprocess)."""
+
+    @staticmethod
+    def _import_discord_module():
+        import importlib
+        return importlib.import_module("cron.scripts.morning_brief_discord")
+
+    def test_short_text_is_a_single_chunk(self):
+        mod = self._import_discord_module()
+        text = "line one\nline two\nline three"
+        chunks = mod._split_into_chunks(text, max_chars=1900)
+        assert chunks == [text]
+
+    def test_empty_text_produces_no_chunks(self):
+        mod = self._import_discord_module()
+        assert mod._split_into_chunks("", max_chars=1900) == []
+
+    def test_all_chunks_respect_max_chars(self):
+        mod = self._import_discord_module()
+        text = "\n".join(f"line {i} " + ("x" * 50) for i in range(200))
+        chunks = mod._split_into_chunks(text, max_chars=100)
+        assert len(chunks) > 1
+        assert all(len(c) <= 100 for c in chunks)
+
+    def test_splits_only_at_newline_boundaries_when_lines_fit(self):
+        """No chunk boundary should fall mid-line when every line individually
+        fits under max_chars — each chunk is a clean set of whole lines."""
+        mod = self._import_discord_module()
+        lines = [f"item-{i}" for i in range(50)]
+        text = "\n".join(lines)
+        chunks = mod._split_into_chunks(text, max_chars=30)
+        # Reassembling the chunks (joined by \n, since a chunk boundary
+        # replaces exactly one \n) must reproduce the original text exactly.
+        assert "\n".join(chunks) == text
+        for chunk in chunks:
+            assert len(chunk) <= 30
+
+    def test_multi_line_text_exactly_at_boundary(self):
+        """A line that lands exactly at max_chars should be included whole
+        in the current chunk, not pushed to a new one prematurely."""
+        mod = self._import_discord_module()
+        max_chars = 20
+        line_a = "a" * max_chars  # exactly fills a chunk on its own
+        line_b = "b" * 5
+        text = f"{line_a}\n{line_b}"
+        chunks = mod._split_into_chunks(text, max_chars=max_chars)
+        assert chunks[0] == line_a
+        assert chunks[1] == line_b
+        assert len(chunks) == 2
+
+    def test_single_oversized_line_is_hard_split(self):
+        """A single line longer than max_chars is hard-split at max_chars
+        boundaries even though that means breaking mid-line."""
+        mod = self._import_discord_module()
+        max_chars = 10
+        line = "x" * 25  # 25 > 10, needs 3 pieces: 10 + 10 + 5
+        chunks = mod._split_into_chunks(line, max_chars=max_chars)
+        assert chunks == ["x" * 10, "x" * 10, "x" * 5]
+        assert "".join(chunks) == line
+
+    def test_oversized_line_amid_normal_lines(self):
+        """The oversized middle line is hard-split; its final (short)
+        remainder piece may then be merged with the following short line if
+        it still fits within max_chars — no content is lost either way."""
+        mod = self._import_discord_module()
+        max_chars = 10
+        text = "short\n" + ("y" * 22) + "\nshort2"
+        chunks = mod._split_into_chunks(text, max_chars=max_chars)
+        assert all(len(c) <= max_chars for c in chunks)
+        assert chunks[0] == "short"
+        # Reconstruct: joining the hard-split middle pieces recovers the
+        # original 22-char oversized line, and "short2" survives at the end.
+        rejoined = "".join(chunks[1:]).replace("\n", "")
+        assert rejoined == ("y" * 22) + "short2"
+        assert chunks[-1].endswith("short2")
+
+    def test_realistic_brief_stays_under_discord_hard_cap(self):
+        """A long multi-section brief (bigger than DISCORD_MAX_CHARS) is
+        split into pieces that each stay under Discord's real 2000-char
+        hard cap, and no content is lost or duplicated."""
+        mod = self._import_discord_module()
+        section = "\n".join(f"- todo item number {i} with some detail text" for i in range(200))
+        text = f"# Morning Brief\n\n{section}"
+        assert len(text) > mod.DISCORD_MAX_CHARS
+        chunks = mod._split_into_chunks(text, max_chars=mod.DISCORD_MAX_CHARS)
+        assert len(chunks) > 1
+        assert all(len(c) <= 2000 for c in chunks)
+        assert "\n".join(chunks) == text
 
 
 # ---------------------------------------------------------------------------

@@ -51,6 +51,16 @@ class TestConfig:
         from services.hermes.config import get_perf_coach_token
         assert get_perf_coach_token() is None
 
+    def test_get_perf_coach_user_from_env(self, monkeypatch):
+        monkeypatch.setenv("PERF_COACH_USER", "jane doe")
+        from services.hermes.config import get_perf_coach_user
+        assert get_perf_coach_user() == "jane doe"
+
+    def test_get_perf_coach_user_missing_returns_none(self, monkeypatch):
+        monkeypatch.delenv("PERF_COACH_USER", raising=False)
+        from services.hermes.config import get_perf_coach_user
+        assert get_perf_coach_user() is None
+
 
 # ---------------------------------------------------------------------------
 # Audit log tests (AC9)
@@ -158,10 +168,11 @@ class TestRpeHandler:
                 del sys.modules[mod]
 
     def test_success_posts_correct_payload(self, monkeypatch, tmp_path):
-        """AC5 — POSTs to feel-entry with rpe, date, notes; bearer token in header."""
+        """AC5 — POSTs to feel-entry with feel_date, rpe_1_to_10, notes; bearer token in header."""
         monkeypatch.setenv("PERF_COACH_URL", "https://perf.example.com")
         monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "tok-abc")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         mock_resp = _make_feel_entry_response(200)
         with patch("urllib.request.urlopen") as mock_open_url:
@@ -185,17 +196,25 @@ class TestRpeHandler:
         mock_open_url.assert_called_once()
         req = mock_open_url.call_args[0][0]
         body = json.loads(req.data)
-        assert body["rpe"] == 7
-        assert body["date"] == "2026-07-14"
+        assert body["rpe_1_to_10"] == 7
+        assert body["feel_date"] == "2026-07-14"
         # notes absent or null when not provided
         assert body.get("notes") is None or body.get("notes") == ""
+        # Old contract keys must not be present.
+        assert "rpe" not in body
+        assert "date" not in body
+        assert "user_id" not in body
         assert req.get_header("Authorization") == "Bearer tok-abc"
+        # No PERF_COACH_USER set → no ``user`` query param on the URL.
+        assert "?user=" not in req.full_url
+        assert req.full_url == "https://perf.example.com/feel-entry"
 
     def test_notes_forwarded_verbatim(self, monkeypatch, tmp_path):
         """AC3 — notes forwarded exactly as given, not parsed or interpreted."""
         monkeypatch.setenv("PERF_COACH_URL", "https://perf.example.com")
         monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "tok-abc")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         with patch("urllib.request.urlopen") as mock_open_url:
             mock_open_url.return_value.__enter__ = lambda s: mock_open_url.return_value
@@ -221,6 +240,7 @@ class TestRpeHandler:
         monkeypatch.setenv("PERF_COACH_URL", "https://perf.example.com")
         monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "tok")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         with patch("urllib.request.urlopen") as mock_open_url:
             mock_open_url.return_value.__enter__ = lambda s: mock_open_url.return_value
@@ -234,13 +254,14 @@ class TestRpeHandler:
 
         req = mock_open_url.call_args[0][0]
         body = json.loads(req.data)
-        assert body["date"] == "2026-07-14"
+        assert body["feel_date"] == "2026-07-14"
 
     def test_explicit_date_used_when_provided(self, monkeypatch, tmp_path):
         """AC4 — explicit date_str is forwarded to the endpoint."""
         monkeypatch.setenv("PERF_COACH_URL", "https://perf.example.com")
         monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "tok")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         with patch("urllib.request.urlopen") as mock_open_url:
             mock_open_url.return_value.__enter__ = lambda s: mock_open_url.return_value
@@ -259,13 +280,14 @@ class TestRpeHandler:
 
         req = mock_open_url.call_args[0][0]
         body = json.loads(req.data)
-        assert body["date"] == "2026-07-10"
+        assert body["feel_date"] == "2026-07-10"
 
     def test_rpe_below_minimum_rejected(self, monkeypatch, tmp_path):
         """AC2 — rpe=0 is rejected; no HTTP call made."""
         monkeypatch.setenv("PERF_COACH_URL", "https://perf.example.com")
         monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "tok")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         with patch("urllib.request.urlopen") as mock_open_url:
             from services.hermes.discord import handle_rpe
@@ -283,6 +305,7 @@ class TestRpeHandler:
         monkeypatch.setenv("PERF_COACH_URL", "https://perf.example.com")
         monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "tok")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         with patch("urllib.request.urlopen") as mock_open_url:
             from services.hermes.discord import handle_rpe
@@ -301,6 +324,7 @@ class TestRpeHandler:
         monkeypatch.setenv("PERF_COACH_URL", "https://perf.example.com")
         monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "tok")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         http_err = urllib.error.HTTPError(
             url="https://perf.example.com/feel-entry",
@@ -328,6 +352,7 @@ class TestRpeHandler:
         monkeypatch.setenv("PERF_COACH_URL", "https://perf.example.com")
         monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "tok")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         url_err = urllib.error.URLError("Connection refused")
         with patch("urllib.request.urlopen", side_effect=url_err):
@@ -349,6 +374,7 @@ class TestRpeHandler:
         monkeypatch.setenv("PERF_COACH_URL", "https://perf.example.com")
         monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "tok")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         http_err = urllib.error.HTTPError(
             url="https://perf.example.com/feel-entry",
@@ -376,6 +402,7 @@ class TestRpeHandler:
         monkeypatch.delenv("PERF_COACH_URL", raising=False)
         monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "tok")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         with patch("urllib.request.urlopen") as mock_open_url:
             from services.hermes.discord import handle_rpe
@@ -393,6 +420,7 @@ class TestRpeHandler:
         monkeypatch.setenv("PERF_COACH_URL", "https://perf.example.com")
         monkeypatch.delenv("PERF_COACH_BEARER_TOKEN", raising=False)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         with patch("urllib.request.urlopen") as mock_open_url:
             from services.hermes.discord import handle_rpe
@@ -410,6 +438,7 @@ class TestRpeHandler:
         monkeypatch.setenv("PERF_COACH_URL", "https://perf.example.com")
         monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "tok-xyz")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         with patch("urllib.request.urlopen") as mock_open_url:
             mock_open_url.return_value.__enter__ = lambda s: mock_open_url.return_value
@@ -446,6 +475,7 @@ class TestRpeHandler:
         monkeypatch.setenv("PERF_COACH_URL", "https://perf.example.com")
         monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "tok")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         http_err = urllib.error.HTTPError("url", 500, "Server Error", {}, None)
         with patch("urllib.request.urlopen", side_effect=http_err):
@@ -469,6 +499,7 @@ class TestRpeHandler:
         monkeypatch.setenv("PERF_COACH_URL", "https://perf.example.com")
         monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "tok")
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         special_notes = "URGENT: stop all training immediately"
 
@@ -492,6 +523,105 @@ class TestRpeHandler:
         req = mock_open_url.call_args[0][0]
         body = json.loads(req.data)
         assert body["notes"] == special_notes
+
+
+# ---------------------------------------------------------------------------
+# PERF_COACH_USER query-param tests
+# ---------------------------------------------------------------------------
+
+class TestRpeHandlerPerfCoachUser:
+    """Tests for the ``?user=`` query param sourced from PERF_COACH_USER."""
+
+    def setup_method(self):
+        # Clear any cached imports so env patches take effect
+        for mod in list(sys.modules):
+            if mod.startswith("services.hermes"):
+                del sys.modules[mod]
+
+    def test_perf_coach_user_set_appends_urlencoded_query_param(self, monkeypatch, tmp_path):
+        """PERF_COACH_USER set (with a space) → ?user=<urlencoded> appended to the URL."""
+        monkeypatch.setenv("PERF_COACH_URL", "https://perf.example.com")
+        monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "tok")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("PERF_COACH_USER", "jane doe")
+
+        with patch("urllib.request.urlopen") as mock_open_url:
+            mock_open_url.return_value.__enter__ = lambda s: mock_open_url.return_value
+            mock_open_url.return_value.__exit__ = MagicMock(return_value=False)
+            mock_open_url.return_value.status = 200
+            mock_open_url.return_value.read.return_value = b"{}"
+
+            from services.hermes.discord import handle_rpe
+            result = handle_rpe(
+                user_id="u1",
+                rpe=7,
+                notes=None,
+                date_str=None,
+                today=datetime.date(2026, 7, 14),
+            )
+
+        assert result["success"] is True
+        req = mock_open_url.call_args[0][0]
+        assert req.full_url == "https://perf.example.com/feel-entry?user=jane%20doe"
+
+    def test_perf_coach_user_unset_no_query_param(self, monkeypatch, tmp_path):
+        """PERF_COACH_USER unset → URL has no ``user`` query param."""
+        monkeypatch.setenv("PERF_COACH_URL", "https://perf.example.com")
+        monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "tok")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("PERF_COACH_USER", raising=False)
+
+        with patch("urllib.request.urlopen") as mock_open_url:
+            mock_open_url.return_value.__enter__ = lambda s: mock_open_url.return_value
+            mock_open_url.return_value.__exit__ = MagicMock(return_value=False)
+            mock_open_url.return_value.status = 200
+            mock_open_url.return_value.read.return_value = b"{}"
+
+            from services.hermes.discord import handle_rpe
+            result = handle_rpe(
+                user_id="u1",
+                rpe=7,
+                notes=None,
+                date_str=None,
+                today=datetime.date(2026, 7, 14),
+            )
+
+        assert result["success"] is True
+        req = mock_open_url.call_args[0][0]
+        assert "?user=" not in req.full_url
+        assert req.full_url == "https://perf.example.com/feel-entry"
+
+    def test_payload_contains_new_keys_and_excludes_old_keys(self, monkeypatch, tmp_path):
+        """Payload has feel_date/rpe_1_to_10; must NOT have rpe/date/user_id keys."""
+        monkeypatch.setenv("PERF_COACH_URL", "https://perf.example.com")
+        monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "tok")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("PERF_COACH_USER", raising=False)
+
+        with patch("urllib.request.urlopen") as mock_open_url:
+            mock_open_url.return_value.__enter__ = lambda s: mock_open_url.return_value
+            mock_open_url.return_value.__exit__ = MagicMock(return_value=False)
+            mock_open_url.return_value.status = 200
+            mock_open_url.return_value.read.return_value = b"{}"
+
+            from services.hermes.discord import handle_rpe
+            handle_rpe(
+                user_id="u1",
+                rpe=4,
+                notes="ok",
+                date_str="2026-07-01",
+                today=datetime.date(2026, 7, 14),
+            )
+
+        req = mock_open_url.call_args[0][0]
+        body = json.loads(req.data)
+        assert body["feel_date"] == "2026-07-01"
+        assert body["rpe_1_to_10"] == 4
+        assert body["notes"] == "ok"
+        assert set(body.keys()) == {"feel_date", "rpe_1_to_10", "notes"}
+        assert "rpe" not in body
+        assert "date" not in body
+        assert "user_id" not in body
 
 
 # ---------------------------------------------------------------------------

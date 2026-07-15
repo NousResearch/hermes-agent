@@ -546,3 +546,95 @@ class TestCommanderConfig:
         monkeypatch.delenv("COMMANDER_API_URL", raising=False)
         from services.hermes.config import get_commander_api_url
         assert get_commander_api_url() is None
+
+
+# ---------------------------------------------------------------------------
+# Config tests — get_approve_projects (JOURNAL_APPROVE_PROJECTS / _PROJECT)
+# ---------------------------------------------------------------------------
+
+class TestGetApproveProjects:
+    def setup_method(self):
+        _reload_modules()
+
+    def _clear(self, monkeypatch):
+        monkeypatch.delenv("JOURNAL_APPROVE_PROJECTS", raising=False)
+        monkeypatch.delenv("JOURNAL_APPROVE_PROJECT", raising=False)
+
+    def test_comma_list_parsed_into_multiple_projects(self, monkeypatch):
+        self._clear(monkeypatch)
+        monkeypatch.setenv("JOURNAL_APPROVE_PROJECTS", "owner/repo1,owner/repo2,owner/repo3")
+        from services.hermes.config import get_approve_projects
+        assert get_approve_projects() == ["owner/repo1", "owner/repo2", "owner/repo3"]
+
+    def test_comma_list_entries_are_stripped(self, monkeypatch):
+        self._clear(monkeypatch)
+        monkeypatch.setenv("JOURNAL_APPROVE_PROJECTS", " owner/repo1 , owner/repo2 ,  owner/repo3  ")
+        from services.hermes.config import get_approve_projects
+        assert get_approve_projects() == ["owner/repo1", "owner/repo2", "owner/repo3"]
+
+    def test_comma_list_drops_empty_entries(self, monkeypatch):
+        self._clear(monkeypatch)
+        monkeypatch.setenv("JOURNAL_APPROVE_PROJECTS", "owner/repo1,,owner/repo2,  ,owner/repo3,")
+        from services.hermes.config import get_approve_projects
+        assert get_approve_projects() == ["owner/repo1", "owner/repo2", "owner/repo3"]
+
+    def test_single_entry_in_plural_var_returns_single_item_list(self, monkeypatch):
+        self._clear(monkeypatch)
+        monkeypatch.setenv("JOURNAL_APPROVE_PROJECTS", "owner/repo1")
+        from services.hermes.config import get_approve_projects
+        assert get_approve_projects() == ["owner/repo1"]
+
+    def test_plural_var_all_commas_and_whitespace_returns_empty_list(self, monkeypatch):
+        """JOURNAL_APPROVE_PROJECTS set but contains no real entries -> []
+        (does NOT fall back to JOURNAL_APPROVE_PROJECT, since the plural var
+        is present/non-empty and takes precedence)."""
+        self._clear(monkeypatch)
+        monkeypatch.setenv("JOURNAL_APPROVE_PROJECTS", " , , ")
+        from services.hermes.config import get_approve_projects
+        assert get_approve_projects() == []
+
+    def test_fallback_to_singular_when_plural_unset(self, monkeypatch):
+        self._clear(monkeypatch)
+        monkeypatch.setenv("JOURNAL_APPROVE_PROJECT", "owner/legacy-repo")
+        from services.hermes.config import get_approve_projects
+        assert get_approve_projects() == ["owner/legacy-repo"]
+
+    def test_fallback_singular_is_stripped(self, monkeypatch):
+        self._clear(monkeypatch)
+        monkeypatch.setenv("JOURNAL_APPROVE_PROJECT", "  owner/legacy-repo  ")
+        from services.hermes.config import get_approve_projects
+        assert get_approve_projects() == ["owner/legacy-repo"]
+
+    def test_plural_takes_precedence_over_singular_when_both_set(self, monkeypatch):
+        self._clear(monkeypatch)
+        monkeypatch.setenv("JOURNAL_APPROVE_PROJECTS", "owner/new1,owner/new2")
+        monkeypatch.setenv("JOURNAL_APPROVE_PROJECT", "owner/old")
+        from services.hermes.config import get_approve_projects
+        assert get_approve_projects() == ["owner/new1", "owner/new2"]
+
+    def test_both_unset_returns_empty_list(self, monkeypatch):
+        self._clear(monkeypatch)
+        from services.hermes.config import get_approve_projects
+        assert get_approve_projects() == []
+
+    def test_plural_unset_and_singular_empty_string_returns_empty_list(self, monkeypatch):
+        self._clear(monkeypatch)
+        monkeypatch.setenv("JOURNAL_APPROVE_PROJECT", "")
+        from services.hermes.config import get_approve_projects
+        assert get_approve_projects() == []
+
+    def test_plural_empty_string_falls_back_to_singular(self, monkeypatch):
+        """An explicitly empty JOURNAL_APPROVE_PROJECTS ('') is falsy, so the
+        function falls through to the JOURNAL_APPROVE_PROJECT fallback."""
+        self._clear(monkeypatch)
+        monkeypatch.setenv("JOURNAL_APPROVE_PROJECTS", "")
+        monkeypatch.setenv("JOURNAL_APPROVE_PROJECT", "owner/legacy-repo")
+        from services.hermes.config import get_approve_projects
+        assert get_approve_projects() == ["owner/legacy-repo"]
+
+    def test_return_type_is_list(self, monkeypatch):
+        self._clear(monkeypatch)
+        monkeypatch.setenv("JOURNAL_APPROVE_PROJECTS", "owner/repo1,owner/repo2")
+        from services.hermes.config import get_approve_projects
+        result = get_approve_projects()
+        assert isinstance(result, list)

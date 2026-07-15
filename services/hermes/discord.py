@@ -20,11 +20,16 @@ import datetime
 import json
 import logging
 import urllib.error
+import urllib.parse
 import urllib.request
 from typing import Any, Optional, TypedDict
 
 from services.hermes import audit as _audit
-from services.hermes.config import get_perf_coach_token, get_perf_coach_url
+from services.hermes.config import (
+    get_perf_coach_token,
+    get_perf_coach_url,
+    get_perf_coach_user,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -88,14 +93,19 @@ def handle_rpe(
     has_notes = bool(notes)
 
     payload: dict[str, Any] = {
-        "user_id": user_id,
-        "rpe": rpe,
-        "date": target_date,
+        "feel_date": target_date,
+        "rpe_1_to_10": rpe,
         "notes": notes,
     }
 
     # ── POST to feel-entry ─────────────────────────────────────────────────
+    # user_id is Discord's identifier and is only used for the audit log —
+    # the worker resolves the perf-coach user via the ``user`` query param
+    # (or falls back to single-active-user resolution when unset).
     url = base_url.rstrip("/") + _FEEL_ENTRY_PATH
+    perf_coach_user = get_perf_coach_user()
+    if perf_coach_user:
+        url = f"{url}?user={urllib.parse.quote(perf_coach_user)}"
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -108,7 +118,29 @@ def handle_rpe(
     http_outcome: str
     try:
         with urllib.request.urlopen(req) as resp:
-            http_outcome = f"{resp.status} OK"
+            status = resp.status
+            http_outcome = f"{status} OK"
+
+        if not (200 <= status < 300):
+            # Defensive: urlopen normally raises HTTPError for non-2xx, but
+            # only 2xx (e.g. 201 Created) is treated as success here.
+            _audit.log_rpe_invocation(
+                user_id=user_id,
+                rpe=rpe,
+                has_notes=has_notes,
+                target_date=target_date,
+                http_outcome=http_outcome,
+            )
+            _log.warning("feel-entry returned unexpected status %d for user=%s", status, user_id)
+            return {
+                "success": False,
+                "error": (
+                    f"Could not reach the performance coach service "
+                    f"(HTTP {status}) — please try again later."
+                ),
+                "duplicate": False,
+            }
+
         _audit.log_rpe_invocation(
             user_id=user_id,
             rpe=rpe,

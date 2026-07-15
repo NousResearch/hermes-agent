@@ -790,6 +790,59 @@ def _read_bedtime_config() -> dict:
     return {"enabled": True, "hour": hour, "minute": minute, "timeout": timeout}
 
 
+def _read_approvals_config() -> dict:
+    """Return the journal-approvals dispatcher configuration from environment variables.
+
+    Keys:
+        enabled — True when DISCORD_APPROVALS_HOUR is set and parseable
+        hour    — int, UTC hour (0-23)
+        minute  — int, UTC minute (0-59, default 0)
+    """
+    raw_hour = os.getenv("DISCORD_APPROVALS_HOUR", "").strip()
+    if not raw_hour:
+        return {"enabled": False, "hour": 0, "minute": 0}
+    try:
+        hour = int(raw_hour)
+    except ValueError:
+        return {"enabled": False, "hour": 0, "minute": 0}
+    raw_minute = os.getenv("DISCORD_APPROVALS_MINUTE", "0").strip()
+    try:
+        minute = int(raw_minute)
+    except ValueError:
+        minute = 0
+    return {"enabled": True, "hour": hour, "minute": minute}
+
+
+def _read_journal_brief_path() -> str:
+    """Return the path to journal_brief.latest.json.
+
+    Honors JOURNAL_BRIEF_PATH like scripts/morning_brief_composer.py; falls
+    back to HERMES_HOME/contracts/journal_brief.latest.json (same default
+    the composer uses).
+    """
+    raw = os.environ.get("JOURNAL_BRIEF_PATH", "").strip()
+    if raw:
+        return raw
+    home = os.environ.get("HERMES_HOME", "").strip() or os.path.expanduser("~/.hermes")
+    return os.path.join(home, "contracts", "journal_brief.latest.json")
+
+
+def _read_morning_brief_channel_id() -> str:
+    """Return ``discord.morning_brief_channel_id`` from config.yaml, or "".
+
+    Same lookup used by cron/scripts/morning_brief_discord.py and
+    cron/jobs.py's morning-brief job registration.
+    """
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config() or {}
+        discord_cfg = cfg.get("discord", {}) or {}
+        raw = discord_cfg.get("morning_brief_channel_id")
+    except Exception:
+        return ""
+    return str(raw or "").strip()
+
+
 def _read_discord_prompt_timeout() -> int:
     """Return the timeout (in seconds) for Discord button views.
 
@@ -905,6 +958,7 @@ class DiscordAdapter(BasePlatformAdapter):
         )
         self._liveness_task: Optional[asyncio.Task] = None
         self._bedtime_task: Optional[asyncio.Task] = None
+        self._approvals_task: Optional[asyncio.Task] = None
         # True while disconnect() is intentionally closing discord.py. The
         # bot task's done callback uses this to distinguish an operator/service
         # shutdown from a runtime websocket crash.
@@ -1517,6 +1571,130 @@ class DiscordAdapter(BasePlatformAdapter):
                 pass
         self._bedtime_task = None
 
+    def _start_approvals_scheduler(self) -> None:
+        """Start the daily journal-approvals dispatcher if configured.
+
+        Idempotent: a second call while the task is live is a no-op. The
+        loop fires once per day at DISCORD_APPROVALS_HOUR:DISCORD_APPROVALS_MINUTE
+        (UTC), reads dev-category todos from the journal brief, and posts
+        one [Approve] embed per todo to config.yaml's
+        discord.morning_brief_channel_id.
+        """
+        cfg = _read_approvals_config()
+        if not cfg["enabled"]:
+            logger.debug("[%s] Journal approvals scheduler disabled", self.name)
+            return
+        if self._approvals_task and not self._approvals_task.done():
+            return
+        self._approvals_task = asyncio.create_task(self._approvals_scheduler_loop(cfg))
+        logger.info(
+            "[%s] Journal approvals scheduler started (fire at %02d:%02d UTC)",
+            self.name, cfg["hour"], cfg["minute"],
+        )
+
+    async def _approvals_scheduler_loop(self, cfg: dict) -> None:
+        """Loop indefinitely, firing the journal-approvals dispatcher once per day."""
+        import datetime
+
+        while True:
+            now_utc = datetime.datetime.now(datetime.timezone.utc)
+            target = now_utc.replace(
+                hour=cfg["hour"], minute=cfg["minute"], second=0, microsecond=0
+            )
+            if target <= now_utc:
+                target += datetime.timedelta(days=1)
+            delay = (target - now_utc).total_seconds()
+            logger.debug(
+                "[%s] Journal approvals scheduler: sleeping %.0fs until %s UTC",
+                self.name, delay, target.isoformat(),
+            )
+            try:
+                await asyncio.sleep(delay)
+            except asyncio.CancelledError:
+                return
+
+            try:
+                await self._fire_journal_approvals()
+            except Exception as exc:
+                logger.error(
+                    "[%s] Journal approvals: unexpected error firing dispatcher: %s",
+                    self.name, exc,
+                )
+
+    async def _fire_journal_approvals(self) -> None:
+        """Post one [Approve] embed per dev-category journal todo.
+
+        Skips (with a log line) when no approve projects (JOURNAL_APPROVE_PROJECTS
+        or JOURNAL_APPROVE_PROJECT) or the target channel is not configured, when
+        there are zero dev todos, or when today's date is already recorded as
+        posted (gateway restart guard).
+        """
+        import datetime
+
+        from services.hermes import journal_approve
+        from services.hermes.config import get_approve_projects
+
+        today = datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%d")
+        if journal_approve.has_posted_approvals_today(today):
+            logger.debug(
+                "[%s] Journal approvals: already posted for %s; skipping",
+                self.name, today,
+            )
+            return
+
+        projects = get_approve_projects()
+        if not projects:
+            logger.warning(
+                "[%s] Journal approvals: no JOURNAL_APPROVE_PROJECTS/JOURNAL_APPROVE_PROJECT set; skipping",
+                self.name,
+            )
+            return
+
+        brief_path = _read_journal_brief_path()
+        try:
+            raw_todos = await asyncio.to_thread(journal_approve.load_dev_todos, brief_path)
+        except Exception as exc:
+            logger.error(
+                "[%s] Journal approvals: failed to load dev todos from %s: %s",
+                self.name, brief_path, exc,
+            )
+            return
+
+        todos = journal_approve.map_dev_todos_for_send(raw_todos)
+        if not todos:
+            logger.info("[%s] Journal approvals: no dev todos to post", self.name)
+            return
+
+        channel_id = _read_morning_brief_channel_id()
+        if not channel_id or not self._client:
+            logger.warning(
+                "[%s] Journal approvals: discord.morning_brief_channel_id not set; skipping",
+                self.name,
+            )
+            return
+
+        result = await self.send_journal_dev_todos(channel_id, todos, projects=projects)
+        if result.success:
+            journal_approve.mark_approvals_posted(today)
+            logger.info(
+                "[%s] Journal approvals posted (%d todo(s), channel=%s)",
+                self.name, len(todos), channel_id,
+            )
+        else:
+            logger.error(
+                "[%s] Journal approvals: failed to post: %s", self.name, result.error,
+            )
+
+    async def _cancel_approvals_task(self) -> None:
+        """Cancel and await the journal-approvals scheduler task, if running."""
+        if self._approvals_task and not self._approvals_task.done():
+            self._approvals_task.cancel()
+            try:
+                await self._approvals_task
+            except asyncio.CancelledError:
+                pass
+        self._approvals_task = None
+
     async def cancel_background_tasks(self) -> None:
         """Cancel background tasks, but first flush any pending text-batch sends.
 
@@ -1555,6 +1733,7 @@ class DiscordAdapter(BasePlatformAdapter):
         self._pending_text_batch_tasks.clear()
         self._pending_text_batches.clear()
         await self._cancel_bedtime_task()
+        await self._cancel_approvals_task()
         await super().cancel_background_tasks()
 
     def _text_batch_flush_deadline_seconds(self) -> float:
@@ -1817,6 +1996,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return
         self._start_bedtime_scheduler()
+        self._start_approvals_scheduler()
         try:
             sync_policy = self._get_discord_command_sync_policy()
             if sync_policy == "off":
@@ -5995,6 +6175,7 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_id: str,
         todos: list,
         project: str = "",
+        projects: Optional[list] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
         """Send dev-category journal todos with per-todo [Approve] buttons.
@@ -6003,13 +6184,19 @@ class DiscordAdapter(BasePlatformAdapter):
         Only users in the adapter's allowlist may click Approve (AC2).
 
         ``todos`` is a list of dicts with keys: id, title, body.
-        ``project`` is the target repo in ``owner/repo`` format.
+        ``projects`` is the list of candidate target repos (``owner/repo``
+        format) the approver may route the ticket to. When omitted, falls
+        back to wrapping the legacy ``project`` string into a single-item
+        list for back-compat.
         """
         if not self._client or not DISCORD_AVAILABLE:
             return SendResult(success=False, error="Not connected")
 
         if not todos:
             return SendResult(success=True, message_id="")
+
+        if projects is None:
+            projects = [project] if project else []
 
         try:
             target_id = chat_id
@@ -6036,7 +6223,7 @@ class DiscordAdapter(BasePlatformAdapter):
                     todo_id=todo_id,
                     title=title,
                     body=body,
-                    project=project,
+                    projects=projects,
                     allowed_user_ids=self._allowed_user_ids,
                     allowed_role_ids=self._allowed_role_ids,
                 )
@@ -7967,15 +8154,25 @@ def _define_discord_view_classes() -> None:
                     pass
 
     class JournalApproveView(discord.ui.View):
-        """Single-button [Approve] view for promoting a dev journal todo to the backlog.
+        """[Approve] view for promoting a dev journal todo to the backlog.
 
-        One view instance is created per todo. Clicking [Approve]:
+        One view instance is created per todo. When more than one candidate
+        project is configured (JOURNAL_APPROVE_PROJECTS), a project-select
+        dropdown is shown above the button so the approver can route the
+        ticket to any of the user's Commander-tracked projects; the first
+        entry is selected by default. When exactly one project is
+        configured, the dropdown is omitted and behavior matches the
+        original fixed-project flow.
+
+        Clicking [Approve]:
           1. Auth-checks the clicker against the adapter's allowed users/roles.
-          2. Calls handle_journal_approve() to POST to Commander's /api/tickets/create.
+          2. Calls handle_journal_approve() to POST to Commander's /api/tickets/create,
+             targeting the currently-selected project.
           3. Confirms in-channel with "✅ Ticket created: #<N>" or an error message.
           4. Disables the button to prevent duplicate clicks.
 
-        Unauthorised clicks receive an ephemeral rejection reply (AC2).
+        Unauthorised clicks (button or dropdown) receive an ephemeral
+        rejection reply (AC2).
         """
 
         def __init__(
@@ -7983,7 +8180,7 @@ def _define_discord_view_classes() -> None:
             todo_id: str,
             title: str,
             body: str,
-            project: str,
+            projects: list,
             allowed_user_ids: set,
             allowed_role_ids: Optional[set] = None,
         ):
@@ -7991,17 +8188,70 @@ def _define_discord_view_classes() -> None:
             self.todo_id = todo_id
             self.title = title
             self.body = body
-            self.project = project
+            # Discord caps select options at 25 — truncate defensively.
+            self.projects = list(projects or [])[:25]
+            self.project = self.projects[0] if self.projects else ""
             self.allowed_user_ids = allowed_user_ids
             self.allowed_role_ids = allowed_role_ids or set()
             self.resolved = False
+
+            if len(self.projects) > 1:
+                self._build_project_select()
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             return _component_check_auth(
                 interaction, self.allowed_user_ids, self.allowed_role_ids
             )
 
-        @discord.ui.button(label="Approve", style=discord.ButtonStyle.green)
+        def _build_project_select(self):
+            """Add a project-picker dropdown, defaulting to the first entry."""
+            options = [
+                discord.SelectOption(
+                    label=_truncate_discord_component_text(
+                        repo, _DISCORD_SELECT_FIELD_LIMIT
+                    ),
+                    value=_truncate_discord_component_text(
+                        repo, _DISCORD_SELECT_FIELD_LIMIT
+                    ),
+                    default=(repo == self.project),
+                )
+                for repo in self.projects
+            ]
+            select = discord.ui.Select(
+                placeholder="Choose a project...",
+                options=options,
+                custom_id="journal_approve_project_select",
+                row=0,
+            )
+            select.callback = self._on_project_selected
+            self.add_item(select)
+
+        async def _on_project_selected(self, interaction: discord.Interaction):
+            """Update the current project selection. Does not resolve the view."""
+            if self.resolved:
+                await interaction.response.send_message(
+                    "This todo has already been approved.", ephemeral=True
+                )
+                return
+
+            if not self._check_auth(interaction):
+                await interaction.response.send_message(
+                    "You're not authorised to approve journal todos.", ephemeral=True
+                )
+                return
+
+            values = (interaction.data or {}).get("values") or []
+            selected = values[0] if values else self.project
+            self.project = selected
+
+            for item in self.children:
+                if isinstance(item, discord.ui.Select):
+                    for opt in item.options:
+                        opt.default = (opt.value == selected)
+
+            await interaction.response.edit_message(view=self)
+
+        @discord.ui.button(label="Approve", style=discord.ButtonStyle.green, row=1)
         async def approve(
             self, interaction: discord.Interaction, button: discord.ui.Button
         ):

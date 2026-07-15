@@ -38,18 +38,15 @@ function blobExtension(blob: Blob): string {
 
 const RECENT_IMAGE_PASTE_DEDUPE_MS = 1500
 
-export function imageBlobDedupeKey(blob: Blob, data: Uint8Array): string {
+export async function imageBlobDedupeKey(blob: Blob, data: Uint8Array): Promise<string> {
   // A macOS screenshot can arrive twice as different File/Blob objects, with
   // different names or lastModified values. Dedupe by content only so the same
   // clipboard image collapses across those representations.
-  let hash = 2166136261
+  const digestInput = Uint8Array.from(data).buffer
+  const digest = await crypto.subtle.digest('SHA-256', digestInput)
+  const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
 
-  for (const byte of data) {
-    hash ^= byte
-    hash = Math.imul(hash, 16777619) >>> 0
-  }
-
-  return [blob.size, hash.toString(16)].join('|')
+  return [blob.size, `sha256:${hash}`].join('|')
 }
 
 export function rememberRecentImageBlobPaste(seen: Map<string, number>, key: string, now = Date.now()): boolean {
@@ -68,6 +65,10 @@ export function rememberRecentImageBlobPaste(seen: Map<string, number>, key: str
   seen.set(key, now)
 
   return true
+}
+
+export function forgetRecentImageBlobPaste(seen: Map<string, number>, key: string): void {
+  seen.delete(key)
 }
 
 export function isImagePath(filePath: string): boolean {
@@ -330,6 +331,7 @@ export function useComposerActions({
   )
 
   const recentImageBlobPastesRef = useRef<Map<string, number>>(new Map())
+
   const addTextToDraft = useCallback((text: string) => {
     requestComposerInsert(text, { mode: 'block' })
   }, [])
@@ -479,10 +481,12 @@ export function useComposerActions({
         return false
       }
 
+      let dedupeKey: string | undefined
+
       try {
         const buffer = await blob.arrayBuffer()
         const data = new Uint8Array(buffer)
-        const dedupeKey = imageBlobDedupeKey(blob, data)
+        dedupeKey = await imageBlobDedupeKey(blob, data)
 
         // macOS/Electron can fire the same Cmd+V screenshot through multiple
         // clipboard paths/events. Drop only near-simultaneous byte-identical
@@ -494,13 +498,24 @@ export function useComposerActions({
         const savedPath = await window.hermesDesktop?.saveImageBuffer(data, blobExtension(blob))
 
         if (!savedPath) {
+          forgetRecentImageBlobPaste(recentImageBlobPastesRef.current, dedupeKey)
           notify({ kind: 'error', title: copy.imageAttach, message: copy.imageWriteFailed })
 
           return false
         }
 
-        return attachImagePath(savedPath)
+        const attached = await attachImagePath(savedPath)
+
+        if (!attached) {
+          forgetRecentImageBlobPaste(recentImageBlobPastesRef.current, dedupeKey)
+        }
+
+        return attached
       } catch (err) {
+        if (dedupeKey) {
+          forgetRecentImageBlobPaste(recentImageBlobPastesRef.current, dedupeKey)
+        }
+
         notifyError(err, copy.imageAttachFailed)
 
         return false

@@ -437,10 +437,27 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
     # --- Copilot / Copilot ACP / openai-codex fallback:
     #     strip matching provider prefix, keep dots ---
     if provider in _STRIP_VENDOR_ONLY_PROVIDERS:
+        # Strip a matching ``provider:`` (colon) prefix as well as the
+        # ``provider/`` (slash) prefix handled by _strip_matching_provider_prefix.
+        # The ``provider:model`` colon syntax is Hermes's canonical runtime
+        # switch form (parse_model_input splits on the first colon), so
+        # ``openai-codex:gpt-5.6-sol`` must normalize to ``gpt-5.6-sol`` just
+        # like ``openai/gpt-5.6-sol`` does. Previously the colon prefix was
+        # left intact and the raw ``openai-codex:gpt-5.6-sol`` was sent to the
+        # Codex Responses API, which rejected it with HTTP 400
+        # "model is not supported when using Codex with a ChatGPT account".
         stripped = _strip_matching_provider_prefix(name, provider)
-        if stripped == name and name.startswith("openai/"):
-            # openai-codex maps openai/gpt-5.4 -> gpt-5.4
-            return name.split("/", 1)[1]
+        if stripped == name:
+            # Strip a leading ``<provider>:<model>`` or ``<provider>/<model>``
+            # prefix when the provider is literally ``openai-codex`` or
+            # ``openai`` (Copilot never uses these vendor prefixes). This keeps
+            # Hermes's canonical ``provider:model`` colon syntax working for
+            # the Codex backend, which rejects a raw ``openai-codex:gpt-5.6-sol``
+            # slug with HTTP 400.
+            for prefix in ("openai-codex", "openai"):
+                for sep in (":", "/"):
+                    if name.startswith(f"{prefix}{sep}"):
+                        return name.split(sep, 1)[1]
         return stripped
 
     # --- DeepSeek: map to one of two canonical names ---

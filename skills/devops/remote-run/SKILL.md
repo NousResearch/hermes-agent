@@ -1,8 +1,8 @@
 ---
 name: remote-run
 description: "Execute commands on remote hosts via SSH with Paramiko."
-version: 1.1.0
-author: Jasper
+version: 1.2.0
+author: Magnus Hedemark + Jasper
 license: MIT
 platforms: [macos, linux]
 metadata:
@@ -14,9 +14,9 @@ metadata:
 
 # Remote Run — SSH Command Execution
 
-The `remote_run` tool lets you execute commands on remote hosts over SSH
-using the `paramiko` library. Returns stdout, stderr, and exit code in a
-structured JSON response.
+The bundled `remote-run` plugin exposes a `remote_run` tool for executing one
+command on an explicitly selected SSH host. It returns stdout, stderr, and the
+remote exit code as structured JSON.
 
 Unlike piping commands through `ssh user@host command` via the `terminal`
 tool, `remote_run` gives you proper exit code detection, structured
@@ -42,7 +42,7 @@ Hermes also provides a persistent SSH terminal environment
 | Aspect | `remote_run` | SSH Terminal Environment |
 |--------|-------------|-------------------------|
 | Connection model | Fresh connection per call | Persistent ControlMaster session |
-| Exit codes | ✅ Structured via Paramiko | From shell (via `$?`) |
+| Exit codes | Structured per call | Structured terminal result |
 | Sudo handling | ✅ Built-in with password via channel | Manual via `sudo` |
 | Env vars | ✅ Via `env` parameter | Manual |
 | Working directory | ✅ Via `workdir` parameter | Tracks CWD across commands |
@@ -55,9 +55,9 @@ for interactive exploration on a single host.
 
 ## Prerequisites
 
-- **paramiko** — installed in the Hermes venv:
+- **paramiko** — install the Hermes SSH extra:
   ```bash
-  pip install "paramiko>=3,<4"
+  pip install "hermes-agent[ssh]"
   ```
 - **SSH access** — to the target host (key-based auth recommended)
 - **ssh toolset** — the tool is in the `ssh` toolset, not the default `terminal` toolset.
@@ -97,11 +97,9 @@ remote_run(host="server", command="journalctl -n 50", sudo=True)
 remote_run(host="server", command="apt update", sudo=True, password="<password>")
 ```
 
-When `sudo=True` and a `password` is provided, the tool sends it via the SSH
-channel stdin (not embedded in the command string), preventing the password
-from appearing in `/proc/cmdline` or `ps aux`. When `sudo=True` without a
-password, it wraps the command in `sudo bash -c '...'` which works if the
-remote user has NOPASSWD sudo.
+When `sudo=True`, the plugin runs `sudo -S` and sends a supplied password via
+the SSH channel stdin, never in the command string. Without a password, the
+command succeeds only when the remote user has NOPASSWD sudo.
 
 ### 3. Key-Based Authentication (Recommended)
 
@@ -147,16 +145,12 @@ connection-level failures (timeout, auth denied, host unreachable).
 
 1. **Each call opens a new connection.** The tool creates a fresh SSHClient
    per invocation. There is no connection pooling across calls. For many
-   sequential commands on the same host, this adds ~1-2s of TCP handshake
-   overhead per call. Acceptable for ad-hoc operations; for bulk work,
+   sequential commands on the same host, this repeats connection setup. For bulk work,
    consider batching commands into a single call with `&&` or a script.
 
-2. **sudo password security.** The password is sent via the SSH channel stdin
-   (not embedded in the command string), so it does NOT appear in
-   `/proc/cmdline` or `ps aux` on the remote host. However, it passes over
-   the network in plaintext unless SSH is configured with encryption (it
-   always is for modern SSH). Prefer key-based auth with NOPASSWD sudo for
-   sensitive environments.
+2. **sudo password security.** The password is sent inside the encrypted SSH
+   channel and never embedded in the remote command. Prefer key-based SSH auth
+   with NOPASSWD sudo so a reusable password does not need to enter the tool call.
 
 3. **Environment variable key validation.** Keys are validated against
    `[A-Za-z_][A-Za-z0-9_]*`. Invalid keys are rejected with a clear error.
@@ -175,17 +169,13 @@ connection-level failures (timeout, auth denied, host unreachable).
    (under which Hermes runs) is used as the SSH username. Always specify
    `user` explicitly when connecting to a host with a different username.
 
-6. **Host key verification.** The tool uses `WarningPolicy()` which logs a
-   warning for unknown or changed host keys but does not abort. This matches
-   the `StrictHostKeyChecking=accept-new` pattern — convenient for ephemeral
-   environments while still surfacing key changes in logs. For production use
-   with strict verification, pre-configure `known_hosts` and switch to
-   `RejectPolicy` in the source.
+6. **Host key verification.** The first key for a host is accepted and persisted
+   in `$HERMES_HOME/ssh/known_hosts`. Later calls reject a changed key. Paramiko
+   also loads the user's system known-hosts file before consulting this store.
 
-7. **Output truncation.** Stdout and stderr are read entirely into memory.
-   Combined output exceeding 100,000 characters is truncated with a
-   `[truncated]` marker. For commands producing very large output, use
-   `terminal` with a piped SSH command instead.
+7. **Output truncation.** Stdout and stderr are drained concurrently in bounded
+   chunks. At most 100,000 bytes are retained; additional output is discarded
+   and reported with a truncation marker.
 
 8. **Toolset requirement.** The `remote_run` tool is in the `ssh` toolset
    (not the default `terminal` toolset). You must enable it:
@@ -205,7 +195,7 @@ python3 -c "import paramiko; print(paramiko.__version__)"
 python3 -c "
 import json, sys
 sys.path.insert(0, '.')
-from tools.remote_run_tool import remote_run_handler
+from plugins.remote_run import remote_run_handler
 r = json.loads(remote_run_handler({'host': 'localhost', 'command': 'echo ok', 'user': '$USER'}))
 assert r['exit_code'] == 0 and r['stdout'].strip() == 'ok'
 print('remote_run works')

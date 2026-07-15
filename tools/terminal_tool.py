@@ -278,12 +278,16 @@ def _docker_has_host_access(config: Dict[str, Any]) -> bool:
     return any(_docker_volume_uses_host_path(vol) for vol in config.get("docker_volumes", []))
 
 
-def _check_all_guards(command: str, env_type: str,
-                      has_host_access: bool = False) -> dict:
-    """Delegate to consolidated guard (tirith + dangerous cmd) with CLI callback."""
+def check_command_guards(command: str, env_type: str,
+                         has_host_access: bool = False) -> dict:
+    """Run the shared command guard with the active CLI approval callback."""
     return _check_all_guards_impl(command, env_type,
                                   approval_callback=_get_approval_callback(),
                                   has_host_access=has_host_access)
+
+
+# Compatibility for internal tests and callers using the former private name.
+_check_all_guards = check_command_guards
 
 
 # Allowlist: characters that can legitimately appear in directory paths.

@@ -1413,6 +1413,26 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
     Returns None on success, or an error string on failure.
     """
+    # HERMES_FEISHU_CARD_CRON_PATCH_BEGIN
+    try:
+        from hermes_feishu_card.hook_runtime import emit_cron_delivery as _hfc_emit_cron
+        _hfc_cron_metadata = {"delivery_kind": "cron"}
+        # Pre-resolve targets so build_cron_event can discover feishu chat_id
+        _hfc_resolve_targets = locals().get("_resolve_delivery_targets") or globals().get("_resolve_delivery_targets")
+        if callable(_hfc_resolve_targets):
+            try:
+                job["_hfc_resolved_targets"] = _hfc_resolve_targets(job)
+            except Exception:
+                pass
+        if _hfc_emit_cron(locals()):
+            return None
+    except Exception as _hfc_exc:
+        try:
+            import sys as _hfc_sys
+            print("[hermes-feishu-card] hook failed: " + _hfc_exc.__class__.__name__ + ": " + str(_hfc_exc), file=_hfc_sys.stderr)
+        except Exception:
+            pass
+    # HERMES_FEISHU_CARD_CRON_PATCH_END
     targets = _resolve_delivery_targets(job)
     if not targets:
         deliver_value = _normalize_deliver_value(job.get("deliver", "local"))
@@ -2842,10 +2862,10 @@ def run_job(
         chat_id="",
         chat_name="",
     )
-    # Propagate HERMES_SESSION_SOURCE so that tools like
-    # hermes_studio_use_chat_run and run_agent._session_source_for_agent()
-    # inherit the cron identity when they create child sessions.
-    os.environ["HERMES_SESSION_SOURCE"] = "cron"
+    # ContextVar `source="cron"` above is sufficient: get_session_env() in
+    # tools/mcp_tool.py reads from the ContextVar (authoritative per
+    # gateway/session_context.py:304-327), then falls back to os.environ
+    # only when the var was never set. No process-global env mutation needed.
     _cron_delivery_vars = (
         "HERMES_CRON_AUTO_DELIVER_PLATFORM",
         "HERMES_CRON_AUTO_DELIVER_CHAT_ID",

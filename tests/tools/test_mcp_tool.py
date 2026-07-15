@@ -5,6 +5,7 @@ All tests use mocks -- no real MCP servers or subprocesses are started.
 
 import asyncio
 import json
+import os
 import threading
 import time
 from types import SimpleNamespace
@@ -832,6 +833,90 @@ class TestToolHandler:
             assert result["result"] == "reconnected"
             reconnect.assert_called_once()
             mock_session.call_tool.assert_called_once_with("greet", arguments={"name": "world"})
+        finally:
+            _servers.pop("test_srv", None)
+
+    def test_session_source_propagation_from_contextvar(self):
+        """Session source is injected into MCP args from ContextVar, not os.environ.
+        
+        Regression: tools/mcp_tool.py should use get_session_env() which reads
+        the ContextVar (authoritative) before falling back to os.environ.
+        Direct os.environ reads bypass the ContextVar concurrency isolation.
+        
+        See eknium1 review on NousResearch/hermes-agent#52932.
+        """
+        from tools.mcp_tool import _make_tool_handler, _servers
+        from gateway.session_context import get_session_env, set_session_vars, clear_session_vars, _UNSET, _VAR_MAP
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result("ok", is_error=False)
+        )
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+
+        try:
+            handler = _make_tool_handler("test_srv", "hermes_studio_use_chat_run", 120)
+            with self._patch_mcp_loop():
+                # Cron context via ContextVar
+                tokens = set_session_vars(source="cron")
+                try:
+                    handler({"input": "test"})
+                    assert get_session_env("HERMES_SESSION_SOURCE") == "cron"
+                    call_kwargs = mock_session.call_tool.call_args
+                    injected_args = call_kwargs[1]["arguments"]
+                    assert injected_args["source"] == "cron"
+                finally:
+                    clear_session_vars(tokens)
+
+                # Non-cron context — should NOT leak "cron"
+                mock_session.call_tool.reset_mock()
+                with self._patch_mcp_loop():
+                    handler({"input": "test"})
+                call_kwargs = mock_session.call_tool.call_args
+                injected_args = call_kwargs[1]["arguments"]
+                assert "source" not in injected_args
+
+                # Verify env var was NOT set (ContextVar is authoritative)
+                assert os.environ.get("HERMES_SESSION_SOURCE") is None
+
+                # When source is already in args, do not override
+                mock_session.call_tool.reset_mock()
+                tokens = set_session_vars(source="cron")
+                try:
+                    with self._patch_mcp_loop():
+                        handler({"input": "test", "source": "cli"})
+                    call_kwargs = mock_session.call_tool.call_args
+                    injected_args = call_kwargs[1]["arguments"]
+                    assert injected_args["source"] == "cli"  # user value preserved
+                finally:
+                    clear_session_vars(tokens)
+        finally:
+            _servers.pop("test_srv", None)
+
+    def test_session_source_not_propagated_for_other_tools(self):
+        """Source injection only targets hermes_studio_use_chat_run, not arbitrary MCP tools."""
+        from tools.mcp_tool import _make_tool_handler, _servers
+        from gateway.session_context import set_session_vars, clear_session_vars
+
+        mock_session = MagicMock()
+        mock_session.call_tool = AsyncMock(
+            return_value=_make_call_result("ok", is_error=False)
+        )
+        server = _make_mock_server("test_srv", session=mock_session)
+        _servers["test_srv"] = server
+
+        try:
+            handler = _make_tool_handler("test_srv", "some_other_tool", 120)
+            tokens = set_session_vars(source="cron")
+            try:
+                with self._patch_mcp_loop():
+                    handler({"path": "/tmp/test"})
+                call_kwargs = mock_session.call_tool.call_args
+                injected_args = call_kwargs[1]["arguments"]
+                assert "source" not in injected_args
+            finally:
+                clear_session_vars(tokens)
         finally:
             _servers.pop("test_srv", None)
 

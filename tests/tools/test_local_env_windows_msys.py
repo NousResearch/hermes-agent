@@ -255,7 +255,7 @@ class TestWrapCommandWindowsNativeCwd:
 
         captured = {}
 
-        def fake_run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+        def fake_run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None, secret_env=None):
             captured["script"] = cmd_string
             raise RuntimeError("stop after capturing bootstrap")
 

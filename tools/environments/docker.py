@@ -1015,9 +1015,15 @@ class DockerEnvironment(BaseEnvironment):
             args.extend(["-e", f"{key}={exec_env[key]}"])
         return args
 
+    # Secret env vars are forwarded via ``docker exec -e KEY`` (name only) with
+    # the value supplied through the docker CLI's own process environment, so
+    # the value never appears on argv (host ``ps``) or in the container snapshot.
+    supports_secret_env = True
+
     def _run_bash(self, cmd_string: str, *, login: bool = False,
                   timeout: int = 120,
-                  stdin_data: str | None = None) -> subprocess.Popen:
+                  stdin_data: str | None = None,
+                  secret_env: dict[str, str] | None = None) -> subprocess.Popen:
         """Spawn a bash process inside the Docker container."""
         assert self._container_id, "Container not started"
         cmd = [self._docker_exe, "exec"]
@@ -1029,6 +1035,18 @@ class DockerEnvironment(BaseEnvironment):
         if login:
             cmd.extend(self._init_env_args)
 
+        # Inject ephemeral secret env vars for this exec only. Use the
+        # name-only form (``-e KEY``) so the value is read from this docker
+        # CLI process's environment rather than placed on argv (which would
+        # be visible in host ``ps``). The value is unset inside the container
+        # before the snapshot is re-dumped (see BaseEnvironment._wrap_command),
+        # so it is never persisted.
+        popen_env = None
+        if secret_env:
+            for key in secret_env:
+                cmd.extend(["-e", key])
+            popen_env = {**os.environ, **secret_env}
+
         cmd.extend([self._container_id])
 
         if login:
@@ -1036,6 +1054,8 @@ class DockerEnvironment(BaseEnvironment):
         else:
             cmd.extend(["bash", "-c", cmd_string])
 
+        if popen_env is not None:
+            return _popen_bash(cmd, stdin_data, env=popen_env)
         return _popen_bash(cmd, stdin_data)
 
     # ------------------------------------------------------------------

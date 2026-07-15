@@ -52,6 +52,12 @@ class TestHermesApiServerToolset:
         tools = resolve_toolset("hermes-api-server")
         assert "send_message" not in tools
 
+    def test_toolset_excludes_request_secure_input(self):
+        # The HTTP API server has no interactive UI to capture a masked secret,
+        # so request_secure_input must not be advertised on this surface.
+        tools = resolve_toolset("hermes-api-server")
+        assert "request_secure_input" not in tools
+
     def test_toolset_excludes_text_to_speech(self):
         tools = resolve_toolset("hermes-api-server")
         assert "text_to_speech" not in tools

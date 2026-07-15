@@ -26,7 +26,17 @@ def set_secure_input_callback(callback) -> None:
 
 
 def check_secure_input_requirements() -> bool:
-    return True
+    """Gate ``request_secure_input`` to surfaces that can actually capture a
+    masked secret. Only interactive surfaces (CLI/TUI/gateway) register a
+    callback via :func:`set_secure_input_callback`; non-interactive surfaces
+    (API server, headless) leave it unset, so the tool is filtered from the
+    toolset instead of being advertised and then failing at runtime.
+
+    The registry TTL-caches this, and interactive surfaces register their
+    callback at session start (before tool listing), so the gate settles
+    correctly for the session.
+    """
+    return _secure_input_callback is not None
 
 
 def _normalize_allowed_consumers(value: Any) -> list[str]:

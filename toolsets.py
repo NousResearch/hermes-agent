@@ -406,7 +406,11 @@ TOOLSETS = {
             # Web
             "web_search", "web_extract",
             # Terminal + process management
-            "terminal", "process", "request_secure_input",
+            # NOTE: request_secure_input is intentionally omitted — the HTTP API
+            # server has no interactive UI to capture a masked secret, so the
+            # tool's check_fn would filter it out anyway. Keeping it out of the
+            # list avoids advertising a capability this surface never provides.
+            "terminal", "process",
             # File manipulation
             "read_file", "write_file", "patch", "search_files",
             # Vision + image generation

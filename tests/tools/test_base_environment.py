@@ -15,7 +15,8 @@ class _TestableEnv(BaseEnvironment):
     def __init__(self, cwd="/tmp", timeout=10):
         super().__init__(cwd=cwd, timeout=timeout)
 
-    def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None):
+    def _run_bash(self, cmd_string, *, login=False, timeout=120, stdin_data=None,
+                  secret_env=None):
         raise NotImplementedError("Use mock")
 
     def cleanup(self):
@@ -160,8 +161,10 @@ class TestAtomicSnapshotWrite:
         env = _TestableEnv()
         captured = {}
 
-        def fake_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None):
+        def fake_run_bash(cmd_string, *, login=False, timeout=120, stdin_data=None,
+                          secret_env=None):
             captured["cmd"] = cmd_string
+            captured["secret_env"] = secret_env
             raise RuntimeError("stop after capture")  # we only need the script
 
         env._run_bash = fake_run_bash  # type: ignore[assignment]
@@ -345,7 +348,8 @@ class TestInitSessionFailure:
         env._snapshot_ready = False
 
         calls = []
-        def mock_run_bash(cmd, *, login=False, timeout=120, stdin_data=None):
+        def mock_run_bash(cmd, *, login=False, timeout=120, stdin_data=None,
+                          secret_env=None):
             calls.append({"login": login})
             # Return a mock process handle
             mock = MagicMock()

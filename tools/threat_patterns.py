@@ -111,8 +111,15 @@ _PATTERNS: List[Tuple[str, str, str]] = [
     # AGENTS.md / SOUL.md content false-positives and the whole file is
     # blocked. "praxis" was removed for exactly this reason — it's a common
     # word and a legitimate agent name (Greek for practice/action), not a
-    # C2-specific tell like the brands below.
-    (r'\b(?:cobalt\s*strike|sliver|havoc|mythic|metasploit|brainworm)\b', "known_c2_framework", "context"),
+    # C2-specific tell like the brands below. "mythic" was likewise
+    # removed: it is widely used to describe TTRPG products (the Mythic
+    # Game Master Emulator), narrative-writing tools, and any number of
+    # project headings. The C2 framework "Mythic C2" remains detectable
+    # via the surrounding context patterns and the explicit "c2 server"
+    #   rule below, so removing the bare word-boundary match is safe
+    # for the threat model while removing a frequent false positive on
+    # legitimate project content (#59612).
+    (r'\b(?:cobalt\s*strike|sliver|havoc|metasploit|brainworm)\b', "known_c2_framework", "context"),
     (r'\bc2\s+(?:server|channel|infrastructure|beacon)\b', "c2_explicit", "context"),
     (r'\bcommand\s+and\s+control\b', "c2_explicit_long", "context"),
 

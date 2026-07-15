@@ -57,10 +57,23 @@ def _scan_context_content(content: str, filename: str) -> str:
     cloned repo (security research, infra docs).  Content matching is
     BLOCKED at this layer because the file would otherwise enter the
     system prompt verbatim and the user has no chance to intervene.
+
+    When the file is blocked, a warning is also recorded through the
+    shared ``_record_truncation_warning`` accumulator so the existing
+    ``drain_truncation_warnings`` → ``agent._emit_status`` pipeline
+    surfaces it to the user (TUI/CLI/gateway).  Without this hook
+    only ``logger.warning`` would fire — invisible to the user — even
+    though their entire project-context file silently disappears from
+    the system prompt (#59612).
     """
     findings = _scan_for_threats(content, scope="context")
     if findings:
         logger.warning("Context file %s blocked: %s", filename, ", ".join(findings))
+        _record_truncation_warning(
+            f"WARNING: {filename} blocked by threat scanner "
+            f"({', '.join(findings)}). Content not loaded into system prompt. "
+            f"Review the file or add an exception."
+        )
         return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
 
     return content

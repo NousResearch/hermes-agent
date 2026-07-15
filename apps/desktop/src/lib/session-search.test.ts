@@ -60,6 +60,24 @@ describe('sessionMatchesSearch', () => {
     expect(sessionMatchesSearch(makeSession({ source: 'bluebubbles' }), 'imessage')).toBe(true)
   })
 
+  it('matches shared-channel sessions by safe origin room and topic labels', () => {
+    const session = makeSession({
+      channel_origin: {
+        chat_name: 'Build Room',
+        chat_topic: 'Release coordination',
+        chat_type: 'channel',
+        display_name: 'Build Room',
+        has_thread: true,
+        platform: 'webhook'
+      },
+      source: 'webhook'
+    })
+
+    expect(sessionMatchesSearch(session, 'build room')).toBe(true)
+    expect(sessionMatchesSearch(session, 'release coordination')).toBe(true)
+    expect(sessionMatchesSearch(session, 'channel')).toBe(true)
+  })
+
   it('does not match unrelated queries', () => {
     expect(sessionMatchesSearch(makeSession(), 'totally-unrelated')).toBe(false)
   })

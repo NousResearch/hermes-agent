@@ -52,6 +52,58 @@ from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context
 logger = logging.getLogger(__name__)
 
 
+# Structured reason returned by the plan-mode dispatch guard when the
+# enforcement state itself could not be evaluated. The guard fails CLOSED: a
+# mutating tool must not run while plan state is unreadable. Read-only tools
+# are never affected — they are safe regardless of plan state.
+_PLAN_STATE_UNREADABLE_REASON = (
+    "Blocked: plan-mode enforcement state is unreadable — failing closed. "
+    "This mutating tool cannot run until plan state can be read again."
+)
+
+
+def _is_mutating_tool(function_name: str) -> bool:
+    """Best-effort static membership check for the fail-closed guard path.
+
+    Returns True (fail closed) when the mutating-tool set cannot even be
+    loaded: under total uncertainty a tool is treated as mutating so it is
+    blocked rather than silently allowed.
+    """
+    try:
+        from agent.tool_guardrails import MUTATING_TOOL_NAMES
+
+        return function_name in MUTATING_TOOL_NAMES
+    except Exception:
+        return True
+
+
+def _plan_mode_block_reason(agent, function_name: str, function_args) -> Optional[str]:
+    """Fail-closed wrapper around ``plan_mode.tool_block_reason``.
+
+    Returns the block reason (a string) when the tool must be blocked, or
+    ``None`` when it may run. ``plan_mode.tool_block_reason`` already owns the
+    ONE justified carve-out internally — a DB that is simply unavailable (no
+    plan row readable) is treated as "not in plan mode" so a transient outage
+    cannot wedge every session — and it distinguishes that DB-down sentinel
+    from a plan row that exists but cannot be parsed (which it blocks).
+
+    This wrapper adds the outer guarantee the two executor call sites
+    previously lacked: if the guard call ITSELF raises (import error,
+    unexpected bug), we must not silently ALLOW the tool. We fail closed for
+    mutating tools — and only mutating tools; read-only tools always pass.
+    """
+    session_id = getattr(agent, "session_id", "") or ""
+    try:
+        from hermes_cli.plan_mode import tool_block_reason as _plan_block_reason
+
+        return _plan_block_reason(session_id, function_name, function_args)
+    except Exception as exc:
+        logger.warning(
+            "plan-mode guard raised for %s; failing closed: %s", function_name, exc
+        )
+        return _PLAN_STATE_UNREADABLE_REASON if _is_mutating_tool(function_name) else None
+
+
 def _budget_for_agent(agent) -> BudgetConfig:
     """Resolve a tool-result BudgetConfig scaled to the agent's context window.
 
@@ -465,18 +517,14 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 block_message = None
 
             # Plan-mode dispatch guard (fail-closed): block mutating tools while
-            # the session is planning / awaiting approval. See hermes_cli/plan_mode.
+            # the session is planning / awaiting approval. A guard that raises
+            # must NOT allow the tool — _plan_mode_block_reason fails closed for
+            # mutating tools. See hermes_cli/plan_mode.
             _plan_block = None
             if block_message is None:
-                try:
-                    from hermes_cli.plan_mode import tool_block_reason as _plan_block_reason
-                    _plan_block = _plan_block_reason(
-                        getattr(agent, "session_id", "") or "",
-                        function_name,
-                        function_args,
-                    )
-                except Exception:
-                    _plan_block = None
+                _plan_block = _plan_mode_block_reason(
+                    agent, function_name, function_args
+                )
 
             if block_message is not None:
                 block_result = json.dumps({"error": block_message}, ensure_ascii=False)
@@ -1156,20 +1204,16 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 pass
 
             # Plan-mode dispatch guard (fail-closed): block mutating tools while
-            # the session is planning / awaiting approval. See hermes_cli/plan_mode.
+            # the session is planning / awaiting approval. A guard that raises
+            # must NOT allow the tool — _plan_mode_block_reason fails closed for
+            # mutating tools. See hermes_cli/plan_mode.
             if _block_msg is None:
-                try:
-                    from hermes_cli.plan_mode import tool_block_reason as _plan_block_reason
-                    _plan_reason = _plan_block_reason(
-                        getattr(agent, "session_id", "") or "",
-                        function_name,
-                        function_args,
-                    )
-                    if _plan_reason is not None:
-                        _block_msg = _plan_reason
-                        _block_error_type = "plan_mode_block"
-                except Exception:
-                    pass
+                _plan_reason = _plan_mode_block_reason(
+                    agent, function_name, function_args
+                )
+                if _plan_reason is not None:
+                    _block_msg = _plan_reason
+                    _block_error_type = "plan_mode_block"
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
         if _block_msg is None:

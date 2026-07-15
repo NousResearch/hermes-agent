@@ -187,6 +187,7 @@ _STOPPED_SERVICE_UNITS = (
 )
 _PIDLESS_SERVICE_UNITS = frozenset({
     "muncho-canonical-writer-export.timer",
+    "muncho-isolated-worker.socket",
 })
 _SERVICE_PROPERTIES = (
     "LoadState",

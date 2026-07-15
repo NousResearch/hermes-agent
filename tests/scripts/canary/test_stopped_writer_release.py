@@ -320,7 +320,8 @@ def test_service_parser_accepts_only_exact_absent_or_disabled_state():
 
 def test_timer_parser_normalizes_only_the_exact_pidless_systemd_shape():
     timer = "muncho-canonical-writer-export.timer"
-    assert writer_release._PIDLESS_SERVICE_UNITS == frozenset({timer})
+    socket = "muncho-isolated-worker.socket"
+    assert writer_release._PIDLESS_SERVICE_UNITS == frozenset({timer, socket})
 
     parsed = writer_release._parse_service_observation(
         timer,
@@ -329,6 +330,13 @@ def test_timer_parser_normalizes_only_the_exact_pidless_systemd_shape():
 
     assert parsed["state"] == "absent"
     assert parsed["properties"]["MainPID"] == "0"
+
+    socket_parsed = writer_release._parse_service_observation(
+        socket,
+        _service_stdout(socket),
+    )
+    assert socket_parsed["state"] == "absent"
+    assert socket_parsed["properties"]["MainPID"] == "0"
 
     service = writer_release._STOPPED_SERVICE_UNITS[0]
     service_without_pid = _service_stdout(service).replace("MainPID=0\n", "")

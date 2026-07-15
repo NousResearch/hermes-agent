@@ -3533,6 +3533,11 @@ def _service(unit: str) -> Mapping[str, Any]:
             values[key] = value
     except (UnicodeError, ValueError) as exc:
         raise ArtifactError("artifact_service_observation_invalid") from exc
+    missing = set(fields) - set(values)
+    if missing == {"MainPID"} and unit == ISOLATED_WORKER_SOCKET_UNIT:
+        values["MainPID"] = "0"
+    elif missing:
+        raise ArtifactError("artifact_service_observation_invalid")
     if set(values) != set(fields) or values["Names"] != unit:
         raise ArtifactError("artifact_service_observation_invalid")
     fragment = values["FragmentPath"]

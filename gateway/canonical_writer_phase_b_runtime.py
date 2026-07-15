@@ -96,6 +96,9 @@ _SERVICE_PROPERTIES = (
     "Triggers",
     "NextElapseUSecRealtime",
 )
+_PIDLESS_SERVICE_UNITS = frozenset({
+    "muncho-canonical-writer-export.timer",
+})
 _TEMPORARY_ADMIN_RE = re.compile(r"^muncho_canary_admin_[0-9a-f]{16}$")
 _OPERATION_NAME_RE = re.compile(r"^[A-Za-z0-9._~-]{1,256}$")
 _REVISION_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -1317,7 +1320,12 @@ def _collect_one_service(unit: str) -> Mapping[str, Any]:
     # serializers.  Only these exact empty values are normalized.
     for optional in ("TriggeredBy", "Triggers", "NextElapseUSecRealtime"):
         values.setdefault(optional, "")
-    if set(values) != set(_SERVICE_PROPERTIES):
+    missing = set(_SERVICE_PROPERTIES) - set(values)
+    if missing == {"MainPID"} and unit in _PIDLESS_SERVICE_UNITS:
+        # Timer units do not own a service process, so supported systemd
+        # versions omit MainPID even for an exact stopped observation.
+        values["MainPID"] = "0"
+    elif missing:
         _fail("phase_b_runtime_systemd_invalid")
     try:
         main_pid = int(values["MainPID"])

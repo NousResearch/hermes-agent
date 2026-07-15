@@ -1,0 +1,195 @@
+/*
+ * theme-fallback.css — structural + mobile-ergonomics CSS only.
+ *
+ * Colors/tokens are owned by the desktop ThemeProvider (themes/context), which
+ * paints the real desktop skin onto :root — so we DON'T pin --dt-* here.
+ * This file handles layout + device safe areas (status bar / nav bar / notch).
+ */
+
+
+html,
+body {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--dt-background, #0d2f86);
+  overscroll-behavior: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/*
+ * The Android/iOS WebView draws edge-to-edge (viewport-fit=cover), so the app
+ * would slide under the status bar and the gesture/nav bar. Inset the whole app
+ * by the device safe areas. The inset strips show the themed background so the
+ * status-bar and nav-bar regions blend with the app.
+ *
+ * The vendored AppShell root is `h-screen` (100vh) — full viewport, ignoring the
+ * padding. We pin #root to the visual viewport with safe-area padding and force
+ * its child (the shell, or a connect screen) to fill the PADDED box instead of
+ * 100vh, so nothing renders under the system bars.
+ */
+#root {
+  position: fixed;
+  inset: 0;
+  box-sizing: border-box;
+  /* Inset the whole app by the status-bar height so NOTHING (chat title, message
+     list, etc.) renders behind the clock/battery — the app visually stops at the
+     status bar. The fixed titlebar clusters get the same inset below. */
+  padding-top: env(safe-area-inset-top);
+  /* Bottom = nav-bar inset. When the keyboard opens the WebView shrinks above
+     it natively (Chromium edge-to-edge), so no manual lift is needed here. */
+  padding-bottom: env(safe-area-inset-bottom);
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+  /* The safe-area strips (status bar on top, nav bar on bottom) show this
+     background, so they read as a clean themed band rather than bare white. */
+  background: var(--ui-sidebar-surface-background, var(--dt-background, #0d2f86));
+  overflow: hidden;
+}
+
+#root > * {
+  height: 100% !important;
+  max-height: 100%;
+}
+
+/*
+ * The titlebar clusters (settings gear, sidebar toggles, swap, etc.) are
+ * position:fixed (viewport-relative), so #root's top inset doesn't move them —
+ * add the same status-bar inset here so they land in the chat's titlebar row
+ * (which is now inset by #root) instead of behind the clock/battery.
+ * (env(safe-area-inset-top) is real thanks to the SafeArea plugin; 0 in a plain
+ * browser, so this is a no-op in dev.)
+ */
+[data-titlebar-cluster] {
+  top: calc(var(--titlebar-controls-top, 0px) + env(safe-area-inset-top)) !important;
+}
+
+/* Slightly larger tap targets for touch — the desktop titlebar buttons are tuned
+   for a mouse. Bumped a little (not a lot) so they're easier to hit. */
+:root {
+  --titlebar-control-size: 1.6rem;
+  --titlebar-control-height: 1.7rem;
+}
+[data-titlebar-cluster] .codicon {
+  font-size: 1rem !important;
+}
+
+/* While a sidebar drawer is open, hide the titlebar — it's position:fixed at a
+   higher z-index than the drawer, so it would float over the drawer's content.
+   The drawer has its own header; SidebarBridge sets data-drawer-open on <html>. */
+[data-drawer-open] [data-titlebar-cluster] {
+  display: none !important;
+}
+
+/* Safe-area helpers usable from any screen. */
+.safe-t {
+  padding-top: env(safe-area-inset-top);
+}
+.safe-b {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/*
+ * Mobile bottom status bar. Rather than HIDING controls the phone can't fit
+ * (YOLO, background agents, cron, terminal, session timer) — which makes the app
+ * feel like a stripped-down port — keep them all and let the bar scroll
+ * horizontally (see the [data-statusbar] rule below). Only the client-version is
+ * dropped: it's redundant with the backend version already shown.
+ */
+[data-statusbar-id='version-client'] {
+  display: none !important;
+}
+
+/* Gateway: show ONLY the colored status icon — hide the "Gateway" label and the
+   "ready/checking" status text (both rendered as <span> inside the item). */
+[data-statusbar-id='gateway-health'] span {
+  display: none !important;
+}
+
+/* Slightly taller bottom bar with larger text/icons so the items are easier to
+   tap (the desktop bar is h-5 / 0.6875rem — too small for touch). Bumped a
+   little, not a lot. */
+[data-statusbar] {
+  height: 1.75rem !important;
+  /* Show every control; scroll the bar horizontally rather than cram or clip. */
+  justify-content: flex-start !important;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+[data-statusbar]::-webkit-scrollbar {
+  display: none;
+}
+[data-statusbar] > * {
+  overflow: visible !important;
+  flex: 0 0 auto;
+}
+[data-statusbar] [data-statusbar-id] {
+  font-size: 0.8125rem !important;
+  padding-left: 0.5rem !important;
+  padding-right: 0.5rem !important;
+}
+[data-statusbar] [data-statusbar-id] .codicon {
+  font-size: 0.95rem !important;
+}
+
+/* Boot-failure recovery: the local-install actions (repair the installer, switch
+   to the bundled LOCAL gateway, open desktop logs) don't exist on the remote-only
+   mobile client — the bridge stubs them all. Hide them so only Retry (which
+   reloads and reconnects to the remote gateway) remains. */
+[data-boot-action='repair'],
+[data-boot-action='local'],
+[data-boot-action='logs'] {
+  display: none !important;
+}
+
+/* Keyboard-shortcut keycaps (the "Ctrl N" next to New session, etc.) mean nothing
+   on a touchscreen — hide them everywhere on mobile. */
+[data-slot='kbd-group'],
+[data-slot='kbd'] {
+  display: none !important;
+}
+
+/* The titlebar "keyboard shortcuts" (⌨) button is the only entry point to the
+   keybinds panel — and shortcuts are meaningless on a touchscreen. Hide it so the
+   panel can't be opened on mobile. */
+[data-titlebar-tool='keybinds'] {
+  display: none !important;
+}
+
+/* Page filter chips (e.g. Skills' ~20 category chips) wrap into a dense wall on a
+   phone. Make the row a single horizontal-scroll strip — one swipeable line of
+   tappable chips instead of a cramped block. */
+[data-page-filters] {
+  flex-wrap: nowrap !important;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  -webkit-overflow-scrolling: touch;
+}
+[data-page-filters]::-webkit-scrollbar {
+  display: none;
+}
+[data-page-filters] > * {
+  flex: 0 0 auto;
+}
+
+/*
+ * Overlay screens (Settings / Skills / Profiles …). Upstream ships its own
+ * responsive master-detail for these now (a category dropdown bar + full-width
+ * content on narrow viewports — see overlays/overlay-split-layout.tsx), so the
+ * only mobile tweak here is insetting the overlay CARD into the safe area.
+ */
+@media (max-width: 47.5rem) {
+  /* Inset the whole overlay CARD (Settings/Skills/Profiles) into the safe area so
+     the panel stops at the status bar / nav bar like the rest of the app, instead
+     of sliding under the clock/battery. With the card inset, its inner panels use
+     their normal desktop titlebar clearance — no extra env() needed below. */
+  [data-overlay-view] {
+    padding-top: calc(env(safe-area-inset-top) + 0.5rem) !important;
+    padding-bottom: calc(env(safe-area-inset-bottom) + 0.5rem) !important;
+    padding-left: calc(env(safe-area-inset-left) + 0.5rem) !important;
+    padding-right: calc(env(safe-area-inset-right) + 0.5rem) !important;
+  }
+}

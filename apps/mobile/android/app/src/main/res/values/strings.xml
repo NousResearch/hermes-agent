@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Hermes</string>
+    <string name="title_activity_main">Hermes</string>
+    <string name="package_name">com.nousresearch.hermesagent.mobile</string>
+    <string name="custom_url_scheme">com.nousresearch.hermesagent.mobile</string>
+</resources>

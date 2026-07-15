@@ -1,0 +1,32 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+dist-ssr/
+*.local
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Editor / OS
+.vscode/*
+!.vscode/extensions.json
+.idea/
+.DS_Store
+Thumbs.db
+
+# Capacitor — the native android/ project IS committed, but its build
+# artifacts are not (Capacitor writes android/.gitignore for those on add).
+.capacitor/
+
+# Vendor manifest checksums are committed; the vendored tree itself is too
+# (so the app builds without a local hermes-agent checkout). Nothing ignored here.
+
+# TypeScript build info
+*.tsbuildinfo

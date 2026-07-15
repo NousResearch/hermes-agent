@@ -63,6 +63,7 @@ export function OverlayView({
           closeOverlay()
         }
       }}
+      data-overlay-view
       role="presentation"
     >
       <div

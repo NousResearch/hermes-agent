@@ -307,12 +307,18 @@ export function BootFailureOverlay() {
           <div className="grid gap-2">
             <div className="flex flex-wrap gap-2">
               {actions.map(action => (
-                <Button disabled={Boolean(busy)} key={action.key} onClick={action.onClick} variant={action.variant}>
+                <Button
+                  data-boot-action={action.key}
+                  disabled={Boolean(busy)}
+                  key={action.key}
+                  onClick={action.onClick}
+                  variant={action.variant}
+                >
                   {action.busy && busy === action.busy ? <Loader2 className="animate-spin" /> : action.icon}
                   {action.label}
                 </Button>
               ))}
-              <Button onClick={openLogs} variant="ghost">
+              <Button data-boot-action="logs" onClick={openLogs} variant="ghost">
                 <FileText />
                 {copy.openLogs}
               </Button>

@@ -1,0 +1,28 @@
+diff --git a/node_modules/@capacitor-community/safe-area/android/src/main/java/com/getcapacitor/community/safearea/SafeAreaPlugin.java b/node_modules/@capacitor-community/safe-area/android/src/main/java/com/getcapacitor/community/safearea/SafeAreaPlugin.java
+index 7e5d064..adb53e2 100644
+--- a/node_modules/@capacitor-community/safe-area/android/src/main/java/com/getcapacitor/community/safearea/SafeAreaPlugin.java
++++ b/node_modules/@capacitor-community/safe-area/android/src/main/java/com/getcapacitor/community/safearea/SafeAreaPlugin.java
+@@ -124,8 +124,10 @@ public class SafeAreaPlugin extends Plugin {
+             boolean keyboardVisible = windowInsets.isVisible(WindowInsetsCompat.Type.ime());
+ 
+             if (shouldPassthroughInsets) {
+-                // We need to correct for a possible shown IME
+-                v.setPadding(0, 0, 0, keyboardVisible ? imeInsets.bottom : 0);
++                // hermes-mobile patch: do NOT pad for the IME. On Android 15+
++                // edge-to-edge the window already resizes for the keyboard, so
++                // padding here double-counts it (viewport collapsed to ~241px).
++                v.setPadding(0, 0, 0, 0);
+ 
+                 return new WindowInsetsCompat.Builder(windowInsets).setInsets(
+                         WindowInsetsCompat.Type.systemBars() | WindowInsetsCompat.Type.displayCutout(),
+@@ -138,8 +140,8 @@ public class SafeAreaPlugin extends Plugin {
+                 ).build();
+             }
+ 
+-            // We need to correct for a possible shown IME
+-            v.setPadding(systemBarsInsets.left, systemBarsInsets.top, systemBarsInsets.right, keyboardVisible ? imeInsets.bottom : systemBarsInsets.bottom);
++            // hermes-mobile patch: don't pad for the IME (window already resizes).
++            v.setPadding(systemBarsInsets.left, systemBarsInsets.top, systemBarsInsets.right, systemBarsInsets.bottom);
+ 
+             // Returning `WindowInsetsCompat.CONSUMED` breaks recalculation of safe area insets
+             // So we have to explicitly set insets to `0`

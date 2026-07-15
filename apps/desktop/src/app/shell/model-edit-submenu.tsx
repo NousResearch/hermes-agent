@@ -11,6 +11,7 @@ import {
   DropdownMenuSubContent
 } from '@/components/ui/dropdown-menu'
 import { Switch } from '@/components/ui/switch'
+import { useMediaQuery } from '@/hooks/use-media-query'
 import { useI18n } from '@/i18n'
 import { normalize } from '@/lib/text'
 import { setModelPreset } from '@/store/model-presets'
@@ -106,6 +107,11 @@ export function ModelEditSubmenu({
   const { t } = useI18n()
   const copy = t.shell.modelOptions
   const activeSessionId = useStore($activeSessionId)
+  // On a phone the model menu sits bottom-centre, so a normal side submenu opens
+  // past the screen edge and clips (you can't read the effort options). Pull it
+  // back over the parent menu instead — it renders on top, so the overlap reads
+  // fine and everything stays on-screen.
+  const narrow = useMediaQuery('(max-width: 30rem)')
 
   const effortValue = normalizeEffort(effort)
   const thinkingOn = isThinkingEnabled(effort)
@@ -187,7 +193,7 @@ export function ModelEditSubmenu({
   const fastOn = fastControl.kind === 'none' ? false : fastControl.on
 
   return (
-    <DropdownMenuSubContent className="w-52 p-0" sideOffset={4}>
+    <DropdownMenuSubContent className="w-52 p-0" collisionPadding={12} sideOffset={narrow ? -200 : 4}>
       {!hasFast && !reasoning ? (
         <div className="px-2.5 py-3 text-xs text-(--ui-text-tertiary)">{copy.noOptions}</div>
       ) : (

@@ -271,9 +271,10 @@ test('addWorktree: base origin/main does not set up upstream tracking', async ()
   const git = (...args) => execFileSync('git', args, { cwd: cloneDir }).toString().trim()
 
   try {
-    // Seed the remote with a commit on main.
+    // Seed the remote with a commit on main. Inline identity so it works
+    // on CI runners with no global git config.
     execFileSync('git', ['init', '-b', 'main', remoteDir])
-    execFileSync('git', ['-C', remoteDir, 'commit', '--allow-empty', '-m', 'root'])
+    execFileSync('git', ['-C', remoteDir, '-c', 'user.email=hermes@localhost', '-c', 'user.name=Hermes', 'commit', '--allow-empty', '-m', 'root'])
 
     // Clone so origin/main exists as a remote-tracking ref.
     execFileSync('git', ['clone', remoteDir, cloneDir])

@@ -59,7 +59,8 @@ import {
   setShowAllProfiles,
   sortByProfileOrder
 } from '@/store/profile'
-import { $attentionSessionIds, $sessions, $unreadFinishedSessionIds, $workingSessionIds } from '@/store/session'
+import { $attentionSessionIds, $sessions, $unreadFinishedSessionIds } from '@/store/session'
+import { $sessionActivityIds } from '@/store/session-activity'
 import type { ProfileInfo } from '@/types/hermes'
 
 import { CreateProfileDialog } from '../../profiles/create-profile-dialog'
@@ -134,7 +135,7 @@ function ProfileActivityBorder({ activity, hue }: { activity: ProfileActivity; h
         <span
           aria-hidden="true"
           className={cn(
-            'pointer-events-none absolute -right-0.5 -top-0.5 z-2 size-1.5',
+            'pointer-events-none absolute right-0.5 top-0.5 z-2 size-1.5',
             activity === 'needs-input' ? 'quest-glow rounded-full' : 'rotate-45 rounded-[1px]'
           )}
           data-profile-activity-pip={activity}
@@ -177,7 +178,7 @@ export function ProfileRail() {
   const order = useStore($profileOrder)
   const colors = useStore($profileColors)
   const sessions = useStore($sessions)
-  const workingSessionIds = useStore($workingSessionIds)
+  const workingSessionIds = useStore($sessionActivityIds)
   const attentionSessionIds = useStore($attentionSessionIds)
   const unreadSessionIds = useStore($unreadFinishedSessionIds)
 

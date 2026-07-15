@@ -18,6 +18,7 @@ import {
   setSessionsTotal
 } from '@/store/session'
 import { clearAllSessionStates } from '@/store/session-states'
+import { clearAllSubagents } from '@/store/subagents'
 
 // True while a soft gateway-mode apply is mid-flight (wipe → re-dial). Lets the
 // boot hook suppress the backend-exit toast and keeps the cold-boot CONNECTING
@@ -49,6 +50,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // is separate (transient, not computable) so wipe it explicitly.
   clearAllSessionStates()
   $unreadFinishedSessionIds.set([])
+  clearAllSubagents()
   setSessionsLoading(true)
   resetSessionsLimit()
 

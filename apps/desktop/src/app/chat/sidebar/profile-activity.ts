@@ -32,8 +32,11 @@ function sessionMatches(ids: ReadonlySet<string>, session: ProfileActivitySessio
 
 /**
  * Collapse session-level activity into one actionable state per owning profile.
- * A blocking prompt wins over an unseen terminal result, which wins over a
- * running turn. Both live ids and compression lineage roots identify the same row.
+ * A blocking prompt wins. Within one conversation, live work wins over the
+ * parent's unseen intermediate completion (background reviewers continue after
+ * that completion). Across distinct conversations, an unseen result still wins
+ * over a running turn so it is not lost. Both live ids and compression lineage
+ * roots identify the same row.
  */
 export function deriveProfileActivityByProfile({
   attentionSessionIds,
@@ -49,10 +52,10 @@ export function deriveProfileActivityByProfile({
   for (const session of sessions) {
     const activity: ProfileActivity = sessionMatches(attention, session)
       ? 'needs-input'
-      : sessionMatches(unread, session)
-        ? 'unread'
-        : sessionMatches(working, session)
-          ? 'working'
+      : sessionMatches(working, session)
+        ? 'working'
+        : sessionMatches(unread, session)
+          ? 'unread'
           : 'idle'
 
     if (activity === 'idle') {

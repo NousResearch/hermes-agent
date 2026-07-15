@@ -46,6 +46,17 @@ describe('deriveProfileActivityByProfile', () => {
     expect(activity.claire).toBe('unread')
   })
 
+  it('keeps one conversation working while its independent review follows an unseen parent completion', () => {
+    const activity = deriveProfileActivityByProfile({
+      attentionSessionIds: [],
+      sessions: [session('parent', 'claire')],
+      unreadSessionIds: ['parent'],
+      workingSessionIds: ['parent']
+    })
+
+    expect(activity.claire).toBe('working')
+  })
+
   it('matches activity through a compression lineage root and ignores unknown ids', () => {
     const activity = deriveProfileActivityByProfile({
       attentionSessionIds: ['missing-attention'],

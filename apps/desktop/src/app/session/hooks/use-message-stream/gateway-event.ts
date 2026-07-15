@@ -80,6 +80,7 @@ interface GatewayEventDeps {
   refreshHermesConfig: () => Promise<void>
   sessionInterrupted: (sessionId: string) => boolean
   sessionStateByRuntimeIdRef: MutableRefObject<Map<string, ClientSessionState>>
+  storedSessionIdForRuntime: (sessionId: string) => string | undefined
   updateSessionState: (
     sessionId: string,
     updater: (state: ClientSessionState) => ClientSessionState,
@@ -109,6 +110,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
     refreshHermesConfig,
     sessionInterrupted,
     sessionStateByRuntimeIdRef,
+    storedSessionIdForRuntime,
     updateSessionState,
     upsertToolCall
   } = deps
@@ -567,7 +569,8 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
             sessionId,
             payload as Record<string, unknown>,
             event.type === 'subagent.spawn_requested' || event.type === 'subagent.start',
-            event.type
+            event.type,
+            storedSessionIdForRuntime(sessionId)
           )
         }
       } else if (event.type === 'clarify.request') {
@@ -813,6 +816,7 @@ export function useGatewayEventHandler(deps: GatewayEventDeps) {
       scheduleConfigRefresh,
       sessionInterrupted,
       sessionStateByRuntimeIdRef,
+      storedSessionIdForRuntime,
       updateSessionState,
       upsertToolCall
     ]

@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { I18nProvider } from '@/i18n'
 import { $activeGatewayProfile, $profileColors, $profileOrder, $profiles, $showAllProfiles } from '@/store/profile'
 import { $attentionSessionIds, $sessions, $unreadFinishedSessionIds, $workingSessionIds } from '@/store/session'
+import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
 import type { ProfileInfo, SessionInfo } from '@/types/hermes'
 
 import { ProfileRail } from './profile-switcher'
@@ -54,6 +55,7 @@ describe('ProfileRail activity indicators', () => {
     $workingSessionIds.set(['default-run', 'claire-run'])
     $attentionSessionIds.set([])
     $unreadFinishedSessionIds.set(['wallace-done'])
+    $subagentsBySession.set({})
 
     Object.defineProperty(window, 'hermesDesktop', {
       configurable: true,
@@ -72,6 +74,7 @@ describe('ProfileRail activity indicators', () => {
     $workingSessionIds.set([])
     $attentionSessionIds.set([])
     $unreadFinishedSessionIds.set([])
+    $subagentsBySession.set({})
   })
 
   it('brightens and animates profile controls for running and unread sessions', async () => {
@@ -103,6 +106,29 @@ describe('ProfileRail activity indicators', () => {
     expect(claireButton.getAttribute('data-profile-activity')).toBe('needs-input')
     expect(claireButton.querySelector('[data-profile-activity-border="needs-input"]')).toBeTruthy()
     expect(claireButton.querySelector('[data-profile-activity-pip="needs-input"]')).toBeTruthy()
+  })
+
+  it('keeps the parent profile active while an independent review subagent runs', () => {
+    $workingSessionIds.set([])
+    $unreadFinishedSessionIds.set(['claire-run'])
+    upsertSubagent(
+      'runtime-claire',
+      {
+        child_session_id: 'claire-review',
+        goal: 'Independent review',
+        status: 'running',
+        subagent_id: 'review-1'
+      },
+      true,
+      'subagent.start',
+      'claire-run'
+    )
+
+    renderRail()
+
+    expect(screen.getByRole('button', { name: 'claire · Session running' }).getAttribute('data-profile-activity')).toBe(
+      'working'
+    )
   })
 
   it('surfaces the strongest hidden profile activity on the condensed trigger', () => {

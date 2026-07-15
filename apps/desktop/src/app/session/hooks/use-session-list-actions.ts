@@ -29,7 +29,8 @@ import {
   setSessionsLoading,
   setSessionsTotal
 } from '@/store/session'
-import { $workingSessionIds, getRecentlySettledSessionIds } from '@/store/session-states'
+import { $sessionActivityIds } from '@/store/session-activity'
+import { getRecentlySettledSessionIds } from '@/store/session-states'
 
 // The recents list is local-only: cron rows have their own section, and each
 // messaging platform (telegram, discord, …) is fetched separately into its own
@@ -51,7 +52,7 @@ const MESSAGING_EXCLUDED_SOURCES = ['cron', ...LOCAL_SESSION_SOURCE_IDS]
 function sessionsToKeep(scope?: string): Set<string> {
   const keep = new Set<string>([
     ...$attentionSessionIds.get(),
-    ...$workingSessionIds.get(),
+    ...$sessionActivityIds.get(),
     ...$unreadFinishedSessionIds.get(),
     ...$pinnedSessionIds.get(),
     ...getRecentlySettledSessionIds()

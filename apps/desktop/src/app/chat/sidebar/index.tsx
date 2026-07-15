@@ -96,7 +96,8 @@ import {
   sessionPinId,
   setCurrentCwd
 } from '@/store/session'
-import { $focusedStoredSessionId, $workingSessionIds, type SplitDir } from '@/store/session-states'
+import { $focusedStoredSessionId, type SplitDir } from '@/store/session-states'
+import { $sessionActivityIds } from '@/store/session-activity'
 
 import {
   type AppView,
@@ -301,7 +302,7 @@ export function ChatSidebar({
   const sessionsLoading = useStore($sessionsLoading)
   const sessionsTotal = useStore($sessionsTotal)
   const sessionProfileTotals = useStore($sessionProfileTotals)
-  const workingSessionIds = useStore($workingSessionIds)
+  const sessionActivityIds = useStore($sessionActivityIds)
   const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
   // Only surface the profile switcher when more than one profile exists, so
@@ -393,7 +394,7 @@ export function ChatSidebar({
     [visibleSessions]
   )
 
-  const workingSessionIdSet = useMemo(() => new Set(workingSessionIds), [workingSessionIds])
+  const workingSessionIdSet = useMemo(() => new Set(sessionActivityIds), [sessionActivityIds])
 
   // Index sessions by both their live id and their lineage-root id so a pin
   // stored as the pre-compression root resolves to the live continuation tip.

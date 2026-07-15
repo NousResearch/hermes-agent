@@ -15,6 +15,9 @@ export interface SubagentStreamEntry {
 export interface SubagentProgress {
   id: string
   parentId: null | string
+  /** Durable parent-session id used by history/sidebar surfaces. The store map
+   *  itself stays keyed by the live runtime id for stream routing. */
+  ownerSessionId?: string
   goal: string
   /** The child's own stored session id — lets UIs open its session window. */
   sessionId?: string
@@ -146,7 +149,12 @@ function streamFromPayload(
   return out
 }
 
-function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined, eventType = ''): SubagentProgress {
+function toProgress(
+  payload: SubagentPayload,
+  prev: SubagentProgress | undefined,
+  eventType = '',
+  ownerSessionId?: string
+): SubagentProgress {
   const at = Date.now()
   const status = asStatus(payload.status)
   const tool = str(payload.tool_name)
@@ -157,6 +165,7 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
   return {
     id: prev?.id ?? idOf(payload),
     parentId: str(payload.parent_id) || prev?.parentId || null,
+    ownerSessionId: ownerSessionId || prev?.ownerSessionId,
     goal: str(payload.goal) || prev?.goal || 'Subagent',
     sessionId: str(payload.child_session_id) || prev?.sessionId,
     model: str(payload.model) || prev?.model,
@@ -189,6 +198,10 @@ export function clearSessionSubagents(sid: string) {
   $subagentsBySession.set(rest)
 }
 
+export function clearAllSubagents() {
+  $subagentsBySession.set({})
+}
+
 export function pruneDelegateFallbackSubagents(sid: string) {
   const map = $subagentsBySession.get()
   const list = map[sid]
@@ -206,7 +219,13 @@ export function pruneDelegateFallbackSubagents(sid: string) {
   $subagentsBySession.set({ ...map, [sid]: next })
 }
 
-export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMissing = true, eventType?: string) {
+export function upsertSubagent(
+  sid: string,
+  payload: SubagentPayload,
+  createIfMissing = true,
+  eventType?: string,
+  ownerSessionId?: string
+) {
   const map = $subagentsBySession.get()
   const list = map[sid] ?? []
   const id = idOf(payload)
@@ -222,7 +241,7 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
     return
   }
 
-  const next = toProgress(payload, prev, eventType)
+  const next = toProgress(payload, prev, eventType, ownerSessionId)
   const nextList = idx >= 0 ? list.map(item => (item.id === id ? next : item)) : [...list, next]
 
   $subagentsBySession.set({ ...map, [sid]: nextList })

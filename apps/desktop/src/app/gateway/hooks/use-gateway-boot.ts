@@ -37,7 +37,8 @@ import {
   setCurrentCwd,
   setSessionsLoading
 } from '@/store/session'
-import { $attentionSessionIds, $workingSessionIds, resetTileRuntimeBindings } from '@/store/session-states'
+import { $attentionSessionIds, resetTileRuntimeBindings } from '@/store/session-states'
+import { $sessionActivityIds } from '@/store/session-activity'
 import type { RpcEvent } from '@/types/hermes'
 
 // After this many consecutive failed reconnects (≈45s with the 1→15s backoff)
@@ -397,7 +398,7 @@ export function useGatewayBoot({
     // Once that profile goes idle its socket is dropped and its backend is free
     // to idle-reap. The active profile is always spared.
     const recomputeKeptGateways = () => {
-      const live = new Set([...$workingSessionIds.get(), ...$attentionSessionIds.get()])
+      const live = new Set([...$sessionActivityIds.get(), ...$attentionSessionIds.get()])
       const keep = new Set<string>()
 
       for (const session of $sessions.get()) {
@@ -409,7 +410,7 @@ export function useGatewayBoot({
       pruneSecondaryGateways(keep)
     }
 
-    const offWorking = $workingSessionIds.subscribe(() => recomputeKeptGateways())
+    const offWorking = $sessionActivityIds.subscribe(() => recomputeKeptGateways())
     const offAttention = $attentionSessionIds.subscribe(() => recomputeKeptGateways())
     const offActiveProfile = $activeGatewayProfile.subscribe(() => recomputeKeptGateways())
 

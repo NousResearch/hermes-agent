@@ -67,6 +67,11 @@ export function useMessageStream({
   sessionStateByRuntimeIdRef,
   updateSessionState
 }: MessageStreamOptions) {
+  const storedSessionIdForRuntime = useCallback(
+    (sessionId: string) => sessionStateByRuntimeIdRef.current.get(sessionId)?.storedSessionId ?? undefined,
+    [sessionStateByRuntimeIdRef]
+  )
+
   const sessionInterrupted = useCallback(
     (sessionId: string) => sessionStateByRuntimeIdRef.current.get(sessionId)?.interrupted ?? false,
     [sessionStateByRuntimeIdRef]
@@ -360,7 +365,8 @@ export function useMessageStream({
             sessionId,
             subagentPayload,
             true,
-            phase === 'complete' ? 'delegate.complete' : 'delegate.running'
+            phase === 'complete' ? 'delegate.complete' : 'delegate.running',
+            storedSessionIdForRuntime(sessionId)
           )
         }
       }
@@ -372,7 +378,7 @@ export function useMessageStream({
         { pending: m => phase !== 'complete' || (m.pending ?? false) }
       )
     },
-    [flushQueuedDeltas, mutateStream, sessionInterrupted]
+    [flushQueuedDeltas, mutateStream, sessionInterrupted, storedSessionIdForRuntime]
   )
 
   const completeAssistantMessage = useCallback(
@@ -582,6 +588,7 @@ export function useMessageStream({
     refreshHermesConfig,
     sessionInterrupted,
     sessionStateByRuntimeIdRef,
+    storedSessionIdForRuntime,
     updateSessionState,
     upsertToolCall
   })

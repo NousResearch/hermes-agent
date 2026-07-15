@@ -17,6 +17,7 @@ import {
   setSessionsTotal,
   setSessionUnread
 } from '@/store/session'
+import { $subagentsBySession, upsertSubagent } from '@/store/subagents'
 
 import { $gatewaySwitching, wipeSessionListsForGatewaySwitch } from './gateway-switch'
 
@@ -34,6 +35,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     setSessionsLoading(false)
     setFreshDraftReady(false)
     setSessionUnread('unread-old', true)
+    upsertSubagent('runtime-old', { goal: 'old review', status: 'running', subagent_id: 'review-old' })
     $sessionsLimit.set(SIDEBAR_SESSIONS_PAGE_SIZE * 3)
   })
 
@@ -43,6 +45,7 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     setCronSessions([])
     setMessagingSessions([])
     $unreadFinishedSessionIds.set([])
+    $subagentsBySession.set({})
     setSessionsLoading(true)
     $gatewaySwitching.set(false)
   })
@@ -58,5 +61,6 @@ describe('wipeSessionListsForGatewaySwitch', () => {
     expect($sessionsLimit.get()).toBe(SIDEBAR_SESSIONS_PAGE_SIZE)
     expect($freshDraftReady.get()).toBe(true)
     expect($unreadFinishedSessionIds.get()).toEqual([])
+    expect($subagentsBySession.get()).toEqual({})
   })
 })

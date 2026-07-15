@@ -16102,7 +16102,7 @@ def main(
 
     default_skills = (
         []
-        if cli.ignore_rules
+        if getattr(cli, "ignore_rules", False)
         else config_default_skill_identifiers(CLI_CONFIG)
     )
     parsed_skills = merge_preloaded_skill_identifiers(

@@ -36,14 +36,37 @@ def test_override_missing_placeholder_stays_literal():
     i18n.reset_language_cache()
 
 
-def test_name_autofill():
+def test_override_compound_missing_placeholders_stay_literal():
+    template = "X {count} {missing.attr} {missing[key]}"
+    with patch.object(i18n, "_load_config_dict", return_value=_cfg(draining=template)):
+        i18n.reset_language_cache()
+        assert i18n.t("gateway.draining", count=1) == "X 1 {missing.attr} {missing[key]}"
+    i18n.reset_language_cache()
+
+
+def test_name_autofill_uses_configured_custom_skin(tmp_path, monkeypatch):
+    from hermes_cli import skin_engine
+
+    skins_dir = tmp_path / "skins"
+    skins_dir.mkdir()
+    (skins_dir / "reviewer.yaml").write_text(
+        "name: reviewer\nbranding:\n  agent_name: Гермес\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(skin_engine, "get_hermes_home", lambda: tmp_path)
+
     with patch.object(i18n, "_load_config_dict",
-                      return_value={"ui": {"theme": {"branding": {"agent_name": "Гермес"}}},
-                                    "gateway": {"system_messages": {"draining": "{name} drains {count}"}},
-                                    "display": {"language": "ru"}}):
+                      return_value={"gateway": {"system_messages": {"draining": "{name} drains {count}"}},
+                                    "display": {"language": "ru", "skin": "reviewer"}}):
         i18n.reset_language_cache()
         assert i18n.t("gateway.draining", count=2) == "Гермес drains 2"
     i18n.reset_language_cache()
+
+
+def test_gateway_system_messages_is_registered_in_default_config():
+    from hermes_cli.config import DEFAULT_CONFIG
+
+    assert DEFAULT_CONFIG["gateway"]["system_messages"] == {}
 
 
 # ---- marker-coupling preserved ---------------------------------------------

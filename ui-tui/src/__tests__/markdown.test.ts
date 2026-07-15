@@ -4,7 +4,7 @@ import { Box, renderSync } from '@hermes/ink'
 import React from 'react'
 import { describe, expect, it } from 'vitest'
 
-import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
+import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, pickFallbackLabel, preferLinkDisplayLabel, stripInlineMarkup } from '../components/markdown.js'
 import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME } from '../theme.js'
 
@@ -327,5 +327,27 @@ describe('renderTable CJK width alignment', () => {
     // The CJK row is the one that drifted before the fix.  It must
     // align with the rest now.
     expect(qwenCol2).toBe(headerCol2)
+  })
+})
+
+
+describe('explicit Markdown link labels (#64795)', () => {
+  it('preserves a label that normalizes equal to the destination URL', () => {
+    const url = 'https://example.test/path'
+    expect(pickFallbackLabel(url, url)).toBe(url)
+    expect(pickFallbackLabel(`  ${url}  `, url)).toBe(url)
+  })
+
+  it('prefers explicit labels over fetched page titles', () => {
+    const url = 'https://example.test/path'
+    expect(preferLinkDisplayLabel(url, 'Fetched Page Title', url)).toBe(url)
+    expect(preferLinkDisplayLabel('docs home', 'Fetched Page Title', url)).toBe('docs home')
+  })
+
+  it('uses fetched titles only when no explicit label was supplied', () => {
+    const url = 'https://example.test/path'
+    expect(preferLinkDisplayLabel(undefined, 'Fetched Page Title', url)).toBe('Fetched Page Title')
+    expect(pickFallbackLabel(undefined, url)).toBeUndefined()
+    expect(pickFallbackLabel('   ', url)).toBeUndefined()
   })
 })

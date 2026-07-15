@@ -153,15 +153,20 @@ const autolinkUrl = (raw: string) =>
 const defaultLinkLabel = (url: string) =>
   url.startsWith('mailto:') ? url.replace(/^mailto:/, '') : /^https?:\/\//i.test(url) ? urlSlugTitleLabel(url) : url
 
-const pickFallbackLabel = (label: string | undefined, target: string): string | undefined => {
+export const pickFallbackLabel = (label: string | undefined, _target: string): string | undefined => {
+  // Preserve any explicit Markdown label the author supplied — including labels
+  // that normalize to the same string as the target URL. Callers only omit the
+  // argument for bare/auto-linked URLs that never had an author label.
   const trimmed = label?.trim()
 
-  if (!trimmed) {
-    return undefined
-  }
-
-  return normalizeExternalUrl(trimmed) === target ? undefined : trimmed
+  return trimmed || undefined
 }
+
+export const preferLinkDisplayLabel = (
+  fallbackLabel: string | undefined,
+  fetched: string | undefined,
+  url: string
+): string => fallbackLabel || fetched || defaultLinkLabel(url)
 
 interface ResolvedLinkProps {
   fallbackLabel?: string
@@ -171,7 +176,10 @@ interface ResolvedLinkProps {
 
 function ResolvedLink({ fallbackLabel, t, url }: ResolvedLinkProps) {
   const fetched = useLinkTitle(url)
-  const display = fetched || fallbackLabel || defaultLinkLabel(url)
+  // Explicit Markdown link labels win over fetched page titles. Title
+  // resolution remains the preferred display only for bare/auto-linked URLs
+  // that have no author-supplied label (fallbackLabel is undefined then).
+  const display = preferLinkDisplayLabel(fallbackLabel, fetched, url)
 
   return (
     <Link url={url}>

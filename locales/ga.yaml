@@ -11,6 +11,10 @@ approval:
   choose_short:    "      [o]uair amháin  |  [s]eisiún  |  [d]iúltaigh"
   prompt_long:     "      Rogha [o/s/a/D]: "
   prompt_short:    "      Rogha [o/s/D]: "
+  choose_smart_deny: "      [o]uair amháin  |  [d]iúltaigh"
+  prompt_smart_deny: "      Rogha [o/D]: "
+  smart_deny_once_inputs: "o,once"
+  smart_deny_deny_inputs: "d,deny"
   timeout:         "      ⏱ Am istigh — ag diúltú don ordú"
   allowed_once:    "      ✓ Ceadaithe uair amháin"
   allowed_session: "      ✓ Ceadaithe don seisiún seo"
@@ -364,6 +368,8 @@ Future messages in this room will use that transcript until `/reset` or another 
     label_estimated_context:  "Comhthéacs measta: ~{count} comhartha"
     detailed_after_first:     "_(Úsáid mhionsonraithe ar fáil tar éis chéad fhreagra an ghníomhaire)_"
     no_data:                  "Níl aon sonraí úsáide ar fáil don seisiún seo."
+    unknown_subcommand:       "Fo-ordú /usage anaithnid: `{args}`. Bain triail as `/usage` nó `/usage reset [--force]`."
+    reset_wrong_provider:     "Níl athshocruithe teorann bainc ar fáil ach ar an soláthraí openai-codex. Athraigh le `/model` ar dtús."
 
   credits:
     not_logged_in:            "Níl tú logáilte isteach i Nous Portal. Logáil isteach chun d'iarmhéid creidmheasa a fheiceáil agus breis a chur leis."

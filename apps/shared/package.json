@@ -8,9 +8,17 @@
   },
   "types": "./src/index.ts",
   "scripts": {
-    "typecheck": "tsc -p . --noEmit"
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "fix": "npm run lint:fix",
+    "typecheck": "tsc -p . --noEmit",
+    "check": "npm run typecheck"
   },
   "devDependencies": {
-    "typescript": "^6.0.3"
+    "@eslint/js": "^9.39.4",
+    "eslint": "^9.39.4",
+    "globals": "^17.4.0",
+    "typescript": "^6.0.3",
+    "typescript-eslint": "^8.56.1"
   }
 }

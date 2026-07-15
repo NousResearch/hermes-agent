@@ -9224,11 +9224,57 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 _cprint("  Plan mode is off.")
             return
 
-        # Bare /plan (or unknown arg) → enter plan mode.
+        # Bare /plan → enter enforcement mode (no request text).
+        if not arg:
+            mgr.enter(entered_by="user")
+            self.agent = None  # rebuild restricted next turn
+            _cprint("  📝 Plan mode on. I'll plan only — mutating tools are blocked until you approve.")
+            _cprint(f"  {_DIM}Controls: /plan status · /plan show · /plan approve · /plan reject <feedback> · /plan exit{_RST}")
+            return
+
+        # `/plan <request>` → preserve the documented skill dispatch
+        # (website/docs/.../skills.md: "/plan [request]" loads the bundled plan
+        # skill's instructions with the request text) AND enter enforcement
+        # mode, so the plan is authored under a hard mutation block rather than
+        # only a prompt-level instruction. The request is forwarded to the plan
+        # skill; args are never discarded. Registering the `plan` CommandDef
+        # otherwise shadowed this documented workflow.
         mgr.enter(entered_by="user")
         self.agent = None  # rebuild restricted next turn
         _cprint("  📝 Plan mode on. I'll plan only — mutating tools are blocked until you approve.")
+        if not self._seed_plan_skill_request(arg):
+            # Plan skill unavailable — honor the request text as the kickoff
+            # prompt rather than dropping it.
+            if hasattr(self, "_pending_input"):
+                self._pending_input.put(arg)
         _cprint(f"  {_DIM}Controls: /plan status · /plan show · /plan approve · /plan reject <feedback> · /plan exit{_RST}")
+
+    def _seed_plan_skill_request(self, request: str) -> bool:
+        """Queue the documented ``/plan [request]`` skill invocation as the next
+        turn, seeded with ``request``. Returns True when queued.
+
+        Preserves the pre-existing ``/plan <request>`` behavior — loading the
+        bundled ``plan`` skill's instructions alongside the request text — that
+        the enforcement-mode ``plan`` CommandDef otherwise shadowed. Resolved by
+        skill NAME (not the ``/plan`` slash key, which is skipped from the
+        registry precisely because it collides with our core command).
+        """
+        try:
+            from agent.skill_commands import (
+                build_skill_invocation_message_by_identifier,
+            )
+
+            msg = build_skill_invocation_message_by_identifier(
+                "plan", request, task_id=self.session_id
+            )
+        except Exception:
+            msg = None
+        if not msg:
+            return False
+        if hasattr(self, "_pending_input"):
+            self._pending_input.put(msg)
+            print("\n⚡ Loading skill: plan")
+        return True
 
     def _drain_interrupt_queue_to_pending_input(self) -> None:
         """Move stray messages from ``_interrupt_queue`` into ``_pending_input``.

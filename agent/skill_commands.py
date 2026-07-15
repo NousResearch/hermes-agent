@@ -559,6 +559,48 @@ def build_skill_invocation_message(
     )
 
 
+def build_skill_invocation_message_by_identifier(
+    identifier: str,
+    user_instruction: str = "",
+    task_id: str | None = None,
+    runtime_note: str = "",
+) -> Optional[str]:
+    """Build a skill-invocation message resolved by skill IDENTIFIER (name or
+    directory), bypassing the slash-command registry.
+
+    Needed when a skill's slash command is absent from ``get_skill_commands()``
+    — e.g. the bundled ``plan`` skill, whose ``/plan`` auto-registration is
+    skipped because it collides with a core Hermes command (``/plan`` enters
+    code-enforced plan mode). Callers that want the documented ``/plan
+    [request]`` skill behavior resolve it here by name instead. Returns the
+    formatted message, or ``None`` if the skill wasn't found.
+    """
+    loaded = _load_skill_payload(identifier, task_id=task_id)
+    if not loaded:
+        return None
+
+    loaded_skill, skill_dir, skill_name = loaded
+
+    try:
+        from tools.skill_usage import bump_use
+        bump_use(skill_name)
+    except Exception:
+        pass  # Non-critical — skill invocation proceeds regardless
+
+    activation_note = (
+        f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want '
+        "you to follow its instructions. The full skill content is loaded below.]"
+    )
+    return _build_skill_message(
+        loaded_skill,
+        skill_dir,
+        activation_note,
+        user_instruction=user_instruction,
+        runtime_note=runtime_note,
+        session_id=task_id,
+    )
+
+
 # ---------------------------------------------------------------------------
 # Stacked slash-skill invocations — `/skill-a /skill-b do XYZ` loads every
 # leading skill (up to _MAX_STACKED_SKILLS), not just the first.

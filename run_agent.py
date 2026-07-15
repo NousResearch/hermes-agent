@@ -770,18 +770,28 @@ class AIAgent:
 
     def _ensure_lmstudio_runtime_loaded(self, config_context_length: Optional[int] = None) -> None:
         """
-        Preload the LM Studio model with at least Hermes' minimum context.
+        Preload the LM Studio model when the user has configured an explicit
+        context-length override.
+
+        When *no* override is configured the model is left for LM Studio's
+        JIT loader (first inference request triggers it).  Using the manual
+        ``/api/v1/models/load`` endpoint bypasses JIT — the model lands in
+        the manual lane with no idle TTL, blocks VRAM indefinitely, and
+        prevents subsequent model switches from evicting it.  See #25989.
         """
         if (self.provider or "").strip().lower() != "lmstudio":
             return
         try:
-            from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
             from hermes_cli.models import ensure_lmstudio_model_loaded
             if config_context_length is None:
                 config_context_length = getattr(self, "_config_context_length", None)
-            target_ctx = max(config_context_length or 0, MINIMUM_CONTEXT_LENGTH)
+            # No explicit context override → let LM Studio's JIT handle
+            # loading.  The manual /api/v1/models/load bypasses JIT and
+            # creates a no-TTL entry that blocks VRAM.
+            if config_context_length is None:
+                return
             loaded_ctx = ensure_lmstudio_model_loaded(
-                self.model, self.base_url, getattr(self, "api_key", ""), target_ctx,
+                self.model, self.base_url, getattr(self, "api_key", ""), config_context_length,
             )
             if loaded_ctx:
                 # Push into the live compressor so the status bar reflects the

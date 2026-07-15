@@ -114,6 +114,61 @@ def test_acp_real_agent_gets_session_db_for_recall(monkeypatch):
     assert captured["session_id"] == "acp-session"
 
 
+def test_acp_real_agent_gets_fallback_chain_from_config(monkeypatch):
+    """ACP sessions must inherit the configured fallback chain (issue #64441).
+
+    The CLI and cron paths both pass ``fallback_model`` to ``AIAgent``; the ACP
+    session manager used to omit it, so ACP sessions could never fall back when
+    the primary provider hit a rate-limit or connection failure.
+    """
+    captured = {}
+    fallback_chain = [{"provider": "p2", "model": "m2"}]
+
+    class CapturingAgent(FakeAgent):
+        def __init__(self, **kwargs):
+            super().__init__()
+            captured.update(kwargs)
+
+    def mod(name, **attrs):
+        module = ModuleType(name)
+        for key, value in attrs.items():
+            setattr(module, key, value)
+        return module
+
+    monkeypatch.setitem(sys.modules, "run_agent", mod("run_agent", AIAgent=CapturingAgent))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.config",
+        mod("hermes_cli.config", load_config=lambda: {"model": {"default": "m", "provider": "p"}}),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.fallback_config",
+        mod("hermes_cli.fallback_config", get_fallback_chain=lambda _cfg: fallback_chain),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.runtime_provider",
+        mod(
+            "hermes_cli.runtime_provider",
+            resolve_runtime_provider=lambda **_kwargs: {
+                "provider": "p",
+                "api_mode": "chat_completions",
+                "base_url": "u",
+                "api_key": "k",
+                "command": None,
+                "args": [],
+            },
+        ),
+    )
+
+    manager = SessionManager(db=NoopDb())
+    agent = manager._make_agent(session_id="acp-session", cwd=".")
+
+    assert isinstance(agent, CapturingAgent)
+    assert captured["fallback_model"] == fallback_chain
+
+
 @pytest.mark.asyncio
 async def test_acp_steer_slash_command_injects_into_running_agent():
     acp_agent, state, fake, _conn = make_agent_and_state()

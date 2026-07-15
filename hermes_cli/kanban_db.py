@@ -5945,7 +5945,7 @@ class DispatchResult:
     crashed: list[str] = field(default_factory=list)
     """Task ids reclaimed because their worker PID disappeared."""
     auto_blocked: list[str] = field(default_factory=list)
-    """Task ids auto-blocked by the spawn-failure circuit breaker."""
+    """Task ids auto-blocked by preflight or the failure circuit breaker."""
     timed_out: list[str] = field(default_factory=list)
     """Task ids whose workers exceeded ``max_runtime_seconds``."""
     stale: list[str] = field(default_factory=list)
@@ -5968,6 +5968,255 @@ class DispatchResult:
     DB writes this tick — the lock holder is making progress on the same
     board. This is the steady-state signal that a single-writer guard is
     actively preventing two dispatchers from racing on ``kanban.db``."""
+
+
+@dataclass
+class _DispatchPreflight:
+    """Resolved workspace or an actionable reason a task must not spawn."""
+
+    workspace: Optional[Path] = None
+    branch_name: Optional[str] = None
+    block_kind: Optional[str] = None
+    reason: Optional[str] = None
+
+
+_PR_LIFECYCLE_RE = re.compile(
+    r"\b(?:pull request|open (?:a )?pr|create (?:a )?pr|merge (?:the )?pr|pr lifecycle)\b",
+    re.IGNORECASE,
+)
+_SUBSCRIPTION_WRAPPERS = ("claude-sub", "codex-sub")
+
+
+def _parent_artifact_preflight(
+    conn: sqlite3.Connection,
+    task: Task,
+) -> Optional[str]:
+    """Return an actionable error when a declared parent artifact is gone."""
+    parent_rows = conn.execute(
+        """
+        SELECT t.id, t.workspace_path
+          FROM task_links l
+          JOIN tasks t ON t.id = l.parent_id
+         WHERE l.child_id = ?
+         ORDER BY t.id
+        """,
+        (task.id,),
+    ).fetchall()
+    for parent in parent_rows:
+        run = conn.execute(
+            """
+            SELECT metadata
+              FROM task_runs
+             WHERE task_id = ? AND outcome = 'completed'
+             ORDER BY COALESCE(ended_at, started_at, 0) DESC, id DESC
+             LIMIT 1
+            """,
+            (parent["id"],),
+        ).fetchone()
+        if not run or not run["metadata"]:
+            continue
+        try:
+            metadata = json.loads(run["metadata"])
+        except (TypeError, ValueError):
+            continue
+        artifacts = metadata.get("artifacts", []) if isinstance(metadata, dict) else []
+        if not isinstance(artifacts, list):
+            continue
+        for declared in artifacts:
+            raw_path = declared.get("path") if isinstance(declared, dict) else declared
+            if not isinstance(raw_path, str) or not raw_path.strip():
+                continue
+            artifact = Path(raw_path).expanduser()
+            if not artifact.is_absolute() and parent["workspace_path"]:
+                artifact = Path(parent["workspace_path"]) / artifact
+            if not artifact.exists():
+                return (
+                    f"Parent {parent['id']} declared artifact {raw_path!r}, but it no "
+                    "longer exists. Restore the artifact or update the parent handoff."
+                )
+    return None
+
+
+def _profile_subscription_preflight(task: Task) -> Optional[str]:
+    """Verify subscription wrappers mandated by the assignee profile."""
+    if not task.assignee:
+        return None
+    try:
+        from hermes_cli.profiles import get_profile_dir
+
+        profile_dir = get_profile_dir(task.assignee)
+    except Exception:
+        return None
+
+    instructions = ""
+    for filename in ("SOUL.md", "AGENTS.md", "CLAUDE.md"):
+        try:
+            instructions += (profile_dir / filename).read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            continue
+    for wrapper in _SUBSCRIPTION_WRAPPERS:
+        if not re.search(rf"(?<![\w-]){re.escape(wrapper)}(?![\w-])", instructions):
+            continue
+        executable = shutil.which(wrapper)
+        if executable is None:
+            return (
+                f"Profile {task.assignee!r} requires {wrapper}, but it is not on PATH. "
+                f"Install {wrapper} or add it to PATH, then authenticate it before "
+                "unblocking this task."
+            )
+        auth_env = os.environ.copy()
+        home_match = re.search(
+            rf"\bHOME=([^\s`]+)\s+{re.escape(wrapper)}\b",
+            instructions,
+        )
+        if home_match:
+            auth_env["HOME"] = os.path.expandvars(home_match.group(1))
+        try:
+            auth = subprocess.run(
+                [executable, "auth", "status"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+                env=auth_env,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return (
+                f"Profile {task.assignee!r} requires {wrapper}, but its authentication "
+                "status could not be verified. Repair the wrapper before unblocking."
+            )
+        if auth.returncode != 0:
+            return (
+                f"Profile {task.assignee!r} requires {wrapper}, but it is not "
+                f"authenticated. Run `{wrapper} auth` before unblocking this task."
+            )
+    return None
+
+
+def _git_command(workspace: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", str(workspace), *args],
+        capture_output=True,
+        text=True,
+        timeout=15,
+        check=False,
+    )
+
+
+def _workspace_preflight(task: Task, *, board: Optional[str]) -> _DispatchPreflight:
+    """Resolve and validate the workspace without claiming a worker slot."""
+    try:
+        branch_name = None
+        if task.workspace_kind == "worktree":
+            workspace, branch_name = _resolve_worktree_workspace(task, board=board)
+        else:
+            workspace = resolve_workspace(task, board=board)
+    except Exception as exc:
+        return _DispatchPreflight(
+            block_kind="capability",
+            reason=f"Workspace preflight failed: {exc}",
+        )
+
+    if not workspace.is_dir():
+        return _DispatchPreflight(
+            block_kind="capability",
+            reason=f"Workspace preflight failed: {workspace} is not a directory.",
+        )
+
+    if task.workspace_kind == "worktree":
+        status = _git_command(workspace, "status", "--porcelain")
+        if status.returncode != 0:
+            return _DispatchPreflight(
+                block_kind="capability",
+                reason=(
+                    f"Workspace preflight failed: {workspace} is not a usable git "
+                    "worktree. Repair or recreate it before unblocking."
+                ),
+            )
+        if status.stdout.strip():
+            return _DispatchPreflight(
+                block_kind="needs_input",
+                reason=(
+                    f"Workspace {workspace} has uncommitted changes. Commit, stash, "
+                    "or discard them before unblocking this task."
+                ),
+            )
+
+    task_text = "\n".join(filter(None, (task.title, task.body)))
+    if _PR_LIFECYCLE_RE.search(task_text):
+        inside_repo = _git_command(workspace, "rev-parse", "--is-inside-work-tree")
+        if inside_repo.returncode != 0 or inside_repo.stdout.strip() != "true":
+            return _DispatchPreflight(
+                block_kind="capability",
+                reason="PR lifecycle requested, but the task workspace is not a git checkout.",
+            )
+        remotes = _git_command(workspace, "remote")
+        if remotes.returncode != 0 or not remotes.stdout.strip():
+            return _DispatchPreflight(
+                block_kind="capability",
+                reason="PR lifecycle requested, but the git checkout has no push remote.",
+            )
+        gh = shutil.which("gh")
+        if gh is None:
+            return _DispatchPreflight(
+                block_kind="capability",
+                reason="PR lifecycle requested, but the GitHub CLI (`gh`) is not installed.",
+            )
+        try:
+            auth = subprocess.run(
+                [gh, "auth", "status"],
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            auth = None
+        if auth is None or auth.returncode != 0:
+            return _DispatchPreflight(
+                block_kind="capability",
+                reason=(
+                    "PR lifecycle requested, but GitHub authentication is unavailable. "
+                    "Run `gh auth login` before unblocking this task."
+                ),
+            )
+
+    return _DispatchPreflight(workspace=workspace, branch_name=branch_name)
+
+
+def _dispatch_preflight(
+    conn: sqlite3.Connection,
+    task: Task,
+    *,
+    board: Optional[str],
+) -> _DispatchPreflight:
+    artifact_error = _parent_artifact_preflight(conn, task)
+    if artifact_error:
+        return _DispatchPreflight(block_kind="needs_input", reason=artifact_error)
+    profile_error = _profile_subscription_preflight(task)
+    if profile_error:
+        return _DispatchPreflight(block_kind="capability", reason=profile_error)
+    return _workspace_preflight(task, board=board)
+
+
+def _block_preflight_failure(
+    conn: sqlite3.Connection,
+    task: Task,
+    preflight: _DispatchPreflight,
+    result: DispatchResult,
+) -> None:
+    """Persist a preflight guard as a human-actionable blocked task."""
+    reason = preflight.reason or "Dispatch preflight failed."
+    kind = preflight.block_kind or "capability"
+    if block_task(conn, task.id, reason=reason, kind=kind):
+        with write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+                (reason[:2000], task.id),
+            )
+        result.auto_blocked.append(task.id)
 
 
 # Bounded registry of recently-reaped worker child exits, populated by the
@@ -7648,22 +7897,25 @@ def _dispatch_once_locked(
                     _per_profile_running.get(row_assignee, 0) + 1
                 )
             continue
+        candidate = get_task(conn, row["id"])
+        if candidate is None:
+            continue
+        preflight = _dispatch_preflight(conn, candidate, board=board)
+        if preflight.reason is not None:
+            _block_preflight_failure(conn, candidate, preflight, result)
+            continue
         claimed = claim_task(conn, row["id"], ttl_seconds=ttl_seconds)
         if claimed is None:
             continue
-        try:
-            resolved_branch_name = None
-            if claimed.workspace_kind == "worktree":
-                workspace, resolved_branch_name = _resolve_worktree_workspace(claimed, board=board)
-            else:
-                workspace = resolve_workspace(claimed, board=board)
-        except Exception as exc:
-            auto = _record_spawn_failure(
-                conn, claimed.id, f"workspace: {exc}",
+        workspace = preflight.workspace
+        resolved_branch_name = preflight.branch_name
+        if workspace is None:  # Defensive: successful preflight always resolves one.
+            _record_spawn_failure(
+                conn,
+                claimed.id,
+                "workspace: preflight returned no workspace",
                 failure_limit=failure_limit,
             )
-            if auto:
-                result.auto_blocked.append(claimed.id)
             continue
         # Persist the resolved workspace path so the worker can cd there.
         set_workspace_path(conn, claimed.id, str(workspace))

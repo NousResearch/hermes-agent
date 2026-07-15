@@ -3,7 +3,13 @@ from unittest.mock import patch
 
 import pytest
 
-from tools.skills_tool import SKILLS_LIST_SCHEMA, _SKILLS_CACHE, skills_list
+from tools.skills_tool import (
+    SKILLS_LIST_SCHEMA,
+    _SKILLS_CACHE,
+    _find_all_skills,
+    skills_list,
+)
+from tools.registry import registry
 
 
 def _make_skill(
@@ -60,6 +66,19 @@ def test_query_uses_private_routing_hints_without_leaking_them(tmp_path):
     assert set(result["skills"][0]) == {"name", "description", "category"}
 
 
+def test_cached_search_index_is_immutable(tmp_path):
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        _make_skill(
+            tmp_path,
+            "database-helper",
+            description="PostgreSQL backup recovery",
+        )
+        discovered = _find_all_skills()
+
+    with pytest.raises(TypeError):
+        discovered[0]["_search_tokens"][3] = ()
+
+
 def test_query_supports_legacy_top_level_tags(tmp_path):
     with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
         _make_skill(
@@ -79,6 +98,14 @@ def test_query_matches_unicode_casefolded_metadata(tmp_path):
         result = json.loads(skills_list(query="cafe\u0301"))
 
     assert result["skills"][0]["name"] == "cafe-tools"
+
+
+def test_query_matches_metadata_without_requiring_diacritics(tmp_path):
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        _make_skill(tmp_path, "coffee-orders", description="Gestiona pedidos de CAFÉ")
+        result = json.loads(skills_list(query="cafe"))
+
+    assert result["skills"][0]["name"] == "coffee-orders"
 
 
 def test_category_filter_is_applied_before_query_ranking(tmp_path):
@@ -175,6 +202,72 @@ def test_large_catalog_is_stable_and_bounded(tmp_path):
     assert first["total_matches"] == 500
     assert first["skills"][0]["name"] == "catalog-321"
     assert first["skills"] == second["skills"]
+
+
+def test_query_categories_cover_all_matches_before_limit(tmp_path):
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        _make_skill(
+            tmp_path,
+            "python-api",
+            category="development",
+            description="Python API development",
+        )
+        _make_skill(
+            tmp_path,
+            "python-models",
+            category="mlops",
+            description="Python model training",
+        )
+        result = json.loads(skills_list(query="python", limit=1))
+
+    assert result["count"] == 1
+    assert result["total_matches"] == 2
+    assert result["categories"] == ["development", "mlops"]
+
+
+def test_query_substrings_do_not_cross_token_boundaries(tmp_path):
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        _make_skill(tmp_path, "task-management", description="Coordinate project work")
+        result = json.loads(skills_list(query="ask"))
+
+    assert result["skills"] == []
+    assert result["total_matches"] == 0
+
+
+def test_stopword_only_query_abstains_without_exact_name_or_routing_match(tmp_path):
+    with patch("tools.skills_tool.SKILLS_DIR", tmp_path):
+        _make_skill(tmp_path, "theming", description="Use themes for the interface")
+        _make_skill(tmp_path, "workflow", description="Use this when automating work")
+        result = json.loads(skills_list(query="the use of"))
+
+    assert result["skills"] == []
+    assert result["total_matches"] == 0
+
+
+def test_registry_handler_uses_live_hermes_home_without_resolver_mock(
+    monkeypatch, tmp_path
+):
+    hermes_home = tmp_path / "hermes-home"
+    skills_dir = hermes_home / "skills"
+    _make_skill(
+        skills_dir,
+        "warehouse-audit",
+        category="operations",
+        description="Audit warehouse inventory",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _SKILLS_CACHE.clear()
+
+    entry = registry.get_entry("skills_list")
+    assert entry is not None
+    result = json.loads(
+        entry.handler({"query": "warehouse inventory", "limit": 1}, task_id="e2e-test")
+    )
+
+    assert result["success"] is True
+    assert result["count"] == 1
+    assert result["skills"][0]["name"] == "warehouse-audit"
+    assert result["categories"] == ["operations"]
 
 
 def test_schema_exposes_bounded_query_search():

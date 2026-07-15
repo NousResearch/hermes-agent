@@ -107,6 +107,8 @@ _SKILLS_CACHE_KEY_FILTERED = "filtered"
 _SKILL_SEARCH_DEFAULT_LIMIT = 10
 _SKILL_SEARCH_MAX_LIMIT = 50
 _SKILL_SEARCH_MAX_QUERY_CHARS = 500
+_SKILL_SEARCH_FIELDS = ("name", "routing", "category", "description")
+_SKILL_SEARCH_FIELD_WEIGHTS = (8.0, 5.0, 3.0, 1.0)
 _SKILL_SEARCH_STOPWORDS = frozenset(
     {
         "a",
@@ -138,8 +140,14 @@ _SKILL_SEARCH_STOPWORDS = frozenset(
 
 
 def _normalise_search_text(value: Any) -> str:
-    """Return stable, Unicode-aware text for lexical skill search."""
-    text = unicodedata.normalize("NFKC", str(value or "")).casefold()
+    """Return stable, casefolded, accent-insensitive text for lexical search."""
+    text = str(value or "").casefold()
+    if not text.isascii():
+        text = unicodedata.normalize("NFKD", text)
+        text = "".join(
+            character for character in text if unicodedata.category(character) != "Mn"
+        )
+        text = unicodedata.normalize("NFKC", text)
     return " ".join(text.replace("_", " ").replace("-", " ").replace("/", " ").split())
 
 
@@ -151,6 +159,35 @@ def _search_tokens(value: Any) -> tuple[str, ...]:
         for token in re.findall(r"[^\W_]+(?:\+\+|#)?", normalised, flags=re.UNICODE)
         if len(token) > 1 and token not in _SKILL_SEARCH_STOPWORDS
     )
+
+
+def _contains_token_phrase(needle: str, haystack: str) -> bool:
+    """Return whether a normalized phrase occurs on complete token boundaries."""
+    needle_parts = needle.split()
+    haystack_parts = haystack.split()
+    if not needle_parts or len(needle_parts) > len(haystack_parts):
+        return False
+    width = len(needle_parts)
+    return any(
+        haystack_parts[index : index + width] == needle_parts
+        for index in range(len(haystack_parts) - width + 1)
+    )
+
+
+def _build_search_fields(
+    name: Any,
+    routing_terms: tuple[str, ...],
+    category: Any,
+    description: Any,
+) -> tuple[tuple[str, ...], tuple[tuple[str, ...], ...]]:
+    """Precompute the immutable lexical index stored with a discovery record."""
+    text = (
+        _normalise_search_text(name),
+        _normalise_search_text(" ".join(routing_terms)),
+        _normalise_search_text(category),
+        _normalise_search_text(description),
+    )
+    return text, tuple(_search_tokens(value) for value in text)
 
 
 def _frontmatter_routing_terms(frontmatter: Dict[str, Any]) -> tuple[str, ...]:
@@ -835,12 +872,18 @@ def _find_all_skills(*, skip_disabled: bool = False) -> List[Dict[str, Any]]:
 
                 category = _get_category_from_path(skill_md)
 
+                routing_terms = _frontmatter_routing_terms(frontmatter)
+                search_text, search_tokens = _build_search_fields(
+                    name, routing_terms, category, description
+                )
                 seen_names.add(name)
                 skills.append({
                     "name": name,
                     "description": description,
                     "category": category,
-                    "_routing_terms": _frontmatter_routing_terms(frontmatter),
+                    "_routing_terms": routing_terms,
+                    "_search_text": search_text,
+                    "_search_tokens": search_tokens,
                 })
 
             except (UnicodeDecodeError, PermissionError) as e:
@@ -890,50 +933,65 @@ def _rank_skills_for_query(
     if not query_text:
         return []
 
-    records: list[tuple[Dict[str, Any], Dict[str, tuple[str, ...]], Dict[str, str]]] = []
+    records: list[
+        tuple[Dict[str, Any], tuple[tuple[str, ...], ...], tuple[str, ...]]
+    ] = []
     document_frequency = {token: 0 for token in query_tokens}
 
     for skill in skills:
         routing_terms = tuple(skill.get("_routing_terms") or ())
-        field_text = {
-            "name": _normalise_search_text(skill.get("name", "")),
-            "routing": _normalise_search_text(" ".join(routing_terms)),
-            "category": _normalise_search_text(skill.get("category", "")),
-            "description": _normalise_search_text(skill.get("description", "")),
-        }
-        field_tokens = {key: _search_tokens(value) for key, value in field_text.items()}
-        document_tokens = set().union(*(set(value) for value in field_tokens.values()))
+        field_text = skill.get("_search_text")
+        field_tokens = skill.get("_search_tokens")
+        if (
+            not isinstance(field_text, tuple)
+            or len(field_text) != len(_SKILL_SEARCH_FIELDS)
+            or not isinstance(field_tokens, tuple)
+            or len(field_tokens) != len(_SKILL_SEARCH_FIELDS)
+        ):
+            field_text, field_tokens = _build_search_fields(
+                skill.get("name", ""),
+                routing_terms,
+                skill.get("category", ""),
+                skill.get("description", ""),
+            )
+        document_tokens = set().union(*(set(value) for value in field_tokens))
         for token in query_tokens & document_tokens:
             document_frequency[token] += 1
         records.append((skill, field_tokens, field_text))
 
-    field_weights = {
-        "name": 8.0,
-        "routing": 5.0,
-        "category": 3.0,
-        "description": 1.0,
-    }
     catalog_size = max(1, len(records))
     scored: list[tuple[float, str, str, Dict[str, Any]]] = []
 
     for skill, field_tokens, field_text in records:
         score = 0.0
-        for field, tokens in field_tokens.items():
+        for index, tokens in enumerate(field_tokens):
             matched = query_tokens & set(tokens)
             for token in matched:
                 frequency = document_frequency[token]
                 idf = math.log(1.0 + (catalog_size - frequency + 0.5) / (frequency + 0.5))
-                score += field_weights[field] * idf
+                score += _SKILL_SEARCH_FIELD_WEIGHTS[index] * idf
 
-        name_text = field_text["name"]
+        name_text = field_text[0]
         if query_text == name_text:
             score += 100.0
-        elif query_text in name_text or name_text in query_text:
+        elif query_tokens and (
+            _contains_token_phrase(query_text, name_text)
+            or _contains_token_phrase(name_text, query_text)
+        ):
             score += 24.0
 
         if any(
             term_text
-            and (term_text in query_text or query_text in term_text)
+            and (
+                term_text == query_text
+                or (
+                    query_tokens
+                    and (
+                        _contains_token_phrase(term_text, query_text)
+                        or _contains_token_phrase(query_text, term_text)
+                    )
+                )
+            )
             for term_text in (
                 _normalise_search_text(term)
                 for term in skill.get("_routing_terms") or ()
@@ -1012,9 +1070,11 @@ def skills_list(
 
         query_text = str(query or "").strip()[:_SKILL_SEARCH_MAX_QUERY_CHARS]
         total_matches = None
+        category_source = all_skills
         if query_text:
             all_skills = _rank_skills_for_query(all_skills, query_text)
             total_matches = len(all_skills)
+            category_source = all_skills
             try:
                 result_limit = int(limit) if limit is not None else _SKILL_SEARCH_DEFAULT_LIMIT
             except (TypeError, ValueError):
@@ -1037,7 +1097,7 @@ def skills_list(
 
         # Extract unique categories
         categories = sorted(
-            {s.get("category") for s in all_skills if s.get("category")}
+            {s.get("category") for s in category_source if s.get("category")}
         )
 
         return json.dumps(

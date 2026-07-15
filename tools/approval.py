@@ -2106,6 +2106,33 @@ def is_session_guest(session_key: str) -> bool:
         return session_key in _gateway_guest_sessions
 
 
+def _guest_unsupported_block_result(pattern_key: str, description: str) -> dict:
+    """The fixed BLOCKED result for a guest-mode chat that structurally
+    cannot present or resolve an interactive approval prompt.
+
+    Shared by every guest-denial site in both command-guard entry points:
+    the early check (before cached grants/smart approval get a chance to
+    run) and _await_gateway_decision's own ``guest_unsupported`` result
+    (reached for a command that wasn't already caught early, e.g. a fresh
+    pattern with no prior findings gate).
+    """
+    return {
+        "approved": False,
+        "message": (
+            "BLOCKED: this action requires running a command that isn't "
+            "supported in this context (a guest chat the bot isn't a "
+            "member of has no way to grant approval). Do NOT retry this "
+            "command, do NOT rephrase it, and do NOT attempt the same "
+            "outcome via a different command -- there is no approval path "
+            "available here. Tell the user you can't do that in this context."
+        ),
+        "pattern_key": pattern_key,
+        "description": description,
+        "outcome": "guest_unsupported",
+        "user_consent": False,
+    }
+
+
 def resolve_gateway_approval(session_key: str, choice: str,
                              resolve_all: bool = False,
                              reason: Optional[str] = None) -> int:
@@ -3404,6 +3431,27 @@ def check_all_command_guards(command: str, env_type: str,
 
     session_key = get_current_session_key()
 
+    # Guest-mode Telegram chats can never present or resolve an interactive
+    # approval prompt (see mark_session_guest's docstring). Fail closed for
+    # ANY warning-worthy command HERE — before cached per-session grants
+    # (is_approved, below) or smart approval get a chance to run. Both would
+    # otherwise short-circuit straight to "approved": True without ever
+    # reaching _await_gateway_decision's own guest check further down in
+    # Phase 3, silently defeating the guest denial for the two paths that
+    # matter most: a pattern already approved earlier in the session, or an
+    # aux-LLM "approve" verdict.
+    if is_session_guest(session_key) and (
+        tirith_result["action"] in {"block", "warn"} or is_dangerous
+    ):
+        if tirith_result["action"] in {"block", "warn"}:
+            guest_desc = _format_tirith_description(tirith_result)
+            findings = tirith_result.get("findings") or []
+            guest_key = f"tirith:{findings[0].get('rule_id', 'unknown')}" if findings else "tirith:unknown"
+        else:
+            guest_desc = description
+            guest_key = pattern_key
+        return _guest_unsupported_block_result(guest_key, guest_desc)
+
     # Tirith block/warn → approvable warning with rich findings.
     # Previously, tirith "block" was a hard block with no approval prompt.
     # Now both block and warn go through the approval flow so users can
@@ -3506,14 +3554,7 @@ def check_all_command_guards(command: str, env_type: str,
                 session_key, notify_cb, approval_data, surface="gateway"
             )
             if decision.get("guest_unsupported"):
-                return {
-                    "approved": False,
-                    "message": "BLOCKED: this action requires running a command that isn't supported in this context (a guest chat the bot isn't a member of has no way to grant approval). Do NOT retry this command, do NOT rephrase it, and do NOT attempt the same outcome via a different command -- there is no approval path available here. Tell the user you can't do that in this context.",
-                    "pattern_key": primary_key,
-                    "description": combined_desc,
-                    "outcome": "guest_unsupported",
-                    "user_consent": False,
-                }
+                return _guest_unsupported_block_result(primary_key, combined_desc)
             if decision.get("notify_failed"):
                 return {
                     "approved": False,
@@ -3744,6 +3785,14 @@ def check_execute_code_guard(code: str, env_type: str,
         return {"approved": True, "message": None}
 
     session_key = get_current_session_key()
+
+    # Guest-mode Telegram chats can never present or resolve an interactive
+    # approval prompt (see mark_session_guest's docstring). Fail closed here,
+    # before cached per-session grants (is_approved, below) or smart approval
+    # get a chance to auto-approve — same reasoning as check_all_command_guards.
+    if is_session_guest(session_key):
+        return _guest_unsupported_block_result(pattern_key, description)
+
     # Built only now (past the early-return gates) so the common non-approval
     # paths don't pay to copy a potentially-large script into this string.
     command = f"execute_code <<'PY'\n{code}\nPY"
@@ -3846,14 +3895,7 @@ def check_execute_code_guard(code: str, env_type: str,
         session_key, notify_cb, approval_data, surface="gateway"
     )
     if decision.get("guest_unsupported"):
-        return {
-            "approved": False,
-            "message": "BLOCKED: this action requires running a command that isn't supported in this context (a guest chat the bot isn't a member of has no way to grant approval). Do NOT retry this command, do NOT rephrase it, and do NOT attempt the same outcome via a different command -- there is no approval path available here. Tell the user you can't do that in this context.",
-            "pattern_key": pattern_key,
-            "description": description,
-            "outcome": "guest_unsupported",
-            "user_consent": False,
-        }
+        return _guest_unsupported_block_result(pattern_key, description)
     if decision.get("notify_failed"):
         return {
             "approved": False,

@@ -1018,6 +1018,35 @@ class LineAdapter(BasePlatformAdapter):
         if chat_type == "dm" and self._client:
             asyncio.create_task(self._client.loading(chat_id))
 
+        # Inject group-specific note reference (per-session, persistent)
+        if chat_type != "dm" and msg_type == "text":
+            notes_dir = os.path.expanduser("~/.hermes/line-notes")
+            notes_path = os.path.join(notes_dir, f"{chat_id}.md")
+            try:
+                os.makedirs(notes_dir, exist_ok=True)
+                content = ""
+                if os.path.exists(notes_path):
+                    with open(notes_path, encoding="utf-8") as f:
+                        content = f.read().strip()
+                import datetime
+                tz = datetime.timezone(datetime.timedelta(hours=8))
+                now = datetime.datetime.now(tz)
+                text = (
+                    f"📒 Group note file: {notes_path}\n"
+                    f"   Current time for timestamps: {now.strftime('%Y-%m-%d %H:%M')}\n"
+                    f"   HOW TO USE: When told to remember something, LOAD then APPEND"
+                    f" to this file\n"
+                    f"   using write_file. Each entry MUST follow this format:\n"
+                    f"     - YYYY-MM-DD HH:MM | <user> | <note text>\n"
+                    f"   When asked what was remembered, READ the file and summarise.\n"
+                    f"   Current contents:\n"
+                    f"{content if content else '   (empty)'}\n"
+                    f"───\n"
+                    f"{text}"
+                )
+            except Exception:
+                pass
+
         source_obj = self.build_source(
             chat_id=chat_id,
             chat_type=chat_type,

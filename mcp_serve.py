@@ -43,6 +43,41 @@ from typing import Dict, List, Optional
 
 logger = logging.getLogger("hermes.mcp_serve")
 
+
+# ---------------------------------------------------------------------------
+# Content truncation limits (config.yaml, not env — see AGENTS.md:102-107)
+# ---------------------------------------------------------------------------
+
+def _mcp_truncation_limits() -> tuple[int, int]:
+    """Read content truncation limits from config.yaml.
+
+    Returns ``(max_content_chars, preview_chars)``.
+    Defaults: 2000 for messages_read, 500 for EventBridge event previews.
+    A value of ``0`` disables truncation for that channel (returns the full
+    content). Read from ``mcp.max_content_chars`` / ``mcp.preview_chars`` in
+    config.yaml; behavioral settings must not be env vars (AGENTS.md:102-107).
+    """
+    max_content, preview = 2000, 500
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config().get("mcp", {})
+        if isinstance(cfg, dict):
+            if cfg.get("max_content_chars") is not None:
+                max_content = int(cfg["max_content_chars"])
+            if cfg.get("preview_chars") is not None:
+                preview = int(cfg["preview_chars"])
+    except Exception as e:
+        logger.debug("mcp truncation config unavailable, using defaults: %s", e)
+    return max_content, preview
+
+
+def _truncate(content: str, limit: int) -> str:
+    """Truncate ``content`` to ``limit`` chars. ``0`` disables truncation."""
+    if limit <= 0 or not content:
+        return content
+    return content[:limit]
+
+
 # ---------------------------------------------------------------------------
 # Lazy MCP SDK import
 # ---------------------------------------------------------------------------
@@ -512,6 +547,7 @@ class EventBridge:
                 if ts > last_seen:
                     new_messages.append(msg)
 
+            _, _preview_chars = _mcp_truncation_limits()
             for msg in new_messages:
                 content = _extract_message_content(msg)
                 if not content:
@@ -522,7 +558,7 @@ class EventBridge:
                     session_key=session_key,
                     data={
                         "role": msg.get("role", ""),
-                        "content": content[:500],
+                        "content": _truncate(content, _preview_chars),
                         "timestamp": str(msg.get("timestamp", "")),
                         "message_id": str(msg.get("id", "")),
                     },
@@ -684,6 +720,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
         except Exception as e:
             return json.dumps({"error": f"Failed to read messages: {e}"})
 
+        _max_content_chars, _ = _mcp_truncation_limits()
         filtered = []
         for msg in all_messages:
             role = msg.get("role", "")
@@ -693,7 +730,7 @@ def create_mcp_server(event_bridge: Optional[EventBridge] = None) -> "FastMCP":
                     filtered.append({
                         "id": str(msg.get("id", "")),
                         "role": role,
-                        "content": content[:2000],
+                        "content": _truncate(content, _max_content_chars),
                         "timestamp": msg.get("timestamp", ""),
                     })
 

@@ -1884,9 +1884,35 @@ class TestGatewaySystemServiceRouting:
         gateway_cli.gateway_command(SimpleNamespace(gateway_command="status", deep=False, system=False))
 
         out = capsys.readouterr().out
-        assert "Gateway is not running" in out
+        assert "Gateway is not running for the active profile" in out
         assert "nohup hermes gateway" in out
         assert "install as user service" not in out
+
+    def test_gateway_status_promotes_live_other_profile(self, monkeypatch, capsys):
+        monkeypatch.setattr(gateway_cli, "supports_systemd_services", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_termux", lambda: True)
+        monkeypatch.setattr(gateway_cli, "is_macos", lambda: False)
+        monkeypatch.setattr(gateway_cli, "is_windows", lambda: False)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_gateway_runtime_snapshot",
+            lambda system=False: gateway_cli.GatewayRuntimeSnapshot(manager="manual"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_other_profiles_gateway_processes",
+            lambda: [gateway_cli.ProfileGatewayProcess("default", Path("/tmp"), 4321)],
+        )
+        monkeypatch.setattr(gateway_cli, "_runtime_health_lines", lambda: [])
+
+        gateway_cli.gateway_command(SimpleNamespace(gateway_command="status", deep=False, system=False))
+
+        out = capsys.readouterr().out
+        assert "not running for the active profile" in out
+        assert "not a system-wide outage" in out
+        assert "Live gateways in other profiles:" in out
+        assert "default" in out
+        assert "PID 4321" in out
 
     def test_gateway_restart_does_not_fallback_to_foreground_when_launchd_restart_fails(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"

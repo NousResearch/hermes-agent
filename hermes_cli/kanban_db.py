@@ -5934,6 +5934,9 @@ class DispatchResult:
     operator-actionable failure. Tracked separately so health telemetry
     can distinguish "real stuck" (nothing spawned but spawnable work
     available) from "correctly idle" (nothing spawnable in the queue)."""
+    skipped_global_capped: bool = False
+    """True when ``kanban.max_in_progress`` already filled the board's
+    global worker capacity for this tick."""
     skipped_per_profile_capped: list[tuple[str, str, int]] = field(default_factory=list)
     """Tasks deferred this tick because their assignee is already at
     ``kanban.max_in_progress_per_profile`` (#21582). Each entry is
@@ -7491,6 +7494,7 @@ def _dispatch_once_locked(
             "SELECT COUNT(*) FROM tasks WHERE status = 'running'"
         ).fetchone()[0]
         if in_progress >= max_in_progress:
+            result.skipped_global_capped = True
             return result
         # Only spawn enough to reach the cap, respecting max_spawn too.
         remaining = max_in_progress - in_progress

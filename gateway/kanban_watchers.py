@@ -1252,7 +1252,16 @@ class GatewayKanbanWatchersMixin:
                         )
                 # Health telemetry (aggregate across boards)
                 ready_pending = await asyncio.to_thread(_ready_nonempty)
-                if ready_pending and not any_spawned:
+                intentionally_deferred = any(
+                    res is not None and (
+                        getattr(res, "skipped_global_capped", False)
+                        or bool(getattr(res, "skipped_per_profile_capped", ()))
+                        or bool(getattr(res, "skipped_locked", False))
+                        or bool(getattr(res, "respawn_guarded", ()))
+                    )
+                    for _, res in (results or [])
+                )
+                if ready_pending and not any_spawned and not intentionally_deferred:
                     bad_ticks += 1
                 else:
                     bad_ticks = 0

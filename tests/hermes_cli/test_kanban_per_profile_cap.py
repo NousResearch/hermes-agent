@@ -118,6 +118,25 @@ def test_invalid_cap_treated_as_no_cap(isolated_kanban_home_with_profiles, cap):
     assert len(res.spawned) == 3
 
 
+def test_global_cap_marks_dispatch_as_intentionally_deferred(isolated_kanban_home_with_profiles):
+    kb = isolated_kanban_home_with_profiles
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        running = kb.create_task(conn, title="running", assignee="alpha")
+        kb.create_task(conn, title="ready", assignee="alpha")
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET status = 'running', claim_lock = 'test:1' WHERE id = ?",
+                (running,),
+            )
+    with kb.connect_closing() as conn:
+        result = kb.dispatch_once(
+            conn, spawn_fn=_fake_spawn, dry_run=True, max_in_progress=1,
+        )
+    assert result.skipped_global_capped is True
+    assert result.spawned == []
+
+
 def test_capped_tasks_dispatched_on_subsequent_tick(isolated_kanban_home_with_profiles):
     """A task deferred this tick because its profile was at cap should be
     eligible for dispatch on the next tick (after running tasks complete).

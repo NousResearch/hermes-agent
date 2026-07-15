@@ -1389,29 +1389,33 @@ def _print_gateway_process_mismatch(snapshot: GatewayRuntimeSnapshot) -> None:
         print("  can refuse to start another copy until this process stops.")
 
 
-def _print_other_profiles_gateway_status() -> None:
-    """Print a summary of gateway status across all profiles.
-
-    Shown at the bottom of ``hermes gateway status`` output so users with
-    multiple profiles can tell at a glance which gateways are running and
-    avoid confusing another profile's process with the current one.
-    """
+def _other_profiles_gateway_processes() -> list[ProfileGatewayProcess]:
     try:
         from hermes_cli.profiles import get_active_profile_name
 
         current = get_active_profile_name()
-        other_processes = [
+        return [
             p for p in find_profile_gateway_processes() if p.profile != current
         ]
-        if not other_processes:
-            return
-
-        print()
-        print("Other profiles:")
-        for proc in other_processes:
-            print(f"  ✓ {proc.profile:<16s} — PID {proc.pid}")
     except Exception:
-        pass
+        return []
+
+
+def _print_other_profiles_gateway_status(
+    processes: list[ProfileGatewayProcess] | None = None,
+) -> None:
+    """Print a summary of live gateways outside the active profile."""
+    other_processes = (
+        _other_profiles_gateway_processes() if processes is None else processes
+    )
+    if not other_processes:
+        return
+
+    print()
+    print("Live gateways in other profiles:")
+    for proc in other_processes:
+        label = "default" if proc.profile == "default" else proc.profile
+        print(f"  ✓ {label:<16s} — PID {proc.pid}")
 
 
 def _gateway_list() -> None:
@@ -7031,6 +7035,7 @@ def _gateway_command_inner(args):
         full = getattr(args, "full", False)
         system = getattr(args, "system", False)
         snapshot = get_gateway_runtime_snapshot(system=system)
+        other_profile_processes = _other_profiles_gateway_processes()
 
         # Check for service first
         _windows_service_installed = False
@@ -7056,7 +7061,10 @@ def _gateway_command_inner(args):
             # Check for manually running processes
             pids = list(snapshot.gateway_pids)
             if pids:
-                print(f"✓ Gateway is running (PID: {', '.join(map(str, pids))})")
+                print(
+                    f"✓ Gateway is running for the active profile "
+                    f"(PID: {', '.join(map(str, pids))})"
+                )
                 print("  (Running manually, not as a system service)")
                 runtime_lines = _runtime_health_lines()
                 if runtime_lines:
@@ -7086,7 +7094,9 @@ def _gateway_command_inner(args):
                     print("  hermes gateway install")
                     print("  sudo hermes gateway install --system")
             else:
-                print("✗ Gateway is not running")
+                print("✗ Gateway is not running for the active profile")
+                if other_profile_processes:
+                    print("  A gateway is still live for another profile; this is not a system-wide outage.")
                 runtime_lines = _runtime_health_lines()
                 if runtime_lines:
                     print()
@@ -7117,8 +7127,7 @@ def _gateway_command_inner(args):
                         "  sudo hermes gateway install --system  # Install as boot-time system service"
                     )
 
-        # Show other profiles' gateway status for multi-profile awareness
-        _print_other_profiles_gateway_status()
+        _print_other_profiles_gateway_status(other_profile_processes)
 
     elif subcmd == "list":
         _gateway_list()

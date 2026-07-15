@@ -1,7 +1,7 @@
 ---
 name: toolsnap
-description: Deterministic web/data extraction via the ToolSnap MCP server — exact parsing instead of LLM summarization, at near-zero context cost.
-version: 1.0.0
+description: Deterministic extraction from web pages and documents.
+version: 1.1.0
 author: Icosaedro (github.com/icosaedro-git)
 license: MIT
 platforms: [linux, macos, windows]
@@ -15,51 +15,88 @@ metadata:
     homepage: https://toolsnap.app/agents
 ---
 
-# toolsnap
+# ToolSnap Skill
 
-Use the ToolSnap MCP server (`hermes mcp install official/toolsnap`) when a task needs
-**deterministic** extraction from the web or from documents — exact quotes, structured data,
-reproducible output — rather than an LLM-written summary. ToolSnap does the heavy lifting
-server-side (Cloudflare edge) and returns only the answer, so large pages and documents never
-enter your context window and no auxiliary-model tokens are spent.
+Extract exact, reproducible data from web pages and documents through the
+ToolSnap MCP server, which parses server-side and returns only the answer —
+large pages never enter the context window. It does not search the web and
+does not drive a browser; discovery and interaction stay with native tools.
 
-## When to reach for ToolSnap instead of web_extract / browser
+## When to Use
 
-| Task | Tool | Why |
-|---|---|---|
-| Quote or cite a page exactly | `fetch_extract` | Pure parsing — what you get is what the page said. Median 98.1% token reduction vs raw HTML. |
-| Rebuild / migrate a page | `fetch_html` | Clean DOM (tags/classes/ids kept, scripts/styles stripped). |
-| Tables on a page → data | `html_table_extract` | Returns JSON or CSV directly — no transcription errors. |
-| Query a big CSV/JSON without loading it | `csv_query` / `json_query` | Filter/sort/select server-side; only matching rows come back. |
-| PDF text | `pdf_text_extract` | URL in, text out. |
-| Feeds, sitemaps, link audits | `rss_parse` / `sitemap_parse` / `link_check` | Structured JSON, deterministic. |
-| SEO metadata | `fetch_metadata` / `fetch_structured` | title/canonical/og:* and JSON-LD as data. |
-| Budget check before ingesting | `count_tokens` | Know the cost before you pay it. |
+- Quoting or citing a page exactly, where an LLM summary could drift
+- Turning HTML tables, CSV/JSON files, PDFs, RSS feeds, or sitemaps into structured data
+- Querying a large dataset for a few rows instead of loading the whole file
+- Auditing SEO metadata (title/canonical/og:*, JSON-LD) as data
+- Checking token cost of a document before ingesting it
 
-Keep using Hermes-native `web_search` for discovery (ToolSnap does not search) and
-`browser_navigate` for JS-heavy SPAs, logins, and interactions — ToolSnap fetches server-side
-and will tell you (without failing silently) when a page needs a real browser.
+Keep native `web_search` for discovery (ToolSnap does not search) and
+`browser_navigate` for JS-heavy SPAs, logins, and page interaction.
 
-## The long tail — 38 tools behind 2 calls
+## Prerequisites
 
-Only a curated core appears in `tools/list`. For anything else:
+The `toolsnap` MCP server, installed from the catalog:
 
-1. `tool_catalog()` → families overview; `tool_catalog(family="...")` or `tool_catalog(tool="...")` → schema.
-2. `use_tool(name="...", args={...})` → execute it, same behavior as a direct call.
-3. `task_recipes()` → ready multi-tool plans (clone a site, SEO audit, …).
+```
+hermes mcp install official/toolsnap
+```
 
-## Paid tools (optional)
+It is a remote server on Cloudflare Workers (streamable HTTP) — nothing runs
+locally and the free tools need no account, API key, or configuration.
 
-`screenshot_url` ($0.04), `keyword_research` ($0.04), `remove_background` ($0.03) settle
-per call with USDC on Base via x402 — no account, no API key. A funded wallet alone is not
-enough: the client must answer the `402` by signing an EIP-3009 transfer and retrying.
-Easiest path is the local pay-proxy (key never leaves the machine):
-<https://github.com/icosaedro-git/toolsnap-mcp#paid-tools--connect-through-the-pay-proxy>.
-For repeat use, prepaid is cheaper: deposit once with `account_deposit` (≥ $0.50), then calls
-debit off-chain. Check `pricing()` first; never authorize above the shown price.
+## How to Run
 
-## Habits
+Call the MCP tools directly. Only a curated core appears in `tools/list`;
+the rest of the catalog is reachable through two meta-tools:
 
-- Before loading any external URL or document into context, try the matching ToolSnap tool first.
-- Prefer one targeted query (`csv_query`, `html_table_extract`) over fetching a whole document.
-- If ToolSnap reports a JS-rendered SPA, switch to `browser_navigate` — do not retry blindly.
+1. `tool_catalog()` — families overview; `tool_catalog(family="...")` or
+   `tool_catalog(tool="...")` returns a tool's schema.
+2. `use_tool(name="...", args={...})` — execute any cataloged tool, same
+   behavior as a direct call.
+3. `task_recipes()` — ready multi-tool plans (clone a site, SEO audit, …).
+
+## Quick Reference
+
+| Task | Tool |
+|---|---|
+| Quote or cite a page exactly | `fetch_extract` |
+| Rebuild / migrate a page (clean DOM) | `fetch_html` |
+| Tables on a page → JSON/CSV | `html_table_extract` |
+| Query a big CSV/JSON without loading it | `csv_query` / `json_query` |
+| PDF text | `pdf_text_extract` |
+| Feeds, sitemaps, link audits | `rss_parse` / `sitemap_parse` / `link_check` |
+| SEO metadata and JSON-LD | `fetch_metadata` / `fetch_structured` |
+| Token budget check before ingesting | `count_tokens` |
+
+## Procedure
+
+1. Before loading any external URL or document into context, check the
+   Quick Reference for a matching tool and call it instead.
+2. Prefer one targeted query (`csv_query`, `html_table_extract`) over
+   fetching a whole document and filtering in-context.
+3. For tools not in `tools/list`, resolve the schema with `tool_catalog`
+   and execute with `use_tool`.
+4. Paid tools (`screenshot_url` $0.04, `keyword_research` $0.04,
+   `remove_background` $0.03) settle per call with USDC on Base via x402.
+   Check `pricing()` first and never authorize above the shown price. A
+   funded wallet alone is not enough — the client must answer the `402`
+   by signing an EIP-3009 transfer and retrying; the local pay-proxy
+   (linked from the homepage above) handles this with the key kept on
+   the machine, and `account_deposit` (≥ $0.50) makes repeat use cheaper.
+
+## Pitfalls
+
+- ToolSnap fetches server-side: JS-rendered SPAs come back flagged as such,
+  not silently empty. When it reports one, switch to `browser_navigate` —
+  do not retry blindly.
+- There is no search tool; resolving "find the page about X" needs
+  `web_search` first, then ToolSnap on the resulting URL.
+- Paid calls have real cost per invocation — no first-call-free. Do not
+  loop them without checking `pricing()` and the budget.
+
+## Verification
+
+- `tool_catalog()` returns the families overview — the server is reachable
+  and the catalog loads.
+- `fetch_metadata(url="https://toolsnap.app")` returns the site title as
+  structured JSON — end-to-end extraction works without an account.

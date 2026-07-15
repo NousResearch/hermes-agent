@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import importlib
 import sys
+from pathlib import Path
+
+import tomllib
 from types import SimpleNamespace
 
 import pytest
@@ -50,6 +53,19 @@ def _in_memory_runtime():
         tracer=provider.get_tracer("test.hermes.otel"),
         exporter=exporter,
     )
+
+
+def test_manifest_and_optional_extra():
+    repo_root = Path(__file__).resolve().parents[4]
+    manifest = (repo_root / "plugins/observability/otel/plugin.yaml").read_text()
+    project = tomllib.loads((repo_root / "pyproject.toml").read_text())
+
+    assert "name: otel" in manifest
+    assert all(f"  - {hook}" in manifest for hook in HOOKS)
+    assert project["project"]["optional-dependencies"]["otel"] == [
+        "opentelemetry-sdk==1.39.1",
+        "opentelemetry-exporter-otlp==1.39.1",
+    ]
 
 
 def test_registers_all_observer_hooks():

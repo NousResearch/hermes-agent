@@ -25,7 +25,7 @@ const startManualProviderOAuth = vi.fn()
 
 vi.mock('@/hermes', () => ({
   getGlobalModelInfo: () => getGlobalModelInfo(),
-  getGlobalModelOptions: () => getGlobalModelOptions(),
+  getGlobalModelOptions: (options?: unknown) => getGlobalModelOptions(options),
   getAuxiliaryModels: () => getAuxiliaryModels(),
   getMoaModels: () => getMoaModels(),
   setModelAssignment: (body: unknown) => setModelAssignment(body),
@@ -153,6 +153,48 @@ describe('ModelSettings', () => {
         task: 'vision'
       })
     )
+  })
+
+  it('refreshes live provider models after saving an inline API key', async () => {
+    getGlobalModelOptions
+      .mockResolvedValueOnce({
+        providers: [
+          {
+            name: 'Relay',
+            slug: 'relay',
+            models: [],
+            authenticated: false,
+            auth_type: 'api_key',
+            key_env: 'RELAY_API_KEY'
+          }
+        ]
+      })
+      .mockResolvedValueOnce({
+        providers: [
+          {
+            name: 'Relay',
+            slug: 'relay',
+            models: ['relay-model'],
+            authenticated: true
+          }
+        ]
+      })
+    getGlobalModelInfo.mockResolvedValueOnce({ provider: 'relay', model: '' })
+    getAuxiliaryModels.mockResolvedValueOnce({
+      main: { provider: 'relay', model: '' },
+      tasks: []
+    })
+    getRecommendedDefaultModel.mockResolvedValueOnce({ provider: 'relay', model: '', free_tier: null })
+
+    await renderModelSettings()
+
+    const input = await screen.findByPlaceholderText('Paste RELAY_API_KEY')
+    fireEvent.change(input, { target: { value: 'sk-relay' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Activate' }))
+
+    await waitFor(() => expect(setEnvVar).toHaveBeenCalledWith('RELAY_API_KEY', 'sk-relay'))
+    await waitFor(() => expect(getGlobalModelOptions).toHaveBeenCalledWith({ refresh: true }))
+    expect(await screen.findByText('relay-model')).toBeTruthy()
   })
 
   it('warns when a main switch leaves auxiliary tasks pinned to another provider', async () => {

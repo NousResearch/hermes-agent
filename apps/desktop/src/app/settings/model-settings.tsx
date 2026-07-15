@@ -482,7 +482,7 @@ export function ModelSettings({ onMainModelChanged }: ModelSettingsProps) {
         nextModel = ''
       }
 
-      const options = await getGlobalModelOptions()
+      const options = await getGlobalModelOptions({ refresh: true })
 
       if (profileEpoch.current !== epoch) {
         return

@@ -203,16 +203,17 @@ class CLIAgentSetupMixin:
             ),
         }
 
-        service_tier = getattr(self, "service_tier", None)
-        if not service_tier:
-            route["request_overrides"] = None
-            return route
+        overrides = {}
+        if getattr(self, "service_tier", None):
+            try:
+                overrides.update(resolve_fast_mode_overrides(route["model"]) or {})
+            except Exception:
+                pass
 
-        try:
-            overrides = resolve_fast_mode_overrides(route["model"])
-        except Exception:
-            overrides = None
-        route["request_overrides"] = overrides
+        if getattr(self, "extra_body", None):
+            overrides["extra_body"] = self.extra_body
+
+        route["request_overrides"] = overrides or None
         return route
 
     def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:

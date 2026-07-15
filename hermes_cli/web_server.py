@@ -7976,6 +7976,171 @@ class PaymentSyncRequest(BaseModel):
     max_results: Optional[int] = None
 
 
+class InboxItemStatusUpdate(BaseModel):
+    status: str
+
+
+class PaymentShadowScheduleRequest(BaseModel):
+    schedule: Optional[str] = None
+    query: Optional[str] = None
+    max_results: Optional[int] = None
+    name: Optional[str] = None
+    run_now: bool = False
+
+
+def _ops_service_summary(
+    *,
+    service_id: str,
+    title: str,
+    url: str,
+    description: str = "",
+    group: str = "Operations",
+    tags: Optional[list[str]] = None,
+) -> dict[str, Any]:
+    return {
+        "id": service_id,
+        "title": title,
+        "url": url,
+        "description": description,
+        "group": group,
+        "tags": list(tags or []),
+    }
+
+
+def _default_ops_services(request: Request) -> list[dict[str, Any]]:
+    host = request.url.hostname or "127.0.0.1"
+    scheme = request.url.scheme or "http"
+    dashboard_base = f"{scheme}://{host}:9121"
+    grafana_url = f"{scheme}://{host}:3000"
+    prometheus_url = f"{dashboard_base}/api/ops/webhub/prometheus"
+    return [
+        _ops_service_summary(
+            service_id="payments",
+            title="Payments",
+            url=f"{dashboard_base}/payments",
+            description="Review and update the live payments queue.",
+            group="Hermes",
+            tags=["payments", "ops"],
+        ),
+        _ops_service_summary(
+            service_id="chat",
+            title="Hermes Chat",
+            url=f"{dashboard_base}/chat",
+            description="Open the embedded Hermes terminal chat surface.",
+            group="Hermes",
+            tags=["chat", "agent"],
+        ),
+        _ops_service_summary(
+            service_id="sessions",
+            title="Sessions",
+            url=f"{dashboard_base}/sessions",
+            description="Browse recent Hermes work and resume threads.",
+            group="Hermes",
+            tags=["history"],
+        ),
+        _ops_service_summary(
+            service_id="logs",
+            title="Logs",
+            url=f"{dashboard_base}/logs",
+            description="Inspect gateway and agent logs from the dashboard.",
+            group="Hermes",
+            tags=["logs", "debug"],
+        ),
+        _ops_service_summary(
+            service_id="system",
+            title="System",
+            url=f"{dashboard_base}/system",
+            description="Check gateway health, runtime status, and admin actions.",
+            group="Hermes",
+            tags=["status", "admin"],
+        ),
+        _ops_service_summary(
+            service_id="grafana",
+            title="Grafana",
+            url=grafana_url,
+            description="Metrics and dashboards running on the Mac mini.",
+            group="Observability",
+            tags=["grafana", "metrics"],
+        ),
+        _ops_service_summary(
+            service_id="prometheus",
+            title="Prometheus Export",
+            url=prometheus_url,
+            description="OpenRouter observability metrics in Prometheus text format.",
+            group="Observability",
+            tags=["prometheus", "metrics", "openrouter"],
+        ),
+    ]
+
+
+def _configured_ops_services(config: dict[str, Any]) -> list[dict[str, Any]]:
+    dashboard = config.get("dashboard") if isinstance(config, dict) else {}
+    raw_links = dashboard.get("ops_links") if isinstance(dashboard, dict) else []
+    services: list[dict[str, Any]] = []
+    if not isinstance(raw_links, list):
+        return services
+    for index, item in enumerate(raw_links):
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or item.get("label") or "").strip()
+        url = str(item.get("url") or "").strip()
+        if not title or not url:
+            continue
+        service_id = str(item.get("id") or f"custom-{index + 1}").strip() or f"custom-{index + 1}"
+        description = str(item.get("description") or "").strip()
+        group = str(item.get("group") or "Custom").strip() or "Custom"
+        tags = item.get("tags") if isinstance(item.get("tags"), list) else []
+        services.append(
+            _ops_service_summary(
+                service_id=service_id,
+                title=title,
+                url=url,
+                description=description,
+                group=group,
+                tags=[str(tag).strip() for tag in tags if str(tag).strip()],
+            )
+        )
+    return services
+
+
+@app.get("/api/ops/services")
+async def list_ops_services(request: Request):
+    config = load_config() or {}
+    services = {item["id"]: item for item in _default_ops_services(request)}
+    for item in _configured_ops_services(config):
+        services[item["id"]] = item
+    return {"services": list(services.values())}
+
+
+@app.get("/api/ops/webhub")
+async def get_webhub_ops_summary(request: Request):
+    from plugins.observability.webhub import get_dashboard_summary, get_runtime_status
+
+    host = request.url.hostname or "127.0.0.1"
+    scheme = request.url.scheme or "http"
+    dashboard_base = f"{scheme}://{host}:9121"
+    return {
+        "status": get_runtime_status(),
+        "summary": get_dashboard_summary(window_hours=24),
+        "links": {
+            "grafana_url": f"{scheme}://{host}:3000",
+            "prometheus_url": f"{dashboard_base}/api/ops/webhub/prometheus",
+            "channels_url": f"{dashboard_base}/channels",
+            "ops_url": f"{dashboard_base}/ops",
+        },
+    }
+
+
+@app.get("/api/ops/webhub/prometheus")
+async def get_webhub_prometheus_metrics():
+    from plugins.observability.webhub import render_prometheus_metrics
+
+    return Response(
+        content=render_prometheus_metrics(),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
+
+
 @app.get("/api/payments")
 async def list_payments(profile: Optional[str] = None):
     from hermes_cli import payments as payments_store
@@ -8018,6 +8183,92 @@ async def sync_payments(body: PaymentSyncRequest, profile: Optional[str] = None)
             raise
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/api/payments/shadow-sync")
+async def shadow_sync_payments(body: PaymentSyncRequest, profile: Optional[str] = None):
+    from hermes_cli import payments as payments_store
+
+    source = (body.source or "gmail").strip().lower()
+    with _profile_scope(profile):
+        try:
+            if source != "gmail":
+                raise HTTPException(status_code=400, detail=f"Unsupported payment source: {source}")
+            return payments_store.sync_gmail_payment_requests_shadow(
+                query=body.query or payments_store.DEFAULT_GMAIL_QUERY,
+                max_results=int(body.max_results or payments_store.DEFAULT_GMAIL_MAX_RESULTS),
+            )
+        except HTTPException:
+            raise
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/payments/shadow-report")
+async def payments_shadow_report(profile: Optional[str] = None):
+    from hermes_cli import payments as payments_store
+
+    with _profile_scope(profile):
+        return {
+            "storage_path": payments_store._storage_display_path(),
+            "snapshot": payments_store.load_shadow_report_snapshot(),
+            "parity": payments_store.generate_payments_shadow_report(),
+        }
+
+
+@app.post("/api/payments/shadow-schedule")
+async def payments_shadow_schedule(
+    body: PaymentShadowScheduleRequest,
+    profile: Optional[str] = None,
+):
+    from hermes_cli import payments as payments_store
+
+    with _profile_scope(profile):
+        try:
+            job = payments_store.ensure_gmail_shadow_sync_cron_job(
+                schedule=body.schedule or payments_store.DEFAULT_GMAIL_SHADOW_SYNC_SCHEDULE,
+                query=body.query or payments_store.DEFAULT_GMAIL_QUERY,
+                max_results=int(body.max_results or payments_store.DEFAULT_GMAIL_MAX_RESULTS),
+                name=body.name or payments_store.PAYMENTS_GMAIL_SHADOW_SYNC_CRON_JOB_NAME,
+            )
+            result: dict[str, Any] = {"job": job}
+            if body.run_now:
+                result["run_now"] = payments_store.sync_gmail_payment_requests_shadow(
+                    query=body.query or payments_store.DEFAULT_GMAIL_QUERY,
+                    max_results=int(body.max_results or payments_store.DEFAULT_GMAIL_MAX_RESULTS),
+                )
+            return result
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.get("/api/inbox-items")
+async def list_inbox_items(
+    queue: Optional[str] = None,
+    workflow_type: Optional[str] = None,
+    profile: Optional[str] = None,
+):
+    from hermes_cli import payments as payments_store
+
+    with _profile_scope(profile):
+        return payments_store.list_inbox_items(queue=queue, workflow_type=workflow_type)
+
+
+@app.post("/api/inbox-items/{item_id}/status")
+async def update_inbox_item_status(
+    item_id: str,
+    body: InboxItemStatusUpdate,
+    profile: Optional[str] = None,
+):
+    from hermes_cli import payments as payments_store
+
+    with _profile_scope(profile):
+        try:
+            return payments_store.update_inbox_item_status(item_id, body.status)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="Inbox item not found") from exc
 
 
 # ---------------------------------------------------------------------------

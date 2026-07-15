@@ -67,6 +67,7 @@ const PROFILE_SCOPED_PREFIXES = [
   "/api/gateway",
   "/api/analytics",
   "/api/payments",
+  "/api/inbox-items",
   "/api/skills",
   "/api/tools/toolsets",
   "/api/config",
@@ -560,16 +561,53 @@ export const api = {
     }),
 
   // Payments
+  getOpsServices: () =>
+    fetchJSON<OpsServicesResponse>("/api/ops/services"),
+  getWebhubOpsSummary: () =>
+    fetchJSON<WebhubOpsSummaryResponse>("/api/ops/webhub"),
   getPayments: () =>
     fetchJSON<PaymentsResponse>("/api/payments"),
+  getInboxItems: (params?: { queue?: string; workflow_type?: string }) => {
+    const search = new URLSearchParams();
+    if (params?.queue) search.set("queue", params.queue);
+    if (params?.workflow_type) search.set("workflow_type", params.workflow_type);
+    const suffix = search.size ? `?${search.toString()}` : "";
+    return fetchJSON<InboxItemsResponse>(`/api/inbox-items${suffix}`);
+  },
   syncPayments: (body?: { source?: string; query?: string; max_results?: number }) =>
     fetchJSON<PaymentSyncResponse>("/api/payments/sync", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {}),
     }),
+  shadowSyncPayments: (body?: { source?: string; query?: string; max_results?: number }) =>
+    fetchJSON<PaymentShadowSyncResponse>("/api/payments/shadow-sync", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    }),
+  getPaymentsShadowReport: () =>
+    fetchJSON<PaymentShadowReportResponse>("/api/payments/shadow-report"),
+  schedulePaymentsShadowSync: (body?: {
+    schedule?: string;
+    query?: string;
+    max_results?: number;
+    name?: string;
+    run_now?: boolean;
+  }) =>
+    fetchJSON<PaymentShadowScheduleResponse>("/api/payments/shadow-schedule", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body || {}),
+    }),
   updatePaymentStatus: (id: string, status: PaymentRequest["status"]) =>
     fetchJSON<PaymentRequest>(`/api/payments/${encodeURIComponent(id)}/status`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    }),
+  updateInboxItemStatus: (id: string, status: InboxItem["status"]) =>
+    fetchJSON<InboxItem>(`/api/inbox-items/${encodeURIComponent(id)}/status`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ status }),
@@ -1784,9 +1822,11 @@ export interface PaymentSourceStatus {
 
 export interface PaymentRequest {
   id: string;
+  payment_id?: string;
   source: string;
   source_label: string;
   status: "new" | "needs_review" | "ready_to_pay" | "paid" | "ignored";
+  operator_status?: "needs_review" | "ready_to_pay" | "paid" | "ignored";
   confidence: string;
   received_at: string | null;
   updated_at: string | null;
@@ -1818,11 +1858,62 @@ export interface PaymentRequest {
     message_id: string;
     thread_id: string;
   };
+  raw_text_path?: string;
+  materialized_path?: string;
+  review_note?: string;
+  looks_paid?: boolean;
 }
 
 export interface PaymentsResponse {
   sources: PaymentSourceStatus[];
   requests: PaymentRequest[];
+  storage_path: string;
+}
+
+export interface InboxItem {
+  id: string;
+  source: string;
+  source_account: string;
+  source_thread_id: string;
+  source_message_id: string;
+  source_url: string;
+  captured_at: string | null;
+  updated_at: string | null;
+  last_classified_at: string | null;
+  workflow_type: string;
+  queue: string;
+  status: "new" | "needs_review" | "ready_to_pay" | "paid" | "ignored";
+  title: string;
+  summary: string;
+  counterparty: string;
+  action_required: boolean;
+  confidence: string | number | null;
+  amount: {
+    value: number | null;
+    currency: string;
+    display: string;
+  };
+  due_date: string | null;
+  meeting_dates: string[];
+  meeting_timezone: string;
+  reference_id: string;
+  receipt_like: boolean;
+  invoice_like: boolean;
+  calendar_like: boolean;
+  warning_flags: string[];
+  operator_notes: string;
+  raw_payload_path?: string | null;
+  materialized_path?: string | null;
+  manual_status: boolean;
+  manual_notes: boolean;
+  reviewed_at: string | null;
+  reviewed_by: string | null;
+  entities: Record<string, unknown>;
+  artifacts: Record<string, unknown>;
+}
+
+export interface InboxItemsResponse {
+  items: InboxItem[];
   storage_path: string;
 }
 
@@ -1833,6 +1924,131 @@ export interface PaymentSyncResponse {
   imported: number;
   updated: number;
   requests: PaymentRequest[];
+}
+
+export interface PaymentShadowParityReport {
+  generated_at: string | null;
+  payments_count: number;
+  shadow_count: number;
+  compared_count: number;
+  parity_ok: boolean;
+  status_mismatches: string[];
+  amount_mismatches: string[];
+  due_date_mismatches: string[];
+  reference_mismatches: string[];
+  missing_in_shadow: string[];
+  shadow_only: string[];
+}
+
+export interface PaymentShadowSyncResponse extends PaymentSyncResponse {
+  shadow: {
+    mirrored: number;
+    storage_path: string;
+    parity: PaymentShadowParityReport;
+  };
+}
+
+export interface PaymentShadowReportSnapshot {
+  updated_at: string | null;
+  result: PaymentShadowSyncResponse | null;
+  path: string;
+}
+
+export interface PaymentShadowReportResponse {
+  storage_path: string;
+  snapshot: PaymentShadowReportSnapshot;
+  parity: PaymentShadowParityReport;
+}
+
+export interface PaymentShadowScheduleResponse {
+  job: {
+    id: string;
+    name?: string;
+    schedule?: string;
+    schedule_display?: string;
+    script?: string;
+    no_agent?: boolean;
+  };
+  run_now?: PaymentShadowSyncResponse;
+}
+
+export interface OpsService {
+  id: string;
+  title: string;
+  url: string;
+  description: string;
+  group: string;
+  tags: string[];
+}
+
+export interface OpsServicesResponse {
+  services: OpsService[];
+}
+
+export interface WebhubTopModel {
+  model: string;
+  requests: number;
+  estimated_cost_usd: number;
+  avg_latency_ms: number;
+  total_tokens: number;
+}
+
+export interface WebhubHourlyPoint {
+  bucket_start: string;
+  requests: number;
+  estimated_cost_usd: number;
+  avg_latency_ms: number;
+}
+
+export interface WebhubRecentError {
+  observed_at: string;
+  model: string;
+  error_type: string;
+  error_message: string;
+}
+
+export interface WebhubOpsSummaryResponse {
+  status: {
+    plugin_enabled: boolean;
+    openrouter_configured: boolean;
+    slack_configured: boolean;
+    briefing_file: string;
+  };
+  summary: {
+    window_hours: number;
+    requests: {
+      total: number;
+      ok: number;
+      error: number;
+      success_rate: number;
+      throughput_per_hour: number;
+    };
+    tokens: {
+      input: number;
+      output: number;
+      cache_read: number;
+      cache_write: number;
+      reasoning: number;
+      total: number;
+    };
+    cost: {
+      estimated_usd: number;
+    };
+    latency: {
+      avg_ms: number;
+    };
+    last_request_at: string;
+    top_models: WebhubTopModel[];
+    hourly: WebhubHourlyPoint[];
+    recent_errors: WebhubRecentError[];
+    briefing_markdown: string;
+  };
+  links: {
+    grafana_url: string;
+    prometheus_url: string;
+    channels_url: string;
+    ops_url: string;
+  };
 }
 
 export interface AnalyticsDailyEntry {

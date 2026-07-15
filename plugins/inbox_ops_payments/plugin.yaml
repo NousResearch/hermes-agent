@@ -1,0 +1,4 @@
+name: inbox-ops-payments
+version: 1.0.0
+description: "Plugin-shaped payment candidate classifier and extractor wrappers for inbox-ops shadow ingestion."
+author: Hermes Agent

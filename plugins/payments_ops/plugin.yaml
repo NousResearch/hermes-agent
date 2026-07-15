@@ -1,0 +1,4 @@
+name: payments-ops
+version: 1.0.0
+description: "Slack companion surface for the payments review board: compact canvas summaries plus mobile status actions."
+author: Hermes Agent

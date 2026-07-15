@@ -6840,6 +6840,14 @@ def _default_spawn(
     from hermes_cli.profiles import resolve_profile_env
     try:
         env["HERMES_HOME"] = resolve_profile_env(profile_arg)
+        # Some nested worker helper processes consult HOME directly even when
+        # HERMES_HOME is pinned. Keep them off any stale launch-profile HOME
+        # (for example an old admin wrapper home) while preserving the prior
+        # real home under HERMES_REAL_HOME for external tools that need it.
+        prior_home = str(env.get("HOME") or "").strip()
+        if prior_home and prior_home != env["HERMES_HOME"] and not env.get("HERMES_REAL_HOME"):
+            env["HERMES_REAL_HOME"] = prior_home
+        env["HOME"] = env["HERMES_HOME"]
     except FileNotFoundError:
         # Profile dir doesn't exist — defer resolution to the CLI's
         # _apply_profile_override() via HERMES_PROFILE (set below).

@@ -23,6 +23,9 @@ import pytest
 from hermes_cli.main import (
     _find_stale_dashboard_pids,
     _kill_stale_dashboard_processes,
+    _read_dashboard_state,
+    _restart_dashboard_from_saved_state,
+    _save_dashboard_launch_state,
     _warn_stale_dashboard_processes,  # back-compat alias
 )
 
@@ -47,6 +50,9 @@ def _refresh_bindings_against_live_module():
     """
     global _find_stale_dashboard_pids
     global _kill_stale_dashboard_processes
+    global _read_dashboard_state
+    global _restart_dashboard_from_saved_state
+    global _save_dashboard_launch_state
     global _warn_stale_dashboard_processes
 
     live = sys.modules.get("hermes_cli.main")
@@ -55,6 +61,9 @@ def _refresh_bindings_against_live_module():
 
     _find_stale_dashboard_pids = live._find_stale_dashboard_pids
     _kill_stale_dashboard_processes = live._kill_stale_dashboard_processes
+    _read_dashboard_state = live._read_dashboard_state
+    _restart_dashboard_from_saved_state = live._restart_dashboard_from_saved_state
+    _save_dashboard_launch_state = live._save_dashboard_launch_state
     _warn_stale_dashboard_processes = live._warn_stale_dashboard_processes
     yield
 
@@ -384,6 +393,76 @@ class TestBackCompatAlias:
 
     def test_alias_is_the_kill_function(self):
         assert _warn_stale_dashboard_processes is _kill_stale_dashboard_processes
+
+
+class TestDashboardRestartState:
+    def test_save_dashboard_launch_state_persists_args(self, tmp_path, monkeypatch):
+        import argparse
+
+        monkeypatch.setattr("hermes_cli.main.get_hermes_home", lambda: tmp_path)
+        args = argparse.Namespace(
+            host="0.0.0.0",
+            port=9119,
+            no_open=True,
+            insecure=True,
+            skip_build=True,
+        )
+
+        _save_dashboard_launch_state(args)
+        state = _read_dashboard_state()
+
+        assert state["desired_state"] == "running"
+        assert state["hermes_home"] == str(tmp_path)
+        assert state["argv"] == [
+            "dashboard",
+            "--host", "0.0.0.0",
+            "--port", "9119",
+            "--no-open",
+            "--insecure",
+            "--skip-build",
+        ]
+
+    def test_restart_dashboard_from_saved_state_uses_saved_home(self, tmp_path, monkeypatch, capsys):
+        monkeypatch.setattr("hermes_cli.main.get_hermes_home", lambda: tmp_path)
+        (tmp_path / "dashboard_state.json").write_text(
+            '{"desired_state":"running","argv":["dashboard","--host","127.0.0.1","--port","9119","--no-open"],"hermes_home":"/tmp/hermes-home"}\n',
+            encoding="utf-8",
+        )
+
+        captured: dict[str, object] = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["kwargs"] = kwargs
+            return MagicMock()
+
+        monkeypatch.setattr("subprocess.Popen", fake_popen)
+        restarted = _restart_dashboard_from_saved_state(reason="update")
+
+        assert restarted is True
+        assert captured["cmd"] == [
+            sys.executable, "-m", "hermes_cli.main",
+            "dashboard", "--host", "127.0.0.1", "--port", "9119", "--no-open",
+        ]
+        kwargs = captured["kwargs"]
+        assert kwargs["env"]["HERMES_HOME"] == "/tmp/hermes-home"
+        if sys.platform != "win32":
+            assert kwargs["start_new_session"] is True
+        out = capsys.readouterr().out
+        assert "Restarted dashboard after update" in out
+
+    def test_restart_dashboard_from_saved_state_skips_when_stopped(self, tmp_path, monkeypatch):
+        monkeypatch.setattr("hermes_cli.main.get_hermes_home", lambda: tmp_path)
+        (tmp_path / "dashboard_state.json").write_text(
+            '{"desired_state":"stopped","argv":["dashboard","--host","127.0.0.1","--port","9119"]}\n',
+            encoding="utf-8",
+        )
+
+        with patch("subprocess.Popen") as popen:
+            restarted = _restart_dashboard_from_saved_state(reason="update")
+
+        assert restarted is False
+        popen.assert_not_called()
 
 
 class TestWindowsWmicEncoding:

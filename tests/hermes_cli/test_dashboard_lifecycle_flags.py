@@ -10,6 +10,7 @@ exit codes.
 from __future__ import annotations
 
 import argparse
+import json
 import sys
 from unittest.mock import patch, MagicMock
 
@@ -77,6 +78,15 @@ class TestDashboardStop:
         assert exc.value.code == 0
         out = capsys.readouterr().out
         assert "No hermes dashboard processes running" in out
+
+    def test_stop_marks_saved_state_stopped_even_when_no_process_running(self, tmp_path):
+        with patch("hermes_cli.main.get_hermes_home", return_value=tmp_path), \
+             patch("hermes_cli.main._find_stale_dashboard_pids", return_value=[]), \
+             pytest.raises(SystemExit):
+            cmd_dashboard(_ns(stop=True))
+
+        state = json.loads((tmp_path / "dashboard_state.json").read_text(encoding="utf-8"))
+        assert state["desired_state"] == "stopped"
 
     def test_stop_kills_and_exits_zero_when_all_killed(self, capsys):
         """After the kill, if the second scan returns empty we exit 0."""

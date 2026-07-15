@@ -621,6 +621,16 @@ def run_conversation(
     final_response = None
     interrupted = False
     failed = False
+    # Once session_search has executed, the next model response may echo its
+    # structured history payload verbatim.  Keep the rest of this turn on the
+    # complete-response path so the finalizer can inspect it before any visible
+    # stream consumer receives text.
+    session_search_used_this_turn = False
+    # Error-shaped tool output is shared across every Hermes tool.  Keep the
+    # actual session_search results keyed by tool_call_id so only a matching
+    # echo is withheld; unrelated {error, success:false} assistant JSON stays
+    # untouched.
+    session_search_output_fingerprints: dict[str, set[str]] = {}
     codex_ack_continuations = 0
     length_continue_retries = 0
     truncated_tool_call_retries = 0
@@ -1318,6 +1328,8 @@ def run_conversation(
                 # attempt — switch to non-streaming for the rest of this
                 # session instead of re-failing every retry.
                 if getattr(agent, "_disable_streaming", False):
+                    _use_streaming = False
+                elif session_search_used_this_turn:
                     _use_streaming = False
                 # CopilotACPClient communicates via subprocess stdio and
                 # returns a plain SimpleNamespace — not an iterable
@@ -4339,6 +4351,26 @@ def run_conversation(
                 else:
                     assistant_message.content = str(raw)
 
+            # Post-session-search calls are forced through the complete-response
+            # path, so this is the earliest shared point after provider
+            # normalization and before post_api_request hooks, message builders,
+            # reasoning callbacks, interim display, or persistence.  Scrub all
+            # structured reasoning fields here; later branch-specific checks are
+            # retained as defense in depth for synthetic/recovery messages.
+            if session_search_used_this_turn:
+                from agent.turn_finalizer import (
+                    _sanitize_session_search_reasoning_fields,
+                )
+
+                if _sanitize_session_search_reasoning_fields(
+                    assistant_message,
+                    session_search_output_fingerprints,
+                ):
+                    logger.warning(
+                        "Withheld raw session_search reasoning before response "
+                        "hooks and message construction"
+                    )
+
             try:
                 from hermes_cli.plugins import (
                     has_hook,
@@ -4738,6 +4770,47 @@ def run_conversation(
                     assistant_message.tool_calls
                 )
 
+                _session_search_call_ids = {
+                    str(tc.id)
+                    for tc in assistant_message.tool_calls
+                    if tc.function.name == "session_search" and tc.id is not None
+                }
+                if _session_search_call_ids:
+                    session_search_used_this_turn = True
+
+                # A model can echo the preceding session_search payload while
+                # also requesting another tool.  This branch is persisted and
+                # surfaced as interim commentary before the turn finalizer runs,
+                # so scrub the content at the earliest shared boundary.  Keep
+                # the tool calls themselves intact and use empty content: the
+                # model is still working and has no user-facing answer yet.
+                if session_search_used_this_turn:
+                    from agent.turn_finalizer import (
+                        _looks_like_session_search_output,
+                        _sanitize_session_search_reasoning_fields,
+                    )
+
+                    _reasoning_sanitized = (
+                        _sanitize_session_search_reasoning_fields(
+                            assistant_message,
+                            session_search_output_fingerprints,
+                        )
+                    )
+                    if _looks_like_session_search_output(
+                        assistant_message.content,
+                        session_search_output_fingerprints,
+                    ):
+                        assistant_message.content = ""
+                        logger.warning(
+                            "Withheld raw session_search output from "
+                            "intermediate assistant tool-call message"
+                        )
+                    elif _reasoning_sanitized:
+                        logger.warning(
+                            "Withheld raw session_search reasoning from "
+                            "intermediate assistant tool-call message"
+                        )
+
                 assistant_msg = agent._build_assistant_message(assistant_message, finish_reason)
                 
                 turn_content = assistant_message.content or ""
@@ -4746,7 +4819,7 @@ def run_conversation(
                 # This classification is needed regardless of whether the turn has visible content,
                 # because a substantive tool-only turn must invalidate any older housekeeping fallback.
                 _HOUSEKEEPING_TOOLS = frozenset({
-                    "memory", "todo", "skill_manage", "session_search",
+                    "memory", "todo", "skill_manage",
                 })
                 _all_housekeeping = all(
                     tc.function.name in _HOUSEKEEPING_TOOLS
@@ -4840,7 +4913,28 @@ def run_conversation(
                     except Exception:
                         pass
 
+                _tool_result_start_idx = len(messages)
                 agent._execute_tool_calls(assistant_message, messages, effective_task_id, api_call_count)
+
+                if _session_search_call_ids:
+                    from agent.turn_finalizer import (
+                        _session_search_output_fingerprint,
+                    )
+
+                    for tool_result in messages[_tool_result_start_idx:]:
+                        if not isinstance(tool_result, dict):
+                            continue
+                        call_id = tool_result.get("tool_call_id")
+                        if call_id is None or str(call_id) not in _session_search_call_ids:
+                            continue
+                        fingerprint = _session_search_output_fingerprint(
+                            tool_result.get("content")
+                        )
+                        if fingerprint:
+                            session_search_output_fingerprints.setdefault(
+                                str(call_id),
+                                set(),
+                            ).add(fingerprint)
 
                 if agent._tool_guardrail_halt_decision is not None:
                     decision = agent._tool_guardrail_halt_decision
@@ -5268,6 +5362,40 @@ def run_conversation(
                     length_continue_retries = 0
                 
                 final_response = agent._strip_think_blocks(final_response).strip()
+
+                # Post-search responses use the complete-response API so raw
+                # tool JSON can be inspected before it reaches any stream
+                # consumer.  Sanitize now—before building/persisting the final
+                # assistant message—and keep the finalizer as a defense-in-depth
+                # guard for budget and error exits that bypass this branch.
+                if session_search_used_this_turn:
+                    from agent.turn_finalizer import (
+                        _SESSION_SEARCH_OUTPUT_REPLACEMENT,
+                        _looks_like_session_search_output,
+                        _sanitize_session_search_reasoning_fields,
+                    )
+
+                    _reasoning_sanitized = (
+                        _sanitize_session_search_reasoning_fields(
+                            assistant_message,
+                            session_search_output_fingerprints,
+                        )
+                    )
+                    if _looks_like_session_search_output(
+                        final_response,
+                        session_search_output_fingerprints,
+                    ):
+                        final_response = _SESSION_SEARCH_OUTPUT_REPLACEMENT
+                        assistant_message.content = final_response
+                        logger.warning(
+                            "Withheld raw session_search output from final "
+                            "assistant response"
+                        )
+                    elif _reasoning_sanitized:
+                        logger.warning(
+                            "Withheld raw session_search reasoning from final "
+                            "assistant response"
+                        )
                 
                 final_msg = agent._build_assistant_message(assistant_message, finish_reason)
 
@@ -5440,6 +5568,21 @@ def run_conversation(
                     final_response = None
                     continue
 
+                # The post-search call was deliberately non-streaming.  Once
+                # every verification/worker stop gate has accepted the answer,
+                # replay the checked text through the normal stream fan-out so
+                # display and TTS receive it and existing delivery tracking can
+                # deduplicate the gateway's final response.  This is normal
+                # stream delivery, not an interim preview, so do not set
+                # _response_was_previewed.
+                if session_search_used_this_turn and agent._has_stream_consumers():
+                    agent._fire_stream_delta(final_response)
+                    # Reuse the normal per-response stream finalization path:
+                    # it flushes a benign partial tag prefix (for example a
+                    # trailing "<") through both display and TTS before the
+                    # gateway consumer receives its independent finish signal.
+                    agent._reset_stream_delivery_tracking()
+
                 messages.append(final_msg)
                 
                 _turn_exit_reason = f"text_response(finish_reason={finish_reason})"
@@ -5523,6 +5666,8 @@ def run_conversation(
         _should_review_memory=_should_review_memory,
         _turn_exit_reason=_turn_exit_reason,
         _pending_verification_response=_pending_verification_response,
+        session_search_used=session_search_used_this_turn,
+        session_search_output_fingerprints=session_search_output_fingerprints,
     )
 
 

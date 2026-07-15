@@ -22,9 +22,311 @@ keep the exact logger name (``"agent.conversation_loop"``).
 
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+
+
+_SESSION_SEARCH_OUTPUT_REPLACEMENT = (
+    "I found relevant conversation history, but the raw session-search data "
+    "was withheld. Ask me to summarize the relevant details instead."
+)
+_SESSION_SEARCH_MODES = frozenset({"browse", "discover", "read", "scroll"})
+_SESSION_SEARCH_STRUCTURAL_MARKERS = (
+    '"bookend_start"',
+    '"bookend_end"',
+    '"match_message_id"',
+    '"messages_before"',
+    '"messages_after"',
+    '"sessions_searched"',
+)
+_SESSION_SEARCH_REASONING_SCALAR_FIELDS = ("reasoning", "reasoning_content")
+_SESSION_SEARCH_REASONING_CONTAINER_FIELDS = (
+    "reasoning_details",
+    "anthropic_content_blocks",
+    "codex_reasoning_items",
+)
+
+
+def _strip_json_fence(text: str) -> str:
+    """Return the body of a single Markdown JSON fence, if present."""
+    lines = text.strip().splitlines()
+    if (
+        len(lines) >= 3
+        and lines[0].strip().lower() in {"```", "```json"}
+        and lines[-1].strip() == "```"
+    ):
+        return "\n".join(lines[1:-1]).strip()
+    return text.strip()
+
+
+def _extract_json_object(value):
+    """Extract the first JSON object from a raw or lightly wrapped string."""
+    if not isinstance(value, str) or not value.strip():
+        return None
+
+    candidate = _strip_json_fence(value)
+    try:
+        payload = json.loads(candidate)
+    except (TypeError, ValueError):
+        payload = None
+    if isinstance(payload, dict):
+        return payload
+
+    decoder = json.JSONDecoder()
+    for index, char in enumerate(candidate):
+        if char != "{":
+            continue
+        try:
+            payload, _end = decoder.raw_decode(candidate[index:])
+        except (TypeError, ValueError):
+            continue
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _session_search_output_fingerprint(value):
+    """Return a stable fingerprint for a JSON tool result or echoed wrapper."""
+    payload = value if isinstance(value, dict) else _extract_json_object(value)
+    if not isinstance(payload, dict):
+        return None
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _observed_fingerprint_values(observed_fingerprints) -> set[str]:
+    """Flatten tool-call-id keyed fingerprints into a comparison set."""
+    if not observed_fingerprints:
+        return set()
+    values = (
+        observed_fingerprints.values()
+        if isinstance(observed_fingerprints, dict)
+        else observed_fingerprints
+    )
+    flattened: set[str] = set()
+    for value in values:
+        if isinstance(value, str):
+            flattened.add(value)
+        elif isinstance(value, (set, frozenset, list, tuple)):
+            flattened.update(item for item in value if isinstance(item, str))
+    return flattened
+
+
+def _looks_like_session_search_output(
+    value,
+    observed_fingerprints=None,
+) -> bool:
+    """Recognize a raw session-search result without matching normal prose."""
+    if not isinstance(value, str) or not value.strip():
+        return False
+
+    payload = _extract_json_object(value)
+
+    if isinstance(payload, dict):
+        # session_search uses registry.tool_error(..., success=False) for read,
+        # browse, discover, and scroll failures.  Those payloads intentionally
+        # omit ``mode``.  The shape is shared by every other tool, so only
+        # withhold it when its canonical fingerprint matches a session_search
+        # result actually observed in this turn.
+        if (
+            payload.get("success") is False
+            and isinstance(payload.get("error"), str)
+            and bool(payload["error"].strip())
+        ):
+            fingerprint = _session_search_output_fingerprint(payload)
+            return fingerprint in _observed_fingerprint_values(
+                observed_fingerprints
+            )
+
+        mode = payload.get("mode")
+        if (
+            mode in _SESSION_SEARCH_MODES
+            and payload.get("success") is True
+            and any(key in payload for key in ("messages", "results", "session_id"))
+        ):
+            return True
+
+    compact = "".join(value.lower().split())
+    has_mode = any(f'"mode":"{mode}"' in compact for mode in _SESSION_SEARCH_MODES)
+    has_container = '"messages"' in compact or '"results"' in compact
+    if has_mode and has_container and '"success":true' in compact:
+        return True
+
+    marker_count = sum(marker in value for marker in _SESSION_SEARCH_STRUCTURAL_MARKERS)
+    return marker_count >= 2 and '"role"' in value and '"content"' in value
+
+
+def _value_contains_session_search_output(value, observed_fingerprints=None) -> bool:
+    """Return whether a structured reasoning value contains raw tool output."""
+    if isinstance(value, str):
+        return _looks_like_session_search_output(value, observed_fingerprints)
+    if isinstance(value, dict):
+        return any(
+            _value_contains_session_search_output(item, observed_fingerprints)
+            for item in value.values()
+        )
+    if isinstance(value, (list, tuple)):
+        return any(
+            _value_contains_session_search_output(item, observed_fingerprints)
+            for item in value
+        )
+    model_dump = getattr(value, "model_dump", None)
+    if callable(model_dump):
+        try:
+            return _value_contains_session_search_output(
+                model_dump(),
+                observed_fingerprints,
+            )
+        except Exception:
+            return False
+    return False
+
+
+def _filter_session_search_reasoning_container(
+    value,
+    observed_fingerprints=None,
+):
+    """Drop only raw-search entries from a provider reasoning container."""
+    if isinstance(value, list):
+        preserved = [
+            item
+            for item in value
+            if not _value_contains_session_search_output(
+                item,
+                observed_fingerprints,
+            )
+        ]
+        return preserved, len(preserved) != len(value)
+    if isinstance(value, tuple):
+        preserved = tuple(
+            item
+            for item in value
+            if not _value_contains_session_search_output(
+                item,
+                observed_fingerprints,
+            )
+        )
+        return preserved, len(preserved) != len(value)
+    if _value_contains_session_search_output(value, observed_fingerprints):
+        return None, True
+    return value, False
+
+
+def _sanitize_session_search_reasoning_fields(
+    message,
+    observed_fingerprints=None,
+) -> bool:
+    """Remove raw session-search output from assistant reasoning fields."""
+    if message is None:
+        return False
+
+    def _has(field):
+        return field in message if isinstance(message, dict) else hasattr(message, field)
+
+    def _get(field):
+        return message.get(field) if isinstance(message, dict) else getattr(message, field, None)
+
+    def _set(field, value):
+        if isinstance(message, dict):
+            message[field] = value
+        else:
+            setattr(message, field, value)
+
+    changed = False
+    for field in _SESSION_SEARCH_REASONING_SCALAR_FIELDS:
+        if _has(field) and _value_contains_session_search_output(
+            _get(field),
+            observed_fingerprints,
+        ):
+            try:
+                _set(field, None)
+                changed = True
+            except Exception:
+                pass
+
+    if _has("reasoning_details"):
+        details, details_changed = _filter_session_search_reasoning_container(
+            _get("reasoning_details"),
+            observed_fingerprints,
+        )
+        if details_changed:
+            try:
+                _set("reasoning_details", details)
+                changed = True
+            except Exception:
+                pass
+
+    for metadata_field in ("provider_data", "model_extra"):
+        metadata = _get(metadata_field) if _has(metadata_field) else None
+        if not isinstance(metadata, dict):
+            continue
+        for field in _SESSION_SEARCH_REASONING_SCALAR_FIELDS:
+            if field in metadata and _value_contains_session_search_output(
+                metadata[field],
+                observed_fingerprints,
+            ):
+                metadata[field] = None
+                changed = True
+        for field in _SESSION_SEARCH_REASONING_CONTAINER_FIELDS:
+            if field not in metadata:
+                continue
+            filtered, field_changed = _filter_session_search_reasoning_container(
+                metadata[field],
+                observed_fingerprints,
+            )
+            if field_changed:
+                metadata[field] = filtered
+                changed = True
+
+    return changed
+
+
+def _sanitize_session_search_output(
+    final_response,
+    messages,
+    observed_fingerprints=None,
+):
+    """Sanitize raw search output in final text and current-turn reasoning."""
+    content_sanitized = _looks_like_session_search_output(
+        final_response,
+        observed_fingerprints,
+    )
+    changed = content_sanitized
+
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        if message.get("role") == "user":
+            break
+        if message.get("role") != "assistant":
+            continue
+        changed = (
+            _sanitize_session_search_reasoning_fields(
+                message,
+                observed_fingerprints,
+            )
+            or changed
+        )
+        if content_sanitized and _looks_like_session_search_output(
+            message.get("content"),
+            observed_fingerprints,
+        ):
+            message["content"] = _SESSION_SEARCH_OUTPUT_REPLACEMENT
+
+    return (
+        _SESSION_SEARCH_OUTPUT_REPLACEMENT
+        if content_sanitized
+        else final_response,
+        changed,
+    )
 
 
 def finalize_turn(
@@ -43,6 +345,8 @@ def finalize_turn(
     _should_review_memory,
     _turn_exit_reason,
     _pending_verification_response=None,
+    session_search_used=False,
+    session_search_output_fingerprints=None,
 ):
     """Run the post-loop finalization and return the turn ``result`` dict.
 
@@ -95,6 +399,17 @@ def finalize_turn(
             )
         final_response = agent._handle_max_iterations(messages, api_call_count)
         iteration_limit_fallback = True
+
+    if session_search_used:
+        final_response, _session_output_sanitized = _sanitize_session_search_output(
+            final_response,
+            messages,
+            session_search_output_fingerprints,
+        )
+        if _session_output_sanitized:
+            logger.warning(
+                "Withheld raw session_search content/reasoning from final response"
+            )
 
     if iteration_limit_fallback:
         # If running as a kanban worker, signal the dispatcher that the

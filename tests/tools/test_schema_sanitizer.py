@@ -860,6 +860,36 @@ def test_null_default_and_const_preserved():
     assert x["const"] is None
 
 
+def test_object_valued_default_and_const_are_opaque_data():
+    """Object-valued ``default``/``const`` are literals, not schemas — keys
+    that happen to collide with schema keywords (``type``, ``enum``) must
+    survive untouched, including null-valued ones."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {
+            "a": {"type": "object", "default": {"type": None, "enum": None}},
+            "b": {"type": "string", "const": {"type": None}},
+        },
+    })]
+    out = sanitize_tool_schemas(tools)
+    props = out[0]["function"]["parameters"]["properties"]
+    assert props["a"]["default"] == {"type": None, "enum": None}
+    assert props["b"]["const"] == {"type": None}
+
+
+def test_extension_keywords_are_opaque_data():
+    """``x-*`` extension keywords are annotations, never schemas — their
+    contents must not be sanitized as schema nodes."""
+    tools = [_tool("t", {
+        "type": "object",
+        "properties": {"a": {"type": "string"}},
+        "x-meta": {"type": None, "required": None, "notes": "object"},
+    })]
+    out = sanitize_tool_schemas(tools)
+    params = out[0]["function"]["parameters"]
+    assert params["x-meta"] == {"type": None, "required": None, "notes": "object"}
+
+
 def test_valid_structural_keywords_untouched():
     """Non-null arrays/objects pass through unchanged (no false positives)."""
     schema = {

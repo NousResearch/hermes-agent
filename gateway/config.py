@@ -12,7 +12,7 @@ import logging
 import os
 import json
 from pathlib import Path
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, is_dataclass
 from typing import Dict, List, Optional, Any, Callable
 from enum import Enum
 
@@ -832,7 +832,10 @@ class GatewayConfig:
             "unauthorized_dm_behavior": self.unauthorized_dm_behavior,
             "streaming": self.streaming.to_dict(),
             "session_store_max_age_days": self.session_store_max_age_days,
-            "profile_routes": self.profile_routes,
+            "profile_routes": [
+                asdict(r) if is_dataclass(r) and not isinstance(r, type) else r
+                for r in self.profile_routes
+            ],
         }
     
     @classmethod

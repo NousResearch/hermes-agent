@@ -419,3 +419,53 @@ class TestAdapterToSessionKeyIntegration:
         assert source.profile is None
         key = build_session_key(source, profile=source.profile)
         assert key.startswith("agent:main:"), key
+
+
+class TestMultiplexGate:
+    """``profile_routes`` only activates under ``gateway.multiplex_profiles``.
+
+    Routing stamps ``source.profile``, which namespaces session/batch keys —
+    but the profile-scoped agent run (``_profile_runtime_scope``) only engages
+    when multiplexing is on. Without the gate, a configured route with
+    multiplexing off would split batch/session keys into ``agent:<profile>``
+    while the agent still served the turn from ``agent:main``'s home.
+    """
+
+    def test_routes_ignored_when_multiplex_off(self, mock_runner, discord_source):
+        mock_runner.config.multiplex_profiles = False
+        mock_runner.config.profile_routes = [
+            ProfileRoute(name="dc", platform="discord", profile="coder",
+                         guild_id="789", chat_id="123456"),
+        ]
+        discord_source.profile = None
+
+        assert mock_runner._profile_name_for_source(discord_source) is None
+
+    def test_routes_active_when_multiplex_on(self, mock_runner, discord_source):
+        mock_runner.config.multiplex_profiles = True
+        mock_runner.config.profile_routes = [
+            ProfileRoute(name="dc", platform="discord", profile="coder",
+                         guild_id="789", chat_id="123456"),
+        ]
+        discord_source.profile = None
+
+        assert mock_runner._profile_name_for_source(discord_source) == "coder"
+
+    def test_build_source_leaves_profile_none_when_multiplex_off(self, mock_runner):
+        """End-to-end through the real adapter ``build_source``: with routes
+        configured but multiplexing off, no profile is stamped and the session
+        key stays in the legacy ``agent:main`` namespace — byte-identical to a
+        gateway with no routes at all."""
+        mock_runner.config.multiplex_profiles = False
+        mock_runner.config.profile_routes = [
+            ProfileRoute(name="dc", platform="discord", profile="coder",
+                         guild_id="111", chat_id="222"),
+        ]
+        adapter = _stub_adapter(Platform.DISCORD, mock_runner)
+
+        source = adapter.build_source(
+            chat_id="222", chat_type="group", guild_id="111", user_id="u1",
+        )
+        assert source.profile is None
+        key = build_session_key(source, profile=source.profile)
+        assert key.startswith("agent:main:"), key

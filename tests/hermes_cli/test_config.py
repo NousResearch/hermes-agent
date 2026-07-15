@@ -115,6 +115,75 @@ class TestSaveAndLoadRoundtrip:
             assert reloaded["terminal"]["timeout"] == 999
 
 
+class TestSaveConfigParseFailureGuard:
+    """Regression tests for the shared-boundary parse-failure guard.
+
+    The gateway-local HERMES_CONFIG_PARSE_FAILED flag only covers processes
+    that went through load_gateway_config().  A fresh TUI or dashboard
+    process can reach save_config() without that flag.  If read_raw_config()
+    returns {} on a non-empty config.yaml, writing would wipe all custom
+    settings.  The guard in save_config() refuses the write in that case.
+
+    Based on the reproduction and analysis by @ruangraung (PR #14276).
+    """
+
+    def test_save_config_refuses_on_unparseable_yaml(self, tmp_path):
+        """save_config must not overwrite a non-empty config.yaml that failed to parse."""
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            original_content = (
+                "model:\n"
+                "  default: test-model\n"
+                "  provider: test-provider\n"
+                "providers:\n"
+                "  test-provider:\n"
+                "    api: https://example.com/v1\n"
+                "    key_env: TEST_API_KEY\n"
+                "    name: Test\n"
+                "fallback_providers:\n"
+                "  - provider: test-provider\n"
+                "    model: fallback-model\n"
+                "_config_version: 33\n"
+            )
+            config_path.write_text(original_content, encoding="utf-8")
+            original_bytes = config_path.read_bytes()
+
+            # Simulate a transient parse failure: the file exists and is
+            # non-empty, but read_raw_config() returns {}.
+            with patch("hermes_cli.config.read_raw_config", return_value={}):
+                save_config({"model": {"default": "new-model", "provider": "new-provider"}})
+
+            assert config_path.read_bytes() == original_bytes, (
+                "save_config overwrote a non-empty config.yaml when "
+                "read_raw_config() returned {} — the wipe guard failed"
+            )
+
+    def test_save_config_allows_write_on_empty_config(self, tmp_path):
+        """save_config should proceed when config.yaml doesn't exist yet (fresh install)."""
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            # No config.yaml exists — this is a fresh install, not a parse failure.
+            save_config({"model": "test/new-model"})
+            saved = yaml.safe_load((tmp_path / "config.yaml").read_text())
+            assert saved["model"] == "test/new-model"
+
+    def test_set_config_value_refuses_on_unparseable_yaml(self, tmp_path):
+        """set_config_value must not wipe a non-empty config.yaml that failed to parse."""
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config_path = tmp_path / "config.yaml"
+            # Write broken YAML that fails to parse.
+            broken_content = "model: [unclosed\n  bad: yaml: }}\n"
+            config_path.write_text(broken_content, encoding="utf-8")
+
+            from hermes_cli.config import set_config_value
+            set_config_value("terminal.timeout", "300")
+
+            # File content should be unchanged — the guard refused the write.
+            assert config_path.read_bytes() == broken_content.encode("utf-8"), (
+                "set_config_value overwrote a non-empty config.yaml that "
+                "failed to parse — the wipe guard failed"
+            )
+
+
 class TestSaveEnvValueSecure:
     def test_save_env_value_writes_without_stdout(self, tmp_path, capsys):
         with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):

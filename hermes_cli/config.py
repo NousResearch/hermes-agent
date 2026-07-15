@@ -3156,6 +3156,28 @@ def save_config(config: Dict[str, Any]):
 
     ensure_hermes_home()
     config_path = get_config_path()
+    # Fail-closed guard: if config.yaml exists and is non-empty on disk
+    # but read_raw_config() returned {}, the file failed to parse.
+    # Proceeding would overwrite the user's real settings with defaults
+    # — refuse until the YAML is fixed.
+    # (The gateway-local HERMES_CONFIG_PARSE_FAILED flag above only covers
+    # processes that went through load_gateway_config(). A fresh TUI or
+    # dashboard process reaches save_config() without that flag ever
+    # being set — this shared-boundary check closes that gap.)
+    try:
+        _existing_size = config_path.stat().st_size
+    except OSError:
+        _existing_size = 0
+    if _existing_size > 0 and not read_raw_config():
+        logger.warning(
+            "Refusing to save config: %s is non-empty (%d bytes) but "
+            "read_raw_config() returned empty — the file likely failed "
+            "to parse. Writing now would overwrite all custom settings "
+            "with defaults. Fix the YAML syntax, then retry.",
+            config_path,
+            _existing_size,
+        )
+        return
     current_normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
     normalized = current_normalized
     raw_existing = _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config()))
@@ -3808,6 +3830,23 @@ def set_config_value(key: str, value: str):
                 user_config = yaml.safe_load(f) or {}
         except Exception:
             user_config = {}
+
+    # Fail-closed guard: if config.yaml exists and is non-empty but we
+    # parsed an empty dict, the file has a syntax error.  Writing now
+    # would lose everything except the single key being set.
+    try:
+        _existing_size = config_path.stat().st_size
+    except OSError:
+        _existing_size = 0
+    if _existing_size > 0 and not user_config:
+        logger.warning(
+            "Refusing to set config value: %s is non-empty (%d bytes) "
+            "but parsed empty — likely a YAML syntax error. Writing now "
+            "would wipe all existing settings.",
+            config_path,
+            _existing_size,
+        )
+        return
     
     # Handle nested keys (e.g., "tts.provider")
     parts = key.split('.')

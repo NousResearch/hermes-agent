@@ -218,10 +218,19 @@ pub(crate) fn resolve_hermes_desktop_exe(install_root: &std::path::Path) -> Opti
             ("win-arm64-unpacked", "Hermes.exe"),
         ]
     } else if cfg!(target_os = "macos") {
-        &[
-            ("mac/Hermes.app/Contents/MacOS", "Hermes"),
-            ("mac-arm64/Hermes.app/Contents/MacOS", "Hermes"),
-        ]
+        if cfg!(target_arch = "x86_64") {
+            &[
+                ("mac-x64/Hermes.app/Contents/MacOS", "Hermes"),
+                ("mac-arm64/Hermes.app/Contents/MacOS", "Hermes"),
+                ("mac/Hermes.app/Contents/MacOS", "Hermes"),
+            ]
+        } else {
+            &[
+                ("mac-arm64/Hermes.app/Contents/MacOS", "Hermes"),
+                ("mac-x64/Hermes.app/Contents/MacOS", "Hermes"),
+                ("mac/Hermes.app/Contents/MacOS", "Hermes"),
+            ]
+        }
     } else {
         &[("linux-unpacked", "hermes")]
     };

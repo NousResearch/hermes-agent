@@ -552,10 +552,15 @@ fn desktop_app_payload_paths(install_root: &Path) -> Vec<PathBuf> {
             release.join("win-arm64-unpacked").join("resources").join("app.asar"),
         ]
     } else if cfg!(target_os = "macos") {
-        vec![
-            release.join("mac").join("Hermes.app").join("Contents").join("Resources").join("app.asar"),
-            release.join("mac-arm64").join("Hermes.app").join("Contents").join("Resources").join("app.asar"),
-        ]
+        let mac_arches = if cfg!(target_arch = "x86_64") {
+            ["mac-x64", "mac-arm64", "mac"]
+        } else {
+            ["mac-arm64", "mac-x64", "mac"]
+        };
+        mac_arches
+            .into_iter()
+            .map(|arch| release.join(arch).join("Hermes.app").join("Contents").join("Resources").join("app.asar"))
+            .collect()
     } else {
         vec![release.join("linux-unpacked").join("resources").join("app.asar")]
     }

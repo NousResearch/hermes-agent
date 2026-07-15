@@ -45,11 +45,13 @@ model:
   # api_key: "your-key-here"  # Uncomment to set here instead of .env
   base_url: "https://openrouter.ai/api/v1"
 
-  # Output-token cap sent as max_tokens on every request (both CLI and
-  # gateway). Resolution priority:
+  # Output-token cap sent as max_tokens on interactive CLI and gateway
+  # requests. Resolution priority:
   #   HERMES_MAX_TOKENS env > model.max_tokens (this key)
   #   > max_output_tokens on the matched providers:/custom_providers: entry
   #   > the provider profile default.
+  # NOTE: oneshot, cron, TUI, and ACP constructors do not yet forward this
+  # cap — they fall back to the provider profile default.
   # NOTE: when none of these are set, custom/local endpoints (ollama, vllm,
   # llamacpp aliases) fall back to the `custom` profile default of 65536 —
   # a deliberately generous floor (avoids Ollama's num_predict=128

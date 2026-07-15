@@ -97,6 +97,10 @@ import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
+import {
+  readDesktopSidebarOpenFromStorage,
+  writeDesktopSidebarOpenToStorage,
+} from "@/lib/sidebar-preference";
 import { api } from "@/lib/api";
 import type { StatusResponse, UpdateCheckResponse } from "@/lib/api";
 
@@ -342,47 +346,24 @@ function buildRoutes(
   return routes;
 }
 
-const SIDEBAR_OPEN_KEY = "hermes-sidebar-open";
-/** @deprecated Replaced by SIDEBAR_OPEN_KEY — read once for migration. */
-const LEGACY_SIDEBAR_COLLAPSED_KEY = "hermes-sidebar-collapsed";
-
-function readSidebarOpenFromStorage(): boolean {
-  try {
-    const storedOpen = localStorage.getItem(SIDEBAR_OPEN_KEY);
-    if (storedOpen !== null) return storedOpen !== "false";
-
-    const legacyCollapsed = localStorage.getItem(LEGACY_SIDEBAR_COLLAPSED_KEY);
-    if (legacyCollapsed !== null) {
-      // Old "collapsed" was a narrow icon rail; the new model is open (w-64)
-      // or fully closed — never a rail. Treat legacy collapsed=true as closed.
-      const open = legacyCollapsed !== "true";
-      localStorage.setItem(SIDEBAR_OPEN_KEY, open ? "true" : "false");
-      localStorage.removeItem(LEGACY_SIDEBAR_COLLAPSED_KEY);
-      return open;
-    }
-  } catch {
-    /* localStorage may be unavailable in private browsing */
-  }
-  return true;
-}
-
 export default function App() {
   const { t } = useI18n();
   const { pathname } = useLocation();
   const { manifests, loading: pluginsLoading } = usePlugins();
   const { theme } = useTheme();
-  const [sidebarOpen, setSidebarOpen] = useState(readSidebarOpenFromStorage);
-  const closeSidebar = useCallback(() => {
-    setSidebarOpen(false);
-    try {
-      localStorage.setItem(SIDEBAR_OPEN_KEY, "false");
-    } catch { /* localStorage may be unavailable in private browsing */ }
+  const [mobileDrawerOpen, setMobileDrawerOpen] = useState(false);
+  const [desktopSidebarOpen, setDesktopSidebarOpen] = useState(
+    readDesktopSidebarOpenFromStorage,
+  );
+  const closeMobileDrawer = useCallback(() => setMobileDrawerOpen(false), []);
+  const openMobileDrawer = useCallback(() => setMobileDrawerOpen(true), []);
+  const closeDesktopSidebar = useCallback(() => {
+    setDesktopSidebarOpen(false);
+    writeDesktopSidebarOpenToStorage(false);
   }, []);
-  const openSidebar = useCallback(() => {
-    setSidebarOpen(true);
-    try {
-      localStorage.setItem(SIDEBAR_OPEN_KEY, "true");
-    } catch { /* localStorage may be unavailable in private browsing */ }
+  const openDesktopSidebar = useCallback(() => {
+    setDesktopSidebarOpen(true);
+    writeDesktopSidebarOpenToStorage(true);
   }, []);
   const isMobile = useBelowBreakpoint(1024);
   const tooltipWarmRef = useRef(0);
@@ -470,9 +451,9 @@ export default function App() {
   const layoutVariant = theme.layoutVariant ?? "standard";
 
   useEffect(() => {
-    if (!sidebarOpen || !isMobile) return;
+    if (!mobileDrawerOpen || !isMobile) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") closeSidebar();
+      if (e.key === "Escape") closeMobileDrawer();
     };
     document.addEventListener("keydown", onKey);
     const prevOverflow = document.body.style.overflow;
@@ -481,7 +462,16 @@ export default function App() {
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [closeSidebar, isMobile, sidebarOpen]);
+  }, [closeMobileDrawer, isMobile, mobileDrawerOpen]);
+
+  useEffect(() => {
+    const mql = window.matchMedia("(min-width: 1024px)");
+    const onChange = (e: MediaQueryListEvent) => {
+      if (e.matches) setMobileDrawerOpen(false);
+    };
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
 
   return (
     <ProfileProvider>
@@ -514,9 +504,9 @@ export default function App() {
         <Button
           ghost
           size="icon"
-          onClick={openSidebar}
+          onClick={openMobileDrawer}
           aria-label={t.app.openNavigation}
-          aria-expanded={sidebarOpen}
+          aria-expanded={mobileDrawerOpen}
           aria-controls="app-sidebar"
           className="text-text-secondary hover:text-midground"
         >
@@ -528,11 +518,11 @@ export default function App() {
         </Typography>
       </header>
 
-      {sidebarOpen && isMobile && (
+      {mobileDrawerOpen && isMobile && (
         <Button
           ghost
           aria-label={t.app.closeNavigation}
-          onClick={closeSidebar}
+          onClick={closeMobileDrawer}
           className={cn(
             "lg:hidden fixed inset-0 z-40 p-0 block",
             "bg-black/70",
@@ -545,11 +535,11 @@ export default function App() {
 
       <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden pt-14 lg:pt-0">
         <div className="flex min-h-0 min-w-0 flex-1">
-          {(isMobile || sidebarOpen) && (
+          {(isMobile || desktopSidebarOpen) && (
           <aside
             id="app-sidebar"
             aria-label={t.app.navigation}
-            aria-hidden={!sidebarOpen}
+            aria-hidden={isMobile ? !mobileDrawerOpen : false}
             className={cn(
               "flex h-dvh max-h-dvh min-h-0 flex-col font-sans",
               "border-r border-current/20",
@@ -558,7 +548,7 @@ export default function App() {
                 ? cn(
                     "fixed top-0 left-0 z-50 w-64",
                     "transition-[transform] duration-200 ease-[cubic-bezier(0.23,1,0.32,1)]",
-                    sidebarOpen ? "translate-x-0" : "-translate-x-full",
+                    mobileDrawerOpen ? "translate-x-0" : "-translate-x-full",
                   )
                 : "sticky top-0 z-50 w-64 min-w-64 max-w-64 shrink-0 overflow-hidden",
             )}
@@ -588,7 +578,7 @@ export default function App() {
               <Button
                 ghost
                 size="icon"
-                onClick={closeSidebar}
+                onClick={isMobile ? closeMobileDrawer : closeDesktopSidebar}
                 aria-label={t.app.closeNavigation}
                 className="text-text-secondary hover:text-midground"
               >
@@ -605,7 +595,7 @@ export default function App() {
               <ul className="flex flex-col">
                 {sidebarNav.coreItems.map((item) => (
                   <SidebarNavLink
-                    closeMobile={isMobile ? closeSidebar : undefined}
+                    closeMobile={isMobile ? closeMobileDrawer : undefined}
                     collapsed={false}
                     item={item}
                     key={item.path}
@@ -634,7 +624,7 @@ export default function App() {
                   <ul className="flex flex-col">
                     {sidebarNav.pluginItems.map((item) => (
                       <SidebarNavLink
-                        closeMobile={isMobile ? closeSidebar : undefined}
+                        closeMobile={isMobile ? closeMobileDrawer : undefined}
                         collapsed={false}
                         item={item}
                         key={item.path}
@@ -649,7 +639,7 @@ export default function App() {
 
             <SidebarSystemActions
               collapsed={false}
-              onNavigate={isMobile ? closeSidebar : undefined}
+              onNavigate={isMobile ? closeMobileDrawer : undefined}
               status={sidebarStatus}
               tooltipWarmRef={tooltipWarmRef}
             />
@@ -690,7 +680,7 @@ export default function App() {
           </aside>
           )}
 
-          {!isMobile && !sidebarOpen ? (
+          {!isMobile && !desktopSidebarOpen ? (
             <div
               className={cn(
                 "shrink-0 border-b border-current/20",
@@ -701,7 +691,7 @@ export default function App() {
               <Button
                 ghost
                 size="icon"
-                onClick={openSidebar}
+                onClick={openDesktopSidebar}
                 aria-label={t.app.openNavigation}
                 aria-controls="app-sidebar"
                 className="text-text-secondary hover:text-midground"

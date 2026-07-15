@@ -159,6 +159,25 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
 
 
+def test_run_slash_archive_accepts_legacy_positional_reason(kanban_home):
+    out = kc.run_slash("create 'x' --assignee alice")
+    import re
+    m = re.search(r"(t_[a-f0-9]+)", out)
+    assert m
+    tid = m.group(1)
+
+    out = kc.run_slash(f"archive {tid} 'stale scratch task'")
+
+    assert out == f"Archived {tid}"
+    with kb.connect() as conn:
+        task = kb.get_task(conn, tid)
+        events = kb.list_events(conn, tid)
+    assert task is not None
+    assert task.status == "archived"
+    archived = [event for event in events if event.kind == "archived"][-1]
+    assert archived.payload == {"reason": "stale scratch task"}
+
+
 def test_run_slash_json_output(kanban_home):
     out = kc.run_slash("create 'jsontask' --assignee alice --json")
     payload = json.loads(out)

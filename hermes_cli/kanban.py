@@ -18,10 +18,13 @@ import argparse
 import contextlib
 import json
 import os
+import re
 import shlex
+import shutil
 import sys
 import time
 from pathlib import Path
+
 from typing import Any, Optional
 
 from hermes_cli import kanban_db as kb
@@ -670,6 +673,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
     p_archive = sub.add_parser("archive", help="Archive one or more tasks")
     p_archive.add_argument("task_ids", nargs="*",
                            help="Task ids to archive (default mode)")
+    p_archive.add_argument(
+        "--reason",
+        default=None,
+        help="Optional audit-trail reason recorded on the archived event.",
+    )
     p_archive.add_argument(
         "--rm",
         dest="purge_ids",
@@ -2368,12 +2376,17 @@ def _cmd_promote(args: argparse.Namespace) -> int:
 def _cmd_archive(args: argparse.Namespace) -> int:
     ids = list(args.task_ids or [])
     purge_ids = list(getattr(args, "purge_ids", None) or [])
+    reason = (getattr(args, "reason", None) or "").strip() or None
     if ids and purge_ids:
         print("choose either task_ids to archive or --rm archived task_ids", file=sys.stderr)
         return 1
     if not ids and not purge_ids:
         print("at least one task_id is required", file=sys.stderr)
         return 1
+    if ids and not purge_ids:
+        ids, reason = _normalize_archive_args(ids, reason)
+        if not ids:
+            return 2
     failed: list[str] = []
     with kb.connect_closing() as conn:
         if purge_ids:
@@ -2385,12 +2398,52 @@ def _cmd_archive(args: argparse.Namespace) -> int:
                     print(f"Deleted {tid}")
             return 0 if not failed else 1
         for tid in ids:
-            if not kb.archive_task(conn, tid):
+            if not kb.archive_task(conn, tid, reason=reason):
                 failed.append(tid)
                 print(f"cannot archive {tid}", file=sys.stderr)
             else:
                 print(f"Archived {tid}")
     return 0 if not failed else 1
+
+
+_TASK_ID_RE = re.compile(r"^t_[A-Za-z0-9]+$")
+
+
+def _normalize_archive_args(
+    ids: list[str],
+    reason: Optional[str],
+) -> tuple[list[str], Optional[str]]:
+    """Normalize archive args and support the historical positional reason.
+
+    ``archive`` used to accept ``nargs='*'`` task ids only. When users typed
+    ``archive t_abc 'done for now'``, argparse treated the reason as another
+    task id, yielding a misleading ``cannot archive done for now`` error after
+    successfully archiving the real task. Keep bulk task-id archiving intact,
+    but interpret ``<one task id> <free-form words>`` as a legacy positional
+    reason and prefer the explicit ``--reason`` flag going forward.
+    """
+    if len(ids) <= 1:
+        return ids, reason
+    first, rest = ids[0], ids[1:]
+    if not _TASK_ID_RE.match(first):
+        return ids, reason
+    rest_are_task_ids = [_TASK_ID_RE.match(item) is not None for item in rest]
+    if all(rest_are_task_ids):
+        return ids, reason
+    if not any(rest_are_task_ids):
+        if reason:
+            print(
+                "kanban: archive reason provided both positionally and via --reason",
+                file=sys.stderr,
+            )
+            return [], reason
+        return [first], " ".join(rest).strip() or None
+    print(
+        "kanban: archive accepts either task ids or a single task id plus a reason; "
+        "use --reason for bulk archive reasons",
+        file=sys.stderr,
+    )
+    return [], reason
 
 
 def _cmd_tail(args: argparse.Namespace) -> int:

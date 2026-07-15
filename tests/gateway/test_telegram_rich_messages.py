@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import PlatformConfig
-from gateway.platforms.base import SendResult
+from gateway.platforms.base import SendResult, utf16_len
 from plugins.platforms.telegram.adapter import TelegramAdapter
 from telegram.error import BadRequest, NetworkError, TimedOut
 
@@ -284,8 +284,7 @@ async def test_rich_messages_can_be_opted_out():
 
 @pytest.mark.asyncio
 async def test_plain_markdown_stays_on_legacy_path():
-    """Ordinary replies (no table/task-list/details/math) stay on the legacy
-    MarkdownV2 path for consistent client rendering, even with rich enabled."""
+    """Short ordinary replies stay on MarkdownV2 for copy/paste consistency."""
     adapter = _make_adapter()
 
     result = await adapter.send("12345", "Hello **there**\n\nA normal reply.")
@@ -295,6 +294,42 @@ async def test_plain_markdown_stays_on_legacy_path():
     assert bot is not None
     bot.do_api_request.assert_not_called()
     bot.send_message.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_long_plain_markdown_uses_rich_when_enabled():
+    """Opted-in long replies use rich to avoid 4,096-char MarkdownV2 chunks."""
+    adapter = _make_adapter()
+    content = "## Long reply\n\n" + ("ordinary markdown line\n" * 230)
+    assert utf16_len(content) > TelegramAdapter.MAX_MESSAGE_LENGTH
+    assert len(content) <= TelegramAdapter.RICH_MESSAGE_MAX_CHARS
+
+    result = await adapter.send("12345", content)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_awaited_once()
+    bot.send_message.assert_not_called()
+    api_kwargs = _rich_api_kwargs(adapter)
+    rich_markdown = api_kwargs["rich_message"]["markdown"]
+    assert rich_markdown.startswith("## Long reply")
+    assert "ordinary markdown line" in rich_markdown
+
+
+@pytest.mark.asyncio
+async def test_long_plain_markdown_honors_rich_opt_out():
+    adapter = _make_adapter(extra={"rich_messages": False})
+    content = "## Long reply\n\n" + ("ordinary markdown line\n" * 230)
+    assert utf16_len(content) > TelegramAdapter.MAX_MESSAGE_LENGTH
+
+    result = await adapter.send("12345", content)
+
+    assert result.success is True
+    bot = adapter._bot
+    assert bot is not None
+    bot.do_api_request.assert_not_called()
+    assert bot.send_message.await_count > 1
 
 
 @pytest.mark.asyncio

@@ -1022,6 +1022,61 @@ def test_storage_boot_plan_is_exact_and_has_no_guest_or_shell_authority():
     } <= set(host_storage_boot.CANARY_RUNTIME_UNITS)
 
 
+def test_guest_state_normalizes_only_exact_processless_pid_omissions():
+    def service_stdout(unit, *, omit_pid):
+        values = {
+            "LoadState": "not-found",
+            "ActiveState": "inactive",
+            "SubState": "dead",
+            "UnitFileState": "",
+            "MainPID": "0",
+            "FragmentPath": "",
+            "DropInPaths": "",
+        }
+        if omit_pid:
+            values.pop("MainPID")
+        return "".join(
+            f"{name}={values[name]}\n"
+            for name in host_storage_boot._SERVICE_PROPERTIES
+            if name in values
+        ).encode()
+
+    class Transport:
+        def __init__(self, *, omit_service_pid=False):
+            self.omit_service_pid = omit_service_pid
+
+        def _run_remote(self, argv, **_kwargs):
+            if tuple(argv) == host_storage_boot.BOOT_ID_COMMAND:
+                stdout = b"c535e272-8c19-4b4b-8287-b5c4ad354ab1\n"
+            else:
+                unit = argv[-1]
+                processless = unit in {
+                    "muncho-canonical-writer-export.timer",
+                    "muncho-isolated-worker.socket",
+                }
+                stdout = service_stdout(
+                    unit,
+                    omit_pid=processless or self.omit_service_pid,
+                )
+            return subprocess.CompletedProcess(argv, 0, stdout, b"")
+
+    _boot, states = host_storage_boot._collect_guest_state(
+        Transport(),
+        account="owner@example.com",
+    )
+    by_unit = {item["unit"]: item for item in states}
+    assert by_unit["muncho-canonical-writer-export.timer"]["properties"][
+        "MainPID"
+    ] == "0"
+    assert by_unit["muncho-isolated-worker.socket"]["properties"]["MainPID"] == "0"
+
+    with pytest.raises(RuntimeError, match="incomplete"):
+        host_storage_boot._collect_guest_state(
+            Transport(omit_service_pid=True),
+            account="owner@example.com",
+        )
+
+
 def test_storage_boot_runner_rejects_every_non_plan_mutation():
     with pytest.raises(RuntimeError, match="argv is not exact"):
         host_storage_boot._runner((

@@ -2213,8 +2213,8 @@ def _parse_service_observation(unit: str, raw: str) -> dict[str, Any]:
         values[name] = item
     missing = set(_SERVICE_PROPERTIES) - set(values)
     if missing == {"MainPID"} and unit in _PIDLESS_SERVICE_UNITS:
-        # systemd timer units have no service process and therefore omit
-        # MainPID from `systemctl show`, including while safely inactive.
+        # systemd timer/socket units have no service process and therefore
+        # omit MainPID from `systemctl show`, including while safely inactive.
         # Normalize that exact, allow-listed omission to the stopped value so
         # the receipt schema stays uniform across service and timer units.
         values["MainPID"] = "0"

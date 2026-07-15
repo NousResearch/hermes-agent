@@ -4448,11 +4448,14 @@ def collect_capability_service_state(
             raise RuntimeError("capability service state is ambiguous")
         values[name] = item
     missing = set(_SERVICE_PROPERTIES) - set(values)
+    unexpected = set(values) - set(_SERVICE_PROPERTIES)
     defaults = _PROCESSLESS_UNIT_PROPERTY_DEFAULTS.get(unit, {})
-    if not missing <= set(defaults):
+    if unexpected or not missing <= set(defaults):
         raise RuntimeError("capability service state fields are not exact")
     for name in missing:
         values[name] = defaults[name]
+    if set(values) != set(_SERVICE_PROPERTIES):
+        raise RuntimeError("capability service state fields are not exact")
     try:
         main_pid = int(values.pop("MainPID"))
     except ValueError as exc:

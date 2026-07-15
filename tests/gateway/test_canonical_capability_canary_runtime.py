@@ -794,6 +794,19 @@ def test_processless_socket_observation_normalizes_only_fixed_empty_properties()
             runner=lambda _command: result_for(service, drop=("MainPID",)),
         )
 
+    unexpected = result_for(socket)
+    unexpected = runtime.subprocess.CompletedProcess(
+        unexpected.args,
+        unexpected.returncode,
+        unexpected.stdout + b"Unexpected=x\n",
+        unexpected.stderr,
+    )
+    with pytest.raises(RuntimeError, match="fields are not exact"):
+        runtime.collect_capability_service_state(
+            socket,
+            runner=lambda _command: unexpected,
+        )
+
 
 def test_expiry_watchdog_is_absolute_persistent_and_idempotent(tmp_path):
     calls = []

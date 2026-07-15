@@ -302,7 +302,14 @@ def _is_wake_gate_silent_run(output: str, final_response: str) -> bool:
         return False
     if final_response.strip().upper() != SILENT_MARKER:
         return False
-    return "wakeagent=false" in output.lower()
+
+    lower_output = output.lower()
+    # Match only scheduler-authored provenance, not user prompt text copied into
+    # the saved output document for an agent-authored [SILENT] response.
+    return (
+        "script gate returned `wakeagent=false`" in lower_output
+        or "**status:** silent (wakeagent=false)" in lower_output
+    )
 
 # ---------------------------------------------------------------------------
 # Persistent thread pool for parallel cron jobs.

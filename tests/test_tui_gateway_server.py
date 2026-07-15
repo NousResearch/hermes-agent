@@ -976,6 +976,36 @@ def test_history_to_messages_still_drops_empty_assistant_without_reasoning():
     ]
 
 
+def test_history_to_messages_includes_model_and_provider_when_present():
+    history = [
+        {"role": "user", "content": "first prompt", "model": "claude-sonnet-5", "provider": "anthropic"},
+        {"role": "assistant", "content": "first reply", "model": "claude-sonnet-5", "provider": "anthropic"},
+        {"role": "user", "content": "second prompt", "model": "grok-4", "provider": "xai"},
+        {"role": "assistant", "content": "second reply", "model": "grok-4", "provider": "xai"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "first prompt", "model": "claude-sonnet-5", "provider": "anthropic"},
+        {"role": "assistant", "text": "first reply", "model": "claude-sonnet-5", "provider": "anthropic"},
+        {"role": "user", "text": "second prompt", "model": "grok-4", "provider": "xai"},
+        {"role": "assistant", "text": "second reply", "model": "grok-4", "provider": "xai"},
+    ]
+
+
+def test_history_to_messages_omits_model_when_absent():
+    # Historical rows written before the model/provider columns existed carry
+    # no such keys -- the resume payload must not fabricate them.
+    history = [
+        {"role": "user", "content": "hi"},
+        {"role": "assistant", "content": "hello"},
+    ]
+
+    assert server._history_to_messages(history) == [
+        {"role": "user", "text": "hi"},
+        {"role": "assistant", "text": "hello"},
+    ]
+
+
 def test_history_to_messages_renders_multimodal_content():
     # bb/gui preserves image URLs in the resume payload so the desktop
     # renderer's extractEmbeddedImages can pull them back out and display
@@ -1182,6 +1212,64 @@ def test_session_resume_passes_stored_runtime_to_agent(monkeypatch):
     assert captured["service_tier_override"] == "priority"
     runtime_sid = resp["result"]["session_id"]
     assert server._sessions[runtime_sid]["model_override"] == captured["model_override"]
+
+
+def test_session_resume_messages_carry_model_and_provider(monkeypatch):
+    """The session.resume history payload must tag each message with the
+    model/provider that was active when it was written, for parity with the
+    REST /api/sessions/{id}/messages shape."""
+    # Clear any live session left behind by a prior test using the same
+    # "stored-session" id — otherwise this resume hits the already-live
+    # reuse path (_reuse_live_payload) instead of building fresh, and that
+    # path expects fields (e.g. history_lock) this test's fake session
+    # dict doesn't set.
+    server._sessions.clear()
+    captured = {}
+
+    class FakeDB:
+        def get_session(self, target):
+            return {"id": target, "model": "grok-4"}
+
+        def reopen_session(self, target):
+            pass
+
+        def get_messages_as_conversation(self, target, include_ancestors=False):
+            return [
+                {"role": "user", "content": "old prompt", "model": "claude-sonnet-5", "provider": "anthropic"},
+                {"role": "assistant", "content": "old reply", "model": "claude-sonnet-5", "provider": "anthropic"},
+                {"role": "user", "content": "new prompt", "model": "grok-4", "provider": "xai"},
+                {"role": "assistant", "content": "new reply", "model": "grok-4", "provider": "xai"},
+            ]
+
+    def fake_make_agent(sid, key, session_id=None, session_db=None, **kwargs):
+        captured.update(kwargs)
+        return types.SimpleNamespace(model="grok-4", provider="xai")
+
+    monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
+    monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
+    monkeypatch.setattr(server, "_set_session_context", lambda target: [])
+    monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
+    monkeypatch.setattr(server, "_make_agent", fake_make_agent)
+    monkeypatch.setattr(
+        server, "_session_info", lambda agent, *a: {"model": agent.model, "provider": agent.provider}
+    )
+
+    def fake_init_session(sid, key, agent, history, cols=80, **_kwargs):
+        server._sessions[sid] = {"agent": agent, "session_key": key}
+
+    monkeypatch.setattr(server, "_init_session", fake_init_session)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resume", "params": {"session_id": "stored-session", "eager_build": True}}
+    )
+
+    messages = resp["result"]["messages"]
+    assert [m.get("model") for m in messages] == [
+        "claude-sonnet-5", "claude-sonnet-5", "grok-4", "grok-4",
+    ]
+    assert [m.get("provider") for m in messages] == [
+        "anthropic", "anthropic", "xai", "xai",
+    ]
 
 
 def test_session_resume_profile_uses_profile_db_cwd(monkeypatch, tmp_path):
@@ -5089,6 +5177,56 @@ def test_prompt_submit_history_version_mismatch_surfaces_warning(monkeypatch):
             "not saved" in payload["warning"].lower()
             or "changed" in payload["warning"].lower()
         )
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_prompt_submit_message_complete_carries_model_and_provider(monkeypatch):
+    """The live message.complete event must tag the just-completed reply with
+    the model/provider that actually produced it, so a connected client
+    doesn't need a session.resume round-trip to render the tag."""
+
+    class _Agent:
+        model = "grok-4"
+        provider = "xai"
+
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
+            return {
+                "final_response": "agent reply",
+                "messages": [{"role": "assistant", "content": "agent reply"}],
+            }
+
+    class _ImmediateThread:
+        def __init__(self, target=None, daemon=None, **kw):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    emits: list[tuple] = []
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+        monkeypatch.setattr(server, "_get_usage", lambda _a: {})
+        monkeypatch.setattr(server, "render_message", lambda _t, _c: "")
+        monkeypatch.setattr(server, "_emit", lambda *a: emits.append(a))
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hi"},
+            }
+        )
+        assert resp.get("result"), f"got error: {resp.get('error')}"
+
+        complete_calls = [a for a in emits if a[0] == "message.complete"]
+        assert len(complete_calls) == 1
+        _, _, payload = complete_calls[0]
+        assert payload["model"] == "grok-4"
+        assert payload["provider"] == "xai"
     finally:
         server._sessions.pop("sid", None)
 

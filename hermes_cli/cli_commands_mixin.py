@@ -944,6 +944,8 @@ class CLICommandsMixin:
                     tool_calls=msg.get("tool_calls"),
                     tool_call_id=msg.get("tool_call_id"),
                     reasoning=msg.get("reasoning"),
+                    model=msg.get("model"),
+                    provider=msg.get("provider"),
                 )
             except Exception:
                 pass  # Best-effort copy

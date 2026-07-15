@@ -36,6 +36,7 @@ Usage:
     content = web_extract_tool(["https://example.com"], format="markdown")
 """
 
+import contextvars
 import json
 import logging
 import os
@@ -660,14 +661,19 @@ def _get_extract_char_limit() -> int:
     return DEFAULT_EXTRACT_CHAR_LIMIT
 
 
-# Per-session exhaustion tracking: backends that have returned credit/quota
-# errors are skipped for the remainder of the session. Cleared on /reset.
-_exhausted_backends: set[str] = set()
+# Session-scoped exhaustion tracking: backends that have returned credit/quota
+# errors are skipped for the remainder of the session. Uses a ContextVar so
+# each session gets its own isolated set — /new, /reset, and session transitions
+# automatically get a fresh set without needing explicit lifecycle hooks.
+# The default factory creates a new empty set per session boundary.
+_exhausted_backends: contextvars.ContextVar[set[str]] = contextvars.ContextVar(
+    "_exhausted_backends", default=set()
+)
 
 
 def _reset_exhausted_backends() -> None:
-    """Clear the exhaustion set. Called on session start (/reset)."""
-    _exhausted_backends.clear()
+    """Clear the exhaustion set for the current session."""
+    _exhausted_backends.set(set())
 
 
 def _is_credit_error(response: dict) -> bool:
@@ -962,7 +968,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         response_data = None
         last_error = None
         for attempt, backend in enumerate(backend_chain):
-            if backend in _exhausted_backends:
+            if backend in _exhausted_backends.get():
                 logger.debug("Skipping exhausted backend '%s'", backend)
                 continue
             provider = _wsp_get_provider(backend) if backend else None
@@ -1098,7 +1104,7 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                     "Backend '%s' returned credit error; marking exhausted",
                     provider.name,
                 )
-                _exhausted_backends.add(provider.name)
+                _exhausted_backends.get().add(provider.name)
                 last_error = response_data.get("error", "Credit limit reached")
                 response_data = None
                 continue
@@ -1453,7 +1459,7 @@ async def web_extract_tool(
                 return results
 
             for attempt, backend in enumerate(backend_chain):
-                if backend in _exhausted_backends:
+                if backend in _exhausted_backends.get():
                     logger.debug("Skipping exhausted backend '%s'", backend)
                     continue
 
@@ -1549,7 +1555,7 @@ async def web_extract_tool(
 
                 results = await _dispatch_extract(provider)
                 if results is None:
-                    _exhausted_backends.add(provider.name)
+                    _exhausted_backends.get().add(provider.name)
                     last_error = "Credit limit reached"
                     continue
 

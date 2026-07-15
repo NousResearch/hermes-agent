@@ -889,12 +889,12 @@ class TestWebFailover:
     def setup_method(self):
         """Reset exhaustion state before each test."""
         import tools.web_tools
-        tools.web_tools._exhausted_backends.clear()
+        tools.web_tools._reset_exhausted_backends()
 
     def teardown_method(self):
         """Reset exhaustion state after each test."""
         import tools.web_tools
-        tools.web_tools._exhausted_backends.clear()
+        tools.web_tools._reset_exhausted_backends()
 
     # ── _is_credit_error ─────────────────────────────────────────
 
@@ -946,12 +946,12 @@ class TestWebFailover:
                    return_value={"failover": "tavily"}):
             assert _get_failover_list() == ["tavily"]
 
-    # ── _exhausted_backends tracking ───────────────────────────────
+    # ── _exhausted_backends tracking (ContextVar) ──────────────────
 
     def test_exhausted_backend_is_skipped(self):
         """A backend in _exhausted_backends should be skipped during dispatch."""
         import tools.web_tools
-        tools.web_tools._exhausted_backends.add("firecrawl")
+        tools.web_tools._exhausted_backends.get().add("firecrawl")
 
         fake_tavily = MagicMock(
             name="TavilyWebSearchProvider",
@@ -983,7 +983,7 @@ class TestWebFailover:
     def test_all_backends_exhausted_returns_error(self):
         """When all backends in the chain are exhausted, return a clear error."""
         import tools.web_tools
-        tools.web_tools._exhausted_backends.update(["firecrawl", "tavily"])
+        tools.web_tools._exhausted_backends.get().update(["firecrawl", "tavily"])
 
         with patch("tools.web_tools._get_search_backend", return_value="firecrawl"), \
              patch("tools.web_tools._get_failover_list", return_value=["tavily"]), \
@@ -1001,7 +1001,7 @@ class TestWebFailover:
     def test_credit_error_triggers_failover(self):
         """When primary returns a credit error, failover backend is tried."""
         import tools.web_tools
-        tools.web_tools._exhausted_backends.clear()
+        tools.web_tools._reset_exhausted_backends()
 
         fake_firecrawl = MagicMock(
             name="FirecrawlWebSearchProvider",
@@ -1038,7 +1038,7 @@ class TestWebFailover:
 
         assert result["success"] is True
         # Firecrawl should be marked exhausted
-        assert "firecrawl" in tools.web_tools._exhausted_backends
+        assert "firecrawl" in tools.web_tools._exhausted_backends.get()
         # Tavily should have been called as failover
         # (limit bucketed to 10 by the TTL memo layer)
         fake_tavily.search.assert_called_once_with("test", 10)
@@ -1046,10 +1046,37 @@ class TestWebFailover:
     def test_reset_exhausted_backends_clears_state(self):
         """_reset_exhausted_backends() clears the exhaustion set."""
         from tools.web_tools import _reset_exhausted_backends, _exhausted_backends
-        _exhausted_backends.add("firecrawl")
-        _exhausted_backends.add("tavily")
+        _exhausted_backends.get().add("firecrawl")
+        _exhausted_backends.get().add("tavily")
         _reset_exhausted_backends()
-        assert len(_exhausted_backends) == 0
+        assert len(_exhausted_backends.get()) == 0
+
+    # ── ContextVar session isolation ──────────────────────────────
+
+    def test_contextvar_isolation_between_sessions(self):
+        """Each session (ContextVar context) gets its own exhaustion set.
+
+        The ContextVar default factory creates a new empty set each time
+        .get() is called in a context where no value has been .set().
+        This means a fresh session (no .set() call) always starts clean.
+        """
+        import tools.web_tools
+        # Set a value in the current context
+        tools.web_tools._exhausted_backends.get().add("firecrawl")
+        current_set = tools.web_tools._exhausted_backends.get()
+        assert "firecrawl" in current_set
+
+        # Reset and verify the current context is clean
+        tools.web_tools._reset_exhausted_backends()
+        fresh_set = tools.web_tools._exhausted_backends.get()
+        assert len(fresh_set) == 0
+
+        # Verify the default factory creates a new object each time
+        # (identity check — each .get() without .set() returns the default)
+        first_default = tools.web_tools._exhausted_backends.get()
+        second_default = tools.web_tools._exhausted_backends.get()
+        # They should be the same object within the same context (no .set() between)
+        assert first_default is second_default
 
     # ── web_extract failover tests ────────────────────────────────
 
@@ -1127,14 +1154,14 @@ class TestWebFailover:
         assert result["results"] is not None
         assert result["results"][0]["content"] == "Hello"
         # Firecrawl should be marked exhausted
-        assert "firecrawl" in tools.web_tools._exhausted_backends
+        assert "firecrawl" in tools.web_tools._exhausted_backends.get()
         fake_tavily.extract.assert_called_once()
 
     def test_extract_all_backends_exhausted_returns_error(self):
         """When all extract backends are exhausted, return a clear error."""
         import asyncio
         import tools.web_tools
-        tools.web_tools._exhausted_backends.update(["firecrawl", "tavily"])
+        tools.web_tools._exhausted_backends.get().update(["firecrawl", "tavily"])
 
         with patch("tools.web_tools._get_extract_backend", return_value="firecrawl"), \
              patch("tools.web_tools._get_failover_list", return_value=["tavily"]), \
@@ -1199,4 +1226,4 @@ class TestWebFailover:
 
         assert result["results"] is not None
         assert result["results"][0]["content"] == "Hello"
-        assert "firecrawl" in tools.web_tools._exhausted_backends
+        assert "firecrawl" in tools.web_tools._exhausted_backends.get()

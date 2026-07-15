@@ -192,6 +192,28 @@ class TestSendChunking:
     """WhatsApp send() splits long messages into chunks."""
 
     @pytest.mark.asyncio
+    async def test_lid_send_uses_mapped_phone_jid_at_bridge_boundary(self, tmp_path, monkeypatch):
+        """A known LID must target the visible phone chat, not the raw LID."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        session_dir = tmp_path / "platforms" / "whatsapp" / "session"
+        session_dir.mkdir(parents=True)
+        (session_dir / "lid-mapping-130631430344750_reverse.json").write_text(
+            '"50766715226"', encoding="utf-8"
+        )
+
+        adapter = _make_adapter()
+        resp = MagicMock(status=200)
+        resp.json = AsyncMock(return_value={"messageId": "msg1"})
+        adapter._http_session.post = MagicMock(return_value=_AsyncCM(resp))
+
+        result = await adapter.send("130631430344750@lid", "hello")
+
+        assert result.success
+        assert adapter._http_session.post.call_args.kwargs["json"]["chatId"] == (
+            "50766715226@s.whatsapp.net"
+        )
+
+    @pytest.mark.asyncio
     async def test_short_message_single_send(self):
         adapter = _make_adapter()
         resp = MagicMock(status=200)

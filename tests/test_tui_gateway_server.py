@@ -8960,3 +8960,57 @@ def test_persist_live_session_system_prompt_no_profile_is_unchanged(monkeypatch)
     # Should not raise, should still build and cache.
     server._persist_live_session_system_prompt(session)
     assert agent._cached_system_prompt == "plain prompt"
+
+
+def test_persist_live_session_system_prompt_restores_pre_existing_override(tmp_path):
+    """reset_hermes_home_override() restores the previous ContextVar state,
+    not just the unset case: when a caller already holds an override, the
+    persist call must scope to the session's profile and then hand the
+    caller's override back, rather than clearing it to None."""
+    from hermes_constants import get_hermes_home_override
+
+    outer_home = tmp_path / "profile-outer"
+    outer_home.mkdir()
+    inner_home = tmp_path / "profile-inner"
+    inner_home.mkdir()
+    (inner_home / "SOUL.md").write_text(
+        "# Inner persona\nYou are the inner agent.", encoding="utf-8"
+    )
+
+    built_homes = []
+
+    class FakeAgent:
+        model = "test-model"
+        provider = "test"
+        _cached_system_prompt = None
+        _session_db = None
+
+        def _build_system_prompt(self, system_message=None):
+            from hermes_constants import get_hermes_home
+            built_homes.append(str(get_hermes_home()))
+            return "inner prompt"
+
+    class FakeDB:
+        def update_system_prompt(self, session_id, prompt):
+            pass
+
+    agent = FakeAgent()
+    agent._session_db = FakeDB()
+    session = {
+        "agent": agent,
+        "session_key": "test-key",
+        "profile_home": str(inner_home),
+    }
+
+    outer_token = set_hermes_home_override(outer_home)
+    try:
+        server._persist_live_session_system_prompt(session)
+
+        # The prompt was built under the session's profile, not the outer one.
+        assert built_homes == [str(inner_home)]
+        # The caller's pre-existing override survived, instead of being reset
+        # to None.
+        assert get_hermes_home_override() == str(outer_home)
+    finally:
+        reset_hermes_home_override(outer_token)
+    assert get_hermes_home_override() is None

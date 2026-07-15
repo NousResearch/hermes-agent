@@ -18,33 +18,26 @@ from __future__ import annotations
 
 import json
 import shlex
-import subprocess
+
+from tests.docker.conftest import docker_exec_sh
 
 
-def _exec_py(image: str, py: str) -> str:
-    """Run a Python snippet inside the image as the hermes user, return stdout."""
+def _exec_py(container: str, py: str) -> str:
+    """Run a Python snippet inside the container as the hermes user, return stdout."""
     inner = (
-        "source /opt/hermes/.venv/bin/activate && "
+        ". /opt/hermes/.venv/bin/activate && "
         "cd /opt/hermes && "
         f"python3 -c {shlex.quote(py)}"
     )
-    # Drop to the hermes user (UID 10000) so we exercise the same path the
-    # dashboard PTY child runs as — not root.
-    cmd = [
-        "docker", "run", "--rm", "--entrypoint", "su", image,
-        "hermes", "-s", "/bin/bash", "-c", inner,
-    ]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    r = docker_exec_sh(container, inner, timeout=60)
     assert r.returncode == 0, f"in-container python failed:\n{r.stderr[-2000:]}"
     return r.stdout.strip()
 
 
-def test_hermes_tui_dir_env_is_set(built_image: str) -> None:
+def test_hermes_tui_dir_env_is_set(shared_container: str) -> None:
     """HERMES_TUI_DIR must point at the prebuilt bundle dir in the image."""
-    r = subprocess.run(
-        ["docker", "run", "--rm", "--entrypoint", "sh", built_image,
-         "-c", 'printf "%s" "$HERMES_TUI_DIR"'],
-        capture_output=True, text=True, timeout=60,
+    r = docker_exec_sh(
+        shared_container, 'printf "%s" "$HERMES_TUI_DIR"', timeout=30,
     )
     assert r.returncode == 0, r.stderr[-2000:]
     assert r.stdout.strip() == "/opt/hermes/ui-tui", (
@@ -52,7 +45,9 @@ def test_hermes_tui_dir_env_is_set(built_image: str) -> None:
     )
 
 
-def test_prebuilt_bundle_present_and_no_runtime_install(built_image: str) -> None:
+def test_prebuilt_bundle_present_and_no_runtime_install(
+    shared_container: str,
+) -> None:
     """The launcher must (a) find the prebuilt bundle and (b) NOT want an
     npm install — i.e. it takes the same path as a nix/packaged release."""
     py = (
@@ -69,7 +64,7 @@ def test_prebuilt_bundle_present_and_no_runtime_install(built_image: str) -> Non
         "}\n"
         "print(json.dumps(out))\n"
     )
-    out = json.loads(_exec_py(built_image, py))
+    out = json.loads(_exec_py(shared_container, py))
     assert out["dist_entry_exists"], "prebuilt ui-tui/dist/entry.js missing from image"
     # With HERMES_TUI_DIR set, _make_tui_argv returns the prebuilt path BEFORE
     # ever reaching the install check — so the resolved argv is what matters.

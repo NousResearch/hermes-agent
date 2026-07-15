@@ -143,8 +143,69 @@ jobs:
           OPENROUTER_API_KEY: ""
           OPENAI_API_KEY: ""
           NOUS_API_KEY: ""
+          # Profile every docker subprocess call so we can diagnose why
+          # the suite is slow on CI vs. local. Each per-file subprocess
+          # writes its own docker-test-profile-<pid>.json; the merge
+          # step below combines them into a single report.
+          HERMES_DOCKER_TEST_PROFILE: "1"
         run: |
           scripts/run_tests.sh tests/docker/ --file-timeout 600
+
+      - name: Merge docker test profiles
+        if: always()
+        run: |
+          python3 -c "
+          import json, glob, sys
+          files = sorted(glob.glob('docker-test-profile-*.json'))
+          if not files:
+              print('No per-PID profile files found — profiling may not have activated')
+              sys.exit(0)
+          merged = {'tests': [], 'summary': {}}
+          for f in files:
+              with open(f) as fh:
+                  data = json.load(fh)
+              merged['tests'].extend(data.get('tests', []))
+          # Recompute summary aggregates from merged tests.
+          subcmd_totals = {}
+          subcmd_counts = {}
+          total_sleep = 0
+          total_sleeps = 0
+          for t in merged['tests']:
+              for sub, info in t.get('by_subcommand', {}).items():
+                  subcmd_totals[sub] = subcmd_totals.get(sub, 0) + info['total_s']
+                  subcmd_counts[sub] = subcmd_counts.get(sub, 0) + info['count']
+              total_sleep += t.get('total_sleep_s', 0)
+              total_sleeps += t.get('sleep_count', 0)
+          total_docker = sum(subcmd_totals.values())
+          merged['summary'] = {
+              'total_tests': len(merged['tests']),
+              'total_calls': sum(subcmd_counts.values()),
+              'total_sleeps': total_sleeps,
+              'total_docker_s': round(total_docker, 3),
+              'total_sleep_s': round(total_sleep, 3),
+              'total_wall_s': round(total_docker + total_sleep, 3),
+              'by_subcommand': {
+                  sub: {
+                      'count': subcmd_counts[sub],
+                      'total_s': round(subcmd_totals[sub], 3),
+                      'avg_s': round(subcmd_totals[sub] / subcmd_counts[sub], 3) if subcmd_counts[sub] else 0,
+                  }
+                  for sub in sorted(subcmd_totals, key=lambda s: subcmd_totals[s], reverse=True)
+              },
+          }
+          with open('docker-test-profile.json', 'w') as fh:
+              json.dump(merged, fh, indent=2)
+          print(f'Merged {len(files)} per-PID profiles ({len(merged[\"tests\"])} tests, {total_docker:.0f}s docker + {total_sleep:.0f}s sleep = {total_docker + total_sleep:.0f}s wall)')
+          "
+
+      - name: Upload docker test profile
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: docker-test-profile-${{ matrix.arch }}
+          path: docker-test-profile.json
+          retention-days: 14
+          if-no-files-found: warn
 
   # ---------------------------------------------------------------------------
   # Stitch both per-arch digests into a single tagged multi-arch manifest.

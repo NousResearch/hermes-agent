@@ -19,11 +19,10 @@ from tests.docker.conftest import docker_exec, docker_exec_sh, start_container, 
 
 
 def test_dashboard_not_running_by_default(
-    built_image: str, container_name: str,
+    shared_container: str,
 ) -> None:
     """Without HERMES_DASHBOARD, no dashboard process should be running."""
-    start_container(built_image, container_name, cmd="sleep 60")
-    r = docker_exec(container_name, "pgrep", "-f", "hermes dashboard")
+    r = docker_exec(shared_container, "pgrep", "-f", "hermes dashboard")
     # pgrep exits non-zero when no match found
     assert r.returncode != 0, (
         "Dashboard should not be running without HERMES_DASHBOARD"
@@ -31,7 +30,7 @@ def test_dashboard_not_running_by_default(
 
 
 def test_dashboard_slot_reports_down_when_disabled(
-    built_image: str, container_name: str,
+    shared_container: str,
 ) -> None:
     """Without HERMES_DASHBOARD, s6-svstat should report the dashboard
     slot as DOWN (not up-with-sleep-infinity, which would
@@ -41,11 +40,10 @@ def test_dashboard_slot_reports_down_when_disabled(
     writes a `down` marker file in the live service-dir when
     HERMES_DASHBOARD is unset, so the slot reflects reality.
     """
-    start_container(built_image, container_name, cmd="sleep 60")
     # /command/ isn't on PATH for docker-exec sessions, so call by
     # absolute path.
     r = docker_exec(
-        container_name, "/command/s6-svstat", "/run/service/dashboard",
+        shared_container, "/command/s6-svstat", "/run/service/dashboard",
     )
     assert r.returncode == 0, f"s6-svstat failed: {r.stderr!r} / {r.stdout!r}"
     assert "down" in r.stdout, (

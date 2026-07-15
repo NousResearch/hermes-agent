@@ -25,24 +25,21 @@ from __future__ import annotations
 import re
 import subprocess
 
+from tests.docker.conftest import docker_exec_sh, wait_for_container_ready
+
 
 _VERSION_LINE = re.compile(r"^version:\s+(?P<rest>.+)$", re.MULTILINE)
 _SHA_BRACKET = re.compile(r"\[(?P<sha>[^\]]+)\]\s*$")
 
 
-def _run_dump(image: str) -> str:
-    """Return the stdout of ``docker run <image> dump``.
+def _run_dump(container: str) -> str:
+    """Return the stdout of ``hermes dump`` inside the running container.
 
-    Relies on Docker's anonymous VOLUME for ``/opt/data`` (declared by the
-    Dockerfile) so the container's hermes user (UID 10000) can bootstrap
-    its config.  Anonymous volumes are auto-cleaned by ``--rm``, so unlike
-    a host bind-mount we don't have to chown anything to UID 10000 (which
-    would break cleanup on non-root hosts).
+    The container is already booted with ``sleep infinity`` by the
+    ``shared_container`` fixture, so we just ``docker exec`` the command
+    instead of paying the full ``docker run`` startup cost each time.
     """
-    r = subprocess.run(
-        ["docker", "run", "--rm", image, "dump"],
-        capture_output=True, text=True, timeout=120,
-    )
+    r = docker_exec_sh(container, "hermes dump", timeout=60)
     assert r.returncode == 0, (
         f"hermes dump exited {r.returncode}: "
         f"stderr={r.stderr[-1000:]!r}\nstdout={r.stdout[-1000:]!r}"
@@ -50,29 +47,25 @@ def _run_dump(image: str) -> str:
     return r.stdout
 
 
-def _read_baked_sha_from_image(image: str) -> str | None:
+def _read_baked_sha_from_container(container: str) -> str | None:
     """Return the ``/opt/hermes/.hermes_build_sha`` content, or None if absent."""
-    r = subprocess.run(
-        [
-            "docker", "run", "--rm", "--entrypoint", "cat", image,
-            "/opt/hermes/.hermes_build_sha",
-        ],
-        capture_output=True, text=True, timeout=30,
+    r = docker_exec_sh(
+        container, "cat /opt/hermes/.hermes_build_sha 2>/dev/null", timeout=10,
     )
-    if r.returncode != 0:
+    if r.returncode != 0 or not r.stdout.strip():
         return None
     return r.stdout.strip() or None
 
 
-def test_dump_reports_baked_sha_when_present(built_image: str) -> None:
+def test_dump_reports_baked_sha_when_present(shared_container: str) -> None:
     """When the image was built with ``HERMES_GIT_SHA``, dump must surface it.
 
     Together with the smoke-test action (which exercises ``--help``), this
     closes the regression loop for the missing-sha bug: any future change
     that breaks the baked-file -> dump pipeline will fail CI here.
     """
-    baked = _read_baked_sha_from_image(built_image)
-    stdout = _run_dump(built_image)
+    baked = _read_baked_sha_from_container(shared_container)
+    stdout = _run_dump(shared_container)
 
     match = _VERSION_LINE.search(stdout)
     assert match, f"no `version:` line in dump output:\n{stdout[:2000]}"

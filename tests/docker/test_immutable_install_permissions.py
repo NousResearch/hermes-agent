@@ -1,27 +1,25 @@
 """Docker smoke tests for immutable install permissions."""
 from __future__ import annotations
 
-import subprocess
 import textwrap
 
+from tests.docker.conftest import docker_exec_sh
 
-def test_container_sets_hosted_write_policy_env(built_image: str) -> None:
+
+def test_container_sets_hosted_write_policy_env(shared_container: str) -> None:
     script = (
         'test "$HERMES_HOME" = "/opt/data" && '
         'test "$HERMES_WRITE_SAFE_ROOT" = "/opt/data" && '
         'test "$HERMES_DISABLE_LAZY_INSTALLS" = "1" && '
         'test "$PYTHONDONTWRITEBYTECODE" = "1"'
     )
-    result = subprocess.run(
-        ["docker", "run", "--rm", "--entrypoint", "sh", built_image, "-c", script],
-        capture_output=True,
-        text=True,
-        timeout=60,
-    )
-    assert result.returncode == 0, result.stderr[-2000:]
+    r = docker_exec_sh(shared_container, script, timeout=30)
+    assert r.returncode == 0, r.stderr[-2000:]
 
 
-def test_hermes_user_cannot_modify_install_but_can_write_data(built_image: str) -> None:
+def test_hermes_user_cannot_modify_install_but_can_write_data(
+    shared_container: str,
+) -> None:
     script = textwrap.dedent(
         r"""
         set -eu
@@ -46,22 +44,6 @@ def test_hermes_user_cannot_modify_install_but_can_write_data(built_image: str) 
         PY
         """
     ).strip()
-    result = subprocess.run(
-        [
-            "docker",
-            "run",
-            "--rm",
-            "--entrypoint",
-            "su",
-            built_image,
-            "hermes",
-            "-s",
-            "/bin/sh",
-            "-c",
-            script,
-        ],
-        capture_output=True,
-        text=True,
-        timeout=120,
-    )
-    assert result.returncode == 0, result.stderr[-2000:]
+    # Run as hermes user via docker_exec_sh's default user context.
+    r = docker_exec_sh(shared_container, script, timeout=60)
+    assert r.returncode == 0, r.stderr[-2000:]

@@ -8,6 +8,10 @@ Override the image with ``HERMES_TEST_IMAGE`` env var to point at a pre-built
 image (faster local iteration); otherwise the ``built_image`` fixture builds
 the repo's Dockerfile once per session.
 
+Profiling: set ``HERMES_DOCKER_TEST_PROFILE=1`` to instrument every
+``subprocess.run`` that invokes ``docker``. A per-test breakdown of
+subcommand timings is written to ``docker-test-profile.json`` and a
+summary is printed to stderr at session end. See ``profiling.py``.
 """
 from __future__ import annotations
 
@@ -18,6 +22,8 @@ import time
 from collections.abc import Iterator
 
 import pytest
+
+pytest_plugins = ["tests.docker.profiling"]
 
 IMAGE_TAG = os.environ.get("HERMES_TEST_IMAGE", "hermes-agent-harness:latest")
 
@@ -80,6 +86,42 @@ def container_name(request) -> Iterator[str]:
         ["docker", "rm", "-f", name],
         capture_output=True, timeout=10,
     )
+
+
+@pytest.fixture(scope="module")
+def shared_container(built_image: str, request) -> Iterator[str]:
+    """A long-lived container shared across all tests in a module.
+
+    Starts one ``sleep infinity`` container, waits for s6 cont-init to
+    finish, yields the container name, and tears it down at module exit.
+    Tests that only need to *read* static image state (env vars, file
+    existence, immutable-permission checks, etc.) can share this instead
+    of each paying the full ``docker run`` + cont-init startup cost.
+
+    Tests that *mutate* container state (config changes, gateway starts,
+    restarts, etc.) should still use ``container_name`` + ``start_container``
+    for isolation.
+    """
+    safe = request.module.__name__.replace(".", "-")
+    name = f"hermes-shared-{safe}"
+    # Clean up any leftover from a prior run.
+    subprocess.run(
+        ["docker", "rm", "-f", name],
+        capture_output=True, timeout=10,
+    )
+    r = subprocess.run(
+        ["docker", "run", "-d", "--name", name, built_image, "sleep", "infinity"],
+        capture_output=True, text=True, timeout=60,
+    )
+    assert r.returncode == 0, f"docker run failed: {r.stderr}"
+    try:
+        wait_for_container_ready(name)
+        yield name
+    finally:
+        subprocess.run(
+            ["docker", "rm", "-f", name],
+            capture_output=True, timeout=10,
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -153,6 +195,14 @@ def wait_for_container_ready(
     Raises ``TimeoutError`` if the container never becomes ready — much
     better than a fixed ``time.sleep()`` that either wastes time on fast
     machines or flakes on slow ones.
+
+    Note: an earlier iteration tried a single blocking ``docker exec``
+    with an in-container ``until`` loop to eliminate polling overhead.
+    That was a net regression on CI: the per-``docker exec`` connection
+    overhead on shared runners (~0.7–1s) is higher than the cost of
+    3–7 quick poll calls (0.27s each), so the blocking approach traded
+    fewer calls for longer per-call duration and lost. The poll loop
+    is kept because it's better suited to CI's docker exec cost profile.
     """
     end = time.monotonic() + deadline_s
     while time.monotonic() < end:

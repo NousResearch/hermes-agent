@@ -7,6 +7,10 @@ Build the real image and verify at runtime:
   3. /opt/hermes/.install_method contains "docker" (code-scoped stamp)
   4. $HERMES_HOME/.install_method is NOT stamped as "docker" by stage2
   5. A stale "docker" stamp in $HERMES_HOME is healed (removed) on boot
+
+Tests 1–4 are read-only checks against the default container state and
+share the module-scoped ``shared_container`` fixture. Test 5 mutates
+state and triggers a restart, so it uses its own container.
 """
 from __future__ import annotations
 
@@ -19,7 +23,7 @@ from tests.docker.conftest import (
 
 
 def test_install_tree_not_writable_by_hermes(
-    built_image: str, container_name: str,
+    shared_container: str,
 ) -> None:
     """The hermes user must not be able to modify /opt/hermes.
 
@@ -27,10 +31,8 @@ def test_install_tree_not_writable_by_hermes(
     root-owned and non-writable so an agent session cannot self-modify
     the installation and brick the gateway.
     """
-    start_container(built_image, container_name)
-
     r = docker_exec_sh(
-        container_name,
+        shared_container,
         # Try to create a file under /opt/hermes as the hermes user
         "touch /opt/hermes/test_write 2>&1 && "
         "echo WRITE_SUCCEEDED || echo WRITE_FAILED",
@@ -43,7 +45,7 @@ def test_install_tree_not_writable_by_hermes(
 
     # Also check a key subdirectory
     r = docker_exec_sh(
-        container_name,
+        shared_container,
         "touch /opt/hermes/.venv/test_write 2>&1 && "
         "echo WRITE_SUCCEEDED || echo WRITE_FAILED",
         timeout=10,
@@ -54,15 +56,13 @@ def test_install_tree_not_writable_by_hermes(
 
 
 def test_hermes_disable_lazy_installs_and_dont_write_bytecode(
-    built_image: str, container_name: str,
+    shared_container: str,
 ) -> None:
     """The container must set PYTHONDONTWRITEBYTECODE and
     HERMES_DISABLE_LAZY_INSTALLS=1 so no .pyc files are written to the
     immutable install tree and no lazy installs attempt to modify it."""
-    start_container(built_image, container_name)
-
     r = docker_exec_sh(
-        container_name,
+        shared_container,
         'test "$PYTHONDONTWRITEBYTECODE" = "1" && '
         'test "$HERMES_DISABLE_LAZY_INSTALLS" = "1" && '
         'echo ENV_OK || echo ENV_MISSING',
@@ -75,15 +75,13 @@ def test_hermes_disable_lazy_installs_and_dont_write_bytecode(
 
 
 def test_install_method_stamp_is_code_scoped(
-    built_image: str, container_name: str,
+    shared_container: str,
 ) -> None:
     """The 'docker' install-method stamp must be baked at
     /opt/hermes/.install_method (code-scoped), NOT in $HERMES_HOME."""
-    start_container(built_image, container_name)
-
     # Code-scoped stamp must exist and say "docker"
     r = docker_exec_sh(
-        container_name,
+        shared_container,
         "cat /opt/hermes/.install_method",
         timeout=10,
     )
@@ -96,7 +94,7 @@ def test_install_method_stamp_is_code_scoped(
 
     # $HERMES_HOME must NOT have a 'docker' stamp
     r = docker_exec_sh(
-        container_name,
+        shared_container,
         "cat /opt/data/.install_method 2>/dev/null || echo NONE",
         timeout=10,
     )

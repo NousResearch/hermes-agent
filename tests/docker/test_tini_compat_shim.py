@@ -11,7 +11,7 @@ from __future__ import annotations
 import subprocess
 
 
-def test_tini_compat_symlink_exists(built_image: str) -> None:
+def test_tini_compat_symlink_exists(shared_container: str) -> None:
     """/usr/bin/tini must exist as a symlink to /init.
 
     Regression for #34192: orchestration templates (e.g. Hostinger's
@@ -20,11 +20,10 @@ def test_tini_compat_symlink_exists(built_image: str) -> None:
     PID-1 reaper without behavior change.
     """
     r = subprocess.run(
-        ["docker", "run", "--rm", "--entrypoint", "sh",
-         built_image, "-c",
+        ["docker", "exec", shared_container, "sh", "-c",
          'test -L /usr/bin/tini && '
          'test "$(readlink -f /usr/bin/tini)" = "/init"'],
-        capture_output=True, text=True, timeout=60,
+        capture_output=True, text=True, timeout=30,
     )
     assert r.returncode == 0, (
         f"/usr/bin/tini is not a symlink to /init: {r.stderr[-500:]}"

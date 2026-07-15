@@ -6,20 +6,16 @@ Docker image).
 """
 from __future__ import annotations
 
-import subprocess
+from tests.docker.conftest import docker_exec
 
 
-def test_docker_image_contains_license_file(built_image: str) -> None:
+def test_docker_image_contains_license_file(shared_container: str) -> None:
     """The LICENSE file must be present inside the built Docker image.
 
     PEP 639 license-files metadata references LICENSE, and the Docker
     build context must not exclude it.
     """
-    r = subprocess.run(
-        ["docker", "run", "--rm", "--entrypoint", "test",
-         built_image, "-f", "/opt/hermes/LICENSE"],
-        capture_output=True, text=True, timeout=60,
-    )
+    r = docker_exec(shared_container, "test", "-f", "/opt/hermes/LICENSE")
     assert r.returncode == 0, (
         f"LICENSE file not found at /opt/hermes/LICENSE inside the Docker "
         f"image: {r.stderr[-500:]}"

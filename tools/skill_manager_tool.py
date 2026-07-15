@@ -37,13 +37,12 @@ import logging
 import os
 import re
 import shutil
-import tempfile
 import contextvars as _ctxvars
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home, display_hermes_home
-from utils import atomic_replace, is_truthy_value
+from utils import atomic_replace, bounded_mkstemp, is_truthy_value
 from hermes_cli.config import cfg_get
 
 logger = logging.getLogger(__name__)
@@ -768,7 +767,7 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
         encoding: Text encoding (default: utf-8)
     """
     file_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(
+    fd, temp_path = bounded_mkstemp(
         dir=str(file_path.parent),
         prefix=f".{file_path.name}.tmp.",
         suffix="",

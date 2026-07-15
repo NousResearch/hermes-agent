@@ -86,6 +86,26 @@ def test_null_bytes_in_user_env_are_stripped(tmp_path, monkeypatch):
     assert os.getenv("OPENAI_API_KEY") == "sk-123"
 
 
+def test_sanitize_write_denied_degrades_quietly(tmp_path, monkeypatch):
+    """Regression for the one-shot CLI busy-spin: when the sanitized .env
+    cannot be written back (ACL-denied HERMES_HOME), sanitization must
+    neither hang nor raise - it is best-effort by contract."""
+    from unittest.mock import patch
+
+    from hermes_cli.env_loader import _sanitize_env_file_if_needed
+
+    env_file = tmp_path / ".env"
+    corrupted = "GLM_API_KEY=abc\x00\x00\n"
+    env_file.write_text(corrupted, encoding="utf-8")
+
+    denial = PermissionError(13, "Access is denied", str(env_file))
+    with patch("hermes_cli.env_loader.bounded_mkstemp", side_effect=denial):
+        _sanitize_env_file_if_needed(env_file)  # must return, not raise
+
+    # The corrupted file is left as-is for the next successful run.
+    assert env_file.read_text(encoding="utf-8") == corrupted
+
+
 def test_main_import_applies_user_env_over_shell_values(tmp_path, monkeypatch):
     home = tmp_path / "hermes"
     home.mkdir()

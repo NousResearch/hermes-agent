@@ -14,13 +14,12 @@ import json
 import os
 import re
 import secrets
-import tempfile
 import time
 from pathlib import Path
 from typing import Dict
 
 from hermes_constants import display_hermes_home
-from utils import atomic_replace
+from utils import atomic_replace, bounded_mkstemp
 from hermes_cli.config import cfg_get
 
 
@@ -55,11 +54,10 @@ def _save_subscriptions(subs: Dict[str, dict]) -> None:
     # via tempfile + chmod 0o600 before the atomic rename so a permissive
     # umask cannot leave the secrets readable to other local users in the
     # window between create and rename.
-    fd, tmp_name = tempfile.mkstemp(
+    fd, tmp_name = bounded_mkstemp(
         prefix=f".{path.name}.",
         suffix=".tmp",
         dir=path.parent,
-        text=True,
     )
     tmp_path = Path(tmp_name)
     try:

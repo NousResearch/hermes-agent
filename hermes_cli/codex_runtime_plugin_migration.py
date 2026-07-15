@@ -734,9 +734,9 @@ def migrate(
         # rename. Same-directory rename is atomic on POSIX and ReplaceFile
         # on Windows. Avoids leaving a half-written config.toml that
         # codex would refuse to load if we crash mid-write.
-        import tempfile
-        tmp_fd, tmp_path_str = tempfile.mkstemp(
-            prefix=".config.toml.", dir=str(codex_home)
+        from utils import bounded_mkstemp
+        tmp_fd, tmp_path_str = bounded_mkstemp(
+            prefix=".config.toml.", dir=str(codex_home), suffix=""
         )
         tmp_path = Path(tmp_path_str)
         try:

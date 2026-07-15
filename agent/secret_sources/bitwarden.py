@@ -45,6 +45,8 @@ import zipfile
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from utils import bounded_mkstemp
+
 from agent.secret_sources._cache import (
     CachedFetch as _CachedFetch,
     DiskCache,
@@ -245,7 +247,7 @@ def install_bws(*, force: bool = False) -> Path:
 
         # Move into place atomically.  We write to a sibling tempfile in
         # the final directory so the rename can't cross filesystems.
-        fd, staged = tempfile.mkstemp(dir=str(bin_dir), prefix=".bws_")
+        fd, staged = bounded_mkstemp(dir=str(bin_dir), prefix=".bws_", suffix="")
         os.close(fd)
         shutil.copy2(extracted, staged)
         os.chmod(

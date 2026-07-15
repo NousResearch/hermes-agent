@@ -27,7 +27,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +34,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_hermes_home
 from agent.skill_utils import is_excluded_skill_path, is_external_skill_path
+from utils import bounded_mkstemp
 
 logger = logging.getLogger(__name__)
 
@@ -290,7 +290,7 @@ def _write_suppressed_names(names: Set[str]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         data = "\n".join(sorted(names)) + ("\n" if names else "")
-        fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".curator_suppressed_", suffix=".tmp")
+        fd, tmp = bounded_mkstemp(dir=str(path.parent), prefix=".curator_suppressed_", suffix=".tmp")
         try:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(data)
@@ -522,7 +522,7 @@ def save_usage(data: Dict[str, Dict[str, Any]]) -> None:
     path = _usage_file()
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(
+        fd, tmp_path = bounded_mkstemp(
             dir=str(path.parent), prefix=".usage_", suffix=".tmp"
         )
         try:

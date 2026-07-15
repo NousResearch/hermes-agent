@@ -69,6 +69,19 @@ class TestReadWriteManifest:
 
         assert result == {"skill-a": "hash1", "skill-b": "hash2"}
 
+    def test_write_manifest_unwritable_dir_degrades_quietly(self, tmp_path):
+        """Regression for the one-shot CLI busy-spin: an unwritable skills
+        dir must neither hang nor raise — sync logs at DEBUG and moves on,
+        and the manifest is rebuilt on the next successful sync."""
+        manifest_file = tmp_path / ".bundled_manifest"
+        denial = PermissionError(13, "Access is denied", str(manifest_file))
+
+        with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
+            with patch("tools.skills_sync.bounded_mkstemp", side_effect=denial):
+                _write_manifest({"skill-a": "abc123"})  # must return, not raise
+
+        assert not manifest_file.exists()
+
     def test_read_manifest_mixed_v1_v2(self, tmp_path):
         """Manifest with both v1 and v2 lines (shouldn't happen but handle gracefully)."""
         manifest_file = tmp_path / ".bundled_manifest"

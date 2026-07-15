@@ -22,11 +22,12 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Dict, Generic, Optional, TypeVar
+
+from utils import bounded_mkstemp
 
 __all__ = [
     "FetchResult",
@@ -188,7 +189,7 @@ class DiskCache(Generic[K]):
             }
             # Write to a sibling temp file and atomic-rename.  tempfile honours
             # os.umask, so we explicitly chmod 0600 before the rename.
-            fd, tmp = tempfile.mkstemp(
+            fd, tmp = bounded_mkstemp(
                 prefix=self._tmp_prefix, suffix=".tmp", dir=str(cache_dir)
             )
             try:

@@ -666,7 +666,7 @@ class TestAllowlistConcurrency:
         import logging
         monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
         monkeypatch.setattr(
-            shell_hooks.tempfile, "mkstemp",
+            shell_hooks, "bounded_mkstemp",
             lambda *a, **kw: (_ for _ in ()).throw(OSError(28, "No space")),
         )
         with caplog.at_level(logging.WARNING, logger=shell_hooks.logger.name):
@@ -739,14 +739,14 @@ class TestAllowlistConcurrency:
         p.parent.mkdir(parents=True, exist_ok=True)
 
         tmp_paths_seen: list = []
-        real_mkstemp = shell_hooks.tempfile.mkstemp
+        real_mkstemp = shell_hooks.bounded_mkstemp
 
         def spying_mkstemp(*args, **kwargs):
             fd, path = real_mkstemp(*args, **kwargs)
             tmp_paths_seen.append(path)
             return fd, path
 
-        monkeypatch.setattr(shell_hooks.tempfile, "mkstemp", spying_mkstemp)
+        monkeypatch.setattr(shell_hooks, "bounded_mkstemp", spying_mkstemp)
 
         shell_hooks.save_allowlist({"approvals": [{"event": "a", "command": "x"}]})
         shell_hooks.save_allowlist({"approvals": [{"event": "b", "command": "y"}]})

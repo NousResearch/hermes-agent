@@ -113,7 +113,6 @@ import re
 import shlex
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 from contextlib import contextmanager
@@ -130,7 +129,7 @@ except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
 
 from hermes_constants import get_hermes_home
-from utils import atomic_replace
+from utils import atomic_replace, bounded_mkstemp
 
 logger = logging.getLogger(__name__)
 
@@ -652,7 +651,7 @@ def save_allowlist(data: Dict[str, Any]) -> None:
     p = allowlist_path()
     try:
         p.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_path = tempfile.mkstemp(
+        fd, tmp_path = bounded_mkstemp(
             prefix=f"{p.name}.", suffix=".tmp", dir=str(p.parent),
         )
         try:

@@ -530,6 +530,17 @@ class TestSaveEnvValueSecure:
             save_env_value("TENOR_API_KEY", "sk-test-secret")
             assert os.environ["TENOR_API_KEY"] == "sk-test-secret"
 
+    def test_save_env_value_unwritable_home_raises_promptly(self, tmp_path):
+        """Regression for the one-shot CLI busy-spin: a write-denied
+        HERMES_HOME must surface PermissionError to the caller immediately
+        instead of retrying TMP_MAX candidate names inside tempfile."""
+        denial = PermissionError(13, "Access is denied", str(tmp_path / ".env"))
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            with patch("hermes_cli.config.bounded_mkstemp", side_effect=denial):
+                with pytest.raises(PermissionError):
+                    save_env_value("TENOR_API_KEY", "sk-test-secret")
+        assert not (tmp_path / ".env").exists()
+
     def test_save_env_value_hardens_file_permissions_on_posix(self, tmp_path):
         if os.name == "nt":
             return
@@ -726,7 +737,7 @@ class TestSaveConfigAtomicity:
 
             # Read raw YAML to verify it's valid and correct
             config_path = tmp_path / "config.yaml"
-            with open(config_path) as f:
+            with open(config_path, encoding="utf-8") as f:
                 raw = yaml.safe_load(f)
             assert raw["model"] == "test/atomic-model"
             assert raw["agent"]["max_turns"] == 77

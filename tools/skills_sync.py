@@ -31,7 +31,7 @@ from pathlib import Path, PurePosixPath
 from hermes_constants import get_bundled_skills_dir, get_hermes_home, get_optional_skills_dir
 from agent.skill_utils import is_excluded_skill_path
 from typing import Dict, List, Optional, Set, Tuple
-from utils import atomic_replace
+from utils import atomic_replace, bounded_mkstemp
 
 logger = logging.getLogger(__name__)
 
@@ -153,13 +153,11 @@ def _write_manifest(entries: Dict[str, str]):
     Uses a temp file + os.replace() to avoid corruption if the process
     crashes or is interrupted mid-write.
     """
-    import tempfile
-
     MANIFEST_FILE.parent.mkdir(parents=True, exist_ok=True)
     data = "\n".join(f"{name}:{hash_val}" for name, hash_val in sorted(entries.items())) + "\n"
 
     try:
-        fd, tmp_path = tempfile.mkstemp(
+        fd, tmp_path = bounded_mkstemp(
             dir=str(MANIFEST_FILE.parent),
             prefix=".bundled_manifest_",
             suffix=".tmp",
@@ -457,10 +455,8 @@ def _backfill_optional_provenance(quiet: bool = False) -> List[str]:
         # Atomic write so a crash mid-write can't silently wipe all provenance
         # via the JSONDecodeError fallback above (which resets `installed` to
         # an empty dict).
-        import tempfile
-
         payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
-        fd, tmp_path = tempfile.mkstemp(
+        fd, tmp_path = bounded_mkstemp(
             dir=str(lock_path.parent),
             prefix=".lock_",
             suffix=".tmp",

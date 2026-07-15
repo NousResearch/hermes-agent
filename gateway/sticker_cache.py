@@ -10,9 +10,10 @@ Cache location: ~/.hermes/sticker_cache.json
 
 import json
 import os
-import tempfile
 import time
 from typing import Optional
+
+from utils import bounded_mkstemp
 
 from hermes_cli.config import get_hermes_home
 
@@ -39,7 +40,7 @@ def _load_cache() -> dict:
 def _save_cache(cache: dict) -> None:
     """Save the sticker cache to disk atomically."""
     CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
+    fd, tmp_path = bounded_mkstemp(
         dir=str(CACHE_PATH.parent), suffix=".tmp"
     )
     try:

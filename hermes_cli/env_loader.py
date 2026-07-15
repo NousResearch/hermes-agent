@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 from dotenv import load_dotenv
-from utils import atomic_replace, fast_safe_load
+from utils import atomic_replace, bounded_mkstemp, fast_safe_load
 
 
 # Env var name suffixes that indicate credential values.  These are the
@@ -197,8 +197,7 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
         stripped = [line.replace("\x00", "") for line in original]
         sanitized = _sanitize_env_lines(stripped)
         if sanitized != original:
-            import tempfile
-            fd, tmp = tempfile.mkstemp(
+            fd, tmp = bounded_mkstemp(
                 dir=str(path.parent), suffix=".tmp", prefix=".env_"
             )
             try:

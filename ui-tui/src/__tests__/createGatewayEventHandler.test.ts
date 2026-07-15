@@ -66,6 +66,43 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ showReasoning: true })
   })
 
+  it('refreshes idle transcript history while preserving the intro row', () => {
+    const ctx = buildCtx([])
+    patchUiState({ busy: false, sid: 'runtime-session' })
+    createGatewayEventHandler(ctx)({
+      payload: {
+        messages: [
+          { role: 'user', text: 'external prompt' },
+          { role: 'assistant', text: 'external reply' }
+        ]
+      },
+      session_id: 'runtime-session',
+      type: 'session.history.updated'
+    } as any)
+
+    const update = ctx.transcript.setHistoryItems.mock.calls[0]?.[0]
+    const intro = { kind: 'intro', role: 'system', text: 'intro' }
+    const refreshed = update([intro])
+
+    expect(refreshed[0]).toBe(intro)
+    expect(refreshed.slice(1).map((row: Msg) => [row.role, row.text])).toEqual([
+      ['user', 'external prompt'],
+      ['assistant', 'external reply']
+    ])
+  })
+
+  it('does not refresh transcript history during a live turn', () => {
+    const ctx = buildCtx([])
+    patchUiState({ busy: true, sid: 'runtime-session' })
+    createGatewayEventHandler(ctx)({
+      payload: { messages: [{ role: 'user', text: 'stale row' }] },
+      session_id: 'runtime-session',
+      type: 'session.history.updated'
+    } as any)
+
+    expect(ctx.transcript.setHistoryItems).not.toHaveBeenCalled()
+  })
+
   it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
     const appended: Msg[] = []
 

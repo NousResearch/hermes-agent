@@ -1,6 +1,7 @@
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
+import { toTranscriptMessages } from '../domain/messages.js'
 import type {
   CommandsCatalogResponse,
   ConfigFullResponse,
@@ -431,6 +432,21 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }))
 
         setHistoryItems(prev => prev.map(m => (m.kind === 'intro' ? { ...m, info } : m)))
+
+        return
+      }
+
+      case 'session.history.updated': {
+        if (getUiState().busy) {
+          return
+        }
+
+        const rows = toTranscriptMessages(ev.payload?.messages ?? [])
+        setHistoryItems(prev => {
+          const intro = prev.find(item => item.kind === 'intro')
+
+          return intro ? [intro, ...rows] : rows
+        })
 
         return
       }

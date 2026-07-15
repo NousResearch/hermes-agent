@@ -17,6 +17,95 @@ from hermes_cli.browser_connect import ChromeDebugLaunch
 from tui_gateway import server
 
 
+def test_history_refresh_emits_real_durable_extension(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("stored-session", source="tui")
+    db.append_message("stored-session", role="user", content="local prompt")
+    initial_history = db.get_messages_as_conversation("stored-session")
+    session = {
+        "agent": None,
+        "created_at": time.time(),
+        "display_history_prefix": [],
+        "history": initial_history,
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "session_key": "stored-session",
+    }
+    emitted = []
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, sid, payload=None: emitted.append((event, sid, payload)),
+    )
+
+    try:
+        db.append_message(
+            "stored-session",
+            role="assistant",
+            content="durable reply from another surface",
+        )
+        payload = server._poll_session_history_once("runtime-session", session)
+    finally:
+        db.close()
+
+    assert session["history_version"] == 1
+    assert payload is not None
+    assert payload["messages"][-1] == {
+        "role": "assistant",
+        "text": "durable reply from another surface",
+    }
+    assert emitted == [
+        ("session.history.updated", "runtime-session", payload)
+    ]
+
+
+def test_history_refresh_skips_running_session(monkeypatch):
+    def fail_session_db(_session):
+        raise AssertionError("running sessions must not read durable history")
+
+    monkeypatch.setattr(server, "_session_db", fail_session_db)
+    session = {
+        "history": [{"role": "user", "content": "live turn"}],
+        "history_lock": threading.Lock(),
+        "running": True,
+        "session_key": "stored-session",
+    }
+
+    assert server._refresh_session_history_from_db("runtime-session", session) is None
+
+
+def test_history_refresh_does_not_replace_longer_live_history(monkeypatch, tmp_path):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("stored-session", source="tui")
+    db.append_message("stored-session", role="user", content="durable prompt")
+    durable_history = db.get_messages_as_conversation("stored-session")
+    live_history = [
+        *durable_history,
+        {"role": "assistant", "content": "not persisted yet"},
+    ]
+    session = {
+        "history": live_history,
+        "history_lock": threading.Lock(),
+        "history_version": 0,
+        "running": False,
+        "session_key": "stored-session",
+    }
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+
+    try:
+        assert server._refresh_session_history_from_db("runtime-session", session) is None
+    finally:
+        db.close()
+
+    assert session["history"] == live_history
+
+
 def test_session_create_rejects_at_active_session_limit(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir()

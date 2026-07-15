@@ -239,6 +239,15 @@ export interface SessionResumeResponse {
   status?: LiveSessionStatus
 }
 
+export interface SessionHistoryUpdatedPayload {
+  message_count?: number
+  messages: GatewayTranscriptMessage[]
+  running?: boolean
+  session_key?: string
+  status?: LiveSessionStatus
+  updated_at?: number
+}
+
 export type LiveSessionStatus = 'idle' | 'starting' | 'waiting' | 'working'
 
 export interface SessionActiveItem {
@@ -713,4 +722,5 @@ export type GatewayEvent =
       session_id?: string
       type: 'message.complete'
     }
+  | { payload: SessionHistoryUpdatedPayload; session_id?: string; type: 'session.history.updated' }
   | { payload?: { message?: string }; session_id?: string; type: 'error' }

@@ -231,11 +231,11 @@ IDs.
 | `cron` job with `--deliver` | ✅ | ✅ | No | Scheduled agent tasks |
 
 `hermes send` is intentionally the simplest possible surface. If you need
-a scheduled run with LLM-generated content, use `cronjob(action='create',
-prompt=...)` with `deliver='telegram:...'`. If you just need to pipe a raw
-string, reach for `hermes send`. Agent-callable cross-platform messaging is
-not exposed as a model tool; outbound delivery is handled outside the agent
-loop by the gateway, scheduler, and CLI.
+an agent to decide what to say, schedule a cron job — the agent's final
+response is auto-delivered to the configured `deliver:` target (the agent
+no longer fires messages itself). If you need a scheduled run with LLM-generated content,
+use `cronjob(action='create', prompt=...)` with `deliver='telegram:...'`.
+If you just need to pipe a raw string, reach for `hermes send`.
 
 ---
 

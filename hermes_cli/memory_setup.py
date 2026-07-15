@@ -122,36 +122,19 @@ def _install_dependencies(provider_name: str) -> None:
 
     print(f"\n  Installing dependencies: {', '.join(missing)}")
 
-    import shutil
+    from hermes_cli.tools_config import _pip_install
 
-    uv_path = shutil.which("uv")
-    if uv_path:
-        install_cmd = [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing
-        manual_cmd = f"uv pip install --python {sys.executable} {' '.join(missing)}"
-    else:
-        pip_cmd = shutil.which("pip3") or shutil.which("pip")
-        if not pip_cmd:
-            print(f"  ⚠ uv not found — cannot install dependencies")
-            print(f"  Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh")
-            print(f"  Then re-run: hermes memory setup")
-            return
-        print(f"  ⚠ uv not found. Falling back to standard pip...")
-        install_cmd = [sys.executable, "-m", "pip", "install", "--quiet"] + missing
-        manual_cmd = f"{sys.executable} -m pip install {' '.join(missing)}"
-
+    manual_cmd = f"uv pip install {' '.join(missing)}"
     try:
-        subprocess.run(
-            install_cmd,
-            check=True, timeout=120,
-            capture_output=True,
-        )
-        print(f"  ✓ Installed {', '.join(missing)}")
-    except subprocess.CalledProcessError as e:
-        print(f"  ⚠ Failed to install {', '.join(missing)}")
-        stderr = (e.stderr or b"").decode()[:200]
-        if stderr:
-            print(f"    {stderr}")
-        print(f"  Run manually: {manual_cmd}")
+        result = _pip_install(["--quiet"] + missing, timeout=120)
+        if result.returncode == 0:
+            print(f"  ✓ Installed {', '.join(missing)}")
+        else:
+            print(f"  ⚠ Failed to install {', '.join(missing)}")
+            stderr = (result.stderr or "")[:200]
+            if stderr:
+                print(f"    {stderr}")
+            print(f"  Run manually: {manual_cmd}")
     except Exception as e:
         print(f"  ⚠ Install failed: {e}")
         print(f"  Run manually: {manual_cmd}")
@@ -248,7 +231,7 @@ def cmd_setup_provider(provider_name: str) -> None:
     config["memory"]["provider"] = name
     save_config(config)
     print(f"\n  Memory provider: {name}")
-    print(f"  Activation saved to config.yaml\n")
+    print("  Activation saved to config.yaml\n")
 
 
 def cmd_setup(args) -> None:
@@ -388,12 +371,12 @@ def cmd_setup(args) -> None:
         _write_env_vars(env_path, env_writes)
 
     print(f"\n  Memory provider: {name}")
-    print(f"  Activation saved to config.yaml")
+    print("  Activation saved to config.yaml")
     if provider_config:
-        print(f"  Provider config saved")
+        print("  Provider config saved")
     if env_writes:
-        print(f"  API keys saved to .env")
-    print(f"\n  Start a new session to activate.\n")
+        print("  API keys saved to .env")
+    print("\n  Start a new session to activate.\n")
 
 
 def _write_env_vars(env_path: Path, env_writes: dict) -> None:
@@ -439,8 +422,8 @@ def cmd_status(args) -> None:
     mem_config = config.get("memory", {})
     provider_name = mem_config.get("provider", "")
 
-    print(f"\nMemory status\n" + "─" * 40)
-    print(f"  Built-in:  always active")
+    print("\nMemory status\n" + "─" * 40)
+    print("  Built-in:  always active")
     print(f"  Provider:  {provider_name or '(none — built-in only)'}")
 
     providers = _get_available_providers()
@@ -467,16 +450,16 @@ def cmd_status(args) -> None:
                 print(f"    {key}: {val}")
 
         if provider:
-            print(f"\n  Plugin:    installed ✓")
+            print("\n  Plugin:    installed ✓")
             if provider.is_available():
-                print(f"  Status:    available ✓")
+                print("  Status:    available ✓")
             else:
-                print(f"  Status:    not available ✗")
+                print("  Status:    not available ✗")
                 schema = provider.get_config_schema() if hasattr(provider, "get_config_schema") else []
                 # Check all fields that have env_var (both secret and non-secret)
                 required_fields = [f for f in schema if f.get("env_var")]
                 if required_fields:
-                    print(f"  Missing:")
+                    print("  Missing:")
                     for f in required_fields:
                         env_var = f.get("env_var", "")
                         url = f.get("url", "")
@@ -487,11 +470,11 @@ def cmd_status(args) -> None:
                             line += f"  → {url}"
                         print(line)
         else:
-            print(f"\n  Plugin:    NOT installed ✗")
+            print("\n  Plugin:    NOT installed ✗")
             print(f"  Install the '{provider_name}' memory plugin to ~/.hermes/plugins/")
 
     if providers:
-        print(f"\n  Installed plugins:")
+        print("\n  Installed plugins:")
         for pname, desc, _ in providers:
             active = " ← active" if pname == provider_name else ""
             print(f"    • {pname}  ({desc}){active}")

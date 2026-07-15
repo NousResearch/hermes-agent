@@ -22,5 +22,11 @@ const ROW_TO_FRAME_KEY: Record<string, string> = {
 export function frameCountForRow(pet: PetInfo, row: string): number {
   const mapped = ROW_TO_FRAME_KEY[row]
 
-  return pet.framesByRow?.[row] ?? pet.framesByState?.[row] ?? (mapped ? pet.framesByState?.[mapped] : undefined) ?? pet.framesPerState ?? 0
+  return (
+    pet.framesByRow?.[row] ??
+    pet.framesByState?.[row] ??
+    (mapped ? pet.framesByState?.[mapped] : undefined) ??
+    pet.framesPerState ??
+    0
+  )
 }

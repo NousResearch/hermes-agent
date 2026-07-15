@@ -46,8 +46,11 @@ Frontmatter:
     Bad (123):   `A comprehensive skill that lets the agent search arXiv for
                   academic papers using keywords, authors, and categories.`
 - version: 0.1.0
-- author: the human you are authoring this for, first; "Hermes Agent" second.
-  Never credit only the tool.
+- author: always the literal value `Hermes`. NEVER fill it from the host
+  environment — the OS/login username (e.g. the `user=` line in your
+  environment hints), git config, or any identity you can probe must not be
+  written. Skills get shared and published, so an environment-derived name is
+  a privacy leak the user never opted into; the skill names itself as Hermes.
 - platforms: declare `[macos]`, `[linux]`, and/or `[windows]` IF the skill
   uses OS-bound primitives (osascript/apt/systemctl => the matching OS; /proc,
   os.setsid, signal.SIGKILL => linux; fcntl/termios => POSIX). Prefer fixing it
@@ -114,15 +117,29 @@ def build_learn_prompt(user_request: str) -> str:
 
     return (
         "[/learn] The user wants you to learn a reusable skill from the "
-        "source(s) they described below, and save it.\n\n"
-        f"WHAT TO LEARN FROM:\n{req}\n\n"
+        "request below, and save it.\n\n"
+        f"THE REQUEST:\n{req}\n\n"
+        "The request is open-ended and may mix two kinds of content, in any "
+        "order: SOURCES to gather (directories, file paths, URLs, \"what we "
+        "just did\", pasted notes) AND REQUIREMENTS that shape the skill "
+        "(what to focus on, what to leave out, scope, naming, the angle to "
+        "take). Treat EVERY part of the request as load-bearing. In "
+        "particular, prose that comes after a path or link is NOT incidental "
+        "— it is the user telling you what they want from that source. A "
+        "request like `<url> focus on the auth flow, skip the deprecated "
+        "endpoints` means: gather the URL AND honor \"focus on auth, skip "
+        "deprecated\" as authoring requirements. Never fetch the first source "
+        "and ignore the rest.\n\n"
         "Do this:\n"
-        "1. Gather the material. Resolve whatever the user named using the "
-        "tools you already have — `read_file`/`search_files` for local files "
-        "or directories, `web_extract` for URLs, the current conversation "
-        "history if they referred to something you just did, and the text "
-        "they pasted as-is. If the request is ambiguous about scope, make a "
-        "reasonable choice and note it; do not stall.\n"
+        "1. Gather every source the user named, using the tools you already "
+        "have — `read_file`/`search_files` for local files or directories, "
+        "`web_extract` for URLs, the current conversation history if they "
+        "referred to something you just did, and the text they pasted as-is. "
+        "If the request is ambiguous about scope, make a reasonable choice "
+        "and note it; do not stall.\n"
+        "1b. Apply every requirement, focus, and constraint in the request to "
+        "the skill you author — these govern what the SKILL.md covers and "
+        "emphasizes, not just which sources you read.\n"
         "2. Author ONE SKILL.md and save it with the `skill_manage` tool "
         "(action=\"create\"). Pick a sensible category. If the procedure needs "
         "a non-trivial script, add it under the skill's `scripts/` with "

@@ -38,6 +38,7 @@ from agent.turn_context import (
     reanchor_current_turn_user_idx,
 )
 from agent.turn_retry_state import TurnRetryState
+from agent.runtime_cwd import resolve_agent_cwd
 from agent.message_sanitization import (
     close_interrupted_tool_sequence,
     _repair_tool_call_arguments,
@@ -448,16 +449,20 @@ def _stored_prompt_matches_runtime(agent, prompt: str) -> bool:
 
     # Detect cwd drift: if the stored prompt was built in a different working
     # directory, reuse would silently inject a stale path into the prefix cache.
+    # Compare against resolve_agent_cwd() — the SAME resolver used to build the
+    # prompt — so gateway/TUI sessions that set TERMINAL_CWD are not falsely
+    # rejected (they would always differ from the launch dir's os.getcwd()).
     stored_cwd = line_value("Current working directory")
     if stored_cwd:
-        import os as _os
-        if stored_cwd != _os.getcwd():
+        if stored_cwd != str(resolve_agent_cwd()):
             return False
 
-    # Detect runtime surface drift: desktop GUI vs non-desktop.
-    has_desktop_marker = "Runtime surface: you're running inside the Hermes desktop GUI app." in prompt
-    in_desktop = (os.environ.get("HERMES_DESKTOP", "").strip().lower() in {"1", "true", "yes"})
-    if has_desktop_marker != in_desktop:
+    # Detect runtime-surface drift: the stored prompt records which platform it
+    # was built for (e.g. "desktop" vs "cli"). Reusing a desktop-built prompt on
+    # a terminal session (or vice versa) would inject the wrong runtime hints.
+    stored_platform = line_value("Platform")
+    current_platform = str(getattr(agent, "platform", "") or "").strip()
+    if stored_platform and current_platform and stored_platform != current_platform:
         return False
 
     return True

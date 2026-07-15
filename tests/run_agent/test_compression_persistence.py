@@ -357,19 +357,61 @@ class TestStoredPromptCwdDrift:
             )
 
     def test_stored_prompt_stale_when_runtime_surface_differs(self):
-        """Desktop GUI marker in stored prompt must not be reused when running in terminal."""
-        from unittest.mock import patch
+        """A stored prompt built for a different platform must not be reused."""
         from agent.conversation_loop import _stored_prompt_matches_runtime
 
-        agent = self._make_agent()
         stored_prompt = (
-            "Runtime surface: you're running inside the Hermes desktop GUI app.\n"
+            "Platform: desktop\n"
             "Model: test/model\n"
             "Provider: openrouter\n"
         )
+        agent = self._make_agent()
+        agent.platform = "cli"
+        assert _stored_prompt_matches_runtime(agent, stored_prompt) is False, (
+            "Expected False when stored prompt is for 'desktop' but the "
+            "current session runs on 'cli'"
+        )
 
-        # Current runtime is terminal/CLI: no desktop marker.
-        with patch.dict(os.environ, {"HERMES_DESKTOP": ""}, clear=False):
-            assert _stored_prompt_matches_runtime(agent, stored_prompt) is False, (
-                "Expected False when stored prompt claims desktop but HERMES_DESKTOP is unset"
+    def test_stored_prompt_fresh_when_platform_matches(self):
+        """Matching platform allows prompt reuse."""
+        from agent.conversation_loop import _stored_prompt_matches_runtime
+
+        agent = self._make_agent()
+        agent.platform = "desktop"
+        stored_prompt = (
+            "Platform: desktop\n"
+            "Model: test/model\n"
+            "Provider: openrouter\n"
+        )
+        assert _stored_prompt_matches_runtime(agent, stored_prompt) is True, (
+            "Expected True when stored platform matches the current platform"
+        )
+
+    def test_built_prompt_contains_platform_line(self):
+        """The built system prompt must carry a Platform: line so drift detection works."""
+        import tempfile
+        from pathlib import Path
+        from unittest.mock import patch
+        from hermes_state import SessionDB
+        from run_agent import AIAgent
+        from agent.system_prompt import build_system_prompt_parts
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db = SessionDB(db_path=Path(tmpdir) / "test.db")
+            with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
+                agent = AIAgent(
+                    api_key="test-key",
+                    base_url="https://openrouter.ai/api/v1",
+                    model="test/model",
+                    provider="openrouter",
+                    quiet_mode=True,
+                    session_db=db,
+                    session_id="platform-test",
+                    skip_context_files=True,
+                    skip_memory=True,
+                )
+            agent.platform = "cli"
+            parts = build_system_prompt_parts(agent)
+            assert "Platform: cli" in parts["volatile"], (
+                "Built prompt missing 'Platform: cli' — drift detection cannot read it"
             )

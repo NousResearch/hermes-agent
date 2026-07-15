@@ -2759,7 +2759,13 @@ class BasePlatformAdapter(ABC):
 
     def _acquire_platform_lock(self, scope: str, identity: str, resource_desc: str) -> bool:
         """Acquire a scoped lock for this adapter. Returns True on success."""
-        from gateway.status import acquire_scoped_lock
+        from gateway.status import (
+            acquire_scoped_lock,
+            terminate_pid,
+            _looks_like_gateway_process,
+            write_takeover_marker,
+            _pid_exists,
+        )
         self._platform_lock_scope = scope
         self._platform_lock_identity = identity
         acquired, existing = acquire_scoped_lock(
@@ -2768,6 +2774,39 @@ class BasePlatformAdapter(ABC):
         if acquired:
             return True
         owner_pid = existing.get('pid') if isinstance(existing, dict) else None
+        if owner_pid and _looks_like_gateway_process(owner_pid):
+            # The conflict holder is a live gateway process. Terminate it
+            # and retry the lock acquisition, mirroring the --replace behavior.
+            logger.info(
+                '[%s] %s already in use (PID %d). Terminating holder and retrying.',
+                self.name, resource_desc, owner_pid
+            )
+            try:
+                write_takeover_marker(owner_pid)
+            except Exception as e:
+                logger.debug('[%s] Could not write takeover marker: %s', self.name, e)
+            try:
+                terminate_pid(owner_pid, force=True)
+            except ProcessLookupError:
+                logger.debug('[%s] Holder PID %d already exited', self.name, owner_pid)
+            except Exception as e:
+                logger.warning('[%s] Failed to terminate holder PID %d: %s', self.name, owner_pid, e)
+            # Wait for the holder to exit before retrying. Poll with a short timeout
+            # to avoid blocking indefinitely if the holder is wedged.
+            import time
+            max_wait = 5.0  # Maximum time to wait for holder to exit
+            poll_interval = 0.1
+            waited = 0.0
+            while waited < max_wait:
+                if not _pid_exists(owner_pid):
+                    break
+                time.sleep(poll_interval)
+                waited += poll_interval
+            acquired, existing = acquire_scoped_lock(
+                scope, identity, metadata={'platform': self.platform.value}
+            )
+            if acquired:
+                return True
         message = (
             f'{resource_desc} already in use'
             + (f' (PID {owner_pid})' if owner_pid else '')

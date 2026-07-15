@@ -824,6 +824,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       } catch {
         return;
       }
+      // After fit() the terminal grid dimensions may have changed — scroll
+      // to bottom so the latest output stays in view. Without this, a
+      // tab-switch (display:none → visible) leaves the viewport stranded
+      // above the actual bottom, making the pane appear black (#53641 / #27740).
+      try { term.scrollToBottom(); } catch { /* disposed */ }
       if (fontChanged && term.rows > 0) {
         try {
           term.refresh(0, term.rows - 1);
@@ -1202,16 +1207,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       raf2 = requestAnimationFrame(() => {
         raf2 = 0;
         syncMetricsRef.current?.();
-        // Fix #53641 / #27740: after a tab-switch the xterm scroll position
-        // is not restored to the bottom — content is there but above the
-        // visible viewport, leaving a black area at the bottom of the pane.
-        // scrollToBottom() realigns the viewport; refresh() redraws any rows
-        // that may have been skipped while the tab was hidden.
-        const term = termRef.current;
-        if (term) {
-          term.scrollToBottom();
-          try { term.refresh(0, term.rows - 1); } catch { /* disposed */ }
-        }
         const host = hostRef.current;
         const active = typeof document !== "undefined"
           ? document.activeElement

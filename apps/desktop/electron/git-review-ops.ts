@@ -43,7 +43,11 @@ function runGh(args, cwd, ghBin): Promise<{ ok: boolean; stdout: string }> {
 }
 
 function gitFor(cwd, gitBin) {
-  return simpleGit({ baseDir: cwd, binary: gitBin || 'git', maxConcurrentProcesses: 4, trimmed: false })
+  // simple-git rejects Windows binary paths containing spaces (e.g.
+  // C:\Program Files\Git\cmd\git.exe — the default Git for Windows install
+  // path). Fall back to bare 'git' which Node resolves via PATH.
+  const binary = gitBin && !gitBin.includes(' ') ? gitBin : 'git'
+  return simpleGit({ baseDir: cwd, binary, maxConcurrentProcesses: 4, trimmed: false })
 }
 
 // simple-git reports renames as `old => new` (and `dir/{old => new}/f`); resolve

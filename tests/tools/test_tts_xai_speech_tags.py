@@ -27,6 +27,18 @@ def test_apply_xai_auto_speech_tags_preserves_explicit_tags():
     assert _apply_xai_auto_speech_tags(text) == text
 
 
+def test_apply_xai_auto_speech_tags_preserves_square_wrapping_tags():
+    text = "[whisper]Bonjour Monsieur Talbot. Ceci est un test.[/whisper]"
+
+    assert _apply_xai_auto_speech_tags(text) == text
+
+
+def test_apply_xai_auto_speech_tags_preserves_all_documented_xai_tags():
+    text = "Bonjour Monsieur Talbot. [sigh] <slow>Je parle lentement.</slow> <emphasis>Important.</emphasis>"
+
+    assert _apply_xai_auto_speech_tags(text) == text
+
+
 def test_apply_xai_auto_speech_tags_multi_paragraph_emits_single_pause():
     """Regression for #29417 — multi-paragraph input doubled the pause.
 

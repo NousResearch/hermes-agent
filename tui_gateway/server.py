@@ -686,6 +686,34 @@ def _finalize_session(session: dict | None, end_reason: str = "tui_close") -> No
         pass
 
 
+def _cleanup_agent(agent) -> None:
+    """Best-effort resource cleanup for an AIAgent instance (#50197/#50403).
+
+    Memory-provider shutdown and close() are attempted independently so a
+    failure in one still runs the other. Ordering matters: AIAgent.close()
+    clears _session_messages, so shutdown_memory_provider() must read them
+    first. Mirrors gateway/run.py:_cleanup_agent_resources.
+    """
+    if agent is None:
+        return
+    # 1. Drain the memory provider FIRST (close() would clear _session_messages).
+    try:
+        if hasattr(agent, "shutdown_memory_provider"):
+            session_messages = getattr(agent, "_session_messages", None)
+            if isinstance(session_messages, list):
+                agent.shutdown_memory_provider(session_messages)
+            else:
+                agent.shutdown_memory_provider()
+    except Exception:
+        pass
+    # 2. Close tool resources (terminals, browser, httpx, child agents).
+    try:
+        if hasattr(agent, "close"):
+            agent.close()
+    except Exception:
+        pass
+
+
 def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") -> None:
     """Fully tear down a session: finalize, unregister, close agent + worker.
 
@@ -706,12 +734,7 @@ def _teardown_session(session: dict | None, *, end_reason: str = "tui_close") ->
             unregister_gateway_notify(key)
     except Exception:
         pass
-    try:
-        agent = session.get("agent")
-        if agent is not None and hasattr(agent, "close"):
-            agent.close()
-    except Exception:
-        pass
+    _cleanup_agent(session.get("agent"))
     # NOTE: the slash-worker is closed inside _finalize_session (the single
     # _finalized-guarded chokepoint that main folded it into), exactly once.
     # We deliberately do NOT re-close it here — _teardown_session's job beyond
@@ -10084,24 +10107,26 @@ def _(rid, params: dict) -> dict:
         try:
             from run_agent import AIAgent
 
-            result = AIAgent(
-                **_background_agent_kwargs(session["agent"], task_id)
-            ).run_conversation(
-                user_message=text,
-                task_id=task_id,
-            )
-            _emit(
-                "background.complete",
-                parent,
-                {
-                    "task_id": task_id,
-                    "text": (
-                        result.get("final_response", str(result))
-                        if isinstance(result, dict)
-                        else str(result)
-                    ),
-                },
-            )
+            agent = AIAgent(**_background_agent_kwargs(session["agent"], task_id))
+            try:
+                result = agent.run_conversation(
+                    user_message=text,
+                    task_id=task_id,
+                )
+                _emit(
+                    "background.complete",
+                    parent,
+                    {
+                        "task_id": task_id,
+                        "text": (
+                            result.get("final_response", str(result))
+                            if isinstance(result, dict)
+                            else str(result)
+                        ),
+                    },
+                )
+            finally:
+                _cleanup_agent(agent)
         except Exception as e:
             _emit(
                 "background.complete",
@@ -10195,10 +10220,20 @@ def _(rid, params: dict) -> dict:
                 parent,
                 {"task_id": task_id, "text": f"Starting hidden restart agent{history_note}"},
             )
-            result = AIAgent(
+            # This ephemeral agent's session_id IS task_id (see
+            # _background_agent_kwargs), and AIAgent.close() does a task-wide
+            # kill: process_registry.kill_all(task_id), cleanup_vm(task_id),
+            # cleanup_browser(task_id) (run_agent.py close()). The whole point
+            # of preview.restart is to leave a detached server RUNNING under
+            # this task_id, so closing the agent would tear down the very
+            # server the restart just started. Therefore this agent is
+            # deliberately NOT closed. (skip_memory=True also makes memory
+            # shutdown a no-op, so _cleanup_agent would only do harm here.)
+            agent = AIAgent(
                 **_ephemeral_preview_agent_kwargs(session["agent"], task_id),
                 **_preview_restart_callbacks(parent, task_id),
-            ).run_conversation(
+            )
+            result = agent.run_conversation(
                 user_message=prompt,
                 task_id=task_id,
                 conversation_history=parent_history or None,

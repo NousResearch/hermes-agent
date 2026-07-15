@@ -38,4 +38,8 @@
          requests the runtime grant when the chat starts a voice session. -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
+    <!-- Required by the WifiManager.WifiLock acquired in MainActivity to keep the
+         gateway WebSocket alive under Wi-Fi power-save. Without this the lock
+         throws (silently, via the catch) and the stability fix never engages. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 </manifest>

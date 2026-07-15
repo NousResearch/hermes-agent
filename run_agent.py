@@ -1729,12 +1729,15 @@ class AIAgent:
         # Close and turn-start persistence can run on separate CLI threads; the
         # marker test-and-append below must be one critical section or both can
         # observe the same unmarked dict and write duplicate durable rows.
+        from agent.agent_runtime_helpers import note_turn_persisted
+
         persist_lock = getattr(self, "_session_persist_lock", None)
         if persist_lock is None:
             self._drop_trailing_empty_response_scaffolding(messages)
             self._session_messages = messages
             self._save_session_log(messages)
             self._flush_messages_to_session_db(messages, conversation_history)
+            note_turn_persisted(self)
             return
 
         with persist_lock:
@@ -1742,6 +1745,7 @@ class AIAgent:
             self._session_messages = messages
             self._save_session_log(messages)
             self._flush_messages_to_session_db(messages, conversation_history)
+            note_turn_persisted(self)
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.

@@ -1527,9 +1527,15 @@ class ShellFileOperations(FileOperations):
         # Instead, require ``wc -c`` to return a real byte count.  If it does
         # not (file absent / unreadable / non-POSIX backend), error out so the
         # agent learns the write did NOT happen rather than silently trusting
-        # a phantom success.  The byte count must also be at least the size of
-        # the content we streamed (a smaller on-disk size means a truncated /
-        # partial write).
+        # a phantom success.  The byte count must EXACTLY equal the size of
+        # the content we streamed.  An exact match is load-bearing on both
+        # ends: a smaller on-disk size means a truncated / partial write,
+        # while a *larger* size means the atomic swap did not land and we are
+        # reading a stale / corrupt target left over from a prior write.  The
+        # equality check also closes the empty-content hole — an
+        # ``expected_bytes == 0`` write over an old nonempty target would
+        # otherwise be accepted by a ``<`` comparison even though the new
+        # (empty) content never replaced the old file.
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
         stat_result = self._exec(stat_cmd)
 
@@ -1549,12 +1555,14 @@ class ShellFileOperations(FileOperations):
                     f"on this backend). No file was confirmed on disk."
                 )
             )
-        if bytes_written < expected_bytes:
+        if bytes_written != expected_bytes:
             return WriteResult(
                 error=(
                     f"Write verification failed: '{path}' has {bytes_written} "
                     f"bytes on disk but {expected_bytes} were written — the "
-                    f"file appears truncated or only partially written."
+                    f"on-disk size does not match. A smaller size means a "
+                    f"truncated / partial write; a larger size means the "
+                    f"atomic swap did not land and a stale target remains."
                 )
             )
 

@@ -833,7 +833,14 @@ class TestPatchReplacePostWriteVerification:
             f"success={result.success}, diff={result.diff}"
         )
         assert "verification failed" in result.error.lower()
-        assert "did not persist" in result.error.lower()
+        # The mismatch is caught by write_file's exact byte-count check
+        # (12 stale bytes on disk vs 9 written) or, on backends where that
+        # passes, patch_replace's own re-read ("did not persist"). Either
+        # layer surfacing the failure is acceptable.
+        assert (
+            "did not persist" in result.error.lower()
+            or "does not match" in result.error.lower()
+        )
 
     def test_patch_replace_succeeds_when_file_persisted(self, mock_env):
         """Normal success path: write persists, verify read returns new bytes."""
@@ -984,3 +991,71 @@ class TestWriteFilePostWriteVerification:
         result = ops.write_file("/tmp/test/ok.txt", "hello")
         assert result.error is None, f"Unexpected error: {result.error}"
         assert result.bytes_written == 5
+
+    def test_write_file_fails_when_oversized(self, mock_env):
+        """On-disk byte count LARGER than written content → stale target error.
+
+        A larger on-disk size means the atomic swap never landed and we are
+        reading a stale/corrupt target left over from a prior write.
+        """
+        def side_effect(command, stdin_data=None, **kwargs):
+            if stdin_data is not None:
+                return {"output": "", "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                return {"output": "99\n", "returncode": 0}  # but we wrote 5 bytes
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.write_file("/tmp/test/stale.txt", "hello")
+        assert result.error is not None, (
+            f"oversized stale target not caught: bytes_written={result.bytes_written}"
+        )
+        assert "verification failed" in result.error.lower()
+
+    def test_write_file_fails_when_empty_write_leaves_stale_target(self, mock_env):
+        """Empty-content write over an old nonempty target must fail closed.
+
+        expected_bytes == 0, so a ``<`` comparison would accept any old
+        nonempty file as success even though the empty write never landed.
+        The exact-equality check rejects it.
+        """
+        def side_effect(command, stdin_data=None, **kwargs):
+            if stdin_data is not None:
+                return {"output": "", "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                return {"output": "42\n", "returncode": 0}  # stale nonempty target
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.write_file("/tmp/test/wipe.txt", "")
+        assert result.error is not None, (
+            f"empty-write stale target not caught: bytes_written={result.bytes_written}"
+        )
+        assert "verification failed" in result.error.lower()
+
+    def test_write_file_succeeds_on_empty_content(self, mock_env):
+        """Happy path for an empty write: wc -c confirms 0 bytes on disk."""
+        state = {"content": None}
+
+        def side_effect(command, stdin_data=None, **kwargs):
+            if stdin_data is not None:
+                state["content"] = stdin_data
+                return {"output": "", "returncode": 0}
+            if command.startswith("mkdir "):
+                return {"output": "", "returncode": 0}
+            if command.startswith("wc -c"):
+                n = len((state["content"] or "").encode())
+                return {"output": f"{n}\n", "returncode": 0}
+            return {"output": "", "returncode": 0}
+
+        mock_env.execute.side_effect = side_effect
+        ops = ShellFileOperations(mock_env)
+        result = ops.write_file("/tmp/test/empty.txt", "")
+        assert result.error is None, f"Unexpected error: {result.error}"
+        assert result.bytes_written == 0

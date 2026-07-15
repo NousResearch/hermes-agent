@@ -10769,7 +10769,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             # is referencing. History can contain the same or similar text
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
-            reply_snippet = event.reply_to_text[:500]
+            # reply_to_text is the QUOTED message's text — in a group/channel
+            # that is any other participant's message, i.e. attacker-influenceable
+            # content. Interpolated raw into the turn the model reads, embedded
+            # newlines let it break out of the [Replying to: "..."] framing and
+            # masquerade as a fake markdown section (an "## Override" heading) —
+            # the same indirect-prompt-injection vector the sender-name prefix
+            # above already neutralizes. Collapse it to a single inert line
+            # (benign quotes pass through byte-for-byte).
+            # Keep the existing 500-char snippet cap (max_chars=500 so a
+            # snippet already sliced to 500 is never re-truncated with an
+            # ellipsis); neutralization only flattens newlines/control chars.
+            reply_snippet = neutralize_untrusted_inline_text(
+                event.reply_to_text[:500], max_chars=500
+            )
             if getattr(event, "reply_to_is_own_message", False):
                 message_text = (
                     f'[Replying to your previous message: "{reply_snippet}"]\n\n'

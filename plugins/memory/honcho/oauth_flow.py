@@ -241,6 +241,25 @@ _CALLBACK_HTML = (
 )
 
 
+def _can_display_browser() -> bool:
+    """Return True if the environment has a display capable of opening a browser.
+
+    Returns False on headless servers and SSH sessions without X forwarding,
+    where webbrowser.open() would silently no-op and the loopback listener
+    would block for the full timeout with no way to complete the flow.
+    """
+    if os.environ.get("SSH_CLIENT") or os.environ.get("SSH_TTY"):
+        return False
+    if os.name == "nt":
+        return True
+    try:
+        if os.uname().sysname == "Darwin":
+            return True
+    except AttributeError:
+        pass
+    return bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+
+
 def _bind_loopback_server() -> tuple[HTTPServer, dict[str, str]]:
     """Bind the one-shot callback server, returning it and its capture dict.
 
@@ -317,7 +336,20 @@ def authorize_via_loopback(
     follows the authorize redirect into the loopback callback. It always
     receives the authorize URL, so a CLI caller can also print it for
     browserless environments.
+
+    Raises:
+        RuntimeError: If ``open_url`` is None (system browser) and no display
+            is available — the flow would block for the full timeout with no
+            way to complete the authorization.
     """
+    if open_url is None and not _can_display_browser():
+        raise RuntimeError(
+            "Honcho OAuth requires browser interaction but this environment "
+            "has no display available (headless/SSH session). "
+            "Run `hermes memory connect honcho` from a terminal with browser "
+            "access, or configure an API key instead."
+        )
+
     # Bind first so the advertised redirect_uri carries the actual bound port
     # (which may differ from :8765 if it was taken).
     server, captured = _bind_loopback_server()

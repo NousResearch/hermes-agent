@@ -1,0 +1,122 @@
+name: carbonvoice-platform
+label: Carbon Voice
+kind: platform
+version: 0.3.6
+description: >
+  Carbon Voice gateway adapter for Hermes Agent.
+  Connects via Socket.IO (primary) with REST polling fallback — no public
+  webhook or tunnel required. Persists a cursor to disk so messages received
+  while Hermes is offline are processed on the next startup. Replies via
+  POST /v3/messages/start, so the Hermes agent appears as a bot user inside
+  Carbon Voice. Text-only — Carbon Voice transcribes voice messages to text
+  before delivering them.
+author: PhononX
+
+requires_env:
+  - name: CARBONVOICE_PAT
+    description: "Carbon Voice Personal Access Token (cv_pat_...) for the agent identity"
+    prompt: "Carbon Voice PAT"
+    url: "https://www.developer.carbonvoice.app/"
+    password: true
+
+optional_env:
+  - name: CARBONVOICE_BASE_URL
+    description: "Carbon Voice API base URL (default: https://api.carbonvoice.app)"
+    prompt: "API base URL"
+    password: false
+  - name: CARBONVOICE_POLL_INTERVAL_MS
+    description: "Polling interval when running in fallback mode (default: 5000)"
+    prompt: "Polling interval (ms)"
+    password: false
+  - name: CARBONVOICE_WS_RETRY_MAX_MS
+    description: "Maximum WebSocket reconnect backoff (default: 30000)"
+    prompt: "Max WS retry backoff (ms)"
+    password: false
+  - name: CARBONVOICE_STATE_PATH
+    description: "Path to the cursor state file (default: $HERMES_HOME/state/carbonvoice.json)"
+    prompt: "State file path"
+    password: false
+  - name: CARBONVOICE_CREATOR_ID
+    description: "Restrict inbound messages to this Carbon Voice user_guid (optional personal-bot mode)"
+    prompt: "Allowed creator id (or empty)"
+    password: false
+  - name: CARBONVOICE_ALLOWED_USERS
+    description: "Extra Carbon Voice user_guids allowed, beyond the auto-detected owner and users approved via /cv-allow-user. Access is deny-by-default."
+    prompt: "Extra allowed user_guids (comma-separated, optional)"
+    password: false
+  - name: CARBONVOICE_ALLOW_ALL_USERS
+    description: "Deny-by-default (false). Set true to disable gating and let anyone talk to the bot (old open behavior)."
+    prompt: "Allow ALL users? (true/false, default false)"
+    password: false
+  - name: CARBONVOICE_APPROVAL_COOLDOWN_S
+    description: "Min seconds between owner-approval prompts (and the sender's 'request sent' notice) for the same unknown user (default: 1800). Owner is re-prompted after the window if the first ask was missed."
+    prompt: "Approval re-prompt cooldown (seconds)"
+    password: false
+  - name: CARBONVOICE_HOME_CHANNEL
+    description: "Carbon Voice channel_guid for cron/notifications AND where the bot asks the owner to approve unknown senders (/cv-allow-user)"
+    prompt: "Home channel guid"
+    password: false
+  - name: CARBONVOICE_HOME_CHANNEL_NAME
+    description: "Display name for the Carbon Voice home channel"
+    prompt: "Home channel display name"
+    password: false
+  - name: CARBONVOICE_REACTION_ID
+    description: "Reaction id used to acknowledge inbound messages (default: 'acknowledged'). Available ids are logged on startup."
+    prompt: "Ack reaction id"
+    password: false
+  - name: CARBONVOICE_PENDING_REACTION_ID
+    description: "(Reserved, not used by default.) Reaction id for a 'pending approval' marker on an unauthorized sender's message (default: 'confused' ⁉️). Per-message reactions flooded the owner with notifications, so unauthorized messages are now dropped silently; kept for operators who wire it back in."
+    prompt: "Pending-approval reaction id"
+    password: false
+  - name: CARBONVOICE_APPROVE_REACTION_ID
+    description: "Reaction the owner taps on a 'wants to talk' prompt to ALLOW that user — one-tap approval, no typed command (default: 'affirmative' 💯). Available ids are logged on startup."
+    prompt: "Owner approve reaction id"
+    password: false
+  - name: CARBONVOICE_REJECT_REACTION_ID
+    description: "Reaction the owner taps on a 'wants to talk' prompt to BLOCK that user (default: 'negative' 👎). Available ids are logged on startup."
+    prompt: "Owner reject reaction id"
+    password: false
+  - name: CARBONVOICE_STUCK_MAX_AGE_S
+    description: "How long (seconds) a message with no transcript is retried before being treated as permanently empty (image-only / system / failed STT) and skipped, so it can't pin the polling cursor (default: 300)."
+    prompt: "Stuck-message max age (seconds)"
+    password: false
+  - name: CARBONVOICE_DISABLE_ACK_REACTION
+    description: "Disable the visual ack reaction on inbound messages (default: false)"
+    prompt: "Disable ack reaction? (true/false)"
+    password: false
+  - name: CARBONVOICE_DISABLE_MARK_READ
+    description: "Disable clearing the unread notification after the agent replies (default: false)"
+    prompt: "Disable mark-as-read? (true/false)"
+    password: false
+  - name: CARBONVOICE_IGNORED_SENDERS_LOG
+    description: "Path to the audit log of rejected senders (default: $HERMES_HOME/logs/carbonvoice-ignored-senders.log)"
+    prompt: "Ignored senders log path"
+    password: false
+  - name: CARBONVOICE_REQUIRE_MENTION
+    description: "In group channels, only respond when the agent is @-mentioned (default: true). DMs always pass. Set to false for the pre-gate 'respond to every message' behavior."
+    prompt: "Require @mention in group channels? (true/false)"
+    password: false
+  - name: CARBONVOICE_FREE_RESPONSE_CHANNELS
+    description: "Comma-separated channel_guids where the agent always responds, regardless of mention."
+    prompt: "Free-response channel_guids (comma-separated, blank to skip)"
+    password: false
+  - name: CARBONVOICE_IGNORED_CHANNELS
+    description: "Comma-separated channel_guids where the agent NEVER responds, even when mentioned (hard veto, applies to DMs too)."
+    prompt: "Ignored channel_guids (comma-separated, blank to skip)"
+    password: false
+  - name: CARBONVOICE_SHARED_GROUP_SESSIONS
+    description: "When true, all participants in a group channel share one session with the agent even outside of threads (flips group_sessions_per_user=false). Default false — sessions are already shared per thread (Hermes adds [sender name] prefixes automatically). Set true for bot-room channels where strict per-user isolation isn't wanted."
+    prompt: "Share group sessions across all participants? (true/false)"
+    password: false
+  - name: CARBONVOICE_VOICE_OUT
+    description: "When true, the agent's text replies are auto-converted to voice memos via Hermes' TTS pipeline and shipped to Carbon Voice's /v5/messages/audio endpoint (server-side STT then re-displays them with transcript). Default false (text replies). Requires voice.auto_tts: true in ~/.hermes/config.yaml plus a TTS provider configured (edge works key-less)."
+    prompt: "Always reply with voice memos? (true/false)"
+    password: false
+  - name: CARBONVOICE_MAX_ATTACHMENT_MB
+    description: "Maximum size (MB) for inbound attachments the plugin will download and forward to the agent's multimodal pipeline. Images, PDFs, and text files under the cap are downloaded to ~/.hermes/{image,document}_cache and exposed via MessageEvent.media_urls so the agent can see/read them. Anything larger is logged as a WARNING and skipped (the text part of the message still reaches the agent). Default 10 MB."
+    prompt: "Max inbound attachment size in MB"
+    password: false
+  - name: CARBONVOICE_SEND_DEDUP_WINDOW_S
+    description: "Drop an identical outbound reply to the same channel within this many seconds (default: 90). Defends against the gateway re-sending the same response once per queued follow-up when delivery confirmation is lost (e.g. CV 502 mid-stream). Set 0 to disable."
+    prompt: "Outbound dedup window (seconds)"
+    password: false

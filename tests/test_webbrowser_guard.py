@@ -2,9 +2,18 @@
 
 import webbrowser
 
+import pytest
 
-def test_webbrowser_open_is_neutralized_by_default():
-    assert webbrowser.open("https://auth.x.ai/oauth2/authorize") is True
+
+@pytest.mark.parametrize("method_name", ("open", "open_new", "open_new_tab"))
+def test_webbrowser_methods_are_neutralized_by_default(
+    _neutralize_webbrowser,
+    method_name,
+):
+    url = "https://auth.x.ai/oauth2/authorize"
+
+    assert getattr(webbrowser, method_name)(url) is True
+    assert _neutralize_webbrowser == [url]
 
 
 def test_tests_can_override_webbrowser_open(monkeypatch):

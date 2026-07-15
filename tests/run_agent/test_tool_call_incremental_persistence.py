@@ -52,7 +52,7 @@ def _make_agent():
     with (
         patch(
             "run_agent.get_tool_definitions",
-            return_value=_make_tool_defs("web_search"),
+            return_value=_make_tool_defs("web_search", "vision_analyze"),
         ),
         patch("run_agent.check_toolset_requirements", return_value={}),
         patch("run_agent.OpenAI"),
@@ -87,6 +87,28 @@ def _mock_response(content="Hello", finish_reason="stop", tool_calls=None):
     msg = SimpleNamespace(content=content, tool_calls=tool_calls)
     choice = SimpleNamespace(message=msg, finish_reason=finish_reason)
     return SimpleNamespace(choices=[choice], model="test/model", usage=None)
+
+
+def _oversized_multimodal_result() -> tuple[dict, str]:
+    data_url = "data:image/png;base64," + ("A" * 150_000)
+    return (
+        {
+            "_multimodal": True,
+            "content": [
+                {"type": "text", "text": "screenshot"},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+            "text_summary": "screenshot",
+        },
+        data_url,
+    )
+
+
+def _assert_multimodal_result_was_bounded(messages: list, data_url: str) -> None:
+    content = messages[0]["content"]
+    assert isinstance(content, str)
+    assert "Truncated" in content
+    assert data_url not in content
 
 
 # ---------------------------------------------------------------------------
@@ -250,3 +272,41 @@ def test_execute_tool_calls_concurrent_flushes_each_tool_result_in_order():
     # production flush call breaks one of these assertions.
     assert flushed_tool_ids == ["c1", "c2"]
     assert flush_lengths == [1, 2]
+
+
+def test_sequential_bounds_oversized_multimodal_result_below_turn_budget():
+    agent = _make_agent()
+    agent._flush_messages_to_session_db = MagicMock()
+    tool_call = _mock_tool_call(name="vision_analyze", call_id="img-sequential")
+    assistant_message = SimpleNamespace(content="", tool_calls=[tool_call])
+    result, data_url = _oversized_multimodal_result()
+    messages: list = []
+
+    with (
+        patch("run_agent.handle_function_call", return_value=result),
+        patch("agent.tool_executor.get_active_env", return_value=None),
+        patch.object(agent, "_model_supports_vision", return_value=True),
+        patch.object(agent, "_provider_supports_vision_tool_messages", return_value=True),
+    ):
+        agent._execute_tool_calls_sequential(assistant_message, messages, "task-1")
+
+    _assert_multimodal_result_was_bounded(messages, data_url)
+
+
+def test_concurrent_bounds_oversized_multimodal_result_below_turn_budget():
+    agent = _make_agent()
+    agent._flush_messages_to_session_db = MagicMock()
+    tool_call = _mock_tool_call(name="vision_analyze", call_id="img-concurrent")
+    assistant_message = SimpleNamespace(content="", tool_calls=[tool_call])
+    result, data_url = _oversized_multimodal_result()
+    messages: list = []
+
+    with (
+        patch.object(agent, "_invoke_tool", return_value=result),
+        patch("agent.tool_executor.get_active_env", return_value=None),
+        patch.object(agent, "_model_supports_vision", return_value=True),
+        patch.object(agent, "_provider_supports_vision_tool_messages", return_value=True),
+    ):
+        agent._execute_tool_calls_concurrent(assistant_message, messages, "task-1")
+
+    _assert_multimodal_result_was_bounded(messages, data_url)

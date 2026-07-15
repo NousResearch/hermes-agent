@@ -200,6 +200,43 @@ def maybe_persist_tool_result(
     )
 
 
+def maybe_persist_tool_result_content(
+    content: Any,
+    tool_name: str,
+    tool_use_id: str,
+    env=None,
+    config: BudgetConfig = DEFAULT_BUDGET,
+    threshold: int | float | None = None,
+) -> Any:
+    """Layer 2 for string or structured tool-message content.
+
+    Structured content is measured and persisted using its serialized form,
+    but remains a native list/dict while it is within the per-result limit.
+    This keeps small image parts available to vision-capable models without
+    letting oversized base64 payloads bypass Layer 2.
+    """
+    if isinstance(content, str):
+        return maybe_persist_tool_result(
+            content=content,
+            tool_name=tool_name,
+            tool_use_id=tool_use_id,
+            env=env,
+            config=config,
+            threshold=threshold,
+        )
+
+    storage_content = _serialize_content_for_budget(content)
+    replacement = maybe_persist_tool_result(
+        content=storage_content,
+        tool_name=tool_name,
+        tool_use_id=tool_use_id,
+        env=env,
+        config=config,
+        threshold=threshold,
+    )
+    return content if replacement == storage_content else replacement
+
+
 def enforce_turn_budget(
     tool_messages: list[dict],
     env=None,

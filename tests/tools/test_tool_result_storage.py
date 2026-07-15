@@ -20,6 +20,7 @@ from tools.tool_result_storage import (
     enforce_turn_budget,
     generate_preview,
     maybe_persist_tool_result,
+    maybe_persist_tool_result_content,
 )
 
 
@@ -419,6 +420,29 @@ class TestMaybePersistToolResult:
         )
         # Any non-empty content with threshold=0 should be persisted
         assert PERSISTED_OUTPUT_TAG in result
+
+
+# ── maybe_persist_tool_result_content ────────────────────────────────
+
+class TestMaybePersistToolResultContent:
+    def test_structured_content_under_threshold_stays_native(self):
+        content = [
+            {"type": "text", "text": "screenshot"},
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,AAAA"},
+            },
+        ]
+
+        result = maybe_persist_tool_result_content(
+            content=content,
+            tool_name="vision_analyze",
+            tool_use_id="img-small",
+            env=None,
+            config=BudgetConfig(default_result_size=1_000),
+        )
+
+        assert result is content
 
 
 # ── enforce_turn_budget ───────────────────────────────────────────────

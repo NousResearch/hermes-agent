@@ -43,6 +43,7 @@ from tools.terminal_tool import (
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
     maybe_persist_tool_result,
+    maybe_persist_tool_result_content,
     enforce_turn_budget,
 )
 from tools.budget_config import BudgetConfig, DEFAULT_BUDGET, budget_for_context_window
@@ -827,6 +828,14 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         # image tool result never poisons canonical session history.
         # String results pass through unchanged.
         _tool_content = agent._tool_result_content_for_active_model(name, function_result)
+        if _is_multimodal_tool_result(function_result):
+            _tool_content = maybe_persist_tool_result_content(
+                content=_tool_content,
+                tool_name=name,
+                tool_use_id=tc.id,
+                env=get_active_env(effective_task_id),
+                config=_tool_budget,
+            )
         messages.append(make_tool_result_message(name, _tool_content, tc.id))
         _flush_session_db_after_tool_progress(
             agent,
@@ -1476,6 +1485,14 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
         # Unwrap _multimodal dicts to an OpenAI-style content list
         # (see parallel path for rationale). String results pass through.
         _tool_content = agent._tool_result_content_for_active_model(function_name, function_result)
+        if _is_multimodal_tool_result(function_result):
+            _tool_content = maybe_persist_tool_result_content(
+                content=_tool_content,
+                tool_name=function_name,
+                tool_use_id=tool_call.id,
+                env=get_active_env(effective_task_id),
+                config=_tool_budget,
+            )
         messages.append(make_tool_result_message(function_name, _tool_content, tool_call.id))
         _flush_session_db_after_tool_progress(
             agent,

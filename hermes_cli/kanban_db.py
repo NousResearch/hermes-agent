@@ -7695,8 +7695,11 @@ def _default_spawn(
     try:
         from gateway.session_context import build_session_subprocess_env
         env = build_session_subprocess_env(dict(os.environ))
-    except ImportError:
-        # gateway not importable (e.g. test environments or standalone CLI)
+    except ModuleNotFoundError:
+        # gateway package genuinely absent (e.g. test environments or
+        # standalone CLI) -- fall back. A real ImportError from inside the
+        # module (e.g. a regression) should propagate instead of being
+        # silently swallowed.
         env = dict(os.environ)
 
     # Inject HERMES_HOME so the worker reads the profile-scoped config.yaml

@@ -344,23 +344,28 @@ def build_session_subprocess_env(base_env: "dict | None" = None) -> dict:
 
     Resolution per var:
     1. ContextVar value (set by ``set_session_vars``) -- overrides os.environ.
-    2. ``os.environ`` fallback (CLI / cron / non-gateway paths that never call
-       ``set_session_vars``).
+    2. ``os.environ`` fallback -- consulted whenever the ContextVar was never
+       bound in this context (CLI / cron / non-gateway paths, or a test that
+       passes an explicit but empty ``base_env``).
     3. Omitted if absent from both.
 
     Returns a new dict; does not mutate the caller's env.
     """
     import os as _os
 
-    env = dict(base_env) if base_env is not None else {}
+    env = dict(base_env) if base_env is not None else dict(_os.environ)
     for var_name in _SUBPROCESS_FORWARD_VARS:
         var = _VAR_MAP[var_name]
         value = var.get()
         if value is _UNSET:
-            # Never set in this context -- fall back to os.environ.
-            oval = _os.environ.get(var_name, "")
-            if oval:
-                env[var_name] = oval
+            # Never set in this context. Fall back to os.environ only if the
+            # caller's base_env didn't already supply this var explicitly —
+            # an explicit base_env value is authoritative and must not be
+            # clobbered by a stale process-level os.environ value.
+            if var_name not in env:
+                oval = _os.environ.get(var_name, "")
+                if oval:
+                    env[var_name] = oval
         else:
             # Explicitly set (even to "") -- trust the ContextVar.
             env[var_name] = value

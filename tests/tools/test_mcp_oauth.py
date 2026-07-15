@@ -23,6 +23,7 @@ from tools.mcp_oauth import (
     _wait_for_callback,
     _redirect_handler,
     _paste_callback_reader,
+    _raise_if_non_interactive,
 )
 
 
@@ -30,17 +31,6 @@ def _set_interactive_stdin(monkeypatch, *, is_tty: bool = True) -> None:
     mock_stdin = MagicMock()
     mock_stdin.isatty.return_value = is_tty
     monkeypatch.setattr("tools.mcp_oauth.sys.stdin", mock_stdin)
-
-
-def _mock_callback_server(port: int = 0) -> OAuthCallbackServer:
-    """Create and start an OAuthCallbackServer for testing.
-
-    The server binds at construction time and starts its background thread.
-    Caller must close() the returned instance.
-    """
-    server = OAuthCallbackServer(port=port)
-    server.start()
-    return server
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +262,7 @@ class TestRedirectHandlerSshHint:
 
     def test_ssh_hint_shown_on_ssh_session(self, monkeypatch, capsys):
         import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_is_interactive", lambda: True)
         monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
@@ -285,6 +276,7 @@ class TestRedirectHandlerSshHint:
 
     def test_ssh_hint_shown_via_ssh_tty(self, monkeypatch, capsys):
         import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_is_interactive", lambda: True)
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.setenv("SSH_TTY", "/dev/pts/1")
         monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
@@ -297,6 +289,7 @@ class TestRedirectHandlerSshHint:
 
     def test_no_ssh_hint_on_local_session(self, monkeypatch, capsys):
         import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_is_interactive", lambda: True)
         monkeypatch.delenv("SSH_CLIENT", raising=False)
         monkeypatch.delenv("SSH_TTY", raising=False)
         monkeypatch.setattr(mco, "_can_open_browser", lambda: True)
@@ -309,6 +302,7 @@ class TestRedirectHandlerSshHint:
 
     def test_no_ssh_hint_when_port_not_set(self, monkeypatch, capsys):
         import tools.mcp_oauth as mco
+        monkeypatch.setattr(mco, "_is_interactive", lambda: True)
         monkeypatch.setenv("SSH_CLIENT", "1.2.3.4 1234 22")
         monkeypatch.setattr(mco, "_can_open_browser", lambda: False)
 
@@ -419,19 +413,24 @@ class TestCallbackHandlerIsolation:
 class TestOAuthPortSharing:
     """Verify build_oauth_auth and _wait_for_callback use the same port."""
 
-    def test_port_stored_via_configure_callback_port(self):
-        """_configure_callback_port stores the server and resolved port in cfg."""
+    def test_configure_callback_port_stores_port(self):
+        """_configure_callback_port stores resolved port in cfg."""
         from tools.mcp_oauth import _configure_callback_port
 
         cfg = {"redirect_port": 0}
-        server = _configure_callback_port(cfg)
-        try:
-            assert server.port > 0
-            assert 1024 <= server.port <= 65535
-            assert cfg["_resolved_port"] == server.port
-            assert cfg["_callback_server"] is server
-        finally:
-            server.close()
+        port = _configure_callback_port(cfg)
+        assert isinstance(port, int)
+        assert 1024 <= port <= 65535
+        assert cfg["_resolved_port"] == port
+
+    def test_configure_callback_port_uses_explicit_port(self):
+        """_configure_callback_port preserves explicit redirect_port."""
+        from tools.mcp_oauth import _configure_callback_port
+
+        cfg = {"redirect_port": 54321}
+        port = _configure_callback_port(cfg)
+        assert port == 54321
+        assert cfg["_resolved_port"] == 54321
 
 
 # ---------------------------------------------------------------------------
@@ -542,21 +541,19 @@ class TestIsInteractive:
 class TestWaitForCallbackNoBlocking:
     """_wait_for_callback() must never call input() — it raises instead."""
 
-    def test_raises_on_timeout_instead_of_input(self):
+    def test_raises_on_timeout_instead_of_input(self, monkeypatch):
         """When no auth code arrives, raises OAuthNonInteractiveError."""
         import asyncio
+        import tools.mcp_oauth as mod
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
 
-        server = _mock_callback_server()
-        try:
-            async def instant_sleep(_seconds):
-                pass
+        async def instant_sleep(_seconds):
+            pass
 
-            with patch.object(asyncio, "sleep", instant_sleep):
-                with patch("builtins.input", side_effect=AssertionError("input() must not be called")):
-                    with pytest.raises(OAuthNonInteractiveError, match="callback timed out"):
-                        asyncio.run(_wait_for_callback(server=server))
-        finally:
-            server.close()
+        with patch.object(asyncio, "sleep", instant_sleep):
+            with patch("builtins.input", side_effect=AssertionError("input() must not be called")):
+                with pytest.raises(OAuthNonInteractiveError, match="callback timed out"):
+                    asyncio.run(_wait_for_callback(port=0))
 
 
 class TestBuildOAuthAuthNonInteractive:
@@ -600,6 +597,118 @@ class TestBuildOAuthAuthNonInteractive:
 
 
 # ---------------------------------------------------------------------------
+# #57836: cached-but-unusable token fail-fast at redirect/callback boundary
+# ---------------------------------------------------------------------------
+
+class TestNonInteractiveFailFastAtCallbackBoundary:
+    """#57836: a cached-but-unusable token (expired/revoked, refresh rejected)
+    makes the MCP SDK fall through to the authorization-code flow even though
+    build_oauth_auth's token-file guard passed. In a non-interactive context
+    (systemd gateway, cron, background discovery) that flow must fail fast at
+    the redirect/callback boundary — never launch a browser flow or bind a
+    callback listener, and never block for the full timeout — so gateway
+    startup is not gated on an unusable optional MCP server, and retries do not
+    collide on the callback port ('Address already in use').
+    """
+
+    def test_wait_for_callback_rejects_before_binding_when_noninteractive(self, monkeypatch):
+        """No listener bound and no poll loop entered when non-interactive."""
+        import asyncio
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+
+        # The guard must fire before OAuthCallbackServer is constructed
+        # (which would bind the port).  Assert that construction never
+        # happens by patching the class to blow up on any use.
+        mock_server_cls = MagicMock(side_effect=AssertionError(
+            "OAuthCallbackServer must not be constructed in non-interactive context"
+        ))
+        monkeypatch.setattr(mod, "OAuthCallbackServer", mock_server_cls)
+
+        with pytest.raises(OAuthNonInteractiveError, match="interactive session"):
+            asyncio.run(mod._wait_for_callback(port=0))
+        mock_server_cls.assert_not_called()
+
+    def test_wait_for_callback_fail_fast_holds_even_with_cached_token_file(self, tmp_path, monkeypatch):
+        """Guard does not depend on token-file existence.
+
+        A stale token file on disk passes build_oauth_auth's guard, so the
+        callback boundary is the only place that can reject the flow.
+        """
+        import asyncio
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True)
+        (d / "example.json").write_text(
+            json.dumps({"access_token": "stale", "token_type": "Bearer"})
+        )
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+        monkeypatch.setattr(
+            mod, "OAuthCallbackServer",
+            MagicMock(side_effect=AssertionError("must not bind"))
+        )
+
+        with pytest.raises(OAuthNonInteractiveError):
+            asyncio.run(mod._wait_for_callback(port=0))
+
+    def test_redirect_handler_rejects_and_does_not_open_browser(self, monkeypatch, capsys):
+        """Non-interactive redirect must not print an auth URL or open a browser."""
+        import asyncio
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+        monkeypatch.setattr(
+            "webbrowser.open", MagicMock(side_effect=AssertionError("must not open browser"))
+        )
+
+        with pytest.raises(OAuthNonInteractiveError, match="browser authorization"):
+            asyncio.run(mod._redirect_handler("https://idp.example.com/authorize?x=1"))
+
+        err = capsys.readouterr().err
+        assert "https://idp.example.com/authorize" not in err
+
+    def test_boundary_errors_point_at_hermes_mcp_login(self, monkeypatch):
+        """Both boundaries emit an actionable next step."""
+        import asyncio
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: False)
+        with pytest.raises(OAuthNonInteractiveError, match="hermes mcp login"):
+            asyncio.run(mod._redirect_handler("https://idp.example.com/authorize"))
+
+        with pytest.raises(OAuthNonInteractiveError, match="hermes mcp login"):
+            asyncio.run(mod._wait_for_callback(port=0))
+
+    def test_guard_does_not_fire_on_interactive_redirect(self, monkeypatch, capsys):
+        """Positive control: the fail-fast guard is scoped to the auth-code path.
+
+        #57836 regression coverage asks that valid/refreshable OAuth keeps
+        working non-interactively — a good token never reaches these handlers,
+        so the guard must be inert once a real flow is in progress. Assert the
+        interactive path still prints the URL and does not raise, proving the
+        guard does not over-fire and swallow legitimate authorization.
+        """
+        import asyncio
+        import tools.mcp_oauth as mod
+
+        monkeypatch.setattr(mod, "_is_interactive", lambda: True)
+        # Local (non-SSH) interactive session with no browser available, so the
+        # handler falls through to the manual-URL print without opening a tab.
+        monkeypatch.delenv("SSH_CLIENT", raising=False)
+        monkeypatch.delenv("SSH_TTY", raising=False)
+        monkeypatch.setattr(mod, "_can_open_browser", lambda: False)
+
+        asyncio.run(mod._redirect_handler("https://idp.example.com/authorize?x=9"))
+
+        err = capsys.readouterr().err
+        assert "https://idp.example.com/authorize?x=9" in err
+
+
+# ---------------------------------------------------------------------------
 # Extracted helper tests (Task 3 of MCP OAuth consolidation)
 # ---------------------------------------------------------------------------
 
@@ -638,34 +747,6 @@ def test_build_client_metadata_with_secret_is_confidential():
     _configure_callback_port(cfg)
     md = _build_client_metadata(cfg)
     assert md.token_endpoint_auth_method == "client_secret_post"
-
-
-def test_configure_callback_port_picks_free_port():
-    """_configure_callback_port(0) picks a free port in the ephemeral range."""
-    from tools.mcp_oauth import _configure_callback_port
-
-    cfg = {"redirect_port": 0}
-    server = _configure_callback_port(cfg)
-    try:
-        assert 1024 < server.port < 65536
-        assert cfg["_resolved_port"] == server.port
-        assert cfg["_callback_server"] is server
-    finally:
-        server.close()
-
-
-def test_configure_callback_port_uses_explicit_port():
-    """An explicit redirect_port is preserved."""
-    from tools.mcp_oauth import _configure_callback_port
-
-    cfg = {"redirect_port": 54321}
-    server = _configure_callback_port(cfg)
-    try:
-        assert server.port == 54321
-        assert cfg["_resolved_port"] == 54321
-        assert cfg["_callback_server"] is server
-    finally:
-        server.close()
 
 
 def test_build_oauth_auth_preserves_server_url_path():
@@ -855,6 +936,7 @@ class TestWaitForCallbackPasteIntegration:
     """_wait_for_callback offers the paste prompt only when interactive."""
 
     def test_paste_prompt_shown_on_tty(self, monkeypatch, capsys):
+        import asyncio
         import tools.mcp_oauth as mod
         monkeypatch.setattr(mod, "_is_interactive", lambda: True)
         # Make stdin readline block forever so HTTP listener path drives the test;
@@ -864,55 +946,45 @@ class TestWaitForCallbackPasteIntegration:
             threading.Event().wait()
         monkeypatch.setattr("sys.stdin", MagicMock(readline=block_forever))
 
-        server = _mock_callback_server()
-        try:
-            async def instant_sleep(_):
-                pass
-            with patch.object(mod.asyncio, "sleep", instant_sleep):
-                with pytest.raises(OAuthNonInteractiveError):
-                    asyncio.run(_wait_for_callback(server=server))
-        finally:
-            server.close()
+        async def instant_sleep(_):
+            pass
+        with patch.object(mod.asyncio, "sleep", instant_sleep):
+            with pytest.raises(OAuthNonInteractiveError):
+                asyncio.run(_wait_for_callback(port=0))
         err = capsys.readouterr().err
         assert "paste the redirect URL" in err
 
     def test_paste_prompt_NOT_shown_when_noninteractive(self, monkeypatch, capsys):
         """Preserves existing invariant: no input() / paste prompt in headless runs."""
+        import asyncio
         import tools.mcp_oauth as mod
         monkeypatch.setattr(mod, "_is_interactive", lambda: False)
 
-        server = _mock_callback_server()
-        try:
-            async def instant_sleep(_):
-                pass
-            with patch.object(mod.asyncio, "sleep", instant_sleep):
-                with patch("builtins.input", side_effect=AssertionError("input() must not be called")):
-                    with pytest.raises(OAuthNonInteractiveError):
-                        asyncio.run(_wait_for_callback(server=server))
-        finally:
-            server.close()
+        async def instant_sleep(_):
+            pass
+        with patch.object(mod.asyncio, "sleep", instant_sleep):
+            with patch("builtins.input", side_effect=AssertionError("input() must not be called")):
+                with pytest.raises(OAuthNonInteractiveError):
+                    asyncio.run(_wait_for_callback(port=0))
         err = capsys.readouterr().err
         assert "paste the redirect URL" not in err
 
     def test_paste_prompt_NOT_shown_when_interactivity_suppressed(self, monkeypatch, capsys):
         """Background MCP discovery must not race the CLI/TUI stdin reader."""
+        import asyncio
         import tools.mcp_oauth as mod
 
         mock_stdin = MagicMock()
         mock_stdin.isatty.return_value = True
         monkeypatch.setattr(mod.sys, "stdin", mock_stdin)
 
-        server = _mock_callback_server()
-        try:
-            async def instant_sleep(_):
-                pass
+        async def instant_sleep(_):
+            pass
 
-            with patch.object(mod.asyncio, "sleep", instant_sleep):
-                with mod.suppress_interactive_oauth():
-                    with pytest.raises(OAuthNonInteractiveError):
-                        asyncio.run(_wait_for_callback(server=server))
-        finally:
-            server.close()
+        with patch.object(mod.asyncio, "sleep", instant_sleep):
+            with mod.suppress_interactive_oauth():
+                with pytest.raises(OAuthNonInteractiveError):
+                    asyncio.run(_wait_for_callback(port=0))
         err = capsys.readouterr().err
         assert "paste the redirect URL" not in err
         mock_stdin.readline.assert_not_called()
@@ -966,35 +1038,29 @@ class TestWaitForCallbackSkipIntegration:
 
     def test_skip_raises_non_interactive_error(self, monkeypatch):
         """Skip token must raise OAuthNonInteractiveError (mcp_tool handles as non-fatal)."""
+        import asyncio
         import tools.mcp_oauth as mod
         monkeypatch.setattr(mod, "_is_interactive", lambda: True)
         monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "skip\n"))
 
-        server = _mock_callback_server()
-        try:
-            async def instant_sleep(_):
-                pass
-            with patch.object(mod.asyncio, "sleep", instant_sleep):
-                with pytest.raises(OAuthNonInteractiveError, match="user_skipped"):
-                    asyncio.run(_wait_for_callback(server=server))
-        finally:
-            server.close()
+        async def instant_sleep(_):
+            pass
+        with patch.object(mod.asyncio, "sleep", instant_sleep):
+            with pytest.raises(OAuthNonInteractiveError, match="user_skipped"):
+                asyncio.run(_wait_for_callback(port=0))
 
     def test_paste_prompt_mentions_skip(self, monkeypatch, capsys):
         """The interactive prompt must tell users about the skip option."""
+        import asyncio
         import tools.mcp_oauth as mod
         monkeypatch.setattr(mod, "_is_interactive", lambda: True)
         monkeypatch.setattr("sys.stdin", MagicMock(readline=lambda: "skip\n"))
 
-        server = _mock_callback_server()
-        try:
-            async def instant_sleep(_):
-                pass
-            with patch.object(mod.asyncio, "sleep", instant_sleep):
-                with pytest.raises(OAuthNonInteractiveError):
-                    asyncio.run(_wait_for_callback(server=server))
-        finally:
-            server.close()
+        async def instant_sleep(_):
+            pass
+        with patch.object(mod.asyncio, "sleep", instant_sleep):
+            with pytest.raises(OAuthNonInteractiveError):
+                asyncio.run(_wait_for_callback(port=0))
         err = capsys.readouterr().err
         assert "skip" in err.lower()
 

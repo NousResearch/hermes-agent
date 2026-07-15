@@ -91,6 +91,12 @@ class OAuthNonInteractiveError(RuntimeError):
 # Module-level state
 # ---------------------------------------------------------------------------
 
+# Port used by the most recent build_oauth_auth() call.  Exposed so that
+# tests can verify the callback server and the redirect_uri share a port.
+# NOTE: This global is the root cause of issue #5344 (port collision on
+# concurrent OAuth flows); replacing it with a ContextVar is deferred.
+_oauth_port: int | None = None
+
 # Interactivity gate for OAuth stdin prompts. A ContextVar (NOT threading.local)
 # is required: background MCP discovery sets this on the discovery thread, but
 # the actual connect+OAuth runs on the dedicated `mcp-event-loop` thread via
@@ -167,6 +173,21 @@ def suppress_interactive_oauth():
         yield
     finally:
         _oauth_interactive_enabled.reset(token)
+
+
+def _raise_if_non_interactive(lead: str) -> None:
+    """Raise ``OAuthNonInteractiveError`` unless an interactive session exists.
+
+    ``lead`` is the boundary-specific first sentence; this helper appends the
+    shared, actionable ``hermes mcp login`` next-step so the guidance wording
+    lives in one place across every non-interactive OAuth boundary (#57836).
+    """
+    if not _is_interactive():
+        raise OAuthNonInteractiveError(
+            f"{lead} "
+            "Run `hermes mcp login <server>` interactively to (re)authorize, "
+            "then restart or reload the gateway."
+        )
 
 
 def _can_open_browser() -> bool:
@@ -582,6 +603,21 @@ async def _redirect_handler(authorization_url: str, port: int | None = None) -> 
     Opens the browser automatically when possible; always prints the URL
     as a fallback for headless/SSH/gateway environments.
     """
+    # Fail fast at the authorization boundary in non-interactive contexts
+    # (systemd gateway, cron, background MCP discovery). A cached-but-unusable
+    # token (expired/revoked, refresh rejected) makes the SDK fall through to
+    # the authorization-code flow even though build_oauth_auth's token-file
+    # guard passed. Without this check we would print a URL and launch a
+    # browser flow no operator can complete, then block in _wait_for_callback
+    # for the full timeout. Raise before launching so gateway adapters start
+    # promptly and the caller can skip this server with an actionable warning.
+    # This intentionally re-checks interactivity here rather than trusting the
+    # token-file existence guard alone. See #57836.
+    _raise_if_non_interactive(
+        "MCP OAuth requires browser authorization but no interactive "
+        "session is available (non-interactive/background context)."
+    )
+
     msg = (
         f"\n  MCP OAuth: authorization required.\n"
         f"  Open this URL in your browser:\n\n"
@@ -628,17 +664,52 @@ async def _redirect_handler(authorization_url: str, port: int | None = None) -> 
         print("  (Headless environment detected — open the URL manually.)\n", file=sys.stderr)
 
 
-async def _wait_for_callback(server: "OAuthCallbackServer | None" = None) -> tuple[str, str | None]:
-    """Wait for the OAuth callback to arrive.
+async def _wait_for_callback(port: int | None = None) -> tuple[str, str | None]:
+    """Wait for the OAuth callback to arrive on the local callback server.
 
-    Polls the already-bound *server* for the result.  The paste fallback
-    writes directly to ``server._result`` so it races naturally with the
-    HTTP listener — whichever finishes first wins.
+    Creates and starts an :class:`OAuthCallbackServer` (which binds the port)
+    only after the non-interactive fail-fast guard passes, so that
+    gateway/cron/background contexts never consume a port for an unusable
+    cached token.
 
-    *server* must be provided via ``functools.partial`` from the caller
-    (``build_oauth_auth`` or ``_build_provider``)."""
-    # Poll pre-bound server
-    if server is not None:
+    On an interactive TTY, races the HTTP listener against a stdin paste
+    fallback so users without an SSH tunnel can copy the redirect URL (or
+    just the ``code=...&state=...`` query string) from a browser on another
+    machine and paste it back. The HTTP listener wins when the redirect
+    reaches it first; the paste fallback wins when it doesn't.
+
+    Raises:
+        OAuthNonInteractiveError: If non-interactive, or if the callback
+            times out (no user present to complete the browser auth).
+        RuntimeError: If ``port`` has not been set, which indicates that
+            ``build_oauth_auth`` was not properly called first.
+    """
+    if port is None:
+        raise RuntimeError(
+            "OAuth callback port not set — build_oauth_auth must be called "
+            "before _wait_for_callback"
+        )
+
+    # Reject before binding the callback listener in non-interactive contexts.
+    # Reaching here means the SDK entered the authorization-code flow (a valid
+    # or refreshable token would never call the callback handler), so a cached
+    # token file is present but unusable. Binding the listener here would block
+    # for the full 300s timeout and — on the next connection retry — collide
+    # with the still-bound/TIME_WAIT port, surfacing as
+    # ``OSError: [Errno 98] Address already in use``. Failing fast keeps
+    # gateway startup independent of an unusable optional MCP server. This
+    # guard holds "regardless of whether a token file exists" — the point the
+    # build_oauth_auth token-file guard cannot cover. See #57836.
+    _raise_if_non_interactive(
+        "OAuth callback requires an interactive session but none is "
+        "available (non-interactive/background context); skipping browser "
+        "authorization without binding a callback listener."
+    )
+
+    # Create and bind the callback server now that we're past the guard.
+    server = OAuthCallbackServer(port=port)
+    server.start()
+    try:
         # Paste fallback: race a stdin reader against the HTTP listener.
         # Both write to `server._result`, so whichever finishes first wins.
         if _is_interactive():
@@ -651,15 +722,13 @@ async def _wait_for_callback(server: "OAuthCallbackServer | None" = None) -> tup
             threading.Thread(
                 target=_paste_callback_reader, args=(server._result,), daemon=True
             ).start()
+
         result = await server.wait()
         if result[1] is None and server._result.get("error") == _USER_SKIPPED_SENTINEL:
             raise OAuthNonInteractiveError("user_skipped")
         return result
-
-    raise RuntimeError(
-        "OAuth callback server not provided — "
-        "caller must pass server via functools.partial"
-    )
+    finally:
+        server.close()
 
 
 def _paste_callback_reader(result: dict) -> None:
@@ -774,21 +843,24 @@ def remove_oauth_tokens(server_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _configure_callback_port(cfg: dict) -> "OAuthCallbackServer":
-    """Resolve the OAuth callback port and bind the callback server.
+def _configure_callback_port(cfg: dict) -> int:
+    """Pick or validate the OAuth callback port.
 
-    Creates and starts an :class:`OAuthCallbackServer` so the port is
-    consumed immediately — no TOCTOU gap between port discovery and
-    actual server startup (issue #34260).  Stores the server in
-    ``cfg['_callback_server']`` and the resolved port in
-    ``cfg['_resolved_port']``.
+    Stores the resolved port into ``cfg['_resolved_port']`` so sibling
+    helpers (and the manager) can read it from the same dict. Returns the
+    resolved port.
+
+    NOTE: also sets the legacy module-level ``_oauth_port`` so existing
+    calls to ``_wait_for_callback`` keep working. The legacy global is
+    the root cause of issue #5344 (port collision on concurrent OAuth
+    flows); replacing it with a ContextVar is out of scope for this PR.
     """
+    global _oauth_port
     requested = int(cfg.get("redirect_port", 0))
-    server = OAuthCallbackServer(port=requested)
-    server.start()
-    cfg["_resolved_port"] = server.port
-    cfg["_callback_server"] = server
-    return server
+    port = _find_free_port() if requested == 0 else requested
+    cfg["_resolved_port"] = port
+    _oauth_port = port  # legacy consumer: _wait_for_callback reads this
+    return port
 
 
 def _build_client_metadata(cfg: dict) -> "OAuthClientMetadata":
@@ -897,12 +969,12 @@ def build_oauth_auth(
     _maybe_preregister_client(storage, cfg, client_metadata)
 
     import functools
-    callback_server = cfg.get("_callback_server")
+    port = cfg.get("_resolved_port")
     return OAuthClientProvider(
         server_url=server_url,
         client_metadata=client_metadata,
         storage=storage,
-        redirect_handler=functools.partial(_redirect_handler, port=callback_server.port),
-        callback_handler=functools.partial(_wait_for_callback, server=callback_server),
+        redirect_handler=functools.partial(_redirect_handler, port=port),
+        callback_handler=functools.partial(_wait_for_callback, port=port),
         timeout=float(cfg.get("timeout", 300)),
     )

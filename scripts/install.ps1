@@ -337,19 +337,26 @@ function Find-SystemBrowser {
     return $null
 }
 
+function ConvertTo-DotEnvDoubleQuoted {
+    param([string]$Value)
+    $escaped = $Value.Replace('\', '\\').Replace('"', '\"')
+    return '"' + $escaped + '"'
+}
+
 function Write-BrowserEnv {
     param([string]$BrowserPath)
     if (-not (Test-Path $HermesHome)) {
         New-Item -ItemType Directory -Force -Path $HermesHome | Out-Null
     }
     $envFile = Join-Path $HermesHome ".env"
+    $quotedBrowserPath = ConvertTo-DotEnvDoubleQuoted $BrowserPath
     if (-not (Test-Path $envFile)) {
-        Set-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=`"$BrowserPath`"" -Encoding UTF8
+        Set-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=$quotedBrowserPath" -Encoding UTF8
         return
     }
     $content = Get-Content $envFile -Raw -ErrorAction SilentlyContinue
     if ($content -and $content -match "AGENT_BROWSER_EXECUTABLE_PATH=") { return }
-    Add-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=`"$BrowserPath`"" -Encoding UTF8
+    Add-Content -Path $envFile -Value "AGENT_BROWSER_EXECUTABLE_PATH=$quotedBrowserPath" -Encoding UTF8
 }
 
 function Install-AgentBrowser {

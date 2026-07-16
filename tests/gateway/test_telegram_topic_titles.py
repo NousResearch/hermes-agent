@@ -5,6 +5,7 @@ from gateway.telegram_topic_titles import (
     dedupe_telegram_topic_title,
     resolve_telegram_topic_title_contexts,
     sanitize_telegram_topic_title,
+    telegram_operator_topic_ids,
     telegram_topic_title_options,
 )
 
@@ -16,6 +17,25 @@ def test_default_options_preserve_readable_titles():
     assert sanitize_telegram_topic_title(
         "  Build   Telegram Topic UX  ", options=options
     ) == "Build Telegram Topic UX"
+
+
+def test_operator_topic_ids_are_normalized_and_malformed_values_are_ignored():
+    assert telegram_operator_topic_ids(
+        {
+            "dm_topics": [
+                {
+                    "chat_id": 208214988,
+                    "topics": [
+                        {"name": "Research", "thread_id": 41},
+                        None,
+                    ],
+                },
+                None,
+            ]
+        }
+    ) == frozenset({("208214988", "41")})
+    assert telegram_operator_topic_ids({"dm_topics": None}) == frozenset()
+    assert telegram_operator_topic_ids({"dm_topics": "invalid"}) == frozenset()
 
 
 def test_nested_compact_options_are_parsed_and_word_count_is_clamped():

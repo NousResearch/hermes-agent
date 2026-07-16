@@ -17,6 +17,7 @@ from utils import atomic_json_write
 from gateway.telegram_topic_titles import (
     TelegramTopicTitleOptions,
     resolve_telegram_topic_title_contexts,
+    telegram_operator_topic_ids,
     telegram_topic_title_options,
 )
 
@@ -110,16 +111,19 @@ def _session_entry_name(origin: Dict[str, Any]) -> str:
     return f"{base_name} / {topic_label}"
 
 
-def _configured_telegram_topic_title_options() -> TelegramTopicTitleOptions:
-    """Load Telegram topic-title policy without exposing config to callers."""
+def _configured_telegram_topic_title_settings() -> tuple[
+    TelegramTopicTitleOptions, frozenset[tuple[str, str]]
+]:
+    """Load topic-title policy and operator-declared Telegram topic ids."""
     try:
         from gateway.config import Platform, load_gateway_config
 
         config = load_gateway_config()
         telegram = config.platforms.get(Platform.TELEGRAM)
-        return telegram_topic_title_options(getattr(telegram, "extra", None) or {})
+        extra = getattr(telegram, "extra", None) or {}
+        return telegram_topic_title_options(extra), telegram_operator_topic_ids(extra)
     except Exception:
-        return TelegramTopicTitleOptions()
+        return TelegramTopicTitleOptions(), frozenset()
 
 
 def _merge_telegram_topic_title_context(
@@ -127,8 +131,9 @@ def _merge_telegram_topic_title_context(
     contexts: List[Dict[str, Any]],
     *,
     options: TelegramTopicTitleOptions,
+    operator_topic_ids: frozenset[tuple[str, str]] = frozenset(),
 ) -> None:
-    """Apply bound session titles and stable aliases to Telegram topic entries."""
+    """Apply auto-title labels without rewriting operator-declared topics."""
     by_id = {str(entry.get("id") or ""): entry for entry in entries}
     base_names: Dict[str, str] = {}
     for entry in entries:
@@ -139,11 +144,20 @@ def _merge_telegram_topic_title_context(
         if chat_id:
             base_names.setdefault(chat_id, base_name)
 
+    auto_contexts = [
+        context
+        for context in contexts
+        if (
+            str(context.get("chat_id") or ""),
+            str(context.get("thread_id") or ""),
+        )
+        not in operator_topic_ids
+    ]
     resolved_titles = resolve_telegram_topic_title_contexts(
-        contexts,
+        auto_contexts,
         options=options,
     )
-    for context, resolved in zip(contexts, resolved_titles):
+    for context, resolved in zip(auto_contexts, resolved_titles):
         chat_id = str(context.get("chat_id") or "")
         thread_id = str(context.get("thread_id") or "")
         if not chat_id or not thread_id:
@@ -348,7 +362,7 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, Any]]:
         entries = _build_from_sessions_json(platform_name)
 
     if platform_name == "telegram":
-        options = _configured_telegram_topic_title_options()
+        options, operator_topic_ids = _configured_telegram_topic_title_settings()
         if options.style != "compact":
             return entries
         try:
@@ -363,6 +377,7 @@ def _build_from_sessions(platform_name: str) -> List[Dict[str, Any]]:
                 entries,
                 contexts,
                 options=options,
+                operator_topic_ids=operator_topic_ids,
             )
         except Exception as exc:
             logger.debug(

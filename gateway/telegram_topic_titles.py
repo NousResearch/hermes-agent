@@ -82,6 +82,32 @@ def telegram_topic_title_options(extra: Optional[Mapping[str, Any]]) -> Telegram
     )
 
 
+def telegram_operator_topic_ids(
+    extra: Optional[Mapping[str, Any]],
+) -> frozenset[tuple[str, str]]:
+    """Return normalized ids for topics explicitly declared by the operator."""
+    config = extra if isinstance(extra, Mapping) else {}
+    dm_topics = config.get("dm_topics", [])
+    if not isinstance(dm_topics, list):
+        return frozenset()
+
+    topic_ids: set[tuple[str, str]] = set()
+    for chat_entry in dm_topics:
+        if not isinstance(chat_entry, Mapping):
+            continue
+        chat_id = str(chat_entry.get("chat_id") or "")
+        topics = chat_entry.get("topics", [])
+        if not chat_id or not isinstance(topics, list):
+            continue
+        for topic in topics:
+            if not isinstance(topic, Mapping):
+                continue
+            thread_id = str(topic.get("thread_id") or "")
+            if thread_id:
+                topic_ids.add((chat_id, thread_id))
+    return frozenset(topic_ids)
+
+
 def _readable_title(title: str) -> str:
     cleaned = re.sub(r"\s+", " ", str(title or "")).strip()
     if not cleaned:

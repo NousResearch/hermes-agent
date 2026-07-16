@@ -529,6 +529,72 @@ gateway:
         assert by_id["208214988:42"]["name"] == "Ofir / daily-progress2"
         assert by_id["208214988:42"]["aliases"] == ["daily-progress2", "topic 42"]
 
+    def test_operator_declared_topic_is_preserved_and_does_not_consume_suffix(
+        self, tmp_path
+    ):
+        from hermes_state import SessionDB
+
+        (tmp_path / "config.yaml").write_text(
+            """
+gateway:
+  platforms:
+    telegram:
+      extra:
+        dm_topic_titles:
+          style: compact
+          compact_max_words: 2
+        dm_topics:
+          - chat_id: 208214988
+            topics:
+              - name: Operator General
+                thread_id: 41
+""".lstrip(),
+            encoding="utf-8",
+        )
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.apply_telegram_topic_migration()
+        for session_id, thread_id, chat_topic, title in [
+            ("sess-operator", "41", "Operator General", "Daily Progress Checkin"),
+            ("sess-auto", "42", "topic 42", "Daily Progress Update"),
+        ]:
+            db.create_session(session_id, source="telegram", user_id="208214988")
+            db.set_session_title(session_id, title)
+            origin = {
+                "platform": "telegram",
+                "chat_id": "208214988",
+                "chat_name": "Ofir",
+                "chat_topic": chat_topic,
+                "thread_id": thread_id,
+            }
+            db.record_gateway_session_peer(
+                session_id,
+                source="telegram",
+                user_id="208214988",
+                session_key=f"agent:main:telegram:dm:208214988:{thread_id}",
+                chat_id="208214988",
+                chat_type="dm",
+                thread_id=thread_id,
+                display_name="Ofir",
+                origin_json=json.dumps(origin),
+            )
+            db.bind_telegram_topic(
+                chat_id="208214988",
+                thread_id=thread_id,
+                user_id="208214988",
+                session_key=f"agent:main:telegram:dm:208214988:{thread_id}",
+                session_id=session_id,
+            )
+        db.close()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            entries = _build_from_sessions("telegram")
+
+        by_id = {entry["id"]: entry for entry in entries}
+        assert by_id["208214988:41"]["name"] == "Ofir / Operator General"
+        assert "aliases" not in by_id["208214988:41"]
+        assert by_id["208214988:42"]["name"] == "Ofir / daily-progress"
+        assert by_id["208214988:42"]["aliases"] == ["daily-progress", "topic 42"]
+
     def test_default_config_does_not_enrich_channel_directory(self, tmp_path):
         from hermes_state import SessionDB
 

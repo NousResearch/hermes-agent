@@ -984,6 +984,48 @@ async def test_compact_auto_title_rename_dedupes_titles_per_chat(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_compact_runtime_dedupe_excludes_operator_declared_sibling(tmp_path):
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.apply_telegram_topic_migration()
+    for session_id, thread_id, title in [
+        ("sess-operator", "41", "Daily Progress Checkin"),
+        ("sess-auto", "42", "Daily Progress Update"),
+    ]:
+        db.create_session(session_id, source="telegram", user_id="208214988")
+        db.set_session_title(session_id, title)
+        db.bind_telegram_topic(
+            chat_id="208214988",
+            thread_id=thread_id,
+            user_id="208214988",
+            session_key=f"agent:main:telegram:dm:208214988:{thread_id}",
+            session_id=session_id,
+        )
+    runner = _make_runner(session_db=db)
+    runner._telegram_topic_mode_enabled = lambda source: True
+    runner.config.platforms[Platform.TELEGRAM].extra.update({
+        "dm_topic_titles": {"style": "compact", "compact_max_words": 2},
+        "dm_topics": [
+            {
+                "chat_id": 208214988,
+                "topics": [{"name": "Operator General", "thread_id": 41}],
+            }
+        ],
+    })
+
+    await runner._rename_telegram_topic_for_session_title(
+        _make_source(thread_id="42"),
+        "sess-auto",
+        "Daily Progress Update",
+    )
+
+    runner.adapters[Platform.TELEGRAM].rename_dm_topic.assert_awaited_once_with(
+        chat_id="208214988",
+        thread_id="42",
+        name="daily-progress",
+    )
+
+
+@pytest.mark.asyncio
 async def test_invalid_compact_title_config_preserves_readable_auto_title(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     db.apply_telegram_topic_migration()

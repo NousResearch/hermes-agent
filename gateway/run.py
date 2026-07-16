@@ -62,6 +62,7 @@ from gateway.telegram_topic_titles import (
     TelegramTopicTitleOptions,
     resolve_telegram_topic_title_contexts,
     sanitize_telegram_topic_title as _sanitize_telegram_topic_title_policy,
+    telegram_operator_topic_ids,
     telegram_topic_title_options,
 )
 
@@ -13676,15 +13677,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except Exception:
             logger.debug("Failed to send Telegram topic setup image", exc_info=True)
 
-    def _telegram_topic_title_options(self, source: SessionSource) -> TelegramTopicTitleOptions:
-        """Resolve topic-title presentation settings for this Telegram lane."""
+    def _telegram_topic_title_extra(self, source: SessionSource) -> Dict[str, Any]:
+        """Return Telegram platform extras for shared title policy decisions."""
         platform_cfg = (
             self.config.platforms.get(source.platform)
             if getattr(self, "config", None) and getattr(self.config, "platforms", None)
             else None
         )
-        extra = getattr(platform_cfg, "extra", None) or {} if platform_cfg is not None else {}
-        return telegram_topic_title_options(extra)
+        extra = getattr(platform_cfg, "extra", None) if platform_cfg is not None else None
+        return extra if isinstance(extra, dict) else {}
+
+    def _telegram_topic_title_options(self, source: SessionSource) -> TelegramTopicTitleOptions:
+        """Resolve topic-title presentation settings for this Telegram lane."""
+        return telegram_topic_title_options(self._telegram_topic_title_extra(source))
 
     def _sanitize_telegram_topic_title(self, title: str) -> str:
         """Preserve the existing readable Bot API-safe title contract."""
@@ -13716,12 +13721,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             logger.debug("Failed to load Telegram topic titles before rename", exc_info=True)
             contexts = []
 
+        operator_topic_ids = telegram_operator_topic_ids(
+            self._telegram_topic_title_extra(source)
+        )
+        auto_contexts = [
+            context
+            for context in contexts
+            if (
+                str(context.get("chat_id") or ""),
+                str(context.get("thread_id") or ""),
+            )
+            not in operator_topic_ids
+        ]
         resolved_titles = resolve_telegram_topic_title_contexts(
-            contexts,
+            auto_contexts,
             options=options,
             title_overrides={str(session_id): title},
         )
-        for context, resolved in zip(contexts, resolved_titles):
+        for context, resolved in zip(auto_contexts, resolved_titles):
             if str(context.get("session_id") or "") == str(session_id):
                 return resolved
 

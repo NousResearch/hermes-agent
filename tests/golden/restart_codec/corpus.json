@@ -1,0 +1,83 @@
+{
+  "cases": [
+    {
+      "name": "legacy integer count",
+      "kind": "decode",
+      "value": 3
+    },
+    {
+      "name": "invalid scalar count",
+      "kind": "decode",
+      "value": "not-a-count"
+    },
+    {
+      "name": "full structured entry",
+      "kind": "decode",
+      "value": {
+        "count": "4",
+        "replay_marks": [
+          1,
+          "2.5",
+          "bad",
+          null
+        ],
+        "replay_request_ids": [
+          "req-1",
+          7,
+          "",
+          null
+        ],
+        "armed": 1
+      }
+    },
+    {
+      "name": "malformed structured entry",
+      "kind": "decode",
+      "value": {
+        "count": -2,
+        "replay_marks": "oops",
+        "replay_request_ids": "oops",
+        "armed": false
+      }
+    },
+    {
+      "name": "encode compact count only",
+      "kind": "encode",
+      "entry": {
+        "count": 5,
+        "replay_marks": [],
+        "replay_request_ids": [],
+        "armed": false
+      }
+    },
+    {
+      "name": "encode structured replay state",
+      "kind": "encode",
+      "entry": {
+        "count": 2,
+        "replay_marks": [
+          10.5
+        ],
+        "replay_request_ids": [
+          "req-1"
+        ],
+        "armed": true
+      }
+    },
+    {
+      "name": "encode armed only remains structured",
+      "kind": "encode",
+      "entry": {
+        "count": 1,
+        "replay_marks": [],
+        "replay_request_ids": [],
+        "armed": true
+      }
+    },
+    {
+      "name": "negative scalar count clamps to zero",
+      "kind": "decode",
+      "value": -3
+    }
+  ]
+}

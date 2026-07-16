@@ -1,0 +1,238 @@
+{
+  "025b5cbfe2e3561f3b5a84c9cbe0ead8e00f0ac95375595d981f379c28ad38dd": {
+    "input": {
+      "kind": "persisted",
+      "name": "blank session key is absent",
+      "session_key": "",
+      "store": "valid"
+    },
+    "name": "blank session key is absent",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        "absent",
+        null
+      ]
+    }
+  },
+  "220e86310a6904f605ed5a42d216746912c6279573ec1101282d2c2293d0757c": {
+    "input": {
+      "kind": "persisted",
+      "name": "store lookup returns valid identity",
+      "session_key": "session-c",
+      "store": "valid"
+    },
+    "name": "store lookup returns valid identity",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        "valid",
+        {
+          "api_mode": "responses",
+          "model": "model:session-c",
+          "provider": "openai"
+        }
+      ]
+    }
+  },
+  "66a831752d3532e47dfef8f74ad3d388e9d2bdc302ac9627c6a8011556896139": {
+    "input": {
+      "config": {
+        "model": {
+          "default": "primary-model",
+          "model": "alias-model",
+          "provider": " openai "
+        }
+      },
+      "kind": "configured",
+      "name": "default model wins over model alias"
+    },
+    "name": "default model wins over model alias",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        "primary-model",
+        "openai",
+        "codex_responses"
+      ]
+    }
+  },
+  "8478508fdb985baf7ce90a945dff5fd96a40e0c39341448e0540ce435f0a7f98": {
+    "input": {
+      "config": {
+        "model": [
+          "bad"
+        ]
+      },
+      "kind": "configured",
+      "name": "malformed model config"
+    },
+    "name": "malformed model config",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        "",
+        "",
+        ""
+      ]
+    }
+  },
+  "87672233651e5dc1b4d189f2c6d81b289bb9bbb2b7734d6ac72a3883c065145e": {
+    "input": {
+      "config": {
+        "model": {
+          "model": "gpt-5",
+          "provider": "openai"
+        }
+      },
+      "kind": "configured",
+      "name": "dict model config infers api mode"
+    },
+    "name": "dict model config infers api mode",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        "gpt-5",
+        "openai",
+        "codex_responses"
+      ]
+    }
+  },
+  "8bc356d39f20eb7457bccff06c03a9e62fe483521558d53992478e40aa181dea": {
+    "input": {
+      "config": {
+        "model": {
+          "default": "gpt-5",
+          "provider": " OpenAI "
+        }
+      },
+      "kind": "configured",
+      "name": "provider is normalized"
+    },
+    "name": "provider is normalized",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        "gpt-5",
+        "openai",
+        "codex_responses"
+      ]
+    }
+  },
+  "a48031f7be1dbcdeede2af7c135988b6d05ee25db3ac8a42287f4119e60e2949": {
+    "input": {
+      "config": {
+        "model": {
+          "api_mode": "chat_completions",
+          "default": "claude-sonnet-4",
+          "provider": "anthropic"
+        }
+      },
+      "kind": "configured",
+      "name": "dict model config with explicit api mode"
+    },
+    "name": "dict model config with explicit api mode",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        "claude-sonnet-4",
+        "anthropic",
+        "chat_completions"
+      ]
+    }
+  },
+  "dce758de87fdd4922ac806dcda61913832355d24e4c725f0464cf97ff19b5759": {
+    "input": {
+      "kind": "persisted",
+      "name": "missing store is absent",
+      "session_key": "session-a",
+      "store": "none"
+    },
+    "name": "missing store is absent",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        "absent",
+        null
+      ]
+    }
+  },
+  "e10cde3625a7a28440f21ec263d17ffa8b44d246bfe4ef69e2a796f400ec7cf4": {
+    "input": {
+      "kind": "persisted",
+      "name": "store lookup raises unavailable",
+      "session_key": "session-d",
+      "store": "raises"
+    },
+    "name": "store lookup raises unavailable",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        "unavailable",
+        null
+      ]
+    }
+  },
+  "e7334b0d21b22a8bddfa24b749f0993a8a4d7c4f528118fa76b494b963eca2fd": {
+    "input": {
+      "config": {
+        "model": "gpt-4.1"
+      },
+      "kind": "configured",
+      "name": "string model config"
+    },
+    "name": "string model config",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        "gpt-4.1",
+        "",
+        ""
+      ]
+    }
+  },
+  "ed70a582f7ce240c72a975ec79100b2a60f344c8ed3c60e072a747f5e010f48d": {
+    "input": {
+      "kind": "persisted",
+      "name": "store without class method is absent",
+      "session_key": "session-b",
+      "store": "plain"
+    },
+    "name": "store without class method is absent",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        "absent",
+        null
+      ]
+    }
+  },
+  "f5ab12b03fdeae53bd54eccd0b93ee2b849caba0589bb29d086981914a22b623": {
+    "input": {
+      "kind": "persisted",
+      "name": "store lookup returns wrong type unavailable",
+      "session_key": "session-e",
+      "store": "wrong-type"
+    },
+    "name": "store lookup returns wrong type unavailable",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        "unavailable",
+        null
+      ]
+    }
+  }
+}

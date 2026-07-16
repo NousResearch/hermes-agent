@@ -65,6 +65,14 @@ from agent.inactivity_watch import (
 )
 from hermes_cli.config import cfg_get
 from hermes_cli.fallback_config import get_fallback_chain
+from gateway.fork_ext.restart_codec import (
+    decode_restart_failure_entry,
+    encode_restart_failure_entry,
+)
+from gateway.fork_ext.route_identity import (
+    configured_route_identity,
+    persisted_session_route_identity,
+)
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -4662,18 +4670,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Read model/provider/API mode from config without resolving credentials."""
         from hermes_cli.providers import infer_api_mode_from_provider
 
-        cfg = user_config if isinstance(user_config, dict) else {}
-        model_cfg = cfg.get("model", {})
-        if isinstance(model_cfg, str):
-            return model_cfg, "", ""
-        if not isinstance(model_cfg, dict):
-            model_cfg = {}
-        model = str(model_cfg.get("default") or model_cfg.get("model") or "")
-        provider = str(model_cfg.get("provider") or "").strip().lower()
-        api_mode = str(model_cfg.get("api_mode") or "").strip().lower()
-        if not api_mode:
-            api_mode = infer_api_mode_from_provider(provider) if provider else ""
-        return model, provider, api_mode
+        return configured_route_identity(user_config, infer_api_mode_from_provider)
 
     def _persisted_session_route_identity(
         self, session_key: str
@@ -4684,23 +4681,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         absence: callers must fail closed before enrichment, global-provider
         resolution, or agent construction.
         """
-        store = getattr(self, "session_store", None)
-        if store is None or not session_key:
-            return PersistedSessionRouteLookup("absent")
-
-        # Inspect the class, not the instance: Mock/MagicMock and lightweight
-        # fixture stores synthesize arbitrary attributes on demand and must not
-        # accidentally claim authority over persisted routing state.
-        lookup = getattr(type(store), "lookup_persisted_route_identity", None)
-        if not callable(lookup):
-            return PersistedSessionRouteLookup("absent")
-        try:
-            result = lookup(store, session_key)
-        except Exception:
-            return PersistedSessionRouteLookup("unavailable")
-        if not isinstance(result, PersistedSessionRouteLookup):
-            return PersistedSessionRouteLookup("unavailable")
-        return result
+        return persisted_session_route_identity(
+            getattr(self, "session_store", None),
+            session_key,
+            PersistedSessionRouteLookup,
+        )
 
     def _resolve_configured_session_route_identity(
         self,
@@ -7568,54 +7553,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
     @staticmethod
     def _decode_restart_failure_entry(value: Any) -> dict:
-        if isinstance(value, dict):
-            try:
-                count = int(value.get("count", 0) or 0)
-            except (TypeError, ValueError):
-                count = 0
-            marks = value.get("replay_marks", [])
-            if not isinstance(marks, list):
-                marks = []
-            clean_marks = []
-            for mark in marks:
-                try:
-                    clean_marks.append(float(mark))
-                except (TypeError, ValueError):
-                    continue
-            request_ids = value.get("replay_request_ids", [])
-            if not isinstance(request_ids, list):
-                request_ids = []
-            return {
-                "count": max(0, count),
-                "replay_marks": clean_marks,
-                "replay_request_ids": [str(item) for item in request_ids if item],
-                "armed": bool(value.get("armed", False)),
-            }
-        try:
-            count = int(value or 0)
-        except (TypeError, ValueError):
-            count = 0
-        return {
-            "count": max(0, count),
-            "replay_marks": [],
-            "replay_request_ids": [],
-            "armed": False,
-        }
+        return decode_restart_failure_entry(value)
 
     @classmethod
     def _encode_restart_failure_entry(cls, entry: dict) -> Any:
-        count = int(entry.get("count", 0) or 0)
-        replay_marks = entry.get("replay_marks") or []
-        replay_request_ids = entry.get("replay_request_ids") or []
-        armed = bool(entry.get("armed", False))
-        if replay_marks or replay_request_ids or armed:
-            return {
-                "count": count,
-                "replay_marks": replay_marks,
-                "replay_request_ids": replay_request_ids,
-                "armed": armed,
-            }
-        return count
+        return encode_restart_failure_entry(entry)
 
     def _load_restart_failure_counts(self) -> dict[str, dict]:
         import json

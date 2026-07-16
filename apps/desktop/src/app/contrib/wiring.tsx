@@ -148,10 +148,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   routeTokenRef.current = routeToken
   const getRouteToken = useCallback(() => routeTokenRef.current, [])
 
-  const getRoutedStoredSessionId = useCallback(
-    () => routedSessionIdRef.current,
-    []
-  )
+  const getRoutedStoredSessionId = useCallback(() => routedSessionIdRef.current, [])
 
   const clearRoutedSessionIntent = useCallback(() => {
     routedSessionIdRef.current = null

@@ -150,9 +150,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       const selectedStoredSessionId = selectedStoredSessionIdRef.current
       const routedStoredSessionId = getRoutedStoredSessionId()
 
-      const routedRuntimeId = routedStoredSessionId
-        ? getRuntimeIdForStoredSession(routedStoredSessionId)
-        : null
+      const routedRuntimeId = routedStoredSessionId ? getRuntimeIdForStoredSession(routedStoredSessionId) : null
 
       const routedSessionNeedsResume = Boolean(
         routedStoredSessionId &&

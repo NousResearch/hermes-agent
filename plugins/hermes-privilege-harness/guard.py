@@ -53,7 +53,7 @@ def _register_stamp_secret():
             data = s.recv(mlen)
             resp = json.loads(data.decode())
             if resp.get("status") == "ok":
-                global _nonce, _secret_registered
+                global _nonce
                 _nonce = resp.get("nonce", "")
                 _secret_registered = True
                 logger.info("stamp secret registered nonce=%s", _nonce[:8])

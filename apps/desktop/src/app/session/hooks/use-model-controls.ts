@@ -25,8 +25,9 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
   const updateModelOptionsCache = useCallback(
     (provider: string, model: string, includeGlobal: boolean) => {
       const patch = (prev: ModelOptionsResponse | undefined) => ({ ...(prev ?? {}), provider, model })
+      const sessionId = $activeSessionId.get() || activeSessionId
 
-      queryClient.setQueryData<ModelOptionsResponse>(['model-options', activeSessionId || 'global'], patch)
+      queryClient.setQueryData<ModelOptionsResponse>(['model-options', sessionId || 'global'], patch)
 
       if (includeGlobal) {
         queryClient.setQueryData<ModelOptionsResponse>(['model-options', 'global'], patch)
@@ -81,31 +82,36 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
       // rather than leave the UI showing a model the backend never selected.
       const prevModel = $currentModel.get()
       const prevProvider = $currentProvider.get()
+      // ModelMenuPanel can retain this callback across a create/resume because
+      // its parent keeps a stable actions object. Read the authoritative store
+      // at click time so a callback captured before activation still targets
+      // the current runtime session.
+      const sessionId = $activeSessionId.get() || activeSessionId
 
       setCurrentModel(selection.model)
       setCurrentProvider(selection.provider)
-      updateModelOptionsCache(selection.provider, selection.model, !activeSessionId)
+      updateModelOptionsCache(selection.provider, selection.model, !sessionId)
 
       // No live session yet: the pick is pure UI state. session.create reads
       // $currentModel/$currentProvider and applies it as that session's override.
-      if (!activeSessionId) {
+      if (!sessionId) {
         return true
       }
 
       try {
         await requestGateway('config.set', {
-          session_id: activeSessionId,
+          session_id: sessionId,
           key: 'model',
           value: `${selection.model} --provider ${selection.provider} --session`
         })
 
-        void queryClient.invalidateQueries({ queryKey: ['model-options', activeSessionId] })
+        void queryClient.invalidateQueries({ queryKey: ['model-options', sessionId] })
 
         return true
       } catch (err) {
         setCurrentModel(prevModel)
         setCurrentProvider(prevProvider)
-        updateModelOptionsCache(prevProvider, prevModel, !activeSessionId)
+        updateModelOptionsCache(prevProvider, prevModel, !sessionId)
         notifyError(err, copy.modelSwitchFailed)
 
         return false

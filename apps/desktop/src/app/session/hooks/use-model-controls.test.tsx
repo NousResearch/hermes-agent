@@ -132,6 +132,38 @@ describe('useModelControls', () => {
     expect(requestGateway).not.toHaveBeenCalledWith('slash.exec', expect.anything())
   })
 
+  it('routes a picker callback captured before resume to the current runtime session', async () => {
+    const requestGateway = vi.fn(async () => ({ key: 'model', value: 'claude-sonnet-4.6' }) as never)
+    let controls!: Controls
+
+    const view = render(
+      <Harness activeSessionId={null} onReady={value => (controls = value)} requestGateway={requestGateway} />
+    )
+    const capturedBeforeResume = controls.selectModel
+
+    $activeSessionId.set('session-resumed')
+    view.rerender(
+      <Harness
+        activeSessionId="session-resumed"
+        onReady={value => (controls = value)}
+        requestGateway={requestGateway}
+      />
+    )
+
+    await expect(
+      capturedBeforeResume({
+        model: 'claude-sonnet-4.6',
+        provider: 'anthropic'
+      })
+    ).resolves.toBe(true)
+
+    expect(requestGateway).toHaveBeenCalledWith('config.set', {
+      session_id: 'session-resumed',
+      key: 'model',
+      value: 'claude-sonnet-4.6 --provider anthropic --session'
+    })
+  })
+
   it('session-scopes MoA preset selections so they cannot persist as the global gateway default', async () => {
     const requestGateway = vi.fn(async () => ({ key: 'model', value: 'BeastMode' }) as never)
     let controls!: Controls

@@ -4049,7 +4049,12 @@ def get_sessions(
     if profile:
         profile_name, _ = _cron_profile_home(profile)
     try:
-        db = _open_session_db_for_profile(profile)
+        # When this dashboard is scoped to a specific profile via
+        # --open-profile and the caller did not explicitly request a
+        # profile, default to the scoped profile so the dashboard's
+        # session list matches its profile context.
+        _effective_profile = profile or getattr(app.state, "open_profile", "")
+        db = _open_session_db_for_profile(_effective_profile or None)
         try:
             min_message_count = max(0, min_messages)
             archived_only = archived == "only"
@@ -4138,9 +4143,18 @@ def get_profiles_sessions(
     from hermes_state import SessionDB
     from hermes_cli import profiles as profiles_mod
 
+    # When this dashboard is scoped to a specific profile via
+    # --open-profile, honour that scope: only return the scoped
+    # profile's sessions.  This prevents a profile-specific dashboard
+    # (e.g. juicecup on port 9120) from leaking other profiles' data.
+    _scoped = getattr(app.state, "open_profile", "")
     targets: List[Tuple[str, Path]] = []
     if profile and profile != "all":
         name, home = _cron_profile_home(profile)
+        targets.append((name, home))
+    elif _scoped:
+        # Dashboard is scoped to one profile — return only that profile.
+        name, home = _cron_profile_home(_scoped)
         targets.append((name, home))
     else:
         try:
@@ -4248,7 +4262,8 @@ async def search_sessions(q: str = "", limit: int = 20, profile: Optional[str] =
     if not q or not q.strip():
         return {"results": []}
     try:
-        db = _open_session_db_for_profile(profile)
+        _effective_profile = profile or getattr(app.state, "open_profile", "")
+        db = _open_session_db_for_profile(_effective_profile or None)
         try:
             safe_limit = max(1, min(int(limit or 20), 100))
 
@@ -9845,7 +9860,8 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
             status_code=400,
             detail="ids must contain at most 500 entries",
         )
-    db = _open_session_db_for_profile(body.profile)
+    _effective_profile = body.profile or getattr(app.state, "open_profile", "")
+    db = _open_session_db_for_profile(_effective_profile or None)
     try:
         deleted = db.delete_sessions(body.ids)
         return {"ok": True, "deleted": deleted}
@@ -9887,7 +9903,8 @@ async def count_empty_sessions_endpoint(profile: Optional[str] = None):
     UI hides the affordance so users aren't presented with a button
     that does nothing. Cheap, single-COUNT query.
     """
-    db = _open_session_db_for_profile(profile)
+    _effective_profile = profile or getattr(app.state, "open_profile", "")
+    db = _open_session_db_for_profile(_effective_profile or None)
     try:
         return {"count": db.count_empty_sessions()}
     finally:
@@ -9914,7 +9931,8 @@ async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
     prune-on-startup pass. Matching that pre-existing trade-off keeps
     the two delete endpoints' DB-vs-disk behaviour consistent.
     """
-    db = _open_session_db_for_profile(profile)
+    _effective_profile = profile or getattr(app.state, "open_profile", "")
+    db = _open_session_db_for_profile(_effective_profile or None)
     try:
         deleted = db.delete_empty_sessions()
         return {"ok": True, "deleted": deleted}
@@ -9929,7 +9947,8 @@ async def get_session_stats(profile: Optional[str] = None):
     Registered before ``/api/sessions/{session_id}`` so the literal ``stats``
     path isn't captured as a session id by the parameterized route.
     """
-    db = _open_session_db_for_profile(profile)
+    _effective_profile = profile or getattr(app.state, "open_profile", "")
+    db = _open_session_db_for_profile(_effective_profile or None)
     try:
         total = db.session_count(include_archived=True)
         active_store = db.session_count(include_archived=False)
@@ -9970,7 +9989,8 @@ def _open_session_db_for_profile(profile: Optional[str]):
 
 @app.get("/api/sessions/{session_id}")
 async def get_session_detail(session_id: str, profile: Optional[str] = None):
-    db = _open_session_db_for_profile(profile)
+    _effective_profile = profile or getattr(app.state, "open_profile", "")
+    db = _open_session_db_for_profile(_effective_profile or None)
     try:
         sid = db.resolve_session_id(session_id)
         session = db.get_session(sid) if sid else None
@@ -9989,7 +10009,8 @@ async def get_session_latest_descendant(
     session_id: str,
     profile: Optional[str] = None,
 ):
-    db = _open_session_db_for_profile(profile)
+    _effective_profile = profile or getattr(app.state, "open_profile", "")
+    db = _open_session_db_for_profile(_effective_profile or None)
     try:
         latest, path = _session_latest_descendant(session_id, db)
         if not latest:
@@ -10010,7 +10031,8 @@ async def get_session_messages(
     limit: Optional[int] = None,
     offset: int = 0,
 ):
-    db = _open_session_db_for_profile(profile)
+    _effective_profile = profile or getattr(app.state, "open_profile", "")
+    db = _open_session_db_for_profile(_effective_profile or None)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
@@ -10035,9 +10057,11 @@ async def get_session_messages(
 @app.delete("/api/sessions/{session_id}")
 async def delete_session_endpoint(session_id: str, profile: Optional[str] = None):
     # ``profile`` deletes a session belonging to another (local) profile by
-    # opening its state.db directly. Remote profiles never reach here — the
-    # desktop routes their DELETE to the remote backend. Omit for current/default.
-    db = _open_session_db_for_profile(profile)
+    # opening its state.db directly. Omit for current/default profile, or
+    # fall back to the dashboard's ``--open-profile`` scope so a per-profile
+    # instance (e.g. juicecup on 9120) operates on its own state.db.
+    _effective_profile = profile or getattr(app.state, "open_profile", "")
+    db = _open_session_db_for_profile(_effective_profile or None)
     try:
         # Resolve exact ids / unique prefixes like every other session endpoint
         # (detail, messages, rename, export all do). A session that no longer
@@ -10071,9 +10095,11 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
 
     ``title`` renames (empty/null clears the title); ``archived`` soft-hides or
     restores the session. Either field may be omitted. ``profile`` targets
-    another profile's session.
+    another profile's session. Falls back to the dashboard's ``--open-profile``
+    scope so a per-profile instance operates on its own state.db.
     """
-    db = _open_session_db_for_profile(body.profile)
+    _effective_profile = body.profile or getattr(app.state, "open_profile", "")
+    db = _open_session_db_for_profile(_effective_profile or None)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
@@ -10102,7 +10128,8 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
 @app.get("/api/sessions/{session_id}/export")
 async def export_session_endpoint(session_id: str, profile: Optional[str] = None):
     """Export a single session (metadata + messages) as JSON."""
-    db = _open_session_db_for_profile(profile)
+    _effective_profile = profile or getattr(app.state, "open_profile", "")
+    db = _open_session_db_for_profile(_effective_profile or None)
     try:
         sid = db.resolve_session_id(session_id)
         if not sid:
@@ -10168,8 +10195,9 @@ async def prune_sessions_endpoint(body: SessionPrune):
     _effective_older_than = body.older_than_days
     if has_window or (_attr_filters_set and not _older_than_explicit):
         _effective_older_than = None
-    profile_home = _cron_profile_home(body.profile)[1] if body.profile else get_hermes_home()
-    db = _open_session_db_for_profile(body.profile)
+    _effective_profile = body.profile or getattr(app.state, "open_profile", "")
+    profile_home = _cron_profile_home(_effective_profile)[1] if _effective_profile else get_hermes_home()
+    db = _open_session_db_for_profile(_effective_profile or None)
     try:
         filters = dict(
             older_than_days=_effective_older_than,
@@ -17336,6 +17364,10 @@ def start_server(
     # uses this to decide whether to refuse the bind, log the gate-on
     # banner, and enable uvicorn proxy_headers.
     app.state.auth_required = should_require_auth(host)
+    # Store the --open-profile scope so API endpoints (e.g.
+    # /api/profiles/sessions) can restrict data to this profile only,
+    # instead of always returning all profiles' aggregated data.
+    app.state.open_profile = (initial_profile or "").strip()
 
     # ``--insecure`` no longer disables the auth gate (June 2026 hardening:
     # the hermes-0day MCP-persistence campaign abused unauthenticated public

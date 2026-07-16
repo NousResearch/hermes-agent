@@ -256,9 +256,11 @@ function extractEntry(buf, record) {
   if (record.method !== 0 && record.method !== 8) {
     throw new Error('Unsupported zip compression method.')
   }
+
   if (record.uncompressedSize > MAX_THEME_ENTRY_BYTES) {
     throw new Error('Zip entry exceeds the uncompressed size limit.')
   }
+
   // The local header's name/extra lengths can differ from the central record,
   // so re-read them here to locate the compressed payload.
   if (buf.readUInt32LE(record.localOffset) !== 0x04034b50) {
@@ -268,9 +270,11 @@ function extractEntry(buf, record) {
   const nameLen = buf.readUInt16LE(record.localOffset + 26)
   const extraLen = buf.readUInt16LE(record.localOffset + 28)
   const dataStart = record.localOffset + 30 + nameLen + extraLen
+
   if (dataStart + record.compressedSize > buf.length) {
     throw new Error('Corrupt zip: entry exceeds archive bounds.')
   }
+
   const data = buf.subarray(dataStart, dataStart + record.compressedSize)
 
   // 0 = stored, 8 = deflate. Theme files are one or the other.
@@ -320,9 +324,11 @@ function extractThemes(vsixBuffer) {
     try {
       const contents = extractEntry(vsixBuffer, record)
       totalBytes += Buffer.byteLength(contents, 'utf8')
+
       if (totalBytes > MAX_THEME_TOTAL_BYTES) {
         break
       }
+
       themes.push({
         label: entry.label || entry.id || pkg.displayName || pkg.name || 'VS Code Theme',
         uiTheme: entry.uiTheme,

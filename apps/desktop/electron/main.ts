@@ -30,7 +30,6 @@ import nodePty from 'node-pty'
 
 import { stopBackendChild as stopBackendChildImpl } from './backend-child'
 import { dashboardFallbackArgs, sourceDeclaresServe } from './backend-command'
-import { resolveDashboardWebDist as resolveDashboardWebDistPath } from './dashboard-web-dist'
 import { buildDesktopBackendEnv, normalizeHermesHomeRoot } from './backend-env'
 import { canImportHermesCli, verifyHermesCli } from './backend-probes'
 import { waitForDashboardPortAnnouncement } from './backend-ready'
@@ -54,6 +53,7 @@ import {
   tokenPreview
 } from './connection-config'
 import { adoptServedDashboardToken } from './dashboard-token'
+import { resolveDashboardWebDist as resolveDashboardWebDistPath } from './dashboard-web-dist'
 import {
   buildPosixCleanupScript,
   buildWindowsCleanupScript,
@@ -1107,9 +1107,9 @@ function openExternalUrl(rawUrl) {
       'powershell.exe',
       ['-NoProfile', '-NonInteractive', '-Command', 'Start-Process -FilePath $args[0]', url],
       {
-      detached: true,
-      stdio: 'ignore',
-      windowsHide: true
+        detached: true,
+        stdio: 'ignore',
+        windowsHide: true
       }
     )
 
@@ -3159,8 +3159,7 @@ function resolveDashboardWebDist(hermesRoot?: string | null) {
     sourceRepoRoot: SOURCE_REPO_ROOT,
     isPackaged: IS_PACKAGED,
     dashboardOverride: process.env.HERMES_DESKTOP_DASHBOARD_WEB_DIST,
-    hermesRootOverride:
-      process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT),
+    hermesRootOverride: process.env.HERMES_DESKTOP_HERMES_ROOT && path.resolve(process.env.HERMES_DESKTOP_HERMES_ROOT),
     onWarning: rememberLog
   })
 }
@@ -4315,7 +4314,9 @@ async function resourceBufferFromUrl(rawUrl, redirectsLeft = IMAGE_URL_MAX_REDIR
         return
       }
 
-      const mimeType = String(res.headers['content-type'] || 'application/octet-stream').split(';')[0].trim()
+      const mimeType = String(res.headers['content-type'] || 'application/octet-stream')
+        .split(';')[0]
+        .trim()
 
       if (!IMAGE_MIME_RE.test(mimeType)) {
         fail(new Error('Remote URL did not return an image'))

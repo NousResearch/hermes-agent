@@ -41,7 +41,16 @@ describe('desktop slash command curation', () => {
   })
 
   it('does not classify hidden built-ins as user extensions', () => {
-    for (const command of ['/subgoal', '/whoami', '/codex-runtime', '/memory', '/bundles', '/auth', '/credits', '/billing']) {
+    for (const command of [
+      '/subgoal',
+      '/whoami',
+      '/codex-runtime',
+      '/memory',
+      '/bundles',
+      '/auth',
+      '/credits',
+      '/billing'
+    ]) {
       expect(isDesktopSlashSuggestion(command)).toBe(false)
       expect(isDesktopSlashCommand(command)).toBe(false)
     }

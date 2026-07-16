@@ -227,11 +227,7 @@ async function resolvePublicHttpTarget(parsed: URL, lookup: LookupAll = lookupHo
     family: Number(record?.family)
   }))
 
-  if (
-    targets.some(
-      target => (target.family !== 4 && target.family !== 6) || isPrivateNetworkAddress(target.address)
-    )
-  ) {
+  if (targets.some(target => (target.family !== 4 && target.family !== 6) || isPrivateNetworkAddress(target.address))) {
     throw new Error('Private network image URLs are not allowed')
   }
 
@@ -241,14 +237,17 @@ async function resolvePublicHttpTarget(parsed: URL, lookup: LookupAll = lookupHo
 async function openOrRevealExternalFilePath(filePath, actions) {
   if (shouldRevealExternalFilePath(filePath)) {
     actions.reveal(filePath)
+
     return { action: 'revealed', reason: 'unsafe-file-type' }
   }
 
   try {
     await actions.open(filePath)
+
     return { action: 'opened' }
   } catch (openError) {
     actions.reveal(filePath)
+
     return { action: 'revealed', reason: 'open-failed', openError }
   }
 }

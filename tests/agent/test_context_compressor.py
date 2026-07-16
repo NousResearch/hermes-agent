@@ -2234,6 +2234,7 @@ class TestCompressWithClient:
             SUMMARY_PREFIX,
             _MERGED_PRIOR_CONTEXT_HEADER,
             _MERGED_SUMMARY_DELIMITER,
+            _merged_prior_context_text,
         )
 
         merged = (
@@ -2243,7 +2244,10 @@ class TestCompressWithClient:
             f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nREAL_BODY"
         )
         assert ContextCompressor._is_context_summary_content(merged) is True
-        assert ContextCompressor._strip_summary_prefix(merged) == "REAL_BODY"
+        legacy_body = ContextCompressor._strip_summary_prefix(merged)
+        assert "QUOTED_STALE_BODY" in legacy_body
+        assert "REAL_BODY" in legacy_body
+        assert _merged_prior_context_text(merged) == ""
 
         mapping = {"type": "text", "text": f"{SUMMARY_PREFIX}\nMAPPING_BODY"}
         assert ContextCompressor._is_context_summary_content(mapping) is True
@@ -2251,6 +2255,77 @@ class TestCompressWithClient:
         ordinary = f"Discussion quote: {_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}"
         assert ContextCompressor._is_context_summary_content(ordinary) is False
         assert ContextCompressor._strip_summary_prefix(ordinary) == ordinary
+
+    def test_ambiguous_legacy_merged_summary_preserves_wrapper_as_summary(self):
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+            _merged_prior_context_text,
+        )
+
+        merged = (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\nREAL PRIOR TURN\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nREAL SUMMARY BODY\n"
+            "quoted wrapper inside old persisted summary:\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nQUOTED TAIL"
+        )
+
+        assert ContextCompressor._is_context_summary_content(merged) is True
+        body = ContextCompressor._strip_summary_prefix(merged)
+        assert "REAL PRIOR TURN" in body
+        assert "REAL SUMMARY BODY" in body
+        assert "QUOTED TAIL" in body
+        assert _merged_prior_context_text(merged) == ""
+
+    def test_recompaction_does_not_reinject_ambiguous_legacy_summary_as_real_turn(self):
+        from agent.context_compressor import (
+            SUMMARY_PREFIX,
+            _MERGED_PRIOR_CONTEXT_HEADER,
+            _MERGED_SUMMARY_DELIMITER,
+        )
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=1,
+                protect_last_n=2,
+            )
+
+        ambiguous = (
+            f"{_MERGED_PRIOR_CONTEXT_HEADER}\nREAL PRIOR TURN\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nREAL SUMMARY BODY\n"
+            f"{_MERGED_SUMMARY_DELIMITER}\n{SUMMARY_PREFIX}\nQUOTED TAIL"
+        )
+        messages = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "protected head"},
+            {"role": "assistant", "content": ambiguous},
+            {"role": "user", "content": "middle user 1"},
+            {"role": "assistant", "content": "middle assistant 1"},
+            {"role": "user", "content": "middle user 2"},
+            {"role": "assistant", "content": "tail assistant"},
+            {"role": "user", "content": "tail user"},
+            {"role": "assistant", "content": "tail final"},
+        ]
+        summarized_turns = []
+
+        def fake_generate(turns, focus_topic=None):
+            summarized_turns.extend(turns)
+            assert c._previous_summary is not None
+            assert "REAL SUMMARY BODY" in c._previous_summary
+            return f"{SUMMARY_PREFIX}\nUPDATED SUMMARY"
+
+        with patch.object(c, "_generate_summary", side_effect=fake_generate):
+            c.compress(messages, force=True)
+
+        assert summarized_turns
+        assert all(
+            "REAL SUMMARY BODY" not in str(turn.get("content") or "")
+            and "QUOTED TAIL" not in str(turn.get("content") or "")
+            for turn in summarized_turns
+        )
 
     def test_summary_parser_does_not_copy_every_delimiter_suffix(self):
         from agent.context_compressor import (

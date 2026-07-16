@@ -393,35 +393,39 @@ def _content_text_for_contains(content: Any) -> str:
     return str(content)
 
 
-def _context_summary_prefix_start(text: str) -> Optional[int]:
-    """Return the exact summary-prefix offset for a supported persisted shape."""
+def _context_summary_prefix_starts(text: str) -> list[int]:
+    """Return every valid summary-prefix offset in a persisted shape."""
     prefixes = (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES)
     leading = 0
     while leading < len(text) and text[leading].isspace():
         leading += 1
     if any(text.startswith(prefix, leading) for prefix in prefixes):
-        return leading
+        return [leading]
 
     # Merged summaries are generated with the full prior-context wrapper. The
     # preserved tail is arbitrary and may itself quote the delimiter, so scan
     # every occurrence and accept only one immediately followed by a real prefix.
     if not text.startswith(_MERGED_PRIOR_CONTEXT_HEADER, leading):
-        return None
+        return []
     search_from = leading + len(_MERGED_PRIOR_CONTEXT_HEADER)
-    prefix_start: Optional[int] = None
+    prefix_starts: list[int] = []
     while True:
         delimiter_at = text.find(_MERGED_SUMMARY_DELIMITER, search_from)
         if delimiter_at < 0:
-            return prefix_start
+            return prefix_starts
         after_at = delimiter_at + len(_MERGED_SUMMARY_DELIMITER)
         candidate = after_at
         while candidate < len(text) and text[candidate].isspace():
             candidate += 1
         if any(text.startswith(prefix, candidate) for prefix in prefixes):
-            # Preserved prior content can quote a complete delimiter + prefix
-            # pair. The generated boundary is the final valid pair.
-            prefix_start = candidate
+            prefix_starts.append(candidate)
         search_from = after_at
+
+
+def _context_summary_prefix_start(text: str) -> Optional[int]:
+    """Return the selected summary-prefix offset for a persisted shape."""
+    prefix_starts = _context_summary_prefix_starts(text)
+    return prefix_starts[-1] if prefix_starts else None
 
 
 def is_context_summary_content(content: Any) -> bool:
@@ -444,9 +448,13 @@ def _merged_prior_context_text(content: Any) -> str:
         leading += 1
     if not text.startswith(_MERGED_PRIOR_CONTEXT_HEADER, leading):
         return ""
-    prefix_start = _context_summary_prefix_start(text)
-    if prefix_start is None:
+    prefix_starts = _context_summary_prefix_starts(text)
+    # Pre-escape wrappers are ambiguous when either payload side quotes a full
+    # delimiter + prefix pair. There is no reliable first/last heuristic, so
+    # preserve the wrapper as summary material and never synthesize a real turn.
+    if len(prefix_starts) != 1:
         return ""
+    prefix_start = prefix_starts[0]
     prior_start = leading + len(_MERGED_PRIOR_CONTEXT_HEADER)
     delimiter_at = text.rfind(
         _MERGED_SUMMARY_DELIMITER,
@@ -2529,13 +2537,17 @@ This compaction should PRIORITISE preserving all information related to the focu
         text = (summary or "").strip()
         # Reuse the canonical parser so stripping and detection cannot disagree
         # on repeated delimiters or ordinary text that merely quotes markers.
-        prefix_at = _context_summary_prefix_start(text)
-        if prefix_at is not None:
-            text = text[prefix_at:]
-        for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
-            if text.startswith(prefix):
-                text = text[len(prefix):].lstrip()
-                break
+        prefix_starts = _context_summary_prefix_starts(text)
+        if len(prefix_starts) <= 1:
+            if prefix_starts:
+                text = text[prefix_starts[0]:]
+            for prefix in (SUMMARY_PREFIX, LEGACY_SUMMARY_PREFIX, *_HISTORICAL_SUMMARY_PREFIXES):
+                if text.startswith(prefix):
+                    text = text[len(prefix):].lstrip()
+                    break
+        # Multiple valid boundaries are ambiguous in pre-escape persisted
+        # wrappers. Preserve the complete wrapper instead of guessing and
+        # silently dropping or reclassifying either side.
         # Strip the trailing end marker too — a rehydrated handoff body that
         # keeps it would leak the boundary directive into the iterative-update
         # summarizer prompt (and the marker is re-appended on insertion anyway).

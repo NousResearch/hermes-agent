@@ -2371,6 +2371,32 @@ def terminal_tool(
                     "status": "error",
                 }, ensure_ascii=False)
 
+        # Hard-block: git commands that rewrite the working tree of the
+        # source checkout this hermes process runs from (editable/source
+        # installs only — packaged installs have no .git and the guard is
+        # inert). Swapping code on disk under the live interpreter causes
+        # version skew: already-imported modules stay old while later lazy
+        # imports load the new code, crashing long after the command that
+        # caused it. Like the gateway lifecycle guard above, this applies
+        # unconditionally — force=True cannot make the command safe. Local
+        # backend only: sandboxed backends can't reach the host checkout.
+        if env_type == "local":
+            from tools.self_repo_guard import detect_self_repo_git_mutation
+            _self_repo_hit, _self_repo_msg = detect_self_repo_git_mutation(
+                command, workdir or cwd
+            )
+            if _self_repo_hit:
+                logger.warning(
+                    "Blocked self-repo git mutation (command: %s)",
+                    _safe_command_preview(command),
+                )
+                return json.dumps({
+                    "output": "",
+                    "exit_code": 1,
+                    "error": _self_repo_msg,
+                    "status": "blocked",
+                }, ensure_ascii=False)
+
         # Pre-exec security checks (tirith + dangerous command detection)
         # Skip check if force=True (user has confirmed they want to run it)
         approval_note = None

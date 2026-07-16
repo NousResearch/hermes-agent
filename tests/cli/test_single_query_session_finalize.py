@@ -200,6 +200,107 @@ def test_human_single_query_main_finalizes_after_query(monkeypatch):
     ]
 
 
+def test_kanban_billing_failure_preserves_error_and_uses_sentinel(monkeypatch):
+    import cli as cli_mod
+    from hermes_cli import kanban_db as kb
+
+    calls = []
+    provider_error = "HTTP 429: Insufficient balance. Please recharge."
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_billing")
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "host:worker")
+    monkeypatch.setattr(
+        kb,
+        "record_kanban_worker_failure_error",
+        lambda task_id, claim_lock, error: calls.append(
+            (task_id, claim_lock, error)
+        ) or True,
+    )
+
+    exit_code = cli_mod._single_query_failure_exit_code(
+        {
+            "failed": True,
+            "failure_reason": "billing",
+            "error": provider_error,
+        }
+    )
+
+    assert exit_code == kb.KANBAN_BILLING_BLOCKER_EXIT_CODE
+    assert calls == [("t_billing", "host:worker", provider_error)]
+
+
+def test_kanban_rate_limit_failure_uses_sentinel_without_persisting(monkeypatch):
+    import cli as cli_mod
+    from hermes_cli import kanban_db as kb
+
+    calls = []
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_rate_limit")
+    monkeypatch.setattr(
+        kb,
+        "record_kanban_worker_failure_error",
+        lambda *args: calls.append(args) or True,
+    )
+
+    exit_code = cli_mod._single_query_failure_exit_code(
+        {"failed": True, "failure_reason": "rate_limit", "error": "HTTP 429"}
+    )
+
+    assert exit_code == kb.KANBAN_RATE_LIMIT_EXIT_CODE
+    assert calls == []
+
+
+def test_goal_mode_midloop_billing_failure_reaches_sentinel(tmp_path, monkeypatch):
+    import cli as cli_mod
+    from hermes_cli import goals
+    from hermes_cli import kanban_db as kb
+
+    db_path = tmp_path / "kanban.db"
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
+    claim_lock = "host:goal-worker"
+    provider_error = "HTTP 429: Insufficient balance. Please recharge."
+
+    with kb.connect() as conn:
+        task_id = kb.create_task(conn, title="finish the goal", assignee="a")
+        conn.execute("UPDATE tasks SET status='ready' WHERE id=?", (task_id,))
+        conn.commit()
+        assert kb.claim_task(conn, task_id, claimer=claim_lock) is not None
+
+    monkeypatch.setenv("HERMES_KANBAN_TASK", task_id)
+    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", claim_lock)
+    monkeypatch.setattr(
+        goals,
+        "judge_goal",
+        lambda *_args, **_kwargs: ("continue", "not done", False, False),
+    )
+
+    failure = {
+        "failed": True,
+        "failure_reason": "billing",
+        "error": provider_error,
+        "final_response": "Billing or credits exhausted",
+    }
+    calls = []
+    fake_cli = SimpleNamespace(
+        session_id="goal-session",
+        conversation_history=[],
+        agent=SimpleNamespace(
+            session_id="goal-session",
+            run_conversation=lambda **kwargs: calls.append(kwargs) or failure,
+        ),
+    )
+
+    returned = cli_mod._run_kanban_goal_loop_q(fake_cli, "starting work")
+    assert returned is failure
+    assert len(calls) == 1
+    assert cli_mod._single_query_failure_exit_code(returned) == (
+        kb.KANBAN_BILLING_BLOCKER_EXIT_CODE
+    )
+
+    with kb.connect() as conn:
+        task = kb.get_task(conn, task_id)
+        assert task.status == "running"
+        assert task.last_failure_error == provider_error
+
+
 def test_quiet_single_query_main_finalizes_while_preserving_exit_code(monkeypatch):
     calls = []
 

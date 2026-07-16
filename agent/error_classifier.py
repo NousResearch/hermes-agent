@@ -180,6 +180,8 @@ _USAGE_LIMIT_TRANSIENT_SIGNALS = [
     "try again",
     "retry",
     "resets at",
+    "reset at",
+    "resets in",
     "reset in",
     "wait",
     "requests remaining",
@@ -987,6 +989,26 @@ def _classify_by_status(
                 FailoverReason.overloaded,
                 retryable=True,
             )
+        # Most 429s are ordinary throttling (transient — resets on a timer), but
+        # some providers return a 429 for a HARD billing / account wall
+        # ("Insufficient balance … please recharge", "payment required",
+        # "credits exhausted") or a bare exhausted usage limit that will NOT
+        # clear without an account reset or operator action. Treating those as
+        # transient makes a kanban worker probe the wall every cooldown forever
+        # and burn paid requests (#41805, #31273). Disambiguate usage-limit
+        # wording the same way 402 and message-only errors already do: an
+        # explicit reset/retry/window signal stays transient; otherwise it is a
+        # hard billing/account wall. A plain 429 with no usage-limit or billing
+        # vocabulary remains rate_limit.
+        # Checked before the OpenRouter-upstream branch so a hard billing wall
+        # wrapped in an aggregator error isn't retried against a depleted balance.
+        if any(p in error_msg for p in _BILLING_PATTERNS):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         # Distinguish an OpenRouter-aggregator upstream 429 (an upstream model
         # like DeepSeek rate-limited OpenRouter's aggregate traffic) from an
         # account-level 429 (the user's key is actually throttled). OpenRouter
@@ -1002,6 +1024,23 @@ def _classify_by_status(
                 should_rotate_credential=False,
                 should_fallback=True,
                 error_context=ctx,
+            )
+        # A structured Codex ``usage_limit_reached`` is a confirmed account
+        # wall. Bare words such as "quota" are not: Gemini/Vertex use them for
+        # ordinary RESOURCE_EXHAUSTED throttles, so ambiguous text stays on the
+        # retryable rate-limit path unless billing vocabulary matched above.
+        has_transient_signal = any(
+            p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS
+        )
+        if (
+            error_code.lower() == "usage_limit_reached"
+            and not has_transient_signal
+        ):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
             )
         return result_fn(
             FailoverReason.rate_limit,
@@ -1292,6 +1331,21 @@ def _classify_by_error_code(
             should_rotate_credential=True,
         )
 
+    if code_lower == "usage_limit_reached":
+        if any(p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS):
+            return result_fn(
+                FailoverReason.rate_limit,
+                retryable=True,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
+        return result_fn(
+            FailoverReason.billing,
+            retryable=False,
+            should_rotate_credential=True,
+            should_fallback=True,
+        )
+
     if code_lower in {
         "insufficient_quota",
         "billing_not_active",
@@ -1366,27 +1420,6 @@ def _classify_by_message(
             retryable=True,
         )
 
-    # Usage-limit patterns need the same disambiguation as 402: some providers
-    # surface "usage limit" errors without an HTTP status code.  A transient
-    # signal ("try again", "resets at", …) means it's a periodic quota, not
-    # billing exhaustion.
-    has_usage_limit = any(p in error_msg for p in _USAGE_LIMIT_PATTERNS)
-    if has_usage_limit:
-        has_transient_signal = any(p in error_msg for p in _USAGE_LIMIT_TRANSIENT_SIGNALS)
-        if has_transient_signal:
-            return result_fn(
-                FailoverReason.rate_limit,
-                retryable=True,
-                should_rotate_credential=True,
-                should_fallback=True,
-            )
-        return result_fn(
-            FailoverReason.billing,
-            retryable=False,
-            should_rotate_credential=True,
-            should_fallback=True,
-        )
-
     # Overloaded / server-busy patterns — must come BEFORE the rate_limit and
     # billing checks so that a message-only "overloaded" (no 503/529 status,
     # e.g. some Anthropic-compatible proxies) classifies as a transient
@@ -1403,6 +1436,18 @@ def _classify_by_message(
         return result_fn(
             FailoverReason.billing,
             retryable=False,
+            should_rotate_credential=True,
+            should_fallback=True,
+        )
+
+    # Unstructured usage/quota wording is ambiguous. Gemini/Vertex use bare
+    # "quota" text for ordinary transient RESOURCE_EXHAUSTED responses, so
+    # only structured ``usage_limit_reached`` (handled above) or explicit
+    # billing vocabulary may become a hard wall.
+    if any(p in error_msg for p in _USAGE_LIMIT_PATTERNS):
+        return result_fn(
+            FailoverReason.rate_limit,
+            retryable=True,
             should_rotate_credential=True,
             should_fallback=True,
         )

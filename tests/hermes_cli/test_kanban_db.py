@@ -981,6 +981,144 @@ def test_real_crash_still_counts_and_trips_breaker(kanban_home, monkeypatch):
         )
 
 
+def test_classify_worker_exit_recognizes_billing_blocker_sentinel(kanban_home):
+    """The hard-billing sentinel maps to a distinct ``billing_blocked`` kind,
+    separate from the transient ``rate_limited`` sentinel (#41805)."""
+    import hermes_cli.kanban_db as _kb
+
+    pid = 41805
+    _kb._record_worker_exit(
+        pid, _exited_status(_kb.KANBAN_BILLING_BLOCKER_EXIT_CODE)
+    )
+    kind, code = _kb._classify_worker_exit(pid)
+    assert kind == "billing_blocked"
+    assert code == _kb.KANBAN_BILLING_BLOCKER_EXIT_CODE
+
+    # The two sentinels must be distinct so they route differently.
+    assert _kb.KANBAN_BILLING_BLOCKER_EXIT_CODE != _kb.KANBAN_RATE_LIMIT_EXIT_CODE
+
+
+def test_billing_blocker_exit_auto_blocks_immediately(kanban_home, monkeypatch):
+    """A hard-billing sentinel exit auto-blocks the task on the FIRST hit
+    even when the card's ordinary retry budget is higher, and stamps the cause
+    — it must NOT loop/probe forever the way a transient rate-limit requeue
+    does (#41805).
+
+    Contrast with ``test_rate_limit_exit_requeues_without_counting_failure``
+    (transient → released to ``ready``, no failure counted) and
+    ``test_real_crash_still_counts_and_trips_breaker`` (generic crash → blocks
+    only after DEFAULT_FAILURE_LIMIT == 2 hits).
+    """
+    import hermes_cli.kanban_db as _kb
+
+    monkeypatch.setattr(_kb, "_pid_alive", lambda _pid: False)
+    monkeypatch.setenv("HERMES_KANBAN_CRASH_GRACE_SECONDS", "0")
+
+    with kb.connect() as conn:
+        host = _kb._claimer_id().split(":", 1)[0]
+        claim_lock = f"{host}:w0"
+        tid = kb.create_task(
+            conn,
+            title="billing-wall",
+            assignee="a",
+            max_retries=4,
+        )
+
+        pid = 41806
+        conn.execute(
+            "UPDATE tasks SET status='ready' WHERE id=?",
+            (tid,),
+        )
+        conn.commit()
+        assert kb.claim_task(conn, tid, claimer=claim_lock) is not None
+        _kb._set_worker_pid(conn, tid, pid)
+
+        provider_error = (
+            "HTTP 429: Insufficient balance or no resource package. "
+            "Please recharge."
+        )
+        assert not kb.record_kanban_worker_failure_error(
+            tid, f"{host}:stale", "must not overwrite the active claim"
+        )
+        assert kb.record_kanban_worker_failure_error(
+            tid, claim_lock, provider_error
+        )
+        _kb._record_worker_exit(
+            pid, _exited_status(_kb.KANBAN_BILLING_BLOCKER_EXIT_CODE)
+        )
+
+        spawned_ids = []
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, _workspace: spawned_ids.append(task.id),
+        )
+        # Hard billing IS a (deterministic) crash — counted, unlike rate-limit.
+        assert tid in result.crashed
+        assert tid in result.auto_blocked
+        rl = getattr(_kb.detect_crashed_workers, "_last_rate_limited", [])
+        assert tid not in rl, "hard billing must NOT be a transient requeue"
+
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        # Blocked on the FIRST hit despite max_retries=4. dispatch_once has
+        # already run recompute_ready(), so this also proves the same tick
+        # cannot silently reopen and respawn the card.
+        assert task.status == "blocked", (
+            f"hard billing should auto-block immediately, got {task.status}"
+        )
+        assert task.max_retries == 4
+        assert task.consecutive_failures == 1
+        assert result.promoted == 0
+        assert spawned_ids == []
+        # Cause is surfaced (not a bare 'pid not alive') and matches the
+        # respawn-blocker vocabulary.
+        assert task.last_failure_error == provider_error
+        assert kb._RESPAWN_BLOCKER_RE.search(task.last_failure_error)
+
+        blocked_events = [
+            event for event in kb.list_events(conn, tid)
+            if event.kind == "blocked"
+        ]
+        assert blocked_events
+        assert blocked_events[-1].payload["source"] == "billing_blocked"
+        assert blocked_events[-1].payload["reason"] == provider_error
+
+        runs = kb.list_runs(conn, tid)
+        assert runs[-1].error == provider_error
+
+        # The explicit block is sticky on subsequent dispatcher ticks too;
+        # only an operator unblock may retry after credits are restored.
+        second = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda task, _workspace: spawned_ids.append(task.id),
+        )
+        assert second.promoted == 0
+        assert kb.get_task(conn, tid).status == "blocked"
+        assert spawned_ids == []
+
+
+@pytest.mark.parametrize(
+    "failure_reason,expected_attr",
+    [
+        ("rate_limit", "KANBAN_RATE_LIMIT_EXIT_CODE"),
+        ("billing", "KANBAN_BILLING_BLOCKER_EXIT_CODE"),
+    ],
+)
+def test_kanban_worker_exit_code_for_failure_sentinels(failure_reason, expected_attr):
+    """The worker exit-code contract: transient vs hard wall get distinct
+    sentinels so the dispatcher can route them differently (#41805)."""
+    assert kb.kanban_worker_exit_code_for_failure(failure_reason) == getattr(
+        kb, expected_attr
+    )
+
+
+@pytest.mark.parametrize("failure_reason", [None, "auth", "content_policy_blocked", ""])
+def test_kanban_worker_exit_code_for_failure_generic(failure_reason):
+    """Non-quota reasons (and absent reason) fall back to the generic ``1`` so
+    they count toward the circuit breaker via the normal crashed path."""
+    assert kb.kanban_worker_exit_code_for_failure(failure_reason) == 1
+
+
 def test_respawn_guard_defers_rate_limited_within_cooldown(
     kanban_home, monkeypatch,
 ):
@@ -1863,6 +2001,77 @@ def test_respawn_guard_blocker_auth_on_authorization_error(kanban_home):
         )
         reason = kb.check_respawn_guard(conn, t)
     assert reason == "blocker_auth"
+
+
+@pytest.mark.parametrize(
+    "error_text",
+    [
+        # Exact strings from the worker logs in #41805 (hard usage-limit /
+        # quota / billing 429s that previously slipped past the blocker regex).
+        "The usage limit has been reached",
+        "HTTP 429: The usage limit has been reached",
+        "HTTP 429: Usage limit reached for 5 hour. Your limit will reset at "
+        "2026-05-30 22:00:45",
+        "HTTP 429: Insufficient balance or no resource package. Please recharge.",
+        "API call failed after 3 retries: HTTP 429: Usage limit reached for 5 hour",
+        # error_classifier billing vocabulary (underscore + spaced forms).
+        "insufficient_quota",
+        "payment required",
+        "out of funds",
+    ],
+)
+def test_respawn_guard_blocker_auth_on_hard_usage_limit(kanban_home, error_text):
+    """Hard usage-limit / quota / billing errors trigger blocker_auth (#41805).
+
+    Before the fix these phrasings ("usage limit", "insufficient balance",
+    "recharge", "no resource package", ...) were absent from
+    ``_RESPAWN_BLOCKER_RE``, so a worker that bailed on a hard quota wall before
+    any tool work was re-spawned indefinitely instead of being deferred.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="quota-wall", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            (error_text, t),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason == "blocker_auth"
+
+
+@pytest.mark.parametrize(
+    "error_text",
+    [
+        # Generic crash symptoms must NOT be mistaken for a quota blocker —
+        # guarding these would mask real crashes from the circuit breaker.
+        "pid 12345 not alive",
+        "pid 12345 exited with code 1",
+        "pid 12345 killed by signal 9",
+        "connection reset by peer",
+        "protocol_violation",
+        "Request timed out.",
+        # Benign task-level text that the previous over-broad patterns
+        # (bare ``insufficient\\w*`` / ``recharge``) wrongly matched.
+        "insufficient tests",
+        "insufficient data",
+        "insufficient coverage",
+        "recharge battery",
+        "time to recharge before the next run",
+    ],
+)
+def test_respawn_guard_not_blocked_on_generic_crash(kanban_home, error_text):
+    """Generic crash text does not match the widened blocker regex (#41805).
+
+    Confirms Layer B stayed anchored to billing/quota vocabulary and did not
+    broaden into ordinary transient/crash errors.
+    """
+    with kb.connect() as conn:
+        t = kb.create_task(conn, title="real-crash", assignee="alice")
+        conn.execute(
+            "UPDATE tasks SET last_failure_error = ? WHERE id = ?",
+            (error_text, t),
+        )
+        reason = kb.check_respawn_guard(conn, t)
+    assert reason is None
 
 
 def test_respawn_guard_recent_success(kanban_home):

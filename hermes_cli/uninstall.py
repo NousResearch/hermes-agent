@@ -30,6 +30,51 @@ def get_project_root() -> Path:
     return Path(__file__).parent.parent.resolve()
 
 
+def _is_hermes_project_root(path: Path) -> bool:
+    """Verify a directory is actually a Hermes Agent project root.
+
+    Prevents ``shutil.rmtree(project_root)`` from deleting a shared Python
+    folder when Hermes is installed inside one (e.g. site-packages).
+    Checks for Hermes-specific markers: a ``pyproject.toml`` containing
+    ``hermes-agent`` as the package name, or the presence of both
+    ``hermes_cli/`` and ``run_agent.py`` (the core entry points).
+    A copied ``uninstall.py`` inside an unrelated repo passes this check
+    only if those sibling markers also exist. See issue #65854.
+    """
+    try:
+        # Fast check: pyproject.toml with hermes-agent package name
+        pyproject = path / "pyproject.toml"
+        if pyproject.exists():
+            try:
+                content = pyproject.read_text(encoding="utf-8", errors="ignore")
+                if "hermes-agent" in content or "hermes_agent" in content:
+                    return True
+            except Exception:
+                pass
+
+        # Sibling marker check: hermes_cli/ + run_agent.py must both exist
+        # These are core Hermes files that won't be in a random shared folder
+        has_hermes_cli = (path / "hermes_cli" / "__init__.py").exists()
+        has_run_agent = (path / "run_agent.py").exists()
+        if has_hermes_cli and has_run_agent:
+            return True
+
+        # Fallback: check for setup.py or setup.cfg with hermes-agent
+        for setup_file in ("setup.py", "setup.cfg"):
+            sf = path / setup_file
+            if sf.exists():
+                try:
+                    content = sf.read_text(encoding="utf-8", errors="ignore")
+                    if "hermes-agent" in content or "hermes_agent" in content:
+                        return True
+                except Exception:
+                    pass
+
+        return False
+    except Exception:
+        return False
+
+
 def find_shell_configs() -> list:
     """Find shell configuration files that might have PATH entries."""
     home = Path.home()
@@ -837,12 +882,22 @@ def _perform_uninstall(
     # We need to be careful here
     try:
         if project_root.exists():
-            # If the install is inside ~/.hermes/, just remove the hermes-agent subdir
-            if hermes_home in project_root.parents or project_root.parent == hermes_home:
+            # Safety check: verify this is actually a Hermes project before
+            # removing it. If Hermes is installed inside a shared Python folder
+            # (e.g. site-packages), project_root could resolve to that shared
+            # folder and rmtree would delete other packages' files too.
+            # See issue #65854.
+            if not _is_hermes_project_root(project_root):
+                log_warn(
+                    f"Refusing to remove {project_root} — it does not appear to "
+                    f"be a Hermes Agent project directory (no pyproject.toml or "
+                    f"setup markers found). This may be a shared Python folder. "
+                    f"Please remove Hermes files manually."
+                )
+            elif hermes_home in project_root.parents or project_root.parent == hermes_home:
                 shutil.rmtree(project_root)
                 log_success(f"Removed {project_root}")
             else:
-                # Installation is somewhere else entirely
                 shutil.rmtree(project_root)
                 log_success(f"Removed {project_root}")
     except Exception as e:

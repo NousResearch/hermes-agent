@@ -4187,6 +4187,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return set_session_vars(
             platform="api_server",
+            source="api",
+            chat_type="api",
             chat_id=chat_id,
             session_key=session_key,
             session_id=session_id,

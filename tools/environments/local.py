@@ -20,6 +20,75 @@ _IS_WINDOWS = platform.system() == "Windows"
 logger = logging.getLogger(__name__)
 
 
+_WINDOWS_BASH_NUL_REDIRECTION_RE = re.compile(
+    r"(?i)(?:(?:\d+|&)>>?|>>?)[ \t]*"
+    r"(?P<target>nul)(?=$|[\s;&|(){}])"
+)
+
+
+def _rewrite_windows_bash_nul_redirections(command: str) -> str:
+    """Translate CMD-style ``NUL`` redirects for Windows Git Bash.
+
+    Hermes intentionally executes local Windows commands through Git Bash.
+    Unlike ``cmd.exe``, Bash treats a bare ``NUL`` redirect target as an
+    ordinary filename, so model-authored commands such as ``git ... 2>NUL``
+    leave a Windows-reserved file in the working tree.  Rewrite the common
+    CMD spellings to Bash's real null device before the command is wrapped.
+
+    Quoted strings, escaped characters, and shell comments are masked before
+    matching so examples such as ``echo '2>NUL'`` and nested
+    ``cmd.exe /c \"... 2>NUL\"`` commands keep their original text.
+    """
+    if not command or ">" not in command or "nul" not in command.lower():
+        return command
+
+    masked = list(command)
+    quote: str | None = None
+    i = 0
+    while i < len(command):
+        ch = command[i]
+
+        if quote is not None:
+            masked[i] = "\n" if ch == "\n" else " "
+            if quote != "'" and ch == "\\" and i + 1 < len(command):
+                i += 1
+                masked[i] = "\n" if command[i] == "\n" else " "
+            elif ch == quote:
+                quote = None
+            i += 1
+            continue
+
+        if ch in {"'", '"', "`"}:
+            quote = ch
+            masked[i] = " "
+            i += 1
+            continue
+
+        if ch == "\\" and i + 1 < len(command):
+            masked[i] = " "
+            i += 1
+            masked[i] = "\n" if command[i] == "\n" else " "
+            i += 1
+            continue
+
+        if ch == "#" and (
+            i == 0 or command[i - 1].isspace() or command[i - 1] in ";|&(){}"
+        ):
+            while i < len(command) and command[i] != "\n":
+                masked[i] = " "
+                i += 1
+            continue
+
+        i += 1
+
+    rewritten = command
+    matches = list(_WINDOWS_BASH_NUL_REDIRECTION_RE.finditer("".join(masked)))
+    for match in reversed(matches):
+        start, end = match.span("target")
+        rewritten = rewritten[:start] + "/dev/null" + rewritten[end:]
+    return rewritten
+
+
 def _msys_to_windows_path(cwd: str) -> str:
     """Translate a Git Bash / MSYS-style POSIX path (``/c/Users/x``) to the
     native Windows form (``C:\\Users\\x``) so ``os.path.isdir`` and
@@ -1106,6 +1175,11 @@ class LocalEnvironment(BaseEnvironment):
             cwd = os.path.expanduser(cwd)
         super().__init__(cwd=cwd or os.getcwd(), timeout=timeout, env=env)
         self.init_session()
+
+    def _prepare_command(self, command: str) -> tuple[str, str | None]:
+        if _IS_WINDOWS:
+            command = _rewrite_windows_bash_nul_redirections(command)
+        return super()._prepare_command(command)
 
     def get_temp_dir(self) -> str:
         """Return a shell-safe writable temp dir for local execution.

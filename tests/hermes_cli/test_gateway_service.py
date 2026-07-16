@@ -913,6 +913,57 @@ class TestLaunchdServiceRecovery:
             ["launchctl", "kickstart", target],
         ]
 
+    @pytest.mark.parametrize(
+        ("runtime_status", "error_type"),
+        [
+            (
+                {
+                    "configured": Path("/opt/hermes-runtime"),
+                    "imported": Path("/srv/hermes"),
+                    "matches": False,
+                },
+                RuntimeError,
+            ),
+            (ValueError("runtime.code_root does not exist: /missing"), ValueError),
+        ],
+    )
+    def test_launchd_restart_validates_runtime_before_any_mutation(
+        self, monkeypatch, runtime_status, error_type
+    ):
+        calls = []
+
+        def runtime_info():
+            calls.append("validate-runtime")
+            if isinstance(runtime_status, Exception):
+                raise runtime_status
+            return runtime_status
+
+        monkeypatch.setattr(gateway_cli, "_runtime_code_root_status", runtime_info)
+        monkeypatch.setattr(
+            gateway_cli,
+            "get_launchd_label",
+            lambda: calls.append("get-label") or "ai.hermes.gateway",
+        )
+        monkeypatch.setattr(
+            "gateway.status.get_running_pid",
+            lambda: calls.append("get-pid") or 321,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_request_gateway_self_restart",
+            lambda pid: calls.append("signal-pid") or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli.subprocess,
+            "run",
+            lambda *args, **kwargs: calls.append("launchctl"),
+        )
+
+        with pytest.raises(error_type):
+            gateway_cli.launchd_restart()
+
+        assert calls == ["validate-runtime"]
+
     def test_launchd_restart_drains_running_gateway_before_kickstart(self, monkeypatch, capsys):
         calls = []
         target = f"{gateway_cli._launchd_domain()}/{gateway_cli.get_launchd_label()}"
@@ -3415,6 +3466,34 @@ class TestGatewayStatusParser:
 
 class TestSystemdInstallOffersLegacyRemoval:
     """Verify that systemd_install prompts to remove legacy units first."""
+
+    def test_systemd_install_validates_runtime_before_legacy_removal(
+        self, monkeypatch
+    ):
+        calls = []
+
+        def reject_runtime():
+            calls.append("validate-runtime")
+            raise RuntimeError("runtime mismatch")
+
+        monkeypatch.setattr(
+            gateway_cli, "_require_runtime_code_root_match", reject_runtime
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "has_legacy_hermes_units",
+            lambda: calls.append("inspect-legacy") or True,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "remove_legacy_hermes_units",
+            lambda **kwargs: calls.append("remove-legacy"),
+        )
+
+        with pytest.raises(RuntimeError, match="runtime mismatch"):
+            gateway_cli.systemd_install(non_interactive=True)
+
+        assert calls == ["validate-runtime"]
 
     def test_install_offers_removal_when_legacy_detected(
         self, tmp_path, monkeypatch, capsys

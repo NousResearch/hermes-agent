@@ -3327,6 +3327,11 @@ def systemd_install(
     if system:
         _require_root_for_system_service("install")
 
+    # Validate before removing legacy units, creating directories, or touching
+    # service definitions. A failed deployment contract must leave the existing
+    # service topology unchanged.
+    _require_runtime_code_root_match()
+
     # Offer to remove legacy units (hermes.service from pre-rename installs)
     # before installing the new hermes-gateway.service. If both remain, they
     # flap-fight for the Telegram bot token on every gateway startup.
@@ -4555,6 +4560,11 @@ def _wait_for_gateway_exit(
 
 
 def launchd_restart():
+    # A restart signals or terminates the current gateway before asking launchd
+    # to relaunch it. Validate first so an invalid/mismatched deployment
+    # contract cannot disrupt a working process.
+    _require_runtime_code_root_match()
+
     label = get_launchd_label()
     target = f"{_launchd_domain()}/{label}"
     drain_timeout = _get_restart_drain_timeout()

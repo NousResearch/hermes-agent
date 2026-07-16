@@ -361,35 +361,53 @@ class GatewayKanbanWatchersMixin:
                                 lines = task.result.strip().splitlines()
                                 r = lines[0][:160] if lines else task.result[:160]
                                 handoff = f"\n{r}"
-                            msg = (
-                                f"✔ {board_tag}{tag}Kanban {sub['task_id']} done"
-                                f" — {title}{handoff}"
+                            msg = t(
+                                "gateway.kanban_done",
+                                board_tag=board_tag,
+                                tag=tag,
+                                task_id=sub["task_id"],
+                                title=title,
+                                handoff=handoff,
                             )
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):
                                 reason = f": {str(ev.payload['reason'])[:160]}"
-                            msg = f"⏸ {board_tag}{tag}Kanban {sub['task_id']} blocked{reason}"
+                            msg = t(
+                                "gateway.kanban_blocked",
+                                board_tag=board_tag,
+                                tag=tag,
+                                task_id=sub["task_id"],
+                                reason=reason,
+                            )
                         elif kind == "gave_up":
                             err = ""
                             if ev.payload and ev.payload.get("error"):
                                 err = f"\n{str(ev.payload['error'])[:200]}"
-                            msg = (
-                                f"✖ {board_tag}{tag}Kanban {sub['task_id']} gave up "
-                                f"after repeated spawn failures{err}"
+                            msg = t(
+                                "gateway.kanban_gave_up",
+                                board_tag=board_tag,
+                                tag=tag,
+                                task_id=sub["task_id"],
+                                err=err,
                             )
                         elif kind == "crashed":
-                            msg = (
-                                f"✖ {board_tag}{tag}Kanban {sub['task_id']} worker crashed "
-                                f"(pid gone); dispatcher will retry"
+                            msg = t(
+                                "gateway.kanban_crashed",
+                                board_tag=board_tag,
+                                tag=tag,
+                                task_id=sub["task_id"],
                             )
                         elif kind == "timed_out":
                             limit = 0
                             if ev.payload and ev.payload.get("limit_seconds"):
                                 limit = int(ev.payload["limit_seconds"])
-                            msg = (
-                                f"⏱ {board_tag}{tag}Kanban {sub['task_id']} timed out "
-                                f"(max_runtime={limit}s); will retry"
+                            msg = t(
+                                "gateway.kanban_timed_out",
+                                board_tag=board_tag,
+                                tag=tag,
+                                task_id=sub["task_id"],
+                                limit=limit,
                             )
                         elif kind == "status":
                             new_status = ""

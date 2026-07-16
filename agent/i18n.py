@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import logging
 import os
+import string
 import sysconfig
 import threading
 from functools import lru_cache
@@ -83,6 +84,9 @@ _LANGUAGE_ALIASES: dict[str, str] = {
 
 _catalog_cache: dict[str, dict[str, str]] = {}
 _catalog_lock = threading.Lock()
+
+_overrides_cache: dict[str, str] | None = None
+_overrides_lock = threading.Lock()
 
 
 def _locales_dir() -> Path:
@@ -207,6 +211,20 @@ def _flatten_into(node: Any, prefix: str, out: dict[str, str]) -> None:
     # Non-string, non-dict leaves are ignored -- catalogs are text-only.
 
 
+def _load_config_dict() -> dict:
+    """Read config.yaml as a plain dict, or ``{}`` on any failure.
+
+    Single seam for every config-derived i18n value (language, agent name,
+    overrides) so tests can patch one function and callers stay crash-proof.
+    """
+    try:
+        from hermes_cli.config import load_config
+        return load_config() or {}
+    except Exception as exc:  # config missing / malformed / import error
+        logger.debug("i18n could not read config.yaml: %s", exc)
+        return {}
+
+
 @lru_cache(maxsize=1)
 def _config_language_cached() -> str | None:
     """Read ``display.language`` from config.yaml once per process.
@@ -216,15 +234,37 @@ def _config_language_cached() -> str | None:
     ``reset_language_cache()`` clears this when config changes at runtime
     (e.g. after the setup wizard).
     """
-    try:
-        from hermes_cli.config import load_config
-        cfg = load_config()
-        lang = (cfg.get("display") or {}).get("language")
-        if lang:
-            return _normalize_lang(lang)
-    except Exception as exc:
-        logger.debug("Could not read display.language from config: %s", exc)
+    cfg = _load_config_dict()
+    lang = (cfg.get("display") or {}).get("language")
+    if lang:
+        return _normalize_lang(lang)
     return None
+
+
+@lru_cache(maxsize=1)
+def agent_display_name() -> str:
+    """Configured agent name for ``{name}`` substitution; ``"Hermes"`` fallback.
+
+    Sourced from the skin selected by ``display.skin``, matching the CLI/TUI
+    branding path. Loading is cached with the other config-derived i18n state.
+    """
+    config = _load_config_dict()
+    display = config.get("display") or {}
+    if not isinstance(display, dict):
+        display = {}
+    skin_name = display.get("skin", "default")
+    if not isinstance(skin_name, str) or not skin_name.strip():
+        skin_name = "default"
+
+    try:
+        from hermes_cli.skin_engine import load_skin
+
+        name = load_skin(skin_name.strip()).get_branding("agent_name", "Hermes")
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+    except Exception as exc:
+        logger.debug("i18n could not resolve display skin branding: %s", exc)
+    return "Hermes"
 
 
 def reset_language_cache() -> None:
@@ -234,8 +274,12 @@ def reset_language_cache() -> None:
     needs to pick up a changed ``display.language`` without restart.
     """
     _config_language_cached.cache_clear()
+    agent_display_name.cache_clear()
     with _catalog_lock:
         _catalog_cache.clear()
+    global _overrides_cache
+    with _overrides_lock:
+        _overrides_cache = None
 
 
 def get_language() -> str:
@@ -247,6 +291,106 @@ def get_language() -> str:
     if cfg_lang:
         return cfg_lang
     return DEFAULT_LANGUAGE
+
+
+class _MissingField(str):
+    """Sentinel returned by ``_SafeFormatter.get_value`` for an unknown key.
+
+    Subclasses ``str`` so the value already IS the ``"{key}"`` token and
+    normal string operations still work.  The distinct type lets
+    ``format_field`` unambiguously distinguish a re-emitted placeholder from
+    a real kwarg value that happens to look like ``"{...}"``.
+    """
+
+    __slots__ = ()
+
+
+class _SafeFormatter(string.Formatter):
+    """``str.format`` that leaves unknown placeholders intact instead of raising.
+
+    A user-supplied override template (``gateway.system_messages.*``) may contain
+    a placeholder the call site never provides -- a typo, or ``{minutes}`` on a
+    key that isn't the heartbeat.  Stock ``str.format`` raises on the first such
+    token and the whole string is lost.  This formatter substitutes the kwargs it
+    knows and re-emits the rest as the literal ``{token}`` so a broken template
+    degrades gracefully instead of crashing the gateway.
+    """
+
+    def get_value(self, key: Any, args: Any, kwargs: Any) -> Any:
+        if isinstance(key, str):
+            return kwargs[key] if key in kwargs else _MissingField("{" + key + "}")
+        try:
+            return args[key]
+        except (IndexError, KeyError):
+            return _MissingField("{" + str(key) + "}")
+
+    def get_field(self, field_name: str, args: Any, kwargs: Any) -> tuple[Any, Any]:
+        """Preserve an unresolved compound field as its complete raw token.
+
+        ``string.Formatter.get_field`` performs ``.attr`` / ``[item]``
+        traversal after :meth:`get_value`. A missing root is therefore not
+        enough on its own: traversing the ``_MissingField`` sentinel would
+        otherwise raise ``AttributeError`` or ``TypeError``. Known roots whose
+        requested attribute/item is absent degrade the same way.
+        """
+        root = field_name.split(".", 1)[0].split("[", 1)[0]
+        lookup_key: Any = int(root) if root.isdecimal() else root
+        root_value = self.get_value(lookup_key, args, kwargs)
+        if isinstance(root_value, _MissingField):
+            return _MissingField("{" + field_name + "}"), lookup_key
+        try:
+            return super().get_field(field_name, args, kwargs)
+        except (AttributeError, KeyError, IndexError, TypeError):
+            return _MissingField("{" + field_name + "}"), lookup_key
+
+    def format_field(self, value: Any, format_spec: str) -> str:
+        # If get_value returned a sentinel for a missing placeholder, reconstruct
+        # the raw token -- with or without a format spec.
+        if isinstance(value, _MissingField):
+            if format_spec:
+                # Reconstruct e.g. "{n:02d}" from token "{n}" + spec "02d".
+                return value[:-1] + ":" + format_spec + "}"
+            return str(value)
+        try:
+            return super().format_field(value, format_spec)
+        except (ValueError, TypeError):
+            # A real value with an unsatisfiable format spec degrades without
+            # crashing (e.g. a non-numeric value passed where ":02d" expected).
+            return str(value)
+
+
+_SAFE_FORMATTER = _SafeFormatter()
+
+
+def _safe_format(template: str, **kwargs: Any) -> str:
+    """Format ``template`` with ``kwargs``; unknown ``{tokens}`` stay literal."""
+    try:
+        return _SAFE_FORMATTER.vformat(template, (), kwargs)
+    except (AttributeError, KeyError, IndexError, TypeError, ValueError) as exc:
+        logger.warning("i18n safe-format failed for template %r: %s", template, exc)
+        return template
+
+
+def _gateway_overrides() -> dict[str, str]:
+    """Load ``gateway.system_messages`` overrides as a ``{full_key: template}`` map.
+
+    ``gateway.system_messages.restart_success`` -> ``gateway.restart_success``.
+    Cached for the process; ``reset_language_cache()`` clears it on config reload.
+    """
+    global _overrides_cache
+    with _overrides_lock:
+        if _overrides_cache is not None:
+            return _overrides_cache
+    result: dict[str, str] = {}
+    raw = (_load_config_dict().get("gateway") or {}).get("system_messages") or {}
+    if isinstance(raw, dict):
+        for short_key, template in raw.items():
+            if isinstance(template, str):
+                result[f"gateway.{short_key}"] = template
+    with _overrides_lock:
+        if _overrides_cache is None:
+            _overrides_cache = result
+        return _overrides_cache
 
 
 def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
@@ -266,10 +410,19 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
     -------
     The translated string, or the English fallback if the key is missing in
     the target language, or the bare key if English is also missing.
+
+    Notes
+    -----
+    ``gateway.*`` keys are checked against :func:`_gateway_overrides` first;
+    a matching override short-circuits both the language catalog and the
+    English fallback.
     """
     target = _normalize_lang(lang) if lang else get_language()
-    catalog = _load_catalog(target)
-    value = catalog.get(key)
+    # Gateway overrides win over the catalog (populated from gateway.system_messages).
+    value = _gateway_overrides().get(key)
+    if value is None:
+        catalog = _load_catalog(target)
+        value = catalog.get(key)
 
     if value is None and target != DEFAULT_LANGUAGE:
         # Fall through to English rather than showing a key path to the user.
@@ -281,15 +434,11 @@ def t(key: str, lang: str | None = None, **format_kwargs: Any) -> str:
         logger.debug("i18n miss: key=%r lang=%r", key, target)
         value = key
 
+    if "{name}" in value and "name" not in format_kwargs:
+        format_kwargs = {**format_kwargs, "name": agent_display_name()}
+
     if format_kwargs:
-        try:
-            return value.format(**format_kwargs)
-        except (KeyError, IndexError, ValueError) as exc:
-            logger.warning(
-                "i18n format failed for key=%r lang=%r kwargs=%r: %s",
-                key, target, format_kwargs, exc,
-            )
-            return value
+        return _safe_format(value, **format_kwargs)
     return value
 
 
@@ -299,4 +448,5 @@ __all__ = [
     "t",
     "get_language",
     "reset_language_cache",
+    "agent_display_name",
 ]

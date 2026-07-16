@@ -29,6 +29,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
 from agent.conversation_compression import conversation_history_after_compression
+from agent.i18n import t
 from agent.iteration_budget import IterationBudget
 from agent.model_metadata import (
     estimate_messages_tokens_rough,
@@ -242,11 +243,7 @@ def build_turn_context(
     if agent.api_mode != "anthropic_messages":
         try:
             if agent._cleanup_dead_connections():
-                agent._emit_status(
-                    "🔌 Detected stale connections from a previous provider "
-                    "issue — cleaned up automatically. Proceeding with fresh "
-                    "connection."
-                )
+                agent._emit_status(t("gateway.stale_connections_cleaned"))
         except Exception:
             pass
     # Replay compression warning through status_callback for gateway platforms.
@@ -479,9 +476,11 @@ def build_turn_context(
                 f"{_compressor.context_length:,}",
             )
             agent._emit_status(
-                f"📦 Preflight compression: ~{_preflight_tokens:,} tokens "
-                f">= {_compressor.threshold_tokens:,} threshold. "
-                "This may take a moment."
+                t(
+                    "gateway.preflight_compression",
+                    tokens=f"{_preflight_tokens:,}",
+                    threshold=f"{_compressor.threshold_tokens:,}",
+                )
             )
             for _pass in range(3):
                 _orig_len = len(messages)

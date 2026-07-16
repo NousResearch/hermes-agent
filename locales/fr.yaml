@@ -406,3 +406,456 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "Base de données de sessions indisponible"
     session_not_found:           "Session introuvable dans la base de données."
     warn_passthrough:            "⚠️ {error}"
+  # --- fork additions: system-message i18n + category suppression ---
+  codex_gpt55_autoraise_notice: "ℹ Codex {model} caps context at {cap}, so auto-compaction was raised to {to_pct}% (from {from_pct}%) to use more of the window before summarizing.\n  Opt back out: hermes config set compression.codex_gpt55_autoraise false"
+  restart_success: ♻ Gateway restarted successfully. Your session continues.
+  gateway_online: ♻️ Gateway online — Hermes is back and ready.
+  subagent_working: ⏳ Subagent working{status_detail} — your message is queued for when it finishes (use /stop to cancel everything).
+  compressing_context: ⏳ Compressing context{status_detail} — your message is queued for when it finishes (use /stop to cancel everything).
+  queued_next_turn: ⏳ Queued for the next turn{status_detail}. I'll respond once the current task finishes.
+  interrupting_task: ⚡ Interrupting current task{status_detail}. I'll respond to your message shortly.
+  steered_into_run: ⏩ Steered into current run{status_detail}. Your message arrives after the next tool call.
+  long_running: ⏳ Working — {minutes} min{status_detail}
+  no_activity_warning: ⚠️ No activity for {minutes} min. If the agent does not respond soon, it will be timed out in {remaining} min. You can continue waiting or use /reset.
+  provider_auth_failed: ⚠️ Provider authentication failed. Check the configured credentials; raw provider details are in the gateway logs.
+  provider_rejected: ⚠️ The model provider rejected the request. I kept the raw provider error out of chat; check gateway logs for details or try rephrasing.
+  provider_rate_limited: ⏱️ The model provider is rate-limiting requests. Please wait a moment and try again.
+  provider_failed: ⚠️ The model provider failed after retries. I kept raw provider details out of chat; check gateway logs for diagnostics.
+  session_too_large: '⚠️ Session too large for the model''s context window.
+
+    Use /compact to compress the conversation, or /reset to start fresh.'
+  request_failed: 'The request failed: {error}
+
+    Try again or use /reset to start a fresh session.'
+  processing_stopped: '⚠️ Processing stopped: {error}. Try again.'
+  empty_response: ⚠️ Processing completed but no response was generated. This may be a transient error — try sending your message again.
+  no_response_generated: (No response generated)
+  self_review_header: '💾 Self-improvement review: {summary}'
+  review_skill_patched: '📝 Skill ''{name}'' patched: "{old}" → "{new}"'
+  review_skill_created: '📝 Skill ''{name}'' created: {description}'
+  review_skill_rewritten: '📝 Skill ''{name}'' rewritten: {description}'
+  review_skill_message: 📝 {message}
+  review_skill_action: Skill {action}
+  review_mem_add: '{label} ➕ {preview}'
+  review_mem_edit: '{label} ✏️ {preview}'
+  review_mem_remove: '{label} ➖ {preview}'
+  review_mem_updated: '{label} updated'
+  review_label_skill: Skill
+  review_label_memory: Memory
+  review_label_user_profile: User profile
+  iteration_budget_exhausted: ⚠️ Iteration budget exhausted ({n}/{max}) — asking model to summarise
+  stale_connections_cleaned: 🔌 Detected stale connections from a previous provider issue — cleaned up automatically. Proceeding with fresh connection.
+  preflight_compression: '📦 Preflight compression: ~{tokens} tokens >= {threshold} threshold. This may take a moment.'
+  compression_aux_unavailable: ⚠ Configured auxiliary compression provider '{provider}' is unavailable — context compression will drop middle turns without a summary. Check auxiliary.compression in config.yaml and reauthenticate that provider.
+  compression_no_provider: ⚠ No auxiliary LLM provider configured — context compression will drop middle turns without a summary. Run `hermes setup` or set OPENROUTER_API_KEY.
+  api_error_billing: ❌ Billing or credits exhausted — {summary}
+  api_error_rate_limited: ❌ Rate limited after {max_retries} retries — {summary}
+  api_error_failed: ❌ API failed after {max_retries} retries — {summary}
+  api_safety_blocked: '❌ Provider safety filter blocked this request: {summary}'
+  api_non_retryable: '❌ Non-retryable error (HTTP {status_code}): {summary}'
+  api_safety_trying_fallback: ⚠️ Provider safety filter blocked this request — trying fallback...
+  api_non_retryable_trying_fallback: ⚠️ Non-retryable error (HTTP {status_code}) — trying fallback...
+  api_max_retries_trying_fallback: ⚠️ Max retries ({max_retries}) exhausted — trying fallback...
+  tool_guardrail_halted: '⚠️ Tool guardrail halted {tool}: {code}'
+  empty_response_retry: ⚠️ Empty response from model — retrying ({n}/3)
+  empty_response_switching_fallback: ⚠️ Model returning empty responses — switching to fallback provider...
+  empty_response_reasoning_only: ⚠️ Model produced reasoning but no visible response after all retries. Returning empty.
+  empty_response_no_content: ❌ Model returned no content after all retries and fallback attempts.
+  empty_response_no_content_no_fallback: ❌ Model returned no content after all retries. No fallback providers configured.
+  thinking_prefill_retry: ↻ Thinking-only response — prefilling to continue ({n}/2)
+  kanban_done: ✔ {board_tag}{tag}Kanban {task_id} done — {title}{handoff}
+  kanban_blocked: ⏸ {board_tag}{tag}Kanban {task_id} blocked{reason}
+  kanban_gave_up: ✖ {board_tag}{tag}Kanban {task_id} gave up after repeated spawn failures{err}
+  kanban_crashed: ✖ {board_tag}{tag}Kanban {task_id} worker crashed (pid gone); dispatcher will retry
+  kanban_timed_out: ⏱ {board_tag}{tag}Kanban {task_id} timed out (max_runtime={limit}s); will retry
+  busy_queued_drain: ⏳ Gateway {gerund} — queued for the next turn after it comes back.
+  busy_not_accepting_turn: ⏳ Gateway is {gerund} and is not accepting another turn right now.
+  busy_not_accepting_work: ⏳ Gateway is {gerund} and is not accepting new work right now.
+  shutdown_restarting: ⚠️ Gateway is restarting — The current task will be interrupted. Send any message after it restarts and I'll try to pick up where we left off.
+  shutdown_shutting_down: ⚠️ Gateway is shutting down — The current task will be interrupted.
+  steer_update_send_failed: '✗ Failed to send reply to update process: {error}'
+  steer_update_sent: ✓ Sent `{label}` to update process.
+  queued_next_turn_simple: Queued for next turn.
+  queued_next_turn_depth: Queued for next turn. ({depth} queued)
+  steer_usage: 'Usage: /steer <prompt>'
+  steer_agent_starting: Agent is still starting — /steer queued for next turn.
+  steer_failed: '⚠️ Steer failed: {error}'
+  steer_queued: '⏩ Steer queued — will be injected after the next tool call: ''{preview}'''
+  steer_rejected: Steer rejected (empty prompt).
+  steer_no_agent: No active agent — /steer queued for next turn.
+  steer_usage_no_agent: 'Usage: /steer <prompt>  (no agent running; sending as plain message)'
+  agent_running_switch_model: Agent is running — wait for it to finish or /stop it first, then switch model.
+  agent_running_change_runtime: Agent is running — wait for it to finish or /stop it first, then change runtime.
+  agent_running_goal: Agent is running — use /goal status / pause / clear while running or /stop before setting a new goal.
+  agent_running_cant_run_cmd: ⏳ Agent is running — `/{name}` can't run during a turn. Wait for the current response or use `/stop` first.
+  force_stopped_starting: ⚡ Force-stopped. Agent was still starting — session unlocked.
+  command_blocked_hook: Command `/{command}` was blocked by a hook.
+  quick_cmd_no_output: Command returned no output.
+  quick_cmd_timeout: Quick command timed out (30 s).
+  quick_cmd_error: 'Quick command error: {error}'
+  quick_cmd_no_command: Quick command '/{command}' has no command defined.
+  quick_cmd_no_target: Quick command '/{command}' has no target defined.
+  quick_cmd_unsupported_type: 'Quick command ''/{command}'' has unsupported type (supported: ''exec'', ''alias'').'
+  api_hint_auth: ' Check your API key or run `claude /login` to refresh OAuth credentials.'
+  api_hint_billing: ' Your API balance or quota is exhausted. Check your provider dashboard.'
+  api_hint_plan_limit_hours: ' Your plan''s usage limit was reached. It will reset in approximately ~{hours} h.'
+  api_hint_plan_limit: ' Your plan''s usage limit was reached. Please wait for it to reset.'
+  api_hint_rate_limited: ' You are being rate-limited. Please wait a moment and try again.'
+  api_hint_overloaded: ' The API is temporarily overloaded. Please try again in a little while.'
+  api_hint_rejected: ' The request was rejected by the API.'
+  api_error_generic: 'Sorry, an error occurred ({error_type}).
+
+    {error_detail}
+
+    {status_hint}Try again or use /reset to start a fresh session.'
+  delivery_failed: ⚠️ Message delivery failed after multiple attempts. Please try again — your request was processed but the response could not be sent.
+  response_formatting_failed: '(Response formatting failed, plain text:)
+
+
+    {content}'
+  audio_fallback_caption: '🔊 Audio: {audio_path}'
+  file_fallback_caption: '📎 File: {file_path}'
+  image_fallback_caption: '🖼️ Image: {image_path}'
+  clarify_question: ❓ {question}
+  clarify_instructions: Reply with the number, the option text, or your own answer.
+  model_no_response_tool_results: ⚠️ The model returned no response after processing tool results. This can happen with some models — try again or rephrase your request.
+  session_auto_reset: '
+
+
+    🔄 Auto-reset — the conversation exceeded the maximum context size and cannot be compressed further. Your next message will start a fresh session.'
+  voice_no_stt: '🎤 I received your voice message but can''t transcribe it — no speech-to-text provider is configured.
+
+
+    To enable voice: install faster-whisper (`uv pip install faster-whisper` inside the Hermes venv; `pip install faster-whisper` also works if pip is on your PATH) and set `stt.enabled: true` in config.yaml, then /restart.'
+  voice_no_stt_setup_suffix: '
+
+
+    For full setup instructions run: `/skill hermes-agent-setup`'
+  compress_aborted: ⚠️ Context compression aborted ({err}). No messages were removed — conversation is unchanged. Run /compress to retry, /reset for a clean session, or check your auxiliary.compression model setting.
+  compress_aux_model_failed: ℹ️ Configured compression model `{model}` errored ({err}). Fell back to the primary model — context is intact — but you may want to check `auxiliary.compression.model` in config.yaml.
+  admin_only_with_allowed: '⛔ /{cmd} is admin-only. You can run: {allowed_list}. Use /whoami for the full list.'
+  admin_only_no_commands: ⛔ /{cmd} is admin-only. No commands are enabled for non-admins on this platform. Ask the admin to add you to allow_admin_from or set user_allowed_commands.
+  suggestions_failed: 'Suggestions command failed: {error}'
+  bg_task_no_creds: '❌ Background task {task_id} failed: provider credentials not configured.'
+  bg_task_complete: '✅ Background task complete
+
+    Request: "{preview}"
+
+
+    '
+  bg_task_failed: '❌ Background task {task_id} failed: {error}'
+  busy_hint_queued: 💡 First-time tip — I queued your message instead of interrupting. Send `/busy interrupt` to make new messages stop the current task immediately, or `/busy status` to check. This notice won't appear again.
+  busy_hint_steered: 💡 First-time tip — I steered your message into the current run; it will arrive after the next tool call instead of interrupting. Send `/busy interrupt` or `/busy queue` to change this, or `/busy status` to check. This notice won't appear again.
+  busy_hint_interrupt: 💡 First-time tip — I just interrupted my current task to answer you. Send `/busy queue` to queue follow-ups for after the current task instead, `/busy steer` to inject them mid-run without interrupting, or `/busy status` to check. This notice won't appear again.
+  tool_progress_hint: 💡 First-time tip — that tool took a while and I'm streaming every step. If the progress messages feel noisy, send `/verbose` to cycle modes (all → new → off). This notice won't appear again.
+  bundles_unavailable: 'Bundles subsystem unavailable: {exc}'
+  bundles_none_installed: "No skill bundles installed.\nCreate one on the host with:\n  `hermes bundles create <name> --skill <s1> --skill <s2>`\nDirectory: `{bundles_dir}`"
+  bundles_header: '**Skill Bundles** ({n} installed):'
+  bundles_invoke_hint: Invoke a bundle with `/<slug>` to load all its skills.
+  update_managed: ✗ {managed_msg}
+  topic_no_chat_id: Could not determine chat ID.
+  topic_not_enabled: Multi-session topic mode is not currently enabled for this chat.
+  topic_disabled: 'Multi-session topic mode is disabled for this chat.
+
+
+    Existing Telegram topics are not deleted — they just won''t work as independent sessions anymore. The root chat is back to being a normal Hermes chat. Run /topic to re-enable.'
+  topic_no_unlinked_sessions: No previous unlinked Telegram sessions found.
+  topic_restore_instructions: 'To restore a previous session later:
+
+    1. Create or open a topic. To create a new one, open All Messages and send a message there.
+
+    2. Send /topic <session-id> inside that topic.'
+  session_not_found: 'Session not found: {session_id}'
+  session_not_telegram: This is not a Telegram session and cannot be restored into this topic.
+  session_wrong_user: This session does not belong to this Telegram user.
+  session_already_linked: This session is already linked to a different Telegram topic.
+  session_restored: 'Session restored: {title}'
+  session_restored_last_msg: '
+
+
+    Last Hermes message:
+
+    {content}'
+  command_cancelled: 🟡 /{command} cancelled. Conversation unchanged.
+  whoami_unrestricted: '**You** — {platform} ({scope})
+
+    User ID: `{user_id}`
+
+    Tier: unrestricted (no admin list configured for this scope)
+
+    Slash commands: all available'
+  whoami_admin: '**You** — {platform} ({scope})
+
+    User ID: `{user_id}`
+
+    Tier: **admin**
+
+    Slash commands: all available'
+  whoami_user: '**You** — {platform} ({scope})
+
+    User ID: `{user_id}`
+
+    Tier: user
+
+    Slash commands you can run: {runnable_str}'
+  platform_list_header: '**Gateway platforms**'
+  platform_connected: 'Connected: {platforms}'
+  platform_connected_none: 'Connected: (none)'
+  platform_failed_paused: '  · {platform} — PAUSED ({reason}). Resume with `/platform resume {platform}`.'
+  platform_retrying: '  · {platform} — retrying (attempt {attempts})'
+  platform_failed_none: 'Failed/paused: (none)'
+  platform_usage: 'Usage: /platform {action} <name>'
+  platform_unknown: 'Unknown platform: {target}'
+  platform_not_in_queue: '{platform} is not in the retry queue (it''s either connected or not enabled).'
+  platform_already_paused: '{platform} is already paused.'
+  platform_paused_ok: ✓ {platform} paused. Resume with `/platform resume {platform}` or `hermes gateway restart` to reset.
+  platform_not_in_queue_resume: '{platform} is not in the retry queue — nothing to resume.'
+  platform_already_retrying: '{platform} is already retrying — no resume needed.'
+  platform_resumed_ok: ✓ {platform} resumed — retrying on next watcher tick.
+  platform_usage_full: "Usage: /platform <list|pause|resume> [name]\n  /platform list — show platform status\n  /platform pause <name> — stop retrying a failing platform\n  /platform resume <name> — re-queue a paused platform"
+  model_expensive_warning: '⚠️ **Expensive Model Warning**
+
+
+    {warning_message}
+
+
+    _Text fallback: reply `{prefix}approve` to switch or `{prefix}cancel` to keep the current model._'
+  codex_runtime_errors: ❌ {errors}
+  codex_runtime_config_error: '❌ Could not load config: {exc}'
+  codex_runtime_result: '{prefix} {message}'
+  subgoal_no_active_goal: No active goal. Set one with /goal <text>.
+  subgoal_remove_usage: 'Usage: /subgoal remove <n>'
+  subgoal_remove_not_integer: '/subgoal remove: <n> must be an integer (1-based index).'
+  subgoal_remove_error: '/subgoal remove: {exc}'
+  subgoal_removed: '✓ Removed subgoal {idx}: {removed}'
+  subgoal_clear_error: '/subgoal clear: {exc}'
+  subgoal_cleared_one: ✓ Cleared {count} subgoal.
+  subgoal_cleared_many: ✓ Cleared {count} subgoals.
+  subgoal_none_to_clear: No subgoals to clear.
+  subgoal_add_error: '/subgoal: {exc}'
+  subgoal_added: '✓ Added subgoal {idx}: {text}'
+  memory_unknown_subcommand: 'Unknown /memory subcommand. Use: pending, approve <id>, reject <id>, approval <on|off>.'
+  skills_write_approval_off: Skill write approval is off (skills.write_approval). Enable it with /skills approval on, then review staged writes here with /skills pending.
+  skills_unknown_subcommand: 'Unknown /skills subcommand on this platform. Use: pending, approve <id>, reject <id>, diff <id>, approval <on|off>. (Search/install are CLI-only.)'
+  skills_diff_truncated: '
+
+    … (truncated — full diff in ~/.hermes/pending/skills/{pending_id}.json)'
+  tg_update_prompt_header: '⚕ *Update needs your input:*
+
+
+    '
+  tg_btn_yes: ✓ Yes
+  tg_btn_no: ✗ No
+  tg_approval_header: ⚠️ <b>Command Approval Required</b>
+  tg_btn_allow_once: ✅ Allow Once
+  tg_btn_allow_session: ✅ Session
+  tg_btn_allow_always: ✅ Always
+  tg_btn_deny: ❌ Deny
+  tg_btn_approve_once: ✅ Approve Once
+  tg_btn_always_approve: 🔒 Always Approve
+  tg_btn_cancel: ❌ Cancel
+  tg_btn_cancel_x: ✗ Cancel
+  tg_btn_prev: ◀ Prev
+  tg_btn_next: Next ▶
+  tg_btn_back: ◀ Back
+  tg_btn_switch_anyway: Switch anyway
+  tg_more_available: '
+
+    _{n} more available — type `/model <name>` directly_'
+  tg_model_config_header: ⚙ *Model Configuration*
+  tg_current_model: 'Current model: `{model}`'
+  tg_provider_line: 'Provider: {provider}'
+  tg_select_provider: 'Select a provider:'
+  tg_provider_bold: 'Provider: *{provider}*{page_info}'
+  tg_select_model: Select a model:{extra}
+  tg_provider_family: 'Provider family: *{family}*'
+  tg_error_switching_model: 'Error switching model: {error}'
+  tg_resolved: Resolved
+  tg_decision_by: '{label} by {user}'
+  tg_decision_appended: '{original}
+
+    — {label} by {user}'
+  tg_picker_expired: Picker expired — use /model again.
+  tg_provider_not_found: Provider not found.
+  tg_invalid_page: Invalid page.
+  tg_invalid_selection: Invalid selection.
+  tg_invalid_model_index: Invalid model index.
+  tg_picker_expired_short: Picker expired.
+  tg_switch_failed: Switch failed.
+  tg_model_switched: Model switched!
+  tg_confirm_expensive: Confirm expensive model
+  tg_group_not_found: Group not found.
+  tg_model_selection_cancelled: Model selection cancelled.
+  tg_expensive_warning_header: ⚠ *Expensive Model Warning*
+  tg_approved_once: ✅ Approved once
+  tg_denied: ❌ Denied
+  tg_approval_resolved: This approval has already been resolved.
+  tg_prompt_resolved: This prompt has already been resolved.
+  tg_approved_session: ✅ Approved for session
+  tg_approved_permanently: ✅ Approved permanently
+  tg_always_approve_label: 🔒 Always approve
+  tg_cancelled_label: ❌ Cancelled
+  tg_not_authorized_approve: ⛔ You are not authorized to approve commands.
+  tg_not_authorized_prompt: ⛔ You are not authorized to answer this prompt.
+  tg_not_authorized_update: ⛔ You are not authorized to answer update prompts.
+  tg_not_authorized_email: ⛔ You are not authorized to act on this email.
+  tg_type_answer: ✏️ Type your answer in the chat.
+  tg_invalid_choice: Invalid choice.
+  tg_clarify_resolved: ✓ {resolved_text}
+  tg_sent_answer: Sent '{answer}' to the update process.
+  tg_update_answered: '⚕ Update prompt answered: *{label}*'
+  tg_gmail_invalid_data: Invalid gmail-triage data.
+  tg_gmail_unknown_verb: 'Unknown verb: {verb}'
+  tg_gmail_script_missing: ❌ {script_name} missing
+  tg_gmail_verb_failed: '❌ {verb} failed: {detail}'
+  tg_gmail_verb_timed_out: ❌ {verb} timed out
+  tg_gmail_verb_error: '❌ {verb} error: {error}'
+  tg_invalid_approval_data: Invalid approval data.
+  cl_ollama_context_too_small: ❌ Ollama runtime context is too small for Hermes tool use
+  cl_nous_rate_limit: Nous Portal rate limit active — resets in {reset}.
+  cl_empty_malformed_switching: ⚠️ Empty/malformed response — switching to fallback...
+  cl_max_retries_invalid_trying_fallback: ⚠️ Max retries ({max}) for invalid responses — trying fallback...
+  cl_max_retries_invalid_giving_up: ❌ Max retries ({max}) exceeded for invalid responses. Giving up.
+  cl_refusal_status: ⚠️ The model declined to respond to this request (safety refusal).
+  cl_context_reduced: 🗜️ Context reduced to {reduced} tokens (was {old}), retrying...
+  cl_billing_switching_fallback: ⚠️ Billing or credits exhausted — switching to fallback provider...
+  cl_rate_limited_switching_fallback: ⚠️ Rate limited — switching to fallback provider...
+  cl_payload_too_large: ⚠️  Request payload too large (413) — compression attempt {n}/{max}...
+  cl_compressed_retrying: 🗜️ Compressed {before} → {after} messages, retrying...
+  cl_context_too_large_compressing: 🗜️ Context too large (~{tokens} tokens) — compressing ({n}/{max})...
+  cl_rate_limited_waiting: ⏱️ Rate limited. Waiting {wait}s (attempt {n}/{max})...
+  cl_retrying_in: ⏳ Retrying in {wait}s (attempt {n}/{max})...
+  cl_empty_after_tools_using_earlier: ↻ Empty response after tool calls — using earlier content as final answer
+  cl_content_policy_recovery_hint: Try rephrasing the request, narrowing the context, or adding a fallback provider with `hermes fallback add`.
+  cl_nous_no_fallback: '⏳ {nous}
+
+
+    No fallback provider available. Try again after the reset, or add a fallback provider in config.yaml.'
+  cl_refusal_explanation: 'Model''s explanation: {explanation}'
+  cl_refusal_no_explanation: The model returned no explanation.
+  cl_refusal_response: '⚠️  The model declined to respond to this request (safety refusal — not a Hermes/gateway failure).
+
+
+    {detail}
+
+
+    {hint}'
+  cl_thinking_budget_exhausted: '⚠️ **Thinking Budget Exhausted**
+
+
+    The model used all its output tokens on reasoning and had none left for the actual response.
+
+
+    To fix this:
+
+    → Lower reasoning effort: `/thinkon low` or `/thinkon minimal`
+
+    → Or switch to a larger/non-reasoning model with `/model`'
+  cl_interrupted_handling_error: 'Operation interrupted: handling API error ({error_type}: {detail}).'
+  cl_policy_blocked_response: '⚠️  The model provider''s safety filter blocked this request (not a Hermes/gateway failure).
+
+
+    Provider message: {summary}
+
+
+    {hint}'
+  cl_billing_exhausted: 'Billing or credits exhausted: {summary}'
+  cl_stream_drop_hint: '
+
+
+    The provider''s stream connection keeps dropping — this often happens when generating very large tool call responses (e.g. write_file with long content). Try asking me to use execute_code with Python''s open() for large files, or to write in smaller sections.'
+  cl_interrupted_retrying: 'Operation interrupted: retrying API call after error (retry {n}/{max}).'
+  cl_repeated_errors: 'I apologize, but I encountered repeated errors: {error}'
+  cron_response_prefix: 'Cronjob Response: '
+  cron_stop_hint_prefix: '
+
+
+    To stop or manage this job, send me a new message (e.g. "stop reminder '
+  cron_failure_rate_limit: '⚠️ Cron ''{job_name}'' failed: provider {reason}. Fallback chain was exhausted or unavailable. Full details saved in cron output.'
+  cron_failure_timeout: '⚠️ Cron ''{job_name}'' failed: provider timeout. Fallback chain was exhausted or unavailable. Full details saved in cron output.'
+  cron_failure_auth: '⚠️ Cron ''{job_name}'' failed: provider authentication error. Full details saved in cron output.'
+  cron_failure_generic: '⚠️ Cron ''{job_name}'' failed: {cleaned}'
+  cron_watchdog_failed: '⚠ Cron watchdog ''{job_name}'' script failed
+
+
+    {output}
+
+
+    Time: {now_iso}'
+  aux_task_failed: '⚠ Auxiliary {task} failed: {detail}'
+  file_mutation_header: '⚠️ File-mutation verifier: {count} file(s) were NOT modified this turn despite any wording above that may suggest otherwise. Run `git status` or `read_file` to confirm.'
+  file_mutation_bullet: '  • `{path}` — [{tool}] {preview}'
+  file_mutation_more: '  • … and {remaining} more'
+  no_reply_empty_response_exhausted: '⚠️ No reply: the model returned empty content after retries and any fallback providers. Try `continue`, switch model/provider, or inspect the tool output above.'
+  no_reply_all_retries_exhausted: '⚠️ No reply: all API retries were exhausted before a response was produced (provider errors / rate limits). Try `continue` or switch provider.'
+  no_reply_partial_stream_recovery: '⚠️ No reply: streaming stopped early and only a partial response was recovered. Send `continue` to resume from where it stopped.'
+  no_reply_fallback_prior_turn_content: '⚠️ No reply: no new content was produced this turn; showing recovered prior context. Send `continue` to retry.'
+  no_reply_interrupted_during_api_call: '⚠️ No reply: the request was interrupted mid-call before a reply was received. Send `continue` to retry.'
+  no_reply_budget_exhausted: '⚠️ No reply: the per-turn iteration/cost budget was exhausted before a final answer. Send `continue` to keep going.'
+  no_reply_ollama_context_too_small: '⚠️ No reply: the local model''s context window was too small to finish. Increase the context size or use a larger model.'
+  no_reply_max_iterations_reached: '⚠️ No reply: the maximum tool-iteration limit was reached before a final answer. Send `continue` to keep going, or raise `max_iterations`.'
+  no_reply_error_near_max_iterations: '⚠️ No reply: an error occurred near the iteration limit before a final answer. Check the tool output above, then send `continue`.'
+  no_reply_pending_tool_result: '⚠️ No reply: the turn stopped while a tool result was still pending and the model produced no follow-up text. Send `continue` to let it summarize.'
+  slash_confirm_prompt: '⚠️ **Confirm /{command}**
+
+
+    {detail}
+
+
+    Choose:
+
+    • **Approve Once** — proceed this time only
+
+    • **Always Approve** — proceed and silence this prompt permanently
+
+    • **Cancel** — keep current conversation
+
+
+    _Text fallback: reply `{prefix}approve`, `{prefix}always`, or `{prefix}cancel`._'
+  slash_confirm_disabled_note: '
+
+
+    ℹ️ Future /clear, /new, /reset, and /undo will run without confirmation. Re-enable via `approvals.destructive_slash_confirm: true` in config.yaml.'
+  update_failed_exit_code: ❌ Hermes update failed (exit code {exit_code}).
+  update_timed_out: ❌ Hermes update timed out after 30 minutes.
+  update_finished_output: '✅ Hermes update finished.
+
+
+    ```
+
+    {output}
+
+    ```'
+  update_failed_output: '❌ Hermes update failed.
+
+
+    ```
+
+    {output}
+
+    ```'
+  update_finished_ok: ✅ Hermes update finished successfully.
+  update_finished: ✅ Hermes update finished.
+  update_failed_generic: ❌ Hermes update failed. Check the gateway logs or run `hermes update` manually for details.
+  proxy_error: '⚠️ Proxy error ({status}): {detail}'
+  proxy_connection_error: '⚠️ Proxy connection error: {error}'
+  dangerous_command_approval_text: '⚠️ **Dangerous command requires approval:**
+
+    ```
+
+    {command}
+
+    ```
+
+    Reason: {reason}
+
+
+    Reply `{prefix}approve` to execute, `{prefix}approve session` to approve this pattern for the session, `{prefix}approve always` to approve permanently, or `{prefix}deny` to cancel.'
+  session_reset_reason_suspended: previous session was stopped or interrupted
+  session_reset_reason_daily: daily schedule at {hour}:00
+  session_reset_reason_idle: inactive for {duration}
+  session_reset_notice: '◐ Session automatically reset ({reason}). Conversation history cleared.
+
+    Use /resume to browse and restore a previous session.
+
+    Adjust reset timing in config.yaml under session_reset.'

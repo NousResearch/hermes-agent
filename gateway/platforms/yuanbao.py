@@ -38,6 +38,8 @@ from pathlib import Path
 from abc import ABC, abstractmethod
 from typing import Any, Callable, ClassVar, Dict, Iterator, List, Optional, Tuple
 
+from agent.i18n import t
+
 import sys
 
 import httpx
@@ -5012,11 +5014,14 @@ class MessageSender:
     @staticmethod
     def strip_cron_wrapper(content: str) -> str:
         """Strip scheduler cron header/footer wrapper for cleaner Yuanbao output."""
-        if not content.startswith("Cronjob Response: "):
+        # Match the same localized prefixes the scheduler produces (t() renders
+        # in the active language for both producer and consumer, keeping the
+        # wrapper strip locale-symmetric).
+        if not content.startswith(t("gateway.cron_response_prefix")):
             return content
 
         divider = "\n-------------\n\n"
-        footer_prefix = '\n\nTo stop or manage this job, send me a new message (e.g. "stop reminder '
+        footer_prefix = t("gateway.cron_stop_hint_prefix")
         divider_pos = content.find(divider)
         footer_pos = content.rfind(footer_prefix)
         if divider_pos < 0 or footer_pos < 0 or footer_pos <= divider_pos:

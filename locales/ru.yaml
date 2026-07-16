@@ -406,3 +406,456 @@ Future messages in this room will use that transcript until `/reset` or another 
     session_db_unavailable_prefix: "База данных сеансов недоступна"
     session_not_found:           "Сеанс не найден в базе данных."
     warn_passthrough:            "⚠️ {error}"
+  # --- fork additions: system-message i18n + category suppression ---
+  codex_gpt55_autoraise_notice: "ℹ Codex {model} ограничивает контекст {cap} токенами, поэтому автосжатие было повышено до {to_pct}% (с {from_pct}%), чтобы использовать больше окна перед обобщением.\n  Отказаться: hermes config set compression.codex_gpt55_autoraise false"
+  restart_success: ♻ Gateway перезапущен. Сессия продолжается.
+  gateway_online: ♻️ Gateway снова онлайн — Hermes снова в строю.
+  subagent_working: ⏳ Подагент работает{status_detail} — ваше сообщение в очереди и будет обработано после завершения (используйте /stop, чтобы отменить всё).
+  compressing_context: ⏳ Сжатие контекста{status_detail} — ваше сообщение в очереди и будет обработано после завершения (используйте /stop, чтобы отменить всё).
+  queued_next_turn: ⏳ В очереди на следующий ход{status_detail}. Отвечу, как только завершится текущая задача.
+  interrupting_task: ⚡ Прерываю текущую задачу{status_detail}. Скоро отвечу на ваше сообщение.
+  steered_into_run: ⏩ Влито в текущий запуск{status_detail}. Ваше сообщение поступит после следующего вызова инструмента.
+  long_running: ⏳ Работаю — {minutes} мин{status_detail}
+  no_activity_warning: ⚠️ Нет активности уже {minutes} мин. Если агент скоро не ответит, он будет остановлен по таймауту через {remaining} мин. Можно подождать ещё или использовать /reset.
+  provider_auth_failed: ⚠️ Ошибка аутентификации провайдера. Проверьте настроенные учётные данные; подробности провайдера — в логах gateway.
+  provider_rejected: ⚠️ Провайдер модели отклонил запрос. Я не стал выводить сырую ошибку провайдера в чат; смотрите логи gateway или попробуйте переформулировать.
+  provider_rate_limited: ⏱️ Провайдер модели ограничивает частоту запросов. Подождите немного и попробуйте снова.
+  provider_failed: ⚠️ Провайдер модели не ответил после повторных попыток. Я не стал выводить сырые детали провайдера в чат; смотрите логи gateway для диагностики.
+  session_too_large: '⚠️ Сессия слишком велика для контекстного окна модели.
+
+    Используйте /compact, чтобы сжать беседу, или /reset, чтобы начать заново.'
+  request_failed: 'Запрос не удался: {error}
+
+    Попробуйте снова или используйте /reset, чтобы начать новую сессию.'
+  processing_stopped: '⚠️ Обработка остановлена: {error}. Попробуйте снова.'
+  empty_response: ⚠️ Обработка завершена, но ответ не сгенерирован. Возможно, это временная ошибка — попробуйте отправить сообщение ещё раз.
+  no_response_generated: (Ответ не сгенерирован)
+  self_review_header: '💾 Обзор самосовершенствования: {summary}'
+  review_skill_patched: '📝 Навык ''{name}'' обновлён (патч): "{old}" → "{new}"'
+  review_skill_created: '📝 Навык ''{name}'' создан: {description}'
+  review_skill_rewritten: '📝 Навык ''{name}'' переработан: {description}'
+  review_skill_message: 📝 {message}
+  review_skill_action: Навык {action}
+  review_mem_add: '{label} ➕ {preview}'
+  review_mem_edit: '{label} ✏️ {preview}'
+  review_mem_remove: '{label} ➖ {preview}'
+  review_mem_updated: 'Обновлено: {label}'
+  review_label_skill: Навык
+  review_label_memory: Память
+  review_label_user_profile: Профиль пользователя
+  iteration_budget_exhausted: ⚠️ Бюджет итераций исчерпан ({n}/{max}) — прошу модель сформировать сводку
+  stale_connections_cleaned: 🔌 Обнаружены устаревшие соединения от предыдущей ошибки провайдера — автоматически очищены. Продолжаем с новым соединением.
+  preflight_compression: '📦 Предварительное сжатие: ~{tokens} токенов >= порога {threshold}. Это может занять некоторое время.'
+  compression_aux_unavailable: ⚠ Настроенный вспомогательный провайдер сжатия '{provider}' недоступен — сжатие контекста будет удалять промежуточные ходы без сводки. Проверьте auxiliary.compression в config.yaml и повторно аутентифицируйтесь у этого провайдера.
+  compression_no_provider: ⚠ Вспомогательный провайдер LLM не настроен — сжатие контекста будет удалять промежуточные ходы без сводки. Запустите `hermes setup` или задайте OPENROUTER_API_KEY.
+  api_error_billing: ❌ Баланс или кредиты исчерпаны — {summary}
+  api_error_rate_limited: ❌ Ограничение частоты запросов после {max_retries} попыток — {summary}
+  api_error_failed: ❌ Сбой API после {max_retries} попыток — {summary}
+  api_safety_blocked: '❌ Фильтр безопасности провайдера заблокировал этот запрос: {summary}'
+  api_non_retryable: '❌ Неповторяемая ошибка (HTTP {status_code}): {summary}'
+  api_safety_trying_fallback: ⚠️ Фильтр безопасности провайдера заблокировал запрос — пробую резервный вариант...
+  api_non_retryable_trying_fallback: ⚠️ Неповторяемая ошибка (HTTP {status_code}) — пробую резервный вариант...
+  api_max_retries_trying_fallback: ⚠️ Максимальное число попыток ({max_retries}) исчерпано — пробую резервный вариант...
+  tool_guardrail_halted: '⚠️ Защита инструментов остановила {tool}: {code}'
+  empty_response_retry: ⚠️ Модель вернула пустой ответ — повтор ({n}/3)
+  empty_response_switching_fallback: ⚠️ Модель возвращает пустые ответы — переключаюсь на резервного провайдера...
+  empty_response_reasoning_only: ⚠️ Модель сформировала рассуждение, но не дала видимого ответа после всех попыток. Возвращаю пустой ответ.
+  empty_response_no_content: ❌ Модель не вернула контент после всех попыток и резервных вариантов.
+  empty_response_no_content_no_fallback: ❌ Модель не вернула контент после всех попыток. Резервные провайдеры не настроены.
+  thinking_prefill_retry: ↻ Ответ только с рассуждением — добавляю префикс для продолжения ({n}/2)
+  kanban_done: ✔ {board_tag}{tag}Kanban {task_id} завершён — {title}{handoff}
+  kanban_blocked: ⏸ {board_tag}{tag}Kanban {task_id} заблокирован{reason}
+  kanban_gave_up: ✖ {board_tag}{tag}Kanban {task_id} отказался после многократных ошибок запуска{err}
+  kanban_crashed: ✖ {board_tag}{tag}Kanban {task_id} воркер упал (pid исчез); диспетчер повторит попытку
+  kanban_timed_out: ⏱ {board_tag}{tag}Kanban {task_id} истекло время ожидания (max_runtime={limit}с); будет повторено
+  busy_queued_drain: ⏳ Gateway {gerund} — в очереди на следующий ход после возобновления.
+  busy_not_accepting_turn: ⏳ Gateway {gerund} и не принимает ещё один ход прямо сейчас.
+  busy_not_accepting_work: ⏳ Gateway {gerund} и не принимает новую работу прямо сейчас.
+  shutdown_restarting: ⚠️ Gateway перезапускается — Текущая задача будет прервана. Отправьте любое сообщение после перезапуска, и я постараюсь продолжить с того места, где остановился.
+  shutdown_shutting_down: ⚠️ Gateway завершает работу — Текущая задача будет прервана.
+  steer_update_send_failed: '✗ Не удалось отправить ответ процессу обновления: {error}'
+  steer_update_sent: ✓ Отправлено `{label}` процессу обновления.
+  queued_next_turn_simple: В очереди на следующий ход.
+  queued_next_turn_depth: В очереди на следующий ход. ({depth} в очереди)
+  steer_usage: 'Использование: /steer <запрос>'
+  steer_agent_starting: Агент ещё запускается — /steer поставлен в очередь на следующий ход.
+  steer_failed: '⚠️ Steer не выполнен: {error}'
+  steer_queued: '⏩ Steer в очереди — поступит после следующего вызова инструмента: ''{preview}'''
+  steer_rejected: Steer отклонён (пустой запрос).
+  steer_no_agent: Нет активного агента — /steer поставлен в очередь на следующий ход.
+  steer_usage_no_agent: 'Использование: /steer <запрос>  (агент не запущен; отправляется как обычное сообщение)'
+  agent_running_switch_model: Агент выполняется — подождите или сначала используйте /stop, затем смените модель.
+  agent_running_change_runtime: Агент выполняется — подождите или сначала используйте /stop, затем измените runtime.
+  agent_running_goal: Агент выполняется — используйте /goal status / pause / clear во время выполнения или /stop перед установкой новой цели.
+  agent_running_cant_run_cmd: ⏳ Агент выполняется — `/{name}` не может запуститься в процессе хода. Дождитесь текущего ответа или сначала используйте `/stop`.
+  force_stopped_starting: ⚡ Принудительно остановлено. Агент ещё запускался — сессия разблокирована.
+  command_blocked_hook: Команда `/{command}` была заблокирована хуком.
+  quick_cmd_no_output: Команда не вернула вывода.
+  quick_cmd_timeout: Быстрая команда превысила время ожидания (30 с).
+  quick_cmd_error: 'Ошибка быстрой команды: {error}'
+  quick_cmd_no_command: Быстрая команда '/{command}' не имеет определённой команды.
+  quick_cmd_no_target: Быстрая команда '/{command}' не имеет определённой цели.
+  quick_cmd_unsupported_type: 'Быстрая команда ''/{command}'' имеет неподдерживаемый тип (поддерживаются: ''exec'', ''alias'').'
+  api_hint_auth: ' Проверьте ваш API-ключ или запустите `claude /login` для обновления OAuth-учётных данных.'
+  api_hint_billing: ' Ваш баланс API или квота исчерпаны. Проверьте панель управления провайдера.'
+  api_hint_plan_limit_hours: ' Лимит использования вашего плана достигнут. Он сбросится примерно через ~{hours} ч.'
+  api_hint_plan_limit: ' Лимит использования вашего плана достигнут. Пожалуйста, подождите до сброса.'
+  api_hint_rate_limited: ' Вы ограничены по частоте запросов. Подождите немного и попробуйте снова.'
+  api_hint_overloaded: ' API временно перегружен. Попробуйте ещё раз немного позже.'
+  api_hint_rejected: ' Запрос был отклонён API.'
+  api_error_generic: 'Извините, произошла ошибка ({error_type}).
+
+    {error_detail}
+
+    {status_hint}Попробуйте снова или используйте /reset для начала новой сессии.'
+  delivery_failed: ⚠️ Сообщение не удалось доставить после нескольких попыток. Пожалуйста, попробуйте ещё раз — ваш запрос был обработан, но ответ не удалось отправить.
+  response_formatting_failed: '(Форматирование ответа не удалось, простой текст:)
+
+
+    {content}'
+  audio_fallback_caption: '🔊 Аудио: {audio_path}'
+  file_fallback_caption: '📎 Файл: {file_path}'
+  image_fallback_caption: '🖼️ Изображение: {image_path}'
+  clarify_question: ❓ {question}
+  clarify_instructions: Ответьте номером, текстом варианта или своим ответом.
+  model_no_response_tool_results: ⚠️ Модель не вернула ответ после обработки результатов инструментов. Это может происходить с некоторыми моделями — попробуйте снова или перефразируйте вопрос.
+  session_auto_reset: '
+
+
+    🔄 Автоматический сброс сессии — беседа превысила максимальный размер контекста и не может быть дополнительно сжата. Ваше следующее сообщение начнёт новую сессию.'
+  voice_no_stt: '🎤 Я получил ваше голосовое сообщение, но не могу его расшифровать — провайдер распознавания речи не настроен.
+
+
+    Чтобы включить голос: установите faster-whisper (`uv pip install faster-whisper` в виртуальной среде Hermes; `pip install faster-whisper` тоже работает, если pip есть в PATH) и задайте `stt.enabled: true` в config.yaml, затем выполните /restart.'
+  voice_no_stt_setup_suffix: '
+
+
+    Для получения полных инструкций по настройке введите: `/skill hermes-agent-setup`'
+  compress_aborted: ⚠️ Сжатие контекста прервано ({err}). Сообщения не удалялись — беседа не изменена. Запустите /compress для повторной попытки, /reset для чистой сессии или проверьте настройку вашей модели auxiliary.compression.
+  compress_aux_model_failed: ℹ️ Настроенная модель сжатия `{model}` завершилась с ошибкой ({err}). Выполнено восстановление с использованием основной модели — контекст цел — но возможно стоит проверить `auxiliary.compression.model` в config.yaml.
+  admin_only_with_allowed: '⛔ /{cmd} доступна только администраторам. Вы можете запустить: {allowed_list}. Используйте /whoami для полного списка.'
+  admin_only_no_commands: ⛔ /{cmd} доступна только администраторам. Для не-администраторов команды не включены на этой платформе. Попросите администратора добавить вас в allow_admin_from или задать user_allowed_commands.
+  suggestions_failed: 'Команда предложений завершилась с ошибкой: {error}'
+  bg_task_no_creds: '❌ Фоновая задача {task_id} завершилась неудачей: учётные данные провайдера не настроены.'
+  bg_task_complete: '✅ Фоновая задача завершена
+
+    Запрос: "{preview}"
+
+
+    '
+  bg_task_failed: '❌ Фоновая задача {task_id} завершилась неудачей: {error}'
+  busy_hint_queued: 💡 Подсказка для новых — я поставил ваше сообщение в очередь, а не прервал текущую задачу. Отправьте `/busy interrupt`, чтобы новые сообщения останавливали задачу немедленно, или `/busy status` для проверки. Это уведомление больше не появится.
+  busy_hint_steered: 💡 Подсказка для новых — я направил ваше сообщение в текущий запуск; оно поступит после следующего вызова инструмента, а не прервёт его. Отправьте `/busy interrupt` или `/busy queue`, чтобы изменить это, или `/busy status` для проверки. Это уведомление больше не появится.
+  busy_hint_interrupt: 💡 Подсказка для новых — я прервал текущую задачу, чтобы ответить вам. Отправьте `/busy queue` для постановки ответов в очередь после текущей задачи, `/busy steer` — для добавления на ходу без прерывания, или `/busy status` для проверки. Это уведомление больше не появится.
+  tool_progress_hint: 💡 Подсказка для новых — этот инструмент выполнялся некоторое время, и я передаю каждый шаг в потоке. Если сообщения о прогрессе кажутся избыточными, отправьте `/verbose` для переключения режимов (all → new → off). Это уведомление больше не появится.
+  bundles_unavailable: 'Подсистема бандлов недоступна: {exc}'
+  bundles_none_installed: "Бандлы навыков не установлены.\nСоздайте бандл на хосте:\n  `hermes bundles create <name> --skill <s1> --skill <s2>`\nКаталог: `{bundles_dir}`"
+  bundles_header: '**Бандлы навыков** (установлено: {n}):'
+  bundles_invoke_hint: Активируйте бандл командой `/<slug>`, чтобы загрузить все его навыки.
+  update_managed: ✗ {managed_msg}
+  topic_no_chat_id: Не удалось определить ID чата.
+  topic_not_enabled: Режим мультисессионных тем в данный момент не включён для этого чата.
+  topic_disabled: 'Режим мультисессионных тем для этого чата выключен.
+
+
+    Существующие темы в Telegram не удаляются — они просто перестанут работать как независимые сессии. Корневой чат снова работает как обычный чат Hermes. Запустите /topic для повторного включения.'
+  topic_no_unlinked_sessions: Предыдущих несвязанных сессий Telegram не найдено.
+  topic_restore_instructions: 'Чтобы восстановить предыдущую сессию позже:
+
+    1. Создайте или откройте тему. Для создания новой откройте Все сообщения и отправьте туда любое сообщение.
+
+    2. Отправьте /topic <session-id> внутри этой темы.'
+  session_not_found: 'Сессия не найдена: {session_id}'
+  session_not_telegram: Это не Telegram-сессия и её нельзя восстановить в данной теме.
+  session_wrong_user: Эта сессия не принадлежит данному пользователю Telegram.
+  session_already_linked: Эта сессия уже привязана к другой теме Telegram.
+  session_restored: 'Сессия восстановлена: {title}'
+  session_restored_last_msg: '
+
+
+    Последнее сообщение Hermes:
+
+    {content}'
+  command_cancelled: 🟡 /{command} отменена. Беседа не изменена.
+  whoami_unrestricted: '**Вы** — {platform} ({scope})
+
+    ID пользователя: `{user_id}`
+
+    Уровень: без ограничений (список администраторов не настроен для этой области)
+
+    Команды со слешем: все доступны'
+  whoami_admin: '**Вы** — {platform} ({scope})
+
+    ID пользователя: `{user_id}`
+
+    Уровень: **admin**
+
+    Команды со слешем: все доступны'
+  whoami_user: '**Вы** — {platform} ({scope})
+
+    ID пользователя: `{user_id}`
+
+    Уровень: пользователь
+
+    Доступные команды со слешем: {runnable_str}'
+  platform_list_header: '**Платформы Gateway**'
+  platform_connected: 'Подключено: {platforms}'
+  platform_connected_none: 'Подключено: (нет)'
+  platform_failed_paused: '  · {platform} — ПРИОСТАНОВЛЕНО ({reason}). Возобновите через `/platform resume {platform}`.'
+  platform_retrying: '  · {platform} — повторная попытка (попытка {attempts})'
+  platform_failed_none: 'Сбой/приостановлено: (нет)'
+  platform_usage: 'Использование: /platform {action} <имя>'
+  platform_unknown: 'Неизвестная платформа: {target}'
+  platform_not_in_queue: '{platform} отсутствует в очереди повторных попыток (она либо подключена, либо не включена).'
+  platform_already_paused: '{platform} уже приостановлена.'
+  platform_paused_ok: ✓ {platform} приостановлена. Возобновите через `/platform resume {platform}` или `hermes gateway restart` для сброса.
+  platform_not_in_queue_resume: '{platform} отсутствует в очереди повторных попыток — нечего возобновлять.'
+  platform_already_retrying: '{platform} уже повторяет попытки — возобновление не требуется.'
+  platform_resumed_ok: ✓ {platform} возобновлена — повторная попытка при следующем тике наблюдателя.
+  platform_usage_full: "Использование: /platform <list|pause|resume> [имя]\n  /platform list — показать статус платформ\n  /platform pause <имя> — остановить повторные попытки для платформы с ошибкой\n  /platform resume <имя> — вернуть приостановленную платформу в очередь"
+  model_expensive_warning: '⚠️ **Предупреждение о дорогой модели**
+
+
+    {warning_message}
+
+
+    _Текстовый вариант: ответьте `{prefix}approve` для переключения или `{prefix}cancel` для сохранения текущей модели._'
+  codex_runtime_errors: ❌ {errors}
+  codex_runtime_config_error: '❌ Не удалось загрузить конфигурацию: {exc}'
+  codex_runtime_result: '{prefix} {message}'
+  subgoal_no_active_goal: Нет активной цели. Установите её с помощью /goal <текст>.
+  subgoal_remove_usage: 'Использование: /subgoal remove <n>'
+  subgoal_remove_not_integer: '/subgoal remove: <n> должен быть целым числом (индекс с 1).'
+  subgoal_remove_error: '/subgoal remove: {exc}'
+  subgoal_removed: '✓ Удалена подцель {idx}: {removed}'
+  subgoal_clear_error: '/subgoal clear: {exc}'
+  subgoal_cleared_one: ✓ Очищена {count} подцель.
+  subgoal_cleared_many: ✓ Очищено {count} подцелей.
+  subgoal_none_to_clear: Нет подцелей для очистки.
+  subgoal_add_error: '/subgoal: {exc}'
+  subgoal_added: '✓ Добавлена подцель {idx}: {text}'
+  memory_unknown_subcommand: 'Неизвестная подкоманда /memory. Используйте: pending, approve <id>, reject <id>, approval <on|off>.'
+  skills_write_approval_off: Одобрение записи навыков отключено (skills.write_approval). Включите с помощью /skills approval on, затем проверяйте отложенные записи здесь с /skills pending.
+  skills_unknown_subcommand: 'Неизвестная подкоманда /skills на этой платформе. Используйте: pending, approve <id>, reject <id>, diff <id>, approval <on|off>. (Поиск/установка доступны только в CLI.)'
+  skills_diff_truncated: '
+
+    … (усечено — полный diff в ~/.hermes/pending/skills/{pending_id}.json)'
+  tg_update_prompt_header: '⚕ *Требуется ваш ввод:*
+
+
+    '
+  tg_btn_yes: ✓ Да
+  tg_btn_no: ✗ Нет
+  tg_approval_header: ⚠️ <b>Требуется подтверждение команды</b>
+  tg_btn_allow_once: ✅ Разрешить однократно
+  tg_btn_allow_session: ✅ На сессию
+  tg_btn_allow_always: ✅ Всегда
+  tg_btn_deny: ❌ Отклонить
+  tg_btn_approve_once: ✅ Подтвердить однократно
+  tg_btn_always_approve: 🔒 Всегда подтверждать
+  tg_btn_cancel: ❌ Отмена
+  tg_btn_cancel_x: ✗ Отмена
+  tg_btn_prev: ◀ Пред
+  tg_btn_next: Далее ▶
+  tg_btn_back: ◀ Назад
+  tg_btn_switch_anyway: Переключить всё равно
+  tg_more_available: '
+
+    _{n} ещё доступно — введите `/model <name>` напрямую_'
+  tg_model_config_header: ⚙ *Настройка модели*
+  tg_current_model: 'Текущая модель: `{model}`'
+  tg_provider_line: 'Провайдер: {provider}'
+  tg_select_provider: 'Выберите провайдера:'
+  tg_provider_bold: 'Провайдер: *{provider}*{page_info}'
+  tg_select_model: Выберите модель:{extra}
+  tg_provider_family: 'Семейство провайдеров: *{family}*'
+  tg_error_switching_model: 'Ошибка при переключении модели: {error}'
+  tg_resolved: Решено
+  tg_decision_by: '{label} — {user}'
+  tg_decision_appended: '{original}
+
+    — {label} — {user}'
+  tg_picker_expired: Меню устарело — используйте /model снова.
+  tg_provider_not_found: Провайдер не найден.
+  tg_invalid_page: Неверная страница.
+  tg_invalid_selection: Неверный выбор.
+  tg_invalid_model_index: Неверный индекс модели.
+  tg_picker_expired_short: Меню устарело.
+  tg_switch_failed: Переключение не удалось.
+  tg_model_switched: Модель переключена!
+  tg_confirm_expensive: Подтвердите дорогостоящую модель
+  tg_group_not_found: Группа не найдена.
+  tg_model_selection_cancelled: Выбор модели отменён.
+  tg_expensive_warning_header: ⚠ *Предупреждение о дорогостоящей модели*
+  tg_approved_once: ✅ Одобрено однократно
+  tg_denied: ❌ Отклонено
+  tg_approval_resolved: Это подтверждение уже обработано.
+  tg_prompt_resolved: Этот запрос уже обработан.
+  tg_approved_session: ✅ Разрешено на сессию
+  tg_approved_permanently: ✅ Разрешено навсегда
+  tg_always_approve_label: 🔒 Всегда подтверждать
+  tg_cancelled_label: ❌ Отменено
+  tg_not_authorized_approve: ⛔ У вас нет прав на подтверждение команд.
+  tg_not_authorized_prompt: ⛔ У вас нет прав на ответ на этот запрос.
+  tg_not_authorized_update: ⛔ У вас нет прав на ответ на запросы обновления.
+  tg_not_authorized_email: ⛔ У вас нет прав на действия с этим письмом.
+  tg_type_answer: ✏️ Введите ваш ответ в чате.
+  tg_invalid_choice: Неверный вариант.
+  tg_clarify_resolved: ✓ {resolved_text}
+  tg_sent_answer: Ответ '{answer}' отправлен в процесс обновления.
+  tg_update_answered: '⚕ Ответ на запрос обновления: *{label}*'
+  tg_gmail_invalid_data: Неверные данные gmail-triage.
+  tg_gmail_unknown_verb: 'Неизвестная команда: {verb}'
+  tg_gmail_script_missing: ❌ {script_name} не найден
+  tg_gmail_verb_failed: '❌ {verb} не выполнено: {detail}'
+  tg_gmail_verb_timed_out: ❌ {verb} истекло время ожидания
+  tg_gmail_verb_error: '❌ ошибка {verb}: {error}'
+  tg_invalid_approval_data: Неверные данные подтверждения.
+  cl_ollama_context_too_small: ❌ Контекст среды выполнения Ollama слишком мал для использования инструментов Hermes
+  cl_nous_rate_limit: Действует ограничение частоты запросов Nous Portal — сбрасывается через {reset}.
+  cl_empty_malformed_switching: ⚠️ Пустой или некорректный ответ — переключаюсь на резервный провайдер...
+  cl_max_retries_invalid_trying_fallback: ⚠️ Достигнут лимит повторов ({max}) для некорректных ответов — пробую резервный провайдер...
+  cl_max_retries_invalid_giving_up: ❌ Превышен лимит повторов ({max}) для некорректных ответов. Прекращаю.
+  cl_refusal_status: ⚠️ Модель отказалась отвечать на этот запрос (отказ по соображениям безопасности).
+  cl_context_reduced: 🗜️ Контекст уменьшен до {reduced} токенов (было {old}), повторяю...
+  cl_billing_switching_fallback: ⚠️ Исчерпаны средства или кредиты — переключаюсь на резервный провайдер...
+  cl_rate_limited_switching_fallback: ⚠️ Превышен лимит частоты запросов — переключаюсь на резервный провайдер...
+  cl_payload_too_large: ⚠️  Слишком большой размер запроса (413) — попытка сжатия {n}/{max}...
+  cl_compressed_retrying: 🗜️ Сжато с {before} → {after} сообщений, повторяю...
+  cl_context_too_large_compressing: 🗜️ Слишком большой контекст (~{tokens} токенов) — сжимаю ({n}/{max})...
+  cl_rate_limited_waiting: ⏱️ Превышен лимит частоты запросов. Ожидание {wait}с (попытка {n}/{max})...
+  cl_retrying_in: ⏳ Повтор через {wait}с (попытка {n}/{max})...
+  cl_empty_after_tools_using_earlier: ↻ Пустой ответ после вызова инструментов — использую более ранний текст как итоговый ответ
+  cl_content_policy_recovery_hint: Попробуйте переформулировать запрос, сузить контекст или добавить резервный провайдер командой `hermes fallback add`.
+  cl_nous_no_fallback: '⏳ {nous}
+
+
+    Резервный провайдер недоступен. Повторите попытку после сброса или добавьте резервный провайдер в config.yaml.'
+  cl_refusal_explanation: 'Пояснение модели: {explanation}'
+  cl_refusal_no_explanation: Модель не вернула пояснений.
+  cl_refusal_response: '⚠️  Модель отказалась отвечать на этот запрос (отказ по соображениям безопасности — это не сбой Hermes/шлюза).
+
+
+    {detail}
+
+
+    {hint}'
+  cl_thinking_budget_exhausted: '⚠️ **Бюджет рассуждений исчерпан**
+
+
+    Модель израсходовала все выходные токены на рассуждения, и для самого ответа их не осталось.
+
+
+    Как это исправить:
+
+    → Снизьте уровень рассуждений: `/thinkon low` или `/thinkon minimal`
+
+    → Либо переключитесь на более крупную модель без рассуждений командой `/model`'
+  cl_interrupted_handling_error: 'Операция прервана: обработка ошибки API ({error_type}: {detail}).'
+  cl_policy_blocked_response: '⚠️  Фильтр безопасности провайдера модели заблокировал этот запрос (это не сбой Hermes/шлюза).
+
+
+    Сообщение провайдера: {summary}
+
+
+    {hint}'
+  cl_billing_exhausted: 'Исчерпаны средства или кредиты: {summary}'
+  cl_stream_drop_hint: '
+
+
+    Потоковое соединение провайдера постоянно обрывается — это часто происходит при генерации очень больших ответов с вызовом инструментов (например, write_file с длинным содержимым). Попробуйте попросить меня использовать execute_code с Python-функцией open() для больших файлов или писать меньшими частями.'
+  cl_interrupted_retrying: 'Операция прервана: повтор вызова API после ошибки (повтор {n}/{max}).'
+  cl_repeated_errors: 'Прошу прощения, но я столкнулся с повторяющимися ошибками: {error}'
+  cron_response_prefix: 'Ответ задачи: '
+  cron_stop_hint_prefix: '
+
+
+    Чтобы остановить или управлять этой задачей, отправьте мне новое сообщение (например, "остановить напоминание '
+  cron_failure_rate_limit: '⚠️ Задача ''{job_name}'' завершилась с ошибкой: превышен {reason} провайдера. Цепочка резервных вариантов исчерпана или недоступна. Подробности сохранены в выводе задачи.'
+  cron_failure_timeout: '⚠️ Задача ''{job_name}'' завершилась с ошибкой: таймаут провайдера. Цепочка резервных вариантов исчерпана или недоступна. Подробности сохранены в выводе задачи.'
+  cron_failure_auth: '⚠️ Задача ''{job_name}'' завершилась с ошибкой: ошибка аутентификации провайдера. Подробности сохранены в выводе задачи.'
+  cron_failure_generic: '⚠️ Задача ''{job_name}'' завершилась с ошибкой: {cleaned}'
+  cron_watchdog_failed: '⚠ Скрипт watchdog задачи ''{job_name}'' завершился с ошибкой
+
+
+    {output}
+
+
+    Время: {now_iso}'
+  aux_task_failed: '⚠ Вспомогательная задача {task} завершилась с ошибкой: {detail}'
+  file_mutation_header: '⚠️ Верификатор мутаций файлов: {count} файл(ов) НЕ были изменены в этом ходу, несмотря на формулировки выше. Проверьте с помощью `git status` или `read_file`.'
+  file_mutation_bullet: '  • `{path}` — [{tool}] {preview}'
+  file_mutation_more: '  • … и ещё {remaining}'
+  no_reply_empty_response_exhausted: '⚠️ Нет ответа: модель вернула пустое содержимое после повторных попыток и всех резервных провайдеров. Попробуйте `continue`, смените модель/провайдера или проверьте вывод инструмента выше.'
+  no_reply_all_retries_exhausted: '⚠️ Нет ответа: все попытки API исчерпаны до получения ответа (ошибки провайдера / ограничения частоты). Попробуйте `continue` или смените провайдера.'
+  no_reply_partial_stream_recovery: '⚠️ Нет ответа: стриминг прервался досрочно, восстановлен лишь частичный ответ. Отправьте `continue` для продолжения с того места, где остановились.'
+  no_reply_fallback_prior_turn_content: '⚠️ Нет ответа: в этом ходу новый контент не был произведён; отображается восстановленный предыдущий контекст. Отправьте `continue` для повтора.'
+  no_reply_interrupted_during_api_call: '⚠️ Нет ответа: запрос был прерван в процессе вызова до получения ответа. Отправьте `continue` для повтора.'
+  no_reply_budget_exhausted: '⚠️ Нет ответа: бюджет итераций/стоимости за ход исчерпан до получения финального ответа. Отправьте `continue` для продолжения.'
+  no_reply_ollama_context_too_small: '⚠️ Нет ответа: контекстное окно локальной модели слишком мало для завершения. Увеличьте размер контекста или используйте более крупную модель.'
+  no_reply_max_iterations_reached: '⚠️ Нет ответа: достигнут максимальный лимит итераций инструментов до получения финального ответа. Отправьте `continue` для продолжения или увеличьте `max_iterations`.'
+  no_reply_error_near_max_iterations: '⚠️ Нет ответа: возникла ошибка вблизи лимита итераций до получения финального ответа. Проверьте вывод инструмента выше, затем отправьте `continue`.'
+  no_reply_pending_tool_result: '⚠️ Нет ответа: ход остановился, пока результат инструмента ещё ожидался, а модель не произвела текст-продолжение. Отправьте `continue`, чтобы она подвела итог.'
+  slash_confirm_prompt: '⚠️ **Подтвердите /{command}**
+
+
+    {detail}
+
+
+    Выберите:
+
+    • **Подтвердить один раз** — выполнить только сейчас
+
+    • **Подтверждать всегда** — выполнить и навсегда отключить этот запрос
+
+    • **Отмена** — сохранить текущий диалог
+
+
+    _Текстовый вариант: ответьте `{prefix}approve`, `{prefix}always` или `{prefix}cancel`._'
+  slash_confirm_disabled_note: '
+
+
+    ℹ️ Дальнейшие /clear, /new, /reset и /undo будут выполняться без подтверждения. Снова включить можно через `approvals.destructive_slash_confirm: true` в config.yaml.'
+  update_failed_exit_code: ❌ Обновление Hermes не удалось (код выхода {exit_code}).
+  update_timed_out: ❌ Обновление Hermes прервано по таймауту через 30 минут.
+  update_finished_output: '✅ Обновление Hermes завершено.
+
+
+    ```
+
+    {output}
+
+    ```'
+  update_failed_output: '❌ Обновление Hermes не удалось.
+
+
+    ```
+
+    {output}
+
+    ```'
+  update_finished_ok: ✅ Обновление Hermes успешно завершено.
+  update_finished: ✅ Обновление Hermes завершено.
+  update_failed_generic: ❌ Обновление Hermes не удалось. Проверьте логи шлюза или запустите `hermes update` вручную для подробностей.
+  proxy_error: '⚠️ Ошибка прокси ({status}): {detail}'
+  proxy_connection_error: '⚠️ Ошибка подключения к прокси: {error}'
+  dangerous_command_approval_text: '⚠️ **Опасная команда требует подтверждения:**
+
+    ```
+
+    {command}
+
+    ```
+
+    Причина: {reason}
+
+
+    Ответьте `{prefix}approve` для выполнения, `{prefix}approve session` чтобы одобрить этот шаблон на сессию, `{prefix}approve always` чтобы одобрить навсегда, или `{prefix}deny` для отмены.'
+  session_reset_reason_suspended: предыдущая сессия была остановлена или прервана
+  session_reset_reason_daily: по расписанию в {hour}:00
+  session_reset_reason_idle: неактивность {duration}
+  session_reset_notice: '◐ Сессия автоматически сброшена ({reason}). История разговора очищена.
+
+    Используйте /resume, чтобы просмотреть и восстановить предыдущую сессию.
+
+    Настройте тайминг сброса в config.yaml в разделе session_reset.'

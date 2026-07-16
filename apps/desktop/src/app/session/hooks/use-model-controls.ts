@@ -55,7 +55,7 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
       }
 
       if (force) {
-        $currentModelExplicitlySet.set(false)
+        setCurrentModelExplicitlySet(false)
       }
 
       if (!force && $currentModel.get()) {
@@ -96,7 +96,7 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
 
       setCurrentModel(selection.model)
       setCurrentProvider(selection.provider)
-      $currentModelExplicitlySet.set(true)
+      setCurrentModelExplicitlySet(true)
       updateModelOptionsCache(selection.provider, selection.model, !activeSessionId)
 
       // No live session yet: the pick is pure UI state. session.create reads

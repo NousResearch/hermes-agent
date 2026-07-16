@@ -1244,15 +1244,33 @@ def _select_window(
     if not candidates:
         return None
 
-    def _rank(w: Dict[str, Any]) -> Tuple[int, Any]:
+    def _rank(w: Dict[str, Any]) -> Tuple[Any, ...]:
+        try:
+            z_index = int(w.get("z_index", 0))
+        except (TypeError, ValueError):
+            z_index = 0
+        pid_value = w.get("pid")
+        pid_missing = pid_value is None
+        pid_rank = int(pid_value) if pid_value is not None else 0
+        window_rank = int(w.get("window_id", 0))
         if desktop_only:
             text = _window_text(w)
             is_backdrop = any(
                 name in text
                 for name in ("progman", "workerw", "program manager", "finder", "desktop")
             )
-            return (0 if is_backdrop else 1, w.get("z_index", 0))
-        return (0, w.get("z_index", 0))
+            desktop_rank = 0 if is_backdrop else 1
+        else:
+            desktop_rank = 0
+        return (
+            desktop_rank,
+            z_index,
+            pid_missing,
+            pid_rank,
+            window_rank,
+            str(w.get("app_name", "")).casefold(),
+            str(w.get("title", "")).casefold(),
+        )
 
     if not (app or window_title or pid is not None or window_id is not None or desktop_only):
         visible = [
@@ -1802,7 +1820,12 @@ class CuaDriverBackend(ComputerUseBackend):
                 "Foreground XTest was dispatched but is still unverifiable; "
                 "Hermes does not require ydotool or another evdev helper."
             )
-        return ActionResult(ok=result.ok, action=result.action, message=result.message, meta=meta)
+        return ActionResult(
+            ok=False,
+            action=result.action,
+            message=result.message or "Linux foreground pixel click delivery could not be verified.",
+            meta=meta,
+        )
 
     def drag(
         self,

@@ -23,6 +23,7 @@ integer pid.
 from __future__ import annotations
 
 import base64
+import json
 from unittest.mock import MagicMock
 
 # 8×8 transparent PNG — decodes cleanly so capture() can size it.
@@ -123,6 +124,31 @@ class TestSelectWindow:
         windows = _ingest_fixture_windows()
 
         assert _select_window(windows)["app_name"] == "Chromium"
+
+    def test_equal_z_index_selection_is_independent_of_driver_order(self):
+        from tools.computer_use.cua_backend import _ingest_windows, _select_window
+
+        raw = [
+            {"app_name": "Editor", "pid": 20, "window_id": 200, "z_index": 1},
+            {"app_name": "Editor", "pid": 10, "window_id": 100, "z_index": 1},
+        ]
+
+        forward = _select_window(_ingest_windows(raw), app="editor")
+        reverse = _select_window(_ingest_windows(list(reversed(raw))), app="editor")
+
+        assert forward is not None
+        assert reverse is not None
+        assert forward["window_id"] == 100
+        assert reverse["window_id"] == 100
+
+    def test_explicit_pid_zero_does_not_alias_a_null_pid_window(self):
+        from tools.computer_use.cua_backend import _ingest_windows, _select_window
+
+        windows = _ingest_windows([
+            {"app_name": "Desktop", "pid": None, "window_id": 1, "z_index": 0},
+        ])
+
+        assert _select_window(windows, pid=0) is None
 
 
 def _ingest_fixture_windows():
@@ -279,7 +305,7 @@ def test_linux_foreground_pixel_click_marks_xtest_as_unverifiable_with_driver_hi
 
     result = backend.click(x=260, y=183, button="left", delivery_mode="foreground")
 
-    assert result.ok is True
+    assert result.ok is False
     assert result.meta["verified"] is False
     assert result.meta["effect"] == "unverifiable"
     assert "fallback" not in result.meta
@@ -291,6 +317,72 @@ def test_linux_foreground_pixel_click_marks_xtest_as_unverifiable_with_driver_hi
     assert driver_call.args[1]["x"] == 260
     assert driver_call.args[1]["y"] == 183
     assert driver_call.args[1]["window_id"] == 77
+
+
+def test_linux_foreground_unverifiable_click_is_public_failure(monkeypatch):
+    from tools.computer_use import cua_backend, tool
+    from tools.computer_use.cua_backend import CuaDriverBackend
+
+    backend = CuaDriverBackend()
+    backend._active_pid = 0
+    backend._active_window_id = 77
+    session = MagicMock()
+    session.supports_capability.return_value = False
+    session.call_tool.return_value = {
+        "isError": False,
+        "data": "",
+        "structuredContent": {
+            "verified": False,
+            "effect": "unverifiable",
+            "path": "x11_xtest_fg",
+        },
+    }
+    backend._session = session
+
+    monkeypatch.setattr(cua_backend.sys, "platform", "linux")
+    monkeypatch.setattr(tool, "_get_backend", lambda: backend)
+
+    response = tool.handle_computer_use({
+        "action": "click",
+        "coordinate": [260, 183],
+        "delivery_mode": "foreground",
+    })
+    payload = json.loads(response)
+
+    assert payload["ok"] is False
+    assert payload["action"] == "click"
+    assert payload["meta"]["verified"] is False
+    assert payload["meta"]["effect"] == "unverifiable"
+    assert payload["meta"]["escalation"]["recommended"] == "verify_or_driver_input_backend"
+
+
+def test_linux_unverifiable_element_click_remains_success(monkeypatch):
+    from tools.computer_use import cua_backend
+    from tools.computer_use.cua_backend import CuaDriverBackend
+
+    backend = CuaDriverBackend()
+    backend._active_pid = 123
+    backend._active_window_id = 77
+    session = MagicMock()
+    session.supports_capability.return_value = False
+    session.call_tool.return_value = {
+        "isError": False,
+        "data": "",
+        "structuredContent": {
+            "verified": False,
+            "effect": "unverifiable",
+            "path": "x11_atspi",
+        },
+    }
+    backend._session = session
+
+    monkeypatch.setattr(cua_backend.sys, "platform", "linux")
+
+    result = backend.click(element=4, delivery_mode="foreground")
+
+    assert result.ok is True
+    assert result.meta["effect"] == "unverifiable"
+    assert "escalation" not in result.meta
 
 
 def test_linux_pixel_click_annotation_is_limited_to_unverifiable_pixel_paths(monkeypatch):

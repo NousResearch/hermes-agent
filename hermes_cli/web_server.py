@@ -13700,29 +13700,43 @@ async def get_toolsets(profile: Optional[str] = None):
     from hermes_cli.tools_config import (
         _get_effective_configurable_toolsets,
         _get_platform_tools,
+        _toolset_configuration_platform,
         _toolset_has_keys,
         gui_toolset_label,
     )
+    from hermes_cli.platforms import platform_label
     from toolsets import resolve_toolset
 
     with _profile_scope(profile):
         config = load_config()
-        enabled_toolsets = _get_platform_tools(
-            config,
-            "cli",
-            include_default_mcp_servers=False,
-        )
+        toolset_rows = _get_effective_configurable_toolsets()
+        target_platforms = {
+            _toolset_configuration_platform(name) for name, _, _ in toolset_rows
+        }
+        enabled_by_platform = {
+            platform: _get_platform_tools(
+                config,
+                platform,
+                include_default_mcp_servers=False,
+            )
+            for platform in target_platforms
+        }
     result = []
-    for name, label, desc in _get_effective_configurable_toolsets():
+    for name, label, desc in toolset_rows:
         try:
             tools = sorted(set(resolve_toolset(name)))
         except Exception:
             tools = []
-        is_enabled = name in enabled_toolsets
+        target_platform = _toolset_configuration_platform(name)
+        is_enabled = name in enabled_by_platform[target_platform]
         result.append({
             "name": name,
             "label": gui_toolset_label(label),
             "description": desc,
+            "platform": target_platform,
+            "platform_label": gui_toolset_label(
+                platform_label(target_platform, target_platform)
+            ),
             "enabled": is_enabled,
             "available": is_enabled,
             "configured": _toolset_has_keys(name, config),
@@ -13738,34 +13752,46 @@ class ToolsetToggle(BaseModel):
 
 @app.put("/api/tools/toolsets/{name}")
 async def toggle_toolset(name: str, body: ToolsetToggle, profile: Optional[str] = None):
-    """Enable/disable a configurable toolset for the desktop (cli) platform.
+    """Enable/disable a configurable toolset for its configuration platform.
 
-    Persists to ``platform_toolsets.cli`` via the same ``_save_platform_tools``
-    helper the CLI ``hermes tools`` picker uses, so the GUI and CLI stay in
-    lockstep. Scoped to ``body.profile`` when provided. Returns 400 for
-    unknown toolset keys.
+    Most toolsets persist to ``platform_toolsets.cli``. Platform-restricted
+    toolsets instead target their supported platform (for example, Discord's
+    native toolsets persist to ``platform_toolsets.discord``). The shared
+    ``_save_platform_tools`` helper keeps the GUI and CLI in lockstep. Scoped
+    to ``body.profile`` when provided. Returns 400 for unknown toolset keys.
     """
     from hermes_cli.tools_config import (
         _get_effective_configurable_toolsets,
         _get_platform_tools,
         _save_platform_tools,
+        _toolset_configuration_platform,
     )
 
     valid = {ts_key for ts_key, _, _ in _get_effective_configurable_toolsets()}
     if name not in valid:
         raise HTTPException(status_code=400, detail=f"Unknown toolset: {name}")
 
+    target_platform = _toolset_configuration_platform(name)
     with _profile_scope(body.profile or profile):
         config = load_config()
         enabled = set(
-            _get_platform_tools(config, "cli", include_default_mcp_servers=False)
+            _get_platform_tools(
+                config,
+                target_platform,
+                include_default_mcp_servers=False,
+            )
         )
         if body.enabled:
             enabled.add(name)
         else:
             enabled.discard(name)
-        _save_platform_tools(config, "cli", enabled)
-    return {"ok": True, "name": name, "enabled": body.enabled}
+        _save_platform_tools(config, target_platform, enabled)
+    return {
+        "ok": True,
+        "name": name,
+        "platform": target_platform,
+        "enabled": body.enabled,
+    }
 
 
 @app.get("/api/tools/toolsets/{name}/config")

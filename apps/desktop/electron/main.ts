@@ -117,6 +117,13 @@ import { findGitBash as _findGitBash } from './find-git-bash'
 import { installFoundInPageForwarder, performFind, stopFind } from './find-in-page'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { readDirForIpc } from './fs-read-dir'
+import {
+  filenameFromContentDisposition,
+  gatewayFilePath,
+  isNotFoundError,
+  parseDataUrlToBuffer,
+  pumpStreamToFile
+} from './gateway-file-download'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { scanGitRepos } from './git-repo-scan'
 import {
@@ -4646,7 +4653,11 @@ function fetchJson(url, token, options: any = {}) {
   })
 }
 
-function fetchBuffer(url, token, options: any = {}) {
+// Token-auth download that streams the response body straight to a
+// user-selected destination (via finalizeGatewayDownload) instead of buffering
+// the whole file in memory. The connect timeout is cleared once headers arrive
+// so a slow save dialog or a large stream doesn't trip it.
+function downloadViaTokenToFile(url, token, ctx, options: any = {}) {
   return new Promise((resolve, reject) => {
     let parsed
 
@@ -4675,22 +4686,19 @@ function fetchBuffer(url, token, options: any = {}) {
         }
       },
       res => {
-        const chunks = []
-
-        res.on('error', reject)
-        res.on('data', chunk => chunks.push(Buffer.from(chunk)))
-        res.on('end', () => {
-          const buffer = Buffer.concat(chunks)
-          const statusCode = res.statusCode || 500
-
-          if (statusCode >= 400) {
-            reject(new Error(`${statusCode}: ${buffer.toString('utf8').slice(0, 500) || res.statusMessage || ''}`))
-
-            return
+        // Headers arrived — the connection phase is done. Drop the idle timeout
+        // so it can't abort mid-stream or while the save dialog is open.
+        req.setTimeout(0)
+        finalizeGatewayDownload(res, res.statusCode || 500, res.headers || {}, {
+          ...ctx,
+          abort: () => {
+            try {
+              req.destroy()
+            } catch {
+              // already finished
+            }
           }
-
-          resolve({ buffer, headers: res.headers || {} })
-        })
+        }).then(resolve, reject)
       }
     )
 
@@ -6800,7 +6808,10 @@ async function ensureNativeAccessToken(baseUrl: string): Promise<string | null> 
   }
 }
 
-function fetchBufferViaOauthSession(url, options: any = {}) {
+// OAuth-session download that streams the response body straight to a
+// user-selected destination (via finalizeGatewayDownload). The connect timeout
+// is cleared once the response headers arrive.
+function downloadViaOauthSessionToFile(url, ctx, options: any = {}) {
   return new Promise((resolve, reject) => {
     const sess = getOauthSession()
 
@@ -6834,10 +6845,14 @@ function fetchBufferViaOauthSession(url, options: any = {}) {
       useSessionCookies: true,
       redirect: 'follow'
     } as any)
-    let timedOut = false
+    let settled = false
 
     const timer = setTimeout(() => {
-      timedOut = true
+      if (settled) {
+        return
+      }
+
+      settled = true
 
       try {
         request.abort()
@@ -6849,32 +6864,31 @@ function fetchBufferViaOauthSession(url, options: any = {}) {
     }, timeoutMs)
 
     request.on('response', res => {
-      const chunks = []
-
-      res.on('data', chunk => chunks.push(Buffer.from(chunk)))
-      res.on('end', () => {
-        if (timedOut) {
-          return
-        }
-
-        clearTimeout(timer)
-        const buffer = Buffer.concat(chunks)
-        const statusCode = res.statusCode || 500
-
-        if (statusCode >= 400) {
-          reject(new Error(`${statusCode}: ${buffer.toString('utf8').slice(0, 500) || res.statusMessage || ''}`))
-
-          return
-        }
-
-        resolve({ buffer, headers: res.headers || {} })
-      })
-    })
-    request.on('error', error => {
-      if (timedOut) {
+      if (settled) {
         return
       }
 
+      // Response headers arrived — cancel the connect timeout so it can't abort
+      // the stream while the save dialog is open or bytes are still flowing.
+      settled = true
+      clearTimeout(timer)
+      finalizeGatewayDownload(res, res.statusCode || 500, res.headers || {}, {
+        ...ctx,
+        abort: () => {
+          try {
+            request.abort()
+          } catch {
+            // already finished
+          }
+        }
+      }).then(resolve, reject)
+    })
+    request.on('error', error => {
+      if (settled) {
+        return
+      }
+
+      settled = true
       clearTimeout(timer)
       reject(error)
     })
@@ -6882,39 +6896,63 @@ function fetchBufferViaOauthSession(url, options: any = {}) {
   })
 }
 
-function gatewayFilePath(rawPath) {
-  const value = String(rawPath || '').trim()
-
-  if (!value) {
-    return ''
+// Shared tail for both transports: validate status, pick a filename, prompt the
+// save dialog, then stream the (still-unconsumed) response body to the chosen
+// destination. On an HTTP error the status code is attached so saveGatewayFile
+// can trigger the 404-only compatibility fallback.
+async function finalizeGatewayDownload(res, statusCode, headers, ctx: any = {}) {
+  if (statusCode >= 400) {
+    const message = await readGatewayErrorText(res)
+    const error: any = new Error(`${statusCode}: ${message}`)
+    error.statusCode = statusCode
+    throw error
   }
 
-  if (!/^file:/i.test(value)) {
-    return value
+  const disposition = headers['content-disposition'] || headers['Content-Disposition']
+  const filename = filenameFromContentDisposition(disposition) || ctx.suggested || ctx.fallbackName
+  const result = await dialog.showSaveDialog(mainWindow, {
+    defaultPath: filename,
+    title: 'Save File'
+  })
+
+  if (result.canceled || !result.filePath) {
+    ctx.abort?.()
+
+    return { canceled: true, saved: false }
   }
 
   try {
-    return decodeURIComponent(new URL(value).pathname)
-  } catch {
-    return value.replace(/^file:\/\//i, '')
+    await pumpStreamToFile(res, result.filePath, {
+      createWriteStream: (destPath: string) => fs.createWriteStream(destPath),
+      unlink: (destPath: string) => fs.promises.unlink(destPath)
+    })
+  } catch (error) {
+    ctx.abort?.()
+    throw error
   }
+
+  return { path: result.filePath, saved: true }
 }
 
-function filenameFromContentDisposition(value) {
-  const text = String(value || '')
-  const encoded = text.match(/filename\*=(?:UTF-8'')?([^;]+)/i)?.[1]
-  const plain = text.match(/filename="?([^";]+)"?/i)?.[1]
-  const raw = encoded || plain || ''
+// Read a bounded amount of an error response body for the thrown message.
+function readGatewayErrorText(res): Promise<string> {
+  return new Promise(resolve => {
+    const chunks = []
+    let total = 0
 
-  if (!raw) {
-    return ''
-  }
+    res.on('data', chunk => {
+      if (total >= 500) {
+        return
+      }
 
-  try {
-    return path.basename(decodeURIComponent(raw.trim()))
-  } catch {
-    return path.basename(raw.trim())
-  }
+      const buffer = Buffer.from(chunk)
+
+      total += buffer.length
+      chunks.push(buffer)
+    })
+    res.on('end', () => resolve(Buffer.concat(chunks).toString('utf8').slice(0, 500)))
+    res.on('error', () => resolve(Buffer.concat(chunks).toString('utf8').slice(0, 500)))
+  })
 }
 
 async function saveGatewayFile(payload: any = {}) {
@@ -6926,18 +6964,56 @@ async function saveGatewayFile(payload: any = {}) {
 
   const profile = payload.profile || null
   const connection = await ensureBackend(profile)
+  const suggested = String(payload.suggestedName || '').trim()
+  const fallbackName = path.basename(filePath) || suggested || 'download'
+  const ctx = { suggested, fallbackName }
   const requestPath = pathWithGlobalRemoteProfile(`/api/fs/download?path=${encodeURIComponent(filePath)}`, profile, {
     globalRemote: globalRemoteActive(),
     profileRemoteOverride: profileHasRemoteOverride(profile)
   })
   const url = `${connection.baseUrl}${requestPath}`
-  const fetched = (
-    connection.authMode === 'oauth' ? await fetchBufferViaOauthSession(url) : await fetchBuffer(url, connection.token)
+
+  try {
+    return await (connection.authMode === 'oauth'
+      ? downloadViaOauthSessionToFile(url, ctx)
+      : downloadViaTokenToFile(url, connection.token, ctx))
+  } catch (error) {
+    // Desktop and the remote gateway update independently. A gateway predating
+    // /api/fs/download 404s here; fall back (ONLY on 404) to the older capped
+    // data-URL route so downloads keep working against older backends.
+    if (isNotFoundError(error)) {
+      return await saveGatewayFileViaDataUrl(connection, profile, filePath, ctx)
+    }
+
+    throw error
+  }
+}
+
+// Compatibility fallback: fetch the file through the capped
+// `/api/fs/read-data-url` route, decode it, and save. Bounded by the gateway's
+// data-URL cap, so it only serves smaller files — enough to keep older gateways
+// working until they gain the streaming route.
+async function saveGatewayFileViaDataUrl(connection, profile, filePath, ctx: any = {}) {
+  const requestPath = pathWithGlobalRemoteProfile(
+    `/api/fs/read-data-url?path=${encodeURIComponent(filePath)}`,
+    profile,
+    {
+      globalRemote: globalRemoteActive(),
+      profileRemoteOverride: profileHasRemoteOverride(profile)
+    }
+  )
+  const url = `${connection.baseUrl}${requestPath}`
+  const json = (
+    connection.authMode === 'oauth' ? await fetchJsonViaOauthSession(url) : await fetchJson(url, connection.token)
   ) as any
-  const disposition = fetched.headers['content-disposition'] || fetched.headers['Content-Disposition']
-  const fallbackName = path.basename(filePath) || String(payload.suggestedName || '').trim() || 'download'
-  const filename =
-    filenameFromContentDisposition(disposition) || String(payload.suggestedName || '').trim() || fallbackName
+  const dataUrl = json?.dataUrl
+
+  if (!dataUrl) {
+    throw new Error('Gateway returned no file data')
+  }
+
+  const buffer = parseDataUrlToBuffer(dataUrl)
+  const filename = ctx.suggested || ctx.fallbackName
   const result = await dialog.showSaveDialog(mainWindow, {
     defaultPath: filename,
     title: 'Save File'
@@ -6947,7 +7023,7 @@ async function saveGatewayFile(payload: any = {}) {
     return { canceled: true, saved: false }
   }
 
-  await fs.promises.writeFile(result.filePath, fetched.buffer)
+  await fs.promises.writeFile(result.filePath, buffer)
 
   return { path: result.filePath, saved: true }
 }

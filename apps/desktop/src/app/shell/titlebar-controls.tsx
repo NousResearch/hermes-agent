@@ -15,10 +15,12 @@ import { $hapticsMuted, toggleHapticsMuted } from '@/store/haptics'
 import {
   $fileBrowserOpen,
   $sidebarOpen,
+  setFileBrowserOpen,
   toggleFileBrowserOpen,
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { $currentCwd } from '@/store/session'
 
 import { appViewForPath, isOverlayView } from '../routes'
 
@@ -100,6 +102,7 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
   const modHeld = useModifierHeld()
   const hapticsMuted = useStore($hapticsMuted)
   const fileBrowserOpen = useStore($fileBrowserOpen)
+  const hasWorkspace = Boolean(useStore($currentCwd).trim())
   const sidebarOpen = useStore($sidebarOpen)
 
   const toggleHaptics = () => {
@@ -114,13 +117,25 @@ export function TitlebarControls({ leftTools = [], tools = [], onOpenSettings }:
     }
   }
 
-  // POSITIONAL toggles: each button shows/hides everything on its physical
-  // side of the main zone (the layout tree collapses the whole side), so they
-  // stay correct through flips and rearranges. $sidebarOpen ≙ left side,
-  // $fileBrowserOpen ≙ right side. Never an active highlight — plain
-  // show/hide affordances.
+  // Pane-scoped toggles: these buttons own sessions and files respectively.
+  // Other panes sharing the same physical side (preview, review, plugins) stay
+  // independent. Never an active highlight — plain show/hide affordances.
   const leftEdge = { open: sidebarOpen, toggle: toggleSidebarOpen }
-  const rightEdge = { open: fileBrowserOpen, toggle: toggleFileBrowserOpen }
+
+  // Files is workspace-gated: on a detached chat (no cwd) nothing renders no
+  // matter what $fileBrowserOpen remembers, so the label reads the EFFECTIVE
+  // visibility and a click only records a Show intent (never flips the
+  // remembered flag off invisibly). With a workspace it's a plain toggle.
+  const rightEdge = {
+    open: fileBrowserOpen && hasWorkspace,
+    toggle: () => {
+      if (hasWorkspace) {
+        toggleFileBrowserOpen()
+      } else {
+        setFileBrowserOpen(true)
+      }
+    }
+  }
 
   const leftToolbarTools: TitlebarTool[] = [
     {

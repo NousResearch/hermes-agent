@@ -80,6 +80,8 @@ apps/shared/src/**/*.js
 apps/shared/src/**/*.js.map
 apps/shared/src/**/*.d.ts
 apps/desktop/release/
+# pane-pointer-smoke.mjs evidence logs (JSONL captures per run — never committed)
+apps/desktop/scripts/.smoke/
 *.tsbuildinfo
 
 # Web UI assets — synced from @nous-research/ui at build time via

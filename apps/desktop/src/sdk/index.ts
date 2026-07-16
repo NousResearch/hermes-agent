@@ -20,12 +20,13 @@
 
 import { atom, type ReadableAtom } from 'nanostores'
 
-import { $narrowViewport } from '@/components/pane-shell/tree/store'
+import { $narrowViewport, setTreePaneHidden } from '@/components/pane-shell/tree/store'
 import { onGatewayEvent } from '@/contrib/events'
+import { registry } from '@/contrib/registry'
 import { getLogs, getStatus } from '@/hermes'
 import { $gateway } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
-import { $paneOpen, setPaneOpen, togglePane } from '@/store/panes'
+import { $paneOpen, setPaneOpen } from '@/store/panes'
 import { $activeGatewayProfile } from '@/store/profile'
 import { $activeSessionId, $currentCwd, $currentModel, $gatewayState } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
@@ -56,6 +57,29 @@ if (typeof window !== 'undefined') {
   $narrowViewport.listen(refresh)
 }
 
+/** Keep the plugin-facing pane atom and the layout tree in lockstep. The pane
+ * store persists titlebar state; the tree hidden set actually collapses and
+ * reveals the rendered zone.
+ *
+ * Core chrome panes (sessions/files/terminal/…) are OFF-LIMITS: their
+ * visibility is owned by app stores ($sidebarOpen, $fileBrowserOpen, …) whose
+ * bindings drive the hidden set. Writing them here would desync the titlebar
+ * toggles from the rendered tree, so any registered pane that is not
+ * plugin-sourced is refused. Unregistered ids pass through — a plugin may
+ * drive its pane before its contribution lands. */
+const setHostPaneOpen = (id: string, open: boolean) => {
+  const contribution = registry.getArea('panes').find(c => c.id === id)
+
+  if (contribution && !contribution.source?.startsWith('plugin:')) {
+    console.warn(`[plugin-sdk] host.panes refuses core pane '${id}' — its visibility is owned by an app store`)
+
+    return
+  }
+
+  setPaneOpen(id, open)
+  setTreePaneHidden(id, !open)
+}
+
 export const host = {
   state: {
     /** Runtime id of the active chat session (null on a fresh draft). */
@@ -80,8 +104,8 @@ export const host = {
    *  tree. `open(id)` is a stable readonly atom suitable for `useValue`. */
   panes: {
     open: (id: string): ReadableAtom<boolean> => readonlyAtom($paneOpen(id)),
-    setOpen: (id: string, open: boolean) => setPaneOpen(id, open),
-    toggle: (id: string) => togglePane(id)
+    setOpen: setHostPaneOpen,
+    toggle: (id: string) => setHostPaneOpen(id, !$paneOpen(id).get())
   },
 
   // NOTE: every host door is async-safe — wrapped so a sync throw from an

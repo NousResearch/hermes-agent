@@ -12,7 +12,7 @@ import { registry } from '@/contrib/registry'
 import { translateNow } from '@/i18n'
 import { readJson, readKey, writeJson, writeKey } from '@/lib/storage'
 import { notify } from '@/store/notifications'
-import { clearAllPaneSizeOverrides } from '@/store/panes'
+import { clearAllPaneSizeOverrides, ensurePaneRegistered, getPaneStateSnapshot } from '@/store/panes'
 import { isSecondaryWindow } from '@/store/windows'
 
 import {
@@ -179,6 +179,30 @@ export function registerPaneCloser(paneId: string, close: () => void) {
  */
 export function registerPaneOpener(paneId: string, open: () => void) {
   paneOpeners[paneId] = open
+}
+
+/**
+ * Bind a pane's rendered visibility to an app store: the store's `$open` drives
+ * the hidden set, and the optional `close`/`open` callbacks route the tab
+ * menu's Close and preset reveals back through that store so the pane's toggle
+ * buttons stay truthful. The controller wires every chrome pane through this.
+ */
+export function bindPaneVisibility(
+  paneId: string,
+  $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
+  close?: () => void,
+  open?: () => void
+) {
+  setTreePaneHidden(paneId, !$open.get())
+  $open.listen(isOpen => setTreePaneHidden(paneId, !isOpen))
+
+  if (close) {
+    registerPaneCloser(paneId, close)
+  }
+
+  if (open) {
+    registerPaneOpener(paneId, open)
+  }
 }
 
 // TOOL PANELS (terminal, logs, …): their toggle COLLAPSES the zone to a rail
@@ -764,20 +788,7 @@ interface PaneDockHint {
 }
 
 function adoptContributedPanes(): void {
-  const tree = $layoutTree.get()
-
-  if (!tree) {
-    return
-  }
-
   const panes = registry.getArea('panes')
-
-  const dataOf = (paneId: string) =>
-    panes.find(c => c.id === paneId)?.data as { placement?: string; dock?: PaneDockHint } | undefined
-
-  const placementOf = (paneId: string) => dataOf(paneId)?.placement
-  const mainId = panes.find(c => placementOf(c.id) === 'main')?.id
-  const inTree = new Set(allPaneIds(tree))
 
   // Plugin panes are never dismissed anymore (Close disables the plugin
   // instead) — drop stale entries so panes stranded by the old behavior
@@ -787,6 +798,33 @@ function adoptContributedPanes(): void {
       setDismissed(pane.id, false)
     }
   }
+
+  // Runtime plugin panes arrive through the registry after core layout stores
+  // initialize. Seed their persisted visibility exactly once, then mirror any
+  // existing preference into the tree before adoption. Without this bridge a
+  // fresh pane rendered visibly while host.panes.open(id) still reported false.
+  // Both loops run BEFORE the tree snapshot below: setTreePaneHidden(…, false)
+  // can reveal (and commit) — adoption must build on the post-reveal tree, not
+  // clobber it from a stale capture.
+  for (const pane of panes) {
+    if (pane.source?.startsWith('plugin:')) {
+      ensurePaneRegistered(pane.id, { open: true })
+      setTreePaneHidden(pane.id, !(getPaneStateSnapshot(pane.id)?.open ?? true))
+    }
+  }
+
+  const tree = $layoutTree.get()
+
+  if (!tree) {
+    return
+  }
+
+  const dataOf = (paneId: string) =>
+    panes.find(c => c.id === paneId)?.data as { placement?: string; dock?: PaneDockHint } | undefined
+
+  const placementOf = (paneId: string) => dataOf(paneId)?.placement
+  const mainId = panes.find(c => placementOf(c.id) === 'main')?.id
+  const inTree = new Set(allPaneIds(tree))
 
   const dismissed = $dismissedPanes.get()
   const missing = panes.filter(c => !inTree.has(c.id) && !dismissed.has(c.id))
@@ -1216,10 +1254,16 @@ export function resetLayoutTree() {
   // Everything still missing (plugin panes) adopts by placement.
   adoptContributedPanes()
 
-  // "Restore everything" includes collapsed SIDES: reopen every bound side
-  // (through its store, so $sidebarOpen / the toggles stay truthful). Without
-  // this a sidebar hidden before the reset silently survives it, flipping the
-  // next ⌘B into a SHOW — so hiding never appears to persist.
+  // "Restore everything" includes chrome-hidden panes: reopen each hidden pane
+  // through its bound store opener (setSidebarOpen / setFileBrowserOpen) so the
+  // toggles stay truthful. Without this a sidebar hidden before the reset
+  // silently survives it, flipping the next ⌘B into a SHOW — so hiding never
+  // appears to persist. Panes without an opener (plugin panes, preview, review)
+  // keep their own store's preference.
+  for (const paneId of $hiddenTreePanes.get()) {
+    paneOpeners[paneId]?.()
+  }
+
   for (const side of Object.keys(sideOpeners) as TreeSide[]) {
     sideOpeners[side]?.(true)
   }

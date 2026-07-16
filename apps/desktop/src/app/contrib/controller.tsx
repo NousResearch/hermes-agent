@@ -11,20 +11,18 @@ import { LayoutTreeRoot } from '@/components/pane-shell/tree/renderer'
 import type { DoubleTapContext } from '@/components/pane-shell/tree/renderer/drag-session'
 import {
   $layoutTree,
-  bindTreeSideVisibility,
+  $narrowViewport,
+  bindPaneVisibility,
   declareDefaultTree,
-  dismissTreePane,
   dockPaneBeside,
   markCollapsePane,
   mirrorLayoutTree,
-  paneRootSide,
   registerLayoutResetHandler,
   registerPaneCloser,
   registerPaneOpener,
   resetLayoutTree,
   revealTreePane,
   setPaneCollapsed,
-  setTreePaneHidden,
   watchContributedPanes
 } from '@/components/pane-shell/tree/store'
 import { SidebarProvider } from '@/components/ui/sidebar'
@@ -430,28 +428,8 @@ registerLayoutResetHandler(stackSessionTilesIntoMain)
 // reacts — a hidden pane's zone collapses (content stays mounted), the flip
 // toggle mirrors the root row.
 // ---------------------------------------------------------------------------
-
-function bindPaneVisibility(
-  paneId: string,
-  $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
-  close?: () => void,
-  open?: () => void
-) {
-  setTreePaneHidden(paneId, !$open.get())
-  $open.listen(isOpen => setTreePaneHidden(paneId, !isOpen))
-
-  // The tab menu's Close routes through the owning store (never dismissal),
-  // so the pane's toggle buttons stay truthful.
-  if (close) {
-    registerPaneCloser(paneId, close)
-  }
-
-  // The opener is the mirror: preset application (revealOnPreset) shows the
-  // pane through the same store, so the toggle stays truthful.
-  if (open) {
-    registerPaneOpener(paneId, open)
-  }
-}
+// bindPaneVisibility lives in the tree store (exported for the persistence
+// behavior tests); the bindings below are the app's production wiring.
 
 // TOOL PANELS (terminal, logs): like bindPaneVisibility but the toggle COLLAPSES
 // the zone to a persistent rail (tab stays) instead of hiding it — the
@@ -505,12 +483,6 @@ $panesFlipped.listen(flipped => {
   }
 })
 
-// POSITIONAL side toggles (titlebar buttons, ⌘B / ⌘J): $sidebarOpen ≙ the
-// LEFT side of the main zone, $fileBrowserOpen ≙ the RIGHT — everything on
-// that side hides together, whatever panes have been rearranged there.
-bindTreeSideVisibility('left', $sidebarOpen, setSidebarOpen)
-bindTreeSideVisibility('right', $fileBrowserOpen, setFileBrowserOpen)
-
 // Workspace-scoped surfaces: the file tree and git diff only mean something
 // inside a project. A detached chat (no cwd) hides them — their zones
 // collapse and the chat absorbs the width; picking a project brings them
@@ -518,7 +490,28 @@ bindTreeSideVisibility('right', $fileBrowserOpen, setFileBrowserOpen)
 // rode the rail's row and vanished with it), its zone stands on its own.
 const $hasWorkspace = computed($currentCwd, cwd => Boolean(cwd.trim()))
 
-bindPaneVisibility('files', $hasWorkspace)
+// Titlebar sidebar buttons own their named panes, not an entire physical side.
+// Browser/QC/preview/review can share that side and must stay independent.
+// NARROW viewports opt these panes OUT of the hidden set: below the collapse
+// breakpoint the rails leave the grid and the edge overlays own visibility,
+// but NarrowOverlays skips hidden panes entirely — leaving a closed pane in
+// the set would deaden its titlebar button and ⌘B/⌘J (no overlay candidate).
+// Wide again, the store's remembered open state re-drives the hidden set.
+bindPaneVisibility(
+  'sessions',
+  computed([$sidebarOpen, $narrowViewport], (open, narrow) => open || narrow),
+  () => setSidebarOpen(false),
+  () => setSidebarOpen(true)
+)
+bindPaneVisibility(
+  'files',
+  computed(
+    [$fileBrowserOpen, $hasWorkspace, $narrowViewport],
+    (open, workspace, narrow) => (open || narrow) && workspace
+  ),
+  () => setFileBrowserOpen(false),
+  () => setFileBrowserOpen(true)
+)
 // ⌘G — the review sidebar appears/disappears (and comes to the front).
 bindPaneVisibility(
   'review',
@@ -563,18 +556,6 @@ registry.register({
     run: () => $logsOpen.set(!$logsOpen.get())
   } satisfies PaletteContribution
 })
-
-// Sessions/files Close = collapse their SIDE (⌘B/⌘J truthful, titlebar button
-// flips back) — but only while the pane actually lives in that root side
-// column. Dragged next to main, a side collapse can't hide it (the collapse
-// skips main-bearing children), so Close falls back to dismissal there —
-// otherwise ⌘W/Close silently no-op.
-registerPaneCloser('sessions', () =>
-  paneRootSide('sessions') === 'left' ? setSidebarOpen(false) : dismissTreePane('sessions')
-)
-registerPaneCloser('files', () =>
-  paneRootSide('files') === 'right' ? setFileBrowserOpen(false) : dismissTreePane('files')
-)
 
 // A preview target lands NEXT TO the file tree — position-aware: wherever
 // files currently lives (default rail, ⌘\-flipped, dragged into a stack), the

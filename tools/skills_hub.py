@@ -291,9 +291,73 @@ def _resolve_lock_install_path(install_path: str, skill_name: str) -> Path:
     return target
 
 
-def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response]:
-    """Fetch a URL with SSRF and redirect-target validation."""
+# Headers that must not ride a cross-origin redirect hop. GitHub callers pass
+# Authorization via GitHubAuth; a public Location that still passes is_safe_url
+# must not inherit that token.
+_SENSITIVE_REDIRECT_HEADERS = frozenset({
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "cookie2",
+})
+
+
+def _headers_for_redirect_hop(
+    headers: Optional[Dict[str, str]],
+    *,
+    origin_url: str,
+    hop_url: str,
+    first_hop: bool,
+) -> Optional[Dict[str, str]]:
+    """Return request headers for this hop.
+
+    Caller-supplied headers (including Authorization) apply on the first hop.
+    On later hops, same-origin keeps them; cross-origin strips credential
+    headers so a safe CDN Location cannot receive a GitHub token.
+    """
+    if not headers:
+        return None
+    if first_hop:
+        return headers
+    origin = urlsplit(origin_url)
+    hop = urlsplit(hop_url)
+    same_origin = (
+        origin.scheme.lower() == hop.scheme.lower()
+        and origin.netloc.lower() == hop.netloc.lower()
+    )
+    if same_origin:
+        return headers
+    stripped = {
+        key: value
+        for key, value in headers.items()
+        if key.lower() not in _SENSITIVE_REDIRECT_HEADERS
+    }
+    return stripped or None
+
+
+def _guarded_http_get(
+    url: str,
+    *,
+    timeout: float = 20,
+    headers: Optional[Dict[str, str]] = None,
+    params: Optional[Dict[str, Any]] = None,
+) -> Optional[httpx.Response]:
+    """Fetch a URL with SSRF and redirect-target validation.
+
+    Every hop (initial URL and each Location target) is checked with
+    ``is_safe_url`` and the website policy gate before the request is sent.
+    Redirects are followed manually so a public catalog/CDN URL cannot 302
+    into link-local / private / cloud-metadata space. Query params apply to
+    the first request only; subsequent hops use the absolute Location URL.
+    Credential headers apply to the first hop (and same-origin redirects);
+    cross-origin hops strip Authorization/Cookie.
+
+    ``httpx.DecodingError`` is re-raised so callers such as
+    ``_load_hermes_index`` can retry with ``Accept-Encoding: identity``.
+    """
     current_url = url
+    origin_url = url
+    first_hop = True
 
     for _ in range(_MAX_SKILL_FETCH_REDIRECTS + 1):
         if not is_safe_url(current_url):
@@ -309,11 +373,29 @@ def _guarded_http_get(url: str, *, timeout: int = 20) -> Optional[httpx.Response
             )
             return None
 
+        hop_headers = _headers_for_redirect_hop(
+            headers,
+            origin_url=origin_url,
+            hop_url=current_url,
+            first_hop=first_hop,
+        )
         try:
-            resp = httpx.get(current_url, timeout=timeout, follow_redirects=False)
+            resp = httpx.get(
+                current_url,
+                timeout=timeout,
+                headers=hop_headers,
+                params=params if first_hop else None,
+                follow_redirects=False,
+            )
+        except httpx.DecodingError:
+            # Let index/retry callers see the decode failure; do not collapse
+            # it into a silent None that skips Accept-Encoding: identity.
+            raise
         except httpx.HTTPError as exc:
             logger.debug("Skills Hub fetch failed for %s: %s", current_url, exc)
             return None
+
+        first_hop = False
 
         if resp.status_code in _REDIRECT_STATUS_CODES:
             location = getattr(resp, "headers", {}).get("location")
@@ -802,10 +884,13 @@ class GitHubSource(SkillSource):
 
         # Resolve default branch
         try:
-            resp = httpx.get(
+            resp = _guarded_http_get(
                 f"https://api.github.com/repos/{repo}",
-                headers=headers, timeout=15, follow_redirects=True,
+                headers=headers,
+                timeout=15,
             )
+            if resp is None:
+                return None
             if resp.status_code != 200:
                 self._check_rate_limit_response(resp)
                 return None
@@ -815,11 +900,14 @@ class GitHubSource(SkillSource):
 
         # Fetch recursive tree
         try:
-            resp = httpx.get(
+            resp = _guarded_http_get(
                 f"https://api.github.com/repos/{repo}/git/trees/{default_branch}",
                 params={"recursive": "1"},
-                headers=headers, timeout=30, follow_redirects=True,
+                headers=headers,
+                timeout=30,
             )
+            if resp is None:
+                return None
             if resp.status_code != 200:
                 self._check_rate_limit_response(resp)
                 return None
@@ -879,10 +967,18 @@ class GitHubSource(SkillSource):
         last_resp: Optional["httpx.Response"] = None
         for attempt in range(max_retries):
             try:
-                resp = httpx.get(
-                    url, params=params, headers=hdrs,
-                    timeout=timeout, follow_redirects=True,
+                resp = _guarded_http_get(
+                    url,
+                    params=params,
+                    headers=hdrs,
+                    timeout=timeout,
                 )
+                if resp is None:
+                    if attempt < max_retries - 1:
+                        time.sleep(backoff)
+                        backoff = min(backoff * 2, 8.0)
+                        continue
+                    return None
             except httpx.HTTPError as e:
                 logger.debug("GitHub GET %s failed (attempt %d/%d): %s",
                              url, attempt + 1, max_retries, e)
@@ -1650,12 +1746,12 @@ class SkillsShSource(SkillSource):
             return [SkillMeta(**item) for item in cached][:limit]
 
         try:
-            resp = httpx.get(
+            resp = _guarded_http_get(
                 self.SEARCH_URL,
                 params={"q": query, "limit": limit},
                 timeout=20,
             )
-            if resp.status_code != 200:
+            if resp is None or resp.status_code != 200:
                 return []
             data = resp.json()
         except (httpx.HTTPError, json.JSONDecodeError):
@@ -1727,13 +1823,12 @@ class SkillsShSource(SkillSource):
         # Step 1: fetch the sitemap index → list of skill-sitemap URLs.
         skill_sitemap_urls: List[str] = []
         try:
-            resp = httpx.get(
+            resp = _guarded_http_get(
                 self.SITEMAP_INDEX_URL,
                 timeout=20,
-                follow_redirects=True,
                 headers=sitemap_headers,
             )
-            if resp.status_code != 200:
+            if resp is None or resp.status_code != 200:
                 return self._featured_skills(limit)
             for match in self._SITEMAP_LOC_RE.finditer(resp.text):
                 loc = match.group(1).strip()
@@ -1751,13 +1846,12 @@ class SkillsShSource(SkillSource):
         results: List[SkillMeta] = []
         for sitemap_url in skill_sitemap_urls:
             try:
-                resp = httpx.get(
+                resp = _guarded_http_get(
                     sitemap_url,
                     timeout=30,
-                    follow_redirects=True,
                     headers=sitemap_headers,
                 )
-                if resp.status_code != 200:
+                if resp is None or resp.status_code != 200:
                     continue
             except httpx.HTTPError:
                 continue
@@ -1801,8 +1895,8 @@ class SkillsShSource(SkillSource):
             return [SkillMeta(**item) for item in cached][:limit]
 
         try:
-            resp = httpx.get(self.BASE_URL, timeout=20)
-            if resp.status_code != 200:
+            resp = _guarded_http_get(self.BASE_URL, timeout=20)
+            if resp is None or resp.status_code != 200:
                 return []
         except httpx.HTTPError:
             return []
@@ -1877,8 +1971,8 @@ class SkillsShSource(SkillSource):
             return cached
 
         try:
-            resp = httpx.get(f"{self.BASE_URL}/{identifier}", timeout=20)
-            if resp.status_code != 200:
+            resp = _guarded_http_get(f"{self.BASE_URL}/{identifier}", timeout=20)
+            if resp is None or resp.status_code != 200:
                 return None
         except httpx.HTTPError:
             return None
@@ -1963,9 +2057,12 @@ class SkillsShSource(SkillSource):
         # Fallback: scan repo root for directories that might contain skills
         try:
             root_url = f"https://api.github.com/repos/{repo}/contents/"
-            resp = httpx.get(root_url, headers=self.github.auth.get_headers(),
-                             timeout=15, follow_redirects=True)
-            if resp.status_code == 200:
+            resp = _guarded_http_get(
+                root_url,
+                headers=self.github.auth.get_headers(),
+                timeout=15,
+            )
+            if resp is not None and resp.status_code == 200:
                 entries = resp.json()
                 if isinstance(entries, list):
                     for entry in entries:
@@ -2375,12 +2472,12 @@ class ClawHubSource(SkillSource):
             )
 
         try:
-            resp = httpx.get(
+            resp = _guarded_http_get(
                 f"{self.BASE_URL}/skills",
                 params={"search": query, "limit": limit},
                 timeout=15,
             )
-            if resp.status_code != 200:
+            if resp is None or resp.status_code != 200:
                 return []
             data = resp.json()
         except (httpx.HTTPError, json.JSONDecodeError):
@@ -2534,8 +2631,12 @@ class ClawHubSource(SkillSource):
                 params["cursor"] = cursor
 
             try:
-                resp = httpx.get(f"{self.BASE_URL}/skills", params=params, timeout=30)
-                if resp.status_code != 200:
+                resp = _guarded_http_get(
+                    f"{self.BASE_URL}/skills",
+                    params=params,
+                    timeout=30,
+                )
+                if resp is None or resp.status_code != 200:
                     break
                 data = resp.json()
             except (httpx.HTTPError, json.JSONDecodeError):
@@ -2583,8 +2684,8 @@ class ClawHubSource(SkillSource):
 
     def _get_json(self, url: str, timeout: int = 20) -> Optional[Any]:
         try:
-            resp = httpx.get(url, timeout=timeout)
-            if resp.status_code != 200:
+            resp = _guarded_http_get(url, timeout=timeout)
+            if resp is None or resp.status_code != 200:
                 return None
             return resp.json()
         except (httpx.HTTPError, json.JSONDecodeError):
@@ -2652,12 +2753,13 @@ class ClawHubSource(SkillSource):
         max_retries = 3
         for attempt in range(max_retries):
             try:
-                resp = httpx.get(
+                resp = _guarded_http_get(
                     f"{self.BASE_URL}/download",
                     params={"slug": slug, "version": version},
                     timeout=30,
-                    follow_redirects=True,
                 )
+                if resp is None:
+                    return files
                 if resp.status_code == 429:
                     try:
                         retry_after = int(resp.headers.get("retry-after", "5"))
@@ -2919,8 +3021,8 @@ class LobeHubSource(SkillSource):
             return cached
 
         try:
-            resp = httpx.get(self.INDEX_URL, timeout=30)
-            if resp.status_code != 200:
+            resp = _guarded_http_get(self.INDEX_URL, timeout=30)
+            if resp is None or resp.status_code != 200:
                 return None
             data = resp.json()
         except (httpx.HTTPError, json.JSONDecodeError):
@@ -2933,8 +3035,8 @@ class LobeHubSource(SkillSource):
         """Fetch a single agent's JSON file."""
         url = f"https://chat-agents.lobehub.com/{agent_id}.json"
         try:
-            resp = httpx.get(url, timeout=15)
-            if resp.status_code == 200:
+            resp = _guarded_http_get(url, timeout=15)
+            if resp is not None and resp.status_code == 200:
                 return resp.json()
         except (httpx.HTTPError, json.JSONDecodeError) as e:
             logger.debug("LobeHub agent fetch failed: %s", e)
@@ -3008,8 +3110,8 @@ class BrowseShSource(SkillSource):
         if cached is not None:
             return cached
         try:
-            resp = httpx.get(self.CATALOG_URL, timeout=20)
-            if resp.status_code != 200:
+            resp = _guarded_http_get(self.CATALOG_URL, timeout=20)
+            if resp is None or resp.status_code != 200:
                 return []
             data = resp.json()
         except (httpx.HTTPError, json.JSONDecodeError):
@@ -3094,8 +3196,10 @@ class BrowseShSource(SkillSource):
         if not md_url:
             return None
         try:
-            resp = httpx.get(md_url, timeout=20, follow_redirects=True)
-            if resp.status_code != 200:
+            # skillMdUrl is catalog-controlled CDN/content URL; never auto-follow
+            # redirects without re-checking each hop (SSRF).
+            resp = _guarded_http_get(md_url, timeout=20)
+            if resp is None or resp.status_code != 200:
                 return None
             content = resp.text
         except httpx.HTTPError:
@@ -3125,12 +3229,11 @@ class BrowseShSource(SkillSource):
         ``sourceUrl`` (some entries may), use it directly.
         """
         try:
-            detail = httpx.get(
+            detail = _guarded_http_get(
                 self.SKILL_DETAIL_URL.format(slug=slug),
                 timeout=20,
-                follow_redirects=True,
             )
-            if detail.status_code == 200:
+            if detail is not None and detail.status_code == 200:
                 data = detail.json()
                 if isinstance(data, dict):
                     md_url = data.get("skillMdUrl")
@@ -3811,12 +3914,13 @@ def _load_hermes_index() -> Optional[dict]:
     data = None
     for accept_encoding in ("gzip, deflate", "identity"):
         try:
-            resp = httpx.get(
+            resp = _guarded_http_get(
                 HERMES_INDEX_URL,
                 timeout=15,
-                follow_redirects=True,
                 headers={"Accept-Encoding": accept_encoding},
             )
+            if resp is None:
+                return _load_stale_index_cache()
             if resp.status_code != 200:
                 logger.debug("Hermes index fetch returned %d", resp.status_code)
                 return _load_stale_index_cache()

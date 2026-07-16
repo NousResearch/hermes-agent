@@ -22,8 +22,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Optional, TypedDict
 
-from services.hermes import audit as _audit
-from services.hermes.config import get_commander_api_url
+from plugins.life_ops import audit as _audit
+from plugins.life_ops.config import get_commander_api_url
 
 _log = logging.getLogger(__name__)
 

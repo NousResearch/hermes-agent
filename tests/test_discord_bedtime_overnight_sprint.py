@@ -63,7 +63,7 @@ class TestBedtimeViewStructure:
 
         with patch.dict(sys.modules, {"discord": discord_stub,
                                        "discord.ui": discord_stub.ui}):
-            from services.hermes import bedtime as _bedtime_mod  # noqa: F401
+            from plugins.life_ops import bedtime as _bedtime_mod  # noqa: F401
             assert hasattr(_bedtime_mod, "fetch_backlog_count")
             assert hasattr(_bedtime_mod, "check_running_sprint")
             assert hasattr(_bedtime_mod, "start_sprint")
@@ -94,7 +94,7 @@ class TestBedtimeViewStructure:
                                        "discord.ext": MagicMock(),
                                        "discord.ext.commands": MagicMock()}):
             import importlib
-            import plugins.platforms.discord.adapter as adapter_mod
+            import plugins.life_ops.discord_adapter as adapter_mod
             importlib.reload(adapter_mod)
             assert hasattr(adapter_mod, "BedtimeView"), \
                 "BedtimeView must be a module-level global after _define_discord_view_classes()"
@@ -108,7 +108,7 @@ class TestBedtimeViewStructure:
 class TestFetchBacklogCount:
     def test_fetch_backlog_count_sums_per_project(self):
         """fetch_backlog_count() returns the sum of per-project backlog counts."""
-        from services.hermes.bedtime import fetch_backlog_count
+        from plugins.life_ops.bedtime import fetch_backlog_count
 
         api_response = [
             {"project": "alpha", "backlog_count": 3},
@@ -130,7 +130,7 @@ class TestFetchBacklogCount:
     def test_fetch_backlog_count_handles_http_error(self):
         """fetch_backlog_count() raises on HTTP error (caller surfaces it)."""
         import urllib.error
-        from services.hermes.bedtime import fetch_backlog_count
+        from plugins.life_ops.bedtime import fetch_backlog_count
 
         with patch("urllib.request.urlopen",
                    side_effect=urllib.error.HTTPError(None, 500, "Server Error", {}, None)), \
@@ -140,7 +140,7 @@ class TestFetchBacklogCount:
 
     def test_fetch_backlog_count_raises_if_no_api_url(self):
         """fetch_backlog_count() raises ValueError when COMMANDER_API_URL is unset."""
-        from services.hermes.bedtime import fetch_backlog_count
+        from plugins.life_ops.bedtime import fetch_backlog_count
 
         env = {k: v for k, v in os.environ.items() if k != "COMMANDER_API_URL"}
         with patch.dict(os.environ, env, clear=True):
@@ -156,7 +156,7 @@ class TestFetchBacklogCount:
 class TestCheckRunningSprint:
     def test_check_running_sprint_true_when_active(self):
         """check_running_sprint() returns True when a sprint is active."""
-        from services.hermes.bedtime import check_running_sprint
+        from plugins.life_ops.bedtime import check_running_sprint
 
         api_response = [{"id": "sp-1", "status": "running"}]
         raw = json.dumps(api_response).encode()
@@ -175,7 +175,7 @@ class TestCheckRunningSprint:
 
     def test_check_running_sprint_false_when_empty(self):
         """check_running_sprint() returns False when no active sprint exists."""
-        from services.hermes.bedtime import check_running_sprint
+        from plugins.life_ops.bedtime import check_running_sprint
 
         raw = json.dumps([]).encode()
         mock_resp = MagicMock()
@@ -200,7 +200,7 @@ class TestCheckRunningSprint:
 class TestStartSprint:
     def test_start_sprint_returns_sprint_id(self):
         """start_sprint() calls POST /api/sprints/run and returns sprint ID."""
-        from services.hermes.bedtime import start_sprint
+        from plugins.life_ops.bedtime import start_sprint
 
         api_response = {"id": "sp-42", "status": "running"}
         raw = json.dumps(api_response).encode()
@@ -226,7 +226,7 @@ class TestStartSprint:
     def test_start_sprint_http_error_returns_failure(self):
         """start_sprint() returns success=False on HTTP error (no raise)."""
         import urllib.error
-        from services.hermes.bedtime import start_sprint
+        from plugins.life_ops.bedtime import start_sprint
 
         with patch("urllib.request.urlopen",
                    side_effect=urllib.error.HTTPError(None, 503, "Service Unavailable", {}, None)), \
@@ -248,7 +248,7 @@ class TestStartSprint:
 @pytest.mark.asyncio
 async def test_skip_button_updates_message_no_api_call():
     """AC5: Skip button updates message to indicate skip; no Commander call."""
-    from services.hermes import bedtime as bedtime_mod
+    from plugins.life_ops import bedtime as bedtime_mod
 
     interaction = _make_interaction(user_id="111")
     button = _make_button()
@@ -281,7 +281,7 @@ async def test_skip_button_updates_message_no_api_call():
 @pytest.mark.asyncio
 async def test_second_start_click_is_idempotent():
     """AC6: A second Start click returns an ephemeral 'Already handled' message."""
-    from services.hermes import bedtime as bedtime_mod
+    from plugins.life_ops import bedtime as bedtime_mod
 
     interaction1 = _make_interaction(user_id="111")
     interaction2 = _make_interaction(user_id="111")
@@ -324,7 +324,7 @@ async def test_second_start_click_is_idempotent():
 @pytest.mark.asyncio
 async def test_second_skip_click_is_idempotent():
     """AC6: A second Skip click also returns ephemeral 'Already handled'."""
-    from services.hermes import bedtime as bedtime_mod
+    from plugins.life_ops import bedtime as bedtime_mod
 
     interaction1 = _make_interaction(user_id="111")
     interaction2 = _make_interaction(user_id="111")
@@ -353,10 +353,10 @@ async def test_second_skip_click_is_idempotent():
 class TestBedtimeAuditLog:
     def test_log_bedtime_action_writes_required_fields(self, tmp_path):
         """log_bedtime_action() writes a JSONL entry with all required fields."""
-        from services.hermes.bedtime import log_bedtime_action
+        from plugins.life_ops.bedtime import log_bedtime_action
 
         log_path = tmp_path / "bedtime-audit.log"
-        with patch("services.hermes.bedtime._resolve_bedtime_log_path",
+        with patch("plugins.life_ops.bedtime._resolve_bedtime_log_path",
                    return_value=log_path):
             log_bedtime_action(
                 user_id="123",
@@ -378,10 +378,10 @@ class TestBedtimeAuditLog:
 
     def test_log_bedtime_action_skip_has_null_sprint_id(self, tmp_path):
         """log_bedtime_action() records sprint_id=null for skip/timeout."""
-        from services.hermes.bedtime import log_bedtime_action
+        from plugins.life_ops.bedtime import log_bedtime_action
 
         log_path = tmp_path / "bedtime-audit.log"
-        with patch("services.hermes.bedtime._resolve_bedtime_log_path",
+        with patch("plugins.life_ops.bedtime._resolve_bedtime_log_path",
                    return_value=log_path):
             log_bedtime_action(
                 user_id="456",
@@ -395,10 +395,10 @@ class TestBedtimeAuditLog:
 
     def test_log_bedtime_action_timeout_recorded(self, tmp_path):
         """log_bedtime_action() records action='timeout' on view timeout."""
-        from services.hermes.bedtime import log_bedtime_action
+        from plugins.life_ops.bedtime import log_bedtime_action
 
         log_path = tmp_path / "bedtime-audit.log"
-        with patch("services.hermes.bedtime._resolve_bedtime_log_path",
+        with patch("plugins.life_ops.bedtime._resolve_bedtime_log_path",
                    return_value=log_path):
             log_bedtime_action(
                 user_id="system",
@@ -419,7 +419,7 @@ class TestBedtimeAuditLog:
 @pytest.mark.asyncio
 async def test_start_button_http_error_shows_ephemeral_error():
     """AC8: When POST /api/sprints/run fails, an ephemeral error is shown."""
-    from services.hermes import bedtime as bedtime_mod
+    from plugins.life_ops import bedtime as bedtime_mod
 
     interaction = _make_interaction(user_id="111")
     button = _make_button()
@@ -447,7 +447,7 @@ async def test_start_button_http_error_shows_ephemeral_error():
 @pytest.mark.asyncio
 async def test_start_already_running_shows_ephemeral_message():
     """AC3: When a sprint is already running, ephemeral message is shown; no POST made."""
-    from services.hermes import bedtime as bedtime_mod
+    from plugins.life_ops import bedtime as bedtime_mod
 
     interaction = _make_interaction(user_id="111")
     button = _make_button()
@@ -478,7 +478,7 @@ async def test_start_already_running_shows_ephemeral_message():
 @pytest.mark.asyncio
 async def test_start_path_full_flow():
     """AC9 (start path): Start button → no running sprint → POST → confirm."""
-    from services.hermes import bedtime as bedtime_mod
+    from plugins.life_ops import bedtime as bedtime_mod
 
     interaction = _make_interaction(user_id="222")
     button = _make_button()
@@ -507,7 +507,7 @@ async def test_start_path_full_flow():
 @pytest.mark.asyncio
 async def test_already_running_path_no_post():
     """AC9 (already-running path): Start button → running sprint → ephemeral, no POST."""
-    from services.hermes import bedtime as bedtime_mod
+    from plugins.life_ops import bedtime as bedtime_mod
 
     interaction = _make_interaction(user_id="333")
     button = _make_button()
@@ -536,7 +536,7 @@ async def test_already_running_path_no_post():
 class TestBedtimeSchedulerConfig:
     def test_bedtime_hour_and_minute_read_from_env(self):
         """The scheduler reads DISCORD_BEDTIME_HOUR and DISCORD_BEDTIME_MINUTE."""
-        from plugins.platforms.discord.adapter import _read_bedtime_config
+        from plugins.life_ops.discord_adapter import _read_bedtime_config
 
         with patch.dict(os.environ, {
             "DISCORD_BEDTIME_HOUR": "22",
@@ -549,7 +549,7 @@ class TestBedtimeSchedulerConfig:
 
     def test_bedtime_defaults_to_disabled(self):
         """If DISCORD_BEDTIME_HOUR is not set, bedtime is disabled."""
-        from plugins.platforms.discord.adapter import _read_bedtime_config
+        from plugins.life_ops.discord_adapter import _read_bedtime_config
 
         env = {k: v for k, v in os.environ.items()
                if k not in ("DISCORD_BEDTIME_HOUR", "DISCORD_BEDTIME_MINUTE")}
@@ -570,7 +570,7 @@ def _make_bedtime_view(
     timeout: int = 10,
 ) -> "BedtimeView":
     """Construct a BedtimeView instance using the pure-Python stub."""
-    from services.hermes.bedtime import BedtimeView
+    from plugins.life_ops.bedtime import BedtimeView
     return BedtimeView(
         backlog_count=backlog_count,
         allowed_user_ids=allowed_user_ids or set(),

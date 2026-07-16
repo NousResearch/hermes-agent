@@ -19,10 +19,10 @@ from unittest.mock import patch
 import pytest
 
 REPO_ROOT = Path(__file__).parent.parent
-SCRIPT = REPO_ROOT / "scripts" / "morning_brief_composer.py"
+SCRIPT = REPO_ROOT / "plugins" / "life_ops" / "scripts" / "morning_brief_composer.py"
 
 sys.path.insert(0, str(REPO_ROOT))
-from scripts.morning_brief_composer import (
+from plugins.life_ops.scripts.morning_brief_composer import (
     compose_brief,
     filter_todos,
     get_today_bangkok,
@@ -268,7 +268,7 @@ class TestTodoContentField:
         assert len(result) == 1
 
     # NOTE: render_todo_section() no longer sources from the raw journal
-    # contract's todos[] at all — it reads services.hermes.todo_store's
+    # contract's todos[] at all — it reads plugins.life_ops.todo_store's
     # persistent, stable-key store instead (see TestRenderTodoSectionFromStore
     # below). The two tests formerly here fed contract-shaped todos straight
     # into render_todo_section() and asserted the text/annotation showed up
@@ -366,7 +366,7 @@ class TestDevCategoryAnnotation:
     # annotated formerly asserted render_todo_section() emits
     # "<!-- route: approval -->" for category="dev" contract items.
     # render_todo_section() now renders exclusively from
-    # services.hermes.todo_store.get_open_todos() (see
+    # plugins.life_ops.todo_store.get_open_todos() (see
     # TestRenderTodoSectionFromStore below), whose rows carry no "category"
     # field at all — that annotation path is dead in the new renderer, so
     # those two tests were removed. test_non_dev_no_approval_comment_in_output
@@ -693,14 +693,14 @@ class TestSessionRendering:
 
 
 # ---------------------------------------------------------------------------
-# render_todo_section — sources from services.hermes.todo_store.get_open_todos(),
+# render_todo_section — sources from plugins.life_ops.todo_store.get_open_todos(),
 # NOT the raw journal contract. HERMES_HOME is isolated per test by
 # tests/conftest.py's autouse fixture, so every test gets a fresh todos.db.
 # ---------------------------------------------------------------------------
 
 def _seed_todo(key, text="fake task text", priority="medium", for_date="2026-07-14",
                 source_dates=None, recurring=False):
-    from services.hermes import todo_store as ts
+    from plugins.life_ops import todo_store as ts
     ts.upsert_from_contract(
         [{
             "key": key,
@@ -727,7 +727,7 @@ class TestRenderTodoSectionFromStore:
         assert "(no open todos)" in section
 
     def test_only_open_rows_render_snoozed_done_dismissed_excluded(self):
-        from services.hermes import todo_store as ts
+        from plugins.life_ops import todo_store as ts
         ts.upsert_from_contract(
             [
                 {"key": "open-1", "text": "Open task alpha", "priority": "high", "source_dates": ["2026-07-14"]},
@@ -821,7 +821,7 @@ class TestRecencyFormatting:
 
     def test_non_recurring_no_source_dates_shows_question_mark(self):
         # Insert directly via upsert with an empty source_dates list.
-        from services.hermes import todo_store as ts
+        from plugins.life_ops import todo_store as ts
         ts.upsert_from_contract(
             [{"key": "nk", "text": "no dates task", "priority": "medium", "source_dates": []}],
             "2026-07-14",
@@ -911,7 +911,7 @@ class TestAwayMarker:
     away_mode.is_away() is true; absent entirely otherwise."""
 
     def test_marker_present_and_mentions_until_date_when_away(self):
-        from services.hermes import away_mode
+        from plugins.life_ops import away_mode
         away_mode.set_away(until="2026-07-20")
 
         brief = compose_brief(_journal_data(for_date="2026-07-15"), "", None, "x", None, "x")
@@ -924,7 +924,7 @@ class TestAwayMarker:
         assert "🌙" not in brief
 
     def test_marker_absent_after_away_mode_cleared(self):
-        from services.hermes import away_mode
+        from plugins.life_ops import away_mode
         away_mode.set_away(until="2026-07-20")
         away_mode.clear_away()
 
@@ -932,7 +932,7 @@ class TestAwayMarker:
         assert "🌙" not in brief
 
     def test_marker_appears_before_section_1(self):
-        from services.hermes import away_mode
+        from plugins.life_ops import away_mode
         away_mode.set_away(until="2026-07-20")
 
         brief = compose_brief(_journal_data(for_date="2026-07-15"), "", None, "x", None, "x")
@@ -945,7 +945,7 @@ class TestNoForbiddenFieldsInTodoSection:
     in the todo section, regardless of what the store row carries."""
 
     def test_forbidden_fields_never_appear(self):
-        from services.hermes import todo_store as ts
+        from plugins.life_ops import todo_store as ts
         ts.upsert_from_contract(
             [{
                 "key": "abc123",

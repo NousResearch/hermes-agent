@@ -16,8 +16,15 @@ OPEN_KEYS/CLOSED_KEYS for journal; (2) journal's morning run; (3)
 `todo_store_sync ingest` — reconcile today's journal contract (todos +
 resolved_keys) back into the persistent todo store; (4) perf-coach brief
 export; (5) hermes brief compose/deliver. See
-`services/hermes/todo_store_sync.py` for why the export step runs *before*
+`plugins/life_ops/todo_store_sync.py` for why the export step runs *before*
 journal rather than after it.
+
+> All fork functionality (todo store, brief composer, Discord bedtime /
+> approvals / todo-closure UI) lives in the `life_ops` plugin — see
+> [`../plugins/life_ops/README.md`](../plugins/life_ops/README.md). The
+> chain's steps 1/3/5 invoke it directly by module path, but the gateway
+> Discord features additionally require enabling the plugin once:
+> `hermes plugins enable life_ops`.
 
 ---
 

@@ -1,4 +1,4 @@
-"""Generic, data-free seed for the persistent todo store (services.hermes.todo_store).
+"""Generic, data-free seed for the persistent todo store (plugins.life_ops.todo_store).
 
 Reconciles any journal_brief.latest.json-shaped contract file's ``todos``
 list into the store, one time, idempotently: a todo whose key already exists
@@ -8,9 +8,9 @@ work identically against any contract file (including a synthetic test
 fixture), so it contains no seed data of its own.
 
 Usage:
-    python -m services.hermes.todo_store_seed
-    python -m services.hermes.todo_store_seed --input /path/to/journal_brief.latest.json
-    python -m services.hermes.todo_store_seed --for-date 2026-07-15
+    python -m plugins.life_ops.todo_store_seed
+    python -m plugins.life_ops.todo_store_seed --input /path/to/journal_brief.latest.json
+    python -m plugins.life_ops.todo_store_seed --for-date 2026-07-15
 """
 from __future__ import annotations
 
@@ -22,7 +22,7 @@ import re
 from pathlib import Path
 
 from hermes_cli.sqlite_util import write_txn
-from services.hermes import todo_store
+from plugins.life_ops import todo_store
 
 # Common filler articles/verbs that don't identify the task; dropped before
 # picking the "significant" words for a derived key.
@@ -191,7 +191,7 @@ def main() -> None:
     """
     parser = argparse.ArgumentParser(
         description=(
-            "One-off, idempotent seed of services.hermes.todo_store from a "
+            "One-off, idempotent seed of plugins.life_ops.todo_store from a "
             "journal_brief.latest.json-shaped contract file."
         )
     )

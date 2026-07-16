@@ -33,32 +33,32 @@ import pytest
 class TestConfig:
     def test_get_perf_coach_url_from_env(self, monkeypatch):
         monkeypatch.setenv("PERF_COACH_URL", "https://perf.example.com")
-        from services.hermes.config import get_perf_coach_url
+        from plugins.life_ops.config import get_perf_coach_url
         assert get_perf_coach_url() == "https://perf.example.com"
 
     def test_get_perf_coach_url_missing_returns_none(self, monkeypatch):
         monkeypatch.delenv("PERF_COACH_URL", raising=False)
-        from services.hermes.config import get_perf_coach_url
+        from plugins.life_ops.config import get_perf_coach_url
         assert get_perf_coach_url() is None
 
     def test_get_perf_coach_token_from_env(self, monkeypatch):
         monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "secret-tok")
-        from services.hermes.config import get_perf_coach_token
+        from plugins.life_ops.config import get_perf_coach_token
         assert get_perf_coach_token() == "secret-tok"
 
     def test_get_perf_coach_token_missing_returns_none(self, monkeypatch):
         monkeypatch.delenv("PERF_COACH_BEARER_TOKEN", raising=False)
-        from services.hermes.config import get_perf_coach_token
+        from plugins.life_ops.config import get_perf_coach_token
         assert get_perf_coach_token() is None
 
     def test_get_perf_coach_user_from_env(self, monkeypatch):
         monkeypatch.setenv("PERF_COACH_USER", "jane doe")
-        from services.hermes.config import get_perf_coach_user
+        from plugins.life_ops.config import get_perf_coach_user
         assert get_perf_coach_user() == "jane doe"
 
     def test_get_perf_coach_user_missing_returns_none(self, monkeypatch):
         monkeypatch.delenv("PERF_COACH_USER", raising=False)
-        from services.hermes.config import get_perf_coach_user
+        from plugins.life_ops.config import get_perf_coach_user
         assert get_perf_coach_user() is None
 
 
@@ -69,7 +69,7 @@ class TestConfig:
 class TestAuditLog:
     def test_log_writes_required_fields(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from services.hermes import audit
+        from plugins.life_ops import audit
         import importlib
         importlib.reload(audit)
 
@@ -93,7 +93,7 @@ class TestAuditLog:
 
     def test_log_records_failure_outcome(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from services.hermes import audit
+        from plugins.life_ops import audit
         import importlib
         importlib.reload(audit)
 
@@ -113,7 +113,7 @@ class TestAuditLog:
         """AC9: bearer token must never appear in the audit log."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         monkeypatch.setenv("PERF_COACH_BEARER_TOKEN", "super-secret-bearer")
-        from services.hermes import audit
+        from plugins.life_ops import audit
         import importlib
         importlib.reload(audit)
 
@@ -130,7 +130,7 @@ class TestAuditLog:
     def test_log_survives_write_error(self, tmp_path, monkeypatch, caplog):
         """Audit log failures must not raise — auth/logging must never block commands."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from services.hermes import audit
+        from plugins.life_ops import audit
         import importlib
         importlib.reload(audit)
 
@@ -164,7 +164,7 @@ class TestRpeHandler:
     def setup_method(self):
         # Clear any cached imports so env patches take effect
         for mod in list(sys.modules):
-            if mod.startswith("services.hermes"):
+            if mod.startswith("plugins.life_ops"):
                 del sys.modules[mod]
 
     def test_success_posts_correct_payload(self, monkeypatch, tmp_path):
@@ -181,7 +181,7 @@ class TestRpeHandler:
             mock_open_url.return_value.status = 200
             mock_open_url.return_value.read.return_value = b"{}"
 
-            from services.hermes.discord import handle_rpe
+            from plugins.life_ops.discord_commands import handle_rpe
             result = handle_rpe(
                 user_id="u1",
                 rpe=7,
@@ -222,7 +222,7 @@ class TestRpeHandler:
             mock_open_url.return_value.status = 200
             mock_open_url.return_value.read.return_value = b"{}"
 
-            from services.hermes.discord import handle_rpe
+            from plugins.life_ops.discord_commands import handle_rpe
             handle_rpe(
                 user_id="u1",
                 rpe=5,
@@ -248,7 +248,7 @@ class TestRpeHandler:
             mock_open_url.return_value.status = 200
             mock_open_url.return_value.read.return_value = b"{}"
 
-            from services.hermes.discord import handle_rpe
+            from plugins.life_ops.discord_commands import handle_rpe
             today = datetime.date(2026, 7, 14)
             handle_rpe(user_id="u1", rpe=6, notes=None, date_str=None, today=today)
 
@@ -269,7 +269,7 @@ class TestRpeHandler:
             mock_open_url.return_value.status = 200
             mock_open_url.return_value.read.return_value = b"{}"
 
-            from services.hermes.discord import handle_rpe
+            from plugins.life_ops.discord_commands import handle_rpe
             handle_rpe(
                 user_id="u1",
                 rpe=5,
@@ -290,7 +290,7 @@ class TestRpeHandler:
         monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         with patch("urllib.request.urlopen") as mock_open_url:
-            from services.hermes.discord import handle_rpe
+            from plugins.life_ops.discord_commands import handle_rpe
             result = handle_rpe(
                 user_id="u1", rpe=0, notes=None, date_str=None,
                 today=datetime.date(2026, 7, 14),
@@ -308,7 +308,7 @@ class TestRpeHandler:
         monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         with patch("urllib.request.urlopen") as mock_open_url:
-            from services.hermes.discord import handle_rpe
+            from plugins.life_ops.discord_commands import handle_rpe
             result = handle_rpe(
                 user_id="u1", rpe=11, notes=None, date_str=None,
                 today=datetime.date(2026, 7, 14),
@@ -335,7 +335,7 @@ class TestRpeHandler:
         )
 
         with patch("urllib.request.urlopen", side_effect=http_err):
-            from services.hermes.discord import handle_rpe
+            from plugins.life_ops.discord_commands import handle_rpe
             result = handle_rpe(
                 user_id="u1", rpe=7, notes=None, date_str=None,
                 today=datetime.date(2026, 7, 14),
@@ -356,7 +356,7 @@ class TestRpeHandler:
 
         url_err = urllib.error.URLError("Connection refused")
         with patch("urllib.request.urlopen", side_effect=url_err):
-            from services.hermes.discord import handle_rpe
+            from plugins.life_ops.discord_commands import handle_rpe
             result = handle_rpe(
                 user_id="u1", rpe=6, notes=None, date_str=None,
                 today=datetime.date(2026, 7, 14),
@@ -385,7 +385,7 @@ class TestRpeHandler:
         )
 
         with patch("urllib.request.urlopen", side_effect=http_err):
-            from services.hermes.discord import handle_rpe
+            from plugins.life_ops.discord_commands import handle_rpe
             result = handle_rpe(
                 user_id="u1", rpe=7, notes=None, date_str=None,
                 today=datetime.date(2026, 7, 14),
@@ -405,7 +405,7 @@ class TestRpeHandler:
         monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         with patch("urllib.request.urlopen") as mock_open_url:
-            from services.hermes.discord import handle_rpe
+            from plugins.life_ops.discord_commands import handle_rpe
             result = handle_rpe(
                 user_id="u1", rpe=7, notes=None, date_str=None,
                 today=datetime.date(2026, 7, 14),
@@ -423,7 +423,7 @@ class TestRpeHandler:
         monkeypatch.delenv("PERF_COACH_USER", raising=False)
 
         with patch("urllib.request.urlopen") as mock_open_url:
-            from services.hermes.discord import handle_rpe
+            from plugins.life_ops.discord_commands import handle_rpe
             result = handle_rpe(
                 user_id="u1", rpe=7, notes=None, date_str=None,
                 today=datetime.date(2026, 7, 14),
@@ -446,8 +446,8 @@ class TestRpeHandler:
             mock_open_url.return_value.status = 200
             mock_open_url.return_value.read.return_value = b"{}"
 
-            from services.hermes.discord import handle_rpe
-            from services.hermes import audit
+            from plugins.life_ops.discord_commands import handle_rpe
+            from plugins.life_ops import audit
             import importlib
             importlib.reload(audit)
 
@@ -479,8 +479,8 @@ class TestRpeHandler:
 
         http_err = urllib.error.HTTPError("url", 500, "Server Error", {}, None)
         with patch("urllib.request.urlopen", side_effect=http_err):
-            from services.hermes.discord import handle_rpe
-            from services.hermes import audit
+            from plugins.life_ops.discord_commands import handle_rpe
+            from plugins.life_ops import audit
             import importlib
             importlib.reload(audit)
 
@@ -509,7 +509,7 @@ class TestRpeHandler:
             mock_open_url.return_value.status = 200
             mock_open_url.return_value.read.return_value = b"{}"
 
-            from services.hermes.discord import handle_rpe
+            from plugins.life_ops.discord_commands import handle_rpe
             result = handle_rpe(
                 user_id="u1",
                 rpe=5,
@@ -535,7 +535,7 @@ class TestRpeHandlerPerfCoachUser:
     def setup_method(self):
         # Clear any cached imports so env patches take effect
         for mod in list(sys.modules):
-            if mod.startswith("services.hermes"):
+            if mod.startswith("plugins.life_ops"):
                 del sys.modules[mod]
 
     def test_perf_coach_user_set_appends_urlencoded_query_param(self, monkeypatch, tmp_path):
@@ -551,7 +551,7 @@ class TestRpeHandlerPerfCoachUser:
             mock_open_url.return_value.status = 200
             mock_open_url.return_value.read.return_value = b"{}"
 
-            from services.hermes.discord import handle_rpe
+            from plugins.life_ops.discord_commands import handle_rpe
             result = handle_rpe(
                 user_id="u1",
                 rpe=7,
@@ -577,7 +577,7 @@ class TestRpeHandlerPerfCoachUser:
             mock_open_url.return_value.status = 200
             mock_open_url.return_value.read.return_value = b"{}"
 
-            from services.hermes.discord import handle_rpe
+            from plugins.life_ops.discord_commands import handle_rpe
             result = handle_rpe(
                 user_id="u1",
                 rpe=7,
@@ -604,7 +604,7 @@ class TestRpeHandlerPerfCoachUser:
             mock_open_url.return_value.status = 200
             mock_open_url.return_value.read.return_value = b"{}"
 
-            from services.hermes.discord import handle_rpe
+            from plugins.life_ops.discord_commands import handle_rpe
             handle_rpe(
                 user_id="u1",
                 rpe=4,
@@ -678,7 +678,7 @@ class TestRpeRegistration:
             sys.modules.setdefault("discord.ext.commands", commands_mod)
 
         # Import the registration function
-        from services.hermes.discord import register_rpe_command
+        from plugins.life_ops.discord_commands import register_rpe_command
 
         class FakeTree:
             def __init__(self):
@@ -704,7 +704,7 @@ class TestRpeRegistration:
         """AC2 — the registered command exposes rpe, notes, date parameters."""
         # The parameter contract is verified via the handler signature
         import inspect
-        from services.hermes.discord import handle_rpe
+        from plugins.life_ops.discord_commands import handle_rpe
         sig = inspect.signature(handle_rpe)
         params = set(sig.parameters)
         assert "rpe" in params

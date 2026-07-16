@@ -1,4 +1,4 @@
-"""Tests for services.hermes.todo_store — the persistent stable-key todo store.
+"""Tests for plugins.life_ops.todo_store — the persistent stable-key todo store.
 
 Covers the acceptance criteria for the morning-run reconciliation
 (:func:`upsert_from_contract` / :func:`plan_upsert_from_contract`), the
@@ -22,7 +22,7 @@ import sqlite3
 
 import pytest
 
-from services.hermes import todo_store as ts
+from plugins.life_ops import todo_store as ts
 
 
 # ---------------------------------------------------------------------------

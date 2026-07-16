@@ -1,5 +1,5 @@
-"""Tests for services.hermes.todo_store_sync — the morning-chain glue that
-wires services.hermes.todo_store into the scheduled path (steps 1 and 3 of
+"""Tests for plugins.life_ops.todo_store_sync — the morning-chain glue that
+wires plugins.life_ops.todo_store into the scheduled path (steps 1 and 3 of
 deploy/bin/morning-chain.sh).
 
 Covers export_open_closed_keys (snooze-expiry side effect + JSON export +
@@ -21,8 +21,8 @@ import json
 
 import pytest
 
-from services.hermes import todo_store
-from services.hermes import todo_store_sync as sync
+from plugins.life_ops import todo_store
+from plugins.life_ops import todo_store_sync as sync
 
 
 @pytest.fixture(autouse=True)

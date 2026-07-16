@@ -1,15 +1,15 @@
-"""Tests for the morning_brief_discord cron job.
+"""Tests for the morning_brief_discord delivery script.
 
-Each test is anchored to a specific AC from issue #7:
+Each test is anchored to a specific AC from issue #7 (the in-gateway cron
+job registration — old AC1/AC2/AC7 — was dropped: the launchd morning
+chain in deploy/ is the real trigger path; per-job cron timezones remain
+covered under AC8):
 
-  AC1 — job entry in cron/jobs.py: name, skill, deliver, cron expr, timezone
-  AC2 — scheduler resolves the new job without touching existing jobs
   AC3 — Discord channel ID from config.discord.morning_brief_channel_id (not hardcoded)
   AC4 — contract file paths from config.discord.morning_brief_contracts
   AC5 — no-agent mode: no interactive steps, no LLM required
   AC6 — Discord delivery failure → error logged, process exits non-zero
-  AC7 — python -m cron.scheduler --list shows the job with correct cron + timezone
-  AC8 — existing jobs are unaffected (regression gate)
+  AC8 — existing jobs are unaffected (regression gate), incl. per-job tz support
 """
 
 from __future__ import annotations
@@ -64,130 +64,6 @@ def discord_config(hermes_env):
 
 
 # ---------------------------------------------------------------------------
-# AC1 — job entry in cron/jobs.py
-# ---------------------------------------------------------------------------
-
-class TestMorningBriefJobSpec:
-    """AC1: A new cron job entry exists in cron/jobs.py with the correct spec."""
-
-    def test_job_name_constant_exported(self):
-        from cron.jobs import MORNING_BRIEF_DISCORD_JOB_NAME
-        assert MORNING_BRIEF_DISCORD_JOB_NAME == "morning_brief_discord"
-
-    def test_register_function_exported(self):
-        from cron.jobs import register_morning_brief_discord_job
-        assert callable(register_morning_brief_discord_job)
-
-    def test_register_creates_job_with_cron_schedule(self, discord_config, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(discord_config))
-        for mod in ("hermes_constants", "cron.jobs"):
-            importlib.reload(importlib.import_module(mod))
-
-        from cron.jobs import register_morning_brief_discord_job, load_jobs
-        job = register_morning_brief_discord_job()
-
-        assert job is not None
-        sched = job.get("schedule", {})
-        assert sched.get("kind") == "cron", "schedule kind must be cron"
-        assert sched.get("expr") == "0 6 * * *", "cron expression must be 0 6 * * *"
-
-    def test_register_stores_asia_bangkok_timezone(self, discord_config, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(discord_config))
-        for mod in ("hermes_constants", "cron.jobs"):
-            importlib.reload(importlib.import_module(mod))
-
-        from cron.jobs import register_morning_brief_discord_job
-        job = register_morning_brief_discord_job()
-
-        sched = job.get("schedule", {})
-        assert sched.get("tz") == "Asia/Bangkok", "job timezone must be Asia/Bangkok"
-
-    def test_register_stores_brief_composer_skill(self, discord_config, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(discord_config))
-        for mod in ("hermes_constants", "cron.jobs"):
-            importlib.reload(importlib.import_module(mod))
-
-        from cron.jobs import register_morning_brief_discord_job
-        job = register_morning_brief_discord_job()
-
-        skills = job.get("skills") or []
-        assert "brief-composer" in skills, "job must reference brief-composer skill"
-
-    def test_register_job_is_no_agent(self, discord_config, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(discord_config))
-        for mod in ("hermes_constants", "cron.jobs"):
-            importlib.reload(importlib.import_module(mod))
-
-        from cron.jobs import register_morning_brief_discord_job
-        job = register_morning_brief_discord_job()
-
-        assert job.get("no_agent") is True, "job must be no-agent mode (AC5)"
-
-    def test_register_job_has_discord_deliver(self, discord_config, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(discord_config))
-        for mod in ("hermes_constants", "cron.jobs"):
-            importlib.reload(importlib.import_module(mod))
-
-        from cron.jobs import register_morning_brief_discord_job
-        job = register_morning_brief_discord_job()
-
-        deliver = job.get("deliver", "")
-        assert "discord" in deliver.lower(), "deliver field must reference discord"
-
-    def test_register_idempotent(self, discord_config, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(discord_config))
-        for mod in ("hermes_constants", "cron.jobs"):
-            importlib.reload(importlib.import_module(mod))
-
-        from cron.jobs import register_morning_brief_discord_job, list_jobs
-        register_morning_brief_discord_job()
-        register_morning_brief_discord_job()
-
-        jobs = [j for j in list_jobs() if j.get("name") == "morning_brief_discord"]
-        assert len(jobs) == 1, "calling register twice must not create duplicate jobs"
-
-
-# ---------------------------------------------------------------------------
-# AC2 — scheduler resolves without modifying existing jobs
-# ---------------------------------------------------------------------------
-
-class TestSchedulerResolves:
-    """AC2: scheduler loads the new job without modifying existing jobs."""
-
-    def test_existing_job_unaffected_after_register(self, discord_config, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(discord_config))
-        for mod in ("hermes_constants", "cron.jobs"):
-            importlib.reload(importlib.import_module(mod))
-
-        from cron.jobs import create_job, load_jobs, register_morning_brief_discord_job
-
-        # Create a pre-existing job
-        existing = create_job(
-            prompt="check disk usage",
-            schedule="every 30m",
-            name="disk_check",
-        )
-        existing_id = existing["id"]
-
-        register_morning_brief_discord_job()
-
-        jobs = load_jobs()
-        ids = [j["id"] for j in jobs]
-        assert existing_id in ids, "existing job must still be present after register"
-
-    def test_new_job_appears_in_list(self, discord_config, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(discord_config))
-        for mod in ("hermes_constants", "cron.jobs"):
-            importlib.reload(importlib.import_module(mod))
-
-        from cron.jobs import list_jobs, register_morning_brief_discord_job
-        register_morning_brief_discord_job()
-
-        names = [j.get("name") for j in list_jobs()]
-        assert "morning_brief_discord" in names
-
-
-# ---------------------------------------------------------------------------
 # AC3 — channel ID from config, not hardcoded
 # ---------------------------------------------------------------------------
 
@@ -206,7 +82,7 @@ class TestChannelIdFromConfig:
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
 
-        script = Path(__file__).parent.parent.parent / "cron" / "scripts" / "morning_brief_discord.py"
+        script = Path(__file__).parent.parent.parent / "plugins" / "life_ops" / "scripts" / "morning_brief_discord.py"
         result = subprocess.run(
             [sys.executable, str(script)],
             env={**os.environ, "HERMES_HOME": str(home)},
@@ -226,7 +102,7 @@ class TestChannelIdFromConfig:
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.delenv("DISCORD_BOT_TOKEN", raising=False)
 
-        script = Path(__file__).parent.parent.parent / "cron" / "scripts" / "morning_brief_discord.py"
+        script = Path(__file__).parent.parent.parent / "plugins" / "life_ops" / "scripts" / "morning_brief_discord.py"
         env = {k: v for k, v in os.environ.items() if "TOKEN" not in k and "SECRET" not in k}
         env["HERMES_HOME"] = str(home)
         result = subprocess.run(
@@ -241,7 +117,7 @@ class TestChannelIdFromConfig:
 # ---------------------------------------------------------------------------
 # AC4 — contract file paths from config
 #
-# The delivery script now reuses scripts.morning_brief_composer, which
+# The delivery script now reuses plugins.life_ops.scripts.morning_brief_composer, which
 # degrades gracefully on missing/stale contracts instead of failing. Config
 # override only takes effect when discord.morning_brief_contracts lists
 # EXACTLY three paths that map unambiguously to journal/perfcoach/commander
@@ -299,7 +175,7 @@ class TestContractFilePaths:
             encoding="utf-8",
         )
 
-        script = Path(__file__).parent.parent.parent / "cron" / "scripts" / "morning_brief_discord.py"
+        script = Path(__file__).parent.parent.parent / "plugins" / "life_ops" / "scripts" / "morning_brief_discord.py"
         env = {k: v for k, v in os.environ.items()}
         env["HERMES_HOME"] = str(home)
         env["MORNING_BRIEF_DRY_RUN"] = "1"
@@ -334,7 +210,7 @@ class TestContractFilePaths:
             encoding="utf-8",
         )
 
-        script = Path(__file__).parent.parent.parent / "cron" / "scripts" / "morning_brief_discord.py"
+        script = Path(__file__).parent.parent.parent / "plugins" / "life_ops" / "scripts" / "morning_brief_discord.py"
         env = {k: v for k, v in os.environ.items()}
         env["HERMES_HOME"] = str(home)
         env["MORNING_BRIEF_DRY_RUN"] = "1"
@@ -372,7 +248,7 @@ class TestContractFilePaths:
             encoding="utf-8",
         )
 
-        script = Path(__file__).parent.parent.parent / "cron" / "scripts" / "morning_brief_discord.py"
+        script = Path(__file__).parent.parent.parent / "plugins" / "life_ops" / "scripts" / "morning_brief_discord.py"
         env = {k: v for k, v in os.environ.items()}
         env["HERMES_HOME"] = str(home)
         env["MORNING_BRIEF_DRY_RUN"] = "1"
@@ -410,7 +286,7 @@ class TestContractFilePaths:
             encoding="utf-8",
         )
 
-        script = Path(__file__).parent.parent.parent / "cron" / "scripts" / "morning_brief_discord.py"
+        script = Path(__file__).parent.parent.parent / "plugins" / "life_ops" / "scripts" / "morning_brief_discord.py"
         env = {k: v for k, v in os.environ.items()}
         env["HERMES_HOME"] = str(home)
         env["MORNING_BRIEF_DRY_RUN"] = "1"
@@ -440,7 +316,7 @@ class TestMissingContractsExitZero:
             encoding="utf-8",
         )
 
-        script = Path(__file__).parent.parent.parent / "cron" / "scripts" / "morning_brief_discord.py"
+        script = Path(__file__).parent.parent.parent / "plugins" / "life_ops" / "scripts" / "morning_brief_discord.py"
         env = {k: v for k, v in os.environ.items()}
         env["HERMES_HOME"] = str(home)
         env["MORNING_BRIEF_DRY_RUN"] = "1"
@@ -454,7 +330,7 @@ class TestMissingContractsExitZero:
         )
         assert result.returncode == 0, f"missing contracts must not cause a non-zero exit: {result.stderr}"
         # Only 3 of the 4 sections degrade to "⚠️ unavailable" — the todo
-        # section (Section 2) now renders from services.hermes.todo_store
+        # section (Section 2) now renders from plugins.life_ops.todo_store
         # regardless of journal-contract availability, so an empty store
         # renders "(no open todos)" rather than an unavailable marker.
         assert result.stdout.count("⚠️ unavailable") == 3, "the 3 non-todo sections should degrade"
@@ -470,7 +346,7 @@ class TestMissingContractsExitZero:
             encoding="utf-8",
         )
 
-        script = Path(__file__).parent.parent.parent / "cron" / "scripts" / "morning_brief_discord.py"
+        script = Path(__file__).parent.parent.parent / "plugins" / "life_ops" / "scripts" / "morning_brief_discord.py"
         env = {k: v for k, v in os.environ.items()}
         env["HERMES_HOME"] = str(home)
         env["MORNING_BRIEF_DRY_RUN"] = "1"
@@ -500,7 +376,7 @@ class TestChunkSplitting:
     @staticmethod
     def _import_discord_module():
         import importlib
-        return importlib.import_module("cron.scripts.morning_brief_discord")
+        return importlib.import_module("plugins.life_ops.scripts.morning_brief_discord")
 
     def test_short_text_is_a_single_chunk(self):
         mod = self._import_discord_module()
@@ -592,15 +468,6 @@ class TestChunkSplitting:
 class TestNoAgentMode:
     """AC5: job runs without an LLM agent — no interactive prompts."""
 
-    def test_job_spec_is_no_agent(self, discord_config, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(discord_config))
-        for mod in ("hermes_constants", "cron.jobs"):
-            importlib.reload(importlib.import_module(mod))
-
-        from cron.jobs import register_morning_brief_discord_job
-        job = register_morning_brief_discord_job()
-        assert job.get("no_agent") is True
-
     def test_dry_run_completes_without_discord_api(self, tmp_path):
         """Dry-run env var makes the script print instead of posting."""
         home = tmp_path / ".hermes"
@@ -610,7 +477,7 @@ class TestNoAgentMode:
             encoding="utf-8",
         )
 
-        script = Path(__file__).parent.parent.parent / "cron" / "scripts" / "morning_brief_discord.py"
+        script = Path(__file__).parent.parent.parent / "plugins" / "life_ops" / "scripts" / "morning_brief_discord.py"
         env = {k: v for k, v in os.environ.items()}
         env["HERMES_HOME"] = str(home)
         env["MORNING_BRIEF_DRY_RUN"] = "1"
@@ -632,7 +499,7 @@ class TestDiscordDeliveryFailure:
     """AC6: Discord API failures are logged and cause non-zero exit."""
 
     def _run_script(self, home: Path, extra_env: dict | None = None) -> subprocess.CompletedProcess:
-        script = Path(__file__).parent.parent.parent / "cron" / "scripts" / "morning_brief_discord.py"
+        script = Path(__file__).parent.parent.parent / "plugins" / "life_ops" / "scripts" / "morning_brief_discord.py"
         env = {k: v for k, v in os.environ.items() if "TOKEN" not in k and "SECRET" not in k}
         env["HERMES_HOME"] = str(home)
         if extra_env:
@@ -705,52 +572,6 @@ class TestDiscordDeliveryFailure:
 
 
 # ---------------------------------------------------------------------------
-# AC7 — scheduler --list shows job with correct schedule + timezone
-# ---------------------------------------------------------------------------
-
-class TestSchedulerList:
-    """AC7: python -m cron.scheduler --list shows the job with correct cron + timezone."""
-
-    def test_list_shows_morning_brief_job(self, discord_config, monkeypatch):
-        monkeypatch.setenv("HERMES_HOME", str(discord_config))
-        for mod in ("hermes_constants", "cron.jobs"):
-            importlib.reload(importlib.import_module(mod))
-
-        from cron.jobs import register_morning_brief_discord_job
-        register_morning_brief_discord_job()
-
-        result = subprocess.run(
-            [sys.executable, "-m", "cron.scheduler", "--list"],
-            env={**os.environ, "HERMES_HOME": str(discord_config)},
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0, f"--list exited non-zero: {result.stderr}"
-        output = result.stdout
-        assert "morning_brief_discord" in output, "--list must show job name"
-        assert "0 6 * * *" in output, "--list must show cron expression"
-        assert "Asia/Bangkok" in output, "--list must show timezone"
-
-    def test_list_shows_preexisting_jobs_too(self, discord_config, monkeypatch):
-        """AC8 overlap: --list shows all jobs including pre-existing ones."""
-        monkeypatch.setenv("HERMES_HOME", str(discord_config))
-        for mod in ("hermes_constants", "cron.jobs"):
-            importlib.reload(importlib.import_module(mod))
-
-        from cron.jobs import create_job, register_morning_brief_discord_job
-        create_job(prompt="check disk", schedule="every 30m", name="disk_check")
-        register_morning_brief_discord_job()
-
-        result = subprocess.run(
-            [sys.executable, "-m", "cron.scheduler", "--list"],
-            env={**os.environ, "HERMES_HOME": str(discord_config)},
-            capture_output=True, text=True,
-        )
-        assert result.returncode == 0
-        assert "disk_check" in result.stdout
-        assert "morning_brief_discord" in result.stdout
-
-
-# ---------------------------------------------------------------------------
 # AC8 — existing cron jobs unaffected
 # ---------------------------------------------------------------------------
 
@@ -814,7 +635,7 @@ class TestFencedChunkSplitting:
     @staticmethod
     def _import_discord_module():
         import importlib
-        return importlib.import_module("cron.scripts.morning_brief_discord")
+        return importlib.import_module("plugins.life_ops.scripts.morning_brief_discord")
 
     @staticmethod
     def _assert_all_chunks_fence_balanced(chunks):

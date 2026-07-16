@@ -1,6 +1,6 @@
-"""Tests for services.hermes.away_mode — the away-mode kill switch.
+"""Tests for plugins.life_ops.away_mode — the away-mode kill switch.
 
-Shares todos.db with services.hermes.todo_store but only touches its own
+Shares todos.db with plugins.life_ops.todo_store but only touches its own
 ``away_state`` table (single row, id=1). HERMES_HOME is redirected to a
 per-test tmp_path (same explicit-monkeypatch pattern used in
 tests/hermes/test_rpe_command.py and tests/hermes/test_todo_store.py).
@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import pytest
 
-from services.hermes import away_mode
+from plugins.life_ops import away_mode
 
 
 @pytest.fixture(autouse=True)

@@ -6,11 +6,11 @@
 feel-entry endpoint, and writes to the audit log.
 
 /done, /dismiss, /snooze are the Discord-side counterpart to
-``services.hermes.todo_store``'s persistent, stable-key todo store —
+``plugins.life_ops.todo_store``'s persistent, stable-key todo store —
 each is a thin ``handle_x()`` + ``register_x_command(tree)`` pair, same
 shape as /rpe, that calls ``todo_store.close_todo()``.
 
-/away-on, /away-off wrap ``services.hermes.away_mode`` (set_away/clear_away).
+/away-on, /away-off wrap ``plugins.life_ops.away_mode`` (set_away/clear_away).
 discord.py slash commands don't nest into ``on|off`` subcommands without a
 ``discord.app_commands.Group`` — this codebase doesn't use Group anywhere
 else, so these stay two flat commands rather than introducing that pattern
@@ -36,8 +36,8 @@ import urllib.parse
 import urllib.request
 from typing import Any, Optional, TypedDict
 
-from services.hermes import audit as _audit
-from services.hermes.config import (
+from plugins.life_ops import audit as _audit
+from plugins.life_ops.config import (
     get_perf_coach_token,
     get_perf_coach_url,
     get_perf_coach_user,
@@ -297,7 +297,7 @@ async def _autocomplete_todo_key(interaction: Any, current: str) -> list:
     """
     try:
         import discord
-        from services.hermes import todo_store
+        from plugins.life_ops import todo_store
     except Exception:
         return []
     try:
@@ -324,7 +324,7 @@ async def _autocomplete_todo_key(interaction: Any, current: str) -> list:
 
 def handle_done(key: str) -> TodoCloseResult:
     """Mark todo ``key`` done via the persistent todo store. Never raises."""
-    from services.hermes import todo_store
+    from plugins.life_ops import todo_store
 
     key = str(key or "").strip()
     if not key:
@@ -334,7 +334,7 @@ def handle_done(key: str) -> TodoCloseResult:
 
 def handle_dismiss(key: str) -> TodoCloseResult:
     """Dismiss todo ``key`` via the persistent todo store. Never raises."""
-    from services.hermes import todo_store
+    from plugins.life_ops import todo_store
 
     key = str(key or "").strip()
     if not key:
@@ -349,7 +349,7 @@ def handle_snooze(key: str, until: str) -> TodoCloseResult:
     rather than raising — the caller (the slash command) surfaces this as
     an ephemeral reply, not a Discord-level interaction failure.
     """
-    from services.hermes import todo_store
+    from plugins.life_ops import todo_store
 
     key = str(key or "").strip()
     if not key:
@@ -472,13 +472,13 @@ def register_snooze_command(tree: Any) -> None:
 
 
 # ---------------------------------------------------------------------------
-# /away-on, /away-off — services.hermes.away_mode wiring
+# /away-on, /away-off — plugins.life_ops.away_mode wiring
 # ---------------------------------------------------------------------------
 
 
 def handle_away_on(until: Optional[str]) -> dict:
     """Turn away mode on, optionally until an ISO date. Never raises."""
-    from services.hermes import away_mode
+    from plugins.life_ops import away_mode
 
     until = (until or "").strip() or None
     if until is not None:
@@ -498,7 +498,7 @@ def handle_away_on(until: Optional[str]) -> dict:
 
 def handle_away_off() -> dict:
     """Turn away mode off. Never raises."""
-    from services.hermes import away_mode
+    from plugins.life_ops import away_mode
 
     away_mode.clear_away()
     return {"ok": True}

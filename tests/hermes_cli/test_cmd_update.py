@@ -1060,3 +1060,53 @@ termux = ["rich>=14"]
 
     assert hm._load_installable_optional_extras(group="all") == ["mcp"]
     assert hm._load_installable_optional_extras(group="termux-all") == ["termux", "mcp"]
+
+
+# ---------------------------------------------------------------------------
+# _is_fork() — recognizes all official URL formats
+# ---------------------------------------------------------------------------
+
+
+def test_is_fork_returns_false_for_official_https_with_dot_git():
+    from hermes_cli.main import _is_fork
+    assert _is_fork("https://github.com/NousResearch/hermes-agent.git") is False
+
+
+def test_is_fork_returns_false_for_official_https_without_dot_git():
+    from hermes_cli.main import _is_fork
+    assert _is_fork("https://github.com/NousResearch/hermes-agent") is False
+
+
+def test_is_fork_returns_false_for_official_git_at_format():
+    from hermes_cli.main import _is_fork
+    assert _is_fork("git@github.com:NousResearch/hermes-agent.git") is False
+
+
+def test_is_fork_returns_false_for_official_ssh_protocol_format():
+    from hermes_cli.main import _is_fork
+    assert _is_fork("ssh://git@github.com/NousResearch/hermes-agent.git") is False
+
+
+def test_is_fork_returns_false_for_official_ssh_protocol_without_dot_git():
+    from hermes_cli.main import _is_fork
+    assert _is_fork("ssh://git@github.com/NousResearch/hermes-agent") is False
+
+
+def test_is_fork_returns_true_for_user_fork():
+    from hermes_cli.main import _is_fork
+    assert _is_fork("https://github.com/Prontsevich/hermes-agent.git") is True
+
+
+def test_is_fork_returns_true_for_fork_ssh():
+    from hermes_cli.main import _is_fork
+    assert _is_fork("git@github.com:Prontsevich/hermes-agent.git") is True
+
+
+def test_is_fork_returns_false_for_none():
+    from hermes_cli.main import _is_fork
+    assert _is_fork(None) is False
+
+
+def test_is_fork_returns_false_for_empty_string():
+    from hermes_cli.main import _is_fork
+    assert _is_fork("") is False

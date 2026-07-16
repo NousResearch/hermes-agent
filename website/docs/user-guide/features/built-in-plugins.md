@@ -144,7 +144,7 @@ The file is still written. The model reads the warning in the next turn's tool m
 
 Traces Hermes turns, LLM calls, and tool invocations to [Langfuse](https://langfuse.com) — an open-source LLM observability platform. One span per turn, one generation per API call, one tool observation per tool call. Usage totals, per-type token counts, and cost estimates come out of Hermes' canonical `agent.usage_pricing` numbers, so the Langfuse dashboard sees the same breakdown (input / output / `cache_read_input_tokens` / `cache_creation_input_tokens` / `reasoning_tokens`) that appears in `hermes logs`.
 
-The plugin is fail-open: no SDK installed, no credentials, or a transient Langfuse error — all turn into a silent no-op in the hook. The agent loop is never impacted.
+The plugin is fail-open: no SDK installed, no credentials, or a transient Langfuse error — all turn into a silent no-op in the hook. The agent loop is never impacted. If Langfuse is configured with an invalid service identity, the plugin does not load; other plugins and the agent loop remain isolated.
 
 **Setup (interactive — recommended):**
 
@@ -152,7 +152,7 @@ The plugin is fail-open: no SDK installed, no credentials, or a transient Langfu
 hermes tools          # → Langfuse Observability → Cloud or Self-Hosted
 ```
 
-The wizard collects your keys, `pip install`s the `langfuse` SDK, and adds `observability/langfuse` to `plugins.enabled` for you. Restart Hermes and the next turn ships a trace.
+The wizard collects your keys, asks for the OpenTelemetry service identity (default: `hermes-agent`), `pip install`s the `langfuse` SDK, and adds `observability/langfuse` to `plugins.enabled` for you. Restart Hermes and the next turn ships a trace.
 
 **Setup (manual):**
 
@@ -168,6 +168,15 @@ HERMES_LANGFUSE_PUBLIC_KEY=pk-lf-...
 HERMES_LANGFUSE_SECRET_KEY=sk-lf-...
 HERMES_LANGFUSE_BASE_URL=https://cloud.langfuse.com   # or your self-hosted URL
 ```
+
+Set the non-secret service identity in `~/.hermes/config.yaml`:
+
+```yaml
+observability:
+  service_name: hermes-agent
+```
+
+`hermes-agent` is the compatibility default for existing credential-only installations. Choose a distinct value when multiple Hermes deployments share a Langfuse project. An empty value or `unknown_service` prevents the Langfuse plugin from loading.
 
 **How it works:**
 

@@ -8698,6 +8698,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         for platform, platform_config in profile_cfg.platforms.items():
             if not platform_config.enabled:
                 continue
+            # Relay is shared process-level ingress in multiplex mode. The
+            # active profile owns the one connection; connector-stamped
+            # source.profile routes inbound turns to secondary profiles.
+            if (
+                getattr(self.config, "multiplex_profiles", False)
+                and platform is Platform.RELAY
+            ):
+                continue
             # A secondary profile must NOT enable a port-binding platform: the
             # default profile's listener already serves every profile via the
             # /p/<profile>/ prefix, so a second bind can only collide. This is a

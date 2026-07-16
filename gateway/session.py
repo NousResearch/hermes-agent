@@ -2511,13 +2511,33 @@ class SessionStore:
         if not self._db:
             return []
         try:
-            # repair_alternation: this load feeds LIVE REPLAY. A durable
-            # user;user wedge (e.g. a turn that persisted no assistant row)
-            # would otherwise re-trigger the pre-request repair on every
-            # request forever — heal it once at the restore boundary.
-            messages = self._db.get_messages_as_conversation(
-                session_id, repair_alternation=True
-            )
+            # This load feeds LIVE REPLAY. Heal durable alternation violations
+            # at the restore boundary, but keep observed rows as boundaries:
+            # merging consecutive observed users discards all but the first
+            # platform message id and breaks later audio-reference selection.
+            messages = self._db.get_messages_as_conversation(session_id)
+            if messages:
+                from agent.agent_runtime_helpers import repair_message_sequence
+
+                repaired_messages: List[Dict[str, Any]] = []
+                unobserved_segment: List[Dict[str, Any]] = []
+
+                def _flush_unobserved_segment() -> None:
+                    if not unobserved_segment:
+                        return
+                    repair_message_sequence(None, unobserved_segment)
+                    repaired_messages.extend(unobserved_segment)
+                    unobserved_segment.clear()
+
+                for message in messages:
+                    if message.get("observed"):
+                        _flush_unobserved_segment()
+                        repaired_messages.append(message)
+                    else:
+                        unobserved_segment.append(message)
+                _flush_unobserved_segment()
+                messages = repaired_messages
+
             get_ancestor_observed = getattr(self._db, "get_ancestor_observed_messages", None)
             if get_ancestor_observed:
                 ancestor_observed = get_ancestor_observed(session_id)

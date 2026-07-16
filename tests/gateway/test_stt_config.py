@@ -229,6 +229,76 @@ async def test_observed_audio_context_transcribes_on_addressed_followup(tmp_path
 
 
 @pytest.mark.asyncio
+async def test_observed_audio_transcript_cache_is_bounded_lru_and_stat_sensitive(
+    tmp_path, monkeypatch
+):
+    import gateway.run as gateway_run
+    from gateway.run import GatewayRunner
+
+    monkeypatch.setattr(gateway_run, "_OBSERVED_AUDIO_TRANSCRIPT_CACHE_MAX_SIZE", 3)
+    runner = GatewayRunner.__new__(GatewayRunner)
+    runner.config = GatewayConfig(stt_enabled=True)
+    audio_paths = [tmp_path / f"audio-{index}.ogg" for index in range(4)]
+    for index, audio_path in enumerate(audio_paths):
+        audio_path.write_bytes(f"audio-{index}".encode())
+
+    async def enrich(audio_path):
+        history = [
+            {
+                "role": "user",
+                "observed": True,
+                "content": f"[audio '{audio_path.name}' saved at: {audio_path}]",
+            }
+        ]
+        return await runner._enrich_observed_audio_context(
+            history,
+            channel_prompt="observed Telegram group context",
+            current_message="transcreva o áudio",
+        )
+
+    calls = []
+
+    def transcribe(path):
+        calls.append(path)
+        return {
+            "success": True,
+            "transcript": f"transcript-{len(calls)}",
+            "provider": "test",
+        }
+
+    with patch(
+        "gateway.run._resolve_observed_audio_cache_path",
+        side_effect=lambda path: str(Path(path).resolve()),
+    ), patch("tools.transcription_tools.transcribe_audio", side_effect=transcribe):
+        for audio_path in audio_paths[:3]:
+            await enrich(audio_path)
+        await enrich(audio_paths[0])  # Hit promotes entry 0 to MRU.
+        await enrich(audio_paths[3])  # Capacity eviction must remove entry 1.
+
+        assert len(calls) == 4
+        assert len(runner._observed_audio_transcript_cache) == 3
+        assert [key[0] for key in runner._observed_audio_transcript_cache] == [
+            str(audio_paths[2].resolve()),
+            str(audio_paths[0].resolve()),
+            str(audio_paths[3].resolve()),
+        ]
+
+        await enrich(audio_paths[1])
+        assert len(calls) == 5  # True LRU entry was evicted and retranscribed.
+        assert len(runner._observed_audio_transcript_cache) == 3
+
+        audio_paths[0].write_bytes(b"changed-audio-size")
+        enriched = await enrich(audio_paths[0])
+        assert len(calls) == 6
+        assert "transcript-6" in enriched[0]["content"]
+        assert len(runner._observed_audio_transcript_cache) == 3
+        assert sum(
+            key[0] == str(audio_paths[0].resolve())
+            for key in runner._observed_audio_transcript_cache
+        ) == 1
+
+
+@pytest.mark.asyncio
 async def test_observed_audio_context_transcribes_only_latest_audio_for_clear_request(tmp_path):
     """A broad audio request must never fan out across observed voice notes."""
     from gateway.run import GatewayRunner

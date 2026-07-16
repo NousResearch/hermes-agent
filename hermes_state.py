@@ -46,6 +46,11 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
     only when the kernel proves that PID no longer exists; legacy/unstructured
     holders and permission errors remain protected until normal TTL expiry.
     """
+    # Python's os.kill(pid, 0) is a non-destructive liveness probe on POSIX.
+    # On Windows, any non-CTRL signal value is implemented with
+    # TerminateProcess, so fall back to TTL-only recovery there.
+    if os.name == "nt":
+        return False
     match = _COMPRESSION_LOCK_HOLDER_PID_RE.search(holder or "")
     if match is None:
         return False
@@ -59,7 +64,7 @@ def _compression_lock_holder_process_is_dead(holder: str) -> bool:
         os.kill(pid, 0)
     except ProcessLookupError:
         return True
-    except (PermissionError, OSError):
+    except (PermissionError, OSError, OverflowError):
         return False
     return False
 

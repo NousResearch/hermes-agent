@@ -137,12 +137,30 @@ def test_unstructured_holder_waits_for_ttl(
     assert db.try_acquire_compression_lock(
         "sess1", "legacy_holder", ttl_seconds=300
     ) is True
-    kill = monkeypatch.setattr(
+    monkeypatch.setattr(
         hermes_state.os,
         "kill",
         lambda *_args: pytest.fail("unstructured holder must not probe a PID"),
     )
-    assert kill is None
+    assert db.try_acquire_compression_lock(
+        "sess1", "pid=525252:tid=2:agent=def:nonce=other", ttl_seconds=300
+    ) is False
+
+
+def test_windows_uses_ttl_only_without_os_kill(
+    db: SessionDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    holder = "pid=424242:tid=1:agent=abc:nonce=windows"
+    assert db.try_acquire_compression_lock(
+        "sess1", holder, ttl_seconds=300
+    ) is True
+    monkeypatch.setattr(hermes_state.os, "name", "nt")
+    monkeypatch.setattr(
+        hermes_state.os,
+        "kill",
+        lambda *_args: pytest.fail("Windows must not use os.kill as a PID probe"),
+    )
+
     assert db.try_acquire_compression_lock(
         "sess1", "pid=525252:tid=2:agent=def:nonce=other", ttl_seconds=300
     ) is False

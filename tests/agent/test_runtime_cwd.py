@@ -74,11 +74,13 @@ class TestResolveContextCwd:
         monkeypatch.setenv("TERMINAL_CWD", str(missing))
         assert resolve_context_cwd() is None
 
-    def test_returns_none_for_install_tree(self, monkeypatch):
-        # Context discovery must never resolve to the Hermes install/source tree,
-        # whose contributor AGENTS.md would take over the system prompt.
+    def test_returns_install_tree_when_explicitly_configured(self, monkeypatch):
+        # An EXPLICITLY configured install-tree cwd is honored verbatim — the
+        # Hermes source tree is a legitimate workspace when the user is
+        # developing Hermes. Only the fallback path (cwd=None → os.getcwd())
+        # is policed, in build_context_files_prompt (#64590).
         monkeypatch.setenv("TERMINAL_CWD", str(rt._PACKAGE_ROOT))
-        assert resolve_context_cwd() is None
+        assert resolve_context_cwd() == rt._PACKAGE_ROOT
 
     def test_expands_leading_tilde(self, monkeypatch):
         monkeypatch.setenv("TERMINAL_CWD", "~")

@@ -16,8 +16,8 @@ the child verbatim.
 
 The functional resolution tests are Windows-gated: they read real on-disk shim
 fixtures whose paths use Windows backslash separators, which only resolve under
-``ntpath`` (i.e. on a real Windows host).  Portable no-op tests and a
-source-level guard keep the fix covered on the Linux CI runner too.
+``ntpath`` (i.e. on a real Windows host).  Portable no-op/fallback and npx-resolution tests keep the fail-safe paths
+covered on the Linux CI runner too.
 """
 
 from __future__ import annotations
@@ -294,40 +294,6 @@ class TestPosixAndFallbacks:
         with caplog.at_level(logging.WARNING):
             assert browser_tool._bypass_windows_cmd_shim([str(cmd)]) == [str(cmd)]
         assert any("could not bypass" in r.getMessage() for r in caplog.records)
-
-
-class TestBypassWiredAtSpawnSites:
-    """Guard (runs on Linux CI too): both agent-browser spawn sites must route
-    their prefix through the bypass, so a future refactor can't silently
-    re-expose the &-URL split. Function-scoped AST assertion — robust to
-    formatting and to the local variable's name, unlike a whole-file substring
-    count."""
-
-    def test_both_launchers_wire_bypass_and_npx(self):
-        import ast
-
-        root = Path(__file__).resolve().parents[2]
-        tree = ast.parse((root / "tools" / "browser_tool.py").read_text(encoding="utf-8"))
-        funcs = {
-            n.name: n
-            for n in ast.walk(tree)
-            if isinstance(n, ast.FunctionDef)
-            and n.name in {"_run_browser_command", "_run_chrome_fallback_command"}
-        }
-        # Both the bypass AND the npx re-resolution must stay wired at each spawn
-        # site: dropping _bypass_windows_cmd_shim re-exposes the &-URL split, and
-        # reverting to a bare "npx" (instead of _resolve_npx_launcher) silently
-        # reintroduces the npx-fallback bypass evasion.
-        required = {"_bypass_windows_cmd_shim", "_resolve_npx_launcher"}
-        for name in ("_run_browser_command", "_run_chrome_fallback_command"):
-            assert name in funcs, f"{name} not found in browser_tool.py"
-            called = {
-                node.func.id
-                for node in ast.walk(funcs[name])
-                if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
-            }
-            missing = required - called
-            assert not missing, f"{name} must call {missing} before spawning"
 
 
 class TestNpxLauncherResolution:

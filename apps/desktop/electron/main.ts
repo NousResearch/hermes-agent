@@ -102,6 +102,7 @@ import {
 import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle } from './link-title-window'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { decideProfileDeleteAction, profileNameFromDeleteRequest, resolveRouteProfile } from './profile-delete-routing'
+import { prepareProfileRenameLifecycle } from './profile-rename-routing'
 import {
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -6712,6 +6713,24 @@ async function prepareProfileDeleteRequest(request) {
   return decision.profile
 }
 
+async function prepareProfileRenameRequest(request) {
+  return prepareProfileRenameLifecycle(request, {
+    isValidProfileName: profile => PROFILE_NAME_RE.test(profile),
+    primaryProfileKey,
+    reloadPrimaryWindow: () => {
+      mainWindow?.reload()
+    },
+    restartPrimaryBackend: async () => {
+      await startHermes()
+    },
+    teardownPoolBackendAndWait,
+    teardownPrimaryBackendAndWait,
+    writeActiveDesktopProfile: profile => {
+      writeActiveDesktopProfile(profile)
+    }
+  })
+}
+
 async function startHermes() {
   // Latched-failure short-circuit: once bootstrap has failed in this
   // process, every subsequent startHermes() call re-throws the same error
@@ -7891,48 +7910,66 @@ ipcMain.handle('hermes:api', async (_event, request) => {
     return rerouted
   }
 
+  const profileRename = await prepareProfileRenameRequest(request)
   const tornDownProfile = await prepareProfileDeleteRequest(request)
 
   const profile = request?.profile
-  // After tearing down a backend for profile deletion, route to the primary
-  // backend instead of spawning a fresh pool backend.  A freshly spawned
-  // backend calls ensure_hermes_home() which recreates the profile directory,
-  // defeating the deletion and leaving a zombie process.
-  const routeProfile = resolveRouteProfile(tornDownProfile, profile)
-  const connection = await ensureBackend(routeProfile)
-  const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
+  // Route profile mutations through the current primary after teardown instead
+  // of respawning the affected pool backend. For a primary rename, the lifecycle
+  // has already made `default` the temporary primary until the PATCH settles.
+  const routeProfile = profileRename ? profileRename.routeProfile : resolveRouteProfile(tornDownProfile, profile)
+  let response
 
-  const requestPath = pathWithGlobalRemoteProfile(request.path, profile, {
-    globalRemote: globalRemoteActive(),
-    profileRemoteOverride: profileHasRemoteOverride(profile)
-  })
+  try {
+    const connection = await ensureBackend(routeProfile)
+    const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
-  const url = `${connection.baseUrl}${requestPath}`
+    const requestPath = pathWithGlobalRemoteProfile(request.path, profile, {
+      globalRemote: globalRemoteActive(),
+      profileRemoteOverride: profileHasRemoteOverride(profile)
+    })
 
-  // OAuth gateways authenticate REST via the HttpOnly session cookie held in
-  // the OAuth partition — route through Electron's net stack bound to that
-  // session so the cookie attaches automatically. Token/local modes keep using
-  // the static session-token header.
-  if (connection.authMode === 'oauth') {
-    // The OAuth path rides electron.net with JSON headers; multipart isn't
-    // wired there. Fail loudly rather than corrupting the upload.
-    if (request?.upload) {
-      throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
+    const url = `${connection.baseUrl}${requestPath}`
+
+    // OAuth gateways authenticate REST via the HttpOnly session cookie held in
+    // the OAuth partition — route through Electron's net stack bound to that
+    // session so the cookie attaches automatically. Token/local modes keep using
+    // the static session-token header.
+    if (connection.authMode === 'oauth') {
+      // The OAuth path rides electron.net with JSON headers; multipart isn't
+      // wired there. Fail loudly rather than corrupting the upload.
+      if (request?.upload) {
+        throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
+      }
+
+      response = await fetchJsonViaOauthSession(url, {
+        method: request?.method,
+        body: request?.body,
+        timeoutMs
+      })
+    } else {
+      response = await fetchJson(url, connection.token, {
+        method: request?.method,
+        body: request?.body,
+        upload: request?.upload,
+        timeoutMs
+      })
+    }
+  } catch (error) {
+    if (profileRename) {
+      try {
+        await profileRename.rollback()
+      } catch (rollbackError) {
+        rememberLog(`Failed to restore primary profile after rename error: ${String(rollbackError)}`)
+      }
     }
 
-    return fetchJsonViaOauthSession(url, {
-      method: request?.method,
-      body: request?.body,
-      timeoutMs
-    })
+    throw error
   }
 
-  return fetchJson(url, connection.token, {
-    method: request?.method,
-    body: request?.body,
-    upload: request?.upload,
-    timeoutMs
-  })
+  await profileRename?.complete()
+
+  return response
 })
 
 ipcMain.handle('hermes:notify', (_event, payload) => {

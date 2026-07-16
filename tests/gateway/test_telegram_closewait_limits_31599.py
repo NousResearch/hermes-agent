@@ -169,4 +169,4 @@ def test_proxy_branch_redacts_proxy_credentials_from_log(monkeypatch, caplog):
 
     assert any(inst.kwargs.get("proxy") == proxy_url for inst in instances)
     assert "agent-vault-token" not in caplog.text
-    assert "http://***@proxy.example:14322" in caplog.text
+    assert "http://proxy.example:14322" in caplog.text

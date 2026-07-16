@@ -418,6 +418,9 @@ class TestConcludeToolDispatch:
         provider._session_key = "telegram:123"
         provider._manager = MagicMock()
         provider._manager.create_conclusion.return_value = True
+        # The response reports the RESOLVED peer (issue #42980), so the dispatch
+        # asks the manager to resolve the requested peer for the message.
+        provider._manager.resolved_peer_label.return_value = "user"
 
         result = provider.handle_tool_call(
             "honcho_conclude",
@@ -425,6 +428,7 @@ class TestConcludeToolDispatch:
         )
 
         assert "Conclusion saved for user" in result
+        provider._manager.resolved_peer_label.assert_called_once_with("telegram:123", "user")
         provider._manager.create_conclusion.assert_called_once_with(
             "telegram:123",
             "User prefers dark mode",
@@ -437,6 +441,7 @@ class TestConcludeToolDispatch:
         provider._session_key = "telegram:123"
         provider._manager = MagicMock()
         provider._manager.create_conclusion.return_value = True
+        provider._manager.resolved_peer_label.return_value = "ai"
 
         result = provider.handle_tool_call(
             "honcho_conclude",
@@ -444,6 +449,7 @@ class TestConcludeToolDispatch:
         )
 
         assert "Conclusion saved for ai" in result
+        provider._manager.resolved_peer_label.assert_called_once_with("telegram:123", "ai")
         provider._manager.create_conclusion.assert_called_once_with(
             "telegram:123",
             "Assistant likes terse replies",

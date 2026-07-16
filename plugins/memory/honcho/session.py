@@ -1045,20 +1045,89 @@ class HonchoSessionManager:
     def _resolve_peer_id(self, session: HonchoSession, peer: str | None) -> str:
         """Resolve a peer alias or explicit peer ID to a concrete Honcho peer ID.
 
-        Always returns a non-empty string: either a known peer ID or a
-        sanitized version of the caller-supplied alias/ID.
+        Always returns a non-empty string. The aliases ``"user"`` and
+        ``"ai"``/``"assistant"`` (case-insensitive) map to the session's user /
+        assistant peers. Any other value is only honored when it matches a
+        *known* peer — the session's own peers or an operator-configured peer
+        (``peer_name`` / ``user_peer_aliases``). An unrecognized free-form value
+        (e.g. a display name the model invented for the user) collapses to the
+        stable user peer instead of minting a brand-new Honcho peer.
+
+        Minting a fresh peer for every name the model used to address one user
+        was the cause of duplicate-peer fragmentation (issue #42980): the
+        duplicates accumulated and were then discarded on Honcho's
+        consolidation pass, losing what it knew about the user. Operators who
+        genuinely run multiple peers should declare them via
+        ``user_peer_aliases``; anything undeclared is treated as the user.
         """
         candidate = (peer or "user").strip()
         if not candidate:
             return session.user_peer_id
 
+        # Honor an explicit, already-known peer FIRST: the session's own peers or
+        # an operator-configured peer id/alias (case-insensitively, so a
+        # lowercased userPeerAliases value still resolves). Checking known peers
+        # before the reserved-word aliases means a real peer that happens to be
+        # named "ai"/"user" is never hijacked to the wrong session peer.
         normalized = self._sanitize_id(candidate)
-        if normalized == self._sanitize_id("user"):
+        # Ordered so a case-insensitive collision resolves deterministically:
+        # session peers outrank configured IDs, and configured IDs that differ
+        # only by case (config parsing allows them) tie-break lexicographically
+        # instead of by set-iteration order.
+        ordered_known = [session.user_peer_id, session.assistant_peer_id]
+        ordered_known += sorted(self._explicit_user_peer_ids())
+        if normalized in ordered_known:
+            return normalized
+        known_by_lower: dict[str, str] = {}
+        for known_id in ordered_known:
+            known_by_lower.setdefault(known_id.lower(), known_id)
+        match = known_by_lower.get(normalized.lower())
+        if match is not None:
+            return match
+
+        # Built-in aliases, case-insensitive, so plausible model guesses
+        # ("AI", "Assistant") route to the assistant rather than silently
+        # collapsing into the user peer.
+        lowered = candidate.lower()
+        if lowered == "user":
             return session.user_peer_id
-        if normalized == self._sanitize_id("ai"):
+        if lowered in ("ai", "assistant"):
             return session.assistant_peer_id
 
-        return normalized
+        # Anything else is an unrecognized free-form name — collapse it to the
+        # user peer rather than create a new peer (single-user-safe default;
+        # prevents #42980 fragmentation).
+
+        # Log the length, not the value: the unrecognized name is typically a
+        # display name / handle the model invented for the user — exactly the
+        # PII this fix avoids persisting, so don't write it to logs either.
+        logger.debug(
+            "Honcho: unrecognized peer (len=%d) resolved to user peer %r "
+            "(not minting a new peer)",
+            len(candidate),
+            session.user_peer_id,
+        )
+        return session.user_peer_id
+
+    def resolved_peer_label(self, session_key: str, peer: str | None) -> str:
+        """Human-facing label for the peer a tool call actually targeted.
+
+        Resolves the requested peer (after alias / unknown-name collapse) so a
+        tool response never confirms a write against a peer name the model
+        invented. Returns the friendly alias ``"user"``/``"ai"`` for the two
+        session peers — rather than leaking the raw internal peer id into the
+        model's context — and the resolved id for any other (configured) peer.
+        Falls back to the sanitized request when no session is cached.
+        """
+        session = self._cache.get(session_key)
+        if session is None:
+            return self._sanitize_id((peer or "user").strip()) or "user"
+        resolved = self._resolve_peer_id(session, peer)
+        if resolved == session.user_peer_id:
+            return "user"
+        if resolved == session.assistant_peer_id:
+            return "ai"
+        return resolved
 
     def _resolve_observer_target(
         self,
@@ -1120,7 +1189,8 @@ class HonchoSessionManager:
             session_key: Session to search against.
             query: Search query for semantic matching.
             max_tokens: Token budget for returned content.
-            peer: Peer alias or explicit peer ID to search about.
+            peer: Peer alias — "user" (default) or "ai" — to search about. An
+                unrecognized value resolves to the user.
 
         Returns:
             Relevant context excerpts as a string, or empty string if none.
@@ -1158,7 +1228,8 @@ class HonchoSessionManager:
         Args:
             session_key: Session to associate the conclusion with.
             content: The conclusion text.
-            peer: Peer alias or explicit peer ID. "user" is the default alias.
+            peer: Peer alias — "user" (default) or "ai". An unrecognized value
+                resolves to the user rather than creating a new peer.
 
         Returns:
             True on success, False on failure.
@@ -1203,7 +1274,8 @@ class HonchoSessionManager:
         Args:
             session_key: Session key for peer resolution.
             conclusion_id: The conclusion ID to delete.
-            peer: Peer alias or explicit peer ID.
+            peer: Peer alias — "user" (default) or "ai". An unrecognized value
+                resolves to the user rather than creating a new peer.
 
         Returns:
             True on success, False on failure.
@@ -1235,7 +1307,8 @@ class HonchoSessionManager:
         Args:
             session_key: Session key for peer resolution.
             card: New peer card as list of fact strings.
-            peer: Peer alias or explicit peer ID.
+            peer: Peer alias — "user" (default) or "ai". An unrecognized value
+                resolves to the user rather than creating a new peer.
 
         Returns:
             Updated card on success, None on failure.

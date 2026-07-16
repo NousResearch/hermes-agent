@@ -12,6 +12,13 @@ def _make_provider(**cfg_overrides) -> HonchoMemoryProvider:
     provider = HonchoMemoryProvider()
     provider._manager = MagicMock()
     provider._manager.get_peer_card.return_value = []  # empty card
+    # Mirror the resolver contract the hint now delegates to: built-in aliases
+    # map to "ai"/"user"; anything unrecognized collapses to "user".
+    provider._manager.resolved_peer_label.side_effect = (
+        lambda _key, peer: "ai"
+        if (peer or "user").strip().lower() in ("ai", "assistant")
+        else "user"
+    )
     provider._session_key = "agent:main:test"
     provider._session_initialized = True  # bypass the lazy _ensure_session() gate
     provider._cron_skipped = False
@@ -74,6 +81,25 @@ class TestEmptyProfileHint:
         payload = json.loads(raw)
         # User-facing suggestion to try honcho_reasoning or honcho_search
         assert "honcho_reasoning" in payload["hint"] or "honcho_search" in payload["hint"]
+
+    def test_hint_label_follows_resolver_not_raw_alias_parse(self):
+        """Regression (#43086 review): the hint must report the peer the
+        RESOLVER targeted, not re-derive it from the raw string. When a session
+        user peer is literally named "AI", the resolver returns the user peer,
+        so the hint must use user observation settings — even though a naive
+        alias parse of "AI" would claim the assistant."""
+        provider = _make_provider(ai_observe_me=False, ai_observe_others=False)
+        # Simulate the reserved-name collision: the resolver says "AI" is the user.
+        provider._manager.resolved_peer_label.side_effect = None
+        provider._manager.resolved_peer_label.return_value = "user"
+        raw = provider.handle_tool_call("honcho_profile", {"peer": "AI"})
+        payload = json.loads(raw)
+        provider._manager.resolved_peer_label.assert_called_with(
+            provider._session_key, "AI"
+        )
+        # User observation is still on, so no disabled-observation reason —
+        # the old raw-parse would have (wrongly) reported the ai settings.
+        assert "observation is disabled" not in payload["hint"].lower()
 
     def test_populated_card_returns_card_without_hint(self):
         """Regression: a populated card should NOT trigger the hint path."""

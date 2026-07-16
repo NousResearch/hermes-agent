@@ -159,6 +159,7 @@ import {
   writeSandboxMarker
 } from './windows-sandbox-fallback'
 import { installWindowsSystemCaTrust } from './windows-system-ca'
+import { forceKillVenvHolders, listVenvHolders } from './windows-venv-holders'
 import { readWindowsUserEnvVar } from './windows-user-env'
 import { isPackagedInstallPath as isPackagedInstallPathUnderRoots } from './workspace-cwd'
 import { readWslWindowsClipboardImage } from './wsl-clipboard-image'
@@ -2510,8 +2511,31 @@ async function releaseBackendLock(updateRoot, tag) {
     forceKillProcessTree(pid)
   }
 
+  // Gateways / slash workers / other profiles are NOT in hermesProcess or the
+  // backend pool — they still hold venv\Scripts\hermes.exe and .pyd files open
+  // on Windows. Without this sweep the Update button aborts after 15s with
+  // "another process is holding the Hermes install open" whenever a gateway
+  // (e.g. Telegram Sophie) is running. hermes update itself pauses/resumes
+  // gateways after hand-off; we must free the shim *before* spawning the
+  // updater. Skip our own Electron PID so we don't suicide mid-handoff.
+  const skipPids = new Set<number>([process.pid, ...pids])
+  try {
+    const external = listVenvHolders(updateRoot, { skipPids })
+    if (external.length) {
+      rememberLog(
+        `[${tag}] force-killing ${external.length} external venv holder(s): ` +
+          external.map(h => `${h.pid}/${h.name}`).join(', ')
+      )
+      forceKillVenvHolders(external, { forceKillProcessTree })
+    }
+  } catch (err) {
+    rememberLog(`[${tag}] external venv-holder sweep failed: ${err && err.message ? err.message : err}`)
+  }
+
   const shim = venvHermesShimPath(updateRoot)
-  const deadlineMs = Date.now() + 15000
+  // Gateways + multi-profile backends can take longer than 15s to unload
+  // native modules on a loaded Windows box; give the OS a full 45s.
+  const deadlineMs = Date.now() + 45000
 
   while (Date.now() < deadlineMs) {
     if (!isShimLocked(shim)) {
@@ -2541,6 +2565,19 @@ async function releaseBackendLock(updateRoot, tag) {
       forceKillProcessTree(pid)
     }
 
+    // Re-sweep external holders each pass — a gateway can race-restart from a
+    // scheduled task or an orphan supervisor between iterations.
+    try {
+      const again = listVenvHolders(updateRoot, {
+        skipPids: new Set([process.pid, ...stragglers])
+      })
+      if (again.length) {
+        forceKillVenvHolders(again, { forceKillProcessTree })
+      }
+    } catch {
+      void 0
+    }
+
     await new Promise(r => setTimeout(r, 300))
   }
 
@@ -2552,7 +2589,7 @@ async function releaseBackendLock(updateRoot, tag) {
   // the update loudly and keeping the app running is strictly better than a
   // bricked install that needs manual venv surgery.
   rememberLog(
-    `[${tag}] venv shim still locked after 15s; aborting hand-off (something outside this app holds the venv)`
+    `[${tag}] venv shim still locked after 45s; aborting hand-off (something outside this app holds the venv)`
   )
 
   return { unlocked: false }

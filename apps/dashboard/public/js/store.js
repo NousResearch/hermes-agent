@@ -9,9 +9,9 @@ const w = (type, size) => ({ id: uid(), type, size });
 function defaultPages() {
   return [
     { id: uid(), name: "Main", layout: [
-      w("clock", "m"), w("worldstate", "xl"), w("agent", "m"), w("weather", "m"),
-      w("launcher", "m"), w("tasks", "m"), w("calendar", "m"), w("notes", "m"),
-      w("focus", "s"), w("system", "m"),
+      w("glance", "xl"), w("clock", "m"), w("worldstate", "xl"), w("agent", "m"),
+      w("weather", "m"), w("launcher", "m"), w("tasks", "m"), w("calendar", "m"),
+      w("notes", "m"), w("focus", "s"), w("system", "m"),
     ] },
     { id: uid(), name: "Markets", layout: [w("markets", "l"), w("stocks", "l")] },
     { id: uid(), name: "Feeds", layout: [

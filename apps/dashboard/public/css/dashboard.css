@@ -937,6 +937,19 @@ a { color: inherit; }
 .score-final { color: var(--muted); }
 .score-pre { color: var(--ink-2); }
 
+/* ---------- at-a-glance hero ---------- */
+.glance-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 1px;
+  background: var(--hairline); border: 1px solid var(--hairline); border-radius: 4px; overflow: hidden;
+}
+.glance-cell { background: var(--surface); padding: 12px 14px; min-width: 0; }
+.glance-label { letter-spacing: 0.14em; }
+.glance-value {
+  font-size: 17px; margin-top: 4px; line-height: 1.3;
+  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+}
+.glance-sub { margin-top: 3px; text-transform: capitalize; }
+
 /* ---------- standings table (scores detail) ---------- */
 .stand-league { letter-spacing: 0.14em; margin-bottom: 8px; }
 .stand-group { margin-bottom: 14px; }

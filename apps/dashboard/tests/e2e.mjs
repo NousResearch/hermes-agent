@@ -118,7 +118,7 @@ check("dark theme default", await page.evaluate(() => document.documentElement.d
 // Dashboard is split into pages; switch to the page holding a widget before
 // interacting with it. gotoPage clicks the page tab and settles.
 const WIDGET_PAGES = {
-  Main: ["clock", "worldstate", "agent", "weather", "launcher", "tasks", "calendar", "notes", "focus", "system"],
+  Main: ["glance", "clock", "worldstate", "agent", "weather", "launcher", "tasks", "calendar", "notes", "focus", "system"],
   Markets: ["markets", "stocks"],
   Feeds: ["news", "reading", "socials", "gaming"],
   Sports: ["scores"],
@@ -140,6 +140,8 @@ for (const [pageName, types] of Object.entries(WIDGET_PAGES)) {
   }
 }
 await gotoPage("Main");
+check("at-a-glance hero renders cells", (await page.locator(".widget-glance .glance-cell").count()) >= 5);
+check("glance weather cell populated", /\d+°/.test(await page.locator(".widget-glance").innerText()));
 check("clock shows time", /\d{1,2}:\d{2}/.test(await page.locator(".clock-time").innerText()));
 check("weather temp shown", /-?\d+°/.test(await page.locator(".weather-temp").innerText()));
 check("worldstate domains", (await page.locator(".ws-row").count()) >= 5);

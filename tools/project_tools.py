@@ -3,13 +3,16 @@
 
 Projects (per-profile ``projects.db``) are the named workspaces the desktop
 sidebar groups sessions into. Creating / switching a project is a deliberate act
-expressed as explicit tools — never a side effect of a terminal ``cd``.
+expressed as explicit tools — never a side effect of a terminal ``cd``. A live
+session create/switch re-anchors only that session; it must not move the
+profile-global Desktop selection shared by concurrent chats.
 
 Exposed only on GUI sessions: the tools live in the `project` toolset (kept off
 ``_HERMES_CORE_TOOLS``) which the desktop/TUI gateway folds into its resolved
 toolsets, so no CLI/messaging/cron schema carries them. The GUI also wires
 ``set_project_workspace_callback`` so a create/switch re-anchors the live
-session's cwd and the sidebar follows the move; the DB write is the durable part.
+session's cwd and the sidebar follows the move. Project creation remains durable;
+a create/switch without a live task id retains the legacy active-pointer behavior.
 """
 
 import json
@@ -20,8 +23,7 @@ from tools.registry import registry
 
 # Set by the GUI gateway (tui_gateway) at session wiring. Receives
 # ``(task_id, primary_path, project_name)`` and re-anchors that session's
-# workspace + refreshes the sidebar. ``None`` in CLI / messaging contexts — the
-# DB write still happens; there's just no live GUI session to move.
+# workspace + refreshes the sidebar. ``None`` in CLI / messaging contexts.
 _workspace_callback: Optional[Callable[[str, str, str], None]] = None
 
 
@@ -102,7 +104,11 @@ def project_create(name: str, path: Optional[str] = None, task_id: Optional[str]
     try:
         with pdb.connect_closing() as conn:
             pid = pdb.create_project(conn, name=name, folders=[folder] if folder else [], primary_path=folder or None)
-            pdb.set_active(conn, pid)
+            # A live agent session owns its workspace independently. Creating a
+            # project must not let a background chat redirect the profile-global
+            # Desktop selection used by unrelated and newly created sessions.
+            if not task_id:
+                pdb.set_active(conn, pid)
             proj = pdb.get_project(conn, pid)
     except ValueError as exc:
         return json.dumps({"success": False, "error": str(exc)})
@@ -123,7 +129,11 @@ def project_switch(project: str, task_id: Optional[str] = None) -> str:
         proj = _resolve(conn, project)
         if proj is None:
             return json.dumps({"success": False, "error": f"no project matching '{project}'"})
-        pdb.set_active(conn, proj.id)
+        # A live agent session owns its workspace independently. Mutating the
+        # profile-global pointer here lets a background chat redirect unrelated
+        # Desktop windows and newly created sessions into this project.
+        if not task_id:
+            pdb.set_active(conn, proj.id)
 
     primary = _primary_path(proj)
     _apply_workspace(task_id, primary, proj.name)

@@ -215,6 +215,36 @@ def restart_codec_mutations() -> list[Mutation]:
     ]
 
 
+def route_identity_mutations() -> list[Mutation]:
+    """Mutations over route config parsing and persisted lookup classification."""
+    return [
+        Mutation(
+            "return-value: prefer model alias over default",
+            lambda p: replace_once(
+                p,
+                'model = str(model_cfg.get("default") or model_cfg.get("model") or "")',
+                'model = str(model_cfg.get("model") or model_cfg.get("default") or "")',
+            ),
+        ),
+        Mutation(
+            "message-emit: skip provider normalization",
+            lambda p: replace_once(
+                p,
+                'provider = str(model_cfg.get("provider") or "").strip().lower()',
+                'provider = str(model_cfg.get("provider") or "")',
+            ),
+        ),
+        Mutation(
+            "branch-classification: trust wrong persisted lookup type",
+            lambda p: replace_once(
+                p,
+                "if not isinstance(result, persisted_lookup_type):",
+                "if False:",
+            ),
+        ),
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--module", required=True)
@@ -231,6 +261,8 @@ def main(argv: list[str] | None = None) -> int:
         mutations = tool_gate_mutations()
     elif module.endswith("restart_codec.py"):
         mutations = restart_codec_mutations()
+    elif module.endswith("route_identity.py"):
+        mutations = route_identity_mutations()
     else:
         mutations = []
     if not mutations:

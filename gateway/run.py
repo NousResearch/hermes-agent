@@ -69,6 +69,10 @@ from gateway.fork_ext.restart_codec import (
     decode_restart_failure_entry,
     encode_restart_failure_entry,
 )
+from gateway.fork_ext.route_identity import (
+    configured_route_identity,
+    persisted_session_route_identity,
+)
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -4666,18 +4670,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         """Read model/provider/API mode from config without resolving credentials."""
         from hermes_cli.providers import infer_api_mode_from_provider
 
-        cfg = user_config if isinstance(user_config, dict) else {}
-        model_cfg = cfg.get("model", {})
-        if isinstance(model_cfg, str):
-            return model_cfg, "", ""
-        if not isinstance(model_cfg, dict):
-            model_cfg = {}
-        model = str(model_cfg.get("default") or model_cfg.get("model") or "")
-        provider = str(model_cfg.get("provider") or "").strip().lower()
-        api_mode = str(model_cfg.get("api_mode") or "").strip().lower()
-        if not api_mode:
-            api_mode = infer_api_mode_from_provider(provider) if provider else ""
-        return model, provider, api_mode
+        return configured_route_identity(user_config, infer_api_mode_from_provider)
 
     def _persisted_session_route_identity(
         self, session_key: str
@@ -4688,23 +4681,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         absence: callers must fail closed before enrichment, global-provider
         resolution, or agent construction.
         """
-        store = getattr(self, "session_store", None)
-        if store is None or not session_key:
-            return PersistedSessionRouteLookup("absent")
-
-        # Inspect the class, not the instance: Mock/MagicMock and lightweight
-        # fixture stores synthesize arbitrary attributes on demand and must not
-        # accidentally claim authority over persisted routing state.
-        lookup = getattr(type(store), "lookup_persisted_route_identity", None)
-        if not callable(lookup):
-            return PersistedSessionRouteLookup("absent")
-        try:
-            result = lookup(store, session_key)
-        except Exception:
-            return PersistedSessionRouteLookup("unavailable")
-        if not isinstance(result, PersistedSessionRouteLookup):
-            return PersistedSessionRouteLookup("unavailable")
-        return result
+        return persisted_session_route_identity(
+            getattr(self, "session_store", None),
+            session_key,
+            PersistedSessionRouteLookup,
+        )
 
     def _resolve_configured_session_route_identity(
         self,

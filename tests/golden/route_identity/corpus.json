@@ -1,0 +1,98 @@
+{
+  "cases": [
+    {
+      "name": "string model config",
+      "kind": "configured",
+      "config": {
+        "model": "gpt-4.1"
+      }
+    },
+    {
+      "name": "dict model config with explicit api mode",
+      "kind": "configured",
+      "config": {
+        "model": {
+          "default": "claude-sonnet-4",
+          "provider": "anthropic",
+          "api_mode": "chat_completions"
+        }
+      }
+    },
+    {
+      "name": "default model wins over model alias",
+      "kind": "configured",
+      "config": {
+        "model": {
+          "default": "primary-model",
+          "model": "alias-model",
+          "provider": " openai "
+        }
+      }
+    },
+    {
+      "name": "provider is normalized",
+      "kind": "configured",
+      "config": {
+        "model": {
+          "default": "gpt-5",
+          "provider": " OpenAI "
+        }
+      }
+    },
+    {
+      "name": "dict model config infers api mode",
+      "kind": "configured",
+      "config": {
+        "model": {
+          "model": "gpt-5",
+          "provider": "openai"
+        }
+      }
+    },
+    {
+      "name": "malformed model config",
+      "kind": "configured",
+      "config": {
+        "model": [
+          "bad"
+        ]
+      }
+    },
+    {
+      "name": "missing store is absent",
+      "kind": "persisted",
+      "store": "none",
+      "session_key": "session-a"
+    },
+    {
+      "name": "blank session key is absent",
+      "kind": "persisted",
+      "store": "valid",
+      "session_key": ""
+    },
+    {
+      "name": "store without class method is absent",
+      "kind": "persisted",
+      "store": "plain",
+      "session_key": "session-b"
+    },
+    {
+      "name": "store lookup returns valid identity",
+      "kind": "persisted",
+      "store": "valid",
+      "session_key": "session-c"
+    },
+    {
+      "name": "store lookup raises unavailable",
+      "kind": "persisted",
+      "store": "raises",
+      "session_key": "session-d"
+    },
+    {
+      "name": "store lookup returns wrong type unavailable",
+      "kind": "persisted",
+      "store": "wrong-type",
+      "session_key": "session-e"
+    }
+  ]
+}

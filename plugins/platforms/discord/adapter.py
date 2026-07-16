@@ -4085,7 +4085,7 @@ class DiscordAdapter(BasePlatformAdapter):
             await self._run_simple_slash(interaction, f"/model {name}".strip())
 
         @tree.command(name="reasoning", description="Show or change reasoning effort")
-        @discord.app_commands.describe(effort="Reasoning effort: none, minimal, low, medium, high, or xhigh.")
+        @discord.app_commands.describe(effort="Effort: none, minimal, low, medium, high, xhigh, max, or ultra.")
         async def slash_reasoning(interaction: discord.Interaction, effort: str = ""):
             await self._run_simple_slash(interaction, f"/reasoning {effort}".strip())
 
@@ -5571,6 +5571,8 @@ class DiscordAdapter(BasePlatformAdapter):
         self, chat_id: str, command: str, session_key: str,
         description: str = "dangerous command",
         metadata: Optional[dict] = None,
+        allow_permanent: bool = True,
+        smart_denied: bool = False,
     ) -> SendResult:
         """
         Send a button-based exec approval prompt for a dangerous command.
@@ -5606,6 +5608,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 "Do you want Hermes to run this command?\n\n"
                 "**Requested command:**\n```bash\n"
             )
+            if smart_denied:
+                prompt_prefix += "**Smart DENY:** owner override applies to this one operation only.\n\n"
             mention_content = self._approval_mention_content()
             if mention_content:
                 prompt_prefix = f"{mention_content}\n{prompt_prefix}"
@@ -5642,6 +5646,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_role_ids=self._allowed_role_ids,
                 require_admin=require_admin,
                 admin_user_ids=admin_user_ids,
+                allow_permanent=allow_permanent,
+                smart_denied=smart_denied,
             )
 
             send_kwargs: Dict[str, Any] = {"content": content, "embed": embed, "view": view}
@@ -6606,12 +6612,20 @@ class DiscordAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching."""
+        """Session-scoped key for text message batching.
+
+        Passes ``event.source.profile`` through so routed messages batch
+        under the same namespace the agent run will use (e.g.
+        ``agent:crypto-trader`` instead of ``agent:main``). Without this,
+        the batch key would always land in ``agent:main`` even when the
+        routed profile differs.
+        """
         from gateway.session import build_session_key
         return build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=event.source.profile,
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -6836,6 +6850,8 @@ def _define_discord_view_classes() -> None:
             allowed_role_ids: Optional[set] = None,
             require_admin: bool = False,
             admin_user_ids: Optional[set] = None,
+            allow_permanent: bool = True,
+            smart_denied: bool = False,
         ):
             super().__init__(timeout=_read_discord_prompt_timeout())
             self.session_key = session_key
@@ -6849,6 +6865,11 @@ def _define_discord_view_classes() -> None:
                 str(a).strip() for a in (admin_user_ids or set()) if str(a).strip()
             }
             self.resolved = False
+            if smart_denied:
+                self.remove_item(self.allow_session)
+                self.remove_item(self.allow_always)
+            elif not allow_permanent:
+                self.remove_item(self.allow_always)
 
         def _check_auth(self, interaction: discord.Interaction) -> bool:
             """Verify the user clicking is authorized.
@@ -7881,6 +7902,7 @@ async def _standalone_send(
     thread_id: Optional[str] = None,
     media_files: Optional[list] = None,
     force_document: bool = False,
+    caption: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Send via Discord REST API without a live gateway adapter.
 
@@ -7981,7 +8003,7 @@ async def _standalone_send(
                             {"id": str(idx), "filename": os.path.basename(path)}
                             for idx, path in enumerate(valid_media)
                         ]
-                        starter_message = {"content": message, "attachments": attachments_meta}
+                        starter_message = {"content": (caption or message), "attachments": attachments_meta}
                         payload_json = json.dumps({"name": thread_name, "message": starter_message})
 
                         form = aiohttp.FormData()
@@ -8061,16 +8083,42 @@ async def _standalone_send(
                         _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
                     )
 
-            # Send each media file as a separate multipart upload
+            # Send each media file as a separate multipart upload. When a
+            # MEDIA:<path> caption was supplied, ride it as the message content
+            # on the attachment so it appears under the media bubble instead of
+            # as a separate message. caption_pending tracks whether the caption
+            # still needs delivering, so a missing file falls back to a plain
+            # message rather than silently dropping the text.
+            caption_pending = bool(caption)
             for media_path, _is_voice in media_files:
                 if not os.path.exists(media_path):
                     warning = f"Media file not found, skipping: {media_path}"
                     logger.warning(warning)
                     warnings.append(warning)
+                    if caption_pending:
+                        try:
+                            async with session.post(
+                                url, headers=json_headers,
+                                json={"content": caption}, **_req_kw,
+                            ) as resp:
+                                if resp.status in {200, 201}:
+                                    last_data = await _standalone_read_json_limited(
+                                        resp, _DISCORD_STANDALONE_JSON_BODY_LIMIT_BYTES,
+                                    )
+                                    caption_pending = False
+                        except Exception:
+                            logger.warning("Discord caption-fallback send failed for missing media")
                     continue
                 try:
                     form = aiohttp.FormData()
                     filename = os.path.basename(media_path)
+                    if caption_pending:
+                        form.add_field(
+                            "payload_json",
+                            json.dumps({"content": caption}),
+                            content_type="application/json",
+                        )
+                        caption_pending = False
                     with open(media_path, "rb") as f:
                         form.add_field("files[0]", f, filename=filename)
                         async with session.post(url, headers=auth_headers, data=form, **_req_kw) as resp:

@@ -198,7 +198,7 @@ from agent.trajectory import (
     save_trajectory as _save_trajectory_to_file,
 )
 from agent.tool_dispatch_helpers import (
-    _should_parallelize_tool_batch,
+    _should_parallelize_tool_batch,  # noqa: F401  # re-exported for tests that `from run_agent import _should_parallelize_tool_batch`
     _is_destructive_command,  # noqa: F401  # re-exported for tests that access `run_agent._is_destructive_command`
     _extract_parallel_scope_path,  # noqa: F401  # re-exported for tests that `from run_agent import _extract_parallel_scope_path`
     _paths_overlap,  # noqa: F401  # re-exported for tests that `from run_agent import _paths_overlap`
@@ -232,6 +232,8 @@ _EPHEMERAL_SCAFFOLDING_FLAGS = (
     # transcript and breaks prompt-prefix cache reuse on later turns. (#55733)
     "_verification_stop_synthetic",
     "_pre_verify_synthetic",
+    # kanban worker stop-guard: narrated exit without kanban_complete/block
+    "_kanban_stop_synthetic",
 )
 
 
@@ -458,6 +460,7 @@ class AIAgent:
         notice_callback: callable = None,
         notice_clear_callback: callable = None,
         event_callback: Optional[Callable[[str, dict], None]] = None,
+        reaction_callback: Optional[Callable[[str], None]] = None,
         max_tokens: int = None,
         reasoning_config: Dict[str, Any] = None,
         service_tier: str = None,
@@ -533,6 +536,7 @@ class AIAgent:
             notice_callback=notice_callback,
             notice_clear_callback=notice_clear_callback,
             event_callback=event_callback,
+            reaction_callback=reaction_callback,
             max_tokens=max_tokens,
             reasoning_config=reasoning_config,
             service_tier=service_tier,
@@ -595,6 +599,13 @@ class AIAgent:
             return
         source = _session_source_for_agent(self.platform)
         try:
+            try:
+                from hermes_cli.profiles import get_active_profile_name
+                _profile_for_session = get_active_profile_name()
+                if _profile_for_session == "default":
+                    _profile_for_session = None
+            except Exception:
+                _profile_for_session = None
             self._session_db.create_session(
                 session_id=self.session_id,
                 source=source,
@@ -604,6 +615,7 @@ class AIAgent:
                 user_id=None,
                 parent_session_id=self._parent_session_id,
                 cwd=_launch_cwd_for_session(source),
+                profile_name=_profile_for_session,
             )
             self._session_db_created = True
         except Exception as e:
@@ -930,6 +942,30 @@ class AIAgent:
             except Exception:
                 logger.debug("notice_clear_callback error in _emit_notice_clear", exc_info=True)
 
+    def _emit_wait_notice(self, text: str) -> None:
+        """Surface a live wait-state explanation on every driver.
+
+        Long provider waits (slow/overloaded backend, no first byte, reasoning
+        model thinking for minutes) used to leave the user staring at a generic
+        "cogitating..." spinner with no hint of what the agent was waiting on.
+        This helper rewrites the live status line with an explanation:
+
+        - CLI: ``thinking_callback`` updates the prompt_toolkit spinner text.
+        - TUI / Desktop: the same callback is bridged to the ``thinking.delta``
+          event, which both render as the live spinner/status line.
+        - Gateway: ``_touch_activity`` stores the text as the activity
+          description, which the "⏳ Working — N min" heartbeat includes.
+
+        Never raises — a wait notice must not break the API-call wait loop.
+        """
+        self._touch_activity(text)
+        _thinking_cb = getattr(self, "thinking_callback", None)
+        if _thinking_cb:
+            try:
+                _thinking_cb(text)
+            except Exception:
+                logger.debug("thinking_callback error in _emit_wait_notice", exc_info=True)
+
     # ── Buffered retry/fallback status ────────────────────────────────────
     # Retry and fallback chains were flooding the CLI/gateway with status
     # noise that users found confusing: a single transient 429 could produce
@@ -981,6 +1017,29 @@ class AIAgent:
         except Exception:
             pass
 
+    def _emit_pending_fallback_notice(self) -> None:
+        """Surface the one-shot fallback-switch notice on successful recovery.
+
+        A provider/model switch is a durable state change operators must see,
+        unlike transient retry chatter that ``_clear_status_buffer`` drops.
+        ``try_activate_fallback`` records the switch in
+        ``self._pending_fallback_notice``; this emits it exactly once via
+        ``_emit_status`` and then clears it, so a successful fallback still
+        produces one visible notice.  On terminal failure the buffered switch
+        line is flushed instead (and this notice discarded) — see
+        ``_flush_status_buffer`` — so the user always sees the switch once.
+        """
+        try:
+            notice = getattr(self, "_pending_fallback_notice", None)
+            if notice:
+                # Clear before emitting so a (swallowed) callback error can't
+                # leave the notice set for a stale re-emit on a later turn.
+                self._pending_fallback_notice = None
+                self._emit_status(notice)
+        except Exception:
+            # Never break the conversation loop on a notice hiccup.
+            pass
+
     def _flush_status_buffer(self) -> None:
         """Emit buffered retry messages — call on terminal failure.
 
@@ -988,6 +1047,10 @@ class AIAgent:
         was tried before the turn gave up.
         """
         try:
+            # The buffered trace already carries the fallback switch line, so
+            # drop any one-shot fallback notice to avoid a stale duplicate
+            # leaking into a later successful turn.
+            self._pending_fallback_notice = None
             buf = getattr(self, "_retry_status_buffer", None)
             if not buf:
                 return
@@ -1634,14 +1697,14 @@ class AIAgent:
             msg = messages[idx]
             if isinstance(msg, dict) and msg.get("role") == "user":
                 # Text-only call paths may pass a synthetic API-facing prompt
-                # and a cleaner transcript string separately. Multimodal
-                # turns, however, keep image/audio blocks in the live
-                # messages list that is still used for the API request after
-                # early crash-resilience persistence. Do not replace those
-                # blocks with the text-only persistence override before the
-                # model call is built. The paired timestamp override still
-                # applies — it is metadata, not content.
-                if override is not None and not isinstance(msg.get("content"), list):
+                # and a cleaner transcript string separately. Before the API
+                # call, a plain-text override must not replace native image/audio
+                # blocks. A list override, however, is the original clean
+                # multimodal payload (for example before a queued /model note)
+                # and must replace the API-local list once the turn is final.
+                if override is not None and (
+                    not isinstance(msg.get("content"), list) or isinstance(override, list)
+                ):
                     msg["content"] = override
                 if timestamp is not None:
                     msg["timestamp"] = timestamp
@@ -1660,10 +1723,22 @@ class AIAgent:
         """
         # Scaffolding removal mutates the live list (desired — ephemeral
         # retry/failure sentinels must not survive into the real transcript).
-        self._drop_trailing_empty_response_scaffolding(messages)
-        self._session_messages = messages
-        self._save_session_log(messages)
-        self._flush_messages_to_session_db(messages, conversation_history)
+        # Close and turn-start persistence can run on separate CLI threads; the
+        # marker test-and-append below must be one critical section or both can
+        # observe the same unmarked dict and write duplicate durable rows.
+        persist_lock = getattr(self, "_session_persist_lock", None)
+        if persist_lock is None:
+            self._drop_trailing_empty_response_scaffolding(messages)
+            self._session_messages = messages
+            self._save_session_log(messages)
+            self._flush_messages_to_session_db(messages, conversation_history)
+            return
+
+        with persist_lock:
+            self._drop_trailing_empty_response_scaffolding(messages)
+            self._session_messages = messages
+            self._save_session_log(messages)
+            self._flush_messages_to_session_db(messages, conversation_history)
 
     def _drop_trailing_empty_response_scaffolding(self, messages: List[Dict]) -> None:
         """Remove private empty-response retry/failure scaffolding from transcript tails.
@@ -1723,7 +1798,23 @@ class AIAgent:
         from agent.agent_runtime_helpers import repair_message_sequence
         return repair_message_sequence(self, messages)
 
-    def _flush_messages_to_session_db(self, messages: List[Dict], conversation_history: List[Dict] = None):
+    def _flush_messages_to_session_db(
+        self,
+        messages: List[Dict],
+        conversation_history: Optional[List[Dict]] = None,
+    ):
+        """Serialize direct and turn-boundary session flushes per agent."""
+        persist_lock = getattr(self, "_session_persist_lock", None)
+        if persist_lock is None:
+            return self._flush_messages_to_session_db_unlocked(messages, conversation_history)
+        with persist_lock:
+            return self._flush_messages_to_session_db_unlocked(messages, conversation_history)
+
+    def _flush_messages_to_session_db_unlocked(
+        self,
+        messages: List[Dict],
+        conversation_history: Optional[List[Dict]] = None,
+    ):
         """Persist any un-flushed messages to the SQLite session store.
 
         Deduplicates via an intrinsic ``_DB_PERSISTED_MARKER`` stamped on each
@@ -1830,11 +1921,22 @@ class AIAgent:
                 content = msg.get("content")
                 _row_timestamp = msg.get("timestamp")
                 # Apply the persist override to THIS row's written values only
-                # (never to the live dict). Match the original guard: text-only
-                # content is replaced; multimodal (list) content is left intact
-                # so image/audio blocks aren't clobbered by the text override.
-                if _ov_idx == _msg_idx and msg.get("role") == "user":
-                    if _ov_content is not None and not isinstance(content, list):
+                # (never to the live dict). A multimodal override is a complete
+                # clean replacement for an API-local noted payload. Preserve the
+                # historical text-only guard for a list payload, though: a plain
+                # text override must not erase its image/audio transcript summary.
+                # The close safety-net may flush a shortened snapshot while
+                # turn setup still owns its staged CLI dict. In that shape the
+                # normal turn index refers to the full history, not this list;
+                # preserve the API-local override by recognizing the same dict.
+                pending_cli_message = getattr(self, "_pending_cli_user_message", None)
+                is_current_turn_user = (
+                    _ov_idx == _msg_idx or msg is pending_cli_message
+                )
+                if is_current_turn_user and msg.get("role") == "user":
+                    if _ov_content is not None and (
+                        not isinstance(content, list) or isinstance(_ov_content, list)
+                    ):
                         content = _ov_content
                     if _ov_timestamp is not None:
                         _row_timestamp = _ov_timestamp
@@ -2645,6 +2747,16 @@ class AIAgent:
         """
         self._interrupt_requested = True
         self._interrupt_message = message
+        # A cron turn performs its API request on the conversation thread to
+        # avoid the nested interrupt-worker deadlock.  Unlike the normal worker
+        # path, its client is registered here so this cross-thread interrupt can
+        # still shut down the active sockets promptly.
+        _abort_active_request = getattr(self, "_active_request_abort", None)
+        if callable(_abort_active_request):
+            try:
+                _abort_active_request("interrupt_abort")
+            except Exception:
+                logger.debug("Failed to abort active inline request", exc_info=True)
         # Signal all tools to abort any in-flight operations immediately.
         # Scope the interrupt to this agent's execution thread so other
         # agents running in the same process (gateway) are not affected.
@@ -5634,22 +5746,41 @@ class AIAgent:
     def _execute_tool_calls(self, assistant_message, messages: list, effective_task_id: str, api_call_count: int = 0) -> None:
         """Execute tool calls from the assistant message and append results to messages.
 
-        Dispatches to concurrent execution only for batches that look
-        independent: read-only tools may always share the parallel path, while
-        file reads/writes may do so only when their target paths do not overlap.
+        The segment planner splits the batch into maximal contiguous runs of
+        parallel-safe calls (read-only tools, non-overlapping file targets,
+        opted-in MCP tools) separated by sequential barriers (interactive,
+        unsafe, or unrecognized tools). Homogeneous batches keep their
+        original single-path dispatch; mixed batches execute segment by
+        segment in emission order so safe subsets still run concurrently
+        while side-effect ordering is preserved.
         """
         tool_calls = assistant_message.tool_calls
 
         # Allow _vprint during tool execution even with stream consumers
         self._executing_tools = True
         try:
-            if not _should_parallelize_tool_batch(tool_calls):
+            if len(tool_calls) <= 1:
                 return self._execute_tool_calls_sequential(
                     assistant_message, messages, effective_task_id, api_call_count
                 )
 
-            return self._execute_tool_calls_concurrent(
-                assistant_message, messages, effective_task_id, api_call_count
+            from agent.tool_dispatch_helpers import _plan_tool_batch_segments
+            segments = _plan_tool_batch_segments(tool_calls)
+
+            if len(segments) == 1:
+                kind = segments[0][0]
+                if kind == "parallel":
+                    return self._execute_tool_calls_concurrent(
+                        assistant_message, messages, effective_task_id, api_call_count
+                    )
+                return self._execute_tool_calls_sequential(
+                    assistant_message, messages, effective_task_id, api_call_count
+                )
+
+            from agent.tool_executor import execute_tool_calls_segmented
+            return execute_tool_calls_segmented(
+                self, assistant_message, messages, effective_task_id, api_call_count,
+                segments=segments,
             )
         finally:
             self._executing_tools = False
@@ -5747,12 +5878,12 @@ class AIAgent:
 
     def run_conversation(
         self,
-        user_message: str,
+        user_message: Any,
         system_message: str = None,
         conversation_history: List[Dict[str, Any]] = None,
         task_id: str = None,
         stream_callback: Optional[callable] = None,
-        persist_user_message: Optional[str] = None,
+        persist_user_message: Optional[Any] = None,
         persist_user_timestamp: Optional[float] = None,
         moa_config: Optional[dict[str, Any]] = None,
     ) -> Dict[str, Any]:

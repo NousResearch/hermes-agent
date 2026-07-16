@@ -950,9 +950,10 @@ async def test_session_hygiene_forces_in_place_compaction_with_bound_session_db(
     agent = FakeInPlaceCompressAgent.last_instance
     assert agent is not None
     agent.context_compressor.bind_session_state.assert_called_once_with(fake_db, "sess-1")
-    runner.session_store.rewrite_transcript.assert_called_once_with(
-        "sess-1", [{"role": "assistant", "content": "compressed in place"}]
-    )
+    # In-place compaction already persisted via archive_and_compact() —
+    # rewrite_transcript would replace_messages(active_only=False) and DELETE
+    # the just-archived rows (#61145). The hygiene handler must skip it.
+    runner.session_store.rewrite_transcript.assert_not_called()
     runner._run_agent.assert_awaited_once()
 
 

@@ -821,6 +821,81 @@ def test_run_conversation_codex_plain_text(monkeypatch):
     assert result["messages"][-1]["content"] == "OK"
 
 
+def test_copilot_final_preflight_sanitizes_both_middleware_layers(monkeypatch):
+    """The dispatch chokepoint must sanitize after every mutable layer."""
+    agent = _build_copilot_agent(monkeypatch)
+    setattr(agent, "_disable_streaming", True)
+    captured = {}
+
+    def _message_item(item_id, *, text, phase, status):
+        return {
+            "type": "message",
+            "role": "assistant",
+            "status": status,
+            "content": [{"type": "output_text", "text": text}],
+            "id": item_id,
+            "phase": phase,
+        }
+
+    def _request_middleware(request, **_context):
+        replacement = dict(request)
+        replacement["input"] = [
+            _message_item(
+                "request_middleware_id",
+                text="request-layer",
+                phase="commentary",
+                status="completed",
+            )
+        ]
+        return SimpleNamespace(
+            payload=replacement,
+            original_payload=request,
+            changed=True,
+            trace=[],
+        )
+
+    def _execution_middleware(request, next_call, **_context):
+        # Request middleware runs after the initial preflight, so its ID is
+        # still present here. The dispatch chokepoint must remove the ID that
+        # this execution middleware introduces immediately before the API call.
+        assert request["input"][0]["id"] == "request_middleware_id"
+        replacement = dict(request)
+        replacement["input"] = [
+            _message_item(
+                "execution_middleware_id",
+                text="execution-layer",
+                phase="final_answer",
+                status="in_progress",
+            )
+        ]
+        return next_call(replacement)
+
+    def _capture_api_call(api_kwargs):
+        captured.update(api_kwargs)
+        return _codex_message_response("OK")
+
+    monkeypatch.setattr(
+        "hermes_cli.middleware.apply_llm_request_middleware",
+        _request_middleware,
+    )
+    monkeypatch.setattr(
+        "hermes_cli.middleware.run_llm_execution_middleware",
+        _execution_middleware,
+    )
+    monkeypatch.setattr(agent, "_interruptible_api_call", _capture_api_call)
+
+    result = agent.run_conversation("Say OK")
+
+    assert result["completed"] is True
+    message_item = captured["input"][0]
+    assert "id" not in message_item
+    assert message_item["status"] == "in_progress"
+    assert message_item["phase"] == "final_answer"
+    assert message_item["content"] == [
+        {"type": "output_text", "text": "execution-layer"}
+    ]
+
+
 def test_run_conversation_codex_empty_output_with_output_text(monkeypatch):
     """Regression: empty response.output + valid output_text should succeed,
     not trigger retry/fallback. The validation stage must defer to
@@ -1629,6 +1704,90 @@ def test_mid_turn_compaction_does_not_double_persist_in_place_rows(monkeypatch, 
     )
 
 
+def _codex_incomplete_with_reasoning(text: str, reasoning_id: str = "rs_default"):
+    """Incomplete response with a reasoning item whose id/encrypted_content
+    can vary independently of the visible message text."""
+    return SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="reasoning",
+                id=reasoning_id,
+                encrypted_content=f"opaque_{reasoning_id}",
+                summary=[SimpleNamespace(text="thinking...")],
+            ),
+            SimpleNamespace(
+                type="message",
+                status="in_progress",
+                content=[SimpleNamespace(type="output_text", text=text)],
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="in_progress",
+        model="gpt-5-codex",
+    )
+
+
+def test_codex_incomplete_visible_dedup_suppresses_duplicate_interims(monkeypatch):
+    """Two consecutive incomplete responses with identical visible content
+    but different opaque reasoning items should be collapsed — only the first
+    interim is emitted to the user (#52711)."""
+    agent = _build_agent(monkeypatch)
+    # 2 incompletes with same text but different reasoning ids, then a final.
+    # (Only 2 to avoid hitting the cap of 3.)
+    responses = [
+        _codex_incomplete_with_reasoning("Working on it...", "rs_1"),
+        _codex_incomplete_with_reasoning("Working on it...", "rs_2"),
+        _codex_message_response("Done."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    emitted: list = []
+    original_emit = agent._emit_interim_assistant_message
+    def _capture_emit(msg):
+        emitted.append(msg.get("content"))
+        original_emit(msg)
+    monkeypatch.setattr(agent, "_emit_interim_assistant_message", _capture_emit)
+
+    result = agent.run_conversation("test dedup")
+
+    assert result["completed"] is True
+    # Only ONE interim should have been emitted (the first), not two.
+    assert len(emitted) == 1
+    assert emitted[0] == "Working on it..."
+
+
+def test_codex_incomplete_opaque_state_updated_in_place(monkeypatch):
+    """When visible content is a duplicate, the last message's opaque state
+    (codex_reasoning_items) should be updated in-place without emitting a new
+    interim (#52711)."""
+    agent = _build_agent(monkeypatch)
+    responses = [
+        _codex_incomplete_with_reasoning("Partial output...", "rs_1"),
+        _codex_incomplete_with_reasoning("Partial output...", "rs_2"),
+        _codex_message_response("Final."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("test opaque update")
+
+    assert result["completed"] is True
+    # Find the incomplete interim message in the result.
+    incompletes = [
+        m for m in result["messages"]
+        if m.get("role") == "assistant" and m.get("finish_reason") == "incomplete"
+    ]
+    # Only one incomplete message should exist (the second was deduped).
+    assert len(incompletes) == 1
+    # The opaque state should reflect the LATEST reasoning item (rs_2),
+    # updated in-place on the single message.
+    items = incompletes[0].get("codex_reasoning_items")
+    if items:
+        assert any(
+            (i.get("id") if isinstance(i, dict) else getattr(i, "id", None)) == "rs_2"
+            for i in items
+        )
+
+
 def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(monkeypatch):
     agent = _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response
@@ -2284,15 +2443,16 @@ def _codex_reasoning_only_response(*, encrypted_content="enc_abc123", summary_te
 
 
 def test_normalize_codex_response_marks_reasoning_only_as_incomplete(monkeypatch):
-    """A response with only reasoning items and no content should be 'incomplete', not 'stop'.
+    """A response with only reasoning items and no content should be 'incomplete' for Codex backends.
 
-    Without this fix, reasoning-only responses get finish_reason='stop' which
-    sends them into the empty-content retry loop (3 retries then failure).
+    Codex CLI uses reasoning-only responses as a signal that the model is still
+    thinking and needs another turn. This test verifies the Codex-specific path
+    where issuer_kind="codex_backend" preserves the old behavior.
     """
     agent = _build_agent(monkeypatch)
     from agent.codex_responses_adapter import _normalize_codex_response
     assistant_message, finish_reason = _normalize_codex_response(
-        _codex_reasoning_only_response()
+        _codex_reasoning_only_response(), issuer_kind="codex_backend"
     )
 
     assert finish_reason == "incomplete"
@@ -2300,6 +2460,74 @@ def test_normalize_codex_response_marks_reasoning_only_as_incomplete(monkeypatch
     assert assistant_message.codex_reasoning_items is not None
     assert len(assistant_message.codex_reasoning_items) == 1
     assert assistant_message.codex_reasoning_items[0]["encrypted_content"] == "enc_abc123"
+
+
+def test_normalize_codex_response_reasoning_only_completed_is_stop_for_other_backends(monkeypatch):
+    """Reasoning-only with status='completed' should be 'stop' for non-Codex backends.
+
+    When response.status == "completed" and no items are queued/in_progress,
+    reasoning alone is a valid final state for non-Codex backends. Forcing
+    "incomplete" here causes multi-minute stalls (3 retries x up to 240s each).
+    See https://github.com/NousResearch/hermes-agent/issues/64434
+    """
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+    response = _codex_reasoning_only_response()
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="other:example-relay"
+    )
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == ""
+    assert assistant_message.codex_reasoning_items is not None
+    assert len(assistant_message.codex_reasoning_items) == 1
+
+
+def test_normalize_codex_response_reasoning_only_completed_is_stop_without_issuer(monkeypatch):
+    """Default issuer (None) should also trust response.status='completed' for reasoning-only.
+
+    When no issuer_kind is provided (test or default scenario) and the provider
+    says status='completed', reasoning-only should be treated as 'stop'.
+    """
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+    response = _codex_reasoning_only_response()
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == ""
+
+
+def test_normalize_codex_response_reasoning_only_stays_incomplete_for_xai_backend(monkeypatch):
+    """xAI backend also preserves incomplete for reasoning-only (same as Codex)."""
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+    response = _codex_reasoning_only_response()
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="xai_responses"
+    )
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.content == ""
+
+
+def test_normalize_codex_response_reasoning_only_stays_incomplete_for_github_backend(monkeypatch):
+    """GitHub/Copilot Responses backend preserves incomplete for reasoning-only.
+
+    Copilot fronts the same OpenAI model family as codex_backend and exhibits
+    the same reasoning-only "still thinking" degeneration mode, so it must
+    stay on the continuation path — only unrecognized (other:*) backends
+    trust response.status='completed' as terminal.
+    """
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+    response = _codex_reasoning_only_response()
+    assistant_message, finish_reason = _normalize_codex_response(
+        response, issuer_kind="github_responses"
+    )
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.content == ""
 
 
 def test_normalize_codex_response_reasoning_with_content_is_stop(monkeypatch):
@@ -2464,7 +2692,8 @@ def test_codex_message_item_status_survives_conversion_and_preflight(monkeypatch
 
 def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch):
     """Two consecutive reasoning-only responses with different encrypted content
-    must NOT be treated as duplicates."""
+    are deduped on visible content — only one interim is kept, but opaque state
+    is updated in-place (#52711)."""
     agent = _build_agent(monkeypatch)
     responses = [
         # First reasoning-only response
@@ -2497,23 +2726,23 @@ def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch
 
     assert result["completed"] is True
     assert result["final_response"] == "Final answer after thinking."
-    # Both reasoning-only interim messages should be in history (not collapsed)
+    # Only one reasoning-only interim should be in history (deduped on
+    # visible content — both have empty visible output).
     interim_msgs = [
         msg for msg in result["messages"]
         if msg.get("role") == "assistant"
         and msg.get("finish_reason") == "incomplete"
     ]
-    assert len(interim_msgs) == 2
-    encrypted_contents = [
-        msg["codex_reasoning_items"][0]["encrypted_content"]
-        for msg in interim_msgs
-    ]
-    assert "enc_first" in encrypted_contents
-    assert "enc_second" in encrypted_contents
+    assert len(interim_msgs) == 1
+    # But the opaque state should reflect the LATEST reasoning item.
+    items = interim_msgs[0].get("codex_reasoning_items")
+    if items:
+        assert items[0].get("encrypted_content") == "enc_second"
 
 
 def test_duplicate_detection_distinguishes_different_codex_message_items(monkeypatch):
-    """Incomplete turns with new message ids/phases/statuses must not be collapsed."""
+    """Incomplete turns with same visible content but different message ids
+    are deduped — only one interim kept, opaque state updated in-place (#52711)."""
     agent = _build_agent(monkeypatch)
     responses = [
         SimpleNamespace(
@@ -2556,12 +2785,12 @@ def test_duplicate_detection_distinguishes_different_codex_message_items(monkeyp
         if msg.get("role") == "assistant"
         and msg.get("finish_reason") == "incomplete"
     ]
-    assert len(interim_msgs) == 2
-    assert [msg["codex_message_items"][0]["id"] for msg in interim_msgs] == [
-        "msg_first",
-        "msg_second",
-    ]
-    assert all(msg["codex_message_items"][0]["status"] == "in_progress" for msg in interim_msgs)
+    # Only one interim — deduped on visible content ("Still working..." == "Still working...").
+    assert len(interim_msgs) == 1
+    # Opaque state should reflect the latest message item.
+    items = interim_msgs[0].get("codex_message_items")
+    if items:
+        assert items[0].get("id") == "msg_second"
 
 
 def test_chat_messages_to_responses_input_deduplicates_reasoning_ids(monkeypatch):
@@ -2731,3 +2960,72 @@ def test_run_conversation_codex_invalid_encrypted_content_without_replay_state_d
     assert all(not any(item.get("type") == "reasoning" for item in payload["input"]) for payload in request_payloads)
     assert agent._codex_reasoning_replay_enabled is True
     assert result["messages"][0].get("codex_reasoning_items") is None
+
+
+def test_run_conversation_codex_nudges_after_unreplayable_reasoning_only_interim(monkeypatch):
+    """A reasoning-only interim with NO encrypted_content (the shape
+    grok-4.20 on xai-oauth returns when it never emits a message output
+    item) replays as nothing — without a nudge every continuation request
+    is byte-identical to the one that just came back incomplete."""
+    agent = _build_agent(monkeypatch)
+    requests = []
+    responses = [
+        _codex_reasoning_only_response(
+            encrypted_content=None,
+            summary_text="Thinking about the repo structure...",
+        ),
+        _codex_message_response("Final answer."),
+    ]
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("analyze repo")
+
+    assert result["completed"] is True
+    assert result["final_response"] == "Final answer."
+    assert len(requests) == 2
+
+    replay_input = requests[1]["input"]
+    nudges = [
+        item for item in replay_input
+        if isinstance(item, dict)
+        and item.get("role") == "user"
+        and "only internal reasoning" in str(item.get("content"))
+    ]
+    assert len(nudges) == 1, (
+        "Continuation after an unreplayable reasoning-only interim must "
+        "append the nudge user message; otherwise the retry request is "
+        "identical to the one that just failed."
+    )
+
+
+def test_run_conversation_codex_no_nudge_for_replayable_interim(monkeypatch):
+    """An interim that carries visible content replays fine — the nudge
+    must not fire and pollute the conversation."""
+    agent = _build_agent(monkeypatch)
+    requests = []
+    responses = [
+        _codex_incomplete_message_response("Partial visible content."),
+        _codex_message_response("Done."),
+    ]
+
+    def _fake_api_call(api_kwargs):
+        requests.append(api_kwargs)
+        return responses.pop(0)
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+
+    result = agent.run_conversation("analyze repo")
+
+    assert result["completed"] is True
+    replay_input = requests[1]["input"]
+    assert not any(
+        isinstance(item, dict)
+        and item.get("role") == "user"
+        and "only internal reasoning" in str(item.get("content"))
+        for item in replay_input
+    )

@@ -31,6 +31,24 @@ from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
 
+
+def workspace_key(row: Dict[str, Any]) -> Optional[str]:
+    """A session's workspace grouping key: its git repo root when known, else
+    its cwd.
+
+    Branch is deliberately excluded so checking out a new branch doesn't
+    fragment a workspace's session history. Returns None for cwd-less (unbound)
+    sessions. Both fields are already recorded on ``sessions`` — this just picks
+    the coarser identity for grouping/filtering.
+    """
+    root = (row.get("git_repo_root") or "").strip()
+    if root:
+        return root
+
+    cwd = (row.get("cwd") or "").strip()
+    return cwd or None
+
+
 def _delegate_from_json(col: str = "model_config") -> str:
     return f"json_extract(COALESCE({col}, '{{}}'), '$._delegate_from')"
 
@@ -122,7 +140,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 19
+SCHEMA_VERSION = 21
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -338,6 +356,36 @@ def _apply_macos_checkpoint_barrier(conn: sqlite3.Connection) -> None:
         pass
 
 
+def _enforce_macos_synchronous_full(conn: sqlite3.Connection) -> None:
+    """Enforce ``PRAGMA synchronous=FULL`` on macOS to prevent btree corruption.
+
+    On Darwin, the default ``synchronous=NORMAL`` only calls ``fsync()``,
+    which Apple's fsync(2) man page explicitly states does *not* guarantee
+    data-on-platter or write-ordering. During a WAL checkpoint race with
+    process termination (e.g., launchd shutdown), this can leave the main
+    DB with half-written btree pages → ``btreeInitPage error 11``.
+
+    WAL mode's durability guarantee assumes the OS honors fsync barriers;
+    macOS does not unless we explicitly set ``synchronous=FULL``, which issues
+    a real ``fsync()`` on every transaction commit.  The ``F_FULLFSYNC``
+    barrier at checkpoint boundaries is handled separately by
+    :func:`_apply_macos_checkpoint_barrier`.
+
+    This function is called after any successful WAL activation (either
+    from ``apply_wal_with_fallback()`` setting a fresh WAL or when probing
+    an existing WAL mode). It ensures macOS connections always use FULL
+    synchronous mode, even if a prior connection set ``synchronous=NORMAL``.
+
+    Best-effort: never raises.
+    """
+    if sys.platform != "darwin":
+        return
+    try:
+        conn.execute("PRAGMA synchronous=FULL")
+    except sqlite3.OperationalError:
+        pass
+
+
 def apply_wal_with_fallback(
     conn: sqlite3.Connection,
     *,
@@ -369,6 +417,7 @@ def apply_wal_with_fallback(
         current_mode = conn.execute("PRAGMA journal_mode").fetchone()
         if current_mode and current_mode[0] == "wal":
             _apply_macos_checkpoint_barrier(conn)
+            _enforce_macos_synchronous_full(conn)
             return "wal"
     except sqlite3.OperationalError:
         pass
@@ -376,6 +425,7 @@ def apply_wal_with_fallback(
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         _apply_macos_checkpoint_barrier(conn)
+        _enforce_macos_synchronous_full(conn)
         return "wal"
     except sqlite3.OperationalError as exc:
         msg = str(exc).lower()
@@ -740,6 +790,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     handoff_error TEXT,
     compression_failure_cooldown_until REAL,
     compression_failure_error TEXT,
+    compression_fallback_streak INTEGER NOT NULL DEFAULT 0,
+    profile_name TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
@@ -753,6 +805,7 @@ CREATE TABLE IF NOT EXISTS messages (
     tool_call_id TEXT,
     tool_calls TEXT,
     tool_name TEXT,
+    effect_disposition TEXT,
     timestamp REAL NOT NULL,
     token_count INTEGER,
     finish_reason TEXT,
@@ -765,6 +818,27 @@ CREATE TABLE IF NOT EXISTS messages (
     observed INTEGER DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     compacted INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS session_model_usage (
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    model TEXT NOT NULL,
+    billing_provider TEXT NOT NULL DEFAULT '',
+    billing_base_url TEXT NOT NULL DEFAULT '',
+    billing_mode TEXT NOT NULL DEFAULT '',
+    api_call_count INTEGER NOT NULL DEFAULT 0,
+    input_tokens INTEGER NOT NULL DEFAULT 0,
+    output_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+    estimated_cost_usd REAL NOT NULL DEFAULT 0,
+    actual_cost_usd REAL NOT NULL DEFAULT 0,
+    cost_status TEXT,
+    cost_source TEXT,
+    first_seen REAL,
+    last_seen REAL,
+    PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode)
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -787,12 +861,37 @@ CREATE TABLE IF NOT EXISTS compression_locks (
     expires_at REAL NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS async_delegations (
+    delegation_id TEXT PRIMARY KEY,
+    origin_session TEXT NOT NULL,
+    origin_ui_session_id TEXT NOT NULL DEFAULT '',
+    parent_session_id TEXT,
+    state TEXT NOT NULL,
+    dispatched_at REAL NOT NULL,
+    completed_at REAL,
+    updated_at REAL NOT NULL,
+    event_json TEXT,
+    result_json TEXT,
+    delivery_state TEXT NOT NULL DEFAULT 'pending',
+    delivery_attempts INTEGER NOT NULL DEFAULT 0,
+    delivered_at REAL,
+    owner_pid INTEGER,
+    owner_started_at INTEGER,
+    task_json TEXT,
+    delivery_claim TEXT,
+    delivery_claimed_at REAL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_source_id ON sessions(source, id);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
 CREATE INDEX IF NOT EXISTS idx_compression_locks_expires ON compression_locks(expires_at);
+CREATE INDEX IF NOT EXISTS idx_session_model_usage_session ON session_model_usage(session_id);
+CREATE INDEX IF NOT EXISTS idx_session_model_usage_model ON session_model_usage(model);
+CREATE INDEX IF NOT EXISTS idx_async_delegations_delivery
+    ON async_delegations(delivery_state, completed_at);
 """
 
 # Indexes that reference columns added in later schema versions must be
@@ -888,7 +987,7 @@ class SessionDB:
     _WRITE_MAX_RETRIES = 15
     _WRITE_RETRY_MIN_S = 0.020   # 20ms
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
-    # Attempt a PASSIVE WAL checkpoint every N successful writes.
+    # Attempt a WAL checkpoint every N successful writes (PASSIVE mode).
     _CHECKPOINT_EVERY_N_WRITES = 50
     # Merge fragmented FTS5 segments every N successful writes. The message
     # triggers append one segment per insert; left unmaintained these grow
@@ -900,6 +999,15 @@ class SessionDB:
     # pays almost nothing; the cadence is deliberately coarse so the one-off
     # merge cost is amortised far below the checkpoint cadence.
     _OPTIMIZE_EVERY_N_WRITES = 1000
+    # Session imports intentionally use a lower cap than exports: import holds
+    # one BEGIN IMMEDIATE transaction, so bounded batches avoid starving live
+    # gateway/CLI writers. The dashboard accepts one exported JSON/JSONL file
+    # at a time, so these still cover normal history restores.
+    _IMPORT_MAX_SESSIONS = 500
+    _IMPORT_MAX_MESSAGES_PER_SESSION = 10_000
+    _IMPORT_MAX_TOTAL_MESSAGES = 50_000
+    _IMPORT_MAX_SESSION_BYTES = 5 * 1024 * 1024
+    _IMPORT_MAX_TOTAL_BYTES = 25 * 1024 * 1024
 
     def __init__(self, db_path: Path = None, read_only: bool = False):
         self.db_path = db_path or DEFAULT_DB_PATH
@@ -1194,35 +1302,34 @@ class SessionDB:
         )
 
     def _try_wal_checkpoint(self) -> None:
-        """Best-effort TRUNCATE WAL checkpoint.  Never raises.
+        """Best-effort PASSIVE WAL checkpoint.  Never raises.
 
-        Flushes committed WAL frames back into the main DB file and
-        truncates the WAL file to zero bytes.  Keeps the WAL from
-        growing unbounded when many processes hold persistent
-        connections.
+        Flushes committed WAL frames back into the main DB file without
+        requiring an exclusive lock.  PASSIVE is safe for frequent
+        periodic use because it does not block concurrent writers and
+        cannot corrupt B-tree pages under I/O pressure.
 
-        PASSIVE checkpoint was previously used here, but it never
-        truncates the WAL file — the file stays at its high-water
-        mark until an explicit TRUNCATE is called (which only
-        happened inside the infrequent vacuum()).
+        PASSIVE does not truncate the WAL file — it stays at its
+        high-water mark.  WAL truncation happens in :meth:`close`
+        (TRUNCATE) and pre-VACUUM checkpoints, which run infrequently
+        under controlled conditions.
 
-        TRUNCATE may block writers briefly while checkpointing, but
-        _try_wal_checkpoint is called off the hot path (every 50
-        writes) and already runs under ``self._lock``, so the
-        additional hold time is negligible.
+        Previous TRUNCATE strategy caused B-tree corruption on large
+        databases (65K+ pages) due to the exclusive-lock I/O pressure
+        from checkpointing thousands of frames at once (issue #45383).
         """
         try:
             with self._lock:
                 result = self._conn.execute(
-                    "PRAGMA wal_checkpoint(TRUNCATE)"
+                    "PRAGMA wal_checkpoint(PASSIVE)"
                 ).fetchone()
                 if result and result[1] > 0:
                     logger.debug(
                         "WAL checkpoint: %d/%d pages checkpointed",
                         result[2], result[1],
                     )
-        except Exception:
-            pass  # Best effort — never fatal.
+        except Exception as exc:
+            logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
 
     def _try_optimize_fts(self) -> None:
         """Best-effort FTS5 segment merge. Never raises.
@@ -1250,8 +1357,8 @@ class SessionDB:
             if self._conn:
                 try:
                     self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("WAL checkpoint (TRUNCATE) at close failed: %s", exc)
                 self._conn.close()
                 self._conn = None
 
@@ -1553,6 +1660,50 @@ class SessionDB:
                     # means consumers fall back to sessions.json for those
                     # rows until the gateway rewrites them.
                     logger.debug("v18 gateway metadata backfill skipped: %s", exc)
+            if current_version < 20:
+                # v20: per-model usage attribution (issue #51607). Going
+                # forward update_token_counts() records each API call into
+                # session_model_usage keyed by the live model, but existing
+                # sessions only have their aggregate totals on the sessions
+                # row. Seed one usage row per historical session from those
+                # aggregates so insights reads uniformly from the new table.
+                # INSERT OR IGNORE keeps it idempotent: if newer code already
+                # wrote a (session_id, model, provider) row for a session, the
+                # PK conflict skips the stale aggregate rather than doubling it.
+                try:
+                    cursor.execute(
+                        """INSERT OR IGNORE INTO session_model_usage (
+                               session_id, model, billing_provider,
+                               billing_base_url, billing_mode,
+                               api_call_count, input_tokens,
+                               output_tokens, cache_read_tokens,
+                               cache_write_tokens, reasoning_tokens,
+                               estimated_cost_usd, actual_cost_usd,
+                               cost_status, cost_source, first_seen, last_seen
+                           )
+                           SELECT id, COALESCE(model, 'unknown'),
+                                  COALESCE(billing_provider, ''),
+                                  COALESCE(billing_base_url, ''),
+                                  COALESCE(billing_mode, ''),
+                                  COALESCE(api_call_count, 0),
+                                  COALESCE(input_tokens, 0),
+                                  COALESCE(output_tokens, 0),
+                                  COALESCE(cache_read_tokens, 0),
+                                  COALESCE(cache_write_tokens, 0),
+                                  COALESCE(reasoning_tokens, 0),
+                                  COALESCE(estimated_cost_usd, 0),
+                                  COALESCE(actual_cost_usd, 0),
+                                  cost_status, cost_source,
+                                  started_at, COALESCE(ended_at, started_at)
+                           FROM sessions
+                           WHERE COALESCE(input_tokens, 0)
+                                 + COALESCE(output_tokens, 0)
+                                 + COALESCE(cache_read_tokens, 0)
+                                 + COALESCE(cache_write_tokens, 0)
+                                 + COALESCE(reasoning_tokens, 0) > 0"""
+                    )
+                except sqlite3.OperationalError:
+                    pass
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
@@ -1609,6 +1760,7 @@ class SessionDB:
         thread_id: str = None,
         parent_session_id: str = None,
         cwd: str = None,
+        profile_name: str = None,
     ) -> None:
         """Insert a session row, enriching NULL metadata on conflict.
 
@@ -1632,9 +1784,9 @@ class SessionDB:
             conn.execute(
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
-                   model, model_config, system_prompt, parent_session_id, cwd, started_at
+                   model, model_config, system_prompt, parent_session_id, cwd, profile_name, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = COALESCE(sessions.model_config, excluded.model_config),
@@ -1644,7 +1796,8 @@ class SessionDB:
                        chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
                        thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
                        parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
-                       cwd = COALESCE(sessions.cwd, excluded.cwd)""",
+                       cwd = COALESCE(sessions.cwd, excluded.cwd),
+                       profile_name = COALESCE(sessions.profile_name, excluded.profile_name)""",
                 (
                     session_id,
                     source,
@@ -1658,6 +1811,7 @@ class SessionDB:
                     system_prompt,
                     parent_session_id,
                     cwd,
+                    profile_name,
                     time.time(),
                 ),
             )
@@ -1962,9 +2116,10 @@ class SessionDB:
         pruned after process-level restart bugs.  New gateway sessions persist
         the deterministic ``session_key`` on the durable session row so the
         mapping can be rebuilt exactly.  Rows ended only by older gateway
-        cleanup's ``agent_close`` bug are treated as recoverable; explicit
-        conversation boundaries such as /new, /resume switches, and compression
-        splits are not.
+        cleanup's ``agent_close`` bug or a mistaken TUI ``ws_orphan_reap``
+        (dashboard viewer disconnect before #60609) are treated as recoverable;
+        explicit conversation boundaries such as /new, /resume switches, and
+        compression splits are not.
         """
         if not session_key:
             return None
@@ -1974,7 +2129,7 @@ class SessionDB:
                 SELECT * FROM sessions
                 WHERE session_key = ?
                   AND source = ?
-                  AND (ended_at IS NULL OR end_reason = 'agent_close')
+                  AND (ended_at IS NULL OR end_reason IN ('agent_close', 'ws_orphan_reap'))
                   AND (COALESCE(message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
                   ))
@@ -1999,7 +2154,7 @@ class SessionDB:
                   AND COALESCE(chat_id, '') = COALESCE(?, '')
                   AND COALESCE(chat_type, '') = COALESCE(?, '')
                   AND COALESCE(thread_id, '') = COALESCE(?, '')
-                  AND (ended_at IS NULL OR end_reason = 'agent_close')
+                  AND (ended_at IS NULL OR end_reason IN ('agent_close', 'ws_orphan_reap'))
                   AND (COALESCE(message_count, 0) > 0 OR EXISTS (
                       SELECT 1 FROM messages WHERE messages.session_id = sessions.id LIMIT 1
                   ))
@@ -2177,6 +2332,45 @@ class SessionDB:
                 "clear_compression_failure_cooldown(%s) failed: %s",
                 session_id, exc,
             )
+
+    def get_compression_fallback_streak(self, session_id: str) -> int:
+        """Return the persisted deterministic-fallback streak."""
+        if not session_id:
+            return 0
+        with self._lock:
+            conn = self._conn
+            if conn is None:
+                return 0
+            row = conn.execute(
+                "SELECT compression_fallback_streak FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return 0
+        value = (
+            row["compression_fallback_streak"]
+            if isinstance(row, sqlite3.Row)
+            else row[0]
+        )
+        try:
+            return max(0, int(value or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def set_compression_fallback_streak(self, session_id: str, streak: int) -> None:
+        """Persist the deterministic-fallback streak for one session."""
+        if not session_id:
+            return
+        normalized = max(0, int(streak))
+
+        def _do(conn):
+            conn.execute(
+                "UPDATE sessions SET compression_fallback_streak = ? WHERE id = ?",
+                (normalized, session_id),
+            )
+
+        self._execute_write(_do)
+
     # ──────────────────────────────────────────────────────────────────────
     # Compression locks
     # ──────────────────────────────────────────────────────────────────────
@@ -2480,6 +2674,11 @@ class SessionDB:
                    model = COALESCE(model, ?),
                    api_call_count = COALESCE(api_call_count, 0) + ?
                    WHERE id = ?"""
+        has_accounted_usage = bool(
+            input_tokens or output_tokens or cache_read_tokens
+            or cache_write_tokens or reasoning_tokens or api_call_count
+            or estimated_cost_usd or actual_cost_usd
+        )
         params = (
             input_tokens,
             output_tokens,
@@ -2492,16 +2691,166 @@ class SessionDB:
             cost_status,
             cost_source,
             pricing_version,
-            billing_provider,
-            billing_base_url,
-            billing_mode,
-            model,
+            billing_provider if has_accounted_usage else None,
+            billing_base_url if has_accounted_usage else None,
+            billing_mode if has_accounted_usage else None,
+            model if has_accounted_usage else None,
             api_call_count,
             session_id,
         )
+        # Per-model usage attribution.  ``update_token_counts`` is the single
+        # chokepoint every per-API-call delta flows through (CLI, gateway, cron,
+        # delegated runs — see conversation_loop / codex_runtime), and each call
+        # carries the model/provider *active at the time of that call*.  The
+        # ``sessions`` row only keeps one (model, billing_provider) pair, so a
+        # mid-session ``/model`` switch otherwise attributes every token to the
+        # initial model (issue #51607).  Recording the per-call delta into
+        # session_model_usage keyed by the live model preserves an accurate
+        # per-model breakdown regardless of how many times the user switches.
+        #
+        # Only the incremental path records here. Absolute cumulative updates
+        # cannot be split back into routes; Insights reconciles any positive
+        # residual against the aggregate session row instead.
+        record_model_usage = (not absolute) and (
+            input_tokens or output_tokens or cache_read_tokens
+            or cache_write_tokens or reasoning_tokens or api_call_count
+            or estimated_cost_usd
+        )
+
         def _do(conn):
+            row = conn.execute(
+                "SELECT model, billing_provider, api_call_count FROM sessions WHERE id = ?",
+                (session_id,),
+            ).fetchone()
+            existing_model = row["model"] if row is not None else None
+            existing_provider = row["billing_provider"] if row is not None else None
+            existing_api_calls = int((row["api_call_count"] if row is not None else 0) or 0)
+
+            # Session creation records the requested primary route before any API
+            # call. If it fails and fallback succeeds, the first accounted usage
+            # event is the first authoritative route. After that, preserve the
+            # legacy row: one row cannot represent mixed-provider usage.
+            first_accounted_route = (
+                existing_api_calls == 0
+                and has_accounted_usage
+                and bool(model)
+                and bool(billing_provider)
+                and (existing_model != model or existing_provider != billing_provider)
+            )
+            if first_accounted_route:
+                conn.execute(
+                    """UPDATE sessions
+                       SET model = ?, billing_provider = ?,
+                       billing_base_url = ?, billing_mode = ?
+                       WHERE id = ?""",
+                    (model, billing_provider, billing_base_url, billing_mode, session_id),
+                )
             conn.execute(sql, params)
+            if record_model_usage:
+                self._record_model_usage(
+                    conn,
+                    session_id,
+                    model=model,
+                    billing_provider=billing_provider,
+                    billing_base_url=billing_base_url,
+                    billing_mode=billing_mode,
+                    input_tokens=input_tokens,
+                    output_tokens=output_tokens,
+                    cache_read_tokens=cache_read_tokens,
+                    cache_write_tokens=cache_write_tokens,
+                    reasoning_tokens=reasoning_tokens,
+                    estimated_cost_usd=estimated_cost_usd,
+                    actual_cost_usd=actual_cost_usd,
+                    cost_status=cost_status,
+                    cost_source=cost_source,
+                    api_call_count=api_call_count,
+                )
         self._execute_write(_do)
+
+    def _record_model_usage(
+        self,
+        conn,
+        session_id: str,
+        *,
+        model: Optional[str],
+        billing_provider: Optional[str],
+        billing_base_url: Optional[str],
+        billing_mode: Optional[str],
+        input_tokens: int,
+        output_tokens: int,
+        cache_read_tokens: int,
+        cache_write_tokens: int,
+        reasoning_tokens: int,
+        estimated_cost_usd: Optional[float],
+        actual_cost_usd: Optional[float],
+        cost_status: Optional[str],
+        cost_source: Optional[str],
+        api_call_count: int,
+    ) -> None:
+        """Accumulate a per-API-call usage delta into session_model_usage.
+
+        Runs inside the caller's write transaction (after the ``sessions``
+        UPDATE) so the per-model rows stay consistent with the summary row.
+        When the caller omits the model/provider (some paths only pass token
+        deltas), fall back to the values already recorded on the session row —
+        the same COALESCE-from-session behaviour the summary update uses.
+        """
+        row = conn.execute(
+            "SELECT model, billing_provider, billing_base_url, billing_mode "
+            "FROM sessions WHERE id = ?",
+            (session_id,),
+        ).fetchone()
+        sess_model = row["model"] if row is not None else None
+        sess_provider = row["billing_provider"] if row is not None else None
+        sess_base_url = row["billing_base_url"] if row is not None else None
+        sess_billing_mode = row["billing_mode"] if row is not None else None
+
+        eff_model = model or sess_model or "unknown"
+        eff_provider = billing_provider or sess_provider or ""
+        eff_base_url = billing_base_url or sess_base_url or ""
+        eff_billing_mode = billing_mode or sess_billing_mode or ""
+        now = time.time()
+        conn.execute(
+            """INSERT INTO session_model_usage (
+                   session_id, model, billing_provider, billing_base_url, billing_mode,
+                   api_call_count, input_tokens, output_tokens,
+                   cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                   estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+                   first_seen, last_seen
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode)
+               DO UPDATE SET
+                   api_call_count = api_call_count + excluded.api_call_count,
+                   input_tokens = input_tokens + excluded.input_tokens,
+                   output_tokens = output_tokens + excluded.output_tokens,
+                   cache_read_tokens = cache_read_tokens + excluded.cache_read_tokens,
+                   cache_write_tokens = cache_write_tokens + excluded.cache_write_tokens,
+                   reasoning_tokens = reasoning_tokens + excluded.reasoning_tokens,
+                   estimated_cost_usd = estimated_cost_usd + excluded.estimated_cost_usd,
+                   actual_cost_usd = actual_cost_usd + excluded.actual_cost_usd,
+                   cost_status = COALESCE(excluded.cost_status, cost_status),
+                   cost_source = COALESCE(excluded.cost_source, cost_source),
+                   last_seen = excluded.last_seen""",
+            (
+                session_id,
+                eff_model,
+                eff_provider,
+                eff_base_url,
+                eff_billing_mode,
+                api_call_count or 0,
+                input_tokens or 0,
+                output_tokens or 0,
+                cache_read_tokens or 0,
+                cache_write_tokens or 0,
+                reasoning_tokens or 0,
+                float(estimated_cost_usd or 0.0),
+                float(actual_cost_usd or 0.0),
+                cost_status,
+                cost_source,
+                now,
+                now,
+            ),
+        )
 
     def ensure_session(
         self,
@@ -3455,6 +3804,7 @@ class SessionDB:
         codex_message_items: Any = None,
         platform_message_id: str = None,
         observed: bool = False,
+        effect_disposition: Optional[str] = None,
         timestamp: Any = None,
     ) -> int:
         """
@@ -3505,10 +3855,10 @@ class SessionDB:
         def _do(conn):
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3516,6 +3866,7 @@ class SessionDB:
                     tool_call_id,
                     tool_calls_json,
                     tool_name,
+                    effect_disposition,
                     message_timestamp,
                     token_count,
                     finish_reason,
@@ -3597,10 +3948,10 @@ class SessionDB:
 
             conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
-                   tool_calls, tool_name, timestamp, token_count, finish_reason,
+                   tool_calls, tool_name, effect_disposition, timestamp, token_count, finish_reason,
                    reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
                    codex_message_items, platform_message_id, observed, active)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -3608,6 +3959,7 @@ class SessionDB:
                     msg.get("tool_call_id"),
                     tool_calls_json,
                     msg.get("tool_name"),
+                    msg.get("effect_disposition"),
                     message_timestamp,
                     msg.get("token_count"),
                     msg.get("finish_reason"),
@@ -4103,7 +4455,7 @@ class SessionDB:
         with self._lock:
             placeholders = ",".join("?" for _ in session_ids)
             rows = self._conn.execute(
-                "SELECT role, content, tool_call_id, tool_calls, tool_name, "
+                "SELECT role, content, tool_call_id, tool_calls, tool_name, effect_disposition, "
                 "finish_reason, reasoning, reasoning_content, reasoning_details, "
                 "codex_reasoning_items, codex_message_items, platform_message_id, observed, timestamp "
                 f"FROM messages WHERE session_id IN ({placeholders})"
@@ -4131,6 +4483,8 @@ class SessionDB:
                 msg["tool_call_id"] = row["tool_call_id"]
             if row["tool_name"]:
                 msg["tool_name"] = row["tool_name"]
+            if row["effect_disposition"]:
+                msg["effect_disposition"] = row["effect_disposition"]
             if row["tool_calls"]:
                 try:
                     msg["tool_calls"] = json.loads(row["tool_calls"])
@@ -5032,13 +5386,16 @@ class SessionDB:
             return [session_id] if session else []
 
         root = session
+        ancestors = {root["id"]}
         while self._is_compression_child_row(root):
             parent = self.get_session(root["parent_session_id"])
-            if not parent:
+            if not parent or parent["id"] in ancestors:
                 break
             root = parent
+            ancestors.add(root["id"])
 
         lineage = [root["id"]]
+        seen = {root["id"]}
         current = root
         while current.get("end_reason") == "compression":
             with self._lock:
@@ -5056,9 +5413,10 @@ class SessionDB:
                 if not self._is_branch_child_row(candidate):
                     next_child = candidate
                     break
-            if not next_child:
+            if not next_child or next_child["id"] in seen:
                 break
             lineage.append(next_child["id"])
+            seen.add(next_child["id"])
             current = next_child
             if current["id"] == session_id:
                 # Continue to include later compression tips only when the
@@ -5105,6 +5463,403 @@ class SessionDB:
             messages = self.get_messages(session["id"])
             results.append({**session, "messages": messages})
         return results
+
+    @staticmethod
+    def _import_text_or_none(value: Any, field: str) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            return value
+        raise ValueError(f"{field} must be a string")
+
+    @staticmethod
+    def _import_json_object_or_none(value: Any, field: str) -> Optional[str]:
+        if value is None:
+            return None
+        if isinstance(value, str):
+            try:
+                parsed = json.loads(value)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"{field} must be valid JSON") from exc
+            if not isinstance(parsed, dict):
+                raise ValueError(f"{field} must be a JSON object")
+            return value
+        if not isinstance(value, dict):
+            raise ValueError(f"{field} must be a JSON object")
+        try:
+            return json.dumps(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field} must be JSON serializable") from exc
+
+    @staticmethod
+    def _float_or_none(value: Any) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _import_int_or_none(value: Any, field: str) -> Optional[int]:
+        if value is None:
+            return None
+        try:
+            return int(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"{field} must be an integer") from exc
+
+    @staticmethod
+    def _int_or_default(value: Any, default: int = 0) -> int:
+        if value is None:
+            return default
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    @staticmethod
+    def _reasoning_json_value(value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        try:
+            return json.loads(value)
+        except (json.JSONDecodeError, TypeError):
+            return value
+
+    @staticmethod
+    def _import_error(index: int, session_id: str, error: str) -> Dict[str, Any]:
+        item: Dict[str, Any] = {"index": index, "error": error}
+        if session_id:
+            item["session_id"] = session_id
+        return item
+
+    def import_sessions(self, sessions: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Import sessions exported by :meth:`export_session` or ``export_all``.
+
+        Existing session IDs are skipped. Imported child sessions keep their
+        parent only when that parent already exists or is included in the same
+        import payload; otherwise the child is detached so partial imports don't
+        fail foreign-key validation. Gateway routing, handoff, rewind, and other
+        live runtime state are intentionally reset: this restores conversation
+        history, not ownership of a live channel or process.
+        """
+        if not isinstance(sessions, list):
+            raise ValueError("sessions must be a list")
+        if len(sessions) > self._IMPORT_MAX_SESSIONS:
+            raise ValueError(
+                f"sessions must contain at most {self._IMPORT_MAX_SESSIONS} entries"
+            )
+
+        normalized: List[Dict[str, Any]] = []
+        errors: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        total_messages = 0
+        total_bytes = 0
+        session_text_fields = (
+            "source",
+            "user_id",
+            "model",
+            "system_prompt",
+            "end_reason",
+            "cwd",
+            "git_branch",
+            "git_repo_root",
+            "billing_provider",
+            "billing_base_url",
+            "billing_mode",
+            "cost_status",
+            "cost_source",
+            "pricing_version",
+            "title",
+        )
+        message_text_fields = (
+            "role",
+            "tool_call_id",
+            "tool_name",
+            "effect_disposition",
+            "finish_reason",
+            "reasoning",
+            "reasoning_content",
+            "platform_message_id",
+            "message_id",
+        )
+
+        for index, raw in enumerate(sessions):
+            if not isinstance(raw, dict):
+                errors.append(self._import_error(index, "", "session must be an object"))
+                continue
+            session_id = str(raw.get("id") or "").strip()
+            if not session_id:
+                errors.append(self._import_error(index, "", "session id is required"))
+                continue
+            if session_id in seen_ids:
+                errors.append(self._import_error(index, session_id, "duplicate session id"))
+                continue
+            messages = raw.get("messages") or []
+            if not isinstance(messages, list):
+                errors.append(self._import_error(index, session_id, "messages must be a list"))
+                continue
+            if len(messages) > self._IMPORT_MAX_MESSAGES_PER_SESSION:
+                errors.append(
+                    self._import_error(
+                        index,
+                        session_id,
+                        "messages exceeds the per-session import limit",
+                    )
+                )
+                continue
+            if any(not isinstance(msg, dict) for msg in messages):
+                errors.append(
+                    self._import_error(
+                        index,
+                        session_id,
+                        "messages must contain only objects",
+                    )
+                )
+                continue
+
+            try:
+                session_bytes = len(
+                    json.dumps(raw, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+                )
+            except (TypeError, ValueError):
+                errors.append(
+                    self._import_error(index, session_id, "session must be JSON serializable")
+                )
+                continue
+            if session_bytes > self._IMPORT_MAX_SESSION_BYTES:
+                errors.append(
+                    self._import_error(index, session_id, "session exceeds the import size limit")
+                )
+                continue
+            total_bytes += session_bytes
+            if total_bytes > self._IMPORT_MAX_TOTAL_BYTES:
+                errors.append(
+                    self._import_error(index, session_id, "import exceeds the total size limit")
+                )
+                continue
+
+            try:
+                clean_session = dict(raw)
+                clean_session["id"] = session_id
+                clean_session["model_config"] = self._import_json_object_or_none(
+                    clean_session.get("model_config"), "model_config"
+                )
+                clean_session["parent_session_id"] = self._import_text_or_none(
+                    clean_session.get("parent_session_id"), "parent_session_id"
+                )
+                for field in session_text_fields:
+                    clean_session[field] = self._import_text_or_none(
+                        clean_session.get(field), field
+                    )
+
+                clean_messages: List[Dict[str, Any]] = []
+                for message_index, message in enumerate(messages):
+                    clean_message = dict(message)
+                    role = clean_message.get("role")
+                    if not isinstance(role, str) or not role:
+                        raise ValueError(f"messages[{message_index}].role must be a non-empty string")
+                    for field in message_text_fields:
+                        if field == "role":
+                            continue
+                        clean_message[field] = self._import_text_or_none(
+                            clean_message.get(field), field
+                        )
+                    clean_message["token_count"] = self._import_int_or_none(
+                        clean_message.get("token_count"), "token_count"
+                    )
+                    clean_messages.append(clean_message)
+            except ValueError as exc:
+                errors.append(self._import_error(index, session_id, str(exc)))
+                continue
+
+            total_messages += len(clean_messages)
+            if total_messages > self._IMPORT_MAX_TOTAL_MESSAGES:
+                errors.append(
+                    self._import_error(
+                        index,
+                        session_id,
+                        "messages exceeds the total import limit",
+                    )
+                )
+                continue
+            seen_ids.add(session_id)
+            normalized.append(
+                {"index": index, "session": clean_session, "messages": clean_messages}
+            )
+
+        if errors:
+            return {
+                "ok": False,
+                "imported": 0,
+                "skipped": 0,
+                "detached": 0,
+                "errors": errors,
+            }
+
+        def _do(conn):
+            imported_ids: List[str] = []
+            skipped_ids: List[str] = []
+            parent_updates: List[tuple[str, str]] = []
+            detached = 0
+
+            for item in normalized:
+                raw = item["session"]
+                messages = item["messages"]
+                session_id = str(raw.get("id") or "").strip()
+                exists = conn.execute(
+                    "SELECT 1 FROM sessions WHERE id = ? LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+                if exists:
+                    skipped_ids.append(session_id)
+                    continue
+
+                started_at = self._float_or_none(raw.get("started_at"))
+                if started_at is None:
+                    started_at = time.time()
+                archived = 1 if raw.get("archived") else 0
+
+                conn.execute(
+                    """INSERT INTO sessions (
+                           id, source, user_id, model, model_config, system_prompt,
+                           parent_session_id, started_at, ended_at, end_reason,
+                           message_count, tool_call_count, input_tokens, output_tokens,
+                           cache_read_tokens, cache_write_tokens, reasoning_tokens,
+                           cwd, git_branch, git_repo_root,
+                           billing_provider, billing_base_url, billing_mode,
+                           estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
+                           pricing_version, title, api_call_count, archived
+                       )
+                       VALUES (
+                           :id, :source, :user_id, :model, :model_config,
+                           :system_prompt, NULL, :started_at, :ended_at,
+                           :end_reason, 0, 0, :input_tokens, :output_tokens,
+                           :cache_read_tokens, :cache_write_tokens,
+                           :reasoning_tokens, :cwd, :git_branch, :git_repo_root,
+                           :billing_provider, :billing_base_url, :billing_mode,
+                           :estimated_cost_usd, :actual_cost_usd, :cost_status,
+                           :cost_source, :pricing_version, :title,
+                           :api_call_count, :archived
+                       )""",
+                    {
+                        "id": session_id,
+                        "source": str(raw.get("source") or "import"),
+                        "user_id": raw.get("user_id"),
+                        "model": raw.get("model"),
+                        "model_config": raw.get("model_config"),
+                        "system_prompt": raw.get("system_prompt"),
+                        "started_at": started_at,
+                        "ended_at": self._float_or_none(raw.get("ended_at")),
+                        "end_reason": raw.get("end_reason"),
+                        "input_tokens": self._int_or_default(raw.get("input_tokens")),
+                        "output_tokens": self._int_or_default(raw.get("output_tokens")),
+                        "cache_read_tokens": self._int_or_default(
+                            raw.get("cache_read_tokens")
+                        ),
+                        "cache_write_tokens": self._int_or_default(
+                            raw.get("cache_write_tokens")
+                        ),
+                        "reasoning_tokens": self._int_or_default(
+                            raw.get("reasoning_tokens")
+                        ),
+                        "cwd": raw.get("cwd"),
+                        "git_branch": raw.get("git_branch"),
+                        "git_repo_root": raw.get("git_repo_root"),
+                        "billing_provider": raw.get("billing_provider"),
+                        "billing_base_url": raw.get("billing_base_url"),
+                        "billing_mode": raw.get("billing_mode"),
+                        "estimated_cost_usd": self._float_or_none(
+                            raw.get("estimated_cost_usd")
+                        ),
+                        "actual_cost_usd": self._float_or_none(
+                            raw.get("actual_cost_usd")
+                        ),
+                        "cost_status": raw.get("cost_status"),
+                        "cost_source": raw.get("cost_source"),
+                        "pricing_version": raw.get("pricing_version"),
+                        "title": raw.get("title"),
+                        "api_call_count": self._int_or_default(raw.get("api_call_count")),
+                        "archived": archived,
+                    },
+                )
+
+                sanitized_messages: List[Dict[str, Any]] = []
+                for msg in messages:
+                    clean = dict(msg)
+                    for key in (
+                        "reasoning_details",
+                        "codex_reasoning_items",
+                        "codex_message_items",
+                    ):
+                        clean[key] = self._reasoning_json_value(clean.get(key))
+                    sanitized_messages.append(clean)
+
+                total_messages, total_tool_calls = self._insert_message_rows(
+                    conn,
+                    session_id,
+                    sanitized_messages,
+                )
+                conn.execute(
+                    "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                    (total_messages, total_tool_calls, session_id),
+                )
+
+                parent_id = str(raw.get("parent_session_id") or "").strip()
+                if parent_id:
+                    parent_updates.append((session_id, parent_id))
+                imported_ids.append(session_id)
+
+            parent_by_child = dict(parent_updates)
+
+            def _would_create_cycle(session_id: str, parent_id: str) -> bool:
+                seen = {session_id}
+                current = parent_id
+                while current:
+                    if current in seen:
+                        return True
+                    seen.add(current)
+                    if current in parent_by_child:
+                        current = parent_by_child[current]
+                        continue
+                    row = conn.execute(
+                        "SELECT parent_session_id FROM sessions WHERE id = ? LIMIT 1",
+                        (current,),
+                    ).fetchone()
+                    if row is None:
+                        return False
+                    current = row["parent_session_id"]
+                return False
+
+            for session_id, parent_id in parent_updates:
+                parent_exists = conn.execute(
+                    "SELECT 1 FROM sessions WHERE id = ? LIMIT 1",
+                    (parent_id,),
+                ).fetchone()
+                if parent_exists and not _would_create_cycle(session_id, parent_id):
+                    conn.execute(
+                        "UPDATE sessions SET parent_session_id = ? WHERE id = ?",
+                        (parent_id, session_id),
+                    )
+                else:
+                    # Drop only the closing edge. Later entries can still attach
+                    # to this now-root session, preserving the acyclic portion
+                    # of a malformed imported lineage.
+                    parent_by_child.pop(session_id, None)
+                    detached += 1
+
+            return {
+                "ok": True,
+                "imported": len(imported_ids),
+                "skipped": len(skipped_ids),
+                "detached": detached,
+                "imported_ids": imported_ids,
+                "skipped_ids": skipped_ids,
+                "errors": [],
+            }
+
+        return self._execute_write(_do)
 
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""
@@ -6263,8 +7018,8 @@ class SessionDB:
             # Best-effort WAL checkpoint first, then VACUUM.
             try:
                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("WAL checkpoint (TRUNCATE) before VACUUM failed: %s", exc)
             self._conn.execute("VACUUM")
         return optimized
 

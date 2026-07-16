@@ -1208,7 +1208,42 @@ def restore_primary_runtime(agent) -> bool:
             api_mode=rt.get("compressor_api_mode", ""),
         )
 
-        # ── Re-select from the credential pool if one is available ──
+        # ── Rebind and re-select the primary credential pool ──
+        # A cross-provider fallback attaches the fallback provider's pool. The
+        # runtime fields above restore the primary, but leaving that pool in
+        # place makes the next primary 401/429 hit the provider-mismatch guard
+        # and disables credential rotation. Reload the primary pool first; if
+        # auth storage is temporarily unreadable, clear the mismatched pool.
+        primary_provider = str(rt.get("provider") or "").strip().lower()
+        pool = getattr(agent, "_credential_pool", None)
+        pool_provider = str(getattr(pool, "provider", "") or "").strip().lower()
+        pool_matches_primary = pool_provider == primary_provider
+        if (
+            primary_provider == "custom"
+            and pool_provider.startswith("custom:")
+        ):
+            try:
+                from agent.credential_pool import get_custom_provider_pool_key
+
+                primary_key = (
+                    get_custom_provider_pool_key(str(rt.get("base_url") or "")) or ""
+                ).strip().lower()
+                pool_matches_primary = bool(primary_key) and primary_key == pool_provider
+            except Exception:
+                pool_matches_primary = False
+        if pool is not None and pool_provider and not pool_matches_primary:
+            agent._credential_pool = None
+            try:
+                from agent.credential_pool import load_pool
+
+                agent._credential_pool = load_pool(primary_provider)
+            except Exception as exc:
+                logger.warning(
+                    "Restore could not reload primary credential pool for %s: %s",
+                    primary_provider,
+                    exc,
+                )
+
         # The snapshot's api_key was captured at construction time.  Across
         # turns the pool may have rotated (token revocation, billing/rate-limit
         # exhaustion, cooldown), leaving the snapshot key stale.  Restoring it
@@ -1222,7 +1257,6 @@ def restore_primary_runtime(agent) -> bool:
             entry = pool.select()
             if entry is not None:
                 entry_provider = str(getattr(entry, "provider", "") or "").strip().lower()
-                primary_provider = str(rt.get("provider") or "").strip().lower()
                 entry_matches_primary = entry_provider == primary_provider
                 # Custom endpoints all carry the generic ``custom`` provider on
                 # the agent while the pool entry is keyed ``custom:<name>`` (see
@@ -1270,6 +1304,13 @@ def restore_primary_runtime(agent) -> bool:
                         entry_provider or "?",
                         primary_provider or "?",
                     )
+
+        # ── Restore reasoning_config if it was saved ──
+        # switch_model saves reasoning_config in _primary_runtime. If the
+        # snapshot predates that (older sessions), keep the current value.
+        saved_reasoning = rt.get("reasoning_config")
+        if saved_reasoning is not None:
+            agent.reasoning_config = dict(saved_reasoning)
 
         # ── Reset fallback chain for the new turn ──
         agent._fallback_activated = False
@@ -1564,6 +1605,17 @@ def anthropic_prompt_cache_policy(
     model_lower = eff_model.lower()
     provider_lower = eff_provider.lower()
     is_claude = "claude" in model_lower
+    # Kimi / Moonshot family via OpenRouter: same cache_control wire format
+    # as Claude on OpenRouter (envelope layout).  Without this branch
+    # moonshotai/kimi-k2.6 falls through to (False, False), serving ~1%
+    # cache hits on 64K-token prompts and re-billing the full prompt on
+    # every turn.  Observed within-turn progression with cache enabled:
+    # 1% → 67% → 84% → 97% (#25970).  Reuses the canonical family matcher
+    # (covers bare k1./k2./k25 release slugs the substring check missed).
+    from agent.anthropic_adapter import _model_name_is_kimi_family
+    is_kimi = (
+        _model_name_is_kimi_family(eff_model) or "moonshot" in model_lower
+    )
     is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
     # Nous Portal proxies to OpenRouter behind the scenes — identical
     # OpenAI-wire envelope cache_control semantics. Treat it as an
@@ -1577,7 +1629,7 @@ def anthropic_prompt_cache_policy(
 
     if is_native_anthropic:
         return True, True
-    if (is_openrouter or is_nous_portal) and is_claude:
+    if (is_openrouter or is_nous_portal) and (is_claude or is_kimi):
         return True, False
     # Nous Portal Qwen (e.g. qwen3.6-plus) takes the same envelope-layout
     # cache_control path as Portal Claude. Portal proxies to OpenRouter
@@ -1805,13 +1857,30 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         # ── Swap core runtime fields ──
         agent.model = new_model
         agent.provider = new_provider
-        # Use new base_url when provided; only fall back to current when the
-        # new provider genuinely has no endpoint (e.g. native SDK providers).
-        # Without this guard the old provider's URL (e.g. Ollama's localhost
-        # address) would persist silently after switching to a cloud provider
-        # that returns an empty base_url string.
+        # Use the new base_url when provided. When it's empty AND the
+        # provider is actually changing, do NOT fall back to the current
+        # (old provider's) URL — that silently pairs the new provider label
+        # with the previous provider's endpoint (e.g. new_provider=minimax
+        # paired with the leftover api.githubcopilot.com URL), and every
+        # request after the switch 400s at the wrong host. This mismatched
+        # pair also gets snapshotted into _primary_runtime below, so it
+        # keeps re-applying on every subsequent turn until a full restart.
+        # Fail loud instead: the caller (model_switch.switch_model())
+        # already resolves base_url for every real provider, so an empty
+        # value here means resolution failed upstream, not that the
+        # provider genuinely has none. Re-selecting the SAME provider with
+        # an empty base_url (e.g. a credential-only refresh) is still fine
+        # to keep the current URL. See #47828.
+        old_norm_provider = (old_provider or "").strip().lower()
+        new_norm_provider = (new_provider or "").strip().lower()
         if base_url:
             agent.base_url = base_url
+        elif old_norm_provider != new_norm_provider:
+            raise ValueError(
+                f"switch_model: no base_url resolved for provider "
+                f"'{new_provider}' (switching from '{old_provider}'); "
+                "refusing to keep the previous provider's endpoint"
+            )
         agent.api_mode = api_mode
         # Invalidate transport cache — new api_mode may need a different transport
         if hasattr(agent, "_transport_cache"):
@@ -1830,6 +1899,9 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         old_norm = (old_provider or "").strip().lower()
         new_norm = (new_provider or "").strip().lower()
         if old_norm != new_norm or getattr(agent, "_credential_pool", None) is None:
+            # A pool bound to the old provider is worse than no pool: the
+            # recovery guard rejects it and every later 401/429 skips rotation.
+            agent._credential_pool = None
             try:
                 from agent.credential_pool import load_pool
                 agent._credential_pool = load_pool(new_provider)
@@ -1925,6 +1997,11 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             _sm_timeout = get_provider_request_timeout(agent.provider, agent.model)
             if _sm_timeout is not None:
                 agent._client_kwargs["timeout"] = _sm_timeout
+            # Reapply provider-specific headers (e.g. OpenRouter HTTP-Referer,
+            # X-Title) that were lost when _client_kwargs was rebuilt from
+            # scratch.  Without this, model switches clear attribution headers
+            # and OpenRouter logs show "Unknown" for subsequent requests.
+            agent._apply_client_headers_for_base_url(effective_base)
             agent.client = agent._create_openai_client(
                 dict(agent._client_kwargs),
                 reason="switch_model",
@@ -1995,6 +2072,24 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
             api_mode=agent.api_mode,
         )
 
+    # ── Re-resolve reasoning_config from per-model override ──
+    # The new model may have a different reasoning_effort override. Re-read
+    # config so the override takes effect immediately on /model switch —
+    # resolved through the shared chokepoint (per-model > global; YAML
+    # boolean False = disabled).
+    try:
+        from hermes_constants import resolve_reasoning_config
+        from hermes_cli.config import load_config as _sm_load_config
+
+        _reasoning_cfg = _sm_load_config() or {}
+        agent.reasoning_config = resolve_reasoning_config(_reasoning_cfg, agent.model)
+        logger.info(
+            "switch_model: reasoning_config resolved for %s: %s",
+            agent.model, agent.reasoning_config,
+        )
+    except Exception as _reasoning_err:
+        logger.debug("switch_model: could not re-resolve reasoning_config: %s", _reasoning_err)
+
     # ── Invalidate cached system prompt so it rebuilds next turn ──
     agent._cached_system_prompt = None
 
@@ -2017,6 +2112,7 @@ def switch_model(agent, new_model, new_provider, api_key='', base_url='', api_mo
         "client_kwargs": dict(agent._client_kwargs),
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
+        "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
         "compressor_model": getattr(_cc, "model", agent.model) if _cc else agent.model,
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url) if _cc else agent.base_url,
         "compressor_api_key": getattr(_cc, "api_key", "") if _cc else "",

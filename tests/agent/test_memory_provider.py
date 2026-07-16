@@ -444,6 +444,20 @@ class TestMemoryManager:
 
         external.release.set()
 
+        deadline = time.monotonic() + 1.0
+        while (
+            external.name in mgr._external_prefetch_threads
+            and mgr._external_prefetch_threads[external.name].is_alive()
+            and time.monotonic() < deadline
+        ):
+            time.sleep(0.01)
+
+        result = mgr.prefetch_all("query 3")
+
+        assert result == "builtin memory\n\nlate external memory"
+        assert external.prefetch_queries == ["query", "query 3"]
+        assert external.name not in mgr._external_prefetch_threads
+
     def test_system_prompt_failure_doesnt_block(self):
         mgr = MemoryManager()
         p1 = FakeMemoryProvider("builtin")

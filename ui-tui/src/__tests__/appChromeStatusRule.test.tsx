@@ -399,3 +399,80 @@ describe('StatusRule idle-since read-out', () => {
     expect(findComponentByName(element, 'IdleSince')).toBeNull()
   })
 })
+
+
+describe('StatusRule cron ticker indicator', () => {
+  it('renders ⏱ cron when the ticker is alive', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, cron_ticker_state: 'alive', cron_heartbeat_age: 45 }
+    })
+
+    expect(textContent(element)).toContain('⏱ cron')
+  })
+
+  it('renders ⚠ cron when the ticker is stale', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, cron_ticker_state: 'stale', cron_heartbeat_age: 350 }
+    })
+
+    expect(textContent(element)).toContain('⚠ cron')
+  })
+
+  it('omits the segment when cron_ticker_state is null', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, cron_ticker_state: null }
+    })
+
+    expect(textContent(element)).not.toContain('cron')
+  })
+
+  it('omits the segment when cron_ticker_state is absent', () => {
+    const element = StatusRule({ ...baseProps })
+
+    expect(textContent(element)).not.toContain('cron')
+  })
+
+  it('shows heartbeat age in seconds alongside the indicator', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, cron_ticker_state: 'alive', cron_heartbeat_age: 123 }
+    })
+
+    expect(textContent(element)).toContain('⏱ cron 123s')
+  })
+
+  it('drops the cron segment before the subagent segment on a narrow terminal', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 44,
+      usage: { ...baseProps.usage, active_subagents: 1, cron_ticker_state: 'alive', cron_heartbeat_age: 30 }
+    })
+
+    // Both cron and subagents are below their breakpoints at 44 cols
+    expect(textContent(element)).not.toContain('cron')
+    expect(textContent(element)).not.toContain('⛓')
+  })
+
+  it('uses warn color for stale ticker state', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, cron_ticker_state: 'stale', cron_heartbeat_age: 350 }
+    })
+
+    const cronText = findElementWithText(element, '⚠ cron')
+    expect(cronText?.props.color).toBe(DEFAULT_THEME.color.warn)
+  })
+
+  it('uses muted color for alive ticker state', () => {
+    const element = StatusRule({
+      ...baseProps,
+      usage: { ...baseProps.usage, cron_ticker_state: 'alive', cron_heartbeat_age: 45 }
+    })
+
+    const cronText = findElementWithText(element, '⏱ cron')
+    expect(cronText?.props.color).toBe(DEFAULT_THEME.color.muted)
+  })
+})

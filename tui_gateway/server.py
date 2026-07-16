@@ -2954,6 +2954,21 @@ def _get_usage(agent) -> dict:
         usage["active_subagents"] = _async_active_count()
     except Exception:
         pass
+    # Cron ticker liveness — mirrors the classic CLI status bar's cron
+    # indicator.  Three states: "alive" (fresh heartbeat), "stale"
+    # (heartbeat too old — ticker thread likely dead or failing), or
+    # None/absent (gateway never ran or heartbeat file unreadable).
+    # Uses the same TICKER_INTERVAL_SECONDS-derived threshold as
+    # hermes_cli/cron.py and cli.py so the three surfaces never drift.
+    try:
+        from cron.jobs import get_ticker_heartbeat_age, TICKER_INTERVAL_SECONDS
+        _hb_age = get_ticker_heartbeat_age()
+        if _hb_age is not None:
+            _stale_after = TICKER_INTERVAL_SECONDS * 3 + 20
+            usage["cron_ticker_state"] = "stale" if _hb_age > _stale_after else "alive"
+            usage["cron_heartbeat_age"] = _hb_age
+    except Exception:
+        pass
     # Dev-only live credits-spent readout (L0 usage-aware-credits). Gated on
     # HERMES_DEV_CREDITS so the payload stays clean when the flag is off.
     if is_truthy_value(os.environ.get("HERMES_DEV_CREDITS")):

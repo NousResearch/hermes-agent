@@ -671,3 +671,216 @@ class TestIdleSinceLastTurn:
         cli_obj._prompt_duration = 7.0
         text = cli_obj._build_status_bar_text(width=160)
         assert "✓ 42s" in text
+
+
+class TestCronTickerStatusBar:
+    """Cron ticker liveness indicator on the classic CLI status bar."""
+
+    def test_cron_alive_shows_ticking_indicator(self):
+        """When cron ticker is alive, the status bar shows ⏱ cron."""
+        cli_obj = _make_cli()
+        from unittest.mock import patch
+        with patch.object(cli_obj, "_get_status_bar_snapshot") as mock_snap:
+            mock_snap.return_value = {
+                "model": "anthropic/claude-sonnet-4-20250514",
+                "model_short": "claude-sonnet-4",
+                "context_tokens": 12450,
+                "context_length": 200000,
+                "context_percent": 6,
+                "prompt_tokens": 10230,
+                "completion_tokens": 2220,
+                "total_tokens": 12450,
+                "api_calls": 7,
+                "duration_label": "15m",
+                "cron_ticker_state": "alive",
+                "cron_heartbeat_age": 45.0,
+            }
+            text = cli_obj._build_status_bar_text(width=120)
+            assert "⏱ cron" in text
+
+    def test_cron_stale_shows_warning_indicator(self):
+        """When cron ticker is stale, the status bar shows ⚠ cron."""
+        cli_obj = _make_cli()
+        from unittest.mock import patch
+        with patch.object(cli_obj, "_get_status_bar_snapshot") as mock_snap:
+            mock_snap.return_value = {
+                "model": "anthropic/claude-sonnet-4-20250514",
+                "model_short": "claude-sonnet-4",
+                "context_tokens": 12450,
+                "context_length": 200000,
+                "context_percent": 6,
+                "prompt_tokens": 10230,
+                "completion_tokens": 2220,
+                "total_tokens": 12450,
+                "api_calls": 7,
+                "duration_label": "15m",
+                "cron_ticker_state": "stale",
+                "cron_heartbeat_age": 350.0,
+            }
+            text = cli_obj._build_status_bar_text(width=120)
+            assert "⚠ cron" in text
+            assert "⏱ cron" not in text
+
+    def test_cron_null_hides_indicator(self):
+        """When cron_ticker_state is None, no cron indicator is shown."""
+        cli_obj = _make_cli()
+        from unittest.mock import patch
+        with patch.object(cli_obj, "_get_status_bar_snapshot") as mock_snap:
+            mock_snap.return_value = {
+                "model": "anthropic/claude-sonnet-4-20250514",
+                "model_short": "claude-sonnet-4",
+                "context_tokens": 12450,
+                "context_length": 200000,
+                "context_percent": 6,
+                "prompt_tokens": 10230,
+                "completion_tokens": 2220,
+                "total_tokens": 12450,
+                "api_calls": 7,
+                "duration_label": "15m",
+                "cron_ticker_state": None,
+            }
+            text = cli_obj._build_status_bar_text(width=120)
+            assert "⏱ cron" not in text
+            assert "⚠ cron" not in text
+
+    def test_cron_missing_key_hides_indicator(self):
+        """When cron_ticker_state key is absent, no cron indicator is shown."""
+        cli_obj = _make_cli()
+        from unittest.mock import patch
+        with patch.object(cli_obj, "_get_status_bar_snapshot") as mock_snap:
+            mock_snap.return_value = {
+                "model": "anthropic/claude-sonnet-4-20250514",
+                "model_short": "claude-sonnet-4",
+                "context_tokens": 12450,
+                "context_length": 200000,
+                "context_percent": 6,
+                "prompt_tokens": 10230,
+                "completion_tokens": 2220,
+                "total_tokens": 12450,
+                "api_calls": 7,
+                "duration_label": "15m",
+            }
+            text = cli_obj._build_status_bar_text(width=120)
+            assert "⏱ cron" not in text
+            assert "⚠ cron" not in text
+
+    def test_cron_hidden_on_narrow_terminal(self):
+        """Cron indicator is hidden on very narrow terminals but doesn't crash."""
+        cli_obj = _make_cli()
+        from unittest.mock import patch
+        with patch.object(cli_obj, "_get_status_bar_snapshot") as mock_snap:
+            mock_snap.return_value = {
+                "model": "anthropic/claude-sonnet-4-20250514",
+                "model_short": "claude-sonnet-4",
+                "context_tokens": 12450,
+                "context_length": 200000,
+                "context_percent": 6,
+                "prompt_tokens": 10230,
+                "completion_tokens": 2220,
+                "total_tokens": 12450,
+                "api_calls": 7,
+                "duration_label": "15m",
+                "cron_ticker_state": "alive",
+                "cron_heartbeat_age": 30.0,
+            }
+            text = cli_obj._build_status_bar_text(width=40)
+            # Key point: no crash, model still visible
+            assert "claude-sonnet" in text or "sonnet" in text
+
+    def test_snapshot_derives_stale_from_ticker_interval(self):
+        """The snapshot's stale threshold derives from TICKER_INTERVAL_SECONDS."""
+        from unittest.mock import patch
+        cli_obj = _make_cli()
+        with patch("cron.jobs.get_ticker_heartbeat_age", return_value=190.0),              patch("cron.jobs.TICKER_INTERVAL_SECONDS", 60):
+            snapshot = cli_obj._get_status_bar_snapshot()
+            assert snapshot.get("cron_ticker_state") == "alive"
+
+        with patch("cron.jobs.get_ticker_heartbeat_age", return_value=210.0),              patch("cron.jobs.TICKER_INTERVAL_SECONDS", 60):
+            snapshot = cli_obj._get_status_bar_snapshot()
+            assert snapshot.get("cron_ticker_state") == "stale"
+
+    def test_snapshot_tracks_ticker_interval_changes(self):
+        """If TICKER_INTERVAL_SECONDS changes, the threshold tracks it."""
+        from unittest.mock import patch
+        cli_obj = _make_cli()
+        # With a 120s interval, stale_after = 120*3+20 = 380
+        with patch("cron.jobs.get_ticker_heartbeat_age", return_value=300.0),              patch("cron.jobs.TICKER_INTERVAL_SECONDS", 120):
+            snapshot = cli_obj._get_status_bar_snapshot()
+            assert snapshot.get("cron_ticker_state") == "alive"
+
+        with patch("cron.jobs.get_ticker_heartbeat_age", return_value=400.0),              patch("cron.jobs.TICKER_INTERVAL_SECONDS", 120):
+            snapshot = cli_obj._get_status_bar_snapshot()
+            assert snapshot.get("cron_ticker_state") == "stale"
+
+    def test_fragments_show_cron_alive(self):
+        """Status bar fragments include the cron indicator when alive."""
+        from unittest.mock import MagicMock, patch
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._status_bar_visible = True
+        with patch.object(cli_obj, "_get_status_bar_snapshot") as mock_snap:
+            mock_snap.return_value = {
+                "model": "anthropic/claude-sonnet-4-20250514",
+                "model_short": "claude-sonnet-4",
+                "context_tokens": 12450,
+                "context_length": 200000,
+                "context_percent": 6,
+                "prompt_tokens": 10230,
+                "completion_tokens": 2220,
+                "total_tokens": 12450,
+                "api_calls": 7,
+                "duration_label": "15m",
+                "cron_ticker_state": "alive",
+                "cron_heartbeat_age": 30.0,
+            }
+            mock_app = MagicMock()
+            mock_app.output.get_size.return_value = MagicMock(columns=120)
+            with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+                frags = cli_obj._get_status_bar_fragments()
+            frag_text = "".join(text for _, text in frags)
+            assert "⏱ cron" in frag_text
+
+    def test_fragments_show_cron_stale_with_yolo_class(self):
+        """Status bar fragments use the warning class for stale cron."""
+        from unittest.mock import MagicMock, patch
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj._status_bar_visible = True
+        with patch.object(cli_obj, "_get_status_bar_snapshot") as mock_snap:
+            mock_snap.return_value = {
+                "model": "anthropic/claude-sonnet-4-20250514",
+                "model_short": "claude-sonnet-4",
+                "context_tokens": 12450,
+                "context_length": 200000,
+                "context_percent": 6,
+                "prompt_tokens": 10230,
+                "completion_tokens": 2220,
+                "total_tokens": 12450,
+                "api_calls": 7,
+                "duration_label": "15m",
+                "cron_ticker_state": "stale",
+                "cron_heartbeat_age": 350.0,
+            }
+            mock_app = MagicMock()
+            mock_app.output.get_size.return_value = MagicMock(columns=120)
+            with patch("prompt_toolkit.application.get_app", return_value=mock_app):
+                frags = cli_obj._get_status_bar_fragments()
+            frag_text = "".join(text for _, text in frags)
+            assert "⚠ cron" in frag_text
+            stale_classes = [cls for cls, text in frags if "⚠ cron" in text]
+            assert len(stale_classes) == 1
+            assert "yolo" in stale_classes[0] or "warn" in stale_classes[0]

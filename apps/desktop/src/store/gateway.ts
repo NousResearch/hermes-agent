@@ -74,6 +74,28 @@ export function activeGateway(): HermesGateway | null {
   return secondaries.get(activeKey)?.gateway ?? primaryGateway
 }
 
+export interface GatewayRegistryEntry {
+  gateway: HermesGateway
+  profile: string
+}
+
+/** Snapshot every backend socket that can still emit session events. Consumers
+ * that reconcile global UI state must query this whole set, not only $gateway:
+ * background-profile sessions keep streaming after the foreground switches. */
+export function gatewayRegistrySnapshot(): GatewayRegistryEntry[] {
+  const gateways: GatewayRegistryEntry[] = []
+
+  if (primaryGateway) {
+    gateways.push({ gateway: primaryGateway, profile: primaryProfile })
+  }
+
+  for (const entry of secondaries.values()) {
+    gateways.push({ gateway: entry.gateway, profile: entry.profile })
+  }
+
+  return gateways
+}
+
 // Mirror a backend's connection state into the global composer state, but only
 // when that backend is the one the user is currently looking at. Lets the
 // composer reflect the active profile's socket without a background reconnect

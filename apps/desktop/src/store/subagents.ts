@@ -19,6 +19,7 @@ export interface SubagentProgress {
   /** The child's own stored session id — lets UIs open its session window. */
   sessionId?: string
   model?: string
+  profile?: string
   status: SubagentStatus
   taskCount: number
   taskIndex: number
@@ -146,7 +147,12 @@ function streamFromPayload(
   return out
 }
 
-function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined, eventType = ''): SubagentProgress {
+function toProgress(
+  payload: SubagentPayload,
+  prev: SubagentProgress | undefined,
+  eventType = '',
+  sourceProfile?: string
+): SubagentProgress {
   const at = Date.now()
   const status = asStatus(payload.status)
   const tool = str(payload.tool_name)
@@ -160,6 +166,7 @@ function toProgress(payload: SubagentPayload, prev: SubagentProgress | undefined
     goal: str(payload.goal) || prev?.goal || 'Subagent',
     sessionId: str(payload.child_session_id) || prev?.sessionId,
     model: str(payload.model) || prev?.model,
+    profile: sourceProfile || prev?.profile,
     status,
     taskCount: num(payload.task_count) ?? prev?.taskCount ?? 1,
     taskIndex: num(payload.task_index) ?? prev?.taskIndex ?? 0,
@@ -206,7 +213,13 @@ export function pruneDelegateFallbackSubagents(sid: string) {
   $subagentsBySession.set({ ...map, [sid]: next })
 }
 
-export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMissing = true, eventType?: string) {
+export function upsertSubagent(
+  sid: string,
+  payload: SubagentPayload,
+  createIfMissing = true,
+  eventType?: string,
+  sourceProfile?: string
+) {
   const map = $subagentsBySession.get()
   const list = map[sid] ?? []
   const id = idOf(payload)
@@ -222,7 +235,7 @@ export function upsertSubagent(sid: string, payload: SubagentPayload, createIfMi
     return
   }
 
-  const next = toProgress(payload, prev, eventType)
+  const next = toProgress(payload, prev, eventType, sourceProfile)
   const nextList = idx >= 0 ? list.map(item => (item.id === id ? next : item)) : [...list, next]
 
   $subagentsBySession.set({ ...map, [sid]: nextList })

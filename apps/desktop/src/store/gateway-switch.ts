@@ -19,6 +19,7 @@ import {
   setUnreadFinishedSessionIds,
   setWorkingSessionIds
 } from '@/store/session'
+import { clearAllSubagents } from '@/store/subagent-liveness'
 
 // True while a soft gateway-mode apply is mid-flight (wipe → re-dial). Lets the
 // boot hook suppress the backend-exit toast and keeps the cold-boot CONNECTING
@@ -48,6 +49,7 @@ export function wipeSessionListsForGatewaySwitch(): void {
   setWorkingSessionIds([])
   setAttentionSessionIds([])
   setUnreadFinishedSessionIds([])
+  clearAllSubagents()
   setSessionsLoading(true)
   resetSessionsLimit()
 

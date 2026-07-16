@@ -2,7 +2,9 @@ import { act, cleanup, render } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $desktopBoot } from '@/store/boot'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $gatewayState } from '@/store/session'
+import type { RpcEvent } from '@/types/hermes'
 
 import { useGatewayBoot } from './use-gateway-boot'
 
@@ -28,6 +30,7 @@ class FakeWebSocket {
   // errors (a dead remote). Mirrors a VPS going away after the first connect.
   static mode: 'open' | 'fail' = 'open'
   static instances: FakeWebSocket[] = []
+  static eventOnOpen: RpcEvent | null = null
 
   readyState = 0
   private listeners: Record<string, Set<Listener>> = {}
@@ -41,6 +44,10 @@ class FakeWebSocket {
       if (willOpen) {
         this.readyState = FakeWebSocket.OPEN
         this.emit('open', {})
+
+        if (FakeWebSocket.eventOnOpen) {
+          this.gatewayEvent(FakeWebSocket.eventOnOpen)
+        }
       } else {
         this.readyState = FakeWebSocket.CLOSED
         this.emit('error', {})
@@ -65,6 +72,12 @@ class FakeWebSocket {
   drop() {
     this.readyState = FakeWebSocket.CLOSED
     this.emit('close', {})
+  }
+
+  gatewayEvent(event: RpcEvent) {
+    this.emit('message', {
+      data: JSON.stringify({ jsonrpc: '2.0', method: 'event', params: event })
+    })
   }
 
   private emit(type: string, ev: unknown) {
@@ -105,9 +118,9 @@ function fakeDesktop() {
   }
 }
 
-function Harness() {
+function Harness({ handleGatewayEvent = () => undefined }: { handleGatewayEvent?: (event: RpcEvent) => void }) {
   useGatewayBoot({
-    handleGatewayEvent: () => undefined,
+    handleGatewayEvent,
     onConnectionReady: () => undefined,
     onGatewayReady: () => undefined,
     refreshHermesConfig: async () => undefined,
@@ -123,8 +136,10 @@ beforeEach(() => {
   vi.useFakeTimers()
   FakeWebSocket.mode = 'open'
   FakeWebSocket.instances = []
+  FakeWebSocket.eventOnOpen = null
   ;(globalThis as { WebSocket: unknown }).WebSocket = FakeWebSocket
   ;(window as { hermesDesktop?: unknown }).hermesDesktop = fakeDesktop()
+  $activeGatewayProfile.set('default')
   $gatewayState.set('idle')
   $desktopBoot.set({
     error: null,
@@ -162,6 +177,48 @@ async function advanceBackoff() {
 }
 
 describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => {
+  it('attributes an event received immediately on open to a non-default primary profile', async () => {
+    const desktop = fakeDesktop()
+    const events: RpcEvent[] = []
+
+    desktop.profile.get = vi.fn(async () => ({ profile: 'work' }))
+    FakeWebSocket.eventOnOpen = {
+      type: 'subagent.progress',
+      session_id: 'parent-session',
+      payload: { subagent_id: 'child-1', status: 'running' }
+    }
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness handleGatewayEvent={event => events.push(event)} />)
+    await flushAsync()
+
+    expect(events).toHaveLength(1)
+    expect(events[0].profile).toBe('work')
+  })
+
+  it('keeps primary event attribution stable when the foreground profile changes', async () => {
+    const desktop = fakeDesktop()
+    const events: RpcEvent[] = []
+
+    desktop.profile.get = vi.fn(async () => ({ profile: 'work' }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness handleGatewayEvent={event => events.push(event)} />)
+    await flushAsync()
+
+    act(() => {
+      $activeGatewayProfile.set('default')
+      FakeWebSocket.instances[0].gatewayEvent({
+        type: 'subagent.progress',
+        session_id: 'parent-session',
+        payload: { subagent_id: 'child-2', status: 'running' }
+      })
+    })
+
+    expect(events).toHaveLength(1)
+    expect(events[0].profile).toBe('work')
+  })
+
   it('INITIAL boot against a dead VPS: getConnection hangs (waitForHermes) → app sits in the connecting combo, then fails', async () => {
     // The report's actual path: a fresh launch pointed at an unreachable VPS.
     // startHermes()'s remote branch awaits waitForHermes() for 45s before it

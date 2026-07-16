@@ -38,6 +38,21 @@ from tui_gateway.transport import (
 
 logger = logging.getLogger(__name__)
 
+try:
+    from agent.display import get_tool_emoji as _display_get_tool_emoji
+except Exception:
+    _display_get_tool_emoji = None
+
+
+def _get_tool_emoji(name: str, default: str = "⚡") -> str:
+    if _display_get_tool_emoji is None:
+        return default
+    try:
+        return _display_get_tool_emoji(name, default=default)
+    except Exception:
+        return default
+
+
 _hermes_home = get_hermes_home()
 load_hermes_dotenv(
     hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env"
@@ -3406,6 +3421,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "yolo": yolo,
         "approval_mode": approval_mode,
         "tools": {},
+        "tool_emojis": {},
         "skills": {},
         "cwd": cwd,
         "branch": _git_branch_for_cwd(cwd),
@@ -3447,6 +3463,7 @@ def _session_info(agent, session: dict | None = None) -> dict:
             info["tools"].setdefault(get_toolset_for_tool(name) or "other", []).append(
                 name
             )
+            info["tool_emojis"][name] = _get_tool_emoji(name, default="⚡")
     except Exception:
         pass
     try:
@@ -3639,6 +3656,7 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             "name": name,
             "context": _tool_ctx(name, args),
         }
+        payload["emoji"] = _get_tool_emoji(name, default="⚡")
         if _session_verbose(sid):
             args_text = _tool_args_text(args)
             if args_text:

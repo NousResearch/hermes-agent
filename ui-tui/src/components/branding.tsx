@@ -1,9 +1,9 @@
-import { Box, Text, useStdout } from '@hermes/ink'
+import { Box, stringWidth, Text, useStdout } from '@hermes/ink'
 import { useEffect, useState } from 'react'
 import unicodeSpinners from 'unicode-animations'
 
 import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
-import { flat } from '../lib/text.js'
+import { flat, toolEmoji } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
 
@@ -175,13 +175,14 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
   const [mcpOpen, setMcpOpen] = useState(false)
 
   const truncLine = (pfx: string, items: string[]) => {
+    const prefixWidth = stringWidth(pfx)
     let line = ''
     let shown = 0
 
     for (const item of [...items].sort()) {
       const next = line ? `${line}, ${item}` : item
 
-      if (pfx.length + next.length > lineBudget) {
+      if (prefixWidth + stringWidth(next) > lineBudget) {
         return line ? `${line}, …+${items.length - shown}` : `${item}, …`
       }
 
@@ -210,7 +211,7 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
         {shown.map(([k, vs]) => (
           <Text key={k} wrap="truncate">
             <Text color={t.color.muted}>{strip(k)}: </Text>
-            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
+            <Text color={t.color.text}>{truncLine(strip(k) + ': ', [...vs].sort())}</Text>
           </Text>
         ))}
         {overflow > 0 && <Text color={t.color.muted}>(and {overflow} more categories…)</Text>}
@@ -234,12 +235,16 @@ export function SessionPanel({ info, maxWidth, sid, t }: SessionPanelProps) {
 
     return (
       <>
-        {shown.map(([k, vs]) => (
-          <Text key={k} wrap="truncate">
-            <Text color={t.color.muted}>{strip(k)}: </Text>
-            <Text color={t.color.text}>{truncLine(strip(k) + ': ', vs)}</Text>
-          </Text>
-        ))}
+        {shown.map(([k, vs]) => {
+          const toolItems = [...vs].sort().map(name => `${toolEmoji(name, '⚡', info.tool_emojis)} ${name}`)
+
+          return (
+            <Text key={k} wrap="truncate">
+              <Text color={t.color.muted}>{strip(k)}: </Text>
+              <Text color={t.color.text}>{truncLine(strip(k) + ': ', toolItems)}</Text>
+            </Text>
+          )
+        })}
         {overflow > 0 && <Text color={t.color.muted}>(and {overflow} more toolsets…)</Text>}
       </>
     )

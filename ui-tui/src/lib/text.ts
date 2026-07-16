@@ -195,6 +195,53 @@ export const toolTrailLabel = (name: string) =>
     .map(p => p[0]!.toUpperCase() + p.slice(1))
     .join(' ') || name
 
+export type ToolEmojiMap = Record<string, string>
+
+const toolEmojiKey = (nameOrLabel: string) => nameOrLabel.trim()
+const toolEmojiSnakeKey = (nameOrLabel: string) => toolEmojiKey(nameOrLabel).toLowerCase().replace(/\s+/g, '_')
+
+export const withToolEmoji = (emojis: ToolEmojiMap = {}, name: string, emoji?: string): ToolEmojiMap => {
+  const cleanName = toolEmojiKey(name)
+  const cleanEmoji = String(emoji ?? '').trim()
+
+  if (!cleanName || !cleanEmoji) {
+    return emojis
+  }
+
+  return {
+    ...emojis,
+    [cleanName]: cleanEmoji,
+    [toolTrailLabel(cleanName)]: cleanEmoji,
+    [toolEmojiSnakeKey(cleanName)]: cleanEmoji
+  }
+}
+
+export const normalizeToolEmojis = (emojis?: ToolEmojiMap): ToolEmojiMap => {
+  let normalized: ToolEmojiMap = {}
+
+  for (const [name, emoji] of Object.entries(emojis ?? {})) {
+    normalized = withToolEmoji(normalized, name, emoji)
+  }
+
+  return normalized
+}
+
+export const toolEmoji = (nameOrLabel: string, fallback = '⚡', emojis?: ToolEmojiMap) => {
+  const key = toolEmojiKey(nameOrLabel)
+
+  return emojis?.[key] ?? emojis?.[toolEmojiSnakeKey(key)] ?? fallback
+}
+
+const toolCallBaseLabel = (call: string) => {
+  const noDuration = call.replace(/ \(\d+(?:\.\d)?s\)$/, '').trim()
+  const paren = noDuration.indexOf('(')
+
+  return (paren >= 0 ? noDuration.slice(0, paren) : noDuration).trim()
+}
+
+export const toolCallEmoji = (call: string, fallback = '⚡', emojis?: ToolEmojiMap) =>
+  toolEmoji(toolCallBaseLabel(call), fallback, emojis)
+
 export const formatToolCall = (name: string, context = '') => {
   const label = toolTrailLabel(name)
   const preview = compactPreview(context, 64)

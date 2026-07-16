@@ -112,6 +112,35 @@ describe('createGatewayEventHandler', () => {
     })
   })
 
+  it('stores tool emoji metadata on the active session info', () => {
+    const appended: Msg[] = []
+    patchUiState({ sid: 'sid-abc' })
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: {
+        model: 'test',
+        skills: {},
+        tool_emojis: { read_file: '📖' },
+        tools: { file: ['read_file', 'terminal'] }
+      },
+      session_id: 'sid-abc',
+      type: 'session.info'
+    } as any)
+    onEvent({
+      payload: { context: 'npm test', emoji: '💻', name: 'terminal', tool_id: 'tool-1' },
+      session_id: 'sid-abc',
+      type: 'tool.start'
+    } as any)
+
+    expect(getUiState().info?.tool_emojis).toMatchObject({
+      'Read File': '📖',
+      Terminal: '💻',
+      read_file: '📖',
+      terminal: '💻'
+    })
+  })
+
   it('keeps the current todo list visible when the next message starts', () => {
     const appended: Msg[] = []
     const todos = [{ content: 'Boil water', id: 'boil', status: 'in_progress' }]

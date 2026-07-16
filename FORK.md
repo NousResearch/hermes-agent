@@ -30,9 +30,8 @@ upstream.
    - `cron/jobs.py` — per-job `tz` (IANA) support inside
      `compute_next_run()` (~26 lines, backward compatible). No upstream
      hook exists for per-job timezones.
-   - `tests/hermes_cli/test_models.py` — determinism fix for
-     `test_falls_back_to_static_snapshot_on_fetch_failure` (stubs the
-     curated-manifest source).
+   - (2026-07 sync: the former `tests/hermes_cli/test_models.py` exception
+     is gone — upstream independently landed the same determinism fix.)
 6. **Before every upstream sync**, verify the diff is only the exceptions:
 
    ```bash

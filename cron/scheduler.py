@@ -2988,11 +2988,12 @@ def run_job(
         except Exception:
             pass
 
-        # Reasoning config from config.yaml (raw value — a YAML boolean False
-        # means thinking disabled, see parse_reasoning_effort)
-        from hermes_constants import parse_reasoning_effort
-        reasoning_config = parse_reasoning_effort(
-            _cfg.get("agent", {}).get("reasoning_effort", "")
+        # Reasoning config from config.yaml (per-model override > global) —
+        # resolved through the shared chokepoint against the job's effective
+        # model (per-job override > HERMES_MODEL env > config.yaml default).
+        from hermes_constants import resolve_reasoning_config
+        reasoning_config = resolve_reasoning_config(
+            _cfg if isinstance(_cfg, dict) else {}, str(model)
         )
 
         # Prefill messages from env or config.yaml. The top-level

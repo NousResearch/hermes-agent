@@ -1112,6 +1112,26 @@ class GatewaySlashCommandsMixin:
             )
             return EphemeralReply(t("gateway.stop.stopped"))
 
+        # No running agent anywhere for this scope. A platform status
+        # indicator can still be stuck — e.g. Slack's persistent
+        # assistant.threads.setStatus survives a gateway restart or a turn
+        # that died without a final send (#32295). Best-effort clear so
+        # /stop always dismisses a phantom "is thinking...".
+        adapter = getattr(self, "adapters", {}).get(source.platform)
+        if adapter and hasattr(adapter, "_stop_typing_with_metadata"):
+            try:
+                await adapter._stop_typing_with_metadata(
+                    source.chat_id,
+                    self._thread_metadata_for_source(
+                        source, self._reply_anchor_for_event(event)
+                    ),
+                )
+            except Exception:
+                logger.debug(
+                    "Failed to clear typing on /stop with no active agent",
+                    exc_info=True,
+                )
+
         return t("gateway.stop.no_active")
 
     async def _handle_platform_command(self, event: MessageEvent) -> str:
@@ -2658,9 +2678,15 @@ class GatewaySlashCommandsMixin:
         _reasoning_source = await asyncio.to_thread(self._normalize_source_for_session_key, event.source)
         session_key = self._session_key_for_source(_reasoning_source)
         self._show_reasoning = self._load_show_reasoning()
+        # Use the session's effective model (session /model override wins over
+        # config default) so per-model reasoning_overrides display correctly.
+        _session_model = str(
+            ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {}).get("model") or ""
+        )
         self._reasoning_config = self._resolve_session_reasoning_config(
             source=event.source,
             session_key=session_key,
+            model=_session_model,
         )
 
         def _save_config_key(key_path: str, value):
@@ -3319,6 +3345,7 @@ class GatewaySlashCommandsMixin:
                     compressed,
                     approx_tokens,
                     new_tokens,
+                    compression_state=compressor,
                 )
                 # Detect summary-generation failure so we can surface a
                 # visible warning to the user even on the manual /compress
@@ -3329,6 +3356,11 @@ class GatewaySlashCommandsMixin:
                 # passed above so any active cooldown is bypassed.
                 _summary_aborted = bool(getattr(compressor, "_last_compress_aborted", False))
                 _summary_err = getattr(compressor, "_last_summary_error", None)
+                # Force-redact provider exception text at this UI boundary
+                # even when global redaction is disabled.
+                if _summary_err:
+                    from agent.redact import redact_sensitive_text
+                    _summary_err = redact_sensitive_text(_summary_err, force=True)
                 # Separately: did the user's CONFIGURED aux model fail
                 # and we recovered via main?  Surface that as an info
                 # note so they can fix their config.

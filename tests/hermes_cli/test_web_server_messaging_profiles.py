@@ -367,7 +367,7 @@ class TestMultiplexPortBindingGuard:
         resp = client.put(
             "/api/messaging/platforms/telegram",
             params={"profile": "worker_alpha"},
-            json={"enabled": True, "env": {"TELEGRAM_BOT_TOKEN": "worker-token"}},
+            json={"enabled": True, "env": {"TELEGRAM_BOT_TOKEN": _VALID_WORKER_BOT_TOKEN}},
         )
         assert resp.status_code == 200
         cfg = yaml.safe_load(

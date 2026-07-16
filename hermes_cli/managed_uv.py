@@ -16,6 +16,8 @@ import platform
 import shutil
 import subprocess
 import tempfile
+import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Optional
 
@@ -239,16 +241,70 @@ def _install_uv_posix(env: dict[str, str]) -> None:
 
 
 def _install_uv_windows(env: dict[str, str]) -> None:
-    """Invoke the PowerShell installer."""
-    cmd = (
-        'irm https://astral.sh/uv/install.ps1 | iex'
-    )
-    subprocess.run(
-        ["powershell", "-ExecutionPolicy", "Bypass", "-c", cmd],
-        env=env,
-        check=True,
-        capture_output=True,
-    )
+    """Download the uv binary zip directly from GitHub releases.
+
+    We intentionally do NOT run the astral installer script
+    (``irm https://astral.sh/uv/install.ps1 | iex``) anymore.  That script
+    calls ``Get-ExecutionPolicy`` internally (from the
+    ``Microsoft.PowerShell.Security`` module), and on some Windows installs
+    that module fails to load -- killing the installer before it can download
+    anything.  Downloading the zip ourselves with stdlib avoids spawning any
+    PowerShell child process at all, sidestepping the broken module entirely.
+    """
+    # Detect the real OS architecture.  platform.machine() reports the
+    # emulated view (AMD64 on ARM under Prism), so prefer the env vars that
+    # reflect the actual hardware.  Mirrors Get-WindowsArch in install.ps1.
+    proc_arch = (
+        os.environ.get("PROCESSOR_ARCHITEW6432")
+        or os.environ.get("PROCESSOR_ARCHITECTURE", "")
+    ).upper()
+    if proc_arch in ("ARM64",):
+        target_triple = "aarch64-pc-windows-msvc"
+    elif proc_arch in ("AMD64", "X64"):
+        target_triple = "x86_64-pc-windows-msvc"
+    elif proc_arch in ("X86",):
+        target_triple = "i686-pc-windows-msvc"
+    else:
+        # Fallback: platform.machine().  On native x64 this is "AMD64".
+        machine = platform.machine().upper()
+        if machine in ("ARM64", "AARCH64"):
+            target_triple = "aarch64-pc-windows-msvc"
+        elif machine in ("AMD64", "X64"):
+            target_triple = "x86_64-pc-windows-msvc"
+        else:
+            target_triple = "i686-pc-windows-msvc"
+
+    zip_name = f"uv-{target_triple}.zip"
+    urls = [
+        f"https://github.com/astral-sh/uv/releases/latest/download/{zip_name}",
+        f"https://releases.astral.sh/github/uv/releases/latest/download/{zip_name}",
+    ]
+
+    with tempfile.TemporaryDirectory() as tmp:
+        zip_path = Path(tmp) / zip_name
+        last_err: Exception | None = None
+        for url in urls:
+            try:
+                logging.debug("Downloading uv from %s", url)
+                urllib.request.urlretrieve(url, zip_path)
+                break
+            except Exception as exc:
+                last_err = exc
+                logging.debug("Download failed from %s: %s", url, exc)
+        else:
+            raise RuntimeError(
+                f"Failed to download uv from all mirrors: {last_err}"
+            ) from last_err
+
+        with zipfile.ZipFile(zip_path) as zf:
+            zf.extractall(tmp)
+
+        # Move every .exe from the archive into the target's parent (the
+        # managed bin dir).  The zip layout is flat (uv.exe, uvx.exe) but
+        # handle nested just in case.
+        bin_dir = env.get("UV_INSTALL_DIR") or str(Path(env.get("UV_UNMANAGED_INSTALL", "")).parent)
+        for exe in Path(tmp).rglob("*.exe"):
+            shutil.copy2(exe, Path(bin_dir) / exe.name)
 
 def rebuild_venv(uv_bin: str, venv_dir: Path, python_version: str = "3.11") -> bool:
     True # dont remove me. ask ethernet

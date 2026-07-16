@@ -4,6 +4,8 @@ OpenAI-compatible API server platform adapter.
 Exposes an HTTP server with endpoints:
 - POST /v1/chat/completions        — OpenAI Chat Completions format (stateless; opt-in session continuity via X-Hermes-Session-Id header; opt-in long-term memory scoping via X-Hermes-Session-Key header)
 - POST /v1/responses               — OpenAI Responses API format (stateful via previous_response_id; X-Hermes-Session-Key supported)
+- POST /v1/audio/transcriptions    — OpenAI-style audio transcription endpoint
+- POST /v1/audio/speech            — OpenAI-style speech synthesis endpoint
 - GET  /v1/responses/{response_id} — Retrieve a stored response
 - DELETE /v1/responses/{response_id} — Delete a stored response
 - GET  /v1/models                  — lists hermes-agent and any configured model_routes aliases
@@ -39,10 +41,12 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from functools import wraps
 import logging
+import mimetypes
 import os
 import socket as _socket
 import re
 import sqlite3
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -102,9 +106,18 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 10_000_000  # 10 MB — accommodates long agent conversations with tool calls
+AUDIO_MAX_REQUEST_BYTES = 100_000_000  # 100 MB for uploaded audio files
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
+_AUDIO_STREAM_CHUNK_BYTES = 64 * 1024
+_AUDIO_SPEECH_FORMATS = {
+    "mp3": ".mp3",
+    "wav": ".wav",
+    "opus": ".ogg",
+    "ogg": ".ogg",
+}
+_AUDIO_TRANSCRIPTION_FORMATS = {"json", "text", "verbose_json"}
 
 
 def _coerce_port(value: Any, default: int = DEFAULT_PORT) -> int:
@@ -555,7 +568,14 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    "Access-Control-Allow-Headers": (
+        "Authorization, Content-Type, Idempotency-Key, "
+        "X-Hermes-Session-Id, X-Hermes-Session-Key"
+    ),
+    "Access-Control-Expose-Headers": (
+        "X-Hermes-Session-Id, X-Hermes-STT-Provider, X-Hermes-TTS-Provider, "
+        "X-Hermes-Transcript-Filtered, X-Hermes-Voice-Compatible"
+    ),
 }
 
 
@@ -730,15 +750,20 @@ def _reserve_pending_api_work(adapter):
 if AIOHTTP_AVAILABLE:
     @web.middleware
     async def body_limit_middleware(request, handler):
-        """Reject overly large request bodies early based on Content-Length."""
+        """Apply route-specific limits to sized and chunked request bodies."""
         if request.method in {"POST", "PUT", "PATCH"}:
+            limit = AUDIO_MAX_REQUEST_BYTES if request.path.startswith("/v1/audio/") else MAX_REQUEST_BYTES
             cl = request.headers.get("Content-Length")
             if cl is not None:
                 try:
-                    if int(cl) > MAX_REQUEST_BYTES:
+                    if int(cl) > limit:
                         return web.json_response(_openai_error("Request body too large.", code="body_too_large"), status=413)
                 except ValueError:
                     return web.json_response(_openai_error("Invalid Content-Length header.", code="invalid_content_length"), status=400)
+            # The application's client_max_size is the largest limit needed by
+            # any route. Clone the request with its actual route limit so
+            # Request.read()/json() also enforce it for chunked bodies.
+            request = request.clone(client_max_size=limit)
         try:
             return await handler(request)
         except web.HTTPRequestEntityTooLarge:
@@ -1228,6 +1253,83 @@ class APIServerAdapter(BasePlatformAdapter):
             status=401,
         )
 
+    @staticmethod
+    def _infer_upload_suffix(filename: Optional[str], content_type: Optional[str]) -> str:
+        """Infer a temporary file suffix from filename or content type."""
+        if filename:
+            suffix = Path(filename).suffix.lower()
+            if suffix:
+                return suffix
+        if content_type:
+            guessed = mimetypes.guess_extension(content_type.split(";", 1)[0].strip(), strict=False)
+            if guessed:
+                return guessed
+        return ".webm"
+
+    @staticmethod
+    def _detect_audio_media_type(file_path: str) -> str:
+        """Detect an audio MIME type from the generated artifact's signature."""
+        with open(file_path, "rb") as handle:
+            header = handle.read(12)
+        if header.startswith(b"OggS"):
+            return "audio/ogg"
+        if len(header) >= 12 and header.startswith(b"RIFF") and header[8:12] == b"WAVE":
+            return "audio/wav"
+        if header.startswith(b"fLaC"):
+            return "audio/flac"
+        if header.startswith(b"ID3") or (
+            len(header) >= 2 and header[0] == 0xFF and (header[1] & 0xE0) == 0xE0
+        ):
+            return "audio/mpeg"
+        if len(header) >= 8 and header[4:8] == b"ftyp":
+            return "audio/mp4"
+        return "application/octet-stream"
+
+    async def _stream_file_response(
+        self,
+        request: "web.Request",
+        file_path: str,
+        media_type: str,
+        *,
+        status: int = 200,
+        extra_headers: Optional[Dict[str, str]] = None,
+        cleanup: bool = False,
+    ) -> "web.StreamResponse":
+        """Stream a local file and optionally delete it once the response finishes."""
+        headers = {
+            "Content-Type": media_type,
+            "Content-Length": str(os.path.getsize(file_path)),
+        }
+        if extra_headers:
+            headers.update(extra_headers)
+        origin = request.headers.get("Origin", "")
+        cors = self._cors_headers_for_origin(origin) if origin else None
+        if cors:
+            headers.update(cors)
+
+        response = web.StreamResponse(status=status, headers=headers)
+        await response.prepare(request)
+        try:
+            with open(file_path, "rb") as handle:
+                while True:
+                    chunk = handle.read(_AUDIO_STREAM_CHUNK_BYTES)
+                    if not chunk:
+                        break
+                    await response.write(chunk)
+            await response.write_eof()
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            logger.info("[api_server] audio client disconnected while streaming %s", file_path)
+        finally:
+            if cleanup:
+                try:
+                    os.unlink(file_path)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    logger.debug("[api_server] failed to clean up %s: %s", file_path, exc)
+
+        return response
+
     # ------------------------------------------------------------------
     # Session header helpers
     # ------------------------------------------------------------------
@@ -1621,6 +1723,205 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return web.json_response({"object": "list", "data": models})
 
+    async def _handle_audio_transcriptions(self, request: "web.Request") -> "web.Response":
+        """POST /v1/audio/transcriptions - OpenAI-style speech-to-text endpoint."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            reader = await request.multipart()
+        except Exception:
+            return web.json_response(
+                _openai_error("Expected multipart/form-data request body"),
+                status=400,
+            )
+
+        form_fields: Dict[str, str] = {}
+        temp_path: Optional[str] = None
+        uploaded_bytes = 0
+        try:
+            while True:
+                part = await reader.next()
+                if part is None:
+                    break
+                if part.name == "file":
+                    suffix = self._infer_upload_suffix(part.filename, part.headers.get("Content-Type"))
+                    fd, temp_path = tempfile.mkstemp(prefix="hermes_api_stt_", suffix=suffix)
+                    with os.fdopen(fd, "wb") as handle:
+                        while True:
+                            chunk = await part.read_chunk()
+                            if not chunk:
+                                break
+                            uploaded_bytes += len(chunk)
+                            if uploaded_bytes > AUDIO_MAX_REQUEST_BYTES:
+                                return web.json_response(
+                                    _openai_error("Request body too large.", code="body_too_large"),
+                                    status=413,
+                                )
+                            handle.write(chunk)
+                elif part.name:
+                    value = await part.read()
+                    uploaded_bytes += len(value)
+                    if uploaded_bytes > AUDIO_MAX_REQUEST_BYTES:
+                        return web.json_response(
+                            _openai_error("Request body too large.", code="body_too_large"),
+                            status=413,
+                        )
+                    form_fields[part.name] = value.decode(part.get_charset(default="utf-8"))
+
+            if temp_path is None:
+                return web.json_response(_openai_error("Missing 'file' field"), status=400)
+
+            response_format = (form_fields.get("response_format") or "json").strip().lower()
+            if response_format not in _AUDIO_TRANSCRIPTION_FORMATS:
+                return web.json_response(
+                    _openai_error(
+                        "Unsupported response_format. Expected one of: json, text, verbose_json",
+                        param="response_format",
+                    ),
+                    status=400,
+                )
+
+            model = (form_fields.get("model") or "").strip() or None
+
+            from tools.transcription_tools import transcribe_audio
+            from tools.voice_mode import is_whisper_hallucination
+
+            result = await asyncio.to_thread(transcribe_audio, temp_path, model=model)
+            if not result.get("success"):
+                return web.json_response(
+                    _openai_error(str(result.get("error", "Transcription failed"))),
+                    status=400,
+                )
+
+            transcript = str(result.get("transcript", "") or "")
+            filtered = bool(result.get("filtered", False))
+            if transcript and is_whisper_hallucination(transcript):
+                transcript = ""
+                filtered = True
+
+            headers = {}
+            provider = str(result.get("provider", "") or "")
+            if provider:
+                headers["X-Hermes-STT-Provider"] = provider
+            if filtered:
+                headers["X-Hermes-Transcript-Filtered"] = "true"
+
+            if response_format == "text":
+                return web.Response(text=transcript, content_type="text/plain", headers=headers)
+
+            payload: Dict[str, Any] = {"text": transcript}
+            if response_format == "verbose_json":
+                payload["task"] = "transcribe"
+                if provider:
+                    payload["provider"] = provider
+                payload["filtered"] = filtered
+            return web.json_response(payload, headers=headers)
+        finally:
+            if temp_path:
+                try:
+                    os.unlink(temp_path)
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    logger.debug("[api_server] failed to clean up temp upload %s: %s", temp_path, exc)
+
+    async def _handle_audio_speech(self, request: "web.Request") -> "web.StreamResponse":
+        """POST /v1/audio/speech - OpenAI-style text-to-speech endpoint."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+
+        input_text = body.get("input")
+        if not isinstance(input_text, str) or not input_text.strip():
+            return web.json_response(_openai_error("Missing or invalid 'input' field"), status=400)
+
+        response_format = str(body.get("response_format", "mp3") or "mp3").strip().lower()
+        audio_format = _AUDIO_SPEECH_FORMATS.get(response_format)
+        if audio_format is None:
+            return web.json_response(
+                _openai_error(
+                    "Unsupported response_format. Expected one of: mp3, wav, opus, ogg",
+                    param="response_format",
+                ),
+                status=400,
+            )
+
+        suffix = audio_format
+        fd, output_path = tempfile.mkstemp(prefix="hermes_api_tts_", suffix=suffix)
+        os.close(fd)
+
+        def _cleanup_output_path() -> None:
+            try:
+                os.unlink(output_path)
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+
+        try:
+            from tools.tts_tool import text_to_speech_tool
+
+            raw = await asyncio.to_thread(text_to_speech_tool, text=input_text.strip(), output_path=output_path)
+            try:
+                result = json.loads(raw)
+            except json.JSONDecodeError:
+                _cleanup_output_path()
+                return web.json_response(
+                    _openai_error("TTS tool returned invalid JSON", err_type="server_error"),
+                    status=500,
+                )
+
+            if not result.get("success"):
+                _cleanup_output_path()
+                return web.json_response(
+                    _openai_error(str(result.get("error", "TTS generation failed"))),
+                    status=400,
+                )
+
+            actual_path = str(result.get("file_path") or output_path)
+            if not os.path.isfile(actual_path):
+                _cleanup_output_path()
+                return web.json_response(
+                    _openai_error("TTS output file is missing", err_type="server_error"),
+                    status=500,
+                )
+
+            headers = {}
+            provider = str(result.get("provider", "") or "")
+            if provider:
+                headers["X-Hermes-TTS-Provider"] = provider
+            headers["X-Hermes-Voice-Compatible"] = "true" if bool(result.get("voice_compatible", False)) else "false"
+
+            if actual_path != output_path:
+                _cleanup_output_path()
+
+            media_type = self._detect_audio_media_type(actual_path)
+
+            return await self._stream_file_response(
+                request,
+                actual_path,
+                media_type,
+                extra_headers=headers,
+                cleanup=True,
+            )
+        except ValueError as exc:
+            _cleanup_output_path()
+            return web.json_response(_openai_error(str(exc)), status=400)
+        except Exception as exc:
+            _cleanup_output_path()
+            logger.error("[api_server] TTS failed: %s", exc, exc_info=True)
+            return web.json_response(
+                _openai_error(f"TTS generation failed: {exc}", err_type="server_error"),
+                status=500,
+            )
+
     async def _handle_capabilities(self, request: "web.Request") -> "web.Response":
         """GET /v1/capabilities — advertise the stable API surface.
 
@@ -1655,6 +1956,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "chat_completions_streaming": True,
                 "responses_api": True,
                 "responses_streaming": True,
+                "audio_transcriptions": True,
+                "audio_speech": True,
                 "run_submission": True,
                 "run_status": True,
                 "run_events_sse": True,
@@ -1682,6 +1985,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 "models": {"method": "GET", "path": "/v1/models"},
                 "chat_completions": {"method": "POST", "path": "/v1/chat/completions"},
                 "responses": {"method": "POST", "path": "/v1/responses"},
+                "audio_transcriptions": {"method": "POST", "path": "/v1/audio/transcriptions"},
+                "audio_speech": {"method": "POST", "path": "/v1/audio/speech"},
                 "runs": {"method": "POST", "path": "/v1/runs"},
                 "run_status": {"method": "GET", "path": "/v1/runs/{run_id}"},
                 "run_events": {"method": "GET", "path": "/v1/runs/{run_id}/events"},
@@ -4971,13 +5276,15 @@ class APIServerAdapter(BasePlatformAdapter):
 
         try:
             mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
-            self._app = web.Application(middlewares=mws, client_max_size=MAX_REQUEST_BYTES)
+            self._app = web.Application(middlewares=mws, client_max_size=AUDIO_MAX_REQUEST_BYTES)
             assert self._app is not None
             self._app.router.add_get("/health", self._handle_health)
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
             self._app.router.add_get("/v1/capabilities", self._handle_capabilities)
+            self._app.router.add_post("/v1/audio/transcriptions", self._handle_audio_transcriptions)
+            self._app.router.add_post("/v1/audio/speech", self._handle_audio_speech)
             self._app.router.add_get("/v1/skills", self._handle_skills)
             self._app.router.add_get("/v1/toolsets", self._handle_toolsets)
             # Session/client control surface (thin wrappers over SessionDB + _run_agent)

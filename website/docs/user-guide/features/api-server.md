@@ -194,6 +194,41 @@ Retrieve a previously stored response by ID.
 
 Delete a stored response.
 
+### POST /v1/audio/transcriptions
+
+Transcribe an uploaded audio file with Hermes' configured STT provider. Send a
+`multipart/form-data` body containing a `file` field. Optional `model` and
+`response_format` fields are supported; `response_format` may be `json`,
+`text`, or `verbose_json`.
+
+```bash
+curl http://localhost:8642/v1/audio/transcriptions \
+  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -F "file=@sample.webm" \
+  -F "response_format=verbose_json"
+```
+
+Audio uploads are limited to 100 MB. The response may include
+`X-Hermes-STT-Provider` and `X-Hermes-Transcript-Filtered` metadata headers.
+
+### POST /v1/audio/speech
+
+Generate speech with Hermes' configured TTS provider. Send JSON with a required
+`input` string and an optional `response_format` of `mp3`, `wav`, `opus`, or
+`ogg`. The generated audio is streamed back using the MIME type detected from
+the provider's actual output.
+
+```bash
+curl http://localhost:8642/v1/audio/speech \
+  -H "Authorization: Bearer $API_SERVER_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"input":"hello from Hermes","response_format":"mp3"}' \
+  --output speech.mp3
+```
+
+The response includes `X-Hermes-TTS-Provider` and
+`X-Hermes-Voice-Compatible` metadata headers.
+
 ### GET /v1/models
 
 Lists the agent as an available model. The advertised model name defaults to the [profile](/user-guide/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.
@@ -510,7 +545,7 @@ In Open WebUI, add each as a separate connection. The model dropdown shows `alic
 ## Limitations
 
 - **Response storage** — stored responses (for `previous_response_id`) are persisted in SQLite and survive gateway restarts. Max 100 stored responses (LRU eviction).
-- **No file upload** — inline images are supported on both `/v1/chat/completions` and `/v1/responses`, but uploaded files (`file`, `input_file`, `file_id`) and non-image document inputs are not supported through the API.
+- **No general file upload** — `/v1/audio/transcriptions` accepts audio uploads, and inline images are supported on both `/v1/chat/completions` and `/v1/responses`, but general uploaded files (`file`, `input_file`, `file_id`) and non-image document inputs are not supported through the chat APIs.
 - **Model field is cosmetic** — the `model` field in requests is accepted but the actual LLM model used is configured server-side in config.yaml.
 
 ## Proxy Mode

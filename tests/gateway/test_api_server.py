@@ -21,17 +21,20 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from aiohttp import web
+from aiohttp import FormData, web
 from aiohttp.test_utils import TestClient, TestServer
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
+    AUDIO_MAX_REQUEST_BYTES,
+    MAX_REQUEST_BYTES,
     APIServerAdapter,
     ResponseStore,
     _IdempotencyCache,
     _derive_chat_session_id,
     _redact_api_error_text,
     check_api_server_requirements,
+    body_limit_middleware,
     cors_middleware,
     security_headers_middleware,
 )
@@ -617,14 +620,16 @@ def _make_adapter(api_key: str = "", cors_origins=None) -> APIServerAdapter:
 
 def _create_app(adapter: APIServerAdapter) -> web.Application:
     """Create the aiohttp app from the adapter (without starting the full server)."""
-    mws = [mw for mw in (cors_middleware, security_headers_middleware) if mw is not None]
-    app = web.Application(middlewares=mws)
+    mws = [mw for mw in (cors_middleware, body_limit_middleware, security_headers_middleware) if mw is not None]
+    app = web.Application(middlewares=mws, client_max_size=AUDIO_MAX_REQUEST_BYTES)
     app["api_server_adapter"] = adapter
     app.router.add_get("/health", adapter._handle_health)
     app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_get("/v1/capabilities", adapter._handle_capabilities)
+    app.router.add_post("/v1/audio/transcriptions", adapter._handle_audio_transcriptions)
+    app.router.add_post("/v1/audio/speech", adapter._handle_audio_speech)
     app.router.add_get("/v1/skills", adapter._handle_skills)
     app.router.add_get("/v1/toolsets", adapter._handle_toolsets)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
@@ -944,9 +949,13 @@ class TestCapabilitiesEndpoint:
             assert data["runtime"]["split_runtime"] is False
             assert "API-server host" in data["runtime"]["description"]
             assert data["features"]["chat_completions"] is True
+            assert data["features"]["audio_transcriptions"] is True
+            assert data["features"]["audio_speech"] is True
             assert data["features"]["run_status"] is True
             assert data["features"]["run_events_sse"] is True
             assert data["features"]["session_continuity_header"] == "X-Hermes-Session-Id"
+            assert data["endpoints"]["audio_transcriptions"]["path"] == "/v1/audio/transcriptions"
+            assert data["endpoints"]["audio_speech"]["path"] == "/v1/audio/speech"
             assert data["endpoints"]["run_status"]["path"] == "/v1/runs/{run_id}"
             assert data["endpoints"]["skills"] == {"method": "GET", "path": "/v1/skills"}
             assert data["endpoints"]["toolsets"] == {"method": "GET", "path": "/v1/toolsets"}
@@ -1113,6 +1122,148 @@ class TestToolsetsEndpoint:
                     headers={"Authorization": "Bearer sk-secret"},
                 )
                 assert authed.status == 200
+
+
+# ---------------------------------------------------------------------------
+# /v1/audio endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestAudioEndpoints:
+    @pytest.mark.asyncio
+    async def test_audio_transcriptions_returns_verbose_json(self, adapter):
+        app = _create_app(adapter)
+        form = FormData()
+        form.add_field(
+            "file",
+            b"fake webm bytes",
+            filename="sample.webm",
+            content_type="audio/webm",
+        )
+        form.add_field("model", "whisper-1")
+        form.add_field("response_format", "verbose_json")
+
+        with patch(
+            "tools.transcription_tools.transcribe_audio",
+            return_value={"success": True, "transcript": "hello", "provider": "local", "filtered": False},
+        ) as transcribe_mock, patch(
+            "tools.voice_mode.is_whisper_hallucination",
+            return_value=False,
+        ):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/v1/audio/transcriptions", data=form)
+                assert resp.status == 200
+                data = await resp.json()
+
+        assert data == {
+            "text": "hello",
+            "task": "transcribe",
+            "provider": "local",
+            "filtered": False,
+        }
+        assert resp.headers.get("X-Hermes-STT-Provider") == "local"
+        assert transcribe_mock.call_args.kwargs["model"] == "whisper-1"
+
+    @pytest.mark.asyncio
+    async def test_audio_speech_streams_generated_file(self, adapter):
+        app = _create_app(adapter)
+
+        def fake_tts(*, text, output_path):
+            with open(output_path, "wb") as handle:
+                handle.write(b"ID3audio-bytes")
+            return json.dumps({
+                "success": True,
+                "file_path": output_path,
+                "provider": "piper",
+                "voice_compatible": True,
+            })
+
+        with patch("tools.tts_tool.text_to_speech_tool", side_effect=fake_tts) as tts_mock:
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/audio/speech",
+                    json={"input": "hello from Hermes", "response_format": "mp3"},
+                )
+                body = await resp.read()
+
+        assert resp.status == 200
+        assert body == b"ID3audio-bytes"
+        assert resp.headers.get("Content-Type") == "audio/mpeg"
+        assert resp.headers.get("X-Hermes-TTS-Provider") == "piper"
+        assert resp.headers.get("X-Hermes-Voice-Compatible") == "true"
+        assert tts_mock.call_args.kwargs["text"] == "hello from Hermes"
+
+    @pytest.mark.asyncio
+    async def test_audio_speech_uses_generated_artifact_mime_type(self, adapter):
+        app = _create_app(adapter)
+
+        def fake_edge_tts(*, text, output_path):
+            # Edge TTS writes MP3 regardless of the caller-provided suffix.
+            with open(output_path, "wb") as handle:
+                handle.write(b"ID3edge-mp3")
+            return json.dumps({
+                "success": True,
+                "file_path": output_path,
+                "provider": "edge",
+                "voice_compatible": False,
+            })
+
+        with patch("tools.tts_tool.text_to_speech_tool", side_effect=fake_edge_tts):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/audio/speech",
+                    json={"input": "hello", "response_format": "wav"},
+                )
+                await resp.read()
+
+        assert resp.status == 200
+        assert resp.headers.get("Content-Type") == "audio/mpeg"
+
+    @pytest.mark.asyncio
+    async def test_chunked_non_audio_request_keeps_standard_body_limit(self, adapter):
+        async def read_body(request):
+            await request.read()
+            return web.Response(text="ok")
+
+        app = web.Application(
+            middlewares=[body_limit_middleware],
+            client_max_size=AUDIO_MAX_REQUEST_BYTES,
+        )
+        app.router.add_post("/non-audio", read_body)
+
+        async def oversized_chunks():
+            yield b"x" * (MAX_REQUEST_BYTES // 2)
+            yield b"x" * (MAX_REQUEST_BYTES // 2 + 1)
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/non-audio", data=oversized_chunks())
+            await resp.read()
+
+        assert resp.status == 413
+
+    @pytest.mark.asyncio
+    async def test_chunked_audio_upload_enforces_audio_limit(self, adapter):
+        app = _create_app(adapter)
+        form = FormData()
+
+        async def audio_chunks():
+            yield b"x" * 5
+            yield b"x" * 5
+
+        form.add_field(
+            "file",
+            audio_chunks(),
+            filename="sample.webm",
+            content_type="audio/webm",
+        )
+
+        with patch("gateway.platforms.api_server.AUDIO_MAX_REQUEST_BYTES", 8):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/v1/audio/transcriptions", data=form)
+                data = await resp.json()
+
+        assert resp.status == 413
+        assert data["error"]["code"] == "body_too_large"
 
 
 # ---------------------------------------------------------------------------
@@ -3859,8 +4010,6 @@ class TestSessionKeyHeader:
             assert resp.status == 200
             data = await resp.json()
             assert data["features"]["session_key_header"] == "X-Hermes-Session-Key"
-
-
 # ---------------------------------------------------------------------------
 # Per-client model routing (model_routes)
 # ---------------------------------------------------------------------------

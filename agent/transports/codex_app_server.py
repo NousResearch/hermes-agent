@@ -17,12 +17,12 @@ runtime is not selected.
 from __future__ import annotations
 
 import json
-import os
 import queue
 import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional
 
 from tools.environments.local import hermes_subprocess_env
@@ -51,6 +51,152 @@ class _Pending:
     sent_at: float = field(default_factory=time.time)
 
 
+def _validated_path(value: Optional[str], *, directory: bool) -> Optional[Path]:
+    """Return an existing absolute path with no symlinked component."""
+    if not value:
+        return None
+    try:
+        path = Path(value).expanduser()
+        if not path.is_absolute() or ".." in path.parts:
+            return None
+        current = path
+        while True:
+            if current.is_symlink():
+                return None
+            if current.parent == current:
+                break
+            current = current.parent
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if resolved != path:
+        return None
+    if directory and not resolved.is_dir():
+        return None
+    if not directory and not resolved.is_file():
+        return None
+    return resolved
+
+
+def _read_git_path(path: Path) -> Optional[str]:
+    """Read one non-empty UTF-8 Git path directive from a regular file."""
+    if _validated_path(str(path), directory=False) is None:
+        return None
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeError, ValueError):
+        return None
+    if len(lines) != 1:
+        return None
+    value = lines[0].strip()
+    return value or None
+
+
+def _resolve_git_path(value: str, *, relative_to: Path) -> Optional[Path]:
+    try:
+        candidate = Path(value).expanduser()
+        if not candidate.is_absolute():
+            candidate = relative_to / candidate
+        resolved = candidate.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return _validated_path(str(resolved), directory=True)
+
+
+def _linked_worktree_metadata_roots(workspace_cwd: Optional[str]) -> list[str]:
+    """Return only the Git metadata roots needed to commit in a linked worktree."""
+    workspace = _validated_path(workspace_cwd, directory=True)
+    if workspace is None:
+        return []
+
+    marker = workspace / ".git"
+    directive = _read_git_path(marker)
+    prefix = "gitdir:"
+    if directive is None or not directive.lower().startswith(prefix):
+        return []
+    gitdir_value = directive[len(prefix) :].strip()
+    if not gitdir_value:
+        return []
+    git_dir = _resolve_git_path(gitdir_value, relative_to=workspace)
+    if git_dir is None:
+        return []
+
+    commondir_value = _read_git_path(git_dir / "commondir")
+    backlink_value = _read_git_path(git_dir / "gitdir")
+    if commondir_value is None or backlink_value is None:
+        return []
+    common_dir = _resolve_git_path(commondir_value, relative_to=git_dir)
+    if common_dir is None:
+        return []
+
+    try:
+        backlink = Path(backlink_value).expanduser()
+        if not backlink.is_absolute():
+            backlink = git_dir / backlink
+        backlink = backlink.resolve(strict=True)
+    except (OSError, RuntimeError, ValueError):
+        return []
+
+    if (
+        git_dir.parent.name != "worktrees"
+        or git_dir.parent.parent != common_dir
+        or backlink != marker
+        or not _narrow_writable_roots([common_dir])
+    ):
+        return []
+    shared_roots = []
+    children = [common_dir / "objects", common_dir / "refs" / "heads"]
+    if (common_dir / "logs").exists():
+        children.append(common_dir / "logs" / "refs" / "heads")
+    for child in children:
+        child = _validated_path(str(child), directory=True)
+        if child is None:
+            return []
+        shared_roots.append(str(child))
+    return [str(git_dir), *shared_roots]
+
+
+def _narrow_writable_roots(roots: list[Path]) -> list[str]:
+    """Reject roots that would grant a filesystem or the user's whole home."""
+    try:
+        home = Path.home().resolve()
+    except (OSError, RuntimeError, ValueError):
+        return []
+    if any(root == Path(root.anchor) or root == home for root in roots):
+        return []
+    return [str(root) for root in roots]
+
+
+def _kanban_writable_roots(
+    env: dict[str, str], *, workspace_cwd: Optional[str]
+) -> list[str]:
+    """Return only dispatcher-pinned, validated Kanban sandbox roots."""
+    db = _validated_path(env.get("HERMES_KANBAN_DB"), directory=False)
+    workspace = _validated_path(
+        env.get("HERMES_KANBAN_WORKSPACE"), directory=True
+    )
+    cwd = _validated_path(workspace_cwd, directory=True)
+    if db is None or workspace is None or cwd != workspace:
+        return []
+
+    roots = [db.parent, workspace]
+    marker = workspace / ".git"
+    git_dir = _validated_path(str(marker), directory=True)
+    if git_dir is not None:
+        roots.append(git_dir)
+    else:
+        linked_roots = _linked_worktree_metadata_roots(str(workspace))
+        if marker.is_file() and not marker.is_symlink() and not linked_roots:
+            return []
+        roots.extend(Path(root) for root in linked_roots)
+    return _narrow_writable_roots(roots)
+
+
+def _toml_string_array(values: list[str]) -> str:
+    """Serialize paths as a Unicode-preserving TOML-compatible array."""
+    return json.dumps(values, ensure_ascii=False)
+
+
 class CodexAppServerClient:
     """Minimal JSON-RPC 2.0 client for `codex app-server` over stdio.
 
@@ -74,6 +220,7 @@ class CodexAppServerClient:
         codex_home: Optional[str] = None,
         extra_args: Optional[list[str]] = None,
         env: Optional[dict[str, str]] = None,
+        workspace_cwd: Optional[str] = None,
     ) -> None:
         self._codex_bin = codex_bin
         # codex app-server is a model-driving CLI executor: it runs a
@@ -94,30 +241,25 @@ class CodexAppServerClient:
             spawn_env["CODEX_HOME"] = codex_home
 
         app_server_args = list(extra_args or [])
-        # Kanban workers must be able to write their handoff/status back to
-        # the board DB, which lives outside the per-task workspace. Keep the
-        # Codex sandbox on, but add the Kanban root as the only extra writable
-        # root. Without this, codex-runtime workers finish their actual work
-        # but crash/block when kanban_complete/kanban_block writes SQLite.
+        # Kanban workers must write their handoff/status to the board DB and
+        # commit inside the exact task workspace. Linked worktrees additionally
+        # need their validated gitdir plus shared objects, refs, and reflogs.
+        # Keep the sandbox and no-network policy on; never inherit broader roots.
         if spawn_env.get("HERMES_KANBAN_TASK"):
-            kanban_db = spawn_env.get("HERMES_KANBAN_DB")
-            kanban_root = (
-                os.path.dirname(kanban_db)
-                if kanban_db
-                else spawn_env.get(
-                    "HERMES_KANBAN_ROOT",
-                    os.path.join(
-                        spawn_env.get("HERMES_HOME", os.path.expanduser("~/.hermes")),
-                        "kanban",
-                    ),
-                )
+            writable_roots = _kanban_writable_roots(
+                spawn_env, workspace_cwd=workspace_cwd
             )
+            if not writable_roots:
+                raise ValueError(
+                    "Codex app-server requires validated Kanban writable roots"
+                )
             app_server_args.extend(
                 [
                     "-c",
                     'sandbox_mode="workspace-write"',
                     "-c",
-                    f'sandbox_workspace_write.writable_roots=["{kanban_root}"]',
+                    "sandbox_workspace_write.writable_roots="
+                    f"{_toml_string_array(writable_roots)}",
                     "-c",
                     "sandbox_workspace_write.network_access=false",
                 ]

@@ -274,7 +274,9 @@ class CodexAppServerSession:
             return self._thread_id
         if self._client is None:
             self._client = self._client_factory(
-                codex_bin=self._codex_bin, codex_home=self._codex_home
+                codex_bin=self._codex_bin,
+                codex_home=self._codex_home,
+                workspace_cwd=self._cwd,
             )
         self._client.initialize(
             client_name="hermes",

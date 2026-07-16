@@ -177,6 +177,21 @@ class TestLifecycle:
         method_calls = [m for (m, _) in client.requests if m == "thread/start"]
         assert len(method_calls) == 1
 
+    def test_client_factory_receives_workspace_cwd(self):
+        client = FakeClient()
+        captured = {}
+
+        def factory(**kwargs):
+            captured.update(kwargs)
+            return client
+
+        s = CodexAppServerSession(
+            cwd="/tmp/worktree", client_factory=factory  # type: ignore[arg-type]
+        )
+        s.ensure_started()
+
+        assert captured["workspace_cwd"] == "/tmp/worktree"
+
     def test_thread_start_passes_cwd_only(self):
         """thread/start carries cwd. We intentionally do NOT pass `permissions`
         on this codex version (experimentalApi-gated + requires matching

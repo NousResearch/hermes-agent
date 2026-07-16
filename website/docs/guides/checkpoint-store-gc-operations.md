@@ -24,10 +24,20 @@ The two-hour grace period protects fresh objects written by another session whil
 Checkpoint-manager messages use the standard Hermes logs under the selected profile's Hermes home, not always the default `~/.hermes` directory. Pick one profile explicitly and reuse it for every command in the investigation. Resolve the profile home through the `hermes` launcher itself rather than an ambient `python` executable, because packaged Hermes installs can provide a working `hermes` command while no `python` command exists on `PATH`.
 
 ```bash
+set -o pipefail
+
 PROFILE=default  # or the named profile that triggered the checkpoint operation
 HERMES_HOME_PATH=$(
   hermes -p "$PROFILE" profile show "$PROFILE" \
-    | awk -F': *' '/^Path:/ { print $2; found = 1 } END { exit found ? 0 : 1 }'
+    | awk '
+        /^Path:/ {
+          sub(/^Path:[[:space:]]*/, "")
+          print
+          found = 1
+          exit
+        }
+        END { exit found ? 0 : 1 }
+      '
 ) || {
   echo "Could not resolve Hermes home for profile '$PROFILE'; aborting before export/fsck." >&2
   exit 1
@@ -38,6 +48,31 @@ if [ -z "$HERMES_HOME_PATH" ]; then
 fi
 export HERMES_HOME="$HERMES_HOME_PATH"
 printf 'Inspecting profile %s at %s\n' "$PROFILE" "$HERMES_HOME_PATH"
+```
+
+The extractor removes only the leading `Path:` label. Do not split on every colon: Windows profile homes such as `C:\Users\alex\.hermes\profiles\ops` must stay intact instead of truncating to `C`.
+
+On Windows, use a native PowerShell flow instead of the Bash/awk recipe:
+
+```powershell
+$Profile = "default"  # or the named profile that triggered the checkpoint operation
+$ProfileText = & hermes -p $Profile profile show $Profile
+if ($LASTEXITCODE -ne 0) {
+  throw "Could not resolve Hermes home for profile '$Profile'; aborting before export/fsck."
+}
+
+$PathLine = $ProfileText | Where-Object { $_ -match '^Path:\s*' } | Select-Object -First 1
+if (-not $PathLine) {
+  throw "Profile '$Profile' output did not include a Path line; aborting before export/fsck."
+}
+
+$HermesHomePath = $PathLine -replace '^Path:\s*', ''
+if ([string]::IsNullOrWhiteSpace($HermesHomePath)) {
+  throw "Resolved empty Hermes home for profile '$Profile'; aborting before export/fsck."
+}
+
+$env:HERMES_HOME = $HermesHomePath
+Write-Host "Inspecting profile $Profile at $HermesHomePath"
 ```
 
 Then inspect `<hermes-home>/logs/`:
@@ -51,6 +86,13 @@ Use `hermes -p "$PROFILE" logs --level debug` for live diagnosis. A normal GC ex
 ```bash
 hermes -p "$PROFILE" checkpoints status
 git --git-dir="$HERMES_HOME_PATH/checkpoints/store" fsck --no-dangling
+```
+
+PowerShell equivalent:
+
+```powershell
+hermes -p $Profile checkpoints status
+git --git-dir (Join-Path $HermesHomePath "checkpoints/store") fsck --no-dangling
 ```
 
 ## Concurrent, stale, and failed GC handling

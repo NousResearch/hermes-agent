@@ -1093,6 +1093,32 @@ class TestGetModelContextLength:
     @patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None)
     @patch("agent.model_metadata._query_ollama_api_show", return_value=131072)
     @patch("agent.model_metadata._query_local_context_length", return_value=None)
+    @patch("agent.model_metadata.is_local_endpoint", return_value=True)
+    @patch("agent.model_metadata.save_context_length")
+    @patch("agent.model_metadata._maybe_cache_local_context_length")
+    def test_local_ollama_falls_back_to_generic_probe(
+        self,
+        mock_maybe_cache, mock_save,
+        mock_is_local, mock_local_ctx,
+        mock_ollama_show, mock_resolve_ep,
+        mock_fetch, mock_cache,
+    ):
+        """Local Ollama falls back to the generic /api/show probe when the
+        num_ctx-first local probe cannot determine a context length."""
+        result = get_model_context_length(
+            "my-model",
+            base_url="http://localhost:11434",
+        )
+
+        assert result == 131072
+        mock_local_ctx.assert_called_once()
+        mock_ollama_show.assert_called_once()
+
+    @patch("agent.model_metadata.get_cached_context_length", return_value=None)
+    @patch("agent.model_metadata.fetch_model_metadata", return_value={})
+    @patch("agent.model_metadata._resolve_endpoint_context_length", return_value=None)
+    @patch("agent.model_metadata._query_ollama_api_show", return_value=131072)
+    @patch("agent.model_metadata._query_local_context_length", return_value=None)
     @patch("agent.model_metadata.is_local_endpoint", return_value=False)
     @patch("agent.model_metadata.save_context_length")
     @patch("agent.model_metadata._maybe_cache_local_context_length")

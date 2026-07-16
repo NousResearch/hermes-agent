@@ -807,6 +807,16 @@ def test_owner_cli_exposes_only_explicit_stopped_phase_b_apply(
     )
     monkeypatch.setattr(
         launcher,
+        "activate_trusted_owner_support",
+        lambda _runtime, *, release_sha: None,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "require_trusted_owner_support_activation",
+        lambda _runtime, *, release_sha: None,
+    )
+    monkeypatch.setattr(
+        launcher,
         "require_local_launcher_provenance",
         lambda exact_release: events.append(("provenance", exact_release)) or _digest(
             "launcher"
@@ -1014,6 +1024,16 @@ def test_owner_cli_routes_explicit_coordinator_publication_without_live_or_cloud
     )
     monkeypatch.setattr(
         launcher,
+        "activate_trusted_owner_support",
+        lambda _runtime, *, release_sha: None,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "require_trusted_owner_support_activation",
+        lambda _runtime, *, release_sha: None,
+    )
+    monkeypatch.setattr(
+        launcher,
         "require_local_launcher_provenance",
         lambda _release: _digest("launcher"),
     )
@@ -1152,6 +1172,16 @@ def test_owner_cli_routes_explicit_stopped_writer_activation(
         launcher,
         "require_trusted_owner_runtime",
         lambda _release: Runtime(),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "activate_trusted_owner_support",
+        lambda _runtime, *, release_sha: None,
+    )
+    monkeypatch.setattr(
+        launcher,
+        "require_trusted_owner_support_activation",
+        lambda _runtime, *, release_sha: None,
     )
     monkeypatch.setattr(
         launcher,

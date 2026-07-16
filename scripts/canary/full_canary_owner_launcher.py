@@ -55,6 +55,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any, BinaryIO, Callable, Mapping, Protocol, Sequence
@@ -312,10 +313,13 @@ RECOVERY_ADMIN_FRAME_SCHEMA = "MRC2-gate-sha256-nonce-sha256-u16be-u32be-utf8-eo
 APPROVAL_REQUEST_PATH = "/etc/muncho/full-canary/approval-request.json"
 FINAL_APPROVAL_PATH = "/etc/muncho/full-canary/owner-approval.json"
 TRUSTED_RUNTIME_BOOTSTRAP_RECEIPT_SCHEMA = (
-    "muncho-full-canary-owner-trusted-runtime-bootstrap-receipt.v1"
+    "muncho-full-canary-owner-trusted-runtime-bootstrap-receipt.v2"
 )
 TRUSTED_SDK_PUBLICATION_INTENT_SCHEMA = (
     "muncho-full-canary-owner-trusted-sdk-publication-intent.v1"
+)
+TRUSTED_OWNER_SUPPORT_TREE_SCHEMA = (
+    "muncho-full-canary-owner-support-tree.v1"
 )
 
 _ADMIN_PASSWORD_BYTES = 48
@@ -423,6 +427,82 @@ _TRUSTED_PYTHON_DEPENDENCIES = (
     "SystemConfiguration",
     "/usr/lib/libedit.3.dylib",
     "/usr/lib/libz.1.dylib",
+)
+_TRUSTED_OWNER_SUPPORT_RELATIVE_PREFIX = ".hermes/trusted/owner-support-"
+_TRUSTED_OWNER_SUPPORT_SOURCE_RELATIVE = "source"
+_TRUSTED_OWNER_SUPPORT_SITE_RELATIVE = "site-packages"
+_TRUSTED_OWNER_SUPPORT_MAX_ENTRIES = 50_000
+_TRUSTED_OWNER_SUPPORT_MAX_BYTES = 512 * 1024 * 1024
+_TRUSTED_OWNER_SUPPORT_MAX_FILE_BYTES = 64 * 1024 * 1024
+_TRUSTED_OWNER_SUPPORT_SOURCE_ARCHIVE_MAX_BYTES = 128 * 1024 * 1024
+_TRUSTED_OWNER_SUPPORT_WHEELS = (
+    (
+        "cryptography",
+        "46.0.7",
+        "cryptography-46.0.7-cp311-abi3-macosx_10_9_universal2.whl",
+        (
+            "https://files.pythonhosted.org/packages/0b/5d/"
+            "4a8f770695d73be252331e60e526291e3df0c9b27556a90a6b47bccca4c2/"
+            "cryptography-46.0.7-cp311-abi3-macosx_10_9_universal2.whl"
+        ),
+        7_179_869,
+        "ea42cbe97209df307fdc3b155f1b6fa2577c0defa8f1f7d3be7d31d189108ad4",
+    ),
+    (
+        "cffi",
+        "2.0.0",
+        "cffi-2.0.0-cp311-cp311-macosx_11_0_arm64.whl",
+        (
+            "https://files.pythonhosted.org/packages/4f/8b/"
+            "f0e4c441227ba756aafbe78f117485b25bb26b1c059d01f137fa6d14896b/"
+            "cffi-2.0.0-cp311-cp311-macosx_11_0_arm64.whl"
+        ),
+        180_560,
+        "2de9a304e27f7596cd03d16f1b7c72219bd944e99cc52b84d0145aefb07cbd3c",
+    ),
+    (
+        "PyYAML",
+        "6.0.3",
+        "pyyaml-6.0.3-cp311-cp311-macosx_11_0_arm64.whl",
+        (
+            "https://files.pythonhosted.org/packages/16/19/"
+            "13de8e4377ed53079ee996e1ab0a9c33ec2faf808a4647b7b4c0d46dd239/"
+            "pyyaml-6.0.3-cp311-cp311-macosx_11_0_arm64.whl"
+        ),
+        175_577,
+        "652cb6edd41e718550aad172851962662ff2681490a8a711af6a4d288dd96824",
+    ),
+    (
+        "pycparser",
+        "3.0",
+        "pycparser-3.0-py3-none-any.whl",
+        (
+            "https://files.pythonhosted.org/packages/0c/c3/"
+            "44f3fbbfa403ea2a7c779186dc20772604442dde72947e7d01069cbe98e3/"
+            "pycparser-3.0-py3-none-any.whl"
+        ),
+        48_172,
+        "b727414169a36b7d524c1c3e31839a521725078d7b2ff038656844266160a992",
+    ),
+)
+_TRUSTED_OWNER_SUPPORT_MANAGED_MODULES = (
+    "gateway",
+    "scripts",
+    "cryptography",
+    "yaml",
+    "cffi",
+    "pycparser",
+    "_cffi_backend",
+)
+_TRUSTED_OWNER_SUPPORT_PREFLIGHT_MODULES = (
+    "gateway.canonical_writer_schema_reconciliation_bootstrap",
+    "gateway.canonical_writer_foundation_phase_b",
+    "gateway.canonical_writer_host_authority",
+    "gateway.canonical_writer_activation",
+    "gateway.canonical_writer_activation_bridge",
+    "gateway.canonical_writer_planner",
+    "scripts.canary.foundation_preflight",
+    "scripts.canary.host_preflight",
 )
 _GCLOUD_PYTHON_ISOLATION_ARGS = (
     "-I",
@@ -921,7 +1001,7 @@ def _close_session_preserving_primary(
 
 @dataclass
 class _OwnerLaunchSignal(BaseException):
-    pass
+    signum: int
 
 
 class _OwnerSignalFence:
@@ -3202,6 +3282,12 @@ class TrustedGcloudExecutable:
         self._publication_intent_fingerprint: tuple[Any, ...] | None = None
         self._publication_intent: Mapping[str, Any] | None = None
         self._bootstrap_receipt_fingerprint: tuple[Any, ...] | None = None
+        self._owner_support_root: str | None = None
+        self._owner_support_source: str | None = None
+        self._owner_support_site: str | None = None
+        self._owner_support_fingerprint: tuple[int, int, str] | None = None
+        self._owner_support_manifest: Mapping[str, Any] | None = None
+        self._owner_support_activated = False
         if self._production_runtime:
             if release_sha is None or _RELEASE_SHA.fullmatch(release_sha) is None:
                 raise OwnerLauncherError("trusted_runtime_release_unbound")
@@ -3224,6 +3310,21 @@ class TrustedGcloudExecutable:
                 self._publication_intent_path(),
                 destination=self._sdk_root,
                 publication_tree=self._sdk_publication_fingerprint,
+            )
+            (
+                self._owner_support_root,
+                self._owner_support_source,
+                self._owner_support_site,
+            ) = _trusted_owner_support_paths(release_sha)
+            self._owner_support_fingerprint = (
+                _capture_owner_support_publication_tree(
+                    self._owner_support_root,
+                    release_sha=release_sha,
+                )
+            )
+            self._owner_support_manifest = _validate_owner_support_manifest(
+                self._owner_support_root,
+                release_sha=release_sha,
             )
             self._bootstrap_receipt_fingerprint = self._validate_bootstrap_receipt()
 
@@ -3475,6 +3576,11 @@ class TrustedGcloudExecutable:
             or self._launcher_sha256 is None
             or self._publication_intent is None
             or self._sdk_publication_fingerprint is None
+            or self._owner_support_root is None
+            or self._owner_support_source is None
+            or self._owner_support_site is None
+            or self._owner_support_fingerprint is None
+            or self._owner_support_manifest is None
         ):
             raise OwnerLauncherError("trusted_runtime_release_unbound")
         return {
@@ -3505,6 +3611,23 @@ class TrustedGcloudExecutable:
             "python_tree_bytes": self._python_fingerprint[1],
             "python_tree_sha256": self._python_fingerprint[2],
             "python_dependencies": list(self._python_dependencies),
+            "owner_support_release_sha": self._release_sha,
+            "owner_support_root": self._owner_support_root,
+            "owner_support_source_root": self._owner_support_source,
+            "owner_support_site_root": self._owner_support_site,
+            "owner_support_tree_entries": self._owner_support_fingerprint[0],
+            "owner_support_tree_bytes": self._owner_support_fingerprint[1],
+            "owner_support_tree_sha256": self._owner_support_fingerprint[2],
+            "owner_support_manifest_sha256": self._owner_support_manifest[
+                "manifest_sha256"
+            ],
+            "owner_support_source_archive_bytes": self._owner_support_manifest[
+                "source_archive_bytes"
+            ],
+            "owner_support_source_archive_sha256": self._owner_support_manifest[
+                "source_archive_sha256"
+            ],
+            "owner_support_wheels": _owner_support_wheel_receipt_values(),
         }
 
     def _validate_bootstrap_receipt(self) -> tuple[Any, ...]:
@@ -3579,6 +3702,12 @@ class TrustedGcloudExecutable:
                 != self._bootstrap_receipt_fingerprint
             ):
                 raise OwnerLauncherError("trusted_runtime_bootstrap_receipt_changed")
+            self._revalidate_owner_support()
+            if self._owner_support_activated:
+                require_trusted_owner_support_activation(
+                    self,
+                    release_sha=str(self._release_sha),
+                )
         try:
             module = os.path.realpath(self._gcloud_module, strict=True)
         except OSError:
@@ -3586,6 +3715,40 @@ class TrustedGcloudExecutable:
         if module != self._gcloud_module:
             raise OwnerLauncherError("trusted_gcloud_sdk_invalid")
         return (python, *_GCLOUD_PYTHON_ISOLATION_ARGS, module)
+
+    def _revalidate_owner_support(self) -> None:
+        if (
+            not self._production_runtime
+            or self._release_sha is None
+            or self._owner_support_root is None
+            or self._owner_support_source is None
+            or self._owner_support_site is None
+            or self._owner_support_fingerprint is None
+            or self._owner_support_manifest is None
+        ):
+            if self._production_runtime:
+                raise OwnerLauncherError("trusted_owner_support_unavailable")
+            return
+        observed_tree = _capture_owner_support_publication_tree(
+            self._owner_support_root,
+            release_sha=self._release_sha,
+        )
+        observed_manifest = _validate_owner_support_manifest(
+            self._owner_support_root,
+            release_sha=self._release_sha,
+        )
+        if observed_tree != self._owner_support_fingerprint:
+            raise OwnerLauncherError("trusted_owner_support_changed")
+        if observed_manifest != self._owner_support_manifest:
+            raise OwnerLauncherError("trusted_owner_support_manifest_changed")
+
+    def trusted_owner_support_paths(self) -> tuple[str, str]:
+        """Return only the sealed release source and site roots after recheck."""
+
+        self._revalidate_owner_support()
+        if self._owner_support_source is None or self._owner_support_site is None:
+            raise OwnerLauncherError("trusted_owner_support_unavailable")
+        return self._owner_support_source, self._owner_support_site
 
 
 def _owner_gcloud_environment(
@@ -4166,6 +4329,929 @@ def _safe_extract_gcloud_archive(archive_path: str, staging_root: str) -> str:
     return root
 
 
+def _trusted_owner_support_paths(
+    release_sha: str,
+    *,
+    home: str | None = None,
+) -> tuple[str, str, str]:
+    if not isinstance(release_sha, str) or _RELEASE_SHA.fullmatch(release_sha) is None:
+        raise OwnerLauncherError("invalid_release_sha")
+    owner_home = _canonical_owner_home() if home is None else os.path.abspath(home)
+    root = os.path.join(
+        owner_home,
+        f"{_TRUSTED_OWNER_SUPPORT_RELATIVE_PREFIX}{release_sha}",
+    )
+    return (
+        root,
+        os.path.join(root, _TRUSTED_OWNER_SUPPORT_SOURCE_RELATIVE),
+        os.path.join(root, _TRUSTED_OWNER_SUPPORT_SITE_RELATIVE),
+    )
+
+
+def _owner_support_wheel_receipt_values() -> list[Mapping[str, Any]]:
+    return [
+        {
+            "distribution": distribution,
+            "version": version,
+            "filename": filename,
+            "url": url,
+            "bytes": expected_bytes,
+            "sha256": expected_sha256,
+        }
+        for (
+            distribution,
+            version,
+            filename,
+            url,
+            expected_bytes,
+            expected_sha256,
+        ) in _TRUSTED_OWNER_SUPPORT_WHEELS
+    ]
+
+
+def _owner_support_manifest_value(
+    release_sha: str,
+    *,
+    source_archive_bytes: int,
+    source_archive_sha256: str,
+) -> Mapping[str, Any]:
+    if (
+        not isinstance(release_sha, str)
+        or _RELEASE_SHA.fullmatch(release_sha) is None
+        or type(source_archive_bytes) is not int
+        or source_archive_bytes <= 0
+        or source_archive_bytes > _TRUSTED_OWNER_SUPPORT_SOURCE_ARCHIVE_MAX_BYTES
+        or not isinstance(source_archive_sha256, str)
+        or _SHA256.fullmatch(source_archive_sha256) is None
+    ):
+        raise OwnerLauncherError("trusted_owner_support_manifest_invalid")
+    unsigned = {
+        "schema": TRUSTED_OWNER_SUPPORT_TREE_SCHEMA,
+        "ok": True,
+        "state": "release_bound_owner_support_ready",
+        "release_sha": release_sha,
+        "source_archive_format": "git-archive-tar",
+        "source_archive_paths": ["gateway", "scripts"],
+        "source_archive_bytes": source_archive_bytes,
+        "source_archive_sha256": source_archive_sha256,
+        "wheels": _owner_support_wheel_receipt_values(),
+    }
+    return {
+        **unsigned,
+        "manifest_sha256": _sha256(_canonical_bytes(unsigned)),
+    }
+
+
+def _validate_owner_support_manifest(
+    root: str,
+    *,
+    release_sha: str,
+) -> Mapping[str, Any]:
+    fingerprint, payload = _read_pinned_regular_file(
+        os.path.join(root, "owner-support.json"),
+        maximum=_GCLOUD_MAX_CONFIG_BYTES,
+        unavailable_code="trusted_owner_support_manifest_unavailable",
+        invalid_code="trusted_owner_support_manifest_invalid",
+        changed_code="trusted_owner_support_manifest_changed",
+        allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
+    )
+    if (
+        stat.S_IMODE(int(fingerprint[0])) != 0o400
+        or int(fingerprint[5]) != 1
+    ):
+        raise OwnerLauncherError("trusted_owner_support_manifest_invalid")
+    try:
+        value = _decode_json_object(payload, maximum=_GCLOUD_MAX_CONFIG_BYTES)
+    except OwnerLauncherError:
+        raise OwnerLauncherError("trusted_owner_support_manifest_invalid") from None
+    if payload != _canonical_bytes(value) + b"\n":
+        raise OwnerLauncherError("trusted_owner_support_manifest_invalid")
+    source_bytes = value.get("source_archive_bytes")
+    source_sha256 = value.get("source_archive_sha256")
+    if (
+        type(source_bytes) is not int
+        or not isinstance(source_sha256, str)
+    ):
+        raise OwnerLauncherError("trusted_owner_support_manifest_invalid")
+    expected = _owner_support_manifest_value(
+        release_sha,
+        source_archive_bytes=source_bytes,
+        source_archive_sha256=source_sha256,
+    )
+    if value != expected:
+        raise OwnerLauncherError("trusted_owner_support_manifest_invalid")
+    return value
+
+
+def _owner_support_name_forbidden(relative: str) -> bool:
+    pure = PurePosixPath(relative)
+    return (
+        not relative
+        or pure.is_absolute()
+        or any(part in {"", ".", "..", "__pycache__"} for part in pure.parts)
+        or any(_CONTROL_RE.search(part) is not None for part in pure.parts)
+        or relative.endswith((".pth", ".pyc", ".pyo"))
+    )
+
+
+def _require_owner_support_no_xattrs(path: str) -> None:
+    if not hasattr(os, "listxattr"):
+        return
+    try:
+        attributes = os.listxattr(path, follow_symlinks=False)
+    except OSError:
+        raise OwnerLauncherError("trusted_owner_support_changed") from None
+    if attributes:
+        raise OwnerLauncherError("trusted_owner_support_invalid")
+
+
+def _capture_owner_support_publication_tree(
+    root: str,
+    *,
+    release_sha: str,
+    canonical_root: str | None = None,
+) -> tuple[int, int, str]:
+    """Hash every sealed owner-support path and reject executable site hooks."""
+
+    expected_root, _expected_source, _expected_site = _trusted_owner_support_paths(
+        release_sha
+    )
+    staged_capture = canonical_root is not None
+    if canonical_root is None:
+        canonical_root = expected_root
+    if (
+        canonical_root != expected_root
+        or not os.path.isabs(root)
+        or (not staged_capture and root != canonical_root)
+    ):
+        raise OwnerLauncherError("trusted_owner_support_path_invalid")
+    try:
+        if os.path.realpath(root, strict=True) != root:
+            raise OwnerLauncherError("trusted_owner_support_path_invalid")
+    except OSError:
+        raise OwnerLauncherError("trusted_owner_support_changed") from None
+    source_root = os.path.join(root, _TRUSTED_OWNER_SUPPORT_SOURCE_RELATIVE)
+    site_root = os.path.join(root, _TRUSTED_OWNER_SUPPORT_SITE_RELATIVE)
+    digest = hashlib.sha256()
+    TrustedGcloudExecutable._feed_tree_entry(
+        digest,
+        (TRUSTED_OWNER_SUPPORT_TREE_SCHEMA, release_sha),
+    )
+    entry_count = 0
+    total_bytes = 0
+    pending = [root]
+    root_children: set[str] | None = None
+    source_children: set[str] | None = None
+    while pending:
+        path = pending.pop()
+        try:
+            before = os.lstat(path)
+        except OSError:
+            raise OwnerLauncherError("trusted_owner_support_changed") from None
+        try:
+            relative = os.path.relpath(path, root)
+        except ValueError:
+            raise OwnerLauncherError("trusted_owner_support_path_invalid") from None
+        if relative != "." and _owner_support_name_forbidden(
+            PurePosixPath(*Path(relative).parts).as_posix()
+        ):
+            raise OwnerLauncherError("trusted_owner_support_invalid")
+        if (
+            before.st_uid != os.getuid()  # windows-footgun: ok
+            or before.st_mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
+        ):
+            raise OwnerLauncherError("trusted_owner_support_invalid")
+        _require_owner_support_no_xattrs(path)
+        if stat.S_ISDIR(before.st_mode):
+            if stat.S_IMODE(before.st_mode) != 0o500:
+                raise OwnerLauncherError("trusted_owner_support_invalid")
+            try:
+                with os.scandir(path) as entries:
+                    children = sorted(
+                        (entry.path for entry in entries),
+                        key=os.fsencode,
+                        reverse=True,
+                    )
+                after = os.lstat(path)
+            except OSError:
+                raise OwnerLauncherError("trusted_owner_support_changed") from None
+            if (
+                before.st_dev,
+                before.st_ino,
+                before.st_mode,
+                before.st_uid,
+                before.st_gid,
+                before.st_nlink,
+                before.st_mtime_ns,
+                before.st_ctime_ns,
+            ) != (
+                after.st_dev,
+                after.st_ino,
+                after.st_mode,
+                after.st_uid,
+                after.st_gid,
+                after.st_nlink,
+                after.st_mtime_ns,
+                after.st_ctime_ns,
+            ):
+                raise OwnerLauncherError("trusted_owner_support_changed")
+            child_names = {os.path.basename(child) for child in children}
+            if path == root:
+                root_children = child_names
+            elif path == source_root:
+                source_children = child_names
+            pending.extend(children)
+            TrustedGcloudExecutable._feed_tree_entry(
+                digest,
+                ("directory", relative, 0o500),
+            )
+        elif stat.S_ISREG(before.st_mode):
+            if stat.S_IMODE(before.st_mode) != 0o400 or before.st_nlink != 1:
+                raise OwnerLauncherError("trusted_owner_support_invalid")
+            fingerprint, payload = _read_pinned_regular_file(
+                path,
+                maximum=_TRUSTED_OWNER_SUPPORT_MAX_FILE_BYTES,
+                unavailable_code="trusted_owner_support_changed",
+                invalid_code="trusted_owner_support_invalid",
+                changed_code="trusted_owner_support_changed",
+                allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
+                allow_empty=True,
+            )
+            if tuple(fingerprint[:9]) != (
+                before.st_mode,
+                before.st_uid,
+                before.st_gid,
+                before.st_dev,
+                before.st_ino,
+                before.st_nlink,
+                before.st_mtime_ns,
+                before.st_ctime_ns,
+                before.st_size,
+            ):
+                raise OwnerLauncherError("trusted_owner_support_changed")
+            total_bytes += len(payload)
+            TrustedGcloudExecutable._feed_tree_entry(
+                digest,
+                ("file", relative, 0o400, len(payload), _sha256(payload)),
+            )
+        else:
+            # In particular, release support never admits symlinks, sockets,
+            # devices, FIFOs, or wheel-created hard-link aliases.
+            raise OwnerLauncherError("trusted_owner_support_invalid")
+        entry_count += 1
+        if (
+            entry_count > _TRUSTED_OWNER_SUPPORT_MAX_ENTRIES
+            or total_bytes > _TRUSTED_OWNER_SUPPORT_MAX_BYTES
+        ):
+            raise OwnerLauncherError("trusted_owner_support_oversized")
+    if root_children != {
+        "owner-support.json",
+        _TRUSTED_OWNER_SUPPORT_SOURCE_RELATIVE,
+        _TRUSTED_OWNER_SUPPORT_SITE_RELATIVE,
+    } or source_children != {"gateway", "scripts"}:
+        raise OwnerLauncherError("trusted_owner_support_invalid")
+    required = (
+        os.path.join(source_root, "gateway", "__init__.py"),
+        os.path.join(source_root, "scripts", "__init__.py"),
+        os.path.join(site_root, "cryptography", "__init__.py"),
+        os.path.join(site_root, "yaml", "__init__.py"),
+        os.path.join(site_root, "cffi", "__init__.py"),
+        os.path.join(site_root, "pycparser", "__init__.py"),
+    )
+    if any(not os.path.isfile(path) for path in required):
+        raise OwnerLauncherError("trusted_owner_support_invalid")
+    return entry_count, total_bytes, digest.hexdigest()
+
+
+def _create_owner_support_source_archive(
+    release_sha: str,
+    destination: str,
+) -> tuple[int, str]:
+    """Create one exact ``git archive`` without consulting worktree files."""
+
+    if _RELEASE_SHA.fullmatch(release_sha) is None:
+        raise OwnerLauncherError("invalid_release_sha")
+    provenance = LocalLauncherProvenance()
+    provenance(release_sha)
+    git_before = provenance._git_identity()
+    repository = Path(__file__).absolute().parents[2]
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = -1
+    try:
+        descriptor = os.open(destination, flags, 0o600)
+        completed = subprocess.run(
+            (
+                "/usr/bin/git",
+                "-C",
+                str(repository),
+                "archive",
+                "--format=tar",
+                release_sha,
+                "--",
+                "gateway",
+                "scripts",
+            ),
+            stdin=subprocess.DEVNULL,
+            stdout=descriptor,
+            stderr=subprocess.DEVNULL,
+            env={
+                "HOME": _canonical_owner_home(),
+                "LANG": "C",
+                "LC_ALL": "C",
+                "PATH": _FIXED_OWNER_PATH,
+            },
+            timeout=60.0,
+            check=False,
+        )
+        os.fsync(descriptor)
+    except (OSError, subprocess.SubprocessError):
+        raise OwnerLauncherError("trusted_owner_support_archive_failed") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if completed.returncode != 0:
+        raise OwnerLauncherError("trusted_owner_support_archive_failed")
+    provenance(release_sha)
+    if provenance._git_identity() != git_before:
+        raise OwnerLauncherError("trusted_git_changed")
+    fingerprint, payload = _read_pinned_regular_file(
+        destination,
+        maximum=_TRUSTED_OWNER_SUPPORT_SOURCE_ARCHIVE_MAX_BYTES,
+        unavailable_code="trusted_owner_support_archive_failed",
+        invalid_code="trusted_owner_support_archive_invalid",
+        changed_code="trusted_owner_support_archive_changed",
+        allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
+    )
+    return int(fingerprint[-2]), str(fingerprint[-1])
+
+
+def _safe_extract_owner_support_source_archive(
+    archive_path: str,
+    destination: str,
+) -> None:
+    try:
+        archive = tarfile.open(archive_path, mode="r:")
+    except (OSError, tarfile.TarError):
+        raise OwnerLauncherError("trusted_owner_support_archive_invalid") from None
+    directories: set[str] = {destination}
+    files: list[tuple[tarfile.TarInfo, str]] = []
+    seen: set[str] = set()
+    total_bytes = 0
+    try:
+        members = archive.getmembers()
+        if len(members) > _TRUSTED_OWNER_SUPPORT_MAX_ENTRIES:
+            raise OwnerLauncherError("trusted_owner_support_oversized")
+        for member in members:
+            name = member.name.rstrip("/")
+            pure = PurePosixPath(name)
+            if (
+                _owner_support_name_forbidden(name)
+                or not pure.parts
+                or pure.as_posix() != name
+                or pure.parts[0] not in {"gateway", "scripts"}
+                or name in seen
+                or "\\" in name
+            ):
+                raise OwnerLauncherError("trusted_owner_support_archive_invalid")
+            seen.add(name)
+            target = os.path.join(destination, *pure.parts)
+            parent = os.path.dirname(target)
+            while parent != destination:
+                directories.add(parent)
+                parent = os.path.dirname(parent)
+            if member.isdir():
+                directories.add(target)
+            elif member.isreg():
+                if (
+                    member.size < 0
+                    or member.size > _TRUSTED_OWNER_SUPPORT_MAX_FILE_BYTES
+                ):
+                    raise OwnerLauncherError("trusted_owner_support_oversized")
+                total_bytes += member.size
+                files.append((member, target))
+            else:
+                raise OwnerLauncherError("trusted_owner_support_archive_invalid")
+        if total_bytes > _TRUSTED_OWNER_SUPPORT_MAX_BYTES:
+            raise OwnerLauncherError("trusted_owner_support_oversized")
+        file_paths = {target for _member, target in files}
+        if directories & file_paths:
+            raise OwnerLauncherError("trusted_owner_support_archive_invalid")
+        for directory in sorted(directories, key=lambda item: len(Path(item).parts)):
+            try:
+                os.mkdir(directory, 0o700)
+            except FileExistsError:
+                metadata = os.lstat(directory)
+                if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                    raise OwnerLauncherError(
+                        "trusted_owner_support_archive_invalid"
+                    ) from None
+        for member, target in files:
+            source = archive.extractfile(member)
+            if source is None:
+                raise OwnerLauncherError("trusted_owner_support_archive_invalid")
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = -1
+            copied = 0
+            try:
+                descriptor = os.open(target, flags, 0o600)
+                while True:
+                    chunk = source.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    copied += len(chunk)
+                    if copied > member.size:
+                        raise OwnerLauncherError(
+                            "trusted_owner_support_archive_invalid"
+                        )
+                    offset = 0
+                    while offset < len(chunk):
+                        written = os.write(descriptor, chunk[offset:])
+                        if written <= 0:
+                            raise OSError("short source archive write")
+                        offset += written
+                os.fsync(descriptor)
+            except OwnerLauncherError:
+                raise
+            except (OSError, tarfile.TarError):
+                raise OwnerLauncherError(
+                    "trusted_owner_support_archive_failed"
+                ) from None
+            finally:
+                source.close()
+                if descriptor >= 0:
+                    os.close(descriptor)
+            if copied != member.size:
+                raise OwnerLauncherError("trusted_owner_support_archive_invalid")
+    finally:
+        archive.close()
+
+
+def _download_pinned_owner_support_wheel(
+    wheel: Sequence[Any],
+    destination: str,
+) -> None:
+    if tuple(wheel) not in _TRUSTED_OWNER_SUPPORT_WHEELS:
+        raise OwnerLauncherError("trusted_owner_support_wheel_invalid")
+    _distribution, _version, _filename, url, expected_bytes, expected_sha256 = wheel
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *_args: Any, **_kwargs: Any) -> None:
+            return None
+
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({}),
+        NoRedirect(),
+        urllib.request.HTTPSHandler(context=_pinned_system_tls_context()),
+    )
+    request = urllib.request.Request(
+        str(url),
+        method="GET",
+        headers={"Accept": "application/octet-stream"},
+    )
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    descriptor = -1
+    digest = hashlib.sha256()
+    count = 0
+    try:
+        descriptor = os.open(destination, flags, 0o600)
+        with opener.open(request, timeout=_HTTP_TIMEOUT_SECONDS) as response:
+            if (
+                int(response.status) != 200
+                or response.geturl() != url
+                or response.headers.get("Content-Length") != str(expected_bytes)
+            ):
+                raise OwnerLauncherError("trusted_owner_support_wheel_rejected")
+            while True:
+                chunk = response.read(1024 * 1024)
+                if not chunk:
+                    break
+                count += len(chunk)
+                if count > expected_bytes:
+                    raise OwnerLauncherError("trusted_owner_support_wheel_oversized")
+                digest.update(chunk)
+                offset = 0
+                while offset < len(chunk):
+                    written = os.write(descriptor, chunk[offset:])
+                    if written <= 0:
+                        raise OSError("short wheel write")
+                    offset += written
+        os.fsync(descriptor)
+    except OwnerLauncherError:
+        raise
+    except (OSError, urllib.error.URLError, TimeoutError, ValueError):
+        raise OwnerLauncherError("trusted_owner_support_wheel_unavailable") from None
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+    if count != expected_bytes or digest.hexdigest() != expected_sha256:
+        raise OwnerLauncherError("trusted_owner_support_wheel_digest_mismatch")
+
+
+def _safe_extract_owner_support_wheel(
+    wheel_path: str,
+    destination: str,
+    *,
+    published_files: set[str],
+) -> None:
+    try:
+        archive = zipfile.ZipFile(wheel_path, mode="r")
+    except (OSError, zipfile.BadZipFile):
+        raise OwnerLauncherError("trusted_owner_support_wheel_invalid") from None
+    directories: set[str] = {destination}
+    files: list[tuple[zipfile.ZipInfo, str]] = []
+    local_names: set[str] = set()
+    total_bytes = 0
+    try:
+        members = archive.infolist()
+        if len(members) > _TRUSTED_OWNER_SUPPORT_MAX_ENTRIES:
+            raise OwnerLauncherError("trusted_owner_support_oversized")
+        for member in members:
+            name = member.filename.rstrip("/")
+            pure = PurePosixPath(name)
+            unix_mode = (member.external_attr >> 16) & 0xFFFF
+            file_type = stat.S_IFMT(unix_mode)
+            if (
+                _owner_support_name_forbidden(name)
+                or pure.as_posix() != name
+                or "\\" in name
+                or name in local_names
+                or member.flag_bits & 0x1
+                or file_type == stat.S_IFLNK
+                or file_type not in {0, stat.S_IFREG, stat.S_IFDIR}
+            ):
+                raise OwnerLauncherError("trusted_owner_support_wheel_invalid")
+            local_names.add(name)
+            target = os.path.join(destination, *pure.parts)
+            parent = os.path.dirname(target)
+            while parent != destination:
+                directories.add(parent)
+                parent = os.path.dirname(parent)
+            if member.is_dir():
+                if file_type not in {0, stat.S_IFDIR}:
+                    raise OwnerLauncherError("trusted_owner_support_wheel_invalid")
+                directories.add(target)
+            else:
+                if (
+                    file_type == stat.S_IFDIR
+                    or member.file_size < 0
+                    or member.file_size > _TRUSTED_OWNER_SUPPORT_MAX_FILE_BYTES
+                    or target in published_files
+                ):
+                    raise OwnerLauncherError("trusted_owner_support_wheel_invalid")
+                total_bytes += member.file_size
+                files.append((member, target))
+        if total_bytes > _TRUSTED_OWNER_SUPPORT_MAX_BYTES:
+            raise OwnerLauncherError("trusted_owner_support_oversized")
+        file_paths = {target for _member, target in files}
+        if directories & file_paths:
+            raise OwnerLauncherError("trusted_owner_support_wheel_invalid")
+        for directory in sorted(directories, key=lambda item: len(Path(item).parts)):
+            try:
+                os.mkdir(directory, 0o700)
+            except FileExistsError:
+                metadata = os.lstat(directory)
+                if not stat.S_ISDIR(metadata.st_mode) or stat.S_ISLNK(metadata.st_mode):
+                    raise OwnerLauncherError(
+                        "trusted_owner_support_wheel_invalid"
+                    ) from None
+        for member, target in files:
+            flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+            if hasattr(os, "O_NOFOLLOW"):
+                flags |= os.O_NOFOLLOW
+            descriptor = -1
+            copied = 0
+            try:
+                descriptor = os.open(target, flags, 0o600)
+                with archive.open(member, mode="r") as source:
+                    while True:
+                        chunk = source.read(1024 * 1024)
+                        if not chunk:
+                            break
+                        copied += len(chunk)
+                        if copied > member.file_size:
+                            raise OwnerLauncherError(
+                                "trusted_owner_support_wheel_invalid"
+                            )
+                        offset = 0
+                        while offset < len(chunk):
+                            written = os.write(descriptor, chunk[offset:])
+                            if written <= 0:
+                                raise OSError("short wheel member write")
+                            offset += written
+                os.fsync(descriptor)
+            except OwnerLauncherError:
+                raise
+            except (OSError, zipfile.BadZipFile, RuntimeError):
+                raise OwnerLauncherError(
+                    "trusted_owner_support_wheel_invalid"
+                ) from None
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+            if copied != member.file_size:
+                raise OwnerLauncherError("trusted_owner_support_wheel_invalid")
+            published_files.add(target)
+    finally:
+        archive.close()
+
+
+def _seal_owner_support_tree(root: str) -> None:
+    directories: list[str] = []
+    pending = [root]
+    while pending:
+        path = pending.pop()
+        try:
+            metadata = os.lstat(path)
+        except OSError:
+            raise OwnerLauncherError("trusted_owner_support_publish_failed") from None
+        if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+            directories.append(path)
+            try:
+                with os.scandir(path) as entries:
+                    pending.extend(entry.path for entry in entries)
+            except OSError:
+                raise OwnerLauncherError(
+                    "trusted_owner_support_publish_failed"
+                ) from None
+        elif stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(metadata.st_mode):
+            _require_owner_support_no_xattrs(path)
+            descriptor = -1
+            try:
+                descriptor = os.open(path, os.O_RDONLY)
+                os.fsync(descriptor)
+                os.chmod(path, 0o400, follow_symlinks=False)
+            except OSError:
+                raise OwnerLauncherError(
+                    "trusted_owner_support_publish_failed"
+                ) from None
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+        else:
+            raise OwnerLauncherError("trusted_owner_support_invalid")
+    for directory in sorted(
+        directories,
+        key=lambda item: len(Path(item).parts),
+        reverse=True,
+    ):
+        _require_owner_support_no_xattrs(directory)
+        descriptor = -1
+        try:
+            descriptor = os.open(directory, os.O_RDONLY)
+            os.fsync(descriptor)
+            os.chmod(directory, 0o500, follow_symlinks=False)
+        except OSError:
+            raise OwnerLauncherError("trusted_owner_support_publish_failed") from None
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+
+
+def _remove_owner_support_staging(stage_parent: str) -> None:
+    """Remove only this launcher's private staging tree, never a publication."""
+
+    if not os.path.lexists(stage_parent):
+        return
+    for current, directories, files in os.walk(stage_parent, topdown=False):
+        for name in files:
+            path = os.path.join(current, name)
+            try:
+                metadata = os.lstat(path)
+                if stat.S_ISREG(metadata.st_mode) and not stat.S_ISLNK(
+                    metadata.st_mode
+                ):
+                    os.chmod(path, 0o600, follow_symlinks=False)
+            except OSError:
+                pass
+        for name in directories:
+            path = os.path.join(current, name)
+            try:
+                metadata = os.lstat(path)
+                if stat.S_ISDIR(metadata.st_mode) and not stat.S_ISLNK(
+                    metadata.st_mode
+                ):
+                    os.chmod(path, 0o700, follow_symlinks=False)
+            except OSError:
+                pass
+        try:
+            os.chmod(current, 0o700, follow_symlinks=False)
+        except OSError:
+            pass
+    shutil.rmtree(stage_parent, ignore_errors=True)
+
+
+def _publish_trusted_owner_support_runtime(
+    release_sha: str,
+    *,
+    trusted_root: str,
+    source_archiver: Callable[[str, str], tuple[int, str]] = (
+        _create_owner_support_source_archive
+    ),
+    wheel_downloader: Callable[[Sequence[Any], str], None] = (
+        _download_pinned_owner_support_wheel
+    ),
+) -> tuple[str, tuple[int, int, str], Mapping[str, Any]]:
+    destination, _source_root, _site_root = _trusted_owner_support_paths(
+        release_sha
+    )
+    if trusted_root != os.path.dirname(destination):
+        raise OwnerLauncherError("trusted_owner_support_path_invalid")
+    _require_private_owner_directory(trusted_root, create=False)
+    stage_parent = tempfile.mkdtemp(
+        prefix=f".owner-support-{release_sha[:12]}-",
+        dir=trusted_root,
+    )
+    os.chmod(stage_parent, 0o700)
+    stage_root = os.path.join(stage_parent, f"owner-support-{release_sha}")
+    source_root = os.path.join(
+        stage_root,
+        _TRUSTED_OWNER_SUPPORT_SOURCE_RELATIVE,
+    )
+    site_root = os.path.join(stage_root, _TRUSTED_OWNER_SUPPORT_SITE_RELATIVE)
+    archive_path = os.path.join(stage_parent, "source.tar")
+    try:
+        os.mkdir(stage_root, 0o700)
+        source_archive_bytes, source_archive_sha256 = source_archiver(
+            release_sha,
+            archive_path,
+        )
+        archive_fingerprint, _archive_payload = _read_pinned_regular_file(
+            archive_path,
+            maximum=_TRUSTED_OWNER_SUPPORT_SOURCE_ARCHIVE_MAX_BYTES,
+            unavailable_code="trusted_owner_support_archive_failed",
+            invalid_code="trusted_owner_support_archive_invalid",
+            changed_code="trusted_owner_support_archive_changed",
+            allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
+        )
+        if archive_fingerprint[-2:] != (
+            source_archive_bytes,
+            source_archive_sha256,
+        ) or (
+            stat.S_IMODE(int(archive_fingerprint[0])) != 0o600
+            or int(archive_fingerprint[5]) != 1
+        ):
+            raise OwnerLauncherError("trusted_owner_support_archive_invalid")
+        _safe_extract_owner_support_source_archive(archive_path, source_root)
+        os.unlink(archive_path)
+        os.mkdir(site_root, 0o700)
+        published_files: set[str] = set()
+        for wheel in _TRUSTED_OWNER_SUPPORT_WHEELS:
+            wheel_path = os.path.join(stage_parent, str(wheel[2]))
+            wheel_downloader(wheel, wheel_path)
+            fingerprint, _payload = _read_pinned_regular_file(
+                wheel_path,
+                maximum=int(wheel[4]),
+                unavailable_code="trusted_owner_support_wheel_unavailable",
+                invalid_code="trusted_owner_support_wheel_invalid",
+                changed_code="trusted_owner_support_wheel_changed",
+                allowed_owners=frozenset({os.getuid()}),  # windows-footgun: ok
+            )
+            if fingerprint[-2:] != (int(wheel[4]), str(wheel[5])):
+                raise OwnerLauncherError(
+                    "trusted_owner_support_wheel_digest_mismatch"
+                )
+            if (
+                stat.S_IMODE(int(fingerprint[0])) != 0o600
+                or int(fingerprint[5]) != 1
+            ):
+                raise OwnerLauncherError("trusted_owner_support_wheel_invalid")
+            _safe_extract_owner_support_wheel(
+                wheel_path,
+                site_root,
+                published_files=published_files,
+            )
+            os.unlink(wheel_path)
+        manifest = _owner_support_manifest_value(
+            release_sha,
+            source_archive_bytes=source_archive_bytes,
+            source_archive_sha256=source_archive_sha256,
+        )
+        manifest_path = os.path.join(stage_root, "owner-support.json")
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
+        descriptor = -1
+        try:
+            descriptor = os.open(manifest_path, flags, 0o600)
+            payload = _canonical_bytes(manifest) + b"\n"
+            offset = 0
+            while offset < len(payload):
+                written = os.write(descriptor, payload[offset:])
+                if written <= 0:
+                    raise OSError("short owner support manifest write")
+                offset += written
+            os.fsync(descriptor)
+        except OSError:
+            raise OwnerLauncherError("trusted_owner_support_publish_failed") from None
+        finally:
+            if descriptor >= 0:
+                os.close(descriptor)
+        _seal_owner_support_tree(stage_root)
+        staged_tree = _capture_owner_support_publication_tree(
+            stage_root,
+            release_sha=release_sha,
+            canonical_root=destination,
+        )
+        if _validate_owner_support_manifest(
+            stage_root,
+            release_sha=release_sha,
+        ) != manifest:
+            raise OwnerLauncherError("trusted_owner_support_manifest_changed")
+        # Darwin refuses to rename a non-writable directory, even when both
+        # parents are private and writable.  The descendants remain sealed;
+        # open only this publication root for the atomic move, then reseal and
+        # fsync it at the destination before the parent publication fsync.
+        try:
+            os.chmod(stage_root, 0o700, follow_symlinks=False)
+        except OSError:
+            raise OwnerLauncherError("trusted_owner_support_publish_failed") from None
+        published_here = False
+        try:
+            _darwin_rename_no_replace(
+                stage_root,
+                destination,
+                exists_code="trusted_owner_support_destination_exists",
+                failed_code="trusted_owner_support_publish_failed",
+            )
+            published_here = True
+        except OwnerLauncherError as exc:
+            if exc.code != "trusted_owner_support_destination_exists":
+                raise
+            # A kill or power loss may land after the atomic move but before
+            # the root reseal below.  Recover only that exact incomplete
+            # publication shape; descendants are still sealed, and the full
+            # rebuilt tree/manifest comparison remains mandatory.
+            try:
+                winning_metadata = os.lstat(destination)
+                winning_mode = stat.S_IMODE(winning_metadata.st_mode)
+                winning_realpath = os.path.realpath(destination, strict=True)
+            except OSError:
+                raise OwnerLauncherError(
+                    "trusted_owner_support_destination_mismatch"
+                ) from None
+            if (
+                stat.S_ISDIR(winning_metadata.st_mode)
+                and not stat.S_ISLNK(winning_metadata.st_mode)
+                and winning_metadata.st_uid == os.getuid()  # windows-footgun: ok
+                and winning_mode == 0o700
+                and winning_realpath == destination
+            ):
+                try:
+                    os.chmod(destination, 0o500, follow_symlinks=False)
+                except OSError:
+                    raise OwnerLauncherError(
+                        "trusted_owner_support_publish_failed"
+                    ) from None
+                _fsync_directory(
+                    destination,
+                    error_code="trusted_owner_support_publish_failed",
+                )
+            winning_tree = _capture_owner_support_publication_tree(
+                destination,
+                release_sha=release_sha,
+            )
+            winning_manifest = _validate_owner_support_manifest(
+                destination,
+                release_sha=release_sha,
+            )
+            if winning_tree != staged_tree or winning_manifest != manifest:
+                raise OwnerLauncherError("trusted_owner_support_destination_mismatch")
+        if published_here:
+            try:
+                os.chmod(destination, 0o500, follow_symlinks=False)
+            except OSError:
+                raise OwnerLauncherError(
+                    "trusted_owner_support_publish_failed"
+                ) from None
+            _fsync_directory(
+                destination,
+                error_code="trusted_owner_support_publish_failed",
+            )
+        _fsync_directory(
+            trusted_root,
+            error_code="trusted_owner_support_publish_failed",
+        )
+        published_tree = _capture_owner_support_publication_tree(
+            destination,
+            release_sha=release_sha,
+        )
+        published_manifest = _validate_owner_support_manifest(
+            destination,
+            release_sha=release_sha,
+        )
+        if published_tree != staged_tree or published_manifest != manifest:
+            raise OwnerLauncherError("trusted_owner_support_destination_mismatch")
+        return destination, published_tree, published_manifest
+    finally:
+        _remove_owner_support_staging(stage_parent)
+
+
 def _fixed_python_runtime_snapshot() -> tuple[
     _PinnedExecutablePath,
     str,
@@ -4216,8 +5302,14 @@ def bootstrap_trusted_gcloud_runtime(
         ],
     ] = _fixed_python_runtime_snapshot,
     runtime_validator: Callable[[str], None] | None = None,
+    owner_support_source_archiver: Callable[[str, str], tuple[int, str]] = (
+        _create_owner_support_source_archive
+    ),
+    owner_support_wheel_downloader: Callable[[Sequence[Any], str], None] = (
+        _download_pinned_owner_support_wheel
+    ),
 ) -> Mapping[str, Any]:
-    """Publish the reviewed SDK snapshot and one release-bound receipt."""
+    """Publish the reviewed SDK and release-bound owner support snapshot."""
 
     if _RELEASE_SHA.fullmatch(release_sha) is None:
         raise OwnerLauncherError("invalid_release_sha")
@@ -4375,6 +5467,22 @@ def bootstrap_trusted_gcloud_runtime(
         finally:
             shutil.rmtree(stage_parent, ignore_errors=True)
 
+    owner_support_root, owner_support_tree, owner_support_manifest = (
+        _publish_trusted_owner_support_runtime(
+            release_sha,
+            trusted_root=trusted_root,
+            source_archiver=owner_support_source_archiver,
+            wheel_downloader=owner_support_wheel_downloader,
+        )
+    )
+    (
+        _support_root,
+        owner_support_source,
+        owner_support_site,
+    ) = _trusted_owner_support_paths(release_sha)
+    if _support_root != owner_support_root:
+        raise OwnerLauncherError("trusted_owner_support_path_invalid")
+
     python, python_root, python_tree, python_version, dependencies = python_snapshot()
     if python_version != _TRUSTED_PYTHON_VERSION:
         raise OwnerLauncherError("trusted_python_version_invalid")
@@ -4417,6 +5525,23 @@ def bootstrap_trusted_gcloud_runtime(
         "python_tree_bytes": python_tree[1],
         "python_tree_sha256": python_tree[2],
         "python_dependencies": list(dependencies),
+        "owner_support_release_sha": release_sha,
+        "owner_support_root": owner_support_root,
+        "owner_support_source_root": owner_support_source,
+        "owner_support_site_root": owner_support_site,
+        "owner_support_tree_entries": owner_support_tree[0],
+        "owner_support_tree_bytes": owner_support_tree[1],
+        "owner_support_tree_sha256": owner_support_tree[2],
+        "owner_support_manifest_sha256": owner_support_manifest[
+            "manifest_sha256"
+        ],
+        "owner_support_source_archive_bytes": owner_support_manifest[
+            "source_archive_bytes"
+        ],
+        "owner_support_source_archive_sha256": owner_support_manifest[
+            "source_archive_sha256"
+        ],
+        "owner_support_wheels": _owner_support_wheel_receipt_values(),
         "created_at_unix": created,
     }
     receipt = {**unsigned, "receipt_sha256": _sha256(_canonical_bytes(unsigned))}
@@ -4624,8 +5749,139 @@ def require_trusted_owner_runtime(release_sha: str) -> TrustedGcloudExecutable:
     return runtime
 
 
+def _trusted_owner_support_module_root(
+    module_name: str,
+    *,
+    source_root: str,
+    site_root: str,
+) -> str | None:
+    top_level = module_name.split(".", 1)[0]
+    if top_level in _TRUSTED_OWNER_SUPPORT_MANAGED_MODULES[:2]:
+        return source_root
+    if top_level in _TRUSTED_OWNER_SUPPORT_MANAGED_MODULES[2:]:
+        return site_root
+    return None
+
+
+def _path_within_trusted_owner_support(path: str, expected_root: str) -> bool:
+    if not isinstance(path, str) or not path or not os.path.isabs(path):
+        return False
+    try:
+        resolved = os.path.realpath(path, strict=True)
+        return resolved == path and os.path.commonpath((expected_root, path)) == (
+            expected_root
+        )
+    except (OSError, ValueError):
+        return False
+
+
+def _validate_trusted_owner_support_module_origins(
+    *,
+    source_root: str,
+    site_root: str,
+) -> None:
+    for name, module in tuple(sys.modules.items()):
+        expected_root = _trusted_owner_support_module_root(
+            name,
+            source_root=source_root,
+            site_root=site_root,
+        )
+        if expected_root is None or module is None:
+            continue
+        origin = getattr(getattr(module, "__spec__", None), "origin", None)
+        module_file = getattr(module, "__file__", None)
+        selected = origin if isinstance(origin, str) and origin else module_file
+        if not isinstance(selected, str) or not _path_within_trusted_owner_support(
+            selected,
+            expected_root,
+        ):
+            raise OwnerLauncherError("trusted_owner_support_origin_invalid")
+        package_paths = getattr(module, "__path__", None)
+        if package_paths is not None:
+            try:
+                paths = tuple(package_paths)
+            except (TypeError, OSError):
+                raise OwnerLauncherError(
+                    "trusted_owner_support_origin_invalid"
+                ) from None
+            if not paths or any(
+                not _path_within_trusted_owner_support(path, expected_root)
+                for path in paths
+            ):
+                raise OwnerLauncherError("trusted_owner_support_origin_invalid")
+
+
+def require_trusted_owner_support_activation(
+    runtime: TrustedGcloudExecutable,
+    *,
+    release_sha: str,
+) -> tuple[str, str]:
+    expected_root, expected_source, expected_site = _trusted_owner_support_paths(
+        release_sha
+    )
+    source_root, site_root = runtime.trusted_owner_support_paths()
+    if (
+        os.path.dirname(source_root) != expected_root
+        or os.path.dirname(site_root) != expected_root
+        or source_root != expected_source
+        or site_root != expected_site
+        or sys.path[:2] != [source_root, site_root]
+    ):
+        raise OwnerLauncherError("trusted_owner_support_path_invalid")
+    _validate_trusted_owner_support_module_origins(
+        source_root=source_root,
+        site_root=site_root,
+    )
+    return source_root, site_root
+
+
+def activate_trusted_owner_support(
+    runtime: TrustedGcloudExecutable,
+    *,
+    release_sha: str,
+) -> tuple[str, str]:
+    """Activate only sealed release source/site roots under exact isolation."""
+
+    expected_root, expected_source, expected_site = _trusted_owner_support_paths(
+        release_sha
+    )
+    source_root, site_root = runtime.trusted_owner_support_paths()
+    if (
+        os.path.dirname(source_root) != expected_root
+        or os.path.dirname(site_root) != expected_root
+        or source_root != expected_source
+        or site_root != expected_site
+    ):
+        raise OwnerLauncherError("trusted_owner_support_path_invalid")
+    # Reject an already-imported ambient package before adding either sealed
+    # root. This is what prevents a worktree or user site from winning once.
+    _validate_trusted_owner_support_module_origins(
+        source_root=source_root,
+        site_root=site_root,
+    )
+    retained = [item for item in sys.path if item not in {source_root, site_root}]
+    sys.path[:] = [source_root, site_root, *retained]
+    try:
+        for module_name in (
+            *_TRUSTED_OWNER_SUPPORT_MANAGED_MODULES,
+            *_TRUSTED_OWNER_SUPPORT_PREFLIGHT_MODULES,
+        ):
+            __import__(module_name)
+    except BaseException as exc:
+        if isinstance(exc, OwnerLauncherError):
+            raise
+        raise OwnerLauncherError("trusted_owner_support_import_failed") from None
+    require_trusted_owner_support_activation(
+        runtime,
+        release_sha=release_sha,
+    )
+    runtime._owner_support_activated = True
+    return source_root, site_root
+
+
 def require_owner_runtime_and_launcher_provenance(release_sha: str) -> None:
-    require_trusted_owner_runtime(release_sha)
+    runtime = require_trusted_owner_runtime(release_sha)
+    activate_trusted_owner_support(runtime, release_sha=release_sha)
     require_local_launcher_provenance(release_sha)
 
 
@@ -10366,7 +11622,6 @@ def reconcile_legacy_canary_schema(
 
     if not isinstance(release_sha, str) or _RELEASE_SHA.fullmatch(release_sha) is None:
         raise OwnerLauncherError("invalid_release_sha")
-    from gateway import canonical_writer_schema_reconciliation_bootstrap as bootstrap
 
     signal_fence = _OwnerSignalFence()
     signal_fence.install()
@@ -10387,6 +11642,10 @@ def reconcile_legacy_canary_schema(
     cleanup_complete = False
     try:
         provenance_guard(release_sha)
+        from gateway import (
+            canonical_writer_schema_reconciliation_bootstrap as bootstrap,
+        )
+
         secret_hardener()
         account = owner_identity.account_for_read_only_preflight()
         expected_owner_subject = _sha256(account.encode("utf-8"))
@@ -14478,6 +15737,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         # The fixed isolated interpreter and its release-bound runtime receipt
         # precede git, auth, IAP, and every secret-bearing source.
         gcloud_executable = require_trusted_owner_runtime(release_sha)
+        activate_trusted_owner_support(
+            gcloud_executable,
+            release_sha=release_sha,
+        )
         require_local_launcher_provenance(release_sha)
         gcloud_configuration = PinnedGcloudConfiguration()
         owner_identity = GcloudOwnerAccessToken(
@@ -14488,6 +15751,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         def runtime_and_provenance_guard(exact_release: str) -> None:
             command = gcloud_executable.trusted_command_prefix()
             _validate_owner_interpreter_invocation(command[0])
+            require_trusted_owner_support_activation(
+                gcloud_executable,
+                release_sha=exact_release,
+            )
             require_local_launcher_provenance(exact_release)
 
         if arguments.rotate_host_identity_receipt:
@@ -14788,6 +16055,7 @@ __all__ = [
     "STOPPED_RELEASE_SOURCE_BASE",
     "STOPPED_RELEASE_SOURCE_REPOSITORY",
     "TRUSTED_RUNTIME_BOOTSTRAP_RECEIPT_SCHEMA",
+    "TRUSTED_OWNER_SUPPORT_TREE_SCHEMA",
     "TRUSTED_SDK_PUBLICATION_INTENT_SCHEMA",
     "TrustedGcloudExecutable",
     "VM_INSTANCE_ID",
@@ -14805,6 +16073,7 @@ __all__ = [
     "build_writer_authority_frame",
     "build_writer_owner_approval",
     "bootstrap_trusted_gcloud_runtime",
+    "activate_trusted_owner_support",
     "harden_owner_secret_process",
     "launch_full_canary",
     "launch_session_bound_full_canary",
@@ -14813,6 +16082,7 @@ __all__ = [
     "main",
     "reconcile_legacy_canary_schema",
     "require_local_launcher_provenance",
+    "require_trusted_owner_support_activation",
     "validate_current_phase_b_live_gate",
     "validate_coordinator_input_publication_receipt",
     "validate_discord_install_gate",

@@ -1,5 +1,5 @@
 export function imageContextMenuItems(params, actions) {
-  if (params.mediaType !== 'image') {
+  if (params.mediaType !== 'image' || !params.hasImageContents) {
     return []
   }
 

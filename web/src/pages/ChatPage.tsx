@@ -57,6 +57,12 @@ import {
 import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
+import {
+  getPtyTabId,
+  ptyClearStoredSessionId,
+  ptyStoredSessionId,
+  ptyStoreSessionId,
+} from "@/lib/pty-session-storage";
 
 // Stable per-browser token identifying THIS chat tab's keep-alive PTY session.
 // Sent as ?attach=; lets a refresh/disconnect reattach to the same live process
@@ -84,44 +90,6 @@ function ptyAttachToken(rotate = false): string {
     }
   }
   return t;
-}
-
-// Session ID persistence: when the PTY process dies (agent exit, gateway
-// restart) and a new one must be spawned, this lets the frontend pass
-// ?resume=<lastSessionId> so the new PTY continues the conversation
-// instead of starting fresh. Keyed by profile scope so multi-profile
-// dashboards don't cross-pollinate.
-const PTY_SESSION_ID_KEY = "hermes.pty.sessionId";
-function ptyStoredSessionId(scope: string): string | null {
-  try {
-    const raw = window.localStorage.getItem(PTY_SESSION_ID_KEY);
-    if (!raw) return null;
-    const entries = JSON.parse(raw) as Record<string, string>;
-    return entries[scope] ?? null;
-  } catch {
-    return null;
-  }
-}
-function ptyStoreSessionId(scope: string, sessionId: string) {
-  try {
-    const raw = window.localStorage.getItem(PTY_SESSION_ID_KEY);
-    const entries: Record<string, string> = raw ? JSON.parse(raw) : {};
-    entries[scope] = sessionId;
-    window.localStorage.setItem(PTY_SESSION_ID_KEY, JSON.stringify(entries));
-  } catch {
-    /* localStorage blocked */
-  }
-}
-function ptyClearStoredSessionId(scope: string) {
-  try {
-    const raw = window.localStorage.getItem(PTY_SESSION_ID_KEY);
-    if (!raw) return;
-    const entries: Record<string, string> = JSON.parse(raw);
-    delete entries[scope];
-    window.localStorage.setItem(PTY_SESSION_ID_KEY, JSON.stringify(entries));
-  } catch {
-    /* localStorage blocked */
-  }
 }
 
 // Channel id ties this chat tab's PTY child (publisher) to its sidebar
@@ -349,9 +317,10 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
   // Persist the session ID to localStorage so a browser-kill/reopen can
   // resume the conversation even if the PTY process died.
+  // Uses the per-tab id so two same-profile tabs never overwrite each other.
   const handleSessionIdChange = useCallback(
     (sessionId: string) => {
-      ptyStoreSessionId(scopedProfile || "default", sessionId);
+      ptyStoreSessionId(scopedProfile || "default", getPtyTabId(), sessionId);
     },
     [scopedProfile],
   );
@@ -954,11 +923,11 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // new PTY spawns with no session context, losing the conversation.
       if (forceFresh) {
         params.fresh = "1";
-        ptyClearStoredSessionId(scopedProfile || "default");
+        ptyClearStoredSessionId(scopedProfile || "default", getPtyTabId());
       } else if (resumeParam) {
         params.resume = resumeParam;
       } else {
-        const stored = ptyStoredSessionId(scopedProfile || "default");
+        const stored = ptyStoredSessionId(scopedProfile || "default", getPtyTabId());
         if (stored) params.resume = stored;
       }
       // Keep-alive identity: reattach to this tab's living PTY across

@@ -2318,18 +2318,6 @@ class BasePlatformAdapter(ABC):
     # set this to False to stay correct-by-default.
     supports_async_delivery: bool = True
 
-    # Whether a successful ``play_tts()`` on this platform already delivers
-    # the reply TEXT to the user — e.g. the platform transcribes the audio
-    # server-side and renders the transcript inline (Carbon Voice), or the
-    # adapter attaches the full text alongside the audio natively.  When
-    # True, the auto-TTS response flow suppresses the follow-up text send
-    # after a successful ``play_tts()``, so the user doesn't get the same
-    # reply twice (audio memo + duplicate text bubble).  Telegram's
-    # caption-based variant is length-conditional and handled separately in
-    # the response flow.  Default False: audio and text are independent, and
-    # the text portion is always sent.
-    voice_out_carries_text: bool = False
-
     # Whether this adapter's ``send()`` splits long content into multiple
     # messages via ``truncate_message()``.  When True, the delivery router
     # (gateway/delivery.py) skips gateway-level truncation and lets the
@@ -5069,15 +5057,8 @@ class BasePlatformAdapter(ABC):
                             caption=telegram_tts_caption,
                             metadata=_final_thread_metadata,
                         )
-                        # Text is carried by the audio when the Telegram
-                        # caption was attached OR the adapter declares that a
-                        # successful play_tts delivers the text natively
-                        # (``voice_out_carries_text``, e.g. Carbon Voice's
-                        # server-side transcript) — either way, skip the
-                        # follow-up text send so the reply isn't duplicated.
                         _tts_caption_delivered = bool(
-                            (telegram_tts_caption or self.voice_out_carries_text)
-                            and getattr(tts_result, "success", False)
+                            telegram_tts_caption and getattr(tts_result, "success", False)
                         )
                     finally:
                         try:

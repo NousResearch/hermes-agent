@@ -9,7 +9,7 @@ Covers the three review items on the original (native) submission:
    env → ``_env_enablement()`` seed → ``PlatformConfig.extra`` →
    ``adapter._voice_out``, and the adapter declares
    ``voice_out_carries_text`` so core suppresses the duplicate text send
-   (see ``test_voice_out_carries_text.py`` for the core contract itself).
+   (the core contract itself lands in PR #32655, tested there).
 3. Credential lock — ``connect()`` refuses to start when another gateway
    already holds the PAT lock, and ``disconnect()`` releases it.
 """
@@ -125,8 +125,9 @@ class TestVoiceOutWiring:
         assert adapter._voice_out is False
 
     def test_adapter_declares_carries_text_contract(self):
-        # Core suppresses the follow-up text send only for adapters that
-        # opt in — Carbon Voice does (server-side transcript IS the text).
+        # Core (PR #32655) suppresses the follow-up text send only for
+        # adapters that opt in — Carbon Voice does (the server-side
+        # transcript IS the text).
         assert CarbonVoiceAdapter.voice_out_carries_text is True
 
 

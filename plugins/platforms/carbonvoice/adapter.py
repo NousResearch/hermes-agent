@@ -127,8 +127,12 @@ class CarbonVoiceAdapter(BasePlatformAdapter):
     # voice messages — different mechanism (STT vs caption), same UX
     # contract (one bubble, text + audio together).
     #
-    # The base class default is False, so adapters that don't override
-    # this are unaffected.
+    # The general delivery contract that honors this flag (suppressing
+    # the follow-up text send after a successful play_tts, with a
+    # completeness guard so truncated speech never drops content) is
+    # PR #32655. Until it lands, the attribute is ignored and voice-out
+    # delivers the audio memo plus a duplicate text bubble — degraded
+    # UX, never lost content.
     voice_out_carries_text = True
 
     def __init__(self, config: PlatformConfig):

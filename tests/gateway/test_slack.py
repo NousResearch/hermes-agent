@@ -260,7 +260,7 @@ class TestAppMentionHandler:
 
         # Catch-all generic matcher must be registered after the named handlers
         # so it does not shadow them. It fires for any event type not already
-        # claimed by a named handler (PR #39679 / issue #39673).
+        # claimed by a named handler (issue #6572).
         import re as _re2
         catchall_patterns = [e for e in registered_events if isinstance(e, _re2.Pattern)]
         assert catchall_patterns, (

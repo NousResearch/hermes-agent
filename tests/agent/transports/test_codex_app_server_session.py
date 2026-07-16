@@ -709,6 +709,11 @@ class TestCompactThread:
     def test_compact_thread_ignores_foreign_child_completion(self):
         client = FakeClient()
         client.queue_notification(
+            "turn/started",
+            threadId="thread-child-001",
+            turn={"id": "child-compact-turn"},
+        )
+        client.queue_notification(
             "item/completed",
             threadId="thread-child-001",
             turnId="child-compact-turn",
@@ -759,6 +764,61 @@ class TestCompactThread:
         assert result.final_text == "parent compacted"
         assert result.projected_messages == [
             {"role": "assistant", "content": "parent compacted"}
+        ]
+
+    def test_compact_thread_ignores_stale_same_thread_completion_before_start(self):
+        client = FakeClient()
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="previous-compact-turn",
+            item={
+                "type": "agentMessage",
+                "id": "stale-compact-message",
+                "text": "stale compact result",
+            },
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={
+                "id": "previous-compact-turn",
+                "status": "completed",
+                "error": None,
+            },
+        )
+        client.queue_notification(
+            "turn/started",
+            threadId="thread-fake-001",
+            turn={"id": "compact-turn-1"},
+        )
+        client.queue_notification(
+            "item/completed",
+            threadId="thread-fake-001",
+            turnId="compact-turn-1",
+            item={
+                "type": "agentMessage",
+                "id": "current-compact-message",
+                "text": "current compact result",
+            },
+        )
+        client.queue_notification(
+            "turn/completed",
+            threadId="thread-fake-001",
+            turn={
+                "id": "compact-turn-1",
+                "status": "completed",
+                "error": None,
+            },
+        )
+
+        result = make_session(client).compact_thread(turn_timeout=2.0)
+
+        assert result.error is None
+        assert result.turn_id == "compact-turn-1"
+        assert result.final_text == "current compact result"
+        assert result.projected_messages == [
+            {"role": "assistant", "content": "current compact result"}
         ]
 
     def test_compact_thread_interrupted_returns_non_success(self):

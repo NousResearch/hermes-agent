@@ -166,6 +166,40 @@ class TestValidateSignature:
         req = _mock_request(headers={})  # no sig headers at all
         assert adapter._validate_signature(req, b"{}", "my-secret") is False
 
+    def test_non_ascii_signature_headers_reject_without_raising(self):
+        """The signature headers are attacker-controlled on a public, unauth
+        endpoint. A non-ASCII byte in one must be rejected (False), not crash
+        the handler: hmac.compare_digest raises TypeError on a non-ASCII str."""
+        adapter = _make_adapter()
+        body = b'{"action": "opened"}'
+        secret = "webhook-secret-42"
+        hostile = "ské-not-a-valid-signature"
+        for header in (
+            "X-Hub-Signature-256",
+            "X-Gitlab-Token",
+            "X-Webhook-Signature",
+        ):
+            req = _mock_request(headers={header: hostile})
+            # Must return False, never raise.
+            assert adapter._validate_signature(req, body, secret) is False
+
+    def test_non_ascii_generic_v2_signature_rejected(self):
+        """V2 branch (timestamp-bound) also rejects a non-ASCII signature."""
+        adapter = _make_adapter()
+        req = _mock_request(headers={
+            "X-Webhook-Signature-V2": "ské-bad",
+            "X-Webhook-Timestamp": str(int(time.time())),
+        })
+        assert adapter._validate_signature(req, b"{}", "secret") is False
+
+    def test_non_ascii_secret_still_validates_a_matching_token(self):
+        """A non-ASCII configured secret must still match its exact GitLab
+        token value byte for byte (bytes comparison keeps this working)."""
+        adapter = _make_adapter()
+        secret = "gl-tökén-välue"
+        req = _mock_request(headers={"X-Gitlab-Token": secret})
+        assert adapter._validate_signature(req, b"{}", secret) is True
+
     def test_validate_no_secret_allows_all(self):
         """When the secret is empty/falsy, the validator is never even called
         by the handler (secret check is 'if secret and secret != _INSECURE...').

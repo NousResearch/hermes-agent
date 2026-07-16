@@ -68,6 +68,19 @@ class TestDeepSeekThinkingWireShape:
         )
         assert top_level == {"reasoning_effort": "max"}
 
+    @pytest.mark.parametrize("effort", ["minimal", "MINIMAL", "  Minimal  "])
+    def test_minimal_clamps_to_low(self, deepseek_profile, effort):
+        """'minimal' has no DeepSeek tier, so it must clamp DOWN to 'low' (the
+        floor) rather than being omitted. Omitting it falls through to
+        DeepSeek's server default (currently 'high') — the strongest tier and
+        the opposite of the user's least-effort request.
+        """
+        _, top_level = deepseek_profile.build_api_kwargs_extras(
+            reasoning_config={"enabled": True, "effort": effort},
+            model="deepseek-v4-pro",
+        )
+        assert top_level == {"reasoning_effort": "low"}
+
     def test_explicitly_disabled_sends_disabled_marker(self, deepseek_profile):
         """``reasoning_config.enabled=False`` → ``thinking.type=disabled``.
 

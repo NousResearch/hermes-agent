@@ -2914,14 +2914,20 @@ def run_job(
 
     agent = None
 
-    # Mark this as a cron session so the approval system can apply cron_mode.
-    # This env var is process-wide and persists for the lifetime of the
-    # scheduler process — every job this process runs is a cron job.
-    os.environ["HERMES_CRON_SESSION"] = "1"
-
     # Use ContextVars for per-job session/delivery state so parallel jobs
     # don't clobber each other's targets (os.environ is process-global).
     from gateway.session_context import set_session_vars, clear_session_vars, _VAR_MAP
+
+    # Mark this as a cron session so the approval gate applies cron_mode.
+    # This MUST be a per-job ContextVar, not os.environ: the default
+    # deployment runs this ticker in-process inside the gateway, so a
+    # process-global marker persists after the first job and misroutes every
+    # concurrent interactive user's approval into the cron branch (a
+    # process-wide env var never cleared here would either hard-block their
+    # dangerous commands under cron_mode=deny or, worse, auto-approve them
+    # under cron_mode=approve). The set + clear both live inside the
+    # try/finally below so a raise before dispatch can't leave it set on a
+    # reused loop-thread context.
 
     # Cron execution is an internal scheduler context, not a live inbound
     # gateway message. Do not seed HERMES_SESSION_* contextvars from the
@@ -3004,6 +3010,9 @@ def run_job(
     _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
 
     _holds_cwd_write = _job_workdir is not None
+    # Predeclare the cron-marker token so the finally below can guard on it
+    # even if the try raises before the marker is set.
+    _cron_marker_token = None
     if _holds_cwd_write:
         _terminal_cwd_lock.acquire_write()
     else:
@@ -3015,6 +3024,17 @@ def run_job(
     # (every future job blocks on acquire_*); a leaked reader blocks all
     # future writers.  Acquire itself can't leak (it either blocks or returns).
     try:
+        # Set the cron-session marker (see the ContextVar note above) as the
+        # first statement in the try so the finally below always restores it.
+        # It still precedes the copy_context() dispatch further down, so the
+        # pool thread running the conversation inherits it. Keep the token: the
+        # finally must reset() to the pre-job state rather than set("") because
+        # get_session_env treats any explicitly-set value, including "", as
+        # authoritative and never falls back to os.environ, so a leftover ""
+        # would misclassify a later standalone/env-marked cron read in this
+        # context as non-cron.
+        _cron_marker_token = _VAR_MAP["HERMES_CRON_SESSION"].set("1")
+
         if _job_workdir:
             os.environ["TERMINAL_CWD"] = _job_workdir
             logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
@@ -3622,8 +3642,17 @@ def run_job(
             _terminal_cwd_lock.release_write()
         else:
             _terminal_cwd_lock.release_read()
-        # Clean up ContextVar session/delivery state for this job.
+        # Clean up ContextVar session/delivery state for this job. Reset the
+        # cron-session marker to its pre-job state (normally the _UNSET
+        # default) so a reused context is not treated as a cron session AND a
+        # later env-marked read in this context still falls back to
+        # os.environ. set("") would break the fallback: get_session_env treats
+        # an explicit "" as authoritative, so the standalone `hermes cron`
+        # process (and single-process test runs) would misclassify cron work
+        # after the first job as non-cron and skip cron_mode entirely.
         clear_session_vars(_ctx_tokens)
+        if _cron_marker_token is not None:
+            _VAR_MAP["HERMES_CRON_SESSION"].reset(_cron_marker_token)
         for _var_name in _cron_delivery_vars:
             _VAR_MAP[_var_name].set("")
         if _session_db:

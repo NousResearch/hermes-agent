@@ -224,6 +224,41 @@ def _get_session_platform() -> str:
         return os.getenv("HERMES_SESSION_PLATFORM", "") or ""
 
 
+def _is_cron_session() -> bool:
+    """True when the current execution context is a cron job.
+
+    Resolution order:
+    1. The per-job ``HERMES_CRON_SESSION`` ContextVar set by ``run_job`` —
+       authoritative whenever it has been bound in this context (including
+       an explicit empty value, which means "not cron").
+    2. ``os.environ["HERMES_CRON_SESSION"]`` — only when the ContextVar was
+       never bound here. That keeps the standalone ``hermes cron`` process
+       and tests that set the flag directly working.
+
+    The env fallback is suppressed when a live gateway session is already
+    bound (``HERMES_SESSION_PLATFORM`` or ``HERMES_GATEWAY_SESSION``). A
+    leftover process-global env value must not reclassify an interactive
+    user as a cron session; the in-process ticker used to leave exactly
+    that residue after the first tick.
+    """
+    try:
+        from gateway.session_context import _UNSET, _VAR_MAP
+
+        value = _VAR_MAP["HERMES_CRON_SESSION"].get()
+        if value is not _UNSET:
+            return is_truthy_value(value, default=False)
+    except Exception:
+        # session_context unavailable — fall through to env only.
+        return is_truthy_value(os.getenv("HERMES_CRON_SESSION", ""), default=False)
+
+    # ContextVar never bound in this context. Skip the process-env fallback
+    # for a live gateway session so a residual HERMES_CRON_SESSION=1 cannot
+    # shadow interactive approvals.
+    if _get_session_platform() or env_var_enabled("HERMES_GATEWAY_SESSION"):
+        return False
+    return is_truthy_value(os.getenv("HERMES_CRON_SESSION", ""), default=False)
+
+
 def _is_gateway_approval_context() -> bool:
     """True when this call is inside a gateway/API session.
 
@@ -238,7 +273,7 @@ def _is_gateway_approval_context() -> bool:
     fall through to the gateway branch would submit a pending approval
     with no listener and block the job indefinitely.
     """
-    if env_var_enabled("HERMES_CRON_SESSION"):
+    if _is_cron_session():
         return False
     if env_var_enabled("HERMES_GATEWAY_SESSION"):
         return True
@@ -2708,7 +2743,7 @@ def _run_approval_gate(
 
     if not is_cli and not is_gateway:
         # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
+        if _is_cron_session():
             if _get_cron_approval_mode() == "deny":
                 return {
                     "approved": False,
@@ -3231,72 +3266,78 @@ def check_all_command_guards(command: str, env_type: str,
     is_gateway = _is_gateway_approval_context()
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
-    # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
-    # flows, we do not block on approvals and we skip external guard work.
-    if not is_cli and not is_gateway and not is_ask:
-        # Cron sessions: respect cron_mode config
-        if env_var_enabled("HERMES_CRON_SESSION"):
-            if _get_cron_approval_mode() == "deny":
-                # Run detection to get a description for the block message
-                is_dangerous, _pk, description = detect_dangerous_command(command)
-                if is_dangerous:
+    # Cron has no interactive approval surface. Apply cron_mode BEFORE the
+    # CLI/gateway/ask gates so an inherited HERMES_EXEC_ASK=1 (common in a
+    # shared gateway process) cannot skip cron-deny and fall into the ask
+    # approval flow with no user present. Mirrors check_execute_code_guard,
+    # which already evaluates cron first.
+    if _is_cron_session():
+        if _get_cron_approval_mode() == "deny":
+            # Run detection to get a description for the block message
+            is_dangerous, _pk, description = detect_dangerous_command(command)
+            if is_dangerous:
+                return {
+                    "approved": False,
+                    "message": (
+                        f"BLOCKED: Command flagged as dangerous ({description}) "
+                        "but cron jobs run without a user present to approve it. "
+                        "Find an alternative approach that avoids this command. "
+                        "To allow dangerous commands in cron jobs, set "
+                        "approvals.cron_mode: approve in config.yaml."
+                    ),
+                }
+            # Also run tirith check in cron-deny mode so content-level
+            # threats (homograph URLs, pipe-to-interpreter, terminal
+            # injection, etc.) are caught even when they do not match
+            # the pattern-based detection above.
+            try:
+                from tools.tirith_security import check_command_security
+                _cron_tirith = check_command_security(command)
+                if _cron_tirith.get("action") in ("block", "warn"):
+                    _cron_desc = _format_tirith_description(_cron_tirith)
                     return {
                         "approved": False,
                         "message": (
-                            f"BLOCKED: Command flagged as dangerous ({description}) "
+                            f"BLOCKED: {_cron_desc} "
                             "but cron jobs run without a user present to approve it. "
                             "Find an alternative approach that avoids this command. "
                             "To allow dangerous commands in cron jobs, set "
                             "approvals.cron_mode: approve in config.yaml."
                         ),
                     }
-                # Also run tirith check in cron-deny mode so content-level
-                # threats (homograph URLs, pipe-to-interpreter, terminal
-                # injection, etc.) are caught even when they do not match
-                # the pattern-based detection above.
+            except ImportError:
+                # Tirith not installed. Honour security.tirith_fail_open:
+                # the default (True) allows as before, but when an operator
+                # has explicitly opted into fail-closed the command cannot
+                # be silently allowed — and a cron session has no user to
+                # approve it, so fail-closed means block (mirrors the
+                # fail-closed synthesis in the main flow below; see #20733).
+                _cron_fail_open = True  # safe default if config is unreadable
                 try:
-                    from tools.tirith_security import check_command_security
-                    _cron_tirith = check_command_security(command)
-                    if _cron_tirith.get("action") in ("block", "warn"):
-                        _cron_desc = _format_tirith_description(_cron_tirith)
-                        return {
-                            "approved": False,
-                            "message": (
-                                f"BLOCKED: {_cron_desc} "
-                                "but cron jobs run without a user present to approve it. "
-                                "Find an alternative approach that avoids this command. "
-                                "To allow dangerous commands in cron jobs, set "
-                                "approvals.cron_mode: approve in config.yaml."
-                            ),
-                        }
-                except ImportError:
-                    # Tirith not installed. Honour security.tirith_fail_open:
-                    # the default (True) allows as before, but when an operator
-                    # has explicitly opted into fail-closed the command cannot
-                    # be silently allowed — and a cron session has no user to
-                    # approve it, so fail-closed means block (mirrors the
-                    # fail-closed synthesis in the main flow below; see #20733).
-                    _cron_fail_open = True  # safe default if config is unreadable
-                    try:
-                        from hermes_cli.config import load_config as _load_cfg
-                        _sec = (_load_cfg() or {}).get("security", {}) or {}
-                        if _sec.get("tirith_enabled", True):
-                            _cron_fail_open = _sec.get("tirith_fail_open", True)
-                    except Exception:
-                        pass
-                    if not _cron_fail_open:
-                        return {
-                            "approved": False,
-                            "message": (
-                                "BLOCKED: the Tirith security scanner could not be "
-                                "imported and security.tirith_fail_open is false, "
-                                "so this command cannot be silently allowed — and "
-                                "cron jobs run without a user present to approve it. "
-                                "Find an alternative approach, install tirith, or set "
-                                "approvals.cron_mode: approve in config.yaml."
-                            ),
-                        }
-                    # else: tirith_fail_open is True — allow as before
+                    from hermes_cli.config import load_config as _load_cfg
+                    _sec = (_load_cfg() or {}).get("security", {}) or {}
+                    if _sec.get("tirith_enabled", True):
+                        _cron_fail_open = _sec.get("tirith_fail_open", True)
+                except Exception:
+                    pass
+                if not _cron_fail_open:
+                    return {
+                        "approved": False,
+                        "message": (
+                            "BLOCKED: the Tirith security scanner could not be "
+                            "imported and security.tirith_fail_open is false, "
+                            "so this command cannot be silently allowed — and "
+                            "cron jobs run without a user present to approve it. "
+                            "Find an alternative approach, install tirith, or set "
+                            "approvals.cron_mode: approve in config.yaml."
+                        ),
+                    }
+                # else: tirith_fail_open is True — allow as before
+        return {"approved": True, "message": None}
+
+    # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
+    # flows, we do not block on approvals and we skip external guard work.
+    if not is_cli and not is_gateway and not is_ask:
         return {"approved": True, "message": None}
 
     # --- Phase 1: Gather findings from both checks ---
@@ -3656,7 +3697,7 @@ def check_execute_code_guard(code: str, env_type: str,
     is_ask = env_var_enabled("HERMES_EXEC_ASK")
 
     # Cron: no user is present to approve arbitrary code.
-    if env_var_enabled("HERMES_CRON_SESSION"):
+    if _is_cron_session():
         if _get_cron_approval_mode() == "deny":
             return {
                 "approved": False,

@@ -1034,6 +1034,38 @@ def get_nous_recommended_aux_model(
     return None
 
 
+def get_nous_recommended_free_model(
+    portal_base_url: str = "",
+    *,
+    force_refresh: bool = False,
+) -> Optional[str]:
+    """Return the Portal's current top free-tier model, or None.
+
+    Reads ``freeRecommendedModels[0]`` from the recommended-models payload.
+    The Portal rotates which model is free; this is the source of truth for
+    "whatever is free right now" — used to resolve the ``recommended:free``
+    sentinel in ``fallback_providers`` entries so free-tier users don't have
+    to hand-edit config.yaml (or silently start getting billed) every time
+    the free model changes.
+
+    Goes through :func:`fetch_nous_recommended_models`, so it inherits the
+    in-process TTL cache and the last-known-good disk cache — a Portal
+    hiccup degrades to the previous answer, not to ``None``.
+    """
+    base = portal_base_url or _resolve_nous_portal_url()
+    payload = fetch_nous_recommended_models(base, force_refresh=force_refresh)
+    if not isinstance(payload, dict) or not payload:
+        return None
+    block = payload.get("freeRecommendedModels")
+    if not isinstance(block, list):
+        return None
+    for entry in block:
+        name = _extract_model_name(entry)
+        if name:
+            return name
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Canonical provider list — single source of truth for provider identity.
 # Every code path that lists, displays, or iterates providers derives from

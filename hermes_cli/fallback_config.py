@@ -1,14 +1,37 @@
-"""Helpers for reading the effective fallback provider chain from config."""
+"""Helpers for reading the effective fallback chain from config."""
 
 from __future__ import annotations
 
+import logging
 from typing import Any
+
+logger = logging.getLogger(__name__)
+
+# Sentinel model name (nous provider only): resolves to the Portal's current
+# ``freeRecommendedModels[0]`` at chain-build time. Lets free-tier users say
+# "whatever is free right now" instead of hand-tracking Portal rotations.
+RECOMMENDED_FREE_SENTINEL = "recommended:free"
 
 
 def _normalized_base_url(value: Any) -> str:
     if not isinstance(value, str):
         return ""
     return value.strip().rstrip("/")
+
+
+def _resolve_recommended_free() -> str | None:
+    """Resolve the sentinel via the Portal recommended-models cache.
+
+    Import is local to avoid a module cycle and to keep this file cheap to
+    import. Any failure returns None — the caller drops the entry with a
+    warning and the rest of the chain still works.
+    """
+    try:
+        from hermes_cli.models import get_nous_recommended_free_model
+        return get_nous_recommended_free_model()
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning("recommended:free resolution failed: %s", exc)
+        return None
 
 
 def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
@@ -27,6 +50,18 @@ def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
         model = str(entry.get("model") or "").strip()
         if not provider or not model:
             continue
+
+        if model == RECOMMENDED_FREE_SENTINEL and provider == "nous":
+            resolved = _resolve_recommended_free()
+            if not resolved:
+                logger.warning(
+                    "fallback entry 'nous/%s' skipped: no free recommendation "
+                    "available from the Portal (network down and no cached "
+                    "answer). The rest of the chain is unaffected.",
+                    RECOMMENDED_FREE_SENTINEL,
+                )
+                continue
+            model = resolved
 
         normalized = dict(entry)
         normalized["provider"] = provider

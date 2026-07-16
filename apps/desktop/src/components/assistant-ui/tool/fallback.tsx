@@ -19,10 +19,10 @@ import {
 import { AnsiText } from '@/components/assistant-ui/ansi-text'
 import { useElapsedSeconds } from '@/components/chat/activity-timer'
 import { ActivityTimerText } from '@/components/chat/activity-timer-text'
-import { BrowserImageActions } from '@/components/chat/browser-image-actions'
 import { CompactMarkdown } from '@/components/chat/compact-markdown'
 import { FileDiffPanel } from '@/components/chat/diff-lines'
 import { DisclosureRow } from '@/components/chat/disclosure-row'
+import { ChatImageActions } from '@/components/chat/image-contribution-actions'
 import { ZoomableImage } from '@/components/chat/zoomable-image'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -497,9 +497,13 @@ function ToolEntry({ part }: ToolEntryProps) {
             />
           )}
           {view.imageUrl && (
-            <div className="relative max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
+            <div className="group/image relative max-w-72 overflow-hidden rounded-[0.25rem] border border-(--ui-stroke-tertiary)">
+              <ChatImageActions
+                className="opacity-0 transition-opacity group-hover/image:opacity-100"
+                src={view.imageUrl}
+                toolName={part.toolName}
+              />
               <ZoomableImage alt={copy.outputAlt} className="h-auto w-full object-cover" src={view.imageUrl} />
-              <BrowserImageActions className="group-hover/tool-block:opacity-100" src={view.imageUrl} />
             </div>
           )}
           {hasSearchHits && view.searchHits && (

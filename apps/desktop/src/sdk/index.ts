@@ -113,8 +113,6 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
-/** Explicit browser/QC surface actions; they never react to background tool results. */
-export { type BrowserTabInput, openBrowserQc, openBrowserSurface } from '@/app/browser/store'
 // Every contribution surface, plugin-reachable: register keybinds, palette
 // commands, routes, themes, panes, composer extensions, and bar items with
 // the same area ids + payload types core uses.
@@ -125,8 +123,12 @@ export { COMPOSER_AREAS, type ComposerAttachmentProvider, type ComposerMiddlewar
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
 export { type RouteContribution, ROUTES_AREA, SIDEBAR_NAV_AREA, type SidebarNavContribution } from '@/app/routes'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
-
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
+export {
+  CHAT_IMAGE_ACTIONS_AREA,
+  type ChatImageActionContribution,
+  type ChatImageActionInput
+} from '@/components/chat/image-contribution-actions'
 export { StatusDot, type StatusTone } from '@/components/status-dot'
 export { Badge } from '@/components/ui/badge'
 export { Button } from '@/components/ui/button'

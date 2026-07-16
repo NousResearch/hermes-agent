@@ -167,9 +167,17 @@ function documentBlocks(payload: JsonObject): CanvasBlock[] {
         const values = Array.isArray(series?.data) ? series.data : []
         const chartData = labels.map((label, valueIndex) => ({ label, value: number(values[valueIndex]) }))
         const chartType = string(item?.chartType, string(item?.variant))
+        const blockType =
+          chartType === 'pie' || chartType === 'donut'
+            ? 'pie-chart'
+            : chartType === 'line'
+              ? 'line-chart'
+              : chartType === 'area'
+                ? 'area-chart'
+                : 'bar-chart'
         if (chartData.length)
           blocks.push({
-            type: chartType === 'pie' || chartType === 'donut' ? 'pie-chart' : 'bar-chart',
+            type: blockType,
             id: `${sectionIndex}-${index}`,
             title: string(item?.title, string(series?.name, title)),
             data: chartData

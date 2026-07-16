@@ -18,11 +18,13 @@ export interface CanvasSource {
 }
 
 export type CanvasBlock =
+  | AreaChartBlock
   | BarChartBlock
   | DividerBlock
   | ImageBlock
   | InsightBlock
   | KpiBlock
+  | LineChartBlock
   | ListBlock
   | PieChartBlock
   | TableBlock
@@ -38,6 +40,18 @@ export interface BarChartBlock {
   id: string
   title: string
   type: 'bar-chart'
+}
+export interface LineChartBlock {
+  data: CanvasDatum[]
+  id: string
+  title: string
+  type: 'line-chart'
+}
+export interface AreaChartBlock {
+  data: CanvasDatum[]
+  id: string
+  title: string
+  type: 'area-chart'
 }
 export interface InsightBlock {
   body: string

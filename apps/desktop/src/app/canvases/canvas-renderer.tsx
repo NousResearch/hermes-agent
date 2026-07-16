@@ -8,7 +8,21 @@ import {
   useReactTable
 } from '@tanstack/react-table'
 import { useMemo, useState } from 'react'
-import { Bar, BarChart, Cell, Pie, PieChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  Cell,
+  Line,
+  LineChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis
+} from 'recharts'
 
 import type { CanvasBlock, CanvasDatum } from './types'
 
@@ -55,6 +69,48 @@ function BarChartBlock({ block }: { block: Extract<CanvasBlock, { type: 'bar-cha
               ))}
             </Bar>
           </BarChart>
+        </ResponsiveContainer>
+      </div>
+    </article>
+  )
+}
+
+function LineChartBlock({ block }: { block: Extract<CanvasBlock, { type: 'line-chart' }> }) {
+  return (
+    <article className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-4">
+      {blockTitle(block.title)}
+      <div className="mt-4 h-64">
+        <ResponsiveContainer height="100%" width="100%">
+          <LineChart data={block.data} margin={{ top: 4, right: 8, left: -22, bottom: 0 }}>
+            <XAxis axisLine={false} dataKey="label" fontSize={12} tickLine={false} />
+            <YAxis axisLine={false} fontSize={12} tickLine={false} />
+            <Tooltip />
+            <Line dataKey="value" dot={false} stroke="#ff385f" strokeWidth={2.5} type="monotone" />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+    </article>
+  )
+}
+
+function AreaChartBlock({ block }: { block: Extract<CanvasBlock, { type: 'area-chart' }> }) {
+  return (
+    <article className="rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-chat-bubble-background) p-4">
+      {blockTitle(block.title)}
+      <div className="mt-4 h-64">
+        <ResponsiveContainer height="100%" width="100%">
+          <AreaChart data={block.data} margin={{ top: 4, right: 8, left: -22, bottom: 0 }}>
+            <defs>
+              <linearGradient id={`canvas-area-${block.id}`} x1="0" x2="0" y1="0" y2="1">
+                <stop offset="5%" stopColor="#ff385f" stopOpacity={0.4} />
+                <stop offset="95%" stopColor="#ff385f" stopOpacity={0.03} />
+              </linearGradient>
+            </defs>
+            <XAxis axisLine={false} dataKey="label" fontSize={12} tickLine={false} />
+            <YAxis axisLine={false} fontSize={12} tickLine={false} />
+            <Tooltip />
+            <Area dataKey="value" fill={`url(#canvas-area-${block.id})`} stroke="#ff385f" strokeWidth={2.5} type="monotone" />
+          </AreaChart>
         </ResponsiveContainer>
       </div>
     </article>
@@ -272,6 +328,8 @@ export function CanvasRenderer({ blocks }: { blocks: CanvasBlock[] }) {
       {blocks.map(block => {
         if (block.type === 'kpis') return <KpisBlock block={block} key={block.type} />
         if (block.type === 'bar-chart') return <BarChartBlock block={block} key={block.id} />
+        if (block.type === 'line-chart') return <LineChartBlock block={block} key={block.id} />
+        if (block.type === 'area-chart') return <AreaChartBlock block={block} key={block.id} />
         if (block.type === 'pie-chart') return <PieChartBlock block={block} key={block.id} />
         if (block.type === 'insight') return <InsightBlock block={block} key={block.id} />
         if (block.type === 'list') return <ListBlock block={block} key={block.id} />

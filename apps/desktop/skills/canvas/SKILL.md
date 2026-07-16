@@ -5,7 +5,7 @@ description: MUST be used whenever the user says Canvas or Canvases to create, u
 
 # Hermes Desktop Canvas
 
-A Canvas is a durable report pair: `<id>.canvas.json` is its required structured state and `<id>.canvas.html` is its optional rendered companion. They live under `~/.hermes/profiles/<profile>/` and are not generic artifacts.
+A Canvas is a durable report pair: `<id>.canvas.json` is its required structured state and `<id>.canvas.html` is its optional rendered companion. They live in the resolved home of the active Hermes profile and are not generic artifacts. Do not construct that path from a fixed `~/.hermes/profiles/<profile>` pattern: the default profile home is `~/.hermes`, while named profiles may have their own configured homes.
 
 Hard requirement: write and validate `<id>.canvas.json` first. A standalone `.canvas.html` is a failed Canvas operation and must never be reported as success. Do not delegate Canvas creation to a generic HTML, artifact, dashboard, or web-design skill.
 
@@ -33,7 +33,7 @@ Minimum valid shape:
 
 Keep every remote manifest below 460,000 UTF-8 bytes. For a large source, choose the useful summaries and a bounded relevant table/list; preserve the full-data retrieval instructions in `source.instructions`. Never embed an unbounded database dump in a Canvas manifest.
 
-For creation, choose the Canvas structure yourself from the request, write the required JSON to `~/.hermes/profiles/<active-profile>/<id>.canvas.json`, parse it back, measure its byte size, and verify the exact final path exists. For updates, read the existing manifest, keep its identity and sources, but freely revise both `data` and `document` when the user changes the requested content or design. Update the `.canvas.html` companion only when it already exists or the user requests it. Do not claim success unless the required JSON write completed.
+For creation, resolve the active profile home from the Hermes runtime/configuration, write the required JSON to `<active-profile-home>/<id>.canvas.json`, parse it back, measure its byte size, and verify the exact final path exists. For updates, read the existing manifest, keep its identity and sources, but freely revise both `data` and `document` when the user changes the requested content or design. Update the `.canvas.html` companion only when it already exists or the user requests it. Do not claim success unless the required JSON write completed.
 
 Final success evidence:
 

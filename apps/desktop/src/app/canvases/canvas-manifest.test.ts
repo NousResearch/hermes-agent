@@ -57,4 +57,28 @@ describe('parseCanvasManifest', () => {
 
     expect(manifest.blocks.map(block => block.type)).toEqual(['list', 'image', 'divider'])
   })
+
+  it('keeps declared line and area chart variants', () => {
+    const manifest = parseCanvasManifest(
+      JSON.stringify({
+        schema: 'hermes.canvas/v1',
+        id: 'trends',
+        title: 'Trends',
+        source: {},
+        document: {
+          sections: [
+            {
+              elements: [
+                { chartType: 'line', labels: ['Mon', 'Tue'], series: [{ data: [4, 7] }], type: 'chart' },
+                { chartType: 'area', labels: ['Mon', 'Tue'], series: [{ data: [4, 7] }], type: 'chart' }
+              ]
+            }
+          ]
+        }
+      }),
+      'default'
+    )
+
+    expect(manifest.blocks.map(block => block.type)).toEqual(['line-chart', 'area-chart'])
+  })
 })

@@ -52,26 +52,31 @@ function bridge() {
   return desktop
 }
 
-function remoteFsApi<T>(path: string, body?: Record<string, unknown>): Promise<T> {
-  return bridge().api<T>(
-    body ? { body, method: 'POST', path, profile: desktopFsProfile() } : { path, profile: desktopFsProfile() }
-  )
+function remoteFsApi<T>(
+  path: string,
+  options?: { body?: Record<string, unknown>; method?: 'DELETE' | 'POST' },
+  profile?: string
+): Promise<T> {
+  const request = { path, profile: profile || desktopFsProfile() }
+  return options?.body
+    ? bridge().api<T>({ ...request, body: options.body, method: options.method || 'POST' })
+    : bridge().api<T>(request)
 }
 
-export async function readDesktopDir(path: string, _profile?: string): Promise<HermesReadDirResult> {
+export async function readDesktopDir(path: string, profile?: string): Promise<HermesReadDirResult> {
   if (!isDesktopFsRemoteMode()) {
     return bridge().readDir(path)
   }
 
-  return remoteFsApi<HermesReadDirResult>(fsPath('list', path))
+  return remoteFsApi<HermesReadDirResult>(fsPath('list', path), undefined, profile)
 }
 
-export async function readDesktopFileText(path: string, _profile?: string): Promise<HermesReadFileTextResult> {
+export async function readDesktopFileText(path: string, profile?: string): Promise<HermesReadFileTextResult> {
   if (!isDesktopFsRemoteMode()) {
     return bridge().readFileText(path)
   }
 
-  return remoteFsApi<HermesReadFileTextResult>(fsPath('read-text', path))
+  return remoteFsApi<HermesReadFileTextResult>(fsPath('read-text', path), undefined, profile)
 }
 
 // Save UTF-8 text back to a file. Local writes go through the hardened Electron
@@ -89,14 +94,14 @@ export async function writeDesktopFileText(path: string, content: string): Promi
     return desktop.writeTextFile(path, content)
   }
 
-  const result = await remoteFsApi<{ ok?: boolean; path?: string }>('/api/fs/write-text', { content, path })
+  const result = await remoteFsApi<{ ok?: boolean; path?: string }>('/api/fs/write-text', { body: { content, path } })
 
   return { path: result.path || path }
 }
 
-export async function deleteDesktopFile(path: string, _profile?: string): Promise<void> {
+export async function deleteDesktopFile(path: string, profile?: string): Promise<void> {
   if (!isDesktopFsRemoteMode()) return trashDesktopPath(path)
-  await bridge().api<{ ok: boolean }>({ body: { path }, method: 'DELETE', path: '/api/files' })
+  await remoteFsApi<{ ok: boolean }>('/api/files', { body: { path }, method: 'DELETE' }, profile)
 }
 
 export async function readDesktopFileDataUrl(path: string): Promise<string> {

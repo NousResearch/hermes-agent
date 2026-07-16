@@ -7,7 +7,11 @@ import { notifyError } from '@/store/notifications'
 import type { MemoryProviderOAuthStatus } from '@/types/hermes'
 
 const POLL_MS = 1500
-const POLL_TIMEOUT_MS = 120_000
+// Must outlast the backend loopback wait (oauth_flow.py `_DEFAULT_TIMEOUT`, 300s)
+// plus a couple of poll intervals, otherwise a slow sign-in (login + MFA + org
+// pick) makes the UI report "Timed out" while the backend still completes and
+// stores the key.
+const POLL_TIMEOUT_MS = 315_000
 
 // Small connect affordance rendered under the provider dropdown. Capability is
 // backend-driven: the status route 404s for providers without an oauth_flow
@@ -124,7 +128,7 @@ export function MemoryConnect({ provider }: { provider: string }) {
     return null
   }
 
-  const connectLabel = connected ? (auth === 'apikey' ? 'Connect via OAuth' : 'Reconnect') : 'Connect'
+  const connectLabel = connected ? 'Reconnect' : 'Connect'
 
   return (
     <span className="inline-flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">

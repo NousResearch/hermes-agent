@@ -46,6 +46,29 @@ def resolve_connect_url() -> str:
     return os.environ.get("HINDSIGHT_CONNECT_URL", _CLOUD_CONNECT_URL).rstrip("/")
 
 
+def resolve_api_url() -> str | None:
+    """Best-effort API base URL for the environment the key is minted in.
+
+    A key minted against one environment (e.g. dev) paired with a different
+    ``api_url`` (e.g. prod) 401s on the first memory call, so we align the two.
+
+    Precedence: an explicit ``HINDSIGHT_API_URL`` override wins; otherwise map
+    the connect (UI) host to its API host by swapping the leading ``ui.`` label
+    (``ui.dev.hindsight… → api.dev.hindsight…``; ``ui.hindsight… → api.hindsight…``).
+    Returns ``None`` for hosts that don't follow that convention (e.g. a custom
+    self-hosted UI, or the ``127.0.0.1`` used in tests) so any existing/default
+    ``api_url`` is left untouched.
+    """
+    override = os.environ.get("HINDSIGHT_API_URL")
+    if override:
+        return override.rstrip("/")
+    parsed = urlparse(resolve_connect_url())
+    host = parsed.hostname or ""
+    if parsed.scheme and host.startswith("ui."):
+        return f"{parsed.scheme}://api.{host[len('ui.') :]}"
+    return None
+
+
 def resolve_config_path() -> Path:
     """The Hindsight provider's config file (where it reads ``apiKey``)."""
     from hermes_constants import get_hermes_home
@@ -67,8 +90,14 @@ def build_connect_url(
     return f"{resolve_connect_url()}?{urlencode(params)}"
 
 
-def _store_api_key(config_path: Path, api_key: str) -> None:
-    """Persist the minted key as the provider's ``apiKey`` (0600)."""
+def _store_api_key(
+    config_path: Path, api_key: str, *, api_url: str | None = None
+) -> None:
+    """Persist the minted key as the provider's ``apiKey`` (0600).
+
+    When ``api_url`` is given it is stored too, so the key targets the same
+    environment it was minted in (see :func:`resolve_api_url`).
+    """
     config_path.parent.mkdir(parents=True, exist_ok=True)
     data: dict = {}
     if config_path.is_file():
@@ -80,6 +109,8 @@ def _store_api_key(config_path: Path, api_key: str) -> None:
         data = {}
     data["apiKey"] = api_key
     data.setdefault("mode", "cloud")
+    if api_url:
+        data["api_url"] = api_url
     try:
         from utils import atomic_json_write
 
@@ -179,7 +210,9 @@ def connect_via_loopback(
             "connect returned an unexpected credential (not a Hindsight API key)"
         )
 
-    _store_api_key(config_path or resolve_config_path(), key)
+    _store_api_key(
+        config_path or resolve_config_path(), key, api_url=resolve_api_url()
+    )
     logger.info("Hindsight connect: stored a browser-provisioned API key")
     return key
 

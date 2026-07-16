@@ -6067,6 +6067,10 @@ async def get_env_vars(profile: Optional[str] = None):
             "url": info.get("url") if info.get("url") is not None else cat_meta.get("url"),
             "category": info.get("category") or cat_meta.get("category", ""),
             "is_password": info.get("password", cat_meta.get("is_password", False)),
+            # Memory provider whose browser "Connect" flow can provision this
+            # credential. When set, the desktop credential card offers a
+            # loopback sign-in button instead of only a "Get a key" link.
+            "connect_provider": info.get("connect_provider", ""),
             "tools": info.get("tools", []),
             "advanced": info.get("advanced", cat_meta.get("advanced", False)),
             # True when this var is a messaging-platform credential owned by a

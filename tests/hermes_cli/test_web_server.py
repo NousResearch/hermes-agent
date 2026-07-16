@@ -508,6 +508,19 @@ class TestWebServerEndpoints:
 
         assert failures == []
 
+    def test_env_hindsight_exposes_connect_provider(self):
+        """The HINDSIGHT_API_KEY credential advertises its browser-connect
+        provider so the desktop card can offer a loopback sign-in button in
+        place of the plain "Get a key" link. Ordinary credentials leave it
+        empty."""
+        resp = self.client.get("/api/env")
+        assert resp.status_code == 200
+        rows = resp.json()
+
+        assert rows["HINDSIGHT_API_KEY"]["connect_provider"] == "hindsight"
+        # A credential without a connect flow reports an empty provider.
+        assert rows["HINDSIGHT_API_URL"].get("connect_provider", "") == ""
+
     def test_memory_provider_payloads_include_manifest_setup_hints(self):
         resp = self.client.get("/api/memory")
 

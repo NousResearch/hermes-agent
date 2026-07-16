@@ -3973,6 +3973,10 @@ OPTIONAL_ENV_VARS = {
         "description": "Hindsight API key for graph-aware persistent memory",
         "prompt": "Hindsight API key",
         "url": "https://hindsight.vectorize.io",
+        # Memory provider whose browser "Connect" flow can provision this key
+        # (loopback sign-in via the Hindsight UI). Surfaces a Connect button on
+        # the credential card in place of the plain "Get a key" link.
+        "connect_provider": "hindsight",
         "tools": ["hindsight_recall"],
         "password": True,
         "category": "tool",

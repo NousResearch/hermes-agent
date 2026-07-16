@@ -9,6 +9,7 @@ import type { EnvVarInfo } from '@/types/hermes'
 
 import { CONTROL_TEXT } from './constants'
 import { prettyName, withoutKey } from './helpers'
+import { MemoryConnect } from './memory/connect'
 import { ListRow } from './primitives'
 import type { EnvRowProps } from './types'
 
@@ -170,7 +171,10 @@ export function CredentialKeyCard({
 }: CredentialKeyCardProps) {
   const docsUrl = info.url?.trim()
   const description = info.description?.trim()
-  const expandable = Boolean(description || docsUrl)
+  // A memory provider whose browser "Connect" flow can provision this key.
+  // When present we surface that button instead of the plain "Get a key" link.
+  const connectProvider = info.connect_provider?.trim()
+  const expandable = Boolean(description || docsUrl || connectProvider)
 
   return (
     <div
@@ -244,7 +248,11 @@ export function CredentialKeyCard({
               </p>
             )}
 
-            {docsUrl && <CredentialDocsLink href={docsUrl} />}
+            {connectProvider ? (
+              <MemoryConnect provider={connectProvider} />
+            ) : (
+              docsUrl && <CredentialDocsLink href={docsUrl} />
+            )}
           </div>
         )}
       </div>

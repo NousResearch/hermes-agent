@@ -99,6 +99,55 @@ def test_connect_stores_minted_key(monkeypatch, tmp_path):
         server.server_close()
 
 
+@pytest.mark.parametrize(
+    "connect_url, expected",
+    [
+        # Prod and dev UI hosts map to their sibling API hosts.
+        ("https://ui.hindsight.vectorize.io/connect/desktop",
+         "https://api.hindsight.vectorize.io"),
+        ("https://ui.dev.hindsight.vectorize.io/connect/desktop",
+         "https://api.dev.hindsight.vectorize.io"),
+        # A host that doesn't follow the ui.* convention → leave api_url alone.
+        ("http://127.0.0.1:5173/connect/desktop", None),
+        ("https://memory.acme.example/connect/desktop", None),
+    ],
+)
+def test_resolve_api_url_maps_ui_host_to_api(monkeypatch, connect_url, expected):
+    monkeypatch.delenv("HINDSIGHT_API_URL", raising=False)
+    monkeypatch.setenv("HINDSIGHT_CONNECT_URL", connect_url)
+    assert oauth_flow.resolve_api_url() == expected
+
+
+def test_resolve_api_url_explicit_override_wins(monkeypatch):
+    monkeypatch.setenv("HINDSIGHT_CONNECT_URL", "https://ui.dev.hindsight.vectorize.io/connect/desktop")
+    monkeypatch.setenv("HINDSIGHT_API_URL", "https://api.self-hosted.example/")
+    # Explicit override beats the derived host, trailing slash trimmed.
+    assert oauth_flow.resolve_api_url() == "https://api.self-hosted.example"
+
+
+def test_connect_stores_api_url_aligned_to_connect_env(monkeypatch, tmp_path):
+    # Drive the real flow against a fake UI, but claim a prod-shaped connect URL
+    # so the stored api_url is derived from it (not the loopback host).
+    server = _serve(_make_ui(), monkeypatch)
+    try:
+        monkeypatch.delenv("HINDSIGHT_API_URL", raising=False)
+        monkeypatch.setattr(
+            oauth_flow,
+            "resolve_api_url",
+            lambda: "https://api.dev.hindsight.vectorize.io",
+        )
+        cfg = tmp_path / "hindsight" / "config.json"
+        oauth_flow.connect_via_loopback(
+            config_path=cfg, open_url=_browser_driver, timeout=10.0
+        )
+        data = json.loads(cfg.read_text())
+        assert data["apiKey"] == MINTED_KEY
+        assert data["api_url"] == "https://api.dev.hindsight.vectorize.io"
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
 def test_connect_rejects_state_mismatch(monkeypatch, tmp_path):
     # UI returns the WRONG state → CSRF guard fires, nothing is stored.
     server = _serve(_make_ui(state_override="not-the-real-state"), monkeypatch)

@@ -362,6 +362,49 @@ class TestStreamingAccumulator:
         assert response.choices[0].message.content == "Let me check"
         assert len(response.choices[0].message.tool_calls) == 1
 
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_usage_captured_from_content_chunk(self, mock_close, mock_create):
+        """Usage from a content-bearing chunk (DeepSeek v4 pattern) is captured.
+
+        Regression guard: some providers (DeepSeek v4, Kilocode) send usage
+        in a chunk that ALSO has content/choices populated, rather than in a
+        dedicated trailing empty-choices chunk. The usage capture must not be
+        gated on empty choices.
+        """
+        from run_agent import AIAgent
+
+        chunks = [
+            _make_stream_chunk(content="Hello"),  # no usage
+            _make_stream_chunk(
+                content=" world",
+                usage=SimpleNamespace(prompt_tokens=12, completion_tokens=2, total_tokens=14),
+            ),  # content + usage in same chunk (DeepSeek pattern)
+            _make_stream_chunk(content="!", finish_reason="stop", model="test-model"),
+        ]
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.return_value = iter(chunks)
+        mock_create.return_value = mock_client
+
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://api.deepseek.com/v1",
+            model="deepseek-v4-flash",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+        agent.api_mode = "chat_completions"
+        agent._interrupt_requested = False
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.usage is not None
+        assert response.usage.prompt_tokens == 12
+        assert response.usage.completion_tokens == 2
+        assert response.usage.total_tokens == 14
+
 
 # ── Test: Streaming Callbacks ────────────────────────────────────────────
 

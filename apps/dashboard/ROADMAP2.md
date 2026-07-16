@@ -24,12 +24,14 @@ Effort key: **S** < ½ day · **M** ~1 day · **L** multi-day.
 - ✅ **§3.5 gaming** — news topic + Epic free games / Steam deals widget — shipped.
 - ✅ **§3.6 tech-ranked + §3.7 socials hub** — HN/Lobsters/Reddit — shipped.
 - ✅ **§4.1 stocks / indices / FX** — Stooq watchlist + chart — shipped.
-- ⬜ **NEXT — §0.4 dashboard pages/tabs** — the default board now holds ~17
-  widgets; pages (Markets / Sports / Intel / Personal) are the organizing fix.
-- ⬜ Also pending: §0.3 registry, §1.6 smarter alerts, §1.7 converter,
-  §2.2 standings, §2.3 follow teams, §3.1 Google News queries, §3.2 richer
-  reader, §3.3 topic detail, §3.4 podcasts, §4.2 at-a-glance hero,
-  §5 intel/utility widgets.
+- ✅ **§0.4 dashboard pages/tabs** — Main / Markets / Feeds / Sports, migration-safe.
+- ✅ **§2.2 standings** (scores detail) · ✅ **§3.1 Google News follow-a-search**
+  · ✅ **§3.2 richer reader** (image/byline/reading time) · ✅ **§4.2 at-a-glance
+  hero** — shipped.
+- ⬜ Still pending: §0.3 registry, §1.6 smarter alerts, §1.7 crypto converter,
+  §2.3 follow teams, §3.3 topic detail window, §3.4 podcasts, and the
+  §5 intel/utility widgets (world clock, FX converter, air/pollen, weather
+  alerts, earthquakes, space weather, flights, RSS-reader folders).
 
 ---
 

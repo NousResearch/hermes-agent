@@ -196,13 +196,23 @@ flag + notifications), `telemetry.jsonl`, `proposals.json`, `routing.json`
   the Phase 6 auto-apply boundary was confirmed via a question).
 
 ## 11. Current status
-- All 6 Jarvis phases complete + original-scope extras + no-Docker deploy, plus
-  the post-phase additions above (news search, accent presets, structured tasks,
-  evolution rollback/audit, model-augmented reflection, routing UI, SSRF
-  hardening, worldstate expand-flash fix, visual-polish layer).
-- Test counts: **155 unit / ~125 e2e checks**, all green (3/3 consecutive e2e),
+- All 6 Jarvis phases + the post-phase additions, PLUS the big all-in-one
+  expansion (see ROADMAP2.md): dashboard **pages/tabs** (Main/Markets/Feeds/
+  Sports), a **crypto suite** (detail drawer, TA indicators, portfolio, global
+  bar + Fear & Greed, trending), **stocks/indices/FX** (Stooq), **live sports
+  scores + standings** (ESPN), a **socials hub** (HN/Lobsters/Reddit), a
+  **gaming** widget (Epic free games + Steam deals) + gaming news topic, an
+  **At-a-Glance hero**, **follow-any-search** news (Google News), and a **richer
+  reader** (image/byline/reading time). Shared infra: `chart.js` (SVG line/
+  candle/donut), `detail.js` (⤢ expand-window), `indicators.py`.
+- New widget files: `glance, markets(detail), scores, socials, gaming, stocks`;
+  new backend endpoints under `/api/crypto/*, /api/stocks*, /api/scores,
+  /api/standings, /api/social, /api/gaming/*`; new data files none (all cached +
+  sample-backed). PWA cache at **hub-v17**.
+- Test counts: **187 unit / ~165 e2e checks**, all green (3/3 consecutive e2e),
   all pushed to `claude/all-in-one-dashboard-xqh6ct`.
-- Detailed plans for what's left live in `ROADMAP.md`.
+- Detailed plans live in `ROADMAP.md` (phase-1 ideas) and `ROADMAP2.md` (the
+  all-in-one expansion, with a shipped/pending status banner).
 
 ## 12. Open / future ideas (not yet built — see ROADMAP.md for full plans)
 - **Web Push notifications** (Tier 1) — real push beyond in-app toasts; the

@@ -1822,6 +1822,12 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
                 npm,
                 "install",
                 *npm_workspace_args,
+                # --include=dev: ui-tui's build toolchain (esbuild, typescript)
+                # lives in devDependencies. An inherited NODE_ENV=production
+                # (e.g. from a container shell or a parent TUI launch) or an
+                # npm `omit=dev` config would silently skip them and the TUI
+                # build would fail. See _run_npm_install_deterministic.
+                "--include=dev",
                 "--silent",
                 "--no-fund",
                 "--no-audit",
@@ -4832,6 +4838,25 @@ def _run_npm_install_deterministic(
     rewrites committed lockfiles (stripping ``"peer": true`` etc.), which leaves
     the working tree dirty and causes the next ``hermes update`` to stash the
     lockfile — repeatedly.
+
+    ``--include=dev`` is forced on every invocation: the callers are frontend
+    builds (web UI / TUI / desktop workspaces), and those builds need the dev
+    toolchain (``tsc``, ``vite``, ``electron-builder`` — all
+    ``devDependencies``).  If the caller's environment has
+    ``NODE_ENV=production`` (or npm config ``omit=dev``) — which leaks in from
+    a shell profile, a container image, or the bundled TUI launcher that sets
+    ``NODE_ENV=production`` on its subprocess env — npm silently omits
+    devDependencies (exit 0, no error), so the build toolchain never installs
+    and the subsequent build dies with ``tsc: command not found`` (exit 127).
+    The flag overrides both the env var and npm config, unlike scrubbing
+    ``NODE_ENV`` from the environment which only fixes the env-leak case.
+
+    ``--no-save`` on the ``npm install`` fallback keeps it true to this
+    function's contract: never mutate ``package-lock.json``.  Without it, an
+    out-of-sync lockfile gets rewritten by the fallback, which drifts the
+    committed lockfile and makes every future ``npm ci`` fail — a
+    self-reinforcing cycle where web devDeps never install and a stale dist
+    is served on every update (PR #65595).
     """
     # unicode-animations' postinstall animates to /dev/tty (bypasses
     # --silent/capture_output). It no-ops when CI is set — same as the TUI
@@ -4840,7 +4865,7 @@ def _run_npm_install_deterministic(
 
     lockfile = cwd / "package-lock.json"
     if lockfile.exists():
-        ci_cmd = [npm, "ci", *extra_args]
+        ci_cmd = [npm, "ci", "--include=dev", *extra_args]
         ci_result = subprocess.run(
             ci_cmd,
             cwd=cwd,
@@ -4855,7 +4880,7 @@ def _run_npm_install_deterministic(
             return ci_result
         # Fall through to `npm install` — lockfile may be out of sync on a
         # WIP fork/branch, or `npm ci` may not be available on very old npm.
-    install_cmd = [npm, "install", *extra_args]
+    install_cmd = [npm, "install", "--no-save", "--include=dev", *extra_args]
     return subprocess.run(
         install_cmd,
         cwd=cwd,

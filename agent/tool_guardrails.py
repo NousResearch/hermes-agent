@@ -77,6 +77,8 @@ class ToolCallGuardrailConfig:
     same_tool_failure_halt_after: int = 8
     no_progress_warn_after: int = 2
     no_progress_block_after: int = 5
+    repeated_success_warn_after: int = 4
+    turn_volume_warn_after: int = 25
     idempotent_tools: frozenset[str] = field(default_factory=lambda: IDEMPOTENT_TOOL_NAMES)
     mutating_tools: frozenset[str] = field(default_factory=lambda: MUTATING_TOOL_NAMES)
 
@@ -120,6 +122,14 @@ class ToolCallGuardrailConfig:
             no_progress_block_after=_positive_int(
                 hard_stop_after.get("idempotent_no_progress", data.get("no_progress_block_after")),
                 defaults.no_progress_block_after,
+            ),
+            repeated_success_warn_after=_positive_int(
+                warn_after.get("repeated_success", data.get("repeated_success_warn_after")),
+                defaults.repeated_success_warn_after,
+            ),
+            turn_volume_warn_after=_positive_int(
+                warn_after.get("turn_volume", data.get("turn_volume_warn_after")),
+                defaults.turn_volume_warn_after,
             ),
         )
 
@@ -222,7 +232,14 @@ def classify_tool_failure(tool_name: str, result: str | None) -> tuple[bool, str
 
 
 class ToolCallGuardrailController:
-    """Per-turn controller for repeated failed/non-progressing tool calls."""
+    """Per-turn controller for repeated failed/non-progressing tool calls.
+
+    Also tracks two success-side redundancy signals the failure detectors do
+    not cover: consecutive identical *successful* calls on non-idempotent
+    tools (``repeated_success_warning``) and total completed tool-call volume
+    for the turn (``turn_volume_warning``, emitted once per turn). Both are
+    warn-only: they never block or halt execution.
+    """
 
     def __init__(self, config: ToolCallGuardrailConfig | None = None):
         self.config = config or ToolCallGuardrailConfig()
@@ -232,6 +249,10 @@ class ToolCallGuardrailController:
         self._exact_failure_counts: dict[ToolCallSignature, int] = {}
         self._same_tool_failure_counts: dict[str, int] = {}
         self._no_progress: dict[ToolCallSignature, tuple[str, int]] = {}
+        self._success_streak_sig: ToolCallSignature | None = None
+        self._success_streak_count: int = 0
+        self._calls_this_turn: int = 0
+        self._turn_volume_warned: bool = False
         self._halt_decision: ToolGuardrailDecision | None = None
 
     @property
@@ -295,10 +316,14 @@ class ToolCallGuardrailController:
         if failed is None:
             failed, _ = classify_tool_failure(tool_name, result)
 
+        self._calls_this_turn += 1
+
         if failed:
             exact_count = self._exact_failure_counts.get(signature, 0) + 1
             self._exact_failure_counts[signature] = exact_count
             self._no_progress.pop(signature, None)
+            self._success_streak_sig = None
+            self._success_streak_count = 0
 
             same_count = self._same_tool_failure_counts.get(tool_name, 0) + 1
             self._same_tool_failure_counts[tool_name] = same_count
@@ -342,13 +367,50 @@ class ToolCallGuardrailController:
                     signature=signature,
                 )
 
+            volume_decision = self._turn_volume_decision(tool_name, signature)
+            if volume_decision is not None:
+                return volume_decision
+
             return ToolGuardrailDecision(tool_name=tool_name, count=exact_count, signature=signature)
 
         self._exact_failure_counts.pop(signature, None)
         self._same_tool_failure_counts.pop(tool_name, None)
 
+        # Consecutive identical *successful* calls. Failures and any
+        # different call break the streak; only successes extend it.
+        if self._success_streak_sig == signature:
+            self._success_streak_count += 1
+        else:
+            self._success_streak_sig = signature
+            self._success_streak_count = 1
+
         if not self._is_idempotent(tool_name):
             self._no_progress.pop(signature, None)
+            # Idempotent tools are covered by the no-progress detector below
+            # (identical args AND identical result). Non-idempotent tools get
+            # the streak warning instead: repeating the exact same mutating
+            # call and having it succeed every time is redundant work the
+            # failure-only detectors never see.
+            if (
+                self.config.warnings_enabled
+                and self._success_streak_count >= self.config.repeated_success_warn_after
+            ):
+                return ToolGuardrailDecision(
+                    action="warn",
+                    code="repeated_success_warning",
+                    message=(
+                        f"{tool_name} succeeded {self._success_streak_count} times in a row "
+                        "with identical arguments. The repeated calls look redundant; use "
+                        "the result you already have, or change the arguments or approach "
+                        "instead of repeating the same call."
+                    ),
+                    tool_name=tool_name,
+                    count=self._success_streak_count,
+                    signature=signature,
+                )
+            volume_decision = self._turn_volume_decision(tool_name, signature)
+            if volume_decision is not None:
+                return volume_decision
             return ToolGuardrailDecision(tool_name=tool_name, signature=signature)
 
         result_hash = _result_hash(result)
@@ -372,12 +434,45 @@ class ToolCallGuardrailController:
                 signature=signature,
             )
 
+        volume_decision = self._turn_volume_decision(tool_name, signature)
+        if volume_decision is not None:
+            return volume_decision
+
         return ToolGuardrailDecision(tool_name=tool_name, count=repeat_count, signature=signature)
 
     def _is_idempotent(self, tool_name: str) -> bool:
         if tool_name in self.config.mutating_tools:
             return False
         return tool_name in self.config.idempotent_tools
+
+    def _turn_volume_decision(
+        self, tool_name: str, signature: ToolCallSignature
+    ) -> ToolGuardrailDecision | None:
+        """Warn once per turn when completed tool-call volume gets high.
+
+        Emitted at most once per turn so a legitimately busy turn is nudged
+        a single time instead of having every subsequent tool result decorated
+        with the same warning.
+        """
+        if not self.config.warnings_enabled:
+            return None
+        if self._turn_volume_warned:
+            return None
+        if self._calls_this_turn < self.config.turn_volume_warn_after:
+            return None
+        self._turn_volume_warned = True
+        return ToolGuardrailDecision(
+            action="warn",
+            code="turn_volume_warning",
+            message=(
+                f"This turn has already made {self._calls_this_turn} tool calls. "
+                "Step back and check whether the remaining work can be finished "
+                "more directly instead of continuing to iterate call by call."
+            ),
+            tool_name=tool_name,
+            count=self._calls_this_turn,
+            signature=signature,
+        )
 
 
 def toolguard_synthetic_result(decision: ToolGuardrailDecision) -> str:

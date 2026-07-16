@@ -1410,6 +1410,8 @@ DEFAULT_CONFIG = {
             "exact_failure": 2,
             "same_tool_failure": 3,
             "idempotent_no_progress": 2,
+            "repeated_success": 4,
+            "turn_volume": 25,
         },
         "hard_stop_after": {
             "exact_failure": 5,

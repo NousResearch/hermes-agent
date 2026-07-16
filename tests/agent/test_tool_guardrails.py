@@ -44,6 +44,8 @@ def test_default_config_is_soft_warning_only_with_hard_stop_disabled():
     assert cfg.exact_failure_block_after == 5
     assert cfg.same_tool_failure_halt_after == 8
     assert cfg.no_progress_block_after == 5
+    assert cfg.repeated_success_warn_after == 4
+    assert cfg.turn_volume_warn_after == 25
 
 
 def test_config_parses_nested_warn_and_hard_stop_thresholds():
@@ -55,6 +57,8 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
                 "exact_failure": 3,
                 "same_tool_failure": 4,
                 "idempotent_no_progress": 5,
+                "repeated_success": 6,
+                "turn_volume": 30,
             },
             "hard_stop_after": {
                 "exact_failure": 6,
@@ -72,6 +76,8 @@ def test_config_parses_nested_warn_and_hard_stop_thresholds():
     assert cfg.exact_failure_block_after == 6
     assert cfg.same_tool_failure_halt_after == 7
     assert cfg.no_progress_block_after == 8
+    assert cfg.repeated_success_warn_after == 6
+    assert cfg.turn_volume_warn_after == 30
 
 
 def test_default_repeated_identical_failed_call_warns_without_blocking():
@@ -256,3 +262,139 @@ def test_reset_for_turn_clears_bounded_guardrail_state():
 
     assert controller.before_call("web_search", {"query": "same"}).action == "allow"
     assert controller.before_call("read_file", {"path": "/tmp/x"}).action == "allow"
+
+def test_repeated_identical_success_on_mutating_tool_warns_without_blocking():
+    controller = ToolCallGuardrailController()
+    args = {"command": "ls -la /tmp"}
+
+    decisions = []
+    for _ in range(5):
+        assert controller.before_call("terminal", args).action == "allow"
+        decisions.append(
+            controller.after_call("terminal", args, '{"exit_code":0}', failed=False)
+        )
+
+    assert [d.action for d in decisions[:3]] == ["allow", "allow", "allow"]
+    assert [d.action for d in decisions[3:]] == ["warn", "warn"]
+    assert {d.code for d in decisions[3:]} == {"repeated_success_warning"}
+    assert decisions[3].count == 4
+    assert decisions[4].count == 5
+    assert "redundant" in decisions[3].message
+    # Warn-only: execution is never prevented and no halt is recorded.
+    assert controller.before_call("terminal", args).action == "allow"
+    assert controller.halt_decision is None
+
+
+def test_success_streak_broken_by_different_args_or_failure():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(repeated_success_warn_after=3)
+    )
+
+    # Two identical successes, then different args: streak restarts.
+    controller.after_call("terminal", {"command": "a"}, '{"exit_code":0}', failed=False)
+    controller.after_call("terminal", {"command": "a"}, '{"exit_code":0}', failed=False)
+    controller.after_call("terminal", {"command": "b"}, '{"exit_code":0}', failed=False)
+    third = controller.after_call("terminal", {"command": "a"}, '{"exit_code":0}', failed=False)
+    assert third.action == "allow"
+
+    # Two identical successes, then a failure of the same call: streak resets.
+    controller.reset_for_turn()
+    controller.after_call("terminal", {"command": "a"}, '{"exit_code":0}', failed=False)
+    controller.after_call("terminal", {"command": "a"}, '{"exit_code":0}', failed=False)
+    controller.after_call("terminal", {"command": "a"}, '{"exit_code":1}', failed=True)
+    after_failure = controller.after_call(
+        "terminal", {"command": "a"}, '{"exit_code":0}', failed=False
+    )
+    assert after_failure.action == "allow"
+
+
+def test_idempotent_tools_use_no_progress_code_not_repeated_success():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(repeated_success_warn_after=2, no_progress_warn_after=2)
+    )
+    args = {"path": "/tmp/same.txt"}
+
+    first = controller.after_call("read_file", args, "same contents", failed=False)
+    second = controller.after_call("read_file", args, "same contents", failed=False)
+
+    assert first.action == "allow"
+    assert second.action == "warn"
+    assert second.code == "idempotent_no_progress_warning"
+
+    # Identical args but progressing results (e.g. polling) must not warn as
+    # a redundant-success loop: no-progress covers the idempotent family.
+    controller.reset_for_turn()
+    a = controller.after_call("read_file", args, "contents v1", failed=False)
+    b = controller.after_call("read_file", args, "contents v2", failed=False)
+    c = controller.after_call("read_file", args, "contents v3", failed=False)
+    assert [a.action, b.action, c.action] == ["allow", "allow", "allow"]
+
+
+def test_turn_volume_warns_once_per_turn_and_resets_at_turn_boundary():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(turn_volume_warn_after=3)
+    )
+
+    first = controller.after_call("web_search", {"query": "q1"}, "r1", failed=False)
+    second = controller.after_call("terminal", {"command": "c1"}, '{"exit_code":0}', failed=False)
+    third = controller.after_call("write_file", {"path": "/tmp/a", "content": "x"}, "ok", failed=False)
+    fourth = controller.after_call("web_search", {"query": "q2"}, "r2", failed=False)
+
+    assert [first.action, second.action] == ["allow", "allow"]
+    assert third.action == "warn"
+    assert third.code == "turn_volume_warning"
+    assert third.count == 3
+    # Only once per turn — subsequent calls stay allow.
+    assert fourth.action == "allow"
+    assert controller.halt_decision is None
+
+    controller.reset_for_turn()
+    after_reset = controller.after_call("web_search", {"query": "q3"}, "r3", failed=False)
+    assert after_reset.action == "allow"
+
+
+def test_turn_volume_counts_failed_calls_too():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            turn_volume_warn_after=2,
+            exact_failure_warn_after=99,
+            same_tool_failure_warn_after=99,
+        )
+    )
+
+    first = controller.after_call("terminal", {"command": "a"}, '{"exit_code":1}', failed=True)
+    second = controller.after_call("terminal", {"command": "b"}, '{"exit_code":1}', failed=True)
+
+    assert first.action == "allow"
+    assert second.action == "warn"
+    assert second.code == "turn_volume_warning"
+
+
+def test_warnings_disabled_suppresses_success_and_volume_warnings():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(
+            warnings_enabled=False,
+            repeated_success_warn_after=2,
+            turn_volume_warn_after=2,
+        )
+    )
+    args = {"command": "same"}
+
+    for _ in range(4):
+        decision = controller.after_call("terminal", args, '{"exit_code":0}', failed=False)
+        assert decision.action == "allow"
+
+
+def test_reset_for_turn_clears_success_streak_state():
+    controller = ToolCallGuardrailController(
+        ToolCallGuardrailConfig(repeated_success_warn_after=3)
+    )
+    args = {"command": "same"}
+    controller.after_call("terminal", args, '{"exit_code":0}', failed=False)
+    controller.after_call("terminal", args, '{"exit_code":0}', failed=False)
+
+    controller.reset_for_turn()
+
+    # Streak restarted: the third identical success is call #1 of the new turn.
+    resumed = controller.after_call("terminal", args, '{"exit_code":0}', failed=False)
+    assert resumed.action == "allow"

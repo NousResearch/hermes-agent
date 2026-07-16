@@ -816,7 +816,13 @@ def _distribution_identity(
             raise RuntimeDependencyError("runtime_dependency_distribution_escaped") from exc
         if located.is_dir():
             continue
-        payload = _read_regular(located, maximum=64 * 1024 * 1024)
+        state = located.lstat()
+        payload = _read_regular(
+            located,
+            maximum=64 * 1024 * 1024,
+            allow_empty=True,
+            expected=state,
+        )
         records.append(
             {"path": str(relative), "size": len(payload), "sha256": _sha256(payload)}
         )

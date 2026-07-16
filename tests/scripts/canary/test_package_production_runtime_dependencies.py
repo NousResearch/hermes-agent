@@ -426,6 +426,53 @@ def test_tree_identity_rejects_zero_byte_read_races(
         )
 
 
+def test_distribution_identity_hashes_zero_byte_files_canonically(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    release = tmp_path / "release"
+    interpreter = release / "venv/bin/python"
+    site_packages = release / "venv/lib/python3.11/site-packages"
+    empty = site_packages / "example/py.typed"
+    value = site_packages / "example/__init__.py"
+    empty.parent.mkdir(parents=True)
+    empty.write_bytes(b"")
+    value.write_bytes(b"x")
+
+    class Distribution:
+        version = package.DDGS_LOCKED_DISTRIBUTIONS["certifi"]
+        files = (Path("example/__init__.py"), Path("example/py.typed"))
+
+        @staticmethod
+        def locate_file(entry: Path) -> Path:
+            return site_packages / entry
+
+    monkeypatch.setattr(
+        package.importlib.metadata,
+        "distribution",
+        lambda _name: Distribution(),
+    )
+    monkeypatch.setattr(package, "_release_interpreter", lambda _release: interpreter)
+    records = [
+        {
+            "path": "lib/python3.11/site-packages/example/__init__.py",
+            "size": 1,
+            "sha256": package._sha256(b"x"),
+        },
+        {
+            "path": "lib/python3.11/site-packages/example/py.typed",
+            "size": 0,
+            "sha256": package._sha256(b""),
+        },
+    ]
+
+    assert package._distribution_identity("certifi", release) == {
+        "version": Distribution.version,
+        "file_count": 2,
+        "files_sha256": package._sha256(_canonical(records)),
+    }
+
+
 def test_verify_manifest_is_observational_and_rejects_drift(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

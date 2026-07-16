@@ -58,9 +58,11 @@ def bridge_module(tmp_path, monkeypatch, isolated_kanban):
 
     # Force reimport so kanban_db picks up the new HERMES_HOME
     import importlib
-    import hermes_cli.kanban_event_bridge as keb
 
+    global kb
+    kb = importlib.import_module("hermes_cli.kanban_db")
     importlib.reload(kb)
+    import hermes_cli.kanban_event_bridge as keb
     importlib.reload(keb)
     return keb
 

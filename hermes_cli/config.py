@@ -2365,6 +2365,12 @@ DEFAULT_CONFIG = {
     # always goes to ~/.hermes/skills/.
     "skills": {
         "external_dirs": [],   # e.g. ["~/.agents/skills", "/shared/team-skills"]
+        # When true, skill_manage rejects mutations (edit/patch/delete/
+        # write_file/remove_file) on skills located in external_dirs. Skills in
+        # external directories are typically managed by an external package
+        # manager (npx skills, git, etc.) — modifications by the agent would be
+        # silently lost on the next update. Set to true to enable protection.
+        "external_dirs_readonly": False,
         # Substitute ${HERMES_SKILL_DIR} and ${HERMES_SESSION_ID} in SKILL.md
         # content with the absolute skill directory and the active session id
         # before the agent sees it.  Lets skill authors reference bundled

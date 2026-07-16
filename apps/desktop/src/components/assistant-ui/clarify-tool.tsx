@@ -442,6 +442,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
 
       if (
         active &&
+        !isEmptyComposer &&
         (active.isContentEditable || active.matches('a[href], button, input, select, textarea, [role="button"]'))
       ) {
         return

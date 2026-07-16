@@ -2487,6 +2487,10 @@ class VerifierAuthorization:
 VERIFIER_RESULT_CONTRACT_ID = "protected-merge:v1"
 VERIFIER_RESULT_MAX_BYTES = 16 * 1024
 VERIFIER_RESULT_DEADLINE_SECONDS = 20 * 60
+# Bounded grace read used when the verifier process has already exited: the
+# frame (if any) is already in the pipe buffer, so only a short EOF-observing
+# drain is justified — never the full result deadline.
+_VERIFIER_RESULT_EOF_GRACE_SECONDS = 5
 _VERIFIER_RESULT_ALLOWED_FIELDS = frozenset({
     "version",
     "task_id",
@@ -2573,8 +2577,17 @@ def _canonical_verifier_contract_payload(contract: dict) -> dict[str, Any]:
     # useful to bind it to the verification decision, but it must never become
     # durable task/audit state or child-process input: those surfaces outlive
     # the operator's intent and are broadly readable.  Persist only the ready
-    # bit plus a deterministic digest of the validated value.
-    readiness_digest = hashlib.sha256(encoded_evidence).hexdigest()
+    # bit plus a deterministic digest of the validated value.  An
+    # already-canonical value (exactly ready + digest) keeps its digest, so
+    # re-canonicalizing a stored contract never changes its hash.
+    if (
+        set(readiness_evidence) == {"ready", "digest"}
+        and isinstance(readiness_evidence.get("digest"), str)
+        and _SHA256_HEX_RE.fullmatch(readiness_evidence["digest"])
+    ):
+        readiness_digest = readiness_evidence["digest"]
+    else:
+        readiness_digest = hashlib.sha256(encoded_evidence).hexdigest()
     return {
         "contract_id": VERIFIER_RESULT_CONTRACT_ID,
         "pr_url": pr_url.strip(),
@@ -6554,12 +6567,22 @@ def _validate_merge_verifier_bypass(
     ):
         return None
 
-    return {
-        "pr_url": intent.pr_url,
-        "approved_head": intent.approved_head,
-        "approved_base": intent.approved_base,
-        "readiness_evidence": intent.readiness_evidence,
-    }
+    # Canonicalize HERE, at the authorization boundary: everything past this
+    # return becomes durable task/audit state (guard_bypass column, grant/
+    # consume/restore events) and eventually child-process input. The raw,
+    # untrusted readiness evidence must never cross that line — only the
+    # ready bit, its digest, and the immutable PR/head/base binding do.
+    try:
+        return _canonical_verifier_contract_payload(
+            {
+                "pr_url": intent.pr_url,
+                "approved_head": intent.approved_head,
+                "approved_base": intent.approved_base,
+                "readiness_evidence": intent.readiness_evidence,
+            }
+        )
+    except ValueError:
+        return None
 
 
 def _canonical_pr_url(url: Any) -> Optional[str]:
@@ -9861,30 +9884,80 @@ def _resolve_worker_cli_toolsets(hermes_home: Optional[str]) -> Optional[list[st
         return None
 
 
+def _windows_peek_pipe(fd: int) -> Optional[int]:
+    """Bytes available on an anonymous pipe without blocking.
+
+    Returns ``None`` once the pipe is broken (all writers closed and the
+    buffer drained) — the Windows equivalent of observing EOF.
+    """
+    import ctypes
+    import msvcrt
+    from ctypes import wintypes
+
+    try:
+        handle = msvcrt.get_osfhandle(fd)
+    except OSError:
+        return None
+    available = wintypes.DWORD(0)
+    ok = ctypes.windll.kernel32.PeekNamedPipe(
+        wintypes.HANDLE(handle), None, 0, None, ctypes.byref(available), None
+    )
+    if not ok:
+        return None
+    return int(available.value)
+
+
 def _read_verifier_result_pipe(
     read_fd: int,
     *,
-    deadline_seconds: int = VERIFIER_RESULT_DEADLINE_SECONDS,
+    deadline_seconds: Optional[int] = None,
     max_bytes: int = VERIFIER_RESULT_MAX_BYTES,
-) -> bytes:
+) -> Optional[bytes]:
+    """Read the one-shot result channel, requiring EOF before the deadline.
+
+    Returns the raw frame bytes only once end-of-file is actually observed
+    within ``deadline_seconds``. Returns ``None`` — never a partial buffer —
+    when the deadline expires with the writer still open, so the caller fails
+    closed instead of treating an unfinished channel as a complete result.
+    Never issues a blocking ``os.read``: POSIX gates reads on ``select``,
+    Windows on a non-blocking pipe peek.
+    """
+    if deadline_seconds is None:
+        deadline_seconds = VERIFIER_RESULT_DEADLINE_SECONDS
     deadline = time.monotonic() + max(1, int(deadline_seconds))
     chunks: list[bytes] = []
     total = 0
+    eof_observed = False
     try:
-        while time.monotonic() < deadline:
-            timeout = max(0.0, min(0.1, deadline - time.monotonic()))
-            if not _IS_WINDOWS:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            if _IS_WINDOWS:
+                available = _windows_peek_pipe(read_fd)
+                if available is None:
+                    eof_observed = True
+                    break
+                if available <= 0:
+                    time.sleep(min(0.05, remaining))
+                    continue
+                read_len = min(available, 4096, max(1, int(max_bytes) + 1 - total))
+            else:
                 import select
-                readable, _, _ = select.select([read_fd], [], [], timeout)
+                readable, _, _ = select.select([read_fd], [], [], min(0.1, remaining))
                 if not readable:
                     continue
-            chunk = os.read(read_fd, min(4096, max(1, int(max_bytes) + 1 - total)))
+                read_len = min(4096, max(1, int(max_bytes) + 1 - total))
+            chunk = os.read(read_fd, read_len)
             if not chunk:
+                eof_observed = True
                 break
             chunks.append(chunk)
             total += len(chunk)
             if total > max_bytes:
                 return b"x" * (int(max_bytes) + 1)
+        if not eof_observed:
+            return None
         return b"".join(chunks)
     finally:
         try:
@@ -10319,9 +10392,18 @@ def _start_verifier_supervisor_waiter(
                         reason=failure_reason,
                     )
                     return
-                raw = _read_verifier_result_pipe(read_fd)
+                # The child has already exited: any frame is either fully in
+                # the pipe buffer or will never arrive, so drain with a short
+                # bounded EOF grace rather than the full result deadline.
+                raw = _read_verifier_result_pipe(
+                    read_fd,
+                    deadline_seconds=_VERIFIER_RESULT_EOF_GRACE_SECONDS,
+                )
             else:
-                raw = _read_verifier_result_pipe(read_fd)
+                raw = _read_verifier_result_pipe(
+                    read_fd,
+                    deadline_seconds=VERIFIER_RESULT_DEADLINE_SECONDS,
+                )
                 try:
                     rc = proc.wait(timeout=5)
                 except AttributeError:
@@ -10345,6 +10427,23 @@ def _start_verifier_supervisor_waiter(
                     task_id=str(binding["task_id"]),
                     run_id=int(binding["run_id"]),
                     reason=failure_reason,
+                )
+                return
+            if raw is None:
+                # The reader never observed EOF: the writer end is still open
+                # (or unreadable), so whatever bytes arrived cannot be trusted
+                # as a complete frame. Fail closed instead of parsing.
+                _reconcile_verifier_authorization_failure(
+                    db_path=db_path,
+                    authorization_id=authorization_id,
+                    binding=binding,
+                    reason="result_no_eof",
+                )
+                _verifier_failure_reblock(
+                    db_path=db_path,
+                    task_id=str(binding["task_id"]),
+                    run_id=int(binding["run_id"]),
+                    reason="result_no_eof",
                 )
                 return
             try:
@@ -10679,10 +10778,15 @@ def _spawn_verifier_supervisor(
 
     if not isinstance(task.verification_contract, dict):
         raise ValueError("verification supervisor requires a contract")
+    # Canonicalize before the contract touches any process surface (prompt,
+    # child env, authorization row): only the ready bit and evidence digest
+    # may cross into the child. Canonicalization is idempotent, so a contract
+    # already canonicalized at the grant boundary keeps its hash.
+    contract = _canonical_verifier_contract_payload(task.verification_contract)
     nonce = secrets.token_urlsafe(24)
     binding = make_verifier_result_binding(
         task,
-        task.verification_contract,
+        contract,
         nonce=nonce,
     )
     db_path = kanban_db_path(board=board)
@@ -10712,7 +10816,7 @@ def _spawn_verifier_supervisor(
     env = _build_verifier_child_env(
         base_env=dict(os.environ),
         workspace=workspace,
-        contract=task.verification_contract,
+        contract=contract,
         binding=binding,
         writer_fd=writer_fd,
         verifier_root=verifier_root,
@@ -10726,7 +10830,7 @@ def _spawn_verifier_supervisor(
         "kanban_verifier",
         "chat",
         "-q",
-        _verifier_prompt(task.verification_contract),
+        _verifier_prompt(contract),
         "-Q",
     ]
     log_dir = worker_logs_dir(board=board)

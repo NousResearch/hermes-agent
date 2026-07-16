@@ -3764,6 +3764,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._stream_buf = ""        # Partial line buffer for line-buffered rendering
         self._stream_started = False  # True once first delta arrives
         self._stream_box_opened = False  # True once the response box header is printed
+        # Turn-level flag: True once ANY content was streamed to the screen
+        # during this user turn.  Persists across tool-call boundaries (where
+        # _stream_box_opened is reset by _on_tool_gen_start) so the final
+        # render guard can tell the difference between "nothing streamed yet"
+        # and "content already shown but box was closed for a tool call".
+        # See issue #65666.
+        self._response_ever_streamed = False
         self._reasoning_preview_buf = ""  # Coalesce tiny reasoning chunks for [thinking] output
         # Table-row buffer.  When a streamed line looks like it could be
         # part of a markdown table, hold it here until the block ends so
@@ -5768,6 +5775,10 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if not text:
                 return
             self._stream_box_opened = True
+            # Mark that we have streamed content this turn — persists across
+            # tool-call boundaries so the final render guard doesn't re-render.
+            # See issue #65666.
+            self._response_ever_streamed = True
             try:
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
@@ -5923,6 +5934,7 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         self._stream_buf = ""
         self._stream_started = False
         self._stream_box_opened = False
+        self._response_ever_streamed = False  # See issue #65666
         self._stream_text_ansi = ""
         self._stream_prefilt = ""
         self._in_reasoning_block = False
@@ -12796,7 +12808,13 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                     _resp_text = _maybe_remap_for_light_mode("#FFF8DC")
 
                 is_error_response = result and (result.get("failed") or result.get("partial"))
-                already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
+                # Use _response_ever_streamed (persists across tool-call
+                # boundaries) instead of _stream_box_opened (which is reset
+                # by _on_tool_gen_start).  Without this, a response that was
+                # partially streamed, then interrupted after a tool-call
+                # transition, gets re-rendered as a Rich Panel — duplicating
+                # the content on screen.  See issue #65666.
+                already_streamed = self._response_ever_streamed and not is_error_response
                 if use_streaming_tts and _streaming_box_opened and not is_error_response:
                     # Text was already printed sentence-by-sentence; just close the box
                     w = self._scrollback_box_width()

@@ -9562,13 +9562,14 @@ def cmd_update(args):
         return
 
     gateway_mode = getattr(args, "gateway", False)
+    light_mode = getattr(args, "light", False) or gateway_mode
 
     # Protect against mid-update terminal disconnects (SIGHUP) and tolerate
     # writes to a closed stdout.  No-op in gateway mode.  See
     # _install_hangup_protection for rationale.
     _update_io_state = _install_hangup_protection(gateway_mode=gateway_mode)
     try:
-        _cmd_update_impl(args, gateway_mode=gateway_mode)
+        _cmd_update_impl(args, gateway_mode=gateway_mode, light=light_mode)
     finally:
         _finalize_update_output(_update_io_state)
 
@@ -9634,7 +9635,7 @@ def _cmd_update_pip(args):
     print("✓ Update complete! Restart hermes to use the new version.")
 
 
-def _cmd_update_impl(args, gateway_mode: bool):
+def _cmd_update_impl(args, gateway_mode: bool, light: bool = False):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
     # In gateway mode, use file-based IPC for prompts instead of stdin
@@ -10180,30 +10181,53 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         _refresh_active_lazy_features()
 
-        node_failures = _update_node_dependencies()
-        _build_web_ui(PROJECT_ROOT / "web")
+        node_failures = []
+        if light:
+            print("  ✓ Light mode: skipped npm install, web UI, and desktop rebuild")
+            print("    (run 'cd web && npm install && npm run build' if you need the dashboard)")
+            # If the user actually has a built dashboard/desktop app, light mode
+            # leaves it on the previously-built version.  Surface that so they
+            # aren't surprised when the UI doesn't reflect the update they just
+            # pulled (esp. after a web/ or apps/desktop source change).
+            desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+            has_desktop_app = (
+                _desktop_packaged_executable(desktop_dir) is not None
+                or _desktop_dist_exists(desktop_dir)
+            )
+            has_web_dashboard = not _web_ui_build_needed(PROJECT_ROOT / "web")
+            if has_desktop_app or has_web_dashboard:
+                print(
+                    "  ⚠ You have a built dashboard/desktop app — light mode left it on the"
+                )
+                print("    previous version. Rebuild when needed:")
+                print("      cd web && npm install && npm run build")
+                if has_desktop_app:
+                    print("      hermes desktop --build-only")
+        else:
+            node_failures = _update_node_dependencies()
+            _build_web_ui(PROJECT_ROOT / "web")
 
-        # Rebuild the desktop app if the source tree changed since the last
-        # build.  ``hermes desktop --build-only`` uses the content-hash stamp
-        # internally, so this is effectively a no-op when nothing changed.
-        # Only bother if the user has a desktop app installed (indicated by
-        # an existing packaged executable or desktop dist); people who have
-        # never run ``hermes desktop`` shouldn't be forced into a full
-        # Electron build by ``hermes update``.
-        desktop_dir = PROJECT_ROOT / "apps" / "desktop"
-        has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
-        if (desktop_dir / "package.json").exists() and _resolve_node_runtime_npm() and has_desktop_app:
-            print("→ Checking if desktop app needs rebuilding...")
-            _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
-            # Capture the (very loud) Electron/vite build output into
-            # update.log instead of streaming it to the terminal. On the rare
-            # nonzero exit, retry once after waiting again for the venv — this
-            # covers a still-settling rebuild window the first wait didn't fully
-            # catch — then surface the captured tail so the failure is
-            # debuggable.
-            build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT)
-            if build_result.returncode != 0:
+            # Rebuild the desktop app if the source tree changed since the last
+            # build.  ``hermes desktop --build-only`` uses the content-hash stamp
+            # internally, so this is effectively a no-op when nothing changed.
+            # Only bother if the user has a desktop app installed (indicated by
+            # an existing packaged executable or desktop dist); people who have
+            # never run ``hermes desktop`` shouldn't be forced into a full
+            # Electron build by ``hermes update``.
+            desktop_dir = PROJECT_ROOT / "apps" / "desktop"
+            has_desktop_app = _desktop_packaged_executable(desktop_dir) is not None or _desktop_dist_exists(desktop_dir)
+            if (desktop_dir / "package.json").exists() and _resolve_node_runtime_npm() and has_desktop_app:
+                print("→ Checking if desktop app needs rebuilding...")
+                _desktop_build_cmd = [sys.executable, "-m", "hermes_cli.main", "desktop", "--build-only"]
+                # Capture the (very loud) Electron/vite build output into
+                # update.log instead of streaming it to the terminal. On the rare
+                # nonzero exit, retry once after waiting again for the venv — this
+                # covers a still-settling rebuild window the first wait didn't fully
+                # catch — then surface the captured tail so the failure is
+                # debuggable.
                 build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT)
+                if build_result.returncode != 0:
+                    build_result = _run_logged_subprocess(_desktop_build_cmd, cwd=PROJECT_ROOT)
             if build_result.returncode != 0:
                 print("  ⚠ Desktop build failed (non-fatal; run `hermes desktop` to retry)")
                 tail = "\n".join((build_result.stdout or "").strip().splitlines()[-15:])

@@ -90,6 +90,36 @@ def relay_header_mutations() -> list[Mutation]:
     ]
 
 
+def compaction_ext_mutations() -> list[Mutation]:
+    """Three mutations over the pure compaction announce output surface."""
+    return [
+        Mutation(
+            "return-value: disable unconditional LCM status gate",
+            lambda p: replace_once(
+                p,
+                '{"compacted", "overflow_recovery", "degraded_fallback_compressed"}',
+                '{"overflow_recovery", "degraded_fallback_compressed"}',
+            ),
+        ),
+        Mutation(
+            "message-emit: corrupt built-in recovery reference",
+            lambda p: replace_once(
+                p,
+                'ref = f"↩ previous: {old_session_id} → current: {new_session_id}"',
+                'ref = f"↩ previous: {old_session_id} → current: mutated-session"',
+            ),
+        ),
+        Mutation(
+            "branch-classification: disable stored wire-mode rendering",
+            lambda p: replace_once(
+                p,
+                "wire_mode = bool(stored and (wire_before or 0) > 0 and (wire_after or 0) > 0)",
+                "wire_mode = False",
+            ),
+        ),
+    ]
+
+
 def tool_gate_mutations() -> list[Mutation]:
     """Mutations for the pure tool-gate extraction output classes."""
     return [
@@ -128,6 +158,8 @@ def main(argv: list[str] | None = None) -> int:
     module = args.module
     if module.endswith("relay_headers.py"):
         mutations = relay_header_mutations()
+    elif module.endswith("compaction_ext.py"):
+        mutations = compaction_ext_mutations()
     elif module.endswith("tool_gate.py"):
         mutations = tool_gate_mutations()
     else:

@@ -7,6 +7,7 @@ for GatewayRunner (mixin bound via the MRO).
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 from typing import TYPE_CHECKING
 import asyncio
@@ -297,13 +298,21 @@ class GatewayBusySessionMixin:
                 for key in self._SECURITY_METADATA_KEYS
             )
         )
-        if same_security_context and (
-            getattr(existing, "message_type", None) == MessageType.PHOTO
-            or event.message_type == MessageType.PHOTO
-            or bool(getattr(existing, "media_urls", None))
-            or bool(getattr(event, "media_urls", None))
+        merge_types = {
+            getattr(existing, "message_type", None),
+            getattr(event, "message_type", None),
+        }
+        if (
+            same_security_context
+            and MessageType.PHOTO in merge_types
+            and merge_types <= {MessageType.TEXT, MessageType.PHOTO}
         ):
-            # Preserve photo-burst / media-merge semantics for the head slot.
+            # Preserve one-turn photo-burst/album semantics while retaining every native event.
+            merged_sources = getattr(existing, "_merged_media_source_events", None)
+            if merged_sources is None:
+                merged_sources = [existing]
+                setattr(existing, "_merged_media_source_events", merged_sources)
+            merged_sources.extend(getattr(event, "_merged_media_source_events", None) or [event])
             merge_pending_message_event(
                 adapter._pending_messages, session_key, event,
                 merge_text=event.message_type == MessageType.TEXT,
@@ -856,6 +865,14 @@ class GatewayBusySessionMixin:
         steer_text = event.get_command_args().strip()
         if not steer_text:
             return "Usage: /steer <prompt>"
+        if (
+            event.message_type not in {MessageType.TEXT, MessageType.COMMAND}
+            or event.media_urls
+            or event.media_types
+        ):
+            queued_event = dataclasses.replace(event, text=steer_text)
+            self._queue_or_replace_pending_event(quick_key, queued_event)
+            return "Attachment queued for the next turn; only plain text can steer the current run."
         _steer_state = self._peek_session_state(quick_key)
         running_agent = _steer_state.turn.agent if _steer_state else None
 

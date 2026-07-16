@@ -20,7 +20,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
+from gateway.platforms.base import MessageEvent, MessageType
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
@@ -167,6 +167,38 @@ async def test_steer_agent_without_steer_method_falls_back():
         adapter._pending_messages[sk].channel_context
         == "[Thread context]\nAlice: earlier request"
     )
+
+@pytest.mark.asyncio
+async def test_steer_with_attachment_queues_original_event():
+    runner, adapter = _make_runner(_session_entry())
+    sk = build_session_key(_make_source())
+    raw_message = object()
+    event = MessageEvent(
+        text="/steer inspect this",
+        message_type=MessageType.DOCUMENT,
+        source=_make_source(),
+        raw_message=raw_message,
+        message_id="m-media",
+        media_urls=["/tmp/fixture-document.pdf"],
+        media_types=["application/pdf"],
+        metadata={"attachment_id": "fixture-attachment"},
+    )
+    running_agent = MagicMock()
+    running_agent.steer.return_value = True
+    runner._running_agents[sk] = running_agent
+
+    result = await runner._handle_message(event)
+
+    assert result is not None
+    assert "queued" in result.lower()
+    running_agent.steer.assert_not_called()
+    queued = adapter._pending_messages[sk]
+    assert queued is not event
+    assert queued.text == "inspect this"
+    assert queued.raw_message is raw_message
+    assert queued.media_urls == ["/tmp/fixture-document.pdf"]
+    assert queued.media_types == ["application/pdf"]
+    assert queued.metadata == {"attachment_id": "fixture-attachment"}
 
 
 if __name__ == "__main__":  # pragma: no cover

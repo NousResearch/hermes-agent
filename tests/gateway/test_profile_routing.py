@@ -188,6 +188,74 @@ class TestSessionKeyIntegration:
         key = build_session_key(src, profile="bot2")
         assert key == "agent:bot2:discord:dm:999"
 
+    @pytest.mark.asyncio
+    async def test_adapter_guard_isolates_routed_profiles(self):
+        """A busy session in one routed profile must not block another."""
+        import asyncio
+
+        from gateway.config import PlatformConfig
+        from gateway.platforms.base import BasePlatformAdapter, MessageEvent
+        from gateway.session import Platform, SessionSource
+
+        class _ConcreteAdapter(BasePlatformAdapter):
+            platform = Platform.DISCORD
+
+            async def connect(self, *, is_reconnect: bool = False):
+                pass
+
+            async def disconnect(self):
+                pass
+
+            async def send(self, chat_id, content, **kwargs):
+                pass
+
+            async def get_chat_info(self, chat_id):
+                return {}
+
+        adapter = _ConcreteAdapter(
+            PlatformConfig(enabled=True, token="***"),
+            Platform.DISCORD,
+        )
+        trader_started = asyncio.Event()
+        helper_started = asyncio.Event()
+        release_trader = asyncio.Event()
+
+        async def handler(event):
+            if event.source.profile == "trader":
+                trader_started.set()
+                await release_trader.wait()
+            elif event.source.profile == "helper":
+                helper_started.set()
+
+        adapter.set_message_handler(handler)
+
+        def routed_event(profile: str, message_id: str) -> MessageEvent:
+            return MessageEvent(
+                text=f"hello from {profile}",
+                source=SessionSource(
+                    platform=Platform.DISCORD,
+                    chat_id="123",
+                    chat_type="channel",
+                    user_id="456",
+                    profile=profile,
+                ),
+                message_id=message_id,
+            )
+
+        await adapter.handle_message(routed_event("trader", "m1"))
+        await asyncio.wait_for(trader_started.wait(), timeout=1)
+
+        try:
+            await adapter.handle_message(routed_event("helper", "m2"))
+            await asyncio.wait_for(helper_started.wait(), timeout=0.5)
+        finally:
+            release_trader.set()
+            tasks = list(adapter._background_tasks)
+            if tasks:
+                await asyncio.gather(*tasks)
+
+        assert not adapter._pending_messages
+
 
 
 class TestParentChatIdMatching:

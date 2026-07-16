@@ -9066,7 +9066,7 @@ if (!_gotSingleInstanceLock) {
 
     if (url) {
       handleDeepLink(url)
-    } else if (mainWindow) {
+    } else if (mainWindow && !mainWindow.isDestroyed()) {
       if (mainWindow.isMinimized()) {
         mainWindow.restore()
       }

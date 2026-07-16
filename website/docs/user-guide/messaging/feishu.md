@@ -471,6 +471,20 @@ Additional webhook protections:
 - **Body read timeout:** 30 seconds
 - **Content-Type enforcement:** Only `application/json` is accepted
 
+## Thread Replies
+
+By default, Feishu replies are sent into the message thread when thread metadata is present. To disable threaded replies so that all messages stay in the main conversation:
+
+```yaml
+platforms:
+  feishu:
+    reply_in_thread: false
+```
+
+| Setting | Config key | Default | Description |
+|---------|-----------|---------|-------------|
+| Thread replies | `reply_in_thread` | `true` | Whether to reply in-thread when thread metadata is available |
+
 ## WebSocket Tuning
 
 When using `websocket` mode, you can customize reconnect and ping behavior:

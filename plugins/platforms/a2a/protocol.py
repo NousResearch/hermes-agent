@@ -178,7 +178,13 @@ def _conv_dir() -> Path:
 
 
 def _safe_name(context_id: str) -> str:
-    return "".join(c for c in (context_id or "default") if c.isalnum() or c in "-_") or "default"
+    """Return a collision-resistant filesystem-safe name derived from context_id.
+
+    Uses SHA-256 to avoid collisions when IDs differ only in characters
+    stripped by a whitelist filter (e.g. ``a/b`` vs ``ab``).
+    """
+    import hashlib
+    return hashlib.sha256((context_id or "default").encode()).hexdigest()
 
 
 def persist_message(context_id: str, role: str, text: str, task_id: str = "") -> None:

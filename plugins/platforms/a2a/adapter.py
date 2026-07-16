@@ -312,9 +312,8 @@ class A2AAdapter(BasePlatformAdapter):
         if is_resuming:
             history = protocol.format_history(context_id, limit=20)
 
-        # Persist the ORIGINAL text (before augmentation) so the disk log
-        # stays clean and future loads don't double-nest history blocks.
-        protocol.persist_message(context_id, "user", text, task_id)
+        # Capture original text before augmentation for disk persistence.
+        original_text = text
 
         # Augment if this is a multi-turn continuation.
         if history:
@@ -340,6 +339,10 @@ class A2AAdapter(BasePlatformAdapter):
                     "Wait for it to complete before sending a follow-up.",
                 )
             self._pending_replies[context_id] = fut
+
+        # Persist the ORIGINAL text (before augmentation) AFTER all guards
+        # so rejected requests don't leak into conversation history.
+        protocol.persist_message(context_id, "user", original_text, task_id)
 
         event = MessageEvent(
             text=framed,

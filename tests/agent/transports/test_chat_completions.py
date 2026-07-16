@@ -1115,6 +1115,33 @@ class TestChatCompletionsCacheStats:
         result = transport.extract_cache_stats(r)
         assert result == {"cached_tokens": 500, "creation_tokens": 100}
 
+    def test_deepseek_native_top_level_cache_hit_tokens(self, transport):
+        """DeepSeek's native API (api.deepseek.com) reports cache hits as
+        top-level prompt_cache_hit_tokens, not the OpenAI nested shape —
+        the extractor must read it or direct DeepSeek sessions show 0%
+        cache hit rate (#61871)."""
+        r = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens_details=None,
+                prompt_cache_hit_tokens=1500,
+                prompt_cache_miss_tokens=500,
+            )
+        )
+        result = transport.extract_cache_stats(r)
+        assert result == {"cached_tokens": 1500, "creation_tokens": 0}
+
+    def test_nested_details_win_over_deepseek_top_level(self, transport):
+        """When both shapes are present, the OpenAI nested value wins."""
+        details = SimpleNamespace(cached_tokens=800, cache_write_tokens=0)
+        r = SimpleNamespace(
+            usage=SimpleNamespace(
+                prompt_tokens_details=details,
+                prompt_cache_hit_tokens=1500,
+            )
+        )
+        result = transport.extract_cache_stats(r)
+        assert result == {"cached_tokens": 800, "creation_tokens": 0}
+
 
 class TestChatCompletionsGeminiNativeExtraBodyStrip:
     """Profile extra_body (e.g. Nous portal tags) must not reach a native

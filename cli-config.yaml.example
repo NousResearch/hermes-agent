@@ -614,6 +614,17 @@ session_reset:
 # local runtime lease registry cannot be read or locked.
 max_concurrent_sessions: null
 
+# Number of gateway-owned worker threads available for synchronous agent turns.
+# Raising this can reduce cross-session queueing when many long turns are active,
+# but increases memory use, tool concurrency, and upstream provider pressure.
+# Must be a positive integer; invalid values fall back to 10. There is no fixed
+# upper bound, so size this conservatively for available memory, tool capacity,
+# and provider limits. The pool is created lazily, so restart the gateway after
+# changing this value. This is separate from max_concurrent_sessions, which
+# limits admission across all chat surfaces.
+gateway:
+  agent_executor_workers: 10
+
 # When true, group/channel chats use one session per participant when the platform
 # provides a user ID. This is the secure default and prevents users in the same
 # room from sharing context, interrupts, and token costs. Set false only if you

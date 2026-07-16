@@ -3006,6 +3006,13 @@ DEFAULT_CONFIG = {
         # crash/restart, as before.
         "delivery_ledger": True,
 
+        # Worker threads used to run synchronous agent turns without blocking
+        # the messaging event loop. Higher values admit more simultaneous
+        # turns but increase memory use and upstream provider pressure. The
+        # pool is created lazily, so changing this setting requires a gateway
+        # restart. Must be a positive integer.
+        "agent_executor_workers": 10,
+
         # Seconds the gateway waits for a single messaging platform to finish
         # connecting during startup (and on reconnect). Discord in particular
         # can blow past the old fixed 30s when an account has many slash

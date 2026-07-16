@@ -1703,7 +1703,7 @@ For separate natural mid-turn assistant updates without progressive token editin
 The master `streaming.enabled` switch is `false` by default — nothing streams until you flip it. Once enabled, streaming is decided **per platform**: Telegram ships with `display.platforms.telegram.streaming: true` (streams) and Discord with `display.platforms.discord.streaming: false` (does not). So after enabling streaming, Telegram streams out of the box and Discord stays on whole-message replies until you change its toggle. You can adjust these per-platform switches from the dashboard's **Channels** toggles or directly in `~/.hermes/config.yaml`.
 :::
 
-## Group Chat Session Isolation
+## Gateway Concurrency and Session Isolation
 
 Limit how many chat sessions can actively be open across CLI, TUI/dashboard,
 and messaging gateway:
@@ -1723,6 +1723,24 @@ The cap is enforced with a local runtime lease file and is best-effort: Hermes
 fails open if the registry cannot be read or locked so users are not stranded.
 It is intended for a single host/profile runtime, not a shared `$HERMES_HOME`
 mounted across multiple machines.
+
+Control how many synchronous agent turns the messaging gateway can execute at
+once:
+
+```yaml
+gateway:
+  agent_executor_workers: 10  # positive integer; restart required
+```
+
+Each active turn occupies one worker while it calls the model and tools. Raising
+the value can reduce queueing when many chats are active, but also increases
+memory use, tool concurrency, and upstream provider pressure. This pool is
+created lazily and is not resized in place, so restart the gateway after changing
+the value. There is no fixed upper bound; non-positive or malformed values fall
+back to `10`. Size the pool conservatively for available memory, tool capacity,
+and provider limits. Use
+`max_concurrent_sessions` separately to bound admission across
+CLI, TUI/dashboard, and messaging surfaces.
 
 Control whether shared chats keep one conversation per room or one conversation per participant:
 

@@ -71,6 +71,16 @@ apps/desktop/dist/
 apps/desktop/release/
 apps/desktop/*.tsbuildinfo
 
+# TypeScript dev/watch compile output emitted NEXT TO the .ts/.tsx source in
+# apps/*/src (tsc without an outDir). These are build artifacts — every .js has
+# a tracked .ts/.tsx sibling and zero .js under apps/*/src is a committed source
+# file — so ignoring them can't hide real source. Keeps ~700 generated files out
+# of `git status` (they otherwise show as untracked and pollute FF-sync/diff).
+apps/desktop/src/**/*.js
+apps/desktop/src/**/*.js.map
+apps/shared/src/**/*.js
+apps/shared/src/**/*.js.map
+
 # Web UI assets — synced from @nous-research/ui at build time via
 # `npm run sync-assets` (see web/package.json).
 web/public/fonts/

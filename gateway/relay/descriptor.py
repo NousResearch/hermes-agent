@@ -80,6 +80,19 @@ class CapabilityDescriptor:
         raw = json.loads(data)
         known = {f for f in cls.__dataclass_fields__}  # type: ignore[attr-defined]
         filtered = {k: v for k, v in raw.items() if k in known}
+        # Normalize the chunking bound at the trust boundary. A connector may
+        # advertise max_message_length 0 ("no limit"), and a buggy/hostile one
+        # may send 0 or a negative; either is a degenerate value that would flow
+        # straight into the adapter's MAX_MESSAGE_LENGTH and truncate_message().
+        # Map it to the documented 4096 default (docs/relay-connector-contract.md;
+        # mirrors from_platform_entry's `or 4096`) so from_json never yields a
+        # descriptor that can't chunk a real message.
+        if "max_message_length" in filtered:
+            try:
+                if int(filtered["max_message_length"]) <= 0:
+                    filtered["max_message_length"] = 4096
+            except (TypeError, ValueError):
+                filtered["max_message_length"] = 4096
         return cls(**filtered)
 
     @classmethod

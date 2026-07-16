@@ -15,7 +15,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 
 from hermes_constants import (
     get_hermes_home,
@@ -1542,8 +1542,25 @@ def _terminal_task_cwd(session: dict | None) -> str:
     point at nonsense.  Non-local terminal backends are different: their cwd is
     inside the target environment, so an SSH path like /home/user/workspace may
     not exist on the local macOS host but is still the correct execution cwd.
+
+    When ``TERMINAL_ENV`` is unset (dashboard/TUI process) the config's
+    ``terminal.backend`` is consulted as a fallback so the non-local cwd
+    resolution path is taken even when the dashboard entrypoint did not call
+    ``apply_terminal_config_to_env`` on its own ``os.environ``.
     """
     backend = (os.environ.get("TERMINAL_ENV") or "").strip().lower()
+    if not backend or backend == "local":
+        # Fall back to config when TERMINAL_ENV is unset (dashboard/TUI process
+        # never calls apply_terminal_config_to_env on os.environ).
+        try:
+            terminal_cfg = _load_cfg().get("terminal", {})
+            if isinstance(terminal_cfg, dict):
+                cfg_backend = str(terminal_cfg.get("backend") or "").strip().lower()
+                if cfg_backend and cfg_backend != "local":
+                    backend = cfg_backend
+        except Exception:
+            pass
+
     if backend and backend != "local":
         raw = os.environ.get("TERMINAL_CWD", "").strip()
         if not raw:
@@ -4471,45 +4488,63 @@ def _schedule_mcp_late_refresh(sid: str, agent) -> None:
     ).start()
 
 
+class _RuntimeFallbackResolution(NamedTuple):
+    runtime: dict
+    selected_model: str | None
+    used_fallback: bool
+
+
 def _resolve_runtime_with_fallback(
     resolve_kwargs: dict | None = None,
-) -> dict:
-    """Resolve runtime provider with init-time fallback on auth failure.
+) -> _RuntimeFallbackResolution:
+    """Resolve the primary runtime or one complete provider/model fallback.
 
-    Mirrors the fallback pattern in ``cron/scheduler.py`` and
-    ``hermes_cli/cli_agent_setup_mixin.py``: when the primary provider
-    raises ``AuthError``, walk the configured ``fallback_providers`` /
-    ``fallback_model`` chain before giving up.
+    Setup-time auth fallback only accepts entries with both fields. Provider-
+    only entries are skipped so the unavailable primary model can never leak
+    into a different runtime. ``used_fallback`` remains explicit rather than
+    overloading a nullable model as control flow.
     """
     from hermes_cli.auth import AuthError
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     kwargs = resolve_kwargs or {}
     try:
-        return resolve_runtime_provider(**kwargs)
+        return _RuntimeFallbackResolution(
+            resolve_runtime_provider(**kwargs),
+            None,
+            False,
+        )
     except AuthError as primary_exc:
         fb_chain = _load_fallback_model() or []
         for entry in fb_chain:
             if not isinstance(entry, dict):
                 continue
-            fb_provider = (entry.get("provider") or "").strip()
-            if not fb_provider:
+            fb_provider = str(entry.get("provider") or "").strip()
+            fb_model = str(entry.get("model") or "").strip()
+            if not fb_provider or not fb_model:
                 continue
             try:
-                fb_kwargs: dict = {"requested": fb_provider}
+                from hermes_cli.fallback_config import resolve_entry_api_key
+
+                fb_kwargs: dict = {
+                    "requested": fb_provider,
+                    "target_model": fb_model,
+                }
                 if entry.get("base_url"):
                     fb_kwargs["explicit_base_url"] = entry["base_url"]
-                if entry.get("api_key"):
-                    fb_kwargs["explicit_api_key"] = entry["api_key"]
+                fb_api_key = resolve_entry_api_key(entry)
+                if fb_api_key:
+                    fb_kwargs["explicit_api_key"] = fb_api_key
                 runtime = resolve_runtime_provider(**fb_kwargs)
                 import logging
 
                 logging.getLogger(__name__).warning(
-                    "Primary auth failed (%s), falling back to %s",
+                    "Primary auth failed (%s), falling back to %s model %s",
                     primary_exc,
                     fb_provider,
+                    fb_model,
                 )
-                return runtime
+                return _RuntimeFallbackResolution(runtime, fb_model, True)
             except Exception:
                 continue
         raise
@@ -4610,26 +4645,37 @@ def _make_agent(
                 resolve_kwargs["explicit_base_url"] = override_base_url
         resolve_kwargs["requested"] = requested_provider
         resolve_kwargs["target_model"] = model or None
-        runtime = _resolve_runtime_with_fallback(resolve_kwargs)
-        # The switch already resolved concrete credentials/endpoint; honor them
-        # so a custom/named endpoint survives the rebuild even if global
-        # resolution would pick a different one.
-        if override_base_url:
-            runtime["base_url"] = override_base_url
-        if override_api_key:
-            runtime["api_key"] = override_api_key
-        if override_api_mode:
-            runtime["api_mode"] = override_api_mode
+        resolution = _resolve_runtime_with_fallback(resolve_kwargs)
+        runtime = resolution.runtime
+        if resolution.used_fallback:
+            if not resolution.selected_model:
+                raise RuntimeError("Auth fallback resolved without a model")
+            model = resolution.selected_model
+        else:
+            # The switch already resolved concrete credentials/endpoint; honor
+            # persisted overrides only while using that original runtime. They
+            # must not leak into a different fallback provider/model pair.
+            if override_base_url:
+                runtime["base_url"] = override_base_url
+            if override_api_key:
+                runtime["api_key"] = override_api_key
+            if override_api_mode:
+                runtime["api_mode"] = override_api_mode
     else:
         model, requested_provider = _resolve_startup_runtime()
         if isinstance(model_override, str) and model_override:
             model = model_override
         if provider_override:
             requested_provider = provider_override
-        runtime = _resolve_runtime_with_fallback({
+        resolution = _resolve_runtime_with_fallback({
             "requested": requested_provider,
             "target_model": model or None,
         })
+        runtime = resolution.runtime
+        if resolution.used_fallback:
+            if not resolution.selected_model:
+                raise RuntimeError("Auth fallback resolved without a model")
+            model = resolution.selected_model
     _pr = _load_provider_routing()
     return AIAgent(
         model=model,
@@ -7976,14 +8022,18 @@ def _(rid, params: dict) -> dict:
             agent = session["agent"]
             _sync_session_key_after_compress(sid, session)
             summary = summarize_manual_compression(
-                before_messages, messages, before_tokens, after_tokens
+                before_messages,
+                messages,
+                before_tokens,
+                after_tokens,
+                compression_state=getattr(agent, "context_compressor", None),
             )
             info = _session_info(agent, session)
             _emit("session.info", sid, info)
             return _ok(
                 rid,
                 {
-                    "status": "compressed",
+                    "status": "aborted" if summary["aborted"] else "compressed",
                     "removed": removed,
                     "before_messages": before_count,
                     "after_messages": after_count,
@@ -8652,9 +8702,9 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     minus its orphan-adoption fallback. An event owns-matches when its
     ``origin_ui_session_id`` is this live session, or its ``session_key``
     (raw or resolved through the compression chain) matches this session's
-    key/lineage. Used as a fail-closed gate for async-delegation payloads:
-    "not provably elsewhere" is NOT good enough to inject a conversation
-    payload into this chat (#55578).
+    key/lineage. Used as the fail-closed gate for every addressed notification:
+    "not provably elsewhere" is NOT good enough to inject a payload into this
+    chat (#55578).
     """
     if session.get("_finalized"):
         return False
@@ -8677,6 +8727,14 @@ def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool
     except Exception:
         resolved_key = evt_key
     return resolved_key in current_keys
+
+
+def _notification_event_requires_owner(evt: dict) -> bool:
+    """Whether ``evt`` must be positively claimed before TUI delivery."""
+    return evt.get("type") == "async_delegation" or bool(
+        str(evt.get("origin_ui_session_id") or "")
+        or str(evt.get("session_key") or "")
+    )
 
 
 def _notification_event_dedup_key(evt: dict) -> tuple:
@@ -8725,10 +8783,9 @@ def _notification_poller_loop(
     status.update (kind=process) for user visibility, then chains an
     agent turn via _run_prompt_submit if the session is idle.
 
-    NOTE: The completion_queue is global (one per process). If multiple
-    TUI sessions coexist, whichever poller wakes first grabs the event,
-    even if the process was started by a different session. This matches
-    CLI/gateway behavior (single session per process).
+    The completion_queue is process-global. In multi-session Desktop each
+    poller requeues events owned by another live session and drops addressed
+    events whose owner is gone; ownerless legacy notifications remain global.
     """
     from tools.process_registry import process_registry, format_process_notification
 
@@ -8749,26 +8806,22 @@ def _notification_poller_loop(
             time.sleep(0.1)
             continue
 
-        # Fail closed for async-delegation results (#55578): these carry a
-        # conversation payload, and injecting one into any chat other than the
-        # one that commissioned it is a hard cross-session leak. The
-        # belongs-elsewhere check above already re-queued events owned by
-        # another LIVE session; what reaches here is either ours or an
-        # orphan whose owner is gone. Orphaned delegation payloads are
-        # DROPPED, not adopted — the subagent's summary is already persisted
-        # in the delegation records/output store, so nothing is lost, whereas
-        # a wrong-chat injection is unrecoverable. Non-delegation events
-        # (background process completions etc.) keep the historical
-        # adopt-orphans behavior.
-        if evt.get("type") == "async_delegation" and not _session_owns_notification_event(
-            sid, session, evt
-        ):
-            logger.warning(
-                "async-delegation completion %s has no live owner "
-                "(origin=%r key=%r); dropping from injection instead of "
-                "delivering to session %s (#55578 fail-closed; result "
-                "remains in the delegation records)",
-                evt.get("delegation_id", "?"),
+        # What reaches here is not owned by another LIVE session. Addressed
+        # events still require positive proof before injection: exact UI origin,
+        # direct durable key, or compression lineage. If none proves ownership,
+        # the event is orphaned and must not be adopted by this chat. Truly
+        # ownerless ordinary notifications retain legacy global delivery.
+        requires_owner = _notification_event_requires_owner(evt)
+        if requires_owner and not _session_owns_notification_event(sid, session, evt):
+            log = (
+                logger.warning
+                if evt.get("type") == "async_delegation"
+                else logger.debug
+            )
+            log(
+                "Dropping unowned %s notification (origin=%r key=%r) instead "
+                "of delivering to session %s",
+                evt.get("type", "completion"),
                 str(evt.get("origin_ui_session_id") or ""),
                 str(evt.get("session_key") or ""),
                 sid,
@@ -8830,6 +8883,7 @@ def _notification_poller_loop(
     # Drain any remaining events after stop signal (process all pending
     # before exiting so nothing is lost on shutdown). Events owned by other
     # live sessions are set aside and re-queued so their poller still sees them.
+    # Orphaned events (owner gone) are dropped — same guard as the main loop.
     deferred: list = []
     while not process_registry.completion_queue.empty():
         try:
@@ -8839,14 +8893,21 @@ def _notification_poller_loop(
         if _notification_event_belongs_elsewhere(sid, session, evt):
             deferred.append(evt)
             continue
-        # Same fail-closed rule as the live loop: an orphaned async-delegation
-        # payload is never adopted by a foreign session — defer it (a later
-        # resume of the owner's lineage can still claim it) rather than
-        # injecting another chat's conversation here (#55578).
-        if evt.get("type") == "async_delegation" and not _session_owns_notification_event(
-            sid, session, evt
-        ):
-            deferred.append(evt)
+        # Same positive-proof rule as the live loop. Preserve the existing
+        # shutdown behavior for orphaned delegation payloads by deferring them
+        # for a later resume; ordinary addressed orphans are dropped.
+        requires_owner = _notification_event_requires_owner(evt)
+        if requires_owner and not _session_owns_notification_event(sid, session, evt):
+            if evt.get("type") == "async_delegation":
+                deferred.append(evt)
+            else:
+                logger.debug(
+                    "Dropping unowned %s notification during shutdown drain "
+                    "(origin=%r key=%r)",
+                    evt.get("type", "completion"),
+                    str(evt.get("origin_ui_session_id") or ""),
+                    str(evt.get("session_key") or ""),
+                )
             continue
         _evt_sid = evt.get("session_id", "")
         if evt.get("type") == "completion" and process_registry.is_completion_consumed(_evt_sid):
@@ -9411,21 +9472,29 @@ def _run_prompt_submit(rid, sid: str, session: dict, text: Any) -> None:
         # Drain completion notifications that arrived during this turn.
         # The background poller handles between-turn delivery; this is
         # the safety net for events that arrived mid-turn.
+        #
+        # Ownership filter (#42674, #35652): a turn finishing in session B
+        # must not consume an event that belongs to session A. The registry
+        # requeues every addressed event this session cannot positively claim;
+        # the poller then delivers it to a live owner or drops an orphan.
         try:
             from tools.process_registry import process_registry
 
             # Positive-proof ownership (compression-chain aware) — the same
             # fail-closed gate the poller uses, so the post-turn drain can't
-            # adopt another session's (or an orphan's) delegation payload,
-            # while a post-compression session still claims its own
-            # pre-compression dispatches (#55578).
-            for _evt, synth in process_registry.drain_notifications(
+            # adopt another session's addressed notification while a
+            # post-compression session still claims its own pre-compression
+            # dispatches (#55578).
+            drained = process_registry.drain_notifications(
                 session_key=session.get("session_key", ""),
                 owns_event=lambda e: _session_owns_notification_event(sid, session, e),
-            ):
+                skip_poll_observed=False,
+            )
+            for index, (_evt, synth) in enumerate(drained):
                 with session["history_lock"]:
                     if session.get("running"):
-                        process_registry.completion_queue.put(_evt)
+                        for pending_evt, _pending_synth in drained[index:]:
+                            process_registry.completion_queue.put(pending_evt)
                         break
                     session["running"] = True
                 from tools.async_delegation import (
@@ -12423,7 +12492,11 @@ def _(rid, params: dict) -> dict:
             )
             _sync_session_key_after_compress(sid, session)
             summary = summarize_manual_compression(
-                before_messages, after_messages, before_tokens, after_tokens
+                before_messages,
+                after_messages,
+                before_tokens,
+                after_tokens,
+                compression_state=getattr(_agent, "context_compressor", None),
             )
             _emit("session.info", sid, _session_info(session.get("agent"), session))
             return _ok(
@@ -13196,7 +13269,11 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             )
             _emit("session.info", sid, _session_info(agent, session))
             _fb = summarize_manual_compression(
-                _before_messages, _after_messages, _before_tokens, _after_tokens
+                _before_messages,
+                _after_messages,
+                _before_tokens,
+                _after_tokens,
+                compression_state=getattr(agent, "context_compressor", None),
             )
             _lines = [_fb["headline"], _fb["token_line"]]
             if _fb.get("note"):

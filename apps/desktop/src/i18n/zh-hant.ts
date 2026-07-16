@@ -184,7 +184,26 @@ export const zhHant = defineLocale({
     muteHaptics: '靜音觸感回饋',
     unmuteHaptics: '開啟觸感回饋',
     openSettings: '開啟設定',
-    openStarmap: '開啟記憶圖譜'
+    openStarmap: '開啟記憶圖譜',
+    openKeybinds: '鍵盤快捷鍵',
+    layoutEditor: '版面編輯器',
+    layoutEditorTitle: '版面編輯器 — ⌘ 點擊重設版面',
+    gatewayModeMenuTitle: '閘道連線',
+    gatewayModeLocal: '本機',
+    gatewayModeLocalHint: '本機私有後端',
+    gatewayModeRemote: '遠端',
+    gatewayModeRemoteHint: '已儲存的遠端 Hermes 後端',
+    gatewayModeCloud: '雲端',
+    gatewayModeCloudHint: 'Hermes Cloud 智能體',
+    gatewayModeOpenSettings: '閘道設定…',
+    gatewaySwitchLocalMessage: '正在重新連線本機 Hermes 閘道…',
+    gatewaySwitchRemoteMessage: '正在重新連線遠端 Hermes 閘道…',
+    gatewaySwitchCloudMessage: '正在重新連線 Hermes Cloud…',
+    gatewaySwitchNeedsSetupTitle: '遠端閘道尚未就緒',
+    gatewaySwitchNeedsSetupMessage: '請先在 設定 → 閘道 中完成設定並登入。',
+    gatewaySwitchNeedsCloudTitle: '雲端閘道尚未就緒',
+    gatewaySwitchNeedsCloudMessage: '請先在 設定 → 閘道 中登入並選擇智能體。',
+    gatewaySwitchFailed: '無法切換閘道'
   },
 
   language: {

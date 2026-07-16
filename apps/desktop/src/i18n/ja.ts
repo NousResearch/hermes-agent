@@ -190,7 +190,26 @@ export const ja = defineLocale({
     muteHaptics: '触覚フィードバックをオフ',
     unmuteHaptics: '触覚フィードバックをオン',
     openSettings: '設定を開く',
-    openStarmap: 'メモリグラフを開く'
+    openStarmap: 'メモリグラフを開く',
+    openKeybinds: 'キーボードショートカット',
+    layoutEditor: 'レイアウト編集',
+    layoutEditorTitle: 'レイアウト編集 — ⌘クリックでリセット',
+    gatewayModeMenuTitle: 'ゲートウェイ接続',
+    gatewayModeLocal: 'ローカル',
+    gatewayModeLocalHint: 'このマシンのプライベートバックエンド',
+    gatewayModeRemote: 'リモート',
+    gatewayModeRemoteHint: '保存済みのリモート Hermes バックエンド',
+    gatewayModeCloud: 'クラウド',
+    gatewayModeCloudHint: 'Hermes Cloud エージェント',
+    gatewayModeOpenSettings: 'ゲートウェイ設定…',
+    gatewaySwitchLocalMessage: 'ローカル Hermes ゲートウェイに再接続中…',
+    gatewaySwitchRemoteMessage: 'リモート Hermes ゲートウェイに再接続中…',
+    gatewaySwitchCloudMessage: 'Hermes Cloud に再接続中…',
+    gatewaySwitchNeedsSetupTitle: 'リモートゲートウェイ未設定',
+    gatewaySwitchNeedsSetupMessage: '先に 設定 → ゲートウェイ で構成してサインインしてください。',
+    gatewaySwitchNeedsCloudTitle: 'クラウドゲートウェイ未設定',
+    gatewaySwitchNeedsCloudMessage: '先に 設定 → ゲートウェイ でサインインし、エージェントを選んでください。',
+    gatewaySwitchFailed: 'ゲートウェイを切り替えられませんでした'
   },
 
   language: {

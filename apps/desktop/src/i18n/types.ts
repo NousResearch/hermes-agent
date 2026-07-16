@@ -234,6 +234,22 @@ export interface Translations {
     openKeybinds: string
     layoutEditor: string
     layoutEditorTitle: string
+    gatewayModeMenuTitle: string
+    gatewayModeLocal: string
+    gatewayModeLocalHint: string
+    gatewayModeRemote: string
+    gatewayModeRemoteHint: string
+    gatewayModeCloud: string
+    gatewayModeCloudHint: string
+    gatewayModeOpenSettings: string
+    gatewaySwitchLocalMessage: string
+    gatewaySwitchRemoteMessage: string
+    gatewaySwitchCloudMessage: string
+    gatewaySwitchNeedsSetupTitle: string
+    gatewaySwitchNeedsSetupMessage: string
+    gatewaySwitchNeedsCloudTitle: string
+    gatewaySwitchNeedsCloudMessage: string
+    gatewaySwitchFailed: string
   }
 
   keybinds: {

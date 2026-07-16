@@ -1,6 +1,8 @@
+import { useStore } from '@nanostores/react'
 import { type MutableRefObject, useEffect, useRef } from 'react'
 
 import { isNewChatRoute } from '@/app/routes'
+import { $gatewaySwitching } from '@/store/gateway-switch'
 import { setResumeExhaustedSessionId } from '@/store/session'
 
 interface RouteResumeOptions {
@@ -82,6 +84,7 @@ export function useRouteResume({
   selectedStoredSessionIdRef,
   startFreshSessionDraft
 }: RouteResumeOptions) {
+  const gatewaySwitching = useStore($gatewaySwitching)
   const lastPathnameRef = useRef<string | null>(null)
   const seenGatewayStateRef = useRef(false)
   const wasGatewayOpenRef = useRef(false)
@@ -108,7 +111,10 @@ export function useRouteResume({
     seenGatewayStateRef.current = true
     wasGatewayOpenRef.current = gatewayOpen
 
-    if (currentView !== 'chat' || !gatewayOpen) {
+    // Soft gateway-mode switch re-homes the backend. Session ids in the URL /
+    // cache belong to the previous host and 404 if we resume them here — wipe
+    // + requestFreshSession own the chat reset; skip until the switch settles.
+    if (currentView !== 'chat' || !gatewayOpen || gatewaySwitching) {
       return
     }
 
@@ -140,7 +146,13 @@ export function useRouteResume({
       // we're stranded on a routed session that never loaded. The first two
       // guard against a transient /:sid re-resume during "new chat" state clears
       // before the pathname updates from /:sid -> /.
-      const shouldResume = pathnameChanged || gatewayBecameOpen || stuckOnRoutedSession
+      //
+      // Gateway reconnect (gatewayBecameOpen) must NOT re-open a previous-host
+      // session while a blank draft is armed (gateway switch / new chat) — even
+      // if the hash still reads /:sid for one more frame. Pathname changes still
+      // resume so clicking a session from a fresh draft works.
+      const shouldResume =
+        pathnameChanged || stuckOnRoutedSession || (gatewayBecameOpen && !freshDraftReady)
 
       // On a reconnect (gatewayBecameOpen) re-resume even when the route looks
       // `alreadyActive`: the cached runtime id can be stale once the gateway
@@ -168,6 +180,7 @@ export function useRouteResume({
     currentView,
     freshDraftReady,
     gatewayState,
+    gatewaySwitching,
     locationPathname,
     resumeSession,
     routedSessionId,
@@ -206,7 +219,7 @@ export function useRouteResume({
       retryAttemptRef.current = 0
     }
 
-    if (currentView !== 'chat' || gatewayState !== 'open') {
+    if (currentView !== 'chat' || gatewayState !== 'open' || gatewaySwitching) {
       return
     }
 
@@ -276,6 +289,7 @@ export function useRouteResume({
     creatingSessionRef,
     currentView,
     gatewayState,
+    gatewaySwitching,
     resumeSession,
     resumeFailedSessionId,
     resumeExhaustedSessionId,

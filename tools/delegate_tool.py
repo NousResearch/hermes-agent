@@ -1330,6 +1330,10 @@ def _build_child_agent(
         reasoning_config=child_reasoning,
         prefill_messages=getattr(parent_agent, "prefill_messages", None),
         fallback_model=parent_fallback,
+        fallback_auto_activate=bool(
+            getattr(parent_agent, "_fallback_auto_activate", True)
+        ),
+        fallback_selection_interactive=False,
         enabled_toolsets=child_toolsets,
         quiet_mode=True,
         ephemeral_system_prompt=child_prompt,

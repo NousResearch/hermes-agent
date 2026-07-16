@@ -3116,6 +3116,7 @@ class TestFallbackModelInheritance(unittest.TestCase):
         parent = _make_mock_parent(depth=0)
         fallback_entry = {"provider": "openrouter", "model": "gpt-4o-mini", "api_key": "sk-or-x"}
         parent._fallback_chain = [fallback_entry]
+        parent._fallback_auto_activate = False
 
         with patch("run_agent.AIAgent") as MockAgent:
             MockAgent.return_value = MagicMock()
@@ -3132,6 +3133,8 @@ class TestFallbackModelInheritance(unittest.TestCase):
 
         _, kwargs = MockAgent.call_args
         self.assertEqual(kwargs["fallback_model"], [fallback_entry])
+        self.assertFalse(kwargs["fallback_auto_activate"])
+        self.assertFalse(kwargs["fallback_selection_interactive"])
 
     def test_child_gets_no_fallback_when_parent_chain_empty(self):
         """When parent._fallback_chain is empty, fallback_model is None."""

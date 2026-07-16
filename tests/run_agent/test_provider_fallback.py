@@ -5,12 +5,22 @@ the new list-based ``fallback_providers`` config format and chain
 advancement through multiple providers.
 """
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit
 
 
-def _make_agent(fallback_model=None):
+def _make_agent(
+    fallback_model=None,
+    *,
+    fallback_auto_activate=True,
+    fallback_selection_interactive=False,
+    clarify_callback=None,
+    **agent_kwargs,
+):
     """Create a minimal AIAgent with optional fallback config."""
     with (
         patch("run_agent.get_tool_definitions", return_value=[]),
@@ -24,6 +34,10 @@ def _make_agent(fallback_model=None):
             skip_context_files=True,
             skip_memory=True,
             fallback_model=fallback_model,
+            fallback_auto_activate=fallback_auto_activate,
+            fallback_selection_interactive=fallback_selection_interactive,
+            clarify_callback=clarify_callback,
+            **agent_kwargs,
         )
         agent.client = MagicMock()
         return agent
@@ -333,4 +347,362 @@ class TestFallbackChainDedup:
             ok = agent._try_activate_fallback()
 
         assert ok is False
+        mock_resolve.assert_not_called()
+
+
+class TestManualFallbackSelection:
+    def test_manual_mode_with_empty_effective_chain_does_not_prompt(self):
+        clarify = MagicMock(return_value="should not be used")
+        fbs = [{"provider": "openrouter", "model": "z-ai/glm-4.7"}]
+        agent = _make_agent(
+            fallback_model=fbs,
+            fallback_auto_activate=False,
+            fallback_selection_interactive=True,
+            clarify_callback=clarify,
+        )
+        agent.provider = "openrouter"
+        agent.model = "z-ai/glm-4.7"
+        agent.base_url = "https://openrouter.ai/api/v1"
+
+        with patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+            ok = agent._try_activate_fallback()
+
+        assert ok is False
+        clarify.assert_not_called()
+        mock_resolve.assert_not_called()
+
+    def test_manual_mode_uses_only_selected_route(self):
+        fbs = [
+            {
+                "provider": "anthropic",
+                "model": "claude-sonnet-4-6",
+                "base_url": "https://api.anthropic.com",
+            },
+            {
+                "provider": "openrouter",
+                "model": "anthropic/claude-opus-4.1",
+                "base_url": "https://openrouter.ai/api/v1",
+            },
+        ]
+        selected_label = (
+            "Continue with anthropic/claude-opus-4.1 via openrouter "
+            "(https://openrouter.ai)"
+        )
+        clarify = MagicMock(return_value="2")
+        agent = _make_agent(
+            fallback_model=fbs,
+            fallback_auto_activate=False,
+            fallback_selection_interactive=True,
+            clarify_callback=clarify,
+        )
+
+        called = []
+
+        def _resolve(provider, model=None, raw_codex=False, **kwargs):
+            called.append((provider, model, kwargs.get("explicit_base_url")))
+            return _mock_client(base_url=kwargs.get("explicit_base_url") or ""), model
+
+        with patch("agent.auxiliary_client.resolve_provider_client", side_effect=_resolve):
+            with patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ):
+                ok = agent._try_activate_fallback()
+
+        assert ok is True
+        clarify.assert_called_once_with(
+            "Primary model failed. Select a fallback route for this turn:",
+            [
+                "Continue with claude-sonnet-4-6 via anthropic (https://api.anthropic.com)",
+                selected_label,
+            ],
+        )
+        assert called == [
+            ("openrouter", "anthropic/claude-opus-4.1", "https://openrouter.ai/api/v1")
+        ]
+        assert agent.provider == "openrouter"
+        assert agent.model == "anthropic/claude-opus-4.1"
+
+    @pytest.mark.parametrize(
+        "response",
+        [
+            "",
+            "[user did not respond within 2m]",
+            "[clarify prompt could not be delivered]",
+            "not a valid choice",
+            "0",
+            "2",
+        ],
+    )
+    def test_manual_mode_unmatched_response_fails_closed(self, response):
+        agent = _make_agent(
+            fallback_model=[{"provider": "openai", "model": "gpt-4o"}],
+            fallback_auto_activate=False,
+            fallback_selection_interactive=True,
+            clarify_callback=MagicMock(return_value=response),
+        )
+
+        with patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+            ok = agent._try_activate_fallback()
+
+        assert ok is False
+        mock_resolve.assert_not_called()
+
+    def test_manual_selection_state_resets_for_next_turn(self):
+        agent = _make_agent(
+            fallback_model=[{"provider": "openai", "model": "gpt-4o"}],
+            fallback_auto_activate=False,
+            fallback_selection_interactive=True,
+            clarify_callback=MagicMock(),
+        )
+        agent._fallback_manual_attempted = True
+        agent._fallback_manual_selected_index = 0
+
+        agent._reset_turn_scoped_fallback_state()
+
+        assert agent._fallback_manual_attempted is False
+        assert agent._fallback_manual_selected_index is None
+
+    def test_two_turn_rate_limit_restores_primary_and_prompts_again(self):
+        """Manual consent is one turn and run_conversation re-arms it next turn."""
+
+        class RateLimitError(Exception):
+            status_code = 429
+
+            def __init__(self):
+                super().__init__("Error code: 429 - rate limit exceeded")
+                self.response = SimpleNamespace(headers={})
+                self.body = {"error": {"message": "rate limit exceeded"}}
+
+        def response(text):
+            message = SimpleNamespace(content=text, tool_calls=None)
+            choice = SimpleNamespace(message=message, finish_reason="stop")
+            return SimpleNamespace(
+                choices=[choice], model="fallback/model", usage=None
+            )
+
+        clarify = MagicMock(side_effect=["1", "1"])
+        agent = _make_agent(
+            fallback_model=[{"provider": "openai", "model": "gpt-4o"}],
+            fallback_auto_activate=False,
+            fallback_selection_interactive=True,
+            clarify_callback=clarify,
+            provider="custom",
+            model="primary-model",
+        )
+        agent._api_max_retries = 1
+        calls = []
+
+        def api_call(_kwargs):
+            calls.append((agent.provider, agent.model))
+            if len(calls) in {1, 3}:
+                raise RateLimitError()
+            return response(f"fallback turn {len(calls) // 2}")
+
+        fallback_client = _mock_client()
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=api_call),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch("run_agent.OpenAI", return_value=MagicMock()),
+            patch("agent.agent_runtime_helpers.time.sleep"),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(fallback_client, "gpt-4o"),
+            ),
+            patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda model, provider: model,
+            ),
+            patch(
+                "agent.model_metadata.get_model_context_length",
+                return_value=200000,
+            ),
+        ):
+            first = agent.run_conversation("turn one")
+            second = agent.run_conversation(
+                "turn two", conversation_history=first["messages"]
+            )
+
+        assert first["completed"] is True
+        assert second["completed"] is True
+        assert calls == [
+            ("custom", "primary-model"),
+            ("openai", "gpt-4o"),
+            ("custom", "primary-model"),
+            ("openai", "gpt-4o"),
+        ]
+        assert clarify.call_count == 2
+
+    def test_manual_mode_supports_callback_attached_after_init(self):
+        label = "Continue with gpt-4o via openai"
+        agent = _make_agent(
+            fallback_model=[{"provider": "openai", "model": "gpt-4o"}],
+            fallback_auto_activate=False,
+            fallback_selection_interactive=None,
+            clarify_callback=None,
+        )
+        agent.clarify_callback = MagicMock(return_value=label)
+
+        assert agent._has_pending_fallback() is True
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            with patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ):
+                assert agent._try_activate_fallback() is True
+
+    def test_manual_mode_noninteractive_fails_closed_even_with_callback(self):
+        clarify = MagicMock(
+            return_value="Continue with gpt-4o via openai"
+        )
+        agent = _make_agent(
+            fallback_model=[{"provider": "openai", "model": "gpt-4o"}],
+            fallback_auto_activate=False,
+            fallback_selection_interactive=False,
+            clarify_callback=clarify,
+        )
+
+        with patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+            ok = agent._try_activate_fallback()
+
+        assert ok is False
+        clarify.assert_not_called()
+        mock_resolve.assert_not_called()
+
+    def test_manual_mode_selected_route_failure_does_not_cascade(self):
+        fbs = [
+            {"provider": "broken", "model": "bad-route"},
+            {"provider": "openai", "model": "gpt-4o"},
+        ]
+        clarify = MagicMock(return_value="Continue with bad-route via broken")
+        agent = _make_agent(
+            fallback_model=fbs,
+            fallback_auto_activate=False,
+            fallback_selection_interactive=True,
+            clarify_callback=clarify,
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(None, None),
+        ) as mock_resolve:
+            ok = agent._try_activate_fallback()
+
+        assert ok is False
+        mock_resolve.assert_called_once()
+
+    def test_manual_mode_never_cascades_after_selected_route_activation(self):
+        label = "Continue with gpt-4o via openai"
+        clarify = MagicMock(return_value=label)
+        agent = _make_agent(
+            fallback_model=[
+                {"provider": "openai", "model": "gpt-4o"},
+                {"provider": "zai", "model": "glm-4.7"},
+            ],
+            fallback_auto_activate=False,
+            fallback_selection_interactive=True,
+            clarify_callback=clarify,
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ) as mock_resolve:
+            with patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ):
+                assert agent._try_activate_fallback() is True
+                assert agent._try_activate_fallback() is False
+
+        clarify.assert_called_once()
+        mock_resolve.assert_called_once()
+
+    def test_manual_mode_redacts_base_url_credentials_from_choices(self):
+        safe_label = (
+            "Continue with gpt-4o via custom (https://api.example)"
+        )
+        clarify = MagicMock(return_value=safe_label)
+        agent = _make_agent(
+            fallback_model=[
+                {
+                    "provider": "custom",
+                    "model": "gpt-4o",
+                    "base_url": "https://user:password@api.example/token-secret/v1?api_key=secret",
+                }
+            ],
+            fallback_auto_activate=False,
+            fallback_selection_interactive=True,
+            clarify_callback=clarify,
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            with patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ):
+                assert agent._try_activate_fallback() is True
+
+        choices = clarify.call_args.args[1]
+        assert choices == [safe_label]
+        assert "password" not in choices[0]
+        assert "secret" not in choices[0]
+
+    def test_manual_mode_renders_ipv6_origin_safely(self):
+        safe_label = (
+            "Continue with gpt-4o via custom (https://[2001:db8::1]:8443)"
+        )
+        clarify = MagicMock(return_value=safe_label)
+        agent = _make_agent(
+            fallback_model=[
+                {
+                    "provider": "custom",
+                    "model": "gpt-4o",
+                    "base_url": (
+                        "https://user:password@[2001:db8::1]:8443/secret/v1"
+                    ),
+                }
+            ],
+            fallback_auto_activate=False,
+            fallback_selection_interactive=True,
+            clarify_callback=clarify,
+        )
+
+        with patch(
+            "agent.auxiliary_client.resolve_provider_client",
+            return_value=(_mock_client(), "gpt-4o"),
+        ):
+            with patch(
+                "hermes_cli.model_normalize.normalize_model_for_provider",
+                side_effect=lambda m, p: m,
+            ):
+                assert agent._try_activate_fallback() is True
+
+        assert clarify.call_args.args[1] == [safe_label]
+
+    def test_manual_mode_fails_closed_when_choice_limit_exceeded(self):
+        clarify = MagicMock(return_value="should not be used")
+        agent = _make_agent(
+            fallback_model=[
+                {"provider": f"provider-{idx}", "model": f"model-{idx}"}
+                for idx in range(5)
+            ],
+            fallback_auto_activate=False,
+            fallback_selection_interactive=True,
+            clarify_callback=clarify,
+        )
+
+        with patch("agent.auxiliary_client.resolve_provider_client") as mock_resolve:
+            ok = agent._try_activate_fallback()
+
+        assert ok is False
+        clarify.assert_not_called()
         mock_resolve.assert_not_called()

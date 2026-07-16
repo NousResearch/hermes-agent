@@ -57,7 +57,7 @@ from agent.async_utils import safe_schedule_threadsafe
 from agent.conversation_loop import INTERRUPT_WAITING_FOR_MODEL_PREFIX
 from agent.i18n import t
 from hermes_cli.config import cfg_get
-from hermes_cli.fallback_config import get_fallback_chain
+from hermes_cli.fallback_config import get_fallback_auto_activate, get_fallback_chain
 
 # --- Agent cache tuning ---------------------------------------------------
 # Bounds the per-session AIAgent cache to prevent unbounded growth in
@@ -2036,6 +2036,8 @@ def _try_resolve_fallback_provider() -> dict | None:
             return None
         with open(cfg_path, encoding="utf-8") as _f:
             cfg = _y.safe_load(_f) or {}
+        if not get_fallback_auto_activate(cfg):
+            return None
         fb_list = get_fallback_chain(cfg)
         if not fb_list:
             return None
@@ -2949,6 +2951,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self._restart_drain_timeout = self._load_restart_drain_timeout()
         self._provider_routing = self._load_provider_routing()
         self._fallback_model = self._load_fallback_model()
+        self._fallback_auto_activate = self._load_fallback_auto_activate()
 
         # Wire process registry into session store for reset protection.
         # A background process older than the configured threshold (default 24h,
@@ -5169,6 +5172,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             pass
         return None
 
+    @staticmethod
+    def _load_fallback_auto_activate() -> bool:
+        """Load the fallback activation policy, preserving legacy automatic mode."""
+        try:
+            import yaml as _y
+
+            cfg_path = _hermes_home / "config.yaml"
+            if cfg_path.exists():
+                with open(cfg_path, encoding="utf-8") as _f:
+                    return get_fallback_auto_activate(_y.safe_load(_f) or {})
+        except Exception:
+            pass
+        return True
+
     def _refresh_fallback_model(self) -> list | None:
         """Re-read fallback_providers from disk for the next agent create/reuse.
 
@@ -5188,6 +5205,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             cfg_path = _hermes_home / "config.yaml"
             if not cfg_path.exists():
                 self._fallback_model = None
+                self._fallback_auto_activate = True
                 return self._fallback_model
             with open(cfg_path, encoding="utf-8") as _f:
                 cfg = _y.safe_load(_f) or {}
@@ -5199,25 +5217,30 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return self._fallback_model
         self._fallback_model = get_fallback_chain(cfg) or None
+        self._fallback_auto_activate = get_fallback_auto_activate(cfg)
         return self._fallback_model
 
     @staticmethod
-    def _apply_fallback_chain_to_agent(agent: Any, chain: list | None) -> None:
+    def _apply_fallback_chain_to_agent(
+        agent: Any, chain: list | None, auto_activate: bool = True
+    ) -> None:
         """Keep a cached agent's fallback chain aligned with current config.
 
-        Skips rewrite while a cooldown is holding the agent on an already-
-        activated fallback provider — ``restore_primary_runtime`` owns that
-        turn-scoped lifecycle. When primary is active (or cooldown expired),
-        replace the chain so mid-uptime ``fallback_providers`` edits take
-        effect without requiring a gateway restart (#60955).
+        Automatic fallback keeps its current chain while a cooldown is holding
+        the agent on an activated route. Manual selection is strictly one-turn,
+        so config edits still replace its future choices while the selected
+        runtime remains active until ``restore_primary_runtime`` runs.
         """
         if agent is None:
             return
         new_chain = list(chain or [])
+        agent._fallback_auto_activate = bool(auto_activate)
         rate_limited_until = getattr(agent, "_rate_limited_until", 0) or 0
         if (
-            getattr(agent, "_fallback_activated", False)
+            bool(auto_activate)
+            and getattr(agent, "_fallback_activated", False)
             and rate_limited_until > time.monotonic()
+            and getattr(agent, "_fallback_manual_selected_index", None) is None
         ):
             return
         old_chain = list(getattr(agent, "_fallback_chain", []) or [])
@@ -13776,6 +13799,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
+                    fallback_auto_activate=self._fallback_auto_activate,
+                    fallback_selection_interactive=False,
                 )
                 try:
                     return agent.run_conversation(
@@ -18896,6 +18921,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if reused_cached_agent and agent is not None:
                 self._apply_fallback_chain_to_agent(
                     agent, self._refresh_fallback_model(),
+                    self._fallback_auto_activate,
                 )
 
             # Lock released — now schedule cleanup of any cross-process-evicted
@@ -18952,6 +18978,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot (#60955).
                     fallback_model=self._refresh_fallback_model(),
+                    fallback_auto_activate=self._fallback_auto_activate,
+                    fallback_selection_interactive=True,
                 )
                 if _cache_lock and _cache is not None:
                     with _cache_lock:

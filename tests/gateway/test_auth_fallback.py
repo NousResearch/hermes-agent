@@ -71,6 +71,32 @@ class TestResolveRuntimeAgentKwargsAuthFallback:
             with pytest.raises(RuntimeError):
                 _resolve_runtime_agent_kwargs()
 
+    def test_auth_error_manual_mode_does_not_auto_resolve_fallback(
+        self, tmp_path, monkeypatch
+    ):
+        """Before an agent exists there is no interactive surface, so fail closed."""
+        from hermes_cli.auth import AuthError
+
+        (tmp_path / "config.yaml").write_text(
+            "model:\n  provider: openai-codex\n"
+            "fallback:\n  auto_activate: false\n"
+            "fallback_providers:\n"
+            "  - provider: openrouter\n"
+            "    model: meta-llama/llama-4-maverick\n"
+        )
+        monkeypatch.setattr("gateway.run._hermes_home", tmp_path)
+
+        with patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            side_effect=AuthError("token expired"),
+        ) as resolve:
+            from gateway.run import _resolve_runtime_agent_kwargs
+
+            with pytest.raises(RuntimeError):
+                _resolve_runtime_agent_kwargs()
+
+        resolve.assert_called_once()
+
     def test_legacy_fallback_is_appended_after_fallback_providers(self, tmp_path, monkeypatch):
         """When both keys exist, the legacy entry still participates in resolution."""
         config_path = tmp_path / "config.yaml"

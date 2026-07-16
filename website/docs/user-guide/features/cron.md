@@ -512,12 +512,13 @@ Outputs are concatenated in the order listed.
 
 ## Provider recovery
 
-Cron jobs inherit your configured fallback providers and credential pool rotation. If the primary API key is rate-limited or the provider returns an error, the cron agent can:
+Cron jobs inherit your configured fallback providers and credential pool rotation. Cron is noninteractive, so provider fallback activates only when `fallback.auto_activate: true` (or when an existing config omits the key and keeps the historical automatic behavior). With manual mode enabled, cron fails closed instead of choosing a paid route without consent.
 
-- **Fall back to an alternate provider** if you have `fallback_providers` (or the legacy `fallback_model`) configured in `config.yaml`
-- **Rotate to the next credential** in your [credential pool](/user-guide/configuration#credential-pool-strategies) for the same provider
+- **Automatic provider fallback:** run `hermes fallback auto on`, or set `fallback.auto_activate: true`, to try `fallback_providers` (or the legacy `fallback_model`) in order.
+- **Manual provider fallback:** `fallback.auto_activate: false` is intended for interactive CLI/Gateway/TUI turns; cron does not display a choice prompt.
+- **Credential rotation:** [credential pool](/user-guide/configuration#credential-pool-strategies) rotation remains independent and can try the next credential for the same provider.
 
-This means cron jobs that run at high frequency or during peak hours are more resilient — a single rate-limited key won't fail the entire run.
+For high-frequency or peak-hour jobs that must continue unattended, explicitly enable automatic fallback. Otherwise, a rate-limited primary may end that cron run without activating another provider.
 
 ## Schedule formats
 

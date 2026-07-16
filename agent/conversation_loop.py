@@ -5011,45 +5011,14 @@ def run_conversation(
                         agent._response_was_previewed = False
                         break
 
-                    # If the previous turn already delivered real content alongside
-                    # HOUSEKEEPING tool calls (e.g. "You're welcome!" + memory save),
-                    # the model has nothing more to say. Use the earlier content
-                    # immediately instead of wasting API calls on retries.
-                    # NOTE: Only use this shortcut when ALL tools in that turn were
-                    # housekeeping (memory, todo, etc.).  When substantive tools
-                    # were called (terminal, search_files, etc.), the content was
-                    # likely mid-task narration ("I'll scan the directory...") and
-                    # the empty follow-up means the model choked — let the
-                    # post-tool nudge below handle that instead of exiting early.
-                    fallback = getattr(agent, '_last_content_with_tools', None)
-                    if fallback and getattr(agent, '_last_content_tools_all_housekeeping', False):
-                        _turn_exit_reason = "fallback_prior_turn_content"
-                        logger.info("Empty follow-up after tool calls — using prior turn content as final response")
-                        agent._emit_status("↻ Empty response after tool calls — using earlier content as final answer")
-                        agent._last_content_with_tools = None
-                        agent._last_content_tools_all_housekeeping = False
-                        agent._empty_content_retries = 0
-                        # Do NOT modify the assistant message content — the
-                        # old code injected "Calling the X tools..." which
-                        # poisoned the conversation history.  Just use the
-                        # fallback text as the final response and break.
-                        final_response = agent._strip_think_blocks(fallback).strip()
-                        agent._response_was_previewed = True
-                        break
-
-                    # ── Post-tool-call empty response nudge ───────────
-                    # The model returned empty after executing tool calls.
-                    # This covers two cases:
-                    #  (a) No prior-turn content at all — model went silent
-                    #  (b) Prior turn had content + SUBSTANTIVE tools (the
-                    #      fallback above was skipped because the content
-                    #      was mid-task narration, not a final answer)
-                    # Instead of giving up, nudge the model to continue by
-                    # appending a user-level hint.  This is the #9400 case:
-                    # weaker models (mimo-v2-pro, GLM-5, etc.) sometimes
-                    # return empty after tool results instead of continuing
-                    # to the next step.  One retry with a nudge usually
-                    # fixes it.
+                    # Nudge availability is computed up front because it gates
+                    # the housekeeping fallback shortcut below (#65600): a
+                    # single empty completion after a housekeeping-only turn is
+                    # NOT a reliable "the model is done" signal — weak/quantized
+                    # local models intermittently choke and return empty right
+                    # after a housekeeping call.  Spend the one nudge retry
+                    # first; the shortcut then handles the SECOND consecutive
+                    # empty, which is a much stronger done signal.
                     _prior_was_tool = any(
                         m.get("role") == "tool"
                         for m in messages[-5:]  # check recent messages
@@ -5066,16 +5035,71 @@ def run_conversation(
                             re.IGNORECASE,
                         )
                     )
-                    if (
+                    _nudge_available = (
                         _prior_was_tool
                         and not getattr(agent, "_post_tool_empty_retried", False)
                         and not _has_inline_thinking  # thinking model still working — let prefill handle
+                    )
+
+                    # If the previous turn already delivered real content alongside
+                    # HOUSEKEEPING tool calls (e.g. "You're welcome!" + memory save),
+                    # the model has nothing more to say. Use the earlier content
+                    # instead of wasting API calls on retries.
+                    # NOTE: Only use this shortcut when ALL tools in that turn were
+                    # housekeeping (memory, todo, etc.).  When substantive tools
+                    # were called (terminal, search_files, etc.), the content was
+                    # likely mid-task narration ("I'll scan the directory...") and
+                    # the empty follow-up means the model choked — let the
+                    # post-tool nudge below handle that instead of exiting early.
+                    # The `not _nudge_available` gate defers the shortcut past
+                    # one nudge attempt (#65600) — see the comment above.
+                    fallback = getattr(agent, '_last_content_with_tools', None)
+                    if (
+                        fallback
+                        and getattr(agent, '_last_content_tools_all_housekeeping', False)
+                        and not _nudge_available
                     ):
-                        agent._post_tool_empty_retried = True
-                        # Clear stale narration so it doesn't resurface
-                        # on a later empty response after the nudge.
+                        _turn_exit_reason = "fallback_prior_turn_content"
+                        logger.info("Empty follow-up after tool calls — using prior turn content as final response")
+                        agent._emit_status("↻ Empty response after tool calls — using earlier content as final answer")
                         agent._last_content_with_tools = None
                         agent._last_content_tools_all_housekeeping = False
+                        agent._empty_content_retries = 0
+                        # Do NOT modify the assistant message content — the
+                        # old code injected "Calling the X tools..." which
+                        # poisoned the conversation history.  Just use the
+                        # fallback text as the final response and break.
+                        final_response = agent._strip_think_blocks(fallback).strip()
+                        agent._response_was_previewed = True
+                        break
+
+                    # ── Post-tool-call empty response nudge ───────────
+                    # The model returned empty after executing tool calls.
+                    # This covers three cases:
+                    #  (a) No prior-turn content at all — model went silent
+                    #  (b) Prior turn had content + SUBSTANTIVE tools (the
+                    #      fallback above was skipped because the content
+                    #      was mid-task narration, not a final answer)
+                    #  (c) Prior turn was housekeeping-only — the fallback
+                    #      above is deferred until this one nudge is spent,
+                    #      so a choked weak model gets a chance to finish
+                    #      instead of silently ending the turn (#65600)
+                    # Instead of giving up, nudge the model to continue by
+                    # appending a user-level hint.  This is the #9400 case:
+                    # weaker models (mimo-v2-pro, GLM-5, etc.) sometimes
+                    # return empty after tool results instead of continuing
+                    # to the next step.  One retry with a nudge usually
+                    # fixes it.
+                    if _nudge_available:
+                        agent._post_tool_empty_retried = True
+                        # Clear stale substantive narration so it doesn't
+                        # resurface on a later empty response after the nudge.
+                        # A HOUSEKEEPING fallback is deliberately preserved:
+                        # if the nudge also comes back empty, the shortcut
+                        # above still delivers the prior content instead of
+                        # dead-ending in empty-response retries (#65600).
+                        if not getattr(agent, '_last_content_tools_all_housekeeping', False):
+                            agent._last_content_with_tools = None
                         logger.info(
                             "Empty response after tool calls — nudging model "
                             "to continue processing"

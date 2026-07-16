@@ -131,6 +131,10 @@ def test_housekeeping_only_turn_still_sets_fallback():
     must still set the fallback so the post-response mute path works.  This
     verifies the fix doesn't break the original use case the fallback was
     designed for.
+
+    Since #65600 the shortcut is deferred past one nudge retry: the first
+    empty completion gets a nudge, and only a SECOND consecutive empty is
+    treated as "the model is done" and served the fallback content.
     """
     with (
         patch("run_agent.get_tool_definitions", return_value=_tool_defs("memory")),
@@ -159,7 +163,9 @@ def test_housekeeping_only_turn_still_sets_fallback():
             finish_reason="tool_calls",
             tool_calls=[_tool_call("memory", "mem1")],
         ),
-        # Turn 2: Empty response (should use the housekeeping fallback)
+        # Turn 2: Empty response (should spend the one nudge retry)
+        _response(content="", finish_reason="stop"),
+        # Turn 3: Empty again (nudge spent — NOW use the housekeeping fallback)
         _response(content="", finish_reason="stop"),
     ]
 
@@ -177,4 +183,82 @@ def test_housekeeping_only_turn_still_sets_fallback():
     )
     assert "fallback_prior_turn_content" in result.get("turn_exit_reason", ""), (
         f"Expected fallback_prior_turn_content exit, got: {result['turn_exit_reason']}."
+    )
+    assert result["api_calls"] == 3, (
+        f"Expected 3 API calls (housekeeping turn, empty, nudged empty), "
+        f"got: {result['api_calls']}."
+    )
+
+
+def test_housekeeping_empty_follow_up_gets_one_nudge_before_fallback():
+    """
+    Regression test for #65600.
+
+    An empty completion right after a housekeeping-only tool turn is not
+    always "the model has nothing more to say" — weak/quantized local models
+    intermittently choke and return empty mid-task.  The shortcut used to
+    fire immediately, recycling the prior turn's narration as the final
+    response and silently ending the turn.
+
+    Test sequence:
+    1. Content + skill_manage (housekeeping) → sets fallback
+    2. Empty completion → must get the standard post-tool nudge, NOT the
+       immediate fallback shortcut
+    3. Model recovers with real content → that content is the final response
+
+    Before the fix: step 2 took the shortcut, the final response was the
+    recycled step-1 narration, and the model never got a chance to finish
+    (2 API calls, reason=fallback_prior_turn_content).
+    """
+    with (
+        patch("run_agent.get_tool_definitions", return_value=_tool_defs("skill_manage")),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        agent = AIAgent(
+            api_key="test-key",
+            base_url="https://openrouter.ai/api/v1/",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+        )
+
+    agent._cached_system_prompt = "You are helpful."
+    agent._use_prompt_caching = False
+    agent.tool_delay = 0
+    agent.compression_enabled = False
+    agent.save_trajectories = False
+    agent.valid_tool_names = {"skill_manage"}
+    agent.client = MagicMock()
+    agent.client.chat.completions.create.side_effect = [
+        # Turn 1: Mid-task narration + housekeeping tool (sets fallback)
+        _response(
+            content="Reviewing the skill library now.",
+            finish_reason="tool_calls",
+            tool_calls=[_tool_call("skill_manage", "skill1")],
+        ),
+        # Turn 2: Model chokes — genuinely empty, but NOT done
+        _response(content="", finish_reason="stop"),
+        # Turn 3: Nudge lands, model finishes the task for real
+        _response(content="Skill library updated with two new entries.", finish_reason="stop"),
+    ]
+
+    with (
+        patch("run_agent.handle_function_call", return_value="ok"),
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("review the skill library")
+
+    assert result["final_response"] == "Skill library updated with two new entries.", (
+        f"Expected the post-nudge recovery response, got: {result['final_response']}. "
+        f"The housekeeping fallback shortcut fired before the nudge retry."
+    )
+    assert result["api_calls"] == 3, (
+        f"Expected 3 API calls (housekeeping turn, choke, nudge recovery), "
+        f"got: {result['api_calls']}. 2 means the shortcut bypassed the nudge."
+    )
+    assert result["turn_exit_reason"].startswith("text_response"), (
+        f"Expected text_response exit, got: {result['turn_exit_reason']}."
     )

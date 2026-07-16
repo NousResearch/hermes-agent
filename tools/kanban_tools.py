@@ -1301,8 +1301,9 @@ KANBAN_BLOCK_SCHEMA = {
     "description": (
         "Stop work on this task and route it according to WHY you're stuck. "
         "Set ``kind`` to say which: 'dependency' (waiting on another task — "
-        "goes to todo and auto-resumes when that task finishes, no human "
-        "needed), 'needs_input' (you need a human decision/answer), "
+        "goes to todo and auto-resumes only when an unresolved parent edge "
+        "exists; otherwise routes to triage so the missing edge can be added), "
+        "'needs_input' (you need a human decision/answer), "
         "'capability' (a hard wall: no access, missing credentials, an action "
         "no agent can do), or 'transient' (a flaky failure that may clear). "
         "``reason`` is shown to the human on the board. If a task keeps "
@@ -1329,9 +1330,10 @@ KANBAN_BLOCK_SCHEMA = {
                 "type": "string",
                 "enum": ["dependency", "needs_input", "capability", "transient"],
                 "description": (
-                    "Why you're blocked. 'dependency' waits in todo and "
-                    "resumes automatically; the others surface to a human. "
-                    "Omit only if none apply."
+                    "Why you're blocked. 'dependency' waits in todo and resumes "
+                    "automatically only when the task has an unresolved parent "
+                    "edge; without one it routes to triage. The others surface "
+                    "to a human. Omit only if none apply."
                 ),
             },
             "board": _board_schema_prop(),

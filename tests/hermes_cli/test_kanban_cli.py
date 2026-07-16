@@ -159,6 +159,22 @@ def test_run_slash_block_unblock_cycle(kanban_home):
     assert "Unblocked" in kc.run_slash(f"unblock {tid}")
 
 
+def test_run_slash_dependency_without_unmet_parent_explains_triage(kanban_home):
+    out = kc.run_slash("create 'child' --assignee alice")
+    import re
+    tid = re.search(r"(t_[a-f0-9]+)", out).group(1)
+    kc.run_slash(f"claim {tid}")
+
+    blocked = kc.run_slash(
+        f"block {tid} 'missing prerequisite edge' --kind dependency"
+    )
+
+    assert "triage" in blocked
+    assert "no unresolved parent edge" in blocked
+    assert "add/link the missing parent" in blocked
+    assert "unblock loop" not in blocked
+
+
 def test_run_slash_json_output(kanban_home):
     out = kc.run_slash("create 'jsontask' --assignee alice --json")
     payload = json.loads(out)

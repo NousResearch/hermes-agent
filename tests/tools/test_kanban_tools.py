@@ -806,20 +806,26 @@ def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
 
 
 def test_block_goal_mode_allows_dependency_kind(monkeypatch, tmp_path):
-    """`dependency` and `needs_input` represent a genuine external blocker
-    the worker cannot resolve itself — these remain ungated.
+    """A goal-mode dependency wait is allowed when encoded by a parent edge.
 
-    `dependency` routes to status='todo' (not 'blocked') per block_task's
-    own kind-routing — the goal loop still treats anything outside
-    running/ready/done/blocked as a stop, so this is still a legitimate,
-    judge-free exit; it's just not the literal 'blocked' status."""
+    The task routes to ``todo`` (not ``blocked``) and remains parent-gated,
+    providing a legitimate judge-free exit without creating a dispatch loop.
+    """
     from tools import kanban_tools as kt
     from hermes_cli import kanban_db as kb
 
     tid = _make_goal_mode_worker_env(monkeypatch, tmp_path)
+    conn = kb.connect()
+    try:
+        parent = kb.create_task(conn, title="unresolved prerequisite")
+        kb.link_tasks(conn, parent_id=parent, child_id=tid)
+    finally:
+        conn.close()
+
     out = kt._handle_block({"reason": "waiting on another task", "kind": "dependency"})
     d = json.loads(out)
     assert d.get("ok") is True
+    assert d.get("status") == "todo"
 
     conn = kb.connect()
     try:

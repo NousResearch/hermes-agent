@@ -5,7 +5,9 @@ Validates that:
 2. Auto-detection prefers pnpm > npm > yarn when config is empty.
 3. pnpm/yarn installs create a package.json manifest when needed.
 4. No ``HERMES_*`` env var fallback — config.yaml only (AGENTS.md policy).
-5. Real subprocess paths exercise the actual install against a temp
+5. Explicit PM selection fails (not silent fallback) when unavailable.
+6. Windows wrapper suffixes (.cmd/.exe/.bat) are normalized.
+7. Real subprocess paths exercise the actual install against a temp
    ``HERMES_HOME`` (no mocked ``subprocess.run``).
 """
 from __future__ import annotations
@@ -13,11 +15,10 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import stat
 import subprocess
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -43,11 +44,6 @@ def _has_yarn() -> bool:
     return _which("yarn") is not None
 
 
-def _fake_config(npm_command: str = "") -> dict:
-    """Return a minimal config dict with terminal.npmCommand set."""
-    return {"terminal": {"npm_command": npm_command}}
-
-
 # ---------------------------------------------------------------------------
 # Unit tests — config key and resolution logic (no network)
 # ---------------------------------------------------------------------------
@@ -63,16 +59,12 @@ class TestConfigKey:
         )
         assert terminal["npm_command"] == "", "default should be empty (auto-detect)"
 
-    def test_resolve_npm_command_reads_config(self, monkeypatch):
-        from agent.lsp import install as mod
 
-        monkeypatch.setattr(
-            mod, "_resolve_npm_command",
-            lambda: "pnpm",
-        )
-        assert mod._resolve_npm_command() == "pnpm"
+class TestResolveNpmCommand:
+    """Behavioral tests for _resolve_npm_command — test the real function,
+    not a monkeypatched stub."""
 
-    def test_resolve_npm_command_auto_detects_pnpm_first(self, monkeypatch):
+    def test_auto_detect_prefers_pnpm(self, monkeypatch):
         """When config is empty, auto-detect should prefer pnpm over npm."""
         from agent.lsp import install as mod
 
@@ -83,51 +75,169 @@ class TestConfigKey:
 
         monkeypatch.setattr(mod.shutil, "which", fake_which)
         monkeypatch.setattr(
-            mod, "_resolve_npm_command",
-            lambda: next(
-                (c for c in ("pnpm", "npm", "yarn") if fake_which(c)),
-                None,
-            ),
+            "hermes_cli.config.load_config",
+            lambda: {"terminal": {"npm_command": ""}},
         )
-        assert mod._resolve_npm_command() == "pnpm"
+        result = mod._resolve_npm_command()
+        assert result == "/usr/bin/pnpm"
 
-    def test_resolve_npm_command_falls_back_to_npm(self, monkeypatch):
+    def test_auto_detect_falls_back_to_npm(self, monkeypatch):
         """When pnpm is not available, fall back to npm."""
         from agent.lsp import install as mod
 
         def fake_which(name):
             if name == "npm":
                 return "/usr/bin/npm"
-            return None  # no pnpm, no yarn
+            return None
 
         monkeypatch.setattr(mod.shutil, "which", fake_which)
         monkeypatch.setattr(
-            mod, "_resolve_npm_command",
-            lambda: next(
-                (c for c in ("pnpm", "npm", "yarn") if fake_which(c)),
-                None,
-            ),
+            "hermes_cli.config.load_config",
+            lambda: {"terminal": {"npm_command": ""}},
         )
-        assert mod._resolve_npm_command() == "npm"
+        result = mod._resolve_npm_command()
+        assert result == "/usr/bin/npm"
 
-    def test_resolve_npm_command_returns_none_when_nothing_found(self, monkeypatch):
+    def test_auto_detect_falls_back_to_yarn(self, monkeypatch):
+        """When pnpm and npm are not available, fall back to yarn."""
+        from agent.lsp import install as mod
+
+        def fake_which(name):
+            if name == "yarn":
+                return "/usr/bin/yarn"
+            return None
+
+        monkeypatch.setattr(mod.shutil, "which", fake_which)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"terminal": {"npm_command": ""}},
+        )
+        result = mod._resolve_npm_command()
+        assert result == "/usr/bin/yarn"
+
+    def test_returns_none_when_nothing_found(self, monkeypatch):
         from agent.lsp import install as mod
 
         monkeypatch.setattr(mod.shutil, "which", lambda _: None)
-        monkeypatch.setattr(mod, "_resolve_npm_command", lambda: None)
-        assert mod._resolve_npm_command() is None
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"terminal": {"npm_command": ""}},
+        )
+        result = mod._resolve_npm_command()
+        assert result is None
+
+    def test_explicit_pnpm_returns_pnpm(self, monkeypatch):
+        """User configures pnpm → should resolve to pnpm."""
+        from agent.lsp import install as mod
+
+        def fake_which(name):
+            if name in ("pnpm", "npm"):
+                return f"/usr/bin/{name}"
+            return None
+
+        monkeypatch.setattr(mod.shutil, "which", fake_which)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"terminal": {"npm_command": "pnpm"}},
+        )
+        result = mod._resolve_npm_command()
+        assert result == "/usr/bin/pnpm"
+
+    def test_explicit_npm_returns_npm(self, monkeypatch):
+        """User configures npm → should resolve to npm even if pnpm exists."""
+        from agent.lsp import install as mod
+
+        def fake_which(name):
+            if name in ("pnpm", "npm"):
+                return f"/usr/bin/{name}"
+            return None
+
+        monkeypatch.setattr(mod.shutil, "which", fake_which)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"terminal": {"npm_command": "npm"}},
+        )
+        result = mod._resolve_npm_command()
+        assert result == "/usr/bin/npm"
+
+    def test_explicit_pm_not_found_returns_none(self, monkeypatch):
+        """User configures pnpm but it's not on PATH → return None (no fallback).
+        This is the key behavioral change: explicit PM means explicit PM."""
+        from agent.lsp import install as mod
+
+        def fake_which(name):
+            if name == "npm":
+                return "/usr/bin/npm"
+            return None  # pnpm not found
+
+        monkeypatch.setattr(mod.shutil, "which", fake_which)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"terminal": {"npm_command": "pnpm"}},
+        )
+        result = mod._resolve_npm_command()
+        assert result is None, (
+            "Explicit PM config must NOT fall back — should return None"
+        )
+
+    def test_config_load_failure_falls_back_to_auto(self, monkeypatch):
+        """If load_config() raises, _resolve_npm_command should not crash."""
+        from agent.lsp import install as mod
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: (_ for _ in ()).throw(RuntimeError("config broken")),
+        )
+        monkeypatch.setattr(
+            mod.shutil, "which", lambda c: "/usr/bin/npm" if c == "npm" else None
+        )
+        result = mod._resolve_npm_command()
+        assert result == "/usr/bin/npm"
+
+    def test_invalid_npm_command_falls_back_to_auto(self, monkeypatch):
+        """An unrecognized npm_command value should fall through to auto-detect."""
+        from agent.lsp import install as mod
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"terminal": {"npm_command": "bogus"}},
+        )
+        monkeypatch.setattr(
+            mod.shutil, "which", lambda c: "/usr/bin/npm" if c == "npm" else None
+        )
+        result = mod._resolve_npm_command()
+        assert result == "/usr/bin/npm"
 
 
 class TestNoEnvVarFallback:
-    """AGENTS.md: non-secret config must NOT use HERMES_* env vars."""
+    """AGENTS.md: non-secret config must NOT use HERMES_* env vars.
 
-    def test_no_hermes_node_package_manager_in_codebase(self):
-        """Ensure HERMES_NODE_PACKAGE_MANAGER is not referenced in install.py."""
-        install_path = Path(__file__).resolve().parents[3] / "agent" / "lsp" / "install.py"
-        content = install_path.read_text(encoding="utf-8")
-        assert "HERMES_NODE_PACKAGE_MANAGER" not in content, (
-            "install.py must not reference HERMES_NODE_PACKAGE_MANAGER — "
-            "use config.yaml terminal.npmCommand instead (AGENTS.md policy)"
+    Instead of a source-text test (which AGENTS.md bans), we verify
+    behaviorally: setting HERMES_NODE_PACKAGE_MANAGER has no effect
+    on _resolve_npm_command.
+    """
+
+    def test_env_var_has_no_effect(self, monkeypatch):
+        """HERMES_NODE_PACKAGE_MANAGER env var should not influence resolution."""
+        from agent.lsp import install as mod
+
+        def fake_which(name):
+            if name == "npm":
+                return "/usr/bin/npm"
+            return None
+
+        monkeypatch.setattr(mod.shutil, "which", fake_which)
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"terminal": {"npm_command": ""}},
+        )
+        monkeypatch.setenv("HERMES_NODE_PACKAGE_MANAGER", "yarn")
+
+        result = mod._resolve_npm_command()
+        # Should resolve to npm via auto-detect, NOT yarn from the env var
+        assert result == "/usr/bin/npm"
+        assert "yarn" not in (result or ""), (
+            "HERMES_NODE_PACKAGE_MANAGER env var must not affect resolution"
         )
 
 
@@ -161,6 +271,29 @@ class TestBuildPmArgv:
         assert "add" in argv
         assert "--cwd" in argv
         assert "pyright" in argv
+
+    def test_pnpm_cmd_dispatches_as_pnpm(self, tmp_path):
+        """pnpm.cmd (Windows) must dispatch to pnpm argv, not npm."""
+        from agent.lsp import install as mod
+        argv = mod._build_pm_argv("C:\\Users\\foo\\pnpm.cmd", tmp_path, ["pyright"])
+        # Should use pnpm argv (add --prefix), not npm (install --prefix)
+        assert "add" in argv
+        assert "--prefix" in argv
+        assert "pyright" in argv
+
+    def test_yarn_exe_dispatches_as_yarn(self, tmp_path):
+        """yarn.exe (Windows) must dispatch to yarn argv."""
+        from agent.lsp import install as mod
+        argv = mod._build_pm_argv("C:\\Users\\foo\\yarn.exe", tmp_path, ["pyright"])
+        assert "add" in argv
+        assert "--cwd" in argv
+
+    def test_pnpm_bat_dispatches_as_pnpm(self, tmp_path):
+        """pnpm.bat (Windows) must dispatch to pnpm argv."""
+        from agent.lsp import install as mod
+        argv = mod._build_pm_argv("/usr/local/bin/pnpm.bat", tmp_path, ["pyright"])
+        assert "add" in argv
+        assert "--prefix" in argv
 
     def test_pnpm_creates_package_json(self, tmp_path):
         from agent.lsp import install as mod
@@ -207,6 +340,8 @@ class TestRealInstall:
     These tests actually run the package manager, so they need network
     access and take a few seconds.  They are skipped when the required
     package manager is not on PATH.
+
+    Tests assert explicitly — no silent acceptance of failures.
     """
 
     @pytest.mark.skipif(not _has_npm(), reason="npm not on PATH")
@@ -214,18 +349,16 @@ class TestRealInstall:
         """Real npm install of pyright into a temp HERMES_HOME."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         from agent.lsp import install as mod
-
-        # Clear the result cache so we get a fresh install attempt
         mod._install_results.clear()
 
         result = mod.try_install("pyright", strategy="auto")
-        if result is not None:
-            assert os.path.exists(result)
-            assert os.access(result, os.X_OK)
-            # Verify the symlink in lsp/bin/
-            bin_dir = mod.hermes_lsp_bin_dir()
-            symlinks = list(bin_dir.glob("pyright*"))
-            assert len(symlinks) >= 1, "expected symlink in lsp/bin/"
+        assert result is not None, "npm install of pyright should succeed"
+        assert os.path.exists(result)
+        assert os.access(result, os.X_OK)
+        # Verify the symlink in lsp/bin/
+        bin_dir = mod.hermes_lsp_bin_dir()
+        symlinks = list(bin_dir.glob("pyright*"))
+        assert len(symlinks) >= 1, "expected symlink in lsp/bin/"
 
     @pytest.mark.skipif(not _has_npm(), reason="npm not on PATH")
     def test_npm_install_with_extra_pkgs(self, tmp_path, monkeypatch):
@@ -235,27 +368,18 @@ class TestRealInstall:
         mod._install_results.clear()
 
         result = mod.try_install("typescript-language-server", strategy="auto")
-        if result is not None:
-            # typescript should be in node_modules alongside the server
-            staging = mod.hermes_lsp_bin_dir().parent
-            ts_pkg = staging / "node_modules" / "typescript" / "package.json"
-            assert ts_pkg.exists(), (
-                "typescript SDK must be installed alongside typescript-language-server"
-            )
+        assert result is not None, "npm install of typescript-language-server should succeed"
+        # typescript should be in node_modules alongside the server
+        staging = mod.hermes_lsp_bin_dir().parent
+        ts_pkg = staging / "node_modules" / "typescript" / "package.json"
+        assert ts_pkg.exists(), (
+            "typescript SDK must be installed alongside typescript-language-server"
+        )
 
     @pytest.mark.skipif(not _has_pnpm(), reason="pnpm not on PATH")
     def test_pnpm_install_creates_manifest(self, tmp_path, monkeypatch):
         """Real pnpm install creates package.json and installs correctly."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        # Write a config that forces pnpm
-        config_dir = tmp_path / "config"
-        config_dir.mkdir()
-        config_file = config_dir / "config.yaml"
-        config_file.write_text(
-            "terminal:\n  npm_command: pnpm\n",
-            encoding="utf-8",
-        )
 
         from agent.lsp import install as mod
         mod._install_results.clear()
@@ -273,14 +397,14 @@ class TestRealInstall:
         manifest = staging / "package.json"
         assert manifest.exists(), "pnpm install must create package.json"
 
-        if result is not None:
-            assert os.path.exists(result)
+        assert result is not None, "pnpm install of pyright should succeed"
+        assert os.path.exists(result)
 
     @pytest.mark.skipif(not _has_pnpm(), reason="pnpm not on PATH")
     def test_pnpm_inherits_supply_chain_config(self, tmp_path, monkeypatch):
         """When pnpm is selected, installs should use pnpm's config for
         supply-chain policies (minimumReleaseAge, blockExoticSubdeps, etc.).
-        
+
         We verify this indirectly: pnpm respects its own config.yaml which
         lives in the project root (staging dir), not a hardcoded npm call.
         """
@@ -312,56 +436,10 @@ class TestRealInstall:
 
 class TestEdgeCases:
 
-    def test_config_load_failure_falls_back_to_auto(self, monkeypatch):
-        """If load_config() raises, _resolve_npm_command should not crash."""
-        from agent.lsp import install as mod
-
-        def broken_config():
-            raise RuntimeError("config broken")
-
-        monkeypatch.setattr("hermes_cli.config.load_config", broken_config)
-        monkeypatch.setattr(mod.shutil, "which", lambda c: "/usr/bin/npm" if c == "npm" else None)
-
-        # Should not raise, should fall back to auto-detect
-        result = mod._resolve_npm_command()
-        assert result in ("/usr/bin/npm", None)
-
-    def test_invalid_npm_command_falls_back_to_auto(self, monkeypatch):
-        """An unrecognized npm_command value should fall through to auto-detect."""
-        from agent.lsp import install as mod
-
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: {"terminal": {"npm_command": "bogus"}},
-        )
-        monkeypatch.setattr(mod.shutil, "which", lambda c: "/usr/bin/npm" if c == "npm" else None)
-
-        result = mod._resolve_npm_command()
-        assert result == "/usr/bin/npm"
-
-    def test_configured_pm_not_on_path_falls_back(self, monkeypatch):
-        """If user configures pnpm but it's not installed, fall back."""
-        from agent.lsp import install as mod
-
-        monkeypatch.setattr(
-            "hermes_cli.config.load_config",
-            lambda: {"terminal": {"npm_command": "pnpm"}},
-        )
-        # pnpm not found, npm found
-        monkeypatch.setattr(
-            mod.shutil, "which",
-            lambda c: "/usr/bin/npm" if c == "npm" else None,
-        )
-
-        result = mod._resolve_npm_command()
-        assert result == "/usr/bin/npm"
-
     def test_install_returns_none_when_no_pm_available(self, monkeypatch):
         """_install_npm should return None gracefully when no PM is found."""
         from agent.lsp import install as mod
-
         monkeypatch.setattr(mod, "_resolve_npm_command", lambda: None)
-
         result = mod._install_npm("pyright", "pyright-langserver")
         assert result is None
 

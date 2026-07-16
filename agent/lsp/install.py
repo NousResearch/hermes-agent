@@ -257,10 +257,17 @@ def _resolve_npm_command() -> Optional[str]:
         resolved = shutil.which(npm_cmd)
         if resolved is not None:
             return resolved
-        logger.info(
-            "[install] configured npm_command=%r not found on PATH, falling back",
+        # Explicitly configured but unavailable — fail, don't silently
+        # fall back to another PM.  The user chose this PM for a reason
+        # (e.g. supply-chain policies); substituting a different one would
+        # silently bypass those protections.
+        logger.warning(
+            "[install] configured npm_command=%r not found on PATH — "
+            "install aborted (set npm_command to \"\" or install %s)",
+            npm_cmd,
             npm_cmd,
         )
+        return None
 
     # Auto-detect: prefer pnpm (supply-chain policies), then npm, then yarn.
     for candidate in ("pnpm", "npm", "yarn"):
@@ -355,7 +362,17 @@ def _build_pm_argv(pm: str, staging: Path, targets: list[str]) -> list[str]:
     project root with a manifest (unlike ``npm install --prefix`` which
     creates one implicitly).
     """
-    name = Path(pm).name  # "pnpm", "npm", or "yarn"
+    # Strip Windows wrapper suffixes (pnpm.cmd → pnpm) so the dispatch
+    # works regardless of how the binary was resolved on PATH.
+    # Handle both POSIX and Windows path separators for cross-platform
+    # robustness (backslash on Linux is literal, not a separator).
+    _base = pm.replace("\\", "/").split("/")[-1]
+    for _suffix in _WINDOWS_WRAPPER_SUFFIXES:
+        if _base.lower().endswith(_suffix):
+            name = _base[: -len(_suffix)]
+            break
+    else:
+        name = _base
     if name == "pnpm":
         _ensure_package_manifest(staging)
         return [pm, "add", "--prefix", str(staging), "--silent", *targets]

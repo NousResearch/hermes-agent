@@ -1,14 +1,29 @@
 from __future__ import annotations
 
 from agent.compaction_stats import CompactionStats
-from agent.conversation_compression import (
-    _abbrev_tokens,
-    _compaction_window_label,
-    _fmt_gross_frac,
-    _format_compaction_announce,
-    _format_granular_announce,
-    _inturn_stats_render_eligible,
-)
+
+# Prefer the extracted module (post-extraction tree) so the golden exercises
+# agent.fork_ext.compaction_ext DIRECTLY, not the re-export chain; fall back to
+# the legacy inline home for pre-extraction replay (Greptile: a re-export-only
+# import would keep passing while compaction_ext drifts).
+try:
+    from agent.fork_ext.compaction_ext import (
+        _abbrev_tokens,
+        _compaction_window_label,
+        _fmt_gross_frac,
+        _format_compaction_announce,
+        _format_granular_announce,
+        _inturn_stats_render_eligible,
+    )
+except ModuleNotFoundError:
+    from agent.conversation_compression import (
+        _abbrev_tokens,
+        _compaction_window_label,
+        _fmt_gross_frac,
+        _format_compaction_announce,
+        _format_granular_announce,
+        _inturn_stats_render_eligible,
+    )
 
 
 class _RaisingStats:

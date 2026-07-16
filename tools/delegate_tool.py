@@ -2576,7 +2576,9 @@ def delegate_task(
             # normally, but if the parent is interrupted while a child is
             # wedged, the abandoned worker must not block interpreter exit.
             from tools.daemon_pool import DaemonThreadPoolExecutor
-            with DaemonThreadPoolExecutor(max_workers=max_children) as executor:
+            executor = DaemonThreadPoolExecutor(max_workers=max_children)
+            interrupted = False
+            try:
                 futures = {}
                 for i, t, child in children:
                     future = executor.submit(
@@ -2603,8 +2605,15 @@ def delegate_task(
                         # Parent interrupted — collect whatever finished and
                         # abandon the rest.  Children already received the
                         # interrupt signal; we just can't wait forever.
+                        interrupted = True
                         for f in pending:
                             idx = futures[f]
+                            child = _child_by_index.get(idx)
+                            try:
+                                if child and hasattr(child, "interrupt"):
+                                    child.interrupt("Parent agent interrupted")
+                            except Exception:
+                                logger.debug("Failed to interrupt delegated child")
                             if f.done():
                                 try:
                                     entry = f.result()
@@ -2621,6 +2630,7 @@ def delegate_task(
                                         ),
                                     }
                             else:
+                                cancelled_before_start = f.cancel()
                                 entry = {
                                     "task_index": idx,
                                     "status": "interrupted",
@@ -2632,6 +2642,21 @@ def delegate_task(
                                         _child_by_index.get(idx), "_delegate_role", None
                                     ),
                                 }
+                                if cancelled_before_start:
+                                    try:
+                                        if child and hasattr(child, "close"):
+                                            child.close()
+                                    except Exception:
+                                        logger.debug("Failed to close queued interrupted child")
+                                    try:
+                                        lock = getattr(parent_agent, "_active_children_lock", None)
+                                        if lock:
+                                            with lock:
+                                                parent_agent._active_children.remove(child)
+                                        else:
+                                            parent_agent._active_children.remove(child)
+                                    except (AttributeError, ValueError):
+                                        pass
                             results.append(entry)
                             completed_count += 1
                         break
@@ -2686,6 +2711,8 @@ def delegate_task(
                                 )
                             except Exception as e:
                                 logger.debug("Spinner update_text failed: %s", e)
+            finally:
+                executor.shutdown(wait=not interrupted, cancel_futures=interrupted)
 
             # Sort by task_index so results match input order
             results.sort(key=lambda r: r["task_index"])

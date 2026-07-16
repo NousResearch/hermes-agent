@@ -913,6 +913,71 @@ class TestSubagentCostRollup(unittest.TestCase):
         parent.session_cost_source = "none"
         return parent
 
+    def test_batch_interrupt_does_not_wait_for_running_children(self):
+        parent = self._make_parent_with_cost_counters(starting_cost=0.0)
+        parent._interrupt_requested = False
+        release = threading.Event()
+        both_started = threading.Event()
+        started = 0
+        started_lock = threading.Lock()
+        children = [MagicMock(), MagicMock()]
+        for child in children:
+            child._delegate_role = "leaf"
+            child.session_id = "child"
+
+        def build_child(**kwargs):
+            child = children[kwargs["task_index"]]
+            with parent._active_children_lock:
+                parent._active_children.append(child)
+            return child
+
+        def run_child(task_index, goal, child, parent_agent):
+            nonlocal started
+            with started_lock:
+                started += 1
+                if started == 2:
+                    both_started.set()
+            try:
+                release.wait(5)
+                return {
+                    "task_index": task_index,
+                    "status": "interrupted",
+                    "summary": None,
+                    "api_calls": 0,
+                    "duration_seconds": 0,
+                    "_child_role": "leaf",
+                }
+            finally:
+                with parent._active_children_lock:
+                    if child in parent._active_children:
+                        parent._active_children.remove(child)
+
+        outcome = {}
+
+        def invoke():
+            outcome["result"] = delegate_task(
+                tasks=[{"goal": "A"}, {"goal": "B"}],
+                parent_agent=parent,
+            )
+
+        with patch("tools.delegate_tool._build_child_agent", side_effect=build_child), \
+             patch("tools.delegate_tool._run_single_child", side_effect=run_child):
+            worker = threading.Thread(target=invoke)
+            worker.start()
+            self.assertTrue(both_started.wait(2))
+            parent._interrupt_requested = True
+            worker.join(timeout=1.5)
+            self.assertFalse(worker.is_alive(), "delegate shutdown waited for running children")
+            self.assertIn("results", json.loads(outcome["result"]))
+            for child in children:
+                child.interrupt.assert_called_once()
+            release.set()
+
+        deadline = time.time() + 2
+        while parent._active_children and time.time() < deadline:
+            time.sleep(0.01)
+        self.assertEqual(parent._active_children, [])
+
     def test_single_child_cost_folded_into_parent(self):
         parent = self._make_parent_with_cost_counters(starting_cost=0.10)
 

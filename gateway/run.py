@@ -15425,21 +15425,59 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 reply_to_message_id=message_id,
                 adapter=adapter,
             )
-            result = await adapter.send(
-                str(chat_id),
-                "♻ Gateway restarted successfully. Your session continues.",
-                metadata=_non_conversational_metadata(metadata, platform=platform),
-            )
-            # adapter.send() catches provider errors (e.g. "Chat not found")
-            # and returns SendResult(success=False) rather than raising, so
-            # we must inspect the result before claiming success — otherwise
-            # the log line is misleading and hides real delivery failures.
-            if result is not None and getattr(result, "success", True) is False:
+            # During startup the Telegram adapter marks the send path as
+            # degraded until the first successful getUpdates polling cycle
+            # completes.  Instead of blind-retrying with a short timeout (which
+            # routinely loses the race against polling startup — 5×2 s vs the
+            # adapter's 60 s _POLLING_PROGRESS_TIMEOUT + 30 s updater-start
+            # budget), wait for the adapter's own readiness signal first.
+            _polling_event = getattr(adapter, "_polling_progress_event", None)
+            if _polling_event is not None:
+                _poll_timeout = 90.0  # _POLLING_PROGRESS_TIMEOUT + _UPDATER_START_TIMEOUT
+                try:
+                    await asyncio.wait_for(_polling_event.wait(), timeout=_poll_timeout)
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "Restart notification to %s:%s — polling did not settle "
+                        "within %.0f s; attempting send anyway",
+                        platform_str, chat_id, _poll_timeout,
+                    )
+
+            # Now attempt delivery.  A few retries remain as a safety net for
+            # transient failures (rate-limits, brief network blips) on any
+            # platform.
+            _degraded_retries = 0
+            while _degraded_retries < 3:
+                result = await adapter.send(
+                    str(chat_id),
+                    "♻ Gateway restarted successfully. Your session continues.",
+                    metadata=_non_conversational_metadata(metadata, platform=platform),
+                )
+                err = getattr(result, "error", None) if result else "send returned None"
+                if result is not None and getattr(result, "success", True) is True:
+                    break
+                if err == "send_path_degraded":
+                    _degraded_retries += 1
+                    if _degraded_retries >= 3:
+                        logger.warning(
+                            "Restart notification to %s:%s abandoned after "
+                            "polling-wait + %d retries — send path stayed degraded",
+                            platform_str, chat_id, _degraded_retries,
+                        )
+                        return None
+                    logger.info(
+                        "Restart notification to %s:%s deferred — send path degraded "
+                        "(attempt %d/3), retrying in 3s",
+                        platform_str, chat_id, _degraded_retries,
+                    )
+                    await asyncio.sleep(3.0)
+                    continue
+                # Non-degraded permanent failure — don't retry
                 logger.warning(
                     "Restart notification to %s:%s was not delivered: %s",
                     platform_str,
                     chat_id,
-                    getattr(result, "error", "send returned success=False"),
+                    err,
                 )
                 return None
 

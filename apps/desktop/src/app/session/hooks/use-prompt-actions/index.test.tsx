@@ -1396,6 +1396,87 @@ describe('usePromptActions submit session-context isolation (#54527)', () => {
     vi.restoreAllMocks()
   })
 
+  it('targets the synchronously selected session when the render-captured active id is stale', async () => {
+    // Session navigation updates the refs synchronously, then React publishes
+    // the new activeSessionId prop. Enter can land between those two steps. The
+    // submit must use the ref snapshot for Session B, never the stale prop for A.
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: RUNTIME_SESSION_B }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_B }
+    let handle: HarnessHandle | null = null
+
+    await actRender(
+      <Harness
+        activeSessionId="rt-session-a-stale"
+        activeSessionIdRef={activeSessionIdRef}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_B}
+      />
+    )
+
+    expect(await handle!.submitText('message for session B')).toBe(true)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      { session_id: RUNTIME_SESSION_B, text: 'message for session B' },
+      1_800_000
+    )
+    expect(requestGateway).not.toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({ session_id: 'rt-session-a-stale' }),
+      expect.anything()
+    )
+  })
+
+  it('creates a new session when fresh-draft refs have already cleared a stale active id', async () => {
+    // Opening New Chat clears the routing refs synchronously. If the user hits
+    // Enter before React refreshes the activeSessionId prop, the stale prop must
+    // not resurrect the previous chat as the submit target.
+    const requestGateway = vi.fn(async () => ({}) as never)
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: null }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: null }
+    let routeToken = '/new'
+
+    const createBackendSessionForSend = vi.fn(async () => {
+      activeSessionIdRef.current = 'rt-fresh-chat'
+      selectedStoredSessionIdRef.current = 'stored-fresh-chat'
+      routeToken = '/session/stored-fresh-chat'
+
+      return 'rt-fresh-chat'
+    })
+
+    let handle: HarnessHandle | null = null
+
+    await actRender(
+      <Harness
+        activeSessionId="rt-previous-chat-stale"
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={createBackendSessionForSend}
+        getRouteToken={() => routeToken}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={null}
+      />
+    )
+
+    expect(await handle!.submitText('first message in the new chat')).toBe(true)
+    expect(createBackendSessionForSend).toHaveBeenCalledTimes(1)
+    expect(requestGateway).toHaveBeenCalledWith(
+      'prompt.submit',
+      { session_id: 'rt-fresh-chat', text: 'first message in the new chat' },
+      1_800_000
+    )
+    expect(requestGateway).not.toHaveBeenCalledWith(
+      'prompt.submit',
+      expect.objectContaining({ session_id: 'rt-previous-chat-stale' }),
+      expect.anything()
+    )
+  })
+
   it('aborts submit when the user switches sessions during session.resume (no misroute)', async () => {
     // Exact #54527 failure: user submits in Session A while its runtime binding
     // is gone; before resume returns they switch to Session B. Without a pinned

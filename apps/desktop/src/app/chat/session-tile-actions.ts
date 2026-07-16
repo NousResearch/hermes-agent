@@ -130,7 +130,6 @@ export function useSessionTileActions({ runtimeId, scope, storedSessionId }: Ses
   // The REAL submit pipeline with tile seams: session always exists, and the
   // scope's writers replace the global view/attachment writes.
   const submitPromptText = useSubmitPrompt({
-    activeSessionId: runtimeId,
     activeSessionIdRef: runtimeIdRef,
     busyRef,
     copy,

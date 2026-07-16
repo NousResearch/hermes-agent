@@ -365,7 +365,6 @@ export function usePromptActions({
   }, [activeSessionId, composerAttachments, eagerlyUploadAttachment])
 
   const submitPromptText = useSubmitPrompt({
-    activeSessionId,
     activeSessionIdRef,
     busyRef,
     copy,

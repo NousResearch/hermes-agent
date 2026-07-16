@@ -31,7 +31,6 @@ import {
 } from './utils'
 
 interface SubmitPromptDeps {
-  activeSessionId: string | null
   activeSessionIdRef: MutableRefObject<string | null>
   busyRef: MutableRefObject<boolean>
   copy: Translations['desktop']
@@ -74,7 +73,6 @@ const MAIN_SUBMIT_SCOPE: NonNullable<SubmitPromptDeps['scope']> = {
 /** The prompt submit pipeline, extracted from usePromptActions. */
 export function useSubmitPrompt(deps: SubmitPromptDeps) {
   const {
-    activeSessionId,
     activeSessionIdRef,
     busyRef,
     copy,
@@ -249,7 +247,11 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       scope.setAwaitingResponse(true)
       clearNotifications()
 
-      let sessionId: null | string = activeSessionId
+      // Read the pinned live identity, not the render-captured prop. Session
+      // navigation updates activeSessionIdRef synchronously before React can
+      // publish a fresh callback; preferring the prop in that window sends the
+      // prompt to the previously active chat.
+      let sessionId: null | string = startingActiveSessionId
 
       if (sessionId) {
         seedOptimistic(sessionId)
@@ -450,7 +452,6 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
       }
     },
     [
-      activeSessionId,
       activeSessionIdRef,
       busyRef,
       copy,

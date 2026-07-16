@@ -1,0 +1,286 @@
+{
+  "020eadeca2de3b918683f2ed7ed0680e6adbd6275b1d2b96bfe4eca5555bf51c": {
+    "input": {
+      "items": [
+        [
+          "compacted",
+          null,
+          null
+        ],
+        [
+          "sanitized",
+          100,
+          50
+        ],
+        [
+          "sanitized",
+          100,
+          100
+        ],
+        [
+          "noop",
+          100,
+          50
+        ]
+      ],
+      "kind": "eligible",
+      "name": "eligibility matrix"
+    },
+    "name": "eligibility matrix",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        true,
+        true,
+        false,
+        false
+      ]
+    }
+  },
+  "0729b7ca191d7e31a0d1a2d00f63e8fd72b720375dc1142fa25ec7a84e9bf211": {
+    "input": {
+      "kind": "format",
+      "kwargs": {
+        "engine_name": null,
+        "model": "m",
+        "new_messages": 3,
+        "new_session_id": null,
+        "old_messages": 3,
+        "old_session_id": "parent",
+        "post_tokens": 1000,
+        "pre_tokens": 1000,
+        "provider": "p",
+        "status": null
+      },
+      "name": "builtin rotation without new session is gated"
+    },
+    "name": "builtin rotation without new session is gated",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": null
+    }
+  },
+  "0fc6853c82bb4375dec92ad62181dec4fbd93bfa8e1b934f1afedbdc5289514f": {
+    "input": {
+      "kind": "format",
+      "kwargs": {
+        "engine_name": "lcm",
+        "model": "m",
+        "new_messages": 10,
+        "new_session_id": "new",
+        "old_messages": 10,
+        "old_session_id": "old",
+        "post_tokens": 5000,
+        "pre_tokens": 5000,
+        "provider": "p",
+        "status": "sanitized"
+      },
+      "name": "lcm conditional status without token drop is gated"
+    },
+    "name": "lcm conditional status without token drop is gated",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": null
+    }
+  },
+  "8b5fbb49421adb9b6112d8fa57ed05b4e3084436e1d9bdf37019a4cda81a09b1": {
+    "input": {
+      "kind": "format",
+      "kwargs": {
+        "engine_name": null,
+        "in_place": true,
+        "model": "claude-opus-4-1m",
+        "new_messages": 12,
+        "new_session_id": "parent",
+        "old_messages": 42,
+        "old_session_id": "parent",
+        "post_tokens": 15123,
+        "pre_tokens": 323456,
+        "provider": "anthropic",
+        "reasoning": "medium",
+        "status": null,
+        "summary_snippet": "Earlier work was summarized.",
+        "trigger_reason": "threshold",
+        "trigger_value": 323456
+      },
+      "name": "builtin in-place announce with trigger and reasoning"
+    },
+    "name": "builtin in-place announce with trigger and reasoning",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": "\ud83d\udddc\ufe0f Context compacted (crossed the compaction threshold, ~323,456 tokens): 42\u219212 messages \u00b7 ~323K\u2192~15K tokens \u00b7 anthropic/claude-opus-4-1m \u00b7 r:medium\n\u21a9 previous: parent \u2192 current: parent\nSummary: Earlier work was summarized."
+    }
+  },
+  "972f76dc9963d5a7fcb8ac5bf90972403977fe13a75a77e82d900462b92b2763": {
+    "input": {
+      "kind": "format",
+      "kwargs": {
+        "engine_name": "lcm",
+        "model": "m",
+        "new_messages": 6,
+        "new_session_id": "new",
+        "old_messages": 8,
+        "old_session_id": "old",
+        "post_tokens": 900,
+        "pre_tokens": 1000,
+        "provider": "p",
+        "recovery_hint": "recover through the test path",
+        "status": "degraded_fail_open"
+      },
+      "name": "lcm degraded conditional with custom recovery"
+    },
+    "name": "lcm degraded conditional with custom recovery",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": "\ud83d\udddc\ufe0f Context compacted (degraded): 8\u21926 messages \u00b7 ~1K\u2192~900 tokens \u00b7 p/m \u00b7 engine: lcm\nrecover through the test path\nSummary: unavailable \u2014 summarizer degraded this pass; raw store is intact."
+    }
+  },
+  "aa9c9500415f74d4c3fb4ffa3ea2924eb949a890e93be126bdb1a7a2c33c81ba": {
+    "input": {
+      "kind": "format",
+      "kwargs": {
+        "engine_name": null,
+        "model": "m",
+        "new_messages": 6,
+        "new_session_id": "new",
+        "old_messages": 20,
+        "old_session_id": "old",
+        "post_tokens": 2000,
+        "pre_tokens": 10000,
+        "provider": "p",
+        "stats": {
+          "anchor_messages": 1,
+          "anchor_tokens": 200,
+          "cleared_count": 3,
+          "cleared_other_count": 1,
+          "cleared_other_tokens": 300,
+          "cleared_tokens": 1000,
+          "cleared_tool_count": 2,
+          "cleared_tool_tokens": 700,
+          "eligible_count": 17,
+          "folded_count": 13,
+          "folded_other_count": 9,
+          "folded_other_tokens": 4800,
+          "folded_tokens": 7800,
+          "folded_tool_count": 4,
+          "folded_tool_tokens": 3000,
+          "kept_messages": 4,
+          "kept_tokens": 1200,
+          "post_messages": 6,
+          "post_tokens": 2000,
+          "pre_messages": 20,
+          "pre_tokens": 10000,
+          "summary_messages": 1,
+          "summary_tokens": 600
+        },
+        "status": null
+      },
+      "name": "granular live announce with subsplits"
+    },
+    "name": "granular live announce with subsplits",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": "\ud83d\udddc\ufe0f Context compacted\n   Messages:  20 \u2192 6   (kept 4 recent chat + 1 summary + 1 anchor)\n   Context:   ~10K \u2192 ~2K tokens   (freed ~8K, 80% smaller)\n   Removed from live context (16 messages):\n     \u2022 2 tool-result messages  \u2192  ~700 reclaimed   (raw tool output)\n     \u2022 1 other messages  \u2192  ~300 reclaimed   (system + tool-call turns, cleared)\n     \u2022 4 tool-result messages  \u2192  ~3K reclaimed   (raw tool output)\n     \u2022 9 other messages  \u2192  ~4K reclaimed   (chat + tool-call turns + system, folded into 1 summary)\n   Replacement cost: ~800 kept in context (summary + anchors)\n   Model: p/m\n\u21a9 previous: old \u2192 current: new"
+    }
+  },
+  "cfdb60eb8604269439fc002595e054422c317d2ffc48ef0d8d22a0ae8dad48da": {
+    "input": {
+      "items": [
+        [
+          75378,
+          74447
+        ],
+        [
+          7000,
+          100000
+        ],
+        [
+          5,
+          0
+        ]
+      ],
+      "kind": "gross",
+      "name": "gross fraction labels"
+    },
+    "name": "gross fraction labels",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        "\u2265100% (raw-tail bound 75378 \u2265 pre 74447; raw vs sanitized basis)",
+        "7.0%",
+        "n/a (pre=0)"
+      ]
+    }
+  },
+  "edc212611df7af24e9e0c300aad29860e9b1692cdae130d2aa915c172f3f489f": {
+    "input": {
+      "after_fallback": true,
+      "basis": "stored",
+      "head": "Context compacted after model fallback",
+      "kind": "granular",
+      "model_part": "openai/gpt-5.5",
+      "name": "granular stored wire mode after fallback",
+      "stats": {
+        "anchor_messages": 0,
+        "anchor_tokens": 0,
+        "cleared_count": 0,
+        "cleared_tokens": 0,
+        "eligible_count": 10,
+        "folded_count": 8,
+        "folded_tokens": 4000,
+        "kept_messages": 2,
+        "kept_tokens": 500,
+        "post_messages": 3,
+        "post_tokens": 1000,
+        "pre_messages": 10,
+        "pre_tokens": 5000,
+        "summary_messages": 1,
+        "summary_tokens": 500
+      },
+      "window_from": 1000000,
+      "window_to": 272000,
+      "wire_after": 80000,
+      "wire_before": 303201
+    },
+    "name": "granular stored wire mode after fallback",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": "Context compacted after model fallback\n   Messages:  10 \u2192 3   (kept 2 recent chat + 1 summary)\n   Context:   303,201 \u2192 ~80,000 tokens   (freed ~223K, 74% smaller \u00b7 before measured, after next-request estimate)\n   Removed from stored transcript (8 messages, ~4K token-est reclaimed from archive):\n     \u2022 8 folded messages   \u2192  ~4K reclaimed   (older chat condensed into 1 summary)\n   Replacement cost: ~500 kept in transcript (summary + anchors)\n   Window: 1M \u2192 272K\n   Model: openai/gpt-5.5"
+    }
+  },
+  "f446455e80b7c5b9466851da3431aa09a14e88ee443f896ee2659e3d680cf9f4": {
+    "input": {
+      "kind": "format",
+      "kwargs": {
+        "engine_name": "lcm",
+        "model": "gpt-5.5",
+        "new_messages": 200,
+        "new_session_id": "new",
+        "old_messages": 1000,
+        "old_session_id": "old",
+        "post_tokens": 266000,
+        "pre_tokens": 1200000,
+        "provider": "openai",
+        "raw_store_count": 12345,
+        "status": "compacted",
+        "trigger_reason": "hygiene_messages",
+        "trigger_value": 222
+      },
+      "name": "lcm compacted announces raw store"
+    },
+    "name": "lcm compacted announces raw store",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": "\ud83d\udddc\ufe0f Context compacted (message-count safety limit: 222 messages): 1000\u2192200 messages \u00b7 ~1.2M\u2192~266K tokens \u00b7 openai/gpt-5.5 \u00b7 engine: lcm\n\u21a9 nothing lost \u2014 12,345 raw turns from this session preserved in lcm.db \u00b7 recover with lcm_grep / lcm_expand"
+    }
+  }
+}

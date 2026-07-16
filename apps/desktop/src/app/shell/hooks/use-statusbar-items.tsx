@@ -10,6 +10,7 @@ import { GatewayMenuPanel } from '@/app/shell/gateway-menu-panel'
 import { Codicon } from '@/components/ui/codicon'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { useI18n } from '@/i18n'
+import type { GatewayRequester } from '@/hooks/use-codex-account-usage'
 import { Activity, AlertCircle, Clock, Command, FolderOpen, Hash, Loader2, Terminal } from '@/lib/icons'
 import type { RuntimeReadinessResult } from '@/lib/runtime-readiness'
 import { contextBarLabel, LiveDuration, usageContextLabel } from '@/lib/statusbar'
@@ -67,7 +68,7 @@ interface StatusbarItemsOptions {
   openAgents: () => void
   openCommandCenterSection: (section: CommandCenterSection) => void
   freshDraftReady: boolean
-  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequester
   statusSnapshot: StatusResponse | null
   toggleCommandCenter: () => void
 }
@@ -151,7 +152,9 @@ export function useStatusbarItems({
   const approvalModeItem = useApprovalModeStatusbarItem(activeGatewayProfile, requestGateway)
 
   const codexUsageItem = useCodexUsageStatusbarItem({
+    connectionScope: `${connection?.mode ?? 'unknown'}:${connection?.baseUrl ?? ''}`,
     gatewayState,
+    profile: activeGatewayProfile,
     provider,
     requestGateway,
     sessionId: activeSessionId

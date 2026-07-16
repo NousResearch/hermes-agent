@@ -505,6 +505,7 @@ export interface AccountUsageWindow {
 }
 
 export interface AccountUsageSnapshot {
+  available?: boolean
   details: string[]
   fetched_at: string
   plan?: null | string

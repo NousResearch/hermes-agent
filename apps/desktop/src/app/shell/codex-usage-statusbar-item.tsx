@@ -1,34 +1,17 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useMemo } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { useI18n } from '@/i18n'
+import { type CodexAccountUsageOptions, useCodexAccountUsage } from '@/hooks/use-codex-account-usage'
 import { ExternalLink } from '@/lib/external-link'
 import { AlertCircle, BarChart3, Loader2, RefreshCw } from '@/lib/icons'
 import { fmtDateTime, relativeTime } from '@/lib/time'
 import { cn } from '@/lib/utils'
-import type { AccountUsageResponse, AccountUsageSnapshot, AccountUsageWindow } from '@/types/hermes'
+import type { AccountUsageSnapshot, AccountUsageWindow } from '@/types/hermes'
 
 import type { StatusbarItem } from './statusbar-controls'
 
 const CODEX_USAGE_URL = 'https://chatgpt.com/codex/settings/usage'
-const REFRESH_MS = 3 * 60_000
-
-type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
-
-interface CodexUsageStatusbarOptions {
-  gatewayState: string
-  provider: string
-  requestGateway: GatewayRequester
-  sessionId: string | null
-}
-
-interface UsageState {
-  error: boolean
-  loading: boolean
-  snapshot: AccountUsageSnapshot | null
-}
-
-const EMPTY_STATE: UsageState = { error: false, loading: false, snapshot: null }
 
 function finitePercent(value: null | number | undefined): number | null {
   if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -48,62 +31,10 @@ export function primaryAccountUsageWindow(snapshot: AccountUsageSnapshot): Accou
   return snapshot.windows.find(window => accountUsageRemaining(window) !== null) ?? null
 }
 
-function useCodexUsage({ gatewayState, provider, requestGateway, sessionId }: CodexUsageStatusbarOptions) {
-  const enabled = gatewayState === 'open' && provider.trim().toLowerCase() === 'openai-codex' && Boolean(sessionId)
-  const generation = useRef(0)
-  const [state, setState] = useState<UsageState>(EMPTY_STATE)
-
-  const refresh = useCallback(async () => {
-    if (!enabled || !sessionId) {
-      return
-    }
-
-    const requestGeneration = ++generation.current
-    setState(current => ({ ...current, loading: true }))
-
-    try {
-      const response = await requestGateway<AccountUsageResponse>('session.account_usage', { session_id: sessionId })
-
-      if (requestGeneration !== generation.current) {
-        return
-      }
-
-      const snapshot = response?.account_usage ?? null
-      setState(current =>
-        snapshot
-          ? { error: false, loading: false, snapshot }
-          : { error: true, loading: false, snapshot: current.snapshot }
-      )
-    } catch {
-      if (requestGeneration === generation.current) {
-        setState(current => ({ ...current, error: true, loading: false }))
-      }
-    }
-  }, [enabled, requestGateway, sessionId])
-
-  useEffect(() => {
-    ++generation.current
-    setState(EMPTY_STATE)
-
-    if (!enabled) {
-      return
-    }
-
-    void refresh()
-    const timer = window.setInterval(() => void refresh(), REFRESH_MS)
-
-    return () => {
-      window.clearInterval(timer)
-    }
-  }, [enabled, provider, refresh, sessionId])
-
-  return { ...state, refresh }
-}
-
-export function useCodexUsageStatusbarItem(options: CodexUsageStatusbarOptions): StatusbarItem {
+export function useCodexUsageStatusbarItem(options: CodexAccountUsageOptions): StatusbarItem {
   const { t } = useI18n()
   const copy = t.shell.statusbar
-  const { error, loading, refresh, snapshot } = useCodexUsage(options)
+  const { error, loading, refresh, snapshot } = useCodexAccountUsage(options)
   const primaryWindow = snapshot ? primaryAccountUsageWindow(snapshot) : null
   const remaining = primaryWindow ? accountUsageRemaining(primaryWindow) : null
   const codexActive = options.provider.trim().toLowerCase() === 'openai-codex'

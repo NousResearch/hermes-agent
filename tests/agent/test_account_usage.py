@@ -1,8 +1,20 @@
+import base64
+import json
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import pytest
 
 from agent import account_usage
+
+
+def _codex_token(account_id: str) -> str:
+    payload = json.dumps(
+        {"https://api.openai.com/auth": {"chatgpt_account_id": account_id}},
+        separators=(",", ":"),
+    ).encode()
+    encoded = base64.urlsafe_b64encode(payload).decode().rstrip("=")
+    return f"header.{encoded}.signature"
 
 
 class _FakeResponse:
@@ -63,10 +75,11 @@ def test_codex_usage_prefers_explicit_live_agent_credentials(monkeypatch, codex_
         lambda **kwargs: (_ for _ in ()).throw(AssertionError("legacy auth should not be used")),
     )
 
+    token = _codex_token("acct-live")
     snapshot = account_usage.fetch_account_usage(
         "openai-codex",
         base_url="https://chatgpt.com/backend-api/codex",
-        api_key="live-agent-token",
+        api_key=token,
     )
 
     assert snapshot is not None
@@ -75,7 +88,29 @@ def test_codex_usage_prefers_explicit_live_agent_credentials(monkeypatch, codex_
     assert [w.label for w in snapshot.windows] == ["Session", "Weekly"]
     assert snapshot.windows[0].used_percent == 21
     assert calls[0]["url"] == "https://chatgpt.com/backend-api/wham/usage"
-    assert calls[0]["headers"]["Authorization"] == "Bearer live-agent-token"
+    assert calls[0]["headers"]["Authorization"] == f"Bearer {token}"
+    assert calls[0]["headers"]["ChatGPT-Account-Id"] == "acct-live"
+
+
+def test_codex_usage_rotated_token_changes_account_header(monkeypatch, codex_usage_payload):
+    calls = []
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, codex_usage_payload),
+    )
+
+    for account_id in ("acct-one", "acct-two"):
+        assert account_usage.fetch_account_usage(
+            "openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key=_codex_token(account_id),
+        ) is not None
+
+    assert [call["headers"]["ChatGPT-Account-Id"] for call in calls] == [
+        "acct-one",
+        "acct-two",
+    ]
 
 
 def test_codex_usage_falls_back_to_native_credential_pool(monkeypatch, codex_usage_payload):
@@ -194,6 +229,37 @@ def test_codex_usage_account_id_read_failure_keeps_singleton_token(monkeypatch, 
     assert "ChatGPT-Account-Id" not in calls[0]["headers"]
 
 
+def test_codex_usage_pool_selection_never_pairs_stale_singleton_account_id(
+    monkeypatch, codex_usage_payload
+):
+    calls = []
+    monkeypatch.setattr(
+        account_usage.httpx,
+        "Client",
+        lambda timeout: _FakeClient(calls, codex_usage_payload),
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "resolve_codex_runtime_credentials",
+        lambda **kwargs: {
+            "api_key": "opaque-pool-token",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "source": "credential_pool",
+        },
+    )
+    monkeypatch.setattr(
+        account_usage,
+        "_read_codex_tokens",
+        lambda: {"tokens": {"account_id": "acct-stale-singleton"}},
+    )
+
+    snapshot = account_usage.fetch_account_usage("openai-codex")
+
+    assert snapshot is not None
+    assert calls[0]["headers"]["Authorization"] == "Bearer opaque-pool-token"
+    assert "ChatGPT-Account-Id" not in calls[0]["headers"]
+
+
 def test_codex_usage_treats_wham_used_percent_as_used_not_remaining(monkeypatch):
     """ChatGPT UI says "left"; /wham/usage.used_percent is already used."""
     payload = {
@@ -253,11 +319,36 @@ def test_serialize_account_usage_snapshot_is_json_safe(codex_usage_payload, monk
 
     assert snapshot is not None
     payload = account_usage.serialize_account_usage_snapshot(snapshot)
+    assert payload["available"] is True
     assert payload["provider"] == "openai-codex"
     assert payload["plan"] == "Plus"
     assert payload["windows"][0]["used_percent"] == 21
     assert payload["windows"][0]["reset_at"].endswith("+00:00")
     assert "token" not in repr(payload).lower()
+
+
+def test_serialize_account_usage_snapshot_sanitizes_non_finite_percentages():
+    snapshot = account_usage.AccountUsageSnapshot(
+        provider="openai-codex",
+        source="usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        windows=(
+            account_usage.AccountUsageWindow(label="NaN", used_percent=float("nan")),
+            account_usage.AccountUsageWindow(label="Infinite", used_percent=float("inf")),
+            account_usage.AccountUsageWindow(label="Low", used_percent=-10),
+            account_usage.AccountUsageWindow(label="High", used_percent=140),
+        ),
+    )
+
+    payload = account_usage.serialize_account_usage_snapshot(snapshot)
+
+    assert [window["used_percent"] for window in payload["windows"]] == [
+        None,
+        None,
+        0.0,
+        100.0,
+    ]
+    json.dumps(payload, allow_nan=False)
 
 
 # ── Banked rate-limit reset credits (`/usage reset`) ─────────────────────────

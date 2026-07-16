@@ -7418,9 +7418,9 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Return normalized provider limits without exposing runtime credentials.
 
-    This deliberately stays session-scoped: the live agent is authoritative for
-    the provider, endpoint, and selected credential.  A renderer receives only
-    the normalized quota snapshot, never the OAuth token or account headers.
+    This deliberately stays session-scoped: the live agent selects the provider,
+    endpoint, and exact credential identity.  A renderer receives only the
+    normalized quota snapshot, never the OAuth token or account headers.
     Missing agents, unsupported providers, expired auth, and transient network
     failures all fail closed to ``None`` so optional chrome can hide cleanly.
     """
@@ -7431,6 +7431,14 @@ def _(rid, params: dict) -> dict:
     if agent is None:
         return _ok(rid, {"account_usage": None})
 
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    api_key = str(getattr(agent, "api_key", "") or "").strip()
+    if provider == "openai-codex" and not api_key:
+        # The generic /usage helper may select a singleton or pool credential
+        # when no key is supplied. A session-scoped read must never substitute
+        # another account for the credential already chosen by this live agent.
+        return _ok(rid, {"account_usage": None})
+
     try:
         from agent.account_usage import (
             fetch_account_usage,
@@ -7438,9 +7446,9 @@ def _(rid, params: dict) -> dict:
         )
 
         snapshot = fetch_account_usage(
-            getattr(agent, "provider", None),
+            provider,
             base_url=getattr(agent, "base_url", None),
-            api_key=getattr(agent, "api_key", None),
+            api_key=api_key,
         )
         payload = (
             serialize_account_usage_snapshot(snapshot)

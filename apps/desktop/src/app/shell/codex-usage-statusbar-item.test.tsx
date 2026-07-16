@@ -1,8 +1,11 @@
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import type { ComponentProps } from 'react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
+import type { GatewayRequester } from '@/hooks/use-codex-account-usage'
 import type { AccountUsageResponse, AccountUsageSnapshot } from '@/types/hermes'
 
 import {
@@ -32,6 +35,7 @@ afterEach(() => {
 })
 
 const snapshot: AccountUsageSnapshot = {
+  available: true,
   details: ['Credits balance: $12.50'],
   fetched_at: '2026-07-16T01:02:03+00:00',
   plan: 'Plus',
@@ -46,17 +50,28 @@ const snapshot: AccountUsageSnapshot = {
 }
 
 function Harness({
+  connectionScope = 'local:',
   gatewayState = 'open',
+  profile = 'default',
   provider = 'openai-codex',
   requestGateway,
   sessionId = 'runtime-1'
 }: {
+  connectionScope?: string
   gatewayState?: string
+  profile?: string
   provider?: string
-  requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
+  requestGateway: GatewayRequester
   sessionId?: null | string
 }) {
-  const item = useCodexUsageStatusbarItem({ gatewayState, provider, requestGateway, sessionId })
+  const item = useCodexUsageStatusbarItem({
+    connectionScope,
+    gatewayState,
+    profile,
+    provider,
+    requestGateway,
+    sessionId
+  })
 
   return (
     <I18nProvider configClient={null} initialLocale="en">
@@ -65,6 +80,16 @@ function Harness({
       </MemoryRouter>
     </I18nProvider>
   )
+}
+
+function renderHarness(props: ComponentProps<typeof Harness>) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { gcTime: Number.POSITIVE_INFINITY, retry: false } }
+  })
+
+  return render(<Harness {...props} />, {
+    wrapper: ({ children }) => <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  })
 }
 
 describe('Codex usage statusbar item', () => {
@@ -77,7 +102,7 @@ describe('Codex usage statusbar item', () => {
 
   it('stays hidden unless an active Codex session returns valid limits', async () => {
     const requestGateway = vi.fn(async () => ({ account_usage: snapshot }) as never)
-    const { rerender } = render(<Harness provider="anthropic" requestGateway={requestGateway} />)
+    const { rerender } = renderHarness({ provider: 'anthropic', requestGateway })
 
     await act(async () => undefined)
     expect(requestGateway).not.toHaveBeenCalled()
@@ -86,12 +111,17 @@ describe('Codex usage statusbar item', () => {
     rerender(<Harness requestGateway={requestGateway} />)
 
     expect(await screen.findByRole('button', { name: /Codex 79% left/i })).toBeTruthy()
-    expect(requestGateway).toHaveBeenCalledWith('session.account_usage', { session_id: 'runtime-1' })
+    expect(requestGateway).toHaveBeenCalledWith(
+      'session.account_usage',
+      { session_id: 'runtime-1' },
+      45_000,
+      expect.any(AbortSignal)
+    )
   })
 
   it('shows both windows, credits, refresh time, and the web fallback', async () => {
     const requestGateway = vi.fn(async () => ({ account_usage: snapshot }) as never)
-    render(<Harness requestGateway={requestGateway} />)
+    renderHarness({ requestGateway })
 
     fireEvent.pointerDown(await screen.findByRole('button', { name: /Codex 79% left/i }), { button: 0 })
 
@@ -110,7 +140,7 @@ describe('Codex usage statusbar item', () => {
       .mockResolvedValueOnce({ account_usage: snapshot })
       .mockRejectedValueOnce(new Error('auth expired'))
 
-    render(<Harness requestGateway={requestGateway as never} />)
+    renderHarness({ requestGateway: requestGateway as never })
     fireEvent.pointerDown(await screen.findByRole('button', { name: /Codex 79% left/i }), { button: 0 })
     fireEvent.click(await screen.findByRole('button', { name: 'Refresh Codex usage' }))
 

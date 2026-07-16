@@ -2664,6 +2664,7 @@ def test_session_account_usage_returns_normalized_secret_free_snapshot(monkeypat
         "base_url": "https://chatgpt.com/backend-api/codex",
         "api_key": "oauth-secret",
     }
+    assert payload["available"] is True
     assert payload["plan"] == "Plus"
     assert payload["windows"] == [
         {
@@ -2692,6 +2693,27 @@ def test_session_account_usage_hides_unavailable_or_unbuilt_accounts(monkeypatch
 
     assert unavailable["result"] == {"account_usage": None}
     assert unbuilt["result"] == {"account_usage": None}
+
+
+def test_session_account_usage_never_falls_back_without_live_codex_key(monkeypatch):
+    server._sessions["usage-sid"] = _session(
+        agent=types.SimpleNamespace(
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="",
+        )
+    )
+    fetch = Mock(side_effect=AssertionError("credential fallback must not run"))
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", fetch)
+    try:
+        response = server._methods["session.account_usage"](
+            "r1", {"session_id": "usage-sid"}
+        )
+    finally:
+        server._sessions.pop("usage-sid", None)
+
+    assert response["result"] == {"account_usage": None}
+    fetch.assert_not_called()
 
 
 def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):

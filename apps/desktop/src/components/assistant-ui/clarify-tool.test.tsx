@@ -56,6 +56,7 @@ function liveClarifyProps(choices = ['staging', 'production']): ToolCallMessageP
     args: { choices, question: 'Which deployment target?' },
     argsText: JSON.stringify({ choices, question: 'Which deployment target?' }),
     isError: false,
+    respondToApproval: vi.fn(),
     result: undefined,
     resume: vi.fn(),
     status: { type: 'running' },

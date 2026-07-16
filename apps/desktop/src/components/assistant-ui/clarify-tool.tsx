@@ -423,6 +423,7 @@ function ClarifyToolPending({ args }: ToolCallMessagePartProps) {
       // typed content, the composer owns its cursor/navigation keys again.
       const isTextEntry =
         active?.isContentEditable || active?.matches('input, select, textarea')
+
       const isEmptyComposer =
         isTextEntry &&
         active &&

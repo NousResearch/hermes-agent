@@ -2205,6 +2205,7 @@ from gateway.config import (
     _BUILTIN_PLATFORM_VALUES,
     GatewayConfig,
     PlatformConfig,
+    _getenv,
     load_gateway_config,
 )
 from gateway.session import (
@@ -2294,11 +2295,11 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
         extra = getattr(platform_config, "extra", None) or {}
         dm_policy = str(
             extra.get("dm_policy")
-            or (os.getenv(dm_env, "pairing") if dm_env else "pairing")
+            or (_getenv(dm_env, "pairing") if dm_env else "pairing")
         ).strip().lower()
         group_policy = str(
             extra.get("group_policy")
-            or (os.getenv(group_env, "pairing") if group_env else "pairing")
+            or (_getenv(group_env, "pairing") if group_env else "pairing")
         ).strip().lower()
         if dm_policy != "open" and group_policy != "open":
             continue
@@ -2307,7 +2308,7 @@ def _own_policy_open_startup_violation(config) -> Optional[str]:
         ).lower() in {"true", "1", "yes"}
         platform_opted_in = gateway_allow_all or (
             allow_all_env
-            and os.getenv(allow_all_env, "").lower() in {"true", "1", "yes"}
+            and _getenv(allow_all_env, "").lower() in {"true", "1", "yes"}
         )
         if platform_opted_in:
             continue

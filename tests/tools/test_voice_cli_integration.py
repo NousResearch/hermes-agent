@@ -1203,6 +1203,56 @@ class TestVoiceStopAndTranscribeReal:
         cli._voice_stop_and_transcribe()
         cli._voice_start_recording.assert_not_called()
 
+    @pytest.mark.parametrize(
+        ("stt_config", "expected_model"),
+        [
+            ({"provider": "local", "model": "whisper-1", "local": {"model": "small"}}, "small"),
+            ({"provider": "local", "local": {"model": "tiny"}}, "tiny"),
+            ({"provider": "local", "model": "whisper-1"}, "base"),
+        ],
+    )
+    def test_local_stt_shows_model_download_status(self, stt_config, expected_model):
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/test.wav"
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+
+        with patch("cli._cprint") as mock_print, \
+             patch("cli.os.path.isfile", return_value=False), \
+             patch("hermes_cli.config.load_config", return_value={"stt": stt_config}), \
+             patch("tools.voice_mode.transcribe_recording",
+                   return_value={"success": True, "transcript": "hello"}) as mock_transcribe, \
+             patch("tools.voice_mode.play_beep"):
+            cli._voice_stop_and_transcribe()
+
+        messages = [call.args[0] for call in mock_print.call_args_list]
+        assert any(
+            f"local STT model '{expected_model}'" in message
+            and "first use may download it from Hugging Face" in message
+            for message in messages
+        )
+        mock_transcribe.assert_called_once_with("/tmp/test.wav", model=expected_model)
+
+    def test_non_local_stt_keeps_generic_transcribing_status(self):
+        recorder = MagicMock()
+        recorder.stop.return_value = "/tmp/test.wav"
+        cli = _make_voice_cli(_voice_recording=True, _voice_recorder=recorder)
+
+        with patch("cli._cprint") as mock_print, \
+             patch("cli.os.path.isfile", return_value=False), \
+             patch(
+                 "hermes_cli.config.load_config",
+                 return_value={"stt": {"provider": "openai", "model": "whisper-1"}},
+             ), \
+             patch("tools.voice_mode.transcribe_recording",
+                   return_value={"success": True, "transcript": "hello"}) as mock_transcribe, \
+             patch("tools.voice_mode.play_beep"):
+            cli._voice_stop_and_transcribe()
+
+        messages = [call.args[0] for call in mock_print.call_args_list]
+        assert any("Transcribing..." in message for message in messages)
+        assert all("Hugging Face" not in message for message in messages)
+        mock_transcribe.assert_called_once_with("/tmp/test.wav", model="whisper-1")
+
     @patch("cli._cprint")
     @patch("cli.os.unlink")
     @patch("cli.os.path.isfile", return_value=True)

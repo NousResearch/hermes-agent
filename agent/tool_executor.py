@@ -358,9 +358,10 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
         return
 
     # ── Parse args + pre-execution bookkeeping ───────────────────────
-    parsed_calls = []  # list of (tool_call, function_name, function_args, middleware_trace, block_result, blocked_by_guardrail)
+    parsed_calls = []  # list of (tool_call, function_name, function_args, middleware_trace, block_result, blocked_by_guardrail, sig)
     for tool_call in tool_calls:
         function_name = tool_call.function.name
+        sig = ""  # Default signature for nudge tracking
 
         function_args, malformed_args_result = _parse_tool_arguments(
             tool_call.function.arguments
@@ -466,6 +467,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
 
             if block_message is not None:
                 block_result = json.dumps({"error": block_message}, ensure_ascii=False)
+                sig = ""
                 _emit_terminal_post_tool_call(
                     agent,
                     function_name=function_name,
@@ -480,6 +482,9 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 )
             else:
                 guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+                # _pending_nudges 用 args_hash 字符串作 key，需从 signature 对象提取
+                _sig_obj = getattr(guardrail_decision, 'signature', None)
+                sig = str(_sig_obj.args_hash) if _sig_obj else ""
                 if not guardrail_decision.allows_execution:
                     block_result = agent._guardrail_block_result(guardrail_decision)
                     blocked_by_guardrail = True
@@ -520,13 +525,13 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 except Exception:
                     pass
 
-        parsed_calls.append((tool_call, function_name, function_args, middleware_trace, block_result, blocked_by_guardrail))
+        parsed_calls.append((tool_call, function_name, function_args, middleware_trace, block_result, blocked_by_guardrail, sig))
 
     # ── Logging / callbacks ──────────────────────────────────────────
-    tool_names_str = ", ".join(name for _, name, _, _, _, _ in parsed_calls)
+    tool_names_str = ", ".join(name for _, name, *_ in parsed_calls)
     if not agent.quiet_mode and getattr(agent, "tool_progress_mode", "all") != "off":
         print(f"  ⚡ Concurrent: {num_tools} tool calls — {tool_names_str}")
-        for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls, 1):
+        for i, (tc, name, args, *_rest) in enumerate(parsed_calls, 1):
             display_args = _redact_tool_args_for_display(name, args) or args
             args_str = json.dumps(display_args, ensure_ascii=False)
             if agent.verbose_logging:
@@ -536,7 +541,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
                 args_preview = args_str[:agent.log_prefix_chars] + "..." if len(args_str) > agent.log_prefix_chars else args_str
                 print(f"  📞 Tool {i}: {name}({list(args.keys())}) - {args_preview}")
 
-    for tc, name, args, middleware_trace, block_result, blocked_by_guardrail in parsed_calls:
+    for tc, name, args, _mt, block_result, *_rest in parsed_calls:
         if block_result is not None:
             continue
         if agent.tool_progress_callback:
@@ -547,7 +552,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             except Exception as cb_err:
                 logging.debug(f"Tool progress callback error: {cb_err}")
 
-    for tc, name, args, middleware_trace, block_result, blocked_by_guardrail in parsed_calls:
+    for tc, name, args, _mt, block_result, *_rest in parsed_calls:
         if block_result is not None:
             continue
         if agent.tool_start_callback:
@@ -560,7 +565,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     # ── Concurrent execution ─────────────────────────────────────────
     # Each slot holds (function_name, function_args, function_result, duration, error_flag, blocked_flag, middleware_trace)
     results = [None] * num_tools
-    for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
+    for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail, sig) in enumerate(parsed_calls):
         if block_result is not None:
             results[i] = (name, args, block_result, 0.0, True, True, middleware_trace)
 
@@ -663,7 +668,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
     try:
         runnable_calls = [
             (i, tc, name, args)
-            for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls)
+            for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail, sig) in enumerate(parsed_calls)
             if block_result is None
         ]
         futures = []
@@ -826,7 +831,7 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             spinner.stop(f"⚡ {completed}/{num_tools} tools completed in {total_dur:.1f}s total")
 
     # ── Post-execution: display per-tool results ─────────────────────
-    for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail) in enumerate(parsed_calls):
+    for i, (tc, name, args, middleware_trace, block_result, blocked_by_guardrail, sig) in enumerate(parsed_calls):
         r = results[i]
         blocked = False
         # A worker can finish and write results[i] in the window between the
@@ -981,28 +986,8 @@ def execute_tool_calls_concurrent(agent, assistant_message, messages: list, effe
             effect_disposition=effect_disposition,
         )
         messages.append(tool_message)
-        risk_metadata = tool_message.get("_tool_output_risk")
-        if (
-            risk_metadata is not None
-            and risk_metadata.get("risk") != "low"
-            and agent.tool_progress_callback
-        ):
-            try:
-                agent.tool_progress_callback(
-                    "tool.output_risk",
-                    name,
-                    None,
-                    None,
-                    tool_call_id=tc.id,
-                    risk_metadata=risk_metadata,
-                )
-            except Exception as cb_err:
-                logging.debug("Tool output risk callback error: %s", cb_err)
-        _flush_session_db_after_tool_progress(
-            agent,
-            messages,
-            stage=f"tool result {name}",
-        )
+        # Deliver guardrail nudge via /steer (appended to this tool result).
+        agent._take_nudge_and_inject(messages, signature=sig)
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Same as the sequential path: drain between each collected
@@ -1128,8 +1113,12 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
                 pass
 
         _guardrail_block_decision: ToolGuardrailDecision | None = None
+        _guardrail_sig = ""
         if _block_msg is None:
             guardrail_decision = agent._tool_guardrails.before_call(function_name, function_args)
+            # _pending_nudges 用 args_hash 字符串作 key，需从 signature 对象提取
+            _sig_obj = getattr(guardrail_decision, 'signature', None)
+            _guardrail_sig = str(_sig_obj.args_hash) if _sig_obj else ""
             if not guardrail_decision.allows_execution:
                 _guardrail_block_decision = guardrail_decision
 
@@ -1687,6 +1676,9 @@ def execute_tool_calls_sequential(agent, assistant_message, messages: list, effe
             messages,
             stage=f"tool result {function_name}",
         )
+
+        # Deliver guardrail nudge via /steer (appended to this tool result).
+        agent._take_nudge_and_inject(messages, signature=_guardrail_sig)
 
         # ── Per-tool /steer drain ───────────────────────────────────
         # Drain pending steer BETWEEN individual tool calls so the

@@ -477,6 +477,160 @@ def test_generated_security_scan_fails_closed_for_staged_and_untracked_utf16(tmp
     assert marker not in untracked.stderr
 
 
+def test_generated_security_scan_redacts_staged_and_unstaged_undecodable_bytes(tmp_path):
+    mod = _load_bundle()
+    bash = _bash_or_skip()
+    command = mod._added_line_security_scan_command()
+    term = "api" + "_key"
+    marker = "undecodable-dummy-value"
+    payload = f'{term} = "{marker}"'.encode("utf-8") + b"\xff\n"
+
+    staged_repo = tmp_path / "staged"
+    _init_git_repo(staged_repo)
+    (staged_repo / "staged.py").write_bytes(payload)
+    subprocess.run(
+        ["git", "add", "--", "staged.py"],
+        cwd=staged_repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    unstaged_repo = tmp_path / "unstaged"
+    _init_git_repo(unstaged_repo)
+    unstaged_file = unstaged_repo / "unstaged.py"
+    unstaged_file.write_text("safe = True\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", "unstaged.py"],
+        cwd=unstaged_repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "baseline"],
+        cwd=unstaged_repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    unstaged_file.write_bytes(payload)
+
+    for repo in (staged_repo, unstaged_repo):
+        scanned = subprocess.run(
+            [bash, "-lc", command],
+            cwd=repo,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+        assert scanned.returncode == 1
+        assert "redacted-hit" in scanned.stdout
+        assert marker not in scanned.stdout
+        assert marker not in scanned.stderr
+        assert "traceback" not in scanned.stderr.lower()
+
+
+def test_generated_security_scan_disables_external_diff_bypass(tmp_path):
+    mod = _load_bundle()
+    bash = _bash_or_skip()
+    command = mod._added_line_security_scan_command()
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    sample = repo / "sample.py"
+    sample.write_text("safe = True\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "add", "--", sample.name],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "commit", "-m", "baseline"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    (repo / "empty-diff.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "config", "diff.external", "sh empty-diff.sh"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    term = "api" + "_key"
+    marker = "external-diff-dummy-value"
+    sample.write_text(f'{term} = "{marker}"\n', encoding="utf-8")
+
+    scanned = subprocess.run(
+        [bash, "-lc", command],
+        cwd=repo,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+    assert scanned.returncode == 1
+    assert "redacted-hit" in scanned.stdout
+    assert marker not in scanned.stdout
+    assert marker not in scanned.stderr
+
+
+def test_generated_security_scan_disables_textconv_bypass(tmp_path):
+    mod = _load_bundle()
+    bash = _bash_or_skip()
+    command = mod._added_line_security_scan_command()
+    repo = tmp_path / "repo"
+    _init_git_repo(repo)
+    (repo / "empty-textconv.sh").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    (repo / ".gitattributes").write_text("*.bin diff=empty\n", encoding="utf-8")
+    subprocess.run(
+        ["git", "config", "diff.empty.textconv", "sh empty-textconv.sh"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    term = "api" + "_key"
+    marker = "textconv-dummy-value"
+    (repo / "payload.bin").write_text(f'{term} = "{marker}"\n', encoding="utf-16")
+    subprocess.run(
+        ["git", "add", "--", ".gitattributes", "payload.bin"],
+        cwd=repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+    scanned = subprocess.run(
+        [bash, "-lc", command],
+        cwd=repo,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+    assert scanned.returncode == 1
+    assert "redacted-hit" in scanned.stdout
+    assert marker not in scanned.stdout
+    assert marker not in scanned.stderr
+
+
 def test_stdout_only_cli_does_not_write_import_bytecode(tmp_path):
     scripts_dir = tmp_path / "scripts"
     ci_dir = scripts_dir / "ci"

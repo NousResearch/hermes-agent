@@ -26,7 +26,9 @@ recommending broader checks instead of skipping work. The suggested added-line
 security command scans staged, unstaged, and untracked files with redacted-only
 findings. It fails closed on binary or undecodable additions and refuses to read
 untracked files through symlink, reparse/junction, hardlink, or out-of-repository
-paths. Executing that suggested command is a separate explicit verification step.
+paths. Tracked scans disable external diff, textconv, color, and customized diff
+indicators before parsing Git output. Executing that suggested command is a
+separate explicit verification step.
 
 ## ULW evidence ledger scaffold
 

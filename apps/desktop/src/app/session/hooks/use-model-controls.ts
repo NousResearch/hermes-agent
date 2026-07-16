@@ -18,6 +18,33 @@ interface ModelControlsOptions {
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
+interface ConfigSetModelResponse {
+  confirm_message?: unknown
+  confirm_required?: unknown
+  warning?: unknown
+}
+
+function confirmationMessage(result: unknown) {
+  if (!result || typeof result !== 'object') {
+    return null
+  }
+
+  const response = result as ConfigSetModelResponse
+  if (response.confirm_required !== true) {
+    return null
+  }
+
+  if (typeof response.confirm_message === 'string' && response.confirm_message.trim()) {
+    return response.confirm_message
+  }
+
+  if (typeof response.warning === 'string' && response.warning.trim()) {
+    return response.warning
+  }
+
+  return ''
+}
+
 export function useModelControls({ activeSessionId, queryClient, requestGateway }: ModelControlsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
@@ -81,6 +108,11 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
       // rather than leave the UI showing a model the backend never selected.
       const prevModel = $currentModel.get()
       const prevProvider = $currentProvider.get()
+      const restorePreviousSelection = () => {
+        setCurrentModel(prevModel)
+        setCurrentProvider(prevProvider)
+        updateModelOptionsCache(prevProvider, prevModel, !activeSessionId)
+      }
 
       setCurrentModel(selection.model)
       setCurrentProvider(selection.provider)
@@ -93,19 +125,25 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
       }
 
       try {
-        await requestGateway('config.set', {
+        const result = await requestGateway<ConfigSetModelResponse>('config.set', {
           session_id: activeSessionId,
           key: 'model',
           value: `${selection.model} --provider ${selection.provider} --session`
         })
+        const confirmMessage = confirmationMessage(result)
+
+        if (confirmMessage !== null) {
+          restorePreviousSelection()
+          notifyError(new Error(confirmMessage || copy.modelSwitchFailed), copy.modelSwitchFailed)
+
+          return false
+        }
 
         void queryClient.invalidateQueries({ queryKey: ['model-options', activeSessionId] })
 
         return true
       } catch (err) {
-        setCurrentModel(prevModel)
-        setCurrentProvider(prevProvider)
-        updateModelOptionsCache(prevProvider, prevModel, !activeSessionId)
+        restorePreviousSelection()
         notifyError(err, copy.modelSwitchFailed)
 
         return false

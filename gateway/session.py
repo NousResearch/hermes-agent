@@ -1933,13 +1933,24 @@ class SessionStore:
             elif _entry_for_checks.resume_pending:
                 _reset_reason = self._should_reset(_entry_for_checks, source)
                 if not _reset_reason:
-                    _fw = auto_continue_freshness_window()
-                    _ref_time = (
-                        _entry_for_checks.last_resume_marked_at
-                        or _entry_for_checks.updated_at
+                    # Freshness-gate stale resume_pending zombies (#46934) —
+                    # but honor an explicit ``session_reset.mode: none``: the
+                    # user opted out of ALL automatic resets, so an expired
+                    # resume marker must fall through to a normal resume of
+                    # the preserved transcript, never a silent fresh session
+                    # (#61052).
+                    _policy = self.config.get_reset_policy(
+                        platform=source.platform,
+                        session_type=source.chat_type,
                     )
-                    if _fw > 0 and (now - _ref_time).total_seconds() > _fw:
-                        _reset_reason = "resume_pending_expired"
+                    if _policy.mode != "none":
+                        _fw = auto_continue_freshness_window()
+                        _ref_time = (
+                            _entry_for_checks.last_resume_marked_at
+                            or _entry_for_checks.updated_at
+                        )
+                        if _fw > 0 and (now - _ref_time).total_seconds() > _fw:
+                            _reset_reason = "resume_pending_expired"
             else:
                 _reset_reason = self._should_reset(_entry_for_checks, source)
 
@@ -2074,7 +2085,16 @@ class SessionStore:
             # "session_reset" caused by idle/daily expiry).
             _db_end_reason = auto_reset_reason if auto_reset_reason else "session_reset"
             try:
-                self._db.end_session(db_end_session_id, _db_end_reason)
+                # promote_to_session_reset, not end_session: the row may
+                # already be ended with a recoverable accidental reason
+                # (agent_close / ws_orphan_reap), which first-reason-wins
+                # end_session would preserve — leaving the reset session
+                # resurrectable by stale-route recovery (#61220, #61993).
+                _promote = getattr(self._db, "promote_to_session_reset", None)
+                if callable(_promote):
+                    _promote(db_end_session_id, _db_end_reason)
+                else:
+                    self._db.end_session(db_end_session_id, _db_end_reason)
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
 
@@ -2340,7 +2360,15 @@ class SessionStore:
 
         if self._db and db_end_session_id:
             try:
-                self._db.end_session(db_end_session_id, "session_reset")
+                # Promote (not plain end_session): an accidental
+                # agent_close/ws_orphan_reap end must not survive an explicit
+                # user reset, or recovery resurrects the reset session
+                # (#61993 — the user's /new was silently undone).
+                _promote = getattr(self._db, "promote_to_session_reset", None)
+                if callable(_promote):
+                    _promote(db_end_session_id, "session_reset")
+                else:
+                    self._db.end_session(db_end_session_id, "session_reset")
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
 
@@ -2401,7 +2429,15 @@ class SessionStore:
 
         if self._db and db_end_session_id:
             try:
-                self._db.end_session(db_end_session_id, "session_switch")
+                # Promote (not plain end_session): a stale agent_close /
+                # ws_orphan_reap end on the outgoing session must be upgraded
+                # to the explicit switch boundary, or recovery can resurrect
+                # it over the user's /resume choice (#61220 bug class).
+                _promote = getattr(self._db, "promote_to_session_reset", None)
+                if callable(_promote):
+                    _promote(db_end_session_id, "session_switch")
+                else:
+                    self._db.end_session(db_end_session_id, "session_switch")
             except Exception as e:
                 logger.debug("Session DB end_session failed: %s", e)
 

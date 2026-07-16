@@ -376,7 +376,13 @@ class TestResumePendingExpiredAutoReset:
         """Stale resume_pending triggers was_auto_reset=True with reason
         'resume_pending_expired', NOT 'idle'."""
         monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "3600")
-        store = _make_store_with_db(tmp_path)
+        # The freshness gate requires an opted-in reset policy — mode "none"
+        # disables it entirely (#61052). Use a huge idle window so only the
+        # freshness gate (not the idle policy) can fire.
+        store = _make_store_with_db(
+            tmp_path,
+            policy=SessionResetPolicy(mode="idle", idle_minutes=999999),
+        )
         source = _make_source()
 
         old = self._seed_stale_resume_pending(store, source)
@@ -392,7 +398,10 @@ class TestResumePendingExpiredAutoReset:
     ):
         """reset_had_activity reflects whether the old session was used."""
         monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "3600")
-        store = _make_store_with_db(tmp_path)
+        store = _make_store_with_db(
+            tmp_path,
+            policy=SessionResetPolicy(mode="idle", idle_minutes=999999),
+        )
         source = _make_source()
 
         old = self._seed_stale_resume_pending(store, source)
@@ -411,14 +420,19 @@ class TestResumePendingExpiredAutoReset:
         generic 'session_reset', so the event is auditable (#58933 fix)."""
         monkeypatch.setenv("HERMES_AUTO_CONTINUE_FRESHNESS", "3600")
         db = _make_db_mock()
-        store = _make_store_with_db(tmp_path, db)
+        store = _make_store_with_db(
+            tmp_path, db,
+            policy=SessionResetPolicy(mode="idle", idle_minutes=999999),
+        )
         source = _make_source()
 
         old = self._seed_stale_resume_pending(store, source)
         store.get_or_create_session(source)
 
-        db.end_session.assert_called_once()
-        ended_id, ended_reason = db.end_session.call_args.args
+        # Auto-reset now writes through promote_to_session_reset so an
+        # accidental agent_close end can't shadow the reset boundary.
+        db.promote_to_session_reset.assert_called_once()
+        ended_id, ended_reason = db.promote_to_session_reset.call_args.args
         assert ended_id == old.session_id
         assert ended_reason == "resume_pending_expired", (
             f"expected 'resume_pending_expired', got {ended_reason!r} — "
@@ -445,8 +459,8 @@ class TestResumePendingExpiredAutoReset:
 
         store.get_or_create_session(source)
 
-        db.end_session.assert_called_once()
-        _, ended_reason = db.end_session.call_args.args
+        db.promote_to_session_reset.assert_called_once()
+        _, ended_reason = db.promote_to_session_reset.call_args.args
         assert ended_reason == "idle"
 
     def test_freshness_disabled_skips_resume_pending_expired(
@@ -465,3 +479,4 @@ class TestResumePendingExpiredAutoReset:
         # Freshness disabled → same session, no DB end_session call.
         assert refreshed.session_id == old.session_id
         db.end_session.assert_not_called()
+        db.promote_to_session_reset.assert_not_called()

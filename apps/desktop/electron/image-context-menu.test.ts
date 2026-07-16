@@ -25,7 +25,11 @@ function createActions() {
 
 test('keeps Copy Image available when Chromium omits a large image srcURL', () => {
   const { actions, calls } = createActions()
-  const items = imageContextMenuItems({ mediaType: 'image', srcURL: '', x: 100, y: 120 }, actions)
+
+  const items = imageContextMenuItems(
+    { mediaType: 'image', hasImageContents: true, srcURL: '', x: 100, y: 120 },
+    actions
+  )
 
   assert.deepEqual(
     items.map(item => item.label),
@@ -39,7 +43,11 @@ test('keeps Copy Image available when Chromium omits a large image srcURL', () =
 test('keeps URL-dependent image actions when srcURL is available', () => {
   const { actions, calls } = createActions()
   const url = 'https://example.com/image.png'
-  const items = imageContextMenuItems({ mediaType: 'image', srcURL: url, x: 5, y: 8 }, actions)
+
+  const items = imageContextMenuItems(
+    { mediaType: 'image', hasImageContents: true, srcURL: url, x: 5, y: 8 },
+    actions
+  )
 
   assert.deepEqual(
     items.map(item => item.label),
@@ -60,5 +68,17 @@ test('keeps URL-dependent image actions when srcURL is available', () => {
 test('does not add image actions for a non-image target', () => {
   const { actions } = createActions()
 
-  assert.deepEqual(imageContextMenuItems({ mediaType: 'none', srcURL: '', x: 0, y: 0 }, actions), [])
+  assert.deepEqual(
+    imageContextMenuItems({ mediaType: 'none', hasImageContents: false, srcURL: '', x: 0, y: 0 }, actions),
+    []
+  )
+})
+
+test('does not offer Copy Image when the target has no decoded image contents', () => {
+  const { actions } = createActions()
+
+  assert.deepEqual(
+    imageContextMenuItems({ mediaType: 'image', hasImageContents: false, srcURL: '', x: 0, y: 0 }, actions),
+    []
+  )
 })

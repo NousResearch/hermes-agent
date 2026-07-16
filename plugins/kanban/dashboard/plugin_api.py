@@ -608,6 +608,10 @@ class CreateTaskBody(BaseModel):
     skills: Optional[list[str]] = None
     goal_mode: bool = False
     goal_max_turns: Optional[int] = None
+    # Kept as mappings because ``SubscriptionContext`` accepts and centrally
+    # validates this public representation of explicit targets.
+    notification_targets: list[dict[str, Any]] = Field(default_factory=list)
+    no_subscribe: bool = False
 
 
 @router.post("/tasks")
@@ -615,6 +619,16 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
+        # Dashboard requests have no ambient delivery channel.  Deliberately
+        # omit the policy context unless a caller named durable targets in the
+        # payload: an empty context would otherwise activate defaults or parent
+        # inheritance intended for other creation surfaces.
+        subscription_context = None
+        if payload.no_subscribe or payload.notification_targets:
+            subscription_context = kanban_db.SubscriptionContext(
+                explicit_targets=tuple(payload.notification_targets),
+                no_subscribe=payload.no_subscribe,
+            )
         task_id = kanban_db.create_task(
             conn,
             title=payload.title,
@@ -632,6 +646,7 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
             skills=payload.skills,
             goal_mode=payload.goal_mode,
             goal_max_turns=payload.goal_max_turns,
+            subscription_context=subscription_context,
         )
         task = kanban_db.get_task(conn, task_id)
         body: dict[str, Any] = {"task": _task_dict(task) if task else None}

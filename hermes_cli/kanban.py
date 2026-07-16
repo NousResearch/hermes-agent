@@ -132,6 +132,20 @@ def _parse_branch_flag(value: Optional[str]) -> Optional[str]:
     return branch
 
 
+def _parse_notify_target(value: str) -> kb.NotificationTarget:
+    """Parse ``PLATFORM:CHAT_ID[:THREAD_ID]`` create-time notification intent."""
+    parts = (value or "").strip().split(":", 2)
+    if len(parts) < 2 or not parts[0].strip() or not parts[1].strip():
+        raise argparse.ArgumentTypeError(
+            "--notify must be PLATFORM:CHAT_ID[:THREAD_ID]"
+        )
+    return kb.NotificationTarget(
+        platform=parts[0].strip(),
+        chat_id=parts[1].strip(),
+        thread_id=parts[2].strip() if len(parts) == 3 and parts[2].strip() else None,
+    )
+
+
 def _check_dispatcher_presence() -> tuple[bool, str]:
     """Return ``(running, message)``.
 
@@ -333,6 +347,11 @@ def build_parser(parent_subparsers: argparse._SubParsersAction) -> argparse.Argu
                                "and re-queues the task.")
     p_create.add_argument("--created-by", default="user",
                           help="Author name recorded on the task (default: user)")
+    p_create.add_argument("--notify", action="append", default=[], dest="notify_targets",
+                          metavar="PLATFORM:CHAT_ID[:THREAD_ID]",
+                          help="Subscribe a gateway target to this task's terminal events (repeatable)")
+    p_create.add_argument("--no-subscribe", action="store_true",
+                          help="Do not create any notify subscriptions for this task")
     p_create.add_argument("--skill", action="append", default=[], dest="skills",
                           help="Skill to force-load into the worker "
                                "(repeatable). The kanban lifecycle is already "
@@ -1306,6 +1325,10 @@ def _cmd_create(args: argparse.Namespace) -> int:
     try:
         ws_kind, ws_path = _parse_workspace_flag(args.workspace)
         branch_name = _parse_branch_flag(getattr(args, "branch", None))
+        explicit_targets = tuple(
+            _parse_notify_target(value)
+            for value in getattr(args, "notify_targets", ())
+        )
     except argparse.ArgumentTypeError as exc:
         print(f"kanban: {exc}", file=sys.stderr)
         return 2
@@ -1325,6 +1348,43 @@ def _cmd_create(args: argparse.Namespace) -> int:
             file=sys.stderr,
         )
         return 2
+    incoming_context = getattr(args, "subscription_context", kb.SubscriptionContext())
+    ambient_origin = incoming_context.ambient_origin
+    owner = (
+        getattr(ambient_origin, "notifier_profile", None)
+        if ambient_origin is not None
+        else _profile_author()
+    )
+    ambient_platform = getattr(ambient_origin, "platform", None)
+    ambient_chat_id = getattr(ambient_origin, "chat_id", None)
+    ambient_thread_id = str(
+        getattr(ambient_origin, "thread_id", None) or ""
+    ).strip()
+    ambient_user_id = getattr(ambient_origin, "user_id", None)
+    explicit_targets = tuple(
+        kb.NotificationTarget(
+            platform=target.platform,
+            chat_id=target.chat_id,
+            thread_id=target.thread_id,
+            user_id=target.user_id or (
+                ambient_user_id
+                if (
+                    target.platform.casefold()
+                    == str(ambient_platform or "").casefold()
+                    and target.chat_id == str(ambient_chat_id or "")
+                    and str(target.thread_id or "").strip() == ambient_thread_id
+                )
+                else None
+            ),
+            notifier_profile=target.notifier_profile or owner,
+        )
+        for target in explicit_targets
+    )
+    subscription_context = kb.SubscriptionContext(
+        explicit_targets=explicit_targets,
+        no_subscribe=bool(getattr(args, "no_subscribe", False)),
+        ambient_origin=ambient_origin,
+    )
     with kb.connect_closing() as conn:
         task_id = kb.create_task(
             conn,
@@ -1347,6 +1407,7 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             initial_status=getattr(args, "initial_status", "running"),
+            subscription_context=subscription_context,
         )
         task = kb.get_task(conn, task_id)
     if getattr(args, "json", False):
@@ -1388,6 +1449,9 @@ def _cmd_swarm(args: argparse.Namespace) -> int:
             created_by=args.created_by or _profile_author(),
             priority=args.priority,
             idempotency_key=getattr(args, "idempotency_key", None),
+            subscription_context=(
+                getattr(args, "subscription_context", None) or kb.SubscriptionContext()
+            ),
         )
     if getattr(args, "json", False):
         print(json.dumps(created.as_dict(), indent=2, ensure_ascii=False))
@@ -2751,7 +2815,8 @@ Common subcommands:
   `list` (alias `ls`)   List tasks on the current board
   `show <id>`           Task details + comments + events
   `stats`               Per-status / per-assignee counts
-  `create <title>…`     Create a task (auto-subscribes you to events)
+  `create <title>…`     Create a task; automatic event subscription requires `kanban.auto_subscribe_on_create`
+                         Use `--notify` for explicit targets or `--no-subscribe` for none
   `comment <id> <msg>`  Append a comment
   `complete <id>…`      Mark task(s) done
   `block <id> [reason]` Mark blocked; `schedule <id> [reason]` parks time-delay work; `unblock <id>` to revive
@@ -2767,12 +2832,17 @@ Read-only commands are safe while an agent is running.\
 """
 
 
-def run_slash(rest: str) -> str:
+def run_slash(
+    rest: str,
+    *,
+    subscription_context: Optional[kb.SubscriptionContext] = None,
+) -> str:
     """Execute a ``/kanban …`` string and return captured stdout/stderr.
 
     ``rest`` is everything after ``/kanban`` (may be empty).  Used from
     both the interactive CLI (``self._handle_kanban_command``) and the
-    gateway (``_handle_kanban_command``) so formatting is identical.
+    gateway (``_handle_kanban_command``) so formatting is identical. Gateway
+    callers may provide their structured origin context for ``create``.
     """
     import io
     import contextlib
@@ -2829,6 +2899,10 @@ def run_slash(rest: str) -> str:
         return f"⚠ /kanban usage error\n{body}" if body else "⚠ /kanban usage error"
     except argparse.ArgumentError as exc:
         return f"⚠ /kanban usage error\n{_usage_for_error()}\n{exc}"
+
+    # Every interactive creation deliberately reaches the ticket-01 policy.
+    # CLI callers have an empty context; gateway callers supply their source.
+    args.subscription_context = subscription_context or kb.SubscriptionContext()
 
     with contextlib.redirect_stdout(buf_out), contextlib.redirect_stderr(buf_err):
         try:

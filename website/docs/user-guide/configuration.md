@@ -63,6 +63,33 @@ Settings are resolved in this order (highest priority first):
 Secrets (API keys, bot tokens, passwords) go in `.env`. Everything else (model, terminal backend, compression settings, memory limits, toolsets) goes in `config.yaml`. When both are set, `config.yaml` wins for non-secret settings.
 :::
 
+## Kanban task subscriptions
+
+Configure automatic create-time Kanban subscriptions under `kanban` in `config.yaml`:
+
+```yaml
+kanban:
+  auto_subscribe_on_create: true
+  notify_default_targets:
+    - platform: telegram
+      chat_id: "1234567890123"
+      thread_id: "7"
+      notifier_profile: default
+  notify_inherit_depth: 1
+```
+
+`auto_subscribe_on_create` is the only global gate for automatic origin, parent-inherited, and default subscriptions. Set it to `false` to disable all three sources. Explicit targets supplied with `hermes kanban create --notify` or a create API still work while the gate is disabled.
+
+Each default target requires `platform` and `chat_id`. It can also include `thread_id`, `user_id`, and `notifier_profile`. Hermes normalizes and deduplicates targets by `platform`, `chat_id`, and `thread_id`. The other fields record user and notifier ownership for delivery.
+
+`notify_inherit_depth` controls parent-graph inheritance:
+
+- `0` disables inheritance
+- A positive integer reads that many ancestor levels
+- `null` or `"unlimited"` reads every reachable ancestor
+
+Per-create `no_subscribe` intent has the highest priority and suppresses every target source. See [Kanban create-time subscription policy](/user-guide/features/kanban#create-time-subscription-policy) for precedence and creator-specific behavior.
+
 :::tip Org deployments
 An administrator can pin specific config and secret values that a standard user
 cannot override, via a system-level managed directory. See

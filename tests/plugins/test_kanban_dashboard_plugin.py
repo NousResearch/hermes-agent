@@ -19,6 +19,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import config as hermes_config
 
 
 # ---------------------------------------------------------------------------
@@ -113,6 +114,77 @@ def test_create_task_appears_on_board(client):
     assert ready["tasks"][0]["id"] == task_id
     assert "acme" in data["tenants"]
     assert "researcher" in data["assignees"]
+
+
+def test_dashboard_task_create_does_not_infer_notification_targets(client):
+    """Dashboard creation remains notification-free without explicit payload targets."""
+    config = hermes_config.load_config()
+    config["kanban"].update({
+        "auto_subscribe_on_create": True,
+        "notify_default_targets": [{"platform": "telegram", "chat_id": "default-chat"}],
+    })
+    hermes_config.save_config(config)
+
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={"title": "No inferred dashboard destination"},
+    )
+
+    assert response.status_code == 200, response.text
+    with kb.connect() as conn:
+        assert kb.list_notify_subs(conn, response.json()["task"]["id"]) == []
+
+
+def test_dashboard_task_create_uses_explicit_notification_targets_when_gate_disabled(client):
+    """Explicit dashboard targets are routed through the shared policy."""
+    config = hermes_config.load_config()
+    config["kanban"].update({
+        "auto_subscribe_on_create": False,
+        "notify_default_targets": [{"platform": "telegram", "chat_id": "default-chat"}],
+    })
+    hermes_config.save_config(config)
+
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "Explicit dashboard destinations",
+            "notification_targets": [
+                {"platform": "telegram", "chat_id": "chat-1", "thread_id": "topic-1"},
+                {"platform": "discord", "chat_id": "channel-2", "notifier_profile": "ops"},
+            ],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    with kb.connect() as conn:
+        rows = kb.list_notify_subs(conn, response.json()["task"]["id"])
+    assert {(row["platform"], row["chat_id"], row["thread_id"], row["notifier_profile"])
+            for row in rows} == {
+        ("telegram", "chat-1", "topic-1", None),
+        ("discord", "channel-2", "", "ops"),
+    }
+
+
+def test_dashboard_task_create_no_subscribe_overrides_notification_targets(client):
+    config = hermes_config.load_config()
+    config["kanban"].update({
+        "auto_subscribe_on_create": True,
+        "notify_default_targets": [{"platform": "telegram", "chat_id": "default-chat"}],
+    })
+    hermes_config.save_config(config)
+
+    response = client.post(
+        "/api/plugins/kanban/tasks",
+        json={
+            "title": "No dashboard destinations",
+            "no_subscribe": True,
+            "notification_targets": [{"platform": "discord", "chat_id": "channel-1"}],
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    with kb.connect() as conn:
+        assert kb.list_notify_subs(conn, response.json()["task"]["id"]) == []
 
 
 def test_board_list_recommends_persistent_workspace_for_configured_workdir(

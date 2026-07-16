@@ -12,6 +12,7 @@ import pytest
 
 from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
+from hermes_cli import config as hermes_config
 
 
 @pytest.fixture
@@ -81,6 +82,14 @@ def test_run_slash_no_args_shows_usage(kanban_home):
     out = kc.run_slash("")
     assert "kanban" in out.lower()
     assert "create" in out.lower() or "subcommand" in out.lower() or "action" in out.lower()
+
+
+def test_run_slash_help_describes_create_subscription_controls(kanban_home):
+    out = kc.run_slash("help")
+
+    assert "kanban.auto_subscribe_on_create" in out
+    assert "--notify" in out
+    assert "--no-subscribe" in out
 
 
 def test_run_slash_create_and_list(kanban_home):
@@ -165,6 +174,136 @@ def test_run_slash_json_output(kanban_home):
     assert payload["title"] == "jsontask"
     assert payload["assignee"] == "alice"
     assert payload["status"] == "ready"
+
+
+def test_run_slash_create_notification_intent(kanban_home, monkeypatch):
+    monkeypatch.setenv("HERMES_PROFILE_NAME", "cli-prof")
+    config = hermes_config.load_config()
+    config["kanban"].update({
+        "auto_subscribe_on_create": True,
+        "notify_default_targets": [{"platform": "default", "chat_id": "fallback"}],
+    })
+    hermes_config.save_config(config)
+
+    explicit = json.loads(kc.run_slash(
+        "create 'explicit notifications' --notify telegram:chat-1:topic-1 "
+        "--notify discord:channel-2 --json"
+    ))
+    quiet = json.loads(kc.run_slash(
+        "create 'no notifications' --notify telegram:chat-3 --no-subscribe --json"
+    ))
+
+    with kb.connect() as conn:
+        explicit_subs = kb.list_notify_subs(conn, explicit["id"])
+        quiet_subs = kb.list_notify_subs(conn, quiet["id"])
+
+    assert {(row["platform"], row["chat_id"], row["thread_id"])
+            for row in explicit_subs} == {
+        ("telegram", "chat-1", "topic-1"),
+        ("discord", "channel-2", ""),
+    }
+    assert {row["notifier_profile"] for row in explicit_subs} == {"cli-prof"}
+    assert quiet_subs == []
+
+
+def test_run_slash_create_uses_defaults_and_explicit_targets_ignore_disabled_gate(kanban_home):
+    config = hermes_config.load_config()
+    config["kanban"].update({
+        "auto_subscribe_on_create": True,
+        "notify_default_targets": [{"platform": "default", "chat_id": "fallback"}],
+    })
+    hermes_config.save_config(config)
+    default_task = json.loads(kc.run_slash("create 'default notifications' --json"))
+
+    config["kanban"]["auto_subscribe_on_create"] = False
+    hermes_config.save_config(config)
+    explicit_task = json.loads(kc.run_slash(
+        "create 'explicit despite disabled gate' --notify discord:channel-2 --json"
+    ))
+
+    with kb.connect() as conn:
+        default_subs = kb.list_notify_subs(conn, default_task["id"])
+        explicit_subs = kb.list_notify_subs(conn, explicit_task["id"])
+
+    assert [(row["platform"], row["chat_id"], row["thread_id"])
+            for row in default_subs] == [("default", "fallback", "")]
+    assert [(row["platform"], row["chat_id"], row["thread_id"])
+            for row in explicit_subs] == [("discord", "channel-2", "")]
+
+
+def test_run_slash_swarm_applies_gateway_context_to_root_only(kanban_home):
+    config = hermes_config.load_config()
+    config["kanban"]["auto_subscribe_on_create"] = True
+    hermes_config.save_config(config)
+
+    created = json.loads(kc.run_slash(
+        "swarm 'Research the market' --worker researcher:Research "
+        "--verifier reviewer --synthesizer writer --json",
+        subscription_context=kb.SubscriptionContext(
+            ambient_origin=kb.NotificationTarget("telegram", "chat-1", "topic-1", "user-1"),
+        ),
+    ))
+
+    with kb.connect() as conn:
+        root_subs = kb.list_notify_subs(conn, created["root_id"])
+        child_subs = [
+            kb.list_notify_subs(conn, task_id)
+            for task_id in [
+                *created["worker_ids"],
+                created["verifier_id"],
+                created["synthesizer_id"],
+            ]
+        ]
+
+    assert [(row["platform"], row["chat_id"], row["thread_id"], row["user_id"])
+            for row in root_subs] == [("telegram", "chat-1", "topic-1", "user-1")]
+    assert child_subs == [[] for _ in child_subs]
+
+
+def test_run_slash_swarm_uses_defaults_for_ordinary_cli_create(kanban_home):
+    config = hermes_config.load_config()
+    config["kanban"].update({
+        "auto_subscribe_on_create": True,
+        "notify_default_targets": [{"platform": "default", "chat_id": "fallback"}],
+    })
+    hermes_config.save_config(config)
+
+    created = json.loads(kc.run_slash(
+        "swarm 'Research the market' --worker researcher:Research "
+        "--verifier reviewer --synthesizer writer --json",
+    ))
+
+    with kb.connect() as conn:
+        subscriptions = kb.list_notify_subs(conn, created["root_id"])
+    assert [(row["platform"], row["chat_id"], row["thread_id"])
+            for row in subscriptions] == [("default", "fallback", "")]
+
+
+def test_kanban_command_swarm_uses_defaults_for_direct_cli(kanban_home):
+    """The top-level ``hermes kanban`` path must activate automatic defaults."""
+    config = hermes_config.load_config()
+    config["kanban"].update({
+        "auto_subscribe_on_create": True,
+        "notify_default_targets": [{"platform": "default", "chat_id": "fallback"}],
+    })
+    hermes_config.save_config(config)
+
+    parser = argparse.ArgumentParser(prog="hermes", add_help=False)
+    subparsers = parser.add_subparsers(dest="command")
+    kc.build_parser(subparsers)
+    args = parser.parse_args([
+        "kanban", "swarm", "Research the market",
+        "--worker", "researcher:Research",
+        "--verifier", "reviewer",
+        "--synthesizer", "writer",
+    ])
+
+    assert kc.kanban_command(args) == 0
+    with kb.connect() as conn:
+        root = next(task for task in kb.list_tasks(conn) if task.title.startswith("Swarm:"))
+        subscriptions = kb.list_notify_subs(conn, root.id)
+    assert [(row["platform"], row["chat_id"], row["thread_id"])
+            for row in subscriptions] == [("default", "fallback", "")]
 
 
 def test_run_slash_dispatch_dry_run_counts(kanban_home):

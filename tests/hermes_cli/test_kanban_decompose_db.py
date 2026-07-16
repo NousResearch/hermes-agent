@@ -32,6 +32,13 @@ def _create_triage(conn, title="rough idea", body=None, assignee=None, tenant=No
     )
 
 
+def _subscriptions(conn, task_id):
+    return {
+        (row["platform"], row["chat_id"], row["thread_id"] or "")
+        for row in kb.list_notify_subs(conn, task_id)
+    }
+
+
 def test_decompose_creates_children_and_promotes_root(kanban_home):
     with kb.connect() as conn:
         tid = _create_triage(conn, title="ship a feature")
@@ -228,3 +235,55 @@ def test_decompose_per_child_workspace_override(kanban_home):
         inh = kb.get_task(conn, child_ids[1])
     assert over.workspace_path == "/other/repo"
     assert inh.workspace_path == proj
+
+
+@pytest.mark.parametrize("depth", [0, 1, "unlimited"])
+def test_decompose_applies_policy_after_persisting_only_sibling_parents(
+    kanban_home, depth,
+):
+    """The root remains a dependent, never a hidden subscription parent."""
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n"
+        "  auto_subscribe_on_create: true\n"
+        "  notify_inherit_depth: " + str(depth) + "\n"
+        "  notify_default_targets:\n"
+        "    - platform: default\n"
+        "      chat_id: fallback\n"
+    )
+    with kb.connect() as conn:
+        root = _create_triage(conn)
+        kb.add_notify_sub(conn, task_id=root, platform="root", chat_id="must-not-inherit")
+        child_ids = kb.decompose_triage_task(
+            conn,
+            root,
+            root_assignee="orch",
+            children=[{"title": "first"}, {"title": "second", "parents": [0]}],
+        )
+        assert child_ids is not None
+        assert _subscriptions(conn, child_ids[0]) == {("default", "fallback", "")}
+        assert _subscriptions(conn, child_ids[1]) == {("default", "fallback", "")}
+        assert kb.parent_ids(conn, child_ids[0]) == []
+        assert kb.parent_ids(conn, child_ids[1]) == [child_ids[0]]
+
+
+def test_decompose_invalid_subscription_policy_rolls_back_everything(kanban_home):
+    """Policy validation is part of the decomposition's one write transaction."""
+    (kanban_home / "config.yaml").write_text(
+        "kanban:\n"
+        "  auto_subscribe_on_create: true\n"
+        "  notify_default_targets: invalid\n"
+    )
+    with kb.connect() as conn:
+        root = _create_triage(conn)
+        with pytest.raises(ValueError, match="notify_default_targets"):
+            kb.decompose_triage_task(
+                conn,
+                root,
+                root_assignee="orch",
+                children=[{"title": "first"}, {"title": "second", "parents": [0]}],
+            )
+        assert kb.get_task(conn, root).status == "triage"
+        assert kb.child_ids(conn, root) == []
+        assert conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0] == 1
+        assert conn.execute("SELECT COUNT(*) FROM task_links").fetchone()[0] == 0
+        assert conn.execute("SELECT COUNT(*) FROM kanban_notify_subs").fetchone()[0] == 0

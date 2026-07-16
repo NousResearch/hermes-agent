@@ -42,6 +42,31 @@ def test_create_swarm_builds_parallel_workers_verifier_and_synthesizer(tmp_path)
         conn.close()
 
 
+def test_create_swarm_applies_creation_context_to_root_only(tmp_path):
+    """A swarm's notification intent belongs to its user-facing root card."""
+    conn = kb.connect(tmp_path / "kanban.db")
+    try:
+        created = create_swarm(
+            conn,
+            goal="Research and synthesize.",
+            workers=[SwarmWorkerSpec(profile="researcher", title="Research", body="Find facts")],
+            verifier_assignee="reviewer",
+            synthesizer_assignee="writer",
+            subscription_context=kb.SubscriptionContext(explicit_targets=(
+                kb.NotificationTarget("telegram", "chat-1", "topic-1"),
+            )),
+        )
+
+        assert [(row["platform"], row["chat_id"], row["thread_id"])
+                for row in kb.list_notify_subs(conn, created.root_id)] == [
+            ("telegram", "chat-1", "topic-1"),
+        ]
+        for task_id in [*created.worker_ids, created.verifier_id, created.synthesizer_id]:
+            assert kb.list_notify_subs(conn, task_id) == []
+    finally:
+        conn.close()
+
+
 def test_swarm_blackboard_merges_structured_updates(tmp_path):
     conn = kb.connect(tmp_path / "kanban.db")
     try:

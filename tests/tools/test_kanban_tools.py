@@ -2156,8 +2156,7 @@ def test_create_subscribes_tui_session_via_session_key(monkeypatch, worker_env):
 
 
 def test_create_does_not_subscribe_in_cli_session(monkeypatch, worker_env):
-    """CLI / cron / test sessions have no persistent delivery channel.
-    _maybe_auto_subscribe returns False and no row is written."""
+    """CLI / cron / test sessions have no persistent delivery channel."""
     from tools import kanban_tools as kt
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
     monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
@@ -2223,26 +2222,106 @@ def test_create_partial_session_context_no_subscribe(monkeypatch, worker_env):
     assert d["subscribed"] is False, d
 
 
-def test_maybe_auto_subscribe_swallows_add_notify_sub_failure(monkeypatch, worker_env):
-    """If add_notify_sub itself raises (e.g. DB locked, schema drift),
-    _maybe_auto_subscribe must NOT bubble that up and fail the parent
-    kanban_create. The function returns False and the parent create
-    still succeeds with subscribed=False."""
-    from tools import kanban_tools as kt
-    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "telegram")
-    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "chat-42")
-
+@pytest.mark.parametrize("partial_session", [False, True], ids=["unattached", "partial"])
+def test_create_unattached_or_partial_session_inherits_actual_parent_subscriptions(
+    monkeypatch, worker_env, partial_session,
+):
+    """Workers without a durable origin still apply canonical inheritance."""
     from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
 
-    def _boom(*a, **kw):
-        raise RuntimeError("simulated DB failure")
+    with open(os.path.join(os.environ["HERMES_HOME"], "config.yaml"), "w") as config:
+        config.write("kanban:\n  notify_inherit_depth: 1\n")
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    if partial_session:
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "slack")
 
-    monkeypatch.setattr(kb, "add_notify_sub", _boom)
+    with kb.connect() as conn:
+        kb.add_notify_sub(conn, task_id=worker_env, platform="parent", chat_id="one")
 
-    out = kt._handle_create({
-        "title": "auto-sub tolerates add_notify_sub failure",
+    response = json.loads(kt._handle_create({
+        "title": "inherits without ambient target",
         "assignee": "peer",
-    })
-    d = json.loads(out)
-    assert d["ok"] is True, d
-    assert d["subscribed"] is False, d
+        "parents": [worker_env],
+    }))
+    assert response["ok"] is True, response
+    assert {
+        (row["platform"], row["chat_id"])
+        for row in _list_subs_for_task(response["task_id"])
+    } == {("parent", "one")}
+
+
+@pytest.mark.parametrize("partial_session", [False, True], ids=["unattached", "partial"])
+def test_create_unattached_or_partial_session_uses_configured_defaults(
+    monkeypatch, worker_env, partial_session,
+):
+    """No ambient destination must not suppress configured defaults."""
+    from tools import kanban_tools as kt
+
+    with open(os.path.join(os.environ["HERMES_HOME"], "config.yaml"), "w") as config:
+        config.write(
+            "kanban:\n"
+            "  notify_default_targets:\n"
+            "    - platform: default\n"
+            "      chat_id: configured\n"
+        )
+    monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_CHAT_ID", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+    monkeypatch.delenv("HERMES_SESSION_ID", raising=False)
+    if partial_session:
+        monkeypatch.setenv("HERMES_SESSION_PLATFORM", "slack")
+
+    response = json.loads(kt._handle_create({
+        "title": "defaults without ambient target",
+        "assignee": "peer",
+    }))
+    assert response["ok"] is True, response
+    assert {
+        (row["platform"], row["chat_id"])
+        for row in _list_subs_for_task(response["task_id"])
+    } == {("default", "configured")}
+
+
+@pytest.mark.parametrize(
+    ("depth", "expected"),
+    [
+        (0, {("gateway", "origin", "")}),
+        (1, {("gateway", "origin", ""), ("parent", "one", "")}),
+        ("unlimited", {("gateway", "origin", ""), ("parent", "one", ""), ("ancestor", "two", "")}),
+    ],
+)
+def test_create_inherits_only_actual_parent_subscriptions(monkeypatch, worker_env, depth, expected):
+    """Worker-created children delegate inheritance to the shared create policy."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    home = os.environ["HERMES_HOME"]
+    with open(os.path.join(home, "config.yaml"), "w") as config:
+        config.write(
+            "kanban:\n"
+            "  auto_subscribe_on_create: true\n"
+            f"  notify_inherit_depth: {depth}\n"
+        )
+    monkeypatch.setenv("HERMES_SESSION_PLATFORM", "gateway")
+    monkeypatch.setenv("HERMES_SESSION_CHAT_ID", "origin")
+    monkeypatch.delenv("HERMES_SESSION_KEY", raising=False)
+
+    with kb.connect() as conn:
+        ancestor = kb.create_task(conn, title="ancestor", assignee="peer")
+        kb.add_notify_sub(conn, task_id=ancestor, platform="ancestor", chat_id="two")
+        kb.add_notify_sub(conn, task_id=worker_env, platform="parent", chat_id="one")
+        kb.link_tasks(conn, ancestor, worker_env)
+
+    response = json.loads(kt._handle_create({
+        "title": "inherited child", "assignee": "peer", "parents": [worker_env],
+    }))
+    assert response["ok"] is True, response
+    assert response["subscribed"] is bool(expected)
+    assert {
+        (row["platform"], row["chat_id"], row["thread_id"] or "")
+        for row in _list_subs_for_task(response["task_id"])
+    } == expected

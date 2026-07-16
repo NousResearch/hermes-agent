@@ -170,7 +170,7 @@ def _enqueue_terminal_notification_in_child(db_path, task_id, event_id, queue):
             platform="telegram",
             chat_id="114874376",
             thread_id="1515141",
-            notifier_profile="auditor",
+            notifier_profile="reviewer",
             event_id=event_id,
             title="intent final",
             outcome_key="subprocess-final",
@@ -247,7 +247,7 @@ def test_notifier_tolerates_malformed_timeout_limit(tmp_path, monkeypatch):
     try:
         tid = kb.create_task(conn, title="timeout payload", assignee="worker")
         kb.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-timeout")
-        kb._append_event(conn, tid, kind="timed_out", payload={"limit_seconds": "auditor"})
+        kb._append_event(conn, tid, kind="timed_out", payload={"limit_seconds": "reviewer"})
     finally:
         conn.close()
 
@@ -394,26 +394,26 @@ def test_kanban_notifier_coalesces_a_backlog_to_one_status_write(tmp_path, monke
     assert events == []
 
 
-def test_kanban_notifier_renders_auditor_claimed_review_status(tmp_path, monkeypatch):
-    """An auditor claim must refresh the same status card, not remain invisible."""
-    db_path = tmp_path / "auditor-claimed-review.db"
+def test_kanban_notifier_renders_reviewer_claimed_review_status(tmp_path, monkeypatch):
+    """An reviewer claim must refresh the same status card, not remain invisible."""
+    db_path = tmp_path / "reviewer-claimed-review.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
     kb.init_db()
     with kb.connect() as conn:
-        task_id = kb.create_task(conn, title="auditor claim visible", assignee="heavy")
+        task_id = kb.create_task(conn, title="reviewer claim visible", assignee="heavy")
         kb.add_notify_sub(conn, task_id=task_id, platform="telegram", chat_id="chat-1")
         assert kb.request_review(conn, task_id, summary="ready for audit")
-        kb._append_event(conn, task_id, kind="auditor_review_claimed", payload={"profile": "auditor"})
+        kb._append_event(conn, task_id, kind="reviewer_review_claimed", payload={"profile": "reviewer"})
 
     adapter = StatusCardAdapter()
     asyncio.run(_run_one_notifier_tick(monkeypatch, _make_runner(adapter)))
 
     assert len(adapter.sent) == 1
-    assert "Auditor started review" in adapter.sent[0]["text"]
+    assert "Reviewer started review" in adapter.sent[0]["text"]
     with kb.connect() as conn:
         _, events = kb.unseen_events_for_sub(
             conn, task_id=task_id, platform="telegram", chat_id="chat-1",
-            kinds=["review_requested", "auditor_review_claimed"],
+            kinds=["review_requested", "reviewer_review_claimed"],
         )
     assert events == []
 
@@ -619,27 +619,27 @@ def test_notifier_standalone_owner_uses_its_own_adapter(tmp_path, monkeypatch):
     kb.init_db()
     conn = kb.connect()
     try:
-        tid = kb.create_task(conn, title="owned by auditor", assignee="worker")
+        tid = kb.create_task(conn, title="owned by reviewer", assignee="worker")
         kb.add_notify_sub(
-            conn, task_id=tid, platform="telegram", chat_id="chat-auditor",
-            notifier_profile="auditor",
+            conn, task_id=tid, platform="telegram", chat_id="chat-reviewer",
+            notifier_profile="reviewer",
         )
         kb.complete_task(conn, tid, summary="done")
     finally:
         conn.close()
 
-    auditor_adapter = RecordingAdapter()
+    reviewer_adapter = RecordingAdapter()
     runner = GatewayRunner.__new__(GatewayRunner)
     runner._running = True
-    runner.adapters = {Platform.TELEGRAM: auditor_adapter}  # type: ignore[assignment]
+    runner.adapters = {Platform.TELEGRAM: reviewer_adapter}  # type: ignore[assignment]
     runner._profile_adapters = {}
-    runner._active_profile_name = lambda: "auditor"
+    runner._active_profile_name = lambda: "reviewer"
     runner._kanban_sub_fail_counts = {}
 
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
-    assert len(auditor_adapter.sent) == 1
-    assert auditor_adapter.sent[0]["chat_id"] == "chat-auditor"
+    assert len(reviewer_adapter.sent) == 1
+    assert reviewer_adapter.sent[0]["chat_id"] == "chat-reviewer"
 
 
 def test_notifier_lease_owner_can_use_stamped_profile_adapter(tmp_path, monkeypatch):
@@ -658,10 +658,10 @@ def test_notifier_lease_owner_can_use_stamped_profile_adapter(tmp_path, monkeypa
 
     conn = kb.connect()
     try:
-        tid = kb.create_task(conn, title="owned by auditor", assignee="worker")
+        tid = kb.create_task(conn, title="owned by reviewer", assignee="worker")
         kb.add_notify_sub(
-            conn, task_id=tid, platform="telegram", chat_id="chat-auditor",
-            notifier_profile="auditor",
+            conn, task_id=tid, platform="telegram", chat_id="chat-reviewer",
+            notifier_profile="reviewer",
         )
         kb.complete_task(conn, tid, summary="done")
     finally:
@@ -673,15 +673,15 @@ def test_notifier_lease_owner_can_use_stamped_profile_adapter(tmp_path, monkeypa
     runner._running = True
     runner._kanban_notifier_profile = "gym-health-bro"
     runner.adapters = {Platform.TELEGRAM: wrong_gateway_adapter}
-    runner._profile_adapters = {"auditor": {Platform.TELEGRAM: owner_adapter}}
+    runner._profile_adapters = {"reviewer": {Platform.TELEGRAM: owner_adapter}}
     runner._kanban_sub_fail_counts = {}
 
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert wrong_gateway_adapter.sent == []
     assert len(owner_adapter.sent) == 1
-    assert owner_adapter.sent[0]["chat_id"] == "chat-auditor"
-    assert _unseen_terminal_events_for(tid, "chat-auditor") == []
+    assert owner_adapter.sent[0]["chat_id"] == "chat-reviewer"
+    assert _unseen_terminal_events_for(tid, "chat-reviewer") == []
 
 
 def test_status_card_reuses_verified_message_id(tmp_path, monkeypatch):
@@ -1002,7 +1002,7 @@ def test_completed_lifecycle_uses_one_card_and_one_final_ping(tmp_path, monkeypa
         )
         kb.add_notify_sub(
             conn, task_id=tid, platform="telegram", chat_id="-100123", thread_id="1515141",
-            notifier_profile="auditor",
+            notifier_profile="reviewer",
         )
         kb._append_event(conn, tid, kind="claimed", payload={})
         kb._append_event(conn, tid, kind="heartbeat", payload={"note": "Проверяю доставку"})
@@ -1022,7 +1022,7 @@ def test_completed_lifecycle_uses_one_card_and_one_final_ping(tmp_path, monkeypa
             },
             expected_run_id=kb.get_task(conn, tid).current_run_id,
         )
-        assert kb.accept_review(conn, tid, summary="verified by auditor")
+        assert kb.accept_review(conn, tid, summary="verified by reviewer")
     finally:
         conn.close()
 
@@ -1044,10 +1044,10 @@ def test_completed_lifecycle_uses_one_card_and_one_final_ping(tmp_path, monkeypa
 
     adapter = ExactLifecycleAdapter()
     first = _make_runner(adapter)
-    first._active_profile_name = lambda: "auditor"
+    first._active_profile_name = lambda: "reviewer"
     asyncio.run(_run_one_notifier_tick(monkeypatch, first))
     second = _make_runner(adapter)
-    second._active_profile_name = lambda: "auditor"
+    second._active_profile_name = lambda: "reviewer"
     asyncio.run(_run_one_notifier_tick(monkeypatch, second))
 
     assert len(adapter.sent) == 2
@@ -1071,7 +1071,7 @@ def test_completed_lifecycle_uses_one_card_and_one_final_ping(tmp_path, monkeypa
             "SELECT notifier_profile, message_id FROM kanban_terminal_notifications WHERE task_id=?",
             (tid,),
         ).fetchone()
-        assert dict(row) == {"notifier_profile": "auditor", "message_id": "message-2"}
+        assert dict(row) == {"notifier_profile": "reviewer", "message_id": "message-2"}
     finally:
         conn.close()
 
@@ -1428,8 +1428,8 @@ def test_terminal_helpers_are_silent_until_root_outcome_is_accepted(tmp_path, mo
                 tid,
                 summary="ready for review: helper completed",
                 metadata={
-                    "notification_key": "auditor-gateway-restart",
-                    "notification_summary": "Auditor gateway restarted.",
+                    "notification_key": "reviewer-gateway-restart",
+                    "notification_summary": "Reviewer gateway restarted.",
                 },
                 expected_run_id=kb.get_task(conn, tid).current_run_id,
             )
@@ -1464,7 +1464,7 @@ def test_terminal_helpers_are_silent_until_root_outcome_is_accepted(tmp_path, mo
             summary="ready for review: restart helper completed",
             metadata={
                 "notification_key": "technical-helper",
-                "notification_summary": "Auditor gateway restarted.",
+                "notification_summary": "Reviewer gateway restarted.",
             },
             expected_run_id=technical_task.current_run_id,
         )
@@ -1993,8 +1993,8 @@ def test_active_task_overviews_are_one_per_telegram_chat_with_durable_topic_sect
     monkeypatch.delenv("HERMES_KANBAN_DB", raising=False)
     task_ids_by_board = {}
     for board, chat_id, profile, topics in (
-        ("auditor-a", "114874376", "auditor", (("1515141", "Auditor"), ("1515142", "Research"))),
-        ("auditor-b", "114874376", "auditor", (("1515143", "Planning"), ("1515144", "Review"))),
+        ("reviewer-a", "114874376", "reviewer", (("1515141", "Reviewer"), ("1515142", "Research"))),
+        ("reviewer-b", "114874376", "reviewer", (("1515143", "Planning"), ("1515144", "Review"))),
         ("workout", "-100222", "workout-logger", (("42", "Planner"), ("43", "Training"))),
     ):
         kb.create_board(board)
@@ -2012,7 +2012,7 @@ def test_active_task_overviews_are_one_per_telegram_chat_with_durable_topic_sect
     adapter = ActiveIndexAdapter()
     runner = _make_runner(adapter)
     runner._profile_adapters = {
-        "auditor": {Platform.TELEGRAM: adapter},
+        "reviewer": {Platform.TELEGRAM: adapter},
         "workout-logger": {Platform.TELEGRAM: adapter},
     }
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
@@ -2022,7 +2022,7 @@ def test_active_task_overviews_are_one_per_telegram_chat_with_durable_topic_sect
     assert {item["chat_id"] for item in indexes} == {"114874376", "-100222"}
     topic_indexes = [item for item in indexes if item["metadata"].get("thread_id")]
     assert len(topic_indexes) == 6
-    assert all(sum(title in item["text"] for title in ("Auditor task", "Research task", "Planning task", "Review task", "Planner task", "Training task")) == 1 for item in topic_indexes)
+    assert all(sum(title in item["text"] for title in ("Reviewer task", "Research task", "Planning task", "Review task", "Planner task", "Training task")) == 1 for item in topic_indexes)
     assert len(adapter.pins) == 8
 
     with kb.connect_active_task_index_registry() as conn:
@@ -2030,9 +2030,9 @@ def test_active_task_overviews_are_one_per_telegram_chat_with_durable_topic_sect
             "SELECT chat_id, thread_id, message_id FROM kanban_active_task_indexes"
         ).fetchall()
         assert len(rows) == 8
-        auditor_message_id = next(row["message_id"] for row in rows if row["chat_id"] == "114874376")
+        reviewer_message_id = next(row["message_id"] for row in rows if row["chat_id"] == "114874376")
 
-    for board in ("auditor-a", "auditor-b"):
+    for board in ("reviewer-a", "reviewer-b"):
         with kb.connect(board=board) as conn:
             for task_id in task_ids_by_board[board]:
                 assert kb.complete_task(conn, task_id, summary="готово")
@@ -2041,19 +2041,19 @@ def test_active_task_overviews_are_one_per_telegram_chat_with_durable_topic_sect
     monkeypatch.setattr("hermes_cli.kanban_db.time.time", lambda: baseline + 61)
     refresh_runner = _make_runner(adapter)
     refresh_runner._profile_adapters = {
-        "auditor": {Platform.TELEGRAM: adapter},
+        "reviewer": {Platform.TELEGRAM: adapter},
         "workout-logger": {Platform.TELEGRAM: adapter},
     }
     asyncio.run(_run_one_notifier_tick(monkeypatch, refresh_runner))
     assert len([item for item in adapter.sent if item["text"].startswith("📌")]) == 8
     assert len(adapter.pins) == 8
-    auditor_edits = [edit for edit in adapter.edits if edit["chat_id"] == "114874376"]
-    assert auditor_edits[-1]["message_id"] == auditor_message_id
-    assert auditor_edits[-1]["content"] == "📌 Active tasks\n\n✅ No active tasks"
+    reviewer_edits = [edit for edit in adapter.edits if edit["chat_id"] == "114874376"]
+    assert reviewer_edits[-1]["message_id"] == reviewer_message_id
+    assert reviewer_edits[-1]["content"] == "📌 Active tasks\n\n✅ No active tasks"
 
     restarted_runner = _make_runner(adapter)
     restarted_runner._profile_adapters = {
-        "auditor": {Platform.TELEGRAM: adapter},
+        "reviewer": {Platform.TELEGRAM: adapter},
         "workout-logger": {Platform.TELEGRAM: adapter},
     }
     asyncio.run(_run_one_notifier_tick(monkeypatch, restarted_runner))
@@ -2071,21 +2071,21 @@ def test_active_task_overview_adopts_one_legacy_receipt_before_registry_send(tmp
         task_id = kb.create_task(conn, title="legacy task", assignee="heavy")
         kb.add_notify_sub(
             conn, task_id=task_id, platform="telegram", chat_id="same-chat",
-            thread_id="1515141", notifier_profile="auditor",
+            thread_id="1515141", notifier_profile="reviewer",
         )
         conn.execute(
             """
             INSERT INTO kanban_active_task_indexes
                 (platform, chat_id, thread_id, notifier_profile, message_id, pinned,
                  pin_attempted_at, created_at, updated_at)
-            VALUES ('telegram', 'same-chat', '', 'auditor', 'existing-777', 1, ?, ?, ?)
+            VALUES ('telegram', 'same-chat', '', 'reviewer', 'existing-777', 1, ?, ?, ?)
             """,
             (now, now, now),
         )
 
     adapter = ActiveIndexAdapter()
     runner = _make_runner(adapter)
-    runner._profile_adapters = {"auditor": {Platform.TELEGRAM: adapter}}
+    runner._profile_adapters = {"reviewer": {Platform.TELEGRAM: adapter}}
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     assert len([item for item in adapter.sent if item["text"].startswith("📌")]) == 1
@@ -2095,7 +2095,7 @@ def test_active_task_overview_adopts_one_legacy_receipt_before_registry_send(tmp
     with kb.connect_active_task_index_registry() as conn:
         receipt = conn.execute(
             "SELECT message_id, pinned FROM kanban_active_task_indexes "
-            "WHERE platform='telegram' AND chat_id='same-chat' AND thread_id='' AND notifier_profile='auditor'"
+            "WHERE platform='telegram' AND chat_id='same-chat' AND thread_id='' AND notifier_profile='reviewer'"
         ).fetchone()
         assert dict(receipt) == {"message_id": "existing-777", "pinned": 1}
 
@@ -2111,7 +2111,7 @@ def test_active_task_overview_adopts_empty_legacy_board_receipt_for_active_sibli
         task_id = kb.create_task(conn, title="completed legacy task", assignee="heavy")
         kb.add_notify_sub(
             conn, task_id=task_id, platform="telegram", chat_id="same-chat",
-            thread_id="1515141", notifier_profile="auditor",
+            thread_id="1515141", notifier_profile="reviewer",
         )
         assert kb.complete_task(conn, task_id, summary="готово")
         conn.execute(
@@ -2119,7 +2119,7 @@ def test_active_task_overview_adopts_empty_legacy_board_receipt_for_active_sibli
             INSERT INTO kanban_active_task_indexes
                 (platform, chat_id, thread_id, notifier_profile, message_id, pinned,
                  pin_attempted_at, created_at, updated_at)
-            VALUES ('telegram', 'same-chat', '', 'auditor', 'existing-777', 1, ?, ?, ?)
+            VALUES ('telegram', 'same-chat', '', 'reviewer', 'existing-777', 1, ?, ?, ?)
             """,
             (now, now, now),
         )
@@ -2128,12 +2128,12 @@ def test_active_task_overview_adopts_empty_legacy_board_receipt_for_active_sibli
         task_id = kb.create_task(conn, title="active sibling task", assignee="heavy")
         kb.add_notify_sub(
             conn, task_id=task_id, platform="telegram", chat_id="same-chat",
-            thread_id="1515142", notifier_profile="auditor",
+            thread_id="1515142", notifier_profile="reviewer",
         )
 
     adapter = ActiveIndexAdapter()
     runner = _make_runner(adapter)
-    runner._profile_adapters = {"auditor": {Platform.TELEGRAM: adapter}}
+    runner._profile_adapters = {"reviewer": {Platform.TELEGRAM: adapter}}
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     overview_sends = [item for item in adapter.sent if item["text"].startswith("📌")]
@@ -2144,7 +2144,7 @@ def test_active_task_overview_adopts_empty_legacy_board_receipt_for_active_sibli
     with kb.connect_active_task_index_registry() as conn:
         receipt = conn.execute(
             "SELECT message_id, pinned FROM kanban_active_task_indexes "
-            "WHERE platform='telegram' AND chat_id='same-chat' AND thread_id='' AND notifier_profile='auditor'"
+            "WHERE platform='telegram' AND chat_id='same-chat' AND thread_id='' AND notifier_profile='reviewer'"
         ).fetchone()
         assert dict(receipt) == {"message_id": "existing-777", "pinned": 1}
 
@@ -2164,21 +2164,21 @@ def test_active_task_overview_adopts_conflicting_legacy_receipts_without_replace
             task_id = kb.create_task(conn, title=f"{board} task", assignee="heavy")
             kb.add_notify_sub(
                 conn, task_id=task_id, platform="telegram", chat_id="same-chat",
-                thread_id=topic_id, notifier_profile="auditor",
+                thread_id=topic_id, notifier_profile="reviewer",
             )
             conn.execute(
                 """
                 INSERT INTO kanban_active_task_indexes
                     (platform, chat_id, thread_id, notifier_profile, message_id, pinned,
                      pin_attempted_at, created_at, updated_at)
-                VALUES ('telegram', 'same-chat', '', 'auditor', ?, 1, ?, ?, ?)
+                VALUES ('telegram', 'same-chat', '', 'reviewer', ?, 1, ?, ?, ?)
                 """,
                 (message_id, now, now, now),
             )
 
     adapter = ActiveIndexAdapter()
     runner = _make_runner(adapter)
-    runner._profile_adapters = {"auditor": {Platform.TELEGRAM: adapter}}
+    runner._profile_adapters = {"reviewer": {Platform.TELEGRAM: adapter}}
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
     overview_sends = [item for item in adapter.sent if item["text"].startswith("📌")]
@@ -2189,6 +2189,6 @@ def test_active_task_overview_adopts_conflicting_legacy_receipts_without_replace
     with kb.connect_active_task_index_registry() as conn:
         receipt = conn.execute(
             "SELECT message_id, pinned FROM kanban_active_task_indexes "
-            "WHERE platform='telegram' AND chat_id='same-chat' AND thread_id='' AND notifier_profile='auditor'"
+            "WHERE platform='telegram' AND chat_id='same-chat' AND thread_id='' AND notifier_profile='reviewer'"
         ).fetchone()
         assert dict(receipt) == {"message_id": "existing-777", "pinned": 1}

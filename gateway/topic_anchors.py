@@ -18,7 +18,7 @@ landing the message in the wrong place. It also stores observed human topic
 names for later Kanban overview rendering.
 
 The store is process-shared (``kanban_home()``-rooted, not per-profile) —
-the profile that records an inbound message (e.g. the auditor gateway
+the profile that records an inbound message (e.g. the reviewer gateway
 handling a live DM turn) is not necessarily the profile whose notifier
 later needs the anchor.
 """

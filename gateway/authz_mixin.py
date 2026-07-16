@@ -49,7 +49,7 @@ class GatewayAuthorizationMixin:
         profile_name = (profile or "").strip() or None
         if profile_name and profile_name != "default":
             # A standalone gateway may represent a named profile (for example,
-            # ``auditor``) while keeping that profile's live adapters in the
+            # ``reviewer``) while keeping that profile's live adapters in the
             # primary ``self.adapters`` map.  Only look in the multiplex
             # registry when the stamp belongs to another profile.
             active_profile = getattr(self, "_active_profile_name", lambda: "default")()

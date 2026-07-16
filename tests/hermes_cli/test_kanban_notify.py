@@ -62,7 +62,7 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
 
     fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
     runner.adapters = {Platform.TELEGRAM: fake_adapter}
-    runner._profile_adapters = {"auditor": {Platform.TELEGRAM: fake_adapter}}
+    runner._profile_adapters = {"reviewer": {Platform.TELEGRAM: fake_adapter}}
 
     _orig_sleep = asyncio.sleep
 
@@ -78,7 +78,7 @@ async def test_notifier_unsubs_after_completed_event(kanban_home):
     assert fake_adapter.send.call_count == 1
     call_msg = fake_adapter.send.call_args[0][1]
     assert "test task" in call_msg
-    assert "Accepted by auditor" in call_msg
+    assert "Accepted by reviewer" in call_msg
 
     conn = kb.connect()
     try:
@@ -126,7 +126,7 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
 
     fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
     runner.adapters = {Platform.TELEGRAM: fake_adapter}
-    runner._profile_adapters = {"auditor": {Platform.TELEGRAM: fake_adapter}}
+    runner._profile_adapters = {"reviewer": {Platform.TELEGRAM: fake_adapter}}
 
     _orig_sleep = asyncio.sleep
 
@@ -356,7 +356,7 @@ async def test_notifier_skips_subscription_owned_by_other_profile(kanban_home):
             task_id=tid,
             platform="telegram",
             chat_id="chat1",
-            notifier_profile="auditor",
+            notifier_profile="reviewer",
         )
         kb.complete_task(conn, tid, result="done")
     finally:
@@ -412,7 +412,7 @@ async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_ho
             task_id=tid,
             platform="telegram",
             chat_id="chat1",
-            notifier_profile="auditor",
+            notifier_profile="reviewer",
         )
         kb.complete_task(conn, tid, result="done")
     finally:
@@ -431,7 +431,7 @@ async def test_notifier_delivers_subscription_owned_by_current_profile(kanban_ho
 
     fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
     runner.adapters = {Platform.TELEGRAM: fake_adapter}
-    runner._profile_adapters = {"auditor": {Platform.TELEGRAM: fake_adapter}}
+    runner._profile_adapters = {"reviewer": {Platform.TELEGRAM: fake_adapter}}
 
     _orig_sleep = asyncio.sleep
 
@@ -554,7 +554,7 @@ async def test_notifier_uploads_explicitly_requested_artifacts_on_completion(kan
     import json as _json
     assert _json.loads(out)["ok"] is True
     with kb.connect() as conn:
-        assert kb.accept_review(conn, tid, summary="auditor accepted artifacts")
+        assert kb.accept_review(conn, tid, summary="reviewer accepted artifacts")
 
     runner = object.__new__(GatewayRunner)
     runner._running = True
@@ -644,7 +644,7 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     finally:
         os.environ.pop("HERMES_KANBAN_TASK", None)
     with kb.connect() as conn:
-        assert kb.accept_review(conn, tid, summary="auditor accepted real artifact")
+        assert kb.accept_review(conn, tid, summary="reviewer accepted real artifact")
 
     runner = object.__new__(GatewayRunner)
     runner._running = True

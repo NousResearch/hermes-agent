@@ -181,40 +181,40 @@ def _state(
     latest = _last_event(timeline, {
         "review_requested", "review_rejected", "review_accepted", "crashed",
         "timed_out", "gave_up", "reclaimed", "archived", "review_retry_scheduled",
-        "review_recovered", "review_job_reconciled", "auditor_review_claimed",
-        "auditor_review_spawned", "needs_auditor",
+        "review_recovered", "review_job_reconciled", "reviewer_review_claimed",
+        "reviewer_review_spawned", "needs_reviewer",
     })
     if status == "running" and current_run is not None:
         latest = _last_event(_attr(current_run, "events", ()), {
             "review_requested", "review_rejected", "review_accepted", "crashed",
             "timed_out", "gave_up", "reclaimed", "archived", "review_retry_scheduled",
-            "review_recovered", "review_job_reconciled", "auditor_review_claimed",
-            "auditor_review_spawned", "needs_auditor",
+            "review_recovered", "review_job_reconciled", "reviewer_review_claimed",
+            "reviewer_review_spawned", "needs_reviewer",
         })
     latest_kind = _attr(latest, "kind", "")
     if status == "archived" or latest_kind == "archived":
         return "📦", "Archived", "This task was closed in the archive."
-    if latest_kind == "needs_auditor":
-        return "🔐", "Manual auditor review required", "Automatic review is unavailable."
+    if latest_kind == "needs_reviewer":
+        return "🔐", "Manual reviewer review required", "Automatic review is unavailable."
     if latest_kind == "review_retry_scheduled":
-        return "⚠️", "Auditor review is restarting", "Review will be retried automatically."
+        return "⚠️", "Reviewer review is restarting", "Review will be retried automatically."
     if latest_kind == "review_recovered":
-        return "🔎", "Auditor review restored", "The auditor will receive this task again."
+        return "🔎", "Reviewer review restored", "The reviewer will receive this task again."
     if latest_kind == "review_job_reconciled":
-        return "🔁", "Auditor review restored", "The review queue is synchronized."
+        return "🔁", "Reviewer review restored", "The review queue is synchronized."
     if status == "review":
         requests = sum(1 for event in timeline if _attr(event, "kind") == "review_requested")
-        if latest_kind in {"auditor_review_claimed", "auditor_review_spawned"}:
-            return "🔎", "Auditor started review", "The auditor is reviewing the result."
+        if latest_kind in {"reviewer_review_claimed", "reviewer_review_spawned"}:
+            return "🔎", "Reviewer started review", "The reviewer is reviewing the result."
         if requests > 1:
-            return "🤔", "Auditor is reviewing again", "The auditor is reviewing the result again."
-        return "🔎", "Auditor is reviewing", "The auditor is reviewing the result."
+            return "🤔", "Reviewer is reviewing again", "The reviewer is reviewing the result again."
+        return "🔎", "Reviewer is reviewing", "The reviewer is reviewing the result."
     if latest_kind == "review_rejected":
         if status == "running":
-            return "🤝", f"{worker} is addressing auditor feedback", "The worker is addressing auditor feedback."
-        return "😡", "Auditor returned the task for changes", "The task is waiting for the worker to restart."
+            return "🤝", f"{worker} is addressing reviewer feedback", "The worker is addressing reviewer feedback."
+        return "😡", "Reviewer returned the task for changes", "The task is waiting for the worker to restart."
     if status == "done" or latest_kind == "review_accepted":
-        return "✅", "Accepted by auditor", "Review complete."
+        return "✅", "Accepted by reviewer", "Review complete."
     if latest_kind == "gave_up":
         return "❌", "Could not complete automatically", "A decision is needed to continue."
     if latest_kind in {"timed_out", "crashed", "reclaimed"}:

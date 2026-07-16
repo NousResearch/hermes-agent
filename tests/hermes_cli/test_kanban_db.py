@@ -65,7 +65,7 @@ def test_malformed_notification_subscription_does_not_block_valid_subscriptions(
         conn.execute(
             "INSERT INTO kanban_notify_subs "
             "(task_id, platform, chat_id, thread_id, created_at, last_event_id) "
-            "VALUES (?, 'telegram', 'bad-chat', '', 1, 'auditor')",
+            "VALUES (?, 'telegram', 'bad-chat', '', 1, 'reviewer')",
             (bad_task,),
         )
         conn.commit()
@@ -100,7 +100,7 @@ def test_active_index_flood_control_honors_telegram_retry_after(tmp_path, monkey
             platform="telegram",
             chat_id="114874376",
             thread_id="",
-            notifier_profile="auditor",
+            notifier_profile="reviewer",
             owner="gateway-a:1",
         )
         assert claimed is not None
@@ -109,7 +109,7 @@ def test_active_index_flood_control_honors_telegram_retry_after(tmp_path, monkey
             platform="telegram",
             chat_id="114874376",
             thread_id="",
-            notifier_profile="auditor",
+            notifier_profile="reviewer",
             owner="gateway-a:1",
             generation=claimed["lease_generation"],
             error="flood_control:3600",
@@ -539,7 +539,7 @@ def test_terminal_notification_waits_for_final_audited_origin_intent_member(kanb
             platform="telegram",
             chat_id="114874376",
             thread_id="1515141",
-            notifier_profile="auditor",
+            notifier_profile="reviewer",
             event_id=event_id,
             title="grouped result",
             outcome_key=key,
@@ -566,7 +566,7 @@ def test_terminal_notification_waits_for_final_audited_origin_intent_member(kanb
             platform="telegram",
             chat_id="114874376",
             thread_id="1515141",
-            notifier_profile="auditor",
+            notifier_profile="reviewer",
             event_id=event_id,
             title="grouped result",
             outcome_key="helper-replay",
@@ -614,7 +614,7 @@ def test_terminal_notification_backlog_uses_latest_audited_intent_member(kanban_
             platform="telegram",
             chat_id="114874376",
             thread_id="1515141",
-            notifier_profile="auditor",
+            notifier_profile="reviewer",
             event_id=event_id,
             title="grouped result",
             outcome_key="backlog-replay",
@@ -4482,7 +4482,7 @@ def _set_task_status(conn: sqlite3.Connection, task_id: str, status: str) -> Non
 
 
 def test_claim_review_task_never_claims_audit_handoff(kanban_home):
-    """Review is an auditor-owned terminal lane, not worker eligibility."""
+    """Review is an reviewer-owned terminal lane, not worker eligibility."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="review me", assignee="alice")
         _set_task_status(conn, t, "review")
@@ -4529,7 +4529,7 @@ def test_dispatch_review_dry_run_never_reports_a_spawn(kanban_home, all_assignee
 def test_dispatch_review_never_spawns_with_correct_skills(
     kanban_home, all_assignees_spawnable,
 ):
-    """The dispatcher leaves review tasks for the auditor."""
+    """The dispatcher leaves review tasks for the reviewer."""
     spawned_tasks = []
 
     def capture_spawn(task, workspace, board=None):
@@ -4598,7 +4598,7 @@ def test_dispatch_review_is_not_spawned_when_ready_empty(
     assert spawns == []
 
 
-def test_has_spawnable_review_is_false_for_auditor_handoffs(kanban_home):
+def test_has_spawnable_review_is_false_for_reviewer_handoffs(kanban_home):
     """Review cards are intentionally not eligible for dispatcher health."""
     with kb.connect() as conn:
         t = kb.create_task(conn, title="review me", assignee="default")
@@ -4689,7 +4689,25 @@ def test_request_review_links_handoff_event_id_to_review_requested_event(kanban_
     assert job_row["handoff_event_id"] == event_row["id"]
 
 
-def test_review_requested_spawns_one_auditor_receipt_without_reclaiming_heavy(
+def test_request_review_uses_configured_reviewer_profile(kanban_home, tmp_path, monkeypatch):
+    from hermes_cli import config as hermes_config
+
+    monkeypatch.setattr(
+        hermes_config,
+        "load_config",
+        lambda: {"kanban": {"review_profile": "independent-review"}},
+    )
+
+    with kb.connect() as conn:
+        task_id, _ = _request_review_with_workspace(conn, tmp_path)
+        profile = conn.execute(
+            "SELECT profile FROM kanban_review_jobs WHERE task_id=?", (task_id,),
+        ).fetchone()[0]
+
+    assert profile == "independent-review"
+
+
+def test_review_requested_spawns_one_reviewer_receipt_without_reclaiming_heavy(
     kanban_home, all_assignees_spawnable, tmp_path, monkeypatch,
 ):
     spawned = []
@@ -4701,27 +4719,27 @@ def test_review_requested_spawns_one_auditor_receipt_without_reclaiming_heavy(
 
     with kb.connect() as conn:
         tid, workspace = _request_review_with_workspace(conn, tmp_path)
-        first = kb.dispatch_once(conn, auditor_spawn_fn=audit_spawn)
-        second = kb.dispatch_once(conn, auditor_spawn_fn=audit_spawn)
+        first = kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn)
+        second = kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn)
         task = kb.get_task(conn, tid)
         job = conn.execute("SELECT profile, status, attempts FROM kanban_review_jobs WHERE task_id=?", (tid,)).fetchone()
 
-    assert first.auditor_spawned == [tid]
-    assert second.auditor_spawned == []
+    assert first.reviewer_spawned == [tid]
+    assert second.reviewer_spawned == []
     assert spawned == [(tid, str(workspace))]
     assert task is not None
     assert task.status == "review"
     assert task.assignee == "heavy"
-    assert dict(job) == {"profile": "auditor", "status": "running", "attempts": 1}
+    assert dict(job) == {"profile": "reviewer", "status": "running", "attempts": 1}
     with kb.connect() as conn:
-        assert kb.accept_review(conn, tid, summary="auditor accepted")
+        assert kb.accept_review(conn, tid, summary="reviewer accepted")
         accepted_task = kb.get_task(conn, tid)
         assert accepted_task is not None
         assert accepted_task.status == "done"
         assert conn.execute("SELECT status FROM kanban_review_jobs WHERE task_id=?", (tid,)).fetchone()[0] == "accepted"
 
 
-def test_auditor_reject_and_bounded_crash_retry_keep_review_separate(
+def test_reviewer_reject_and_bounded_crash_retry_keep_review_separate(
     kanban_home, all_assignees_spawnable, tmp_path, monkeypatch,
 ):
     spawned = []
@@ -4733,11 +4751,11 @@ def test_auditor_reject_and_bounded_crash_retry_keep_review_separate(
     monkeypatch.setattr(kb, "_pid_alive", lambda _pid: False)
     with kb.connect() as conn:
         tid, _ = _request_review_with_workspace(conn, tmp_path)
-        kb.dispatch_once(conn, auditor_spawn_fn=audit_spawn)
-        retry = kb.dispatch_once(conn, auditor_spawn_fn=audit_spawn)
+        kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn)
+        retry = kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn)
         conn.execute("UPDATE kanban_review_jobs SET next_retry_at=0 WHERE task_id=?", (tid,))
-        kb.dispatch_once(conn, auditor_spawn_fn=audit_spawn)
-        exhausted = kb.dispatch_once(conn, auditor_spawn_fn=audit_spawn)
+        kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn)
+        exhausted = kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn)
         job = conn.execute("SELECT status, attempts FROM kanban_review_jobs WHERE task_id=?", (tid,)).fetchone()
         assert kb.reject_review(conn, tid, reason="missing contract proof")
         assert kb.get_task(conn, tid) is not None
@@ -4747,9 +4765,9 @@ def test_auditor_reject_and_bounded_crash_retry_keep_review_separate(
         assert kb.get_task(conn, tid) is not None
         assert kb.get_task(conn, tid).status == "running"
 
-    assert retry.auditor_retrying == [tid]
-    assert exhausted.needs_auditor == [tid]
-    assert dict(job) == {"status": "needs_auditor", "attempts": 2}
+    assert retry.reviewer_retrying == [tid]
+    assert exhausted.needs_reviewer == [tid]
+    assert dict(job) == {"status": "needs_reviewer", "attempts": 2}
     assert spawned == [tid, tid]
     assert normal == [tid]
 
@@ -4757,7 +4775,7 @@ def test_auditor_reject_and_bounded_crash_retry_keep_review_separate(
 def test_dispatch_reconciles_legacy_review_handoffs_once_per_board(
     kanban_home, all_assignees_spawnable, tmp_path, monkeypatch,
 ):
-    """A pre-receipt review handoff gets one auditor run on its own board."""
+    """A pre-receipt review handoff gets one reviewer run on its own board."""
     monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
     spawned = []
 
@@ -4772,13 +4790,13 @@ def test_dispatch_reconciles_legacy_review_handoffs_once_per_board(
         with kb.connect(board=board) as conn:
             tid, _ = _request_review_with_workspace(conn, workspace_root)
             # Simulate a board that was already in review when receipt-based
-            # auditor dispatch was deployed.
+            # reviewer dispatch was deployed.
             conn.execute("DELETE FROM kanban_review_jobs WHERE task_id=?", (tid,))
             task_ids[board] = tid
 
     with kb.connect(board="alpha") as conn:
-        first = kb.dispatch_once(conn, auditor_spawn_fn=audit_spawn, board="alpha")
-        second = kb.dispatch_once(conn, auditor_spawn_fn=audit_spawn, board="alpha")
+        first = kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn, board="alpha")
+        second = kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn, board="alpha")
         alpha_job = conn.execute(
             "SELECT handoff_event_id, status, attempts FROM kanban_review_jobs WHERE task_id=?",
             (task_ids["alpha"],),
@@ -4788,16 +4806,16 @@ def test_dispatch_reconciles_legacy_review_handoffs_once_per_board(
         beta_before = conn.execute(
             "SELECT COUNT(*) FROM kanban_review_jobs WHERE task_id=?", (task_ids["beta"],)
         ).fetchone()[0]
-        beta = kb.dispatch_once(conn, auditor_spawn_fn=audit_spawn, board="beta")
+        beta = kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn, board="beta")
         beta_job = conn.execute(
             "SELECT handoff_event_id, status, attempts FROM kanban_review_jobs WHERE task_id=?",
             (task_ids["beta"],),
         ).fetchone()
 
-    assert first.auditor_spawned == [task_ids["alpha"]]
-    assert second.auditor_spawned == []
+    assert first.reviewer_spawned == [task_ids["alpha"]]
+    assert second.reviewer_spawned == []
     assert beta_before == 0
-    assert beta.auditor_spawned == [task_ids["beta"]]
+    assert beta.reviewer_spawned == [task_ids["beta"]]
     assert spawned == [(task_ids["alpha"], "alpha"), (task_ids["beta"], "beta")]
     assert alpha_job["handoff_event_id"] > 0
     assert alpha_job["status"] == "running"
@@ -4819,7 +4837,7 @@ def test_review_request_after_reject_resets_review_receipt_for_retry(
 
     with kb.connect() as conn:
         tid, _ = _request_review_with_workspace(conn, tmp_path)
-        assert kb.dispatch_once(conn, auditor_spawn_fn=audit_spawn).auditor_spawned == [tid]
+        assert kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn).reviewer_spawned == [tid]
 
         assert kb.reject_review(conn, tid, reason="failing edge-case")
         first_reject_handoff = conn.execute(
@@ -4831,10 +4849,10 @@ def test_review_request_after_reject_resets_review_receipt_for_retry(
         assert kb.request_review(
             conn, tid, summary="ready for second review", metadata={"tests_run": 2}
         )
-        assert kb.dispatch_once(conn, auditor_spawn_fn=audit_spawn).auditor_spawned == [tid]
+        assert kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn).reviewer_spawned == [tid]
 
         assert kb.accept_review(
-            conn, tid, summary="auditor found no blockers on second pass"
+            conn, tid, summary="reviewer found no blockers on second pass"
         )
 
         rows = conn.execute(
@@ -4899,7 +4917,7 @@ def test_reconcile_replaces_stale_terminal_review_receipt(
             (handoff, tid),
         )
 
-        kb.dispatch_once(conn, auditor_spawn_fn=audit_spawn)
+        kb.dispatch_once(conn, reviewer_spawn_fn=audit_spawn)
 
         repaired = conn.execute(
             "SELECT handoff_event_id, status FROM kanban_review_jobs WHERE task_id=?",

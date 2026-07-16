@@ -1307,7 +1307,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
 );
 
 -- A review handoff keeps its task in the immutable ``review`` lane. The
--- auditor's execution has its own durable lease, never tasks.claim_lock.
+-- reviewer's execution has its own durable lease, never tasks.claim_lock.
 CREATE TABLE IF NOT EXISTS kanban_review_jobs (
     task_id          TEXT PRIMARY KEY,
     handoff_event_id INTEGER NOT NULL UNIQUE,
@@ -2388,7 +2388,7 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
         )
 
     # Before the explicit review lifecycle, a worker's `completed` event could
-    # enqueue an unsent final-ready ping. It has no proof of auditor acceptance,
+    # enqueue an unsent final-ready ping. It has no proof of reviewer acceptance,
     # so suppress it once; already receipted historical messages are untouched.
     terminal_table_exists = conn.execute(
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='kanban_terminal_notifications'"
@@ -6103,7 +6103,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str) -> bool:
             return False
         # An archived review handoff is intentionally terminal.  Keep its
         # receipt for audit history, but make it ineligible for future retry
-        # or dispatch so archiving cannot resurrect an auditor worker.
+        # or dispatch so archiving cannot resurrect an reviewer worker.
         conn.execute(
             "UPDATE kanban_review_jobs SET status='cancelled', claim_lock=NULL, "
             "claim_expires=NULL, worker_pid=NULL, next_retry_at=NULL, "
@@ -6635,9 +6635,9 @@ class DispatchResult:
     (EX_TEMPFAIL sentinel exit) and were released back to ``ready`` WITHOUT
     counting a failure. These never trip the circuit breaker — a long quota
     window just makes the task bounce cheaply until the window clears."""
-    auditor_spawned: list[str] = field(default_factory=list)
-    auditor_retrying: list[str] = field(default_factory=list)
-    needs_auditor: list[str] = field(default_factory=list)
+    reviewer_spawned: list[str] = field(default_factory=list)
+    reviewer_retrying: list[str] = field(default_factory=list)
+    needs_reviewer: list[str] = field(default_factory=list)
     skipped_locked: bool = False
     """True when this tick was skipped because another process already held
     the board's dispatch lock (issue #35240). A losing dispatcher does no
@@ -8156,13 +8156,28 @@ def has_spawnable_ready(conn: sqlite3.Connection) -> bool:
 
 
 def has_spawnable_review(conn: sqlite3.Connection) -> bool:
-    """Review handoffs are auditor-owned and never dispatcher-spawnable."""
+    """Review handoffs are reviewer-owned and never dispatcher-spawnable."""
     return False
 
 
-_AUDITOR_REVIEW_PROFILE = "auditor"
-_AUDITOR_REVIEW_TTL_SECONDS = 15 * 60
-_AUDITOR_REVIEW_MAX_ATTEMPTS = 2
+DEFAULT_REVIEW_PROFILE = "reviewer"
+_REVIEWER_REVIEW_TTL_SECONDS = 15 * 60
+_REVIEWER_REVIEW_MAX_ATTEMPTS = 2
+
+
+def configured_review_profile() -> str:
+    """Return the configured review worker profile without coupling the DB to one role."""
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        kanban = config.get("kanban", {}) if isinstance(config, dict) else {}
+        configured = str(kanban.get("review_profile") or "").strip()
+        if configured:
+            return configured
+    except Exception:
+        pass
+    return DEFAULT_REVIEW_PROFILE
 
 
 def _reconcile_review_jobs(conn: sqlite3.Connection) -> list[str]:
@@ -8195,7 +8210,7 @@ def _reconcile_review_jobs(conn: sqlite3.Connection) -> list[str]:
             if handoff_event_id is None:
                 continue
 
-            terminal_job_status = {"accepted", "rejected", "needs_auditor"}
+            terminal_job_status = {"accepted", "rejected", "needs_reviewer"}
             must_recreate = (
                 row["current_handoff_event_id"] is None
                 or row["current_status"] in terminal_job_status
@@ -8245,10 +8260,11 @@ def _upsert_review_job_receipt(
             return False
 
     # Replace stale/terminal/obsolete rows with a fresh, dispatchable lease.
+    review_profile = configured_review_profile()
     payload = (
         task_id,
         handoff_event_id,
-        _AUDITOR_REVIEW_PROFILE,
+        review_profile,
         now,
         now,
     )
@@ -8273,7 +8289,7 @@ def _upsert_review_job_receipt(
             "UPDATE kanban_review_jobs SET handoff_event_id=?, profile=?, status='queued', "
             "attempts=0, claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
             "next_retry_at=NULL, last_error=NULL, created_at=?, updated_at=? WHERE task_id=?",
-            (handoff_event_id, _AUDITOR_REVIEW_PROFILE, now, now, task_id),
+            (handoff_event_id, review_profile, now, now, task_id),
         )
         if updated.rowcount == 0:
             conn.execute(
@@ -8287,7 +8303,7 @@ def _upsert_review_job_receipt(
 
 
 
-def _finish_auditor_review_attempt(conn: sqlite3.Connection, task_id: str, error: str, *, within_transaction: bool = False) -> str:
+def _finish_reviewer_review_attempt(conn: sqlite3.Connection, task_id: str, error: str, *, within_transaction: bool = False) -> str:
     """Release a failed review receipt with bounded backoff or typed escalation."""
     now = int(time.time())
     with (write_txn(conn) if not within_transaction else contextlib.nullcontext()):
@@ -8299,21 +8315,21 @@ def _finish_auditor_review_attempt(conn: sqlite3.Connection, task_id: str, error
             return "missing"
         attempts = int(row["attempts"] or 0)
         attempts_before = attempts
-        if attempts >= _AUDITOR_REVIEW_MAX_ATTEMPTS:
+        if attempts >= _REVIEWER_REVIEW_MAX_ATTEMPTS:
             conn.execute(
-                "UPDATE kanban_review_jobs SET status='needs_auditor', claim_lock=NULL, "
+                "UPDATE kanban_review_jobs SET status='needs_reviewer', claim_lock=NULL, "
                 "claim_expires=NULL, worker_pid=NULL, last_error=?, updated_at=? WHERE task_id=?",
                 (error[:500], now, task_id),
             )
-            _append_event(conn, task_id, "needs_auditor", {
+            _append_event(conn, task_id, "needs_reviewer", {
                 "reason": error[:500],
                 "attempts": attempts,
                 "attempts_before": attempts_before,
                 "handoff_event_id": int(row["handoff_event_id"]) if row["handoff_event_id"] is not None else None,
                 "review_job_previous_status": row["status"],
-                "review_job_status_after": "needs_auditor",
+                "review_job_status_after": "needs_reviewer",
             })
-            return "needs_auditor"
+            return "needs_reviewer"
         retry_at = now + (60 * attempts)
         conn.execute(
             "UPDATE kanban_review_jobs SET status='retry', claim_lock=NULL, claim_expires=NULL, "
@@ -8332,7 +8348,7 @@ def _finish_auditor_review_attempt(conn: sqlite3.Connection, task_id: str, error
         return "retry"
 
 
-def _mark_needs_auditor(conn: sqlite3.Connection, task_id: str, error: str) -> bool:
+def _mark_needs_reviewer(conn: sqlite3.Connection, task_id: str, error: str) -> bool:
     now = int(time.time())
     with write_txn(conn):
         row = conn.execute(
@@ -8342,42 +8358,42 @@ def _mark_needs_auditor(conn: sqlite3.Connection, task_id: str, error: str) -> b
         if row is None:
             return False
         changed = conn.execute(
-            "UPDATE kanban_review_jobs SET status='needs_auditor', claim_lock=NULL, "
+            "UPDATE kanban_review_jobs SET status='needs_reviewer', claim_lock=NULL, "
             "claim_expires=NULL, worker_pid=NULL, last_error=?, updated_at=? "
-            "WHERE task_id=? AND status!='needs_auditor'",
+            "WHERE task_id=? AND status!='needs_reviewer'",
             (error[:500], now, task_id),
         ).rowcount
         if changed:
             _append_event(
                 conn,
                 task_id,
-                "needs_auditor",
+                "needs_reviewer",
                 {
                     "reason": error[:500],
                     "review_job_previous_status": row["status"],
-                    "review_job_status_after": "needs_auditor",
+                    "review_job_status_after": "needs_reviewer",
                     "handoff_event_id": int(row["handoff_event_id"]) if row["handoff_event_id"] is not None else None,
                 },
             )
         return bool(changed)
 
 
-def _dispatch_auditor_reviews(
-    conn: sqlite3.Connection, *, spawn_fn, board: Optional[str], result: DispatchResult, dry_run: bool,
+def _dispatch_reviewer_reviews(
+    conn: sqlite3.Connection, *, reviewer_spawn_fn, board: Optional[str], result: DispatchResult, dry_run: bool,
 ) -> None:
     """Run review receipts without changing ``tasks.status='review'``."""
     # A dry run must not create durable receipts; normal ticks reconcile
-    # legacy review handoffs before attempting any auditor claim.
+    # legacy review handoffs before attempting any reviewer claim.
     if not dry_run:
         _reconcile_review_jobs(conn)
     for row in conn.execute(
         "SELECT task_id, worker_pid FROM kanban_review_jobs WHERE status='running'"
     ).fetchall():
         if row["worker_pid"] and not _pid_alive(int(row["worker_pid"])):
-            state = _finish_auditor_review_attempt(
-                conn, row["task_id"], "auditor review process exited before a decision"
+            state = _finish_reviewer_review_attempt(
+                conn, row["task_id"], "reviewer review process exited before a decision"
             )
-            (result.needs_auditor if state == "needs_auditor" else result.auditor_retrying).append(row["task_id"])
+            (result.needs_reviewer if state == "needs_reviewer" else result.reviewer_retrying).append(row["task_id"])
 
     now = int(time.time())
     jobs = conn.execute(
@@ -8390,7 +8406,7 @@ def _dispatch_auditor_reviews(
     for job in jobs:
         task_id, profile, workspace = job["task_id"], job["profile"], job["workspace_path"]
         if dry_run:
-            result.auditor_spawned.append(task_id)
+            result.reviewer_spawned.append(task_id)
             continue
         try:
             from hermes_cli.profiles import profile_exists
@@ -8398,12 +8414,12 @@ def _dispatch_auditor_reviews(
         except Exception:
             available = True
         if not available:
-            if _mark_needs_auditor(conn, task_id, f"auditor profile '{profile}' is unavailable"):
-                result.needs_auditor.append(task_id)
+            if _mark_needs_reviewer(conn, task_id, f"reviewer profile '{profile}' is unavailable"):
+                result.needs_reviewer.append(task_id)
             continue
         if not workspace or not os.path.isdir(workspace):
-            if _mark_needs_auditor(conn, task_id, "review source workspace is unavailable"):
-                result.needs_auditor.append(task_id)
+            if _mark_needs_reviewer(conn, task_id, "review source workspace is unavailable"):
+                result.needs_reviewer.append(task_id)
             continue
         lock = _claimer_id()
         with write_txn(conn):
@@ -8412,34 +8428,39 @@ def _dispatch_auditor_reviews(
                 "claim_lock=?, claim_expires=?, next_retry_at=NULL, updated_at=? "
                 "WHERE task_id=? AND status IN ('queued', 'retry') "
                 "AND (next_retry_at IS NULL OR next_retry_at <= ?)",
-                (lock, now + _AUDITOR_REVIEW_TTL_SECONDS, now, task_id, now),
+                (lock, now + _REVIEWER_REVIEW_TTL_SECONDS, now, task_id, now),
             ).rowcount
             if claimed:
-                _append_event(conn, task_id, "auditor_review_claimed", {"profile": profile})
+                _append_event(conn, task_id, "reviewer_review_claimed", {"profile": profile})
         if not claimed:
             continue
         try:
             task = get_task(conn, task_id)
-            pid = spawn_fn(task, str(workspace), board=board)
+            if reviewer_spawn_fn is None:
+                pid = _default_reviewer_review_spawn(
+                    task, str(workspace), profile=profile, board=board,
+                )
+            else:
+                pid = reviewer_spawn_fn(task, str(workspace), board=board)
             if not pid:
-                raise RuntimeError("auditor review spawn returned no pid")
+                raise RuntimeError("reviewer review spawn returned no pid")
             with write_txn(conn):
                 conn.execute(
                     "UPDATE kanban_review_jobs SET worker_pid=?, updated_at=? WHERE task_id=? AND status='running'",
                     (int(pid), int(time.time()), task_id),
                 )
-                _append_event(conn, task_id, "auditor_review_spawned", {"profile": profile, "pid": int(pid)})
-            result.auditor_spawned.append(task_id)
+                _append_event(conn, task_id, "reviewer_review_spawned", {"profile": profile, "pid": int(pid)})
+            result.reviewer_spawned.append(task_id)
         except Exception as exc:
-            state = _finish_auditor_review_attempt(conn, task_id, f"auditor review spawn: {exc}")
-            (result.needs_auditor if state == "needs_auditor" else result.auditor_retrying).append(task_id)
+            state = _finish_reviewer_review_attempt(conn, task_id, f"reviewer review spawn: {exc}")
+            (result.needs_reviewer if state == "needs_reviewer" else result.reviewer_retrying).append(task_id)
 
 
 def dispatch_once(
     conn: sqlite3.Connection,
     *,
     spawn_fn=None,
-    auditor_spawn_fn=None,
+    reviewer_spawn_fn=None,
     ttl_seconds: Optional[int] = None,
     dry_run: bool = False,
     max_spawn: Optional[int] = None,
@@ -8474,7 +8495,7 @@ def dispatch_once(
         return _dispatch_once_locked(
             conn,
             spawn_fn=spawn_fn,
-            auditor_spawn_fn=auditor_spawn_fn,
+            reviewer_spawn_fn=reviewer_spawn_fn,
             ttl_seconds=ttl_seconds,
             dry_run=dry_run,
             max_spawn=max_spawn,
@@ -8491,7 +8512,7 @@ def dispatch_once(
         return _dispatch_once_locked(
             conn,
             spawn_fn=spawn_fn,
-            auditor_spawn_fn=auditor_spawn_fn,
+            reviewer_spawn_fn=reviewer_spawn_fn,
             ttl_seconds=ttl_seconds,
             dry_run=dry_run,
             max_spawn=max_spawn,
@@ -8508,7 +8529,7 @@ def _dispatch_once_locked(
     conn: sqlite3.Connection,
     *,
     spawn_fn=None,
-    auditor_spawn_fn=None,
+    reviewer_spawn_fn=None,
     ttl_seconds: Optional[int] = None,
     dry_run: bool = False,
     max_spawn: Optional[int] = None,
@@ -8552,9 +8573,9 @@ def _dispatch_once_locked(
     reap_worker_zombies()
 
     result = DispatchResult()
-    _dispatch_auditor_reviews(
+    _dispatch_reviewer_reviews(
         conn,
-        spawn_fn=auditor_spawn_fn or _default_auditor_review_spawn,
+        reviewer_spawn_fn=reviewer_spawn_fn,
         board=board,
         result=result,
         dry_run=dry_run,
@@ -9297,19 +9318,21 @@ def _default_spawn(
     return proc.pid
 
 
-def _default_auditor_review_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -> Optional[int]:
-    """Start an auditor-only review against the worker's existing workspace."""
+def _default_reviewer_review_spawn(
+    task: Task, workspace: str, *, profile: str, board: Optional[str] = None,
+) -> Optional[int]:
+    """Start a reviewer-only review against the worker's existing workspace."""
     return _default_spawn(
         task,
         workspace,
         board=board,
-        profile_override=_AUDITOR_REVIEW_PROFILE,
+        profile_override=profile,
         review_only=True,
         prompt_override=(
-            f"Audit kanban task {task.id}. Read its worker handoff, metadata, tests, "
+            f"Review kanban task {task.id}. Read its worker handoff, metadata, tests, "
             f"and source in the supplied workspace. Do not modify product code or files. "
             f"Use only kanban_accept_review, kanban_reject_review, or kanban_recover_review "
-            f"to record the audit result."
+            f"to record the review result."
         ),
     )
 
@@ -10085,7 +10108,7 @@ def _origin_intent_can_enqueue_terminal_notification(
     durable intent lineage, so grouping them by chat/topic would guess. Tasks
     with an explicit ``origin_intent_id`` are grouped only by that stored id;
     an active/review/rework member keeps the whole intent silent until its last
-    auditor acceptance. Once every member is terminal, only the canonical
+    reviewer acceptance. Once every member is terminal, only the canonical
     latest ``review_accepted`` event may enqueue. This prevents a delayed
     watcher/replay for an earlier accepted member from taking the durable
     intent dedupe key before the final audited member is processed.
@@ -10439,7 +10462,7 @@ def enqueue_terminal_notification(
 ) -> bool:
     """Queue one accepted outcome after the final card receipt for its intent.
 
-    Explicit origin-intent lineage groups workers, helpers, and auditor
+    Explicit origin-intent lineage groups workers, helpers, and reviewer
     retries without guessing from a Telegram topic. The final accepted member
     owns the one durable notification row; a stable intent-derived outcome key
     makes replay/restart inserts idempotent. Legacy NULL-lineage tasks retain

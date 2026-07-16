@@ -127,7 +127,7 @@ def test_superseded_and_error_cards_do_not_expose_internal_event_detail():
     assert "📍 Этап:" not in capability + superseded + crashed
 
 
-def test_accepted_card_is_edited_to_auditor_acceptance_not_terminal_ping():
+def test_accepted_card_is_edited_to_reviewer_acceptance_not_terminal_ping():
     text = _card(
         _task("done", title="Internal notifier architecture cleanup", completed_at=20),
         _event("claimed", created_at=10),
@@ -136,7 +136,7 @@ def test_accepted_card_is_edited_to_auditor_acceptance_not_terminal_ping():
     )
 
     assert text == (
-        "🗂 Internal notifier architecture cleanup · t_card\n\n✅ Accepted by auditor\n\n"
+        "🗂 Internal notifier architecture cleanup · t_card\n\n✅ Accepted by reviewer\n\n"
         "🧭 Now:\nReview complete.\n\n⏱ Completed in: 0m"
     )
     assert "Готово — к твоему ревью" not in text
@@ -162,7 +162,7 @@ def test_review_and_dependency_cards_show_only_applicable_clocks():
     )
     queued = _card(_task("ready"), now=70)
 
-    assert "🔎 Auditor is reviewing" in review
+    assert "🔎 Reviewer is reviewing" in review
     assert "⏱ In review: 1m" in review
     assert "Воркер на связи" not in review
     assert "⏳ Starts after 'Подготовить данные'" in dependency
@@ -249,13 +249,13 @@ def test_short_header_is_not_changed():
         (_task("ready"), [], None, "⏳ @heavy is waiting to start"),
         (_task("running"), [_event("heartbeat", created_at=100), _event("progress", created_at=100)], None, "🔫 @heavy is working"),
         (_task("running"), [_event("heartbeat", created_at=100)], None, "🤷‍♂️ @heavy is online, but no confirmed progress"),
-        (_task("ready"), [_event("review_rejected")], None, "😡 Auditor returned the task for changes"),
-        (_task("running"), [_event("review_rejected")], None, "🤝 @heavy is addressing auditor feedback"),
-        (_task("review"), [_event("review_requested")], None, "🔎 Auditor is reviewing"),
-        (_task("review"), [_event("review_requested"), _event("review_requested")], None, "🤔 Auditor is reviewing again"),
-        (_task("review"), [_event("review_retry_scheduled")], None, "⚠️ Auditor review is restarting"),
-        (_task("review"), [_event("needs_auditor")], None, "🔐 Manual auditor review required"),
-        (_task("done"), [_event("review_accepted")], None, "✅ Accepted by auditor"),
+        (_task("ready"), [_event("review_rejected")], None, "😡 Reviewer returned the task for changes"),
+        (_task("running"), [_event("review_rejected")], None, "🤝 @heavy is addressing reviewer feedback"),
+        (_task("review"), [_event("review_requested")], None, "🔎 Reviewer is reviewing"),
+        (_task("review"), [_event("review_requested"), _event("review_requested")], None, "🤔 Reviewer is reviewing again"),
+        (_task("review"), [_event("review_retry_scheduled")], None, "⚠️ Reviewer review is restarting"),
+        (_task("review"), [_event("needs_reviewer")], None, "🔐 Manual reviewer review required"),
+        (_task("done"), [_event("review_accepted")], None, "✅ Accepted by reviewer"),
         (_task("todo"), [], None, "⏳ @heavy is waiting to start"),
         (_task("todo"), [], [_parent("Родитель")], "⏳ Starts after 'Родитель'"),
         (_task("todo"), [], [_parent("Первый"), _parent("Второй")], "⏳ Starts after 2 related tasks"),

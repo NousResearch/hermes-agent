@@ -374,7 +374,7 @@ class GatewayKanbanWatchersMixin:
             "created", "claimed", "spawned", "heartbeat", "progress", "status", "blocked",
             "unblocked", "completed", "review_requested", "review_rejected", "review_accepted",
             "review_retry_scheduled", "review_recovered", "review_job_reconciled",
-            "auditor_review_claimed", "auditor_review_spawned", "needs_auditor",
+            "reviewer_review_claimed", "reviewer_review_spawned", "needs_reviewer",
             "crashed", "timed_out", "gave_up", "archived", "dependency_wait", "reclaimed",
             "superseded", "replaced",
         )
@@ -386,7 +386,7 @@ class GatewayKanbanWatchersMixin:
             "created", "claimed", "spawned", "heartbeat", "completed",
             "review_requested", "review_rejected", "review_accepted",
             "review_retry_scheduled", "review_recovered", "review_job_reconciled",
-            "auditor_review_claimed", "auditor_review_spawned", "needs_auditor", "blocked", "gave_up",
+            "reviewer_review_claimed", "reviewer_review_spawned", "needs_reviewer", "blocked", "gave_up",
             "crashed", "timed_out", "status", "unblocked", "dependency_wait",
             "reclaimed", "archived",
         })
@@ -755,24 +755,24 @@ class GatewayKanbanWatchersMixin:
                                 f" — {title}{handoff}"
                             )
                         elif kind == "review_requested":
-                            msg = f"🔎 {board_tag}{tag}Kanban {sub['task_id']} handed to auditor — {title}"
+                            msg = f"🔎 {board_tag}{tag}Kanban {sub['task_id']} handed to reviewer — {title}"
                         elif kind == "review_rejected":
                             msg = f"↩️ {board_tag}{tag}Kanban {sub['task_id']} returned for rework — {title}"
                         elif kind == "review_accepted":
                             msg = f"✅ {board_tag}{tag}Kanban {sub['task_id']} accepted after review — {title}"
                         elif kind == "review_retry_scheduled":
-                            msg = f"🔁 {board_tag}{tag}Kanban {sub['task_id']} auditor retry scheduled — {title}"
+                            msg = f"🔁 {board_tag}{tag}Kanban {sub['task_id']} reviewer retry scheduled — {title}"
                         elif kind == "review_recovered":
                             msg = f"🔎 {board_tag}{tag}Kanban {sub['task_id']} audit handoff recovered — {title}"
                         elif kind == "review_job_reconciled":
                             msg = f"🔁 {board_tag}{tag}Kanban {sub['task_id']} audit handoff reconciled — {title}"
-                        elif kind == "auditor_review_claimed":
-                            msg = f"🔎 {board_tag}{tag}Kanban {sub['task_id']} claimed by auditor — {title}"
-                        elif kind == "auditor_review_spawned":
-                            msg = f"🔎 {board_tag}{tag}Kanban {sub['task_id']} auditor running — {title}"
-                        elif kind == "needs_auditor":
-                            reason = str((ev.payload or {}).get("reason") or "automatic auditor unavailable")[:160]
-                            msg = f"🔐 {board_tag}{tag}Kanban {sub['task_id']} needs auditor — {reason}"
+                        elif kind == "reviewer_review_claimed":
+                            msg = f"🔎 {board_tag}{tag}Kanban {sub['task_id']} claimed by reviewer — {title}"
+                        elif kind == "reviewer_review_spawned":
+                            msg = f"🔎 {board_tag}{tag}Kanban {sub['task_id']} reviewer running — {title}"
+                        elif kind == "needs_reviewer":
+                            reason = str((ev.payload or {}).get("reason") or "automatic reviewer unavailable")[:160]
+                            msg = f"🔐 {board_tag}{tag}Kanban {sub['task_id']} needs reviewer — {reason}"
                         elif kind == "blocked":
                             reason = ""
                             if ev.payload and ev.payload.get("reason"):

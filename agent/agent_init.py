@@ -628,6 +628,9 @@ def init_agent(
     # Model response configuration
     agent.max_tokens = max_tokens  # None = use model default
     agent.reasoning_config = reasoning_config  # None = use default (medium for OpenRouter)
+    # A gateway session/lane can pin reasoning for the whole turn so provider
+    # fallback does not replace it with a global per-model setting.
+    agent._reasoning_config_fixed = False
     agent.service_tier = service_tier
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns

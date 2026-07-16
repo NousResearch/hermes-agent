@@ -300,3 +300,200 @@ class TestResolveSessionAgentRuntimePriority:
              }):
             model, _runtime = runner._resolve_session_agent_runtime(source=source)
         assert model == "parent/model"
+
+
+class TestDiscordReasoningOverrides:
+    @staticmethod
+    def _runner(config, global_reasoning=None):
+        runner = object.__new__(GatewayRunner)
+        runner.config = config
+        runner._session_reasoning_overrides = {}
+        runner._load_reasoning_config = lambda model="": global_reasoning
+        return runner
+
+    @staticmethod
+    def _discord_source(
+        chat_id="100000000000000001",
+        *,
+        chat_type="channel",
+        parent_id=None,
+    ):
+        return SessionSource(
+            platform=Platform.DISCORD,
+            chat_id=chat_id,
+            chat_type=chat_type,
+            parent_chat_id=parent_id,
+            user_id="200000000000000001",
+        )
+
+    def test_exact_channel_override(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "100000000000000001": ChannelOverride(
+                            reasoning_effort="high"
+                        ),
+                    },
+                )
+            }
+        )
+        runner = self._runner(config, {"enabled": True, "effort": "low"})
+
+        assert runner._resolve_session_reasoning_config(
+            source=self._discord_source()
+        ) == {"enabled": True, "effort": "high"}
+
+    def test_exact_thread_override_beats_parent(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "100000000000000010": ChannelOverride(
+                            reasoning_effort="low"
+                        ),
+                        "100000000000000011": ChannelOverride(
+                            reasoning_effort="xhigh"
+                        ),
+                    },
+                )
+            }
+        )
+        runner = self._runner(config)
+        source = self._discord_source(
+            "100000000000000011",
+            chat_type="thread",
+            parent_id="100000000000000010",
+        )
+
+        assert runner._resolve_session_reasoning_config(source=source) == {
+            "enabled": True,
+            "effort": "xhigh",
+        }
+
+    def test_thread_entry_omitting_reasoning_inherits_parent(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "100000000000000020": ChannelOverride(
+                            reasoning_effort="medium"
+                        ),
+                        "100000000000000021": ChannelOverride(
+                            model="thread-model"
+                        ),
+                    },
+                )
+            }
+        )
+        runner = self._runner(config)
+        source = self._discord_source(
+            "100000000000000021",
+            chat_type="thread",
+            parent_id="100000000000000020",
+        )
+
+        assert runner._resolve_session_reasoning_config(source=source) == {
+            "enabled": True,
+            "effort": "medium",
+        }
+
+    def test_explicit_disabled_stops_parent_inheritance(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "100000000000000030": ChannelOverride(
+                            reasoning_effort="high"
+                        ),
+                        "100000000000000031": ChannelOverride(
+                            reasoning_effort=False
+                        ),
+                    },
+                )
+            }
+        )
+        runner = self._runner(config, {"enabled": True, "effort": "low"})
+        source = self._discord_source(
+            "100000000000000031",
+            chat_type="thread",
+            parent_id="100000000000000030",
+        )
+
+        assert runner._resolve_session_reasoning_config(source=source) == {
+            "enabled": False
+        }
+
+    def test_unconfigured_lane_uses_global_model_reasoning(self):
+        global_reasoning = {"enabled": True, "effort": "minimal"}
+        runner = self._runner(
+            GatewayConfig(
+                platforms={Platform.DISCORD: PlatformConfig(enabled=True)}
+            ),
+            global_reasoning,
+        )
+
+        assert runner._resolve_session_reasoning_config(
+            source=self._discord_source("100000000000000099"),
+            model="global-model",
+        ) is global_reasoning
+
+    def test_session_override_beats_exact_lane(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "100000000000000040": ChannelOverride(
+                            reasoning_effort="low"
+                        ),
+                    },
+                )
+            }
+        )
+        runner = self._runner(config)
+        session_key = "agent:main:discord:channel:100000000000000040"
+        runner._session_reasoning_overrides[session_key] = {
+            "enabled": True,
+            "effort": "ultra",
+        }
+
+        assert runner._resolve_session_reasoning_config(
+            source=self._discord_source("100000000000000040"),
+            session_key=session_key,
+        ) == {"enabled": True, "effort": "ultra"}
+        assert runner._has_scoped_reasoning_override(
+            source=self._discord_source("100000000000000040"),
+            session_key=session_key,
+        ) is True
+
+    def test_non_discord_source_keeps_global_behavior(self):
+        global_reasoning = {"enabled": True, "effort": "low"}
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "100000000000000050": ChannelOverride(
+                            reasoning_effort="high"
+                        ),
+                    },
+                )
+            }
+        )
+        runner = self._runner(config, global_reasoning)
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="100000000000000050",
+            chat_type="group",
+            user_id="200000000000000050",
+        )
+
+        assert runner._resolve_session_reasoning_config(
+            source=source
+        ) is global_reasoning
+        assert runner._has_scoped_reasoning_override(source=source) is False

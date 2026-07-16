@@ -1711,6 +1711,61 @@ def test_launch_tui_worktree_validates_relative_python_against_final_cwd(
     assert captured["env"]["HERMES_PYTHON"] == str(relative_python)
 
 
+def test_launch_tui_runs_production_entrypoint_from_user_cwd(
+    monkeypatch, main_mod, tmp_path
+):
+    captured = {}
+    tui_cwd = tmp_path / "hermes" / "ui-tui"
+    tui_cwd.mkdir(parents=True)
+    user_cwd = tmp_path / "workspace"
+    user_cwd.mkdir()
+    monkeypatch.chdir(user_cwd)
+    monkeypatch.delenv("HERMES_CWD", raising=False)
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "/hermes/ui-tui/dist/entry.js"], tui_cwd),
+    )
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: (
+            captured.update({"argv": argv, "cwd": cwd, "env": env}) or 1
+        ),
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui()
+
+    assert captured["cwd"] == str(user_cwd)
+    assert captured["env"]["HERMES_CWD"] == str(user_cwd)
+
+
+def test_launch_tui_keeps_package_cwd_in_dev_mode(monkeypatch, main_mod, tmp_path):
+    captured = {}
+    tui_cwd = tmp_path / "hermes" / "ui-tui"
+    tui_cwd.mkdir(parents=True)
+    user_cwd = tmp_path / "workspace"
+    user_cwd.mkdir()
+    monkeypatch.chdir(user_cwd)
+    monkeypatch.delenv("HERMES_CWD", raising=False)
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["npm", "start"], tui_cwd),
+    )
+    monkeypatch.setattr(
+        main_mod.subprocess,
+        "call",
+        lambda argv, cwd=None, env=None: captured.update({"cwd": cwd}) or 1,
+    )
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(tui_dev=True)
+
+    assert captured["cwd"] == str(tui_cwd)
+
+
 def test_launch_tui_applies_terminal_backend_config(
     monkeypatch, main_mod, _isolate_hermes_home
 ):

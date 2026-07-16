@@ -2290,11 +2290,17 @@ def _launch_tui(
     if resume_session_id:
         env["HERMES_TUI_RESUME"] = resume_session_id
 
-    argv, cwd = _make_tui_argv(tui_dir, tui_dev)
+    argv, tui_cwd = _make_tui_argv(tui_dir, tui_dev)
+    # Production entrypoints are absolute, so keep the foreground process
+    # group in the user's workspace. Launching Node from ui-tui leaks Hermes's
+    # implementation directory to terminal multiplexers that follow the
+    # foreground cwd when creating a split. Dev mode still needs the package
+    # cwd for relative npm/tsx commands.
+    launch_cwd = tui_cwd if tui_dev else Path(env["HERMES_CWD"])
     code: Optional[int] = None
     try:
         try:
-            code = subprocess.call(argv, cwd=str(cwd), env=env)
+            code = subprocess.call(argv, cwd=str(launch_cwd), env=env)
         except KeyboardInterrupt:
             code = 130
 

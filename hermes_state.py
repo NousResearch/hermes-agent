@@ -140,7 +140,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 21
+SCHEMA_VERSION = 22
 
 # Cap on user-controlled FTS5 query input before regex/sanitizer processing.
 # Search queries do not need to be arbitrarily large, and bounding them keeps
@@ -791,6 +791,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     compression_failure_cooldown_until REAL,
     compression_failure_error TEXT,
     compression_fallback_streak INTEGER NOT NULL DEFAULT 0,
+    profile_name TEXT,
     rewind_count INTEGER NOT NULL DEFAULT 0,
     archived INTEGER NOT NULL DEFAULT 0,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
@@ -825,6 +826,7 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     billing_provider TEXT NOT NULL DEFAULT '',
     billing_base_url TEXT NOT NULL DEFAULT '',
     billing_mode TEXT NOT NULL DEFAULT '',
+    task TEXT NOT NULL DEFAULT '',
     api_call_count INTEGER NOT NULL DEFAULT 0,
     input_tokens INTEGER NOT NULL DEFAULT 0,
     output_tokens INTEGER NOT NULL DEFAULT 0,
@@ -837,7 +839,7 @@ CREATE TABLE IF NOT EXISTS session_model_usage (
     cost_source TEXT,
     first_seen REAL,
     last_seen REAL,
-    PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode)
+    PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -986,7 +988,7 @@ class SessionDB:
     _WRITE_MAX_RETRIES = 15
     _WRITE_RETRY_MIN_S = 0.020   # 20ms
     _WRITE_RETRY_MAX_S = 0.150   # 150ms
-    # Attempt a PASSIVE WAL checkpoint every N successful writes.
+    # Attempt a WAL checkpoint every N successful writes (PASSIVE mode).
     _CHECKPOINT_EVERY_N_WRITES = 50
     # Merge fragmented FTS5 segments every N successful writes. The message
     # triggers append one segment per insert; left unmaintained these grow
@@ -1301,35 +1303,34 @@ class SessionDB:
         )
 
     def _try_wal_checkpoint(self) -> None:
-        """Best-effort TRUNCATE WAL checkpoint.  Never raises.
+        """Best-effort PASSIVE WAL checkpoint.  Never raises.
 
-        Flushes committed WAL frames back into the main DB file and
-        truncates the WAL file to zero bytes.  Keeps the WAL from
-        growing unbounded when many processes hold persistent
-        connections.
+        Flushes committed WAL frames back into the main DB file without
+        requiring an exclusive lock.  PASSIVE is safe for frequent
+        periodic use because it does not block concurrent writers and
+        cannot corrupt B-tree pages under I/O pressure.
 
-        PASSIVE checkpoint was previously used here, but it never
-        truncates the WAL file — the file stays at its high-water
-        mark until an explicit TRUNCATE is called (which only
-        happened inside the infrequent vacuum()).
+        PASSIVE does not truncate the WAL file — it stays at its
+        high-water mark.  WAL truncation happens in :meth:`close`
+        (TRUNCATE) and pre-VACUUM checkpoints, which run infrequently
+        under controlled conditions.
 
-        TRUNCATE may block writers briefly while checkpointing, but
-        _try_wal_checkpoint is called off the hot path (every 50
-        writes) and already runs under ``self._lock``, so the
-        additional hold time is negligible.
+        Previous TRUNCATE strategy caused B-tree corruption on large
+        databases (65K+ pages) due to the exclusive-lock I/O pressure
+        from checkpointing thousands of frames at once (issue #45383).
         """
         try:
             with self._lock:
                 result = self._conn.execute(
-                    "PRAGMA wal_checkpoint(TRUNCATE)"
+                    "PRAGMA wal_checkpoint(PASSIVE)"
                 ).fetchone()
                 if result and result[1] > 0:
                     logger.debug(
                         "WAL checkpoint: %d/%d pages checkpointed",
                         result[2], result[1],
                     )
-        except Exception:
-            pass  # Best effort — never fatal.
+        except Exception as exc:
+            logger.warning("WAL checkpoint (PASSIVE) failed: %s", exc)
 
     def _try_optimize_fts(self) -> None:
         """Best-effort FTS5 segment merge. Never raises.
@@ -1357,8 +1358,8 @@ class SessionDB:
             if self._conn:
                 try:
                     self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("WAL checkpoint (TRUNCATE) at close failed: %s", exc)
                 self._conn.close()
                 self._conn = None
 
@@ -1704,18 +1705,111 @@ class SessionDB:
                     )
                 except sqlite3.OperationalError:
                     pass
+            if current_version < 22:
+                # v22: task-dimension usage attribution (issue #23270).
+                # session_model_usage gains a ``task`` column ('' = main agent
+                # loop; 'vision'/'compression'/'title_generation'/... =
+                # auxiliary calls) so aux model spend is visible in analytics.
+                # The column participates in the PRIMARY KEY and SQLite cannot
+                # ALTER a PK, so rebuild the table. The reconciler will have
+                # already ADDed the plain column on legacy DBs (harmless);
+                # the rebuild bakes it into the PK properly. Existing rows are
+                # main-loop accounting by definition → task=''.
+                try:
+                    legacy_pk = cursor.execute(
+                        "SELECT COUNT(*) FROM pragma_table_info('session_model_usage') "
+                        "WHERE name = 'task' AND pk > 0"
+                    ).fetchone()[0]
+                    if not legacy_pk:
+                        cursor.execute("ALTER TABLE session_model_usage RENAME TO session_model_usage_v21")
+                        cursor.execute(
+                            """CREATE TABLE session_model_usage (
+                                   session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                                   model TEXT NOT NULL,
+                                   billing_provider TEXT NOT NULL DEFAULT '',
+                                   billing_base_url TEXT NOT NULL DEFAULT '',
+                                   billing_mode TEXT NOT NULL DEFAULT '',
+                                   task TEXT NOT NULL DEFAULT '',
+                                   api_call_count INTEGER NOT NULL DEFAULT 0,
+                                   input_tokens INTEGER NOT NULL DEFAULT 0,
+                                   output_tokens INTEGER NOT NULL DEFAULT 0,
+                                   cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+                                   cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+                                   reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                                   estimated_cost_usd REAL NOT NULL DEFAULT 0,
+                                   actual_cost_usd REAL NOT NULL DEFAULT 0,
+                                   cost_status TEXT,
+                                   cost_source TEXT,
+                                   first_seen REAL,
+                                   last_seen REAL,
+                                   PRIMARY KEY (session_id, model, billing_provider, billing_base_url, billing_mode, task)
+                               )"""
+                        )
+                        cursor.execute(
+                            """INSERT INTO session_model_usage (
+                                   session_id, model, billing_provider, billing_base_url,
+                                   billing_mode, task, api_call_count, input_tokens,
+                                   output_tokens, cache_read_tokens, cache_write_tokens,
+                                   reasoning_tokens, estimated_cost_usd, actual_cost_usd,
+                                   cost_status, cost_source, first_seen, last_seen
+                               )
+                               SELECT session_id, model, billing_provider, billing_base_url,
+                                      billing_mode, '', api_call_count, input_tokens,
+                                      output_tokens, cache_read_tokens, cache_write_tokens,
+                                      reasoning_tokens, estimated_cost_usd, actual_cost_usd,
+                                      cost_status, cost_source, first_seen, last_seen
+                               FROM session_model_usage_v21"""
+                        )
+                        cursor.execute("DROP TABLE session_model_usage_v21")
+                        cursor.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_session_model_usage_session "
+                            "ON session_model_usage(session_id)"
+                        )
+                        cursor.execute(
+                            "CREATE INDEX IF NOT EXISTS idx_session_model_usage_model "
+                            "ON session_model_usage(model)"
+                        )
+                except sqlite3.OperationalError as exc:
+                    logger.debug("v22 session_model_usage rebuild skipped: %s", exc)
             if current_version < SCHEMA_VERSION and fts_migrations_complete:
                 cursor.execute(
                     "UPDATE schema_version SET version = ?",
                     (SCHEMA_VERSION,),
                 )
 
-        # Unique title index — always ensure it exists
+        # Unique title index — always ensure it exists. Older databases may
+        # contain duplicate aliases from before the constraint was enforced;
+        # preserve every session while letting the newest one retain the alias.
+        title_index_sql = (
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
+            "ON sessions(title) WHERE title IS NOT NULL"
+        )
         try:
-            cursor.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
-                "ON sessions(title) WHERE title IS NOT NULL"
-            )
+            cursor.execute(title_index_sql)
+        except sqlite3.IntegrityError:
+            # The index is an optimization — its creation must never abort
+            # opening the database, so the repair itself is also guarded.
+            try:
+                cursor.execute(
+                    """UPDATE sessions AS older
+                       SET title = NULL
+                       WHERE title IS NOT NULL
+                         AND EXISTS (
+                             SELECT 1 FROM sessions AS newer
+                             WHERE newer.title = older.title
+                               AND newer.rowid > older.rowid
+                         )"""
+                )
+                logger.warning(
+                    "Cleared %d duplicate session title(s) while restoring the unique index",
+                    cursor.rowcount,
+                )
+                cursor.execute(title_index_sql)
+            except sqlite3.Error:
+                logger.exception(
+                    "Could not repair duplicate session titles; "
+                    "unique title index not created"
+                )
         except sqlite3.OperationalError:
             pass  # Index already exists
 
@@ -1760,6 +1854,7 @@ class SessionDB:
         thread_id: str = None,
         parent_session_id: str = None,
         cwd: str = None,
+        profile_name: str = None,
     ) -> None:
         """Insert a session row, enriching NULL metadata on conflict.
 
@@ -1783,9 +1878,9 @@ class SessionDB:
             conn.execute(
                 """INSERT INTO sessions (
                    id, source, user_id, session_key, chat_id, chat_type, thread_id,
-                   model, model_config, system_prompt, parent_session_id, cwd, started_at
+                   model, model_config, system_prompt, parent_session_id, cwd, profile_name, started_at
                 )
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                    ON CONFLICT(id) DO UPDATE SET
                        model = COALESCE(sessions.model, excluded.model),
                        model_config = COALESCE(sessions.model_config, excluded.model_config),
@@ -1795,7 +1890,8 @@ class SessionDB:
                        chat_type = COALESCE(sessions.chat_type, excluded.chat_type),
                        thread_id = COALESCE(sessions.thread_id, excluded.thread_id),
                        parent_session_id = COALESCE(sessions.parent_session_id, excluded.parent_session_id),
-                       cwd = COALESCE(sessions.cwd, excluded.cwd)""",
+                       cwd = COALESCE(sessions.cwd, excluded.cwd),
+                       profile_name = COALESCE(sessions.profile_name, excluded.profile_name)""",
                 (
                     session_id,
                     source,
@@ -1809,6 +1905,7 @@ class SessionDB:
                     system_prompt,
                     parent_session_id,
                     cwd,
+                    profile_name,
                     time.time(),
                 ),
             )
@@ -2783,6 +2880,7 @@ class SessionDB:
         cost_status: Optional[str],
         cost_source: Optional[str],
         api_call_count: int,
+        task: str = "",
     ) -> None:
         """Accumulate a per-API-call usage delta into session_model_usage.
 
@@ -2791,6 +2889,11 @@ class SessionDB:
         When the caller omits the model/provider (some paths only pass token
         deltas), fall back to the values already recorded on the session row —
         the same COALESCE-from-session behaviour the summary update uses.
+
+        ``task`` distinguishes what kind of work consumed the tokens:
+        ``''`` (empty) is the main agent loop; auxiliary calls record their
+        task name (``vision``, ``compression``, ``title_generation``, ...)
+        via :meth:`record_auxiliary_usage` (issue #23270).
         """
         row = conn.execute(
             "SELECT model, billing_provider, billing_base_url, billing_mode "
@@ -2802,20 +2905,30 @@ class SessionDB:
         sess_base_url = row["billing_base_url"] if row is not None else None
         sess_billing_mode = row["billing_mode"] if row is not None else None
 
-        eff_model = model or sess_model or "unknown"
-        eff_provider = billing_provider or sess_provider or ""
-        eff_base_url = billing_base_url or sess_base_url or ""
-        eff_billing_mode = billing_mode or sess_billing_mode or ""
+        # Aux-task rows (task != '') must NOT inherit the session's main-loop
+        # route: an aux call may use a completely different provider/model
+        # (vision on gemini while the main loop runs anthropic). Missing info
+        # stays 'unknown'/empty rather than borrowing a misleading route.
+        if task:
+            eff_model = model or "unknown"
+            eff_provider = billing_provider or ""
+            eff_base_url = billing_base_url or ""
+            eff_billing_mode = billing_mode or ""
+        else:
+            eff_model = model or sess_model or "unknown"
+            eff_provider = billing_provider or sess_provider or ""
+            eff_base_url = billing_base_url or sess_base_url or ""
+            eff_billing_mode = billing_mode or sess_billing_mode or ""
         now = time.time()
         conn.execute(
             """INSERT INTO session_model_usage (
                    session_id, model, billing_provider, billing_base_url, billing_mode,
-                   api_call_count, input_tokens, output_tokens,
+                   task, api_call_count, input_tokens, output_tokens,
                    cache_read_tokens, cache_write_tokens, reasoning_tokens,
                    estimated_cost_usd, actual_cost_usd, cost_status, cost_source,
                    first_seen, last_seen
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode)
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(session_id, model, billing_provider, billing_base_url, billing_mode, task)
                DO UPDATE SET
                    api_call_count = api_call_count + excluded.api_call_count,
                    input_tokens = input_tokens + excluded.input_tokens,
@@ -2834,6 +2947,7 @@ class SessionDB:
                 eff_provider,
                 eff_base_url,
                 eff_billing_mode,
+                task or "",
                 api_call_count or 0,
                 input_tokens or 0,
                 output_tokens or 0,
@@ -2859,6 +2973,65 @@ class SessionDB:
         """Ensure a session row exists (INSERT OR IGNORE). Accepts optional kwargs."""
         self._insert_session_row(session_id, source, model=model, **kwargs)
         return session_id
+
+    def record_auxiliary_usage(
+        self,
+        session_id: str,
+        task: str,
+        *,
+        model: Optional[str] = None,
+        billing_provider: Optional[str] = None,
+        billing_base_url: Optional[str] = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        reasoning_tokens: int = 0,
+        estimated_cost_usd: Optional[float] = None,
+    ) -> None:
+        """Record an auxiliary LLM call's usage against *session_id* (issue #23270).
+
+        Auxiliary calls (vision, compression, title_generation, web_extract,
+        session_search, ...) historically discarded their usage, leaving the
+        dashboard's per-model analytics blind to aux model spend. This writes
+        a per-(model, provider, task) delta into ``session_model_usage`` —
+        the same table the main loop's ``update_token_counts`` feeds — WITHOUT
+        touching the ``sessions`` summary row. That separation is deliberate:
+        the gateway overwrites session counters with absolute main-loop totals,
+        so folding aux tokens into the summary row would either be clobbered
+        or double-counted. Insights/analytics read the union of both.
+
+        Best-effort by contract: callers must never fail an aux call because
+        accounting failed.
+        """
+        if not session_id or not task:
+            return
+        # FK on session_model_usage.session_id → sessions.id: ensure the row
+        # exists (same INSERT OR IGNORE guard update_token_counts uses — the
+        # initial create_session() can fail under concurrent SQLite locking).
+        self._insert_session_row(session_id, "unknown")
+
+        def _do(conn):
+            self._record_model_usage(
+                conn,
+                session_id,
+                model=model,
+                billing_provider=billing_provider,
+                billing_base_url=billing_base_url,
+                billing_mode=None,
+                input_tokens=input_tokens or 0,
+                output_tokens=output_tokens or 0,
+                cache_read_tokens=cache_read_tokens or 0,
+                cache_write_tokens=cache_write_tokens or 0,
+                reasoning_tokens=reasoning_tokens or 0,
+                estimated_cost_usd=estimated_cost_usd,
+                actual_cost_usd=None,
+                cost_status=None,
+                cost_source=None,
+                api_call_count=1,
+                task=task,
+            )
+        self._execute_write(_do)
 
     def prune_empty_ghost_sessions(self, sessions_dir: "Optional[Path]" = None) -> int:
         """Remove empty TUI ghost sessions (no messages, no title, >24hr old)."""
@@ -4435,6 +4608,7 @@ class SessionDB:
         session_id: str,
         include_ancestors: bool = False,
         include_inactive: bool = False,
+        repair_alternation: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
@@ -4443,6 +4617,16 @@ class SessionDB:
         By default only active messages are returned. Pass
         ``include_inactive=True`` to load soft-deleted (rewound) rows
         as well. See :meth:`rewind_to_message`.
+
+        ``repair_alternation=True`` runs ``repair_message_sequence`` over the
+        loaded list before returning it. Callers that restore a session for
+        LIVE REPLAY should pass it: a durable alternation violation (e.g. a
+        ``user;user`` pair left by a turn that persisted no assistant row)
+        otherwise re-triggers the pre-request defensive repair on every
+        single request for the rest of the session's life — the repair
+        mutates only the per-request list, never the stored transcript.
+        Inspection/export consumers keep the default and see the transcript
+        verbatim.
         """
         session_ids = [session_id]
         if include_ancestors:
@@ -4539,7 +4723,36 @@ class SessionDB:
         # assistant reply immediately following it, so a polluted session
         # resumes clean even if stray rows exist.
         messages = _strip_background_review_harness(messages)
+        if repair_alternation and messages:
+            # Lazy import: hermes_state already depends on agent.* (see
+            # sanitize_context above), but keep this optional path from
+            # widening the import surface at module load.
+            from agent.agent_runtime_helpers import repair_message_sequence
+
+            repaired = repair_message_sequence(None, messages)
+            if repaired:
+                logger.info(
+                    "Repaired %d message-alternation violation(s) while "
+                    "restoring session %s — durable transcript kept them, "
+                    "see repair_message_sequence",
+                    repaired,
+                    session_id,
+                )
         return messages
+
+    def get_conversation_root(self, session_id: str) -> str:
+        """Return the ROOT id of *session_id*'s lineage chain.
+
+        The root is the stable "conversation id": context compression
+        rotates ``session_id`` to a new segment linked via
+        ``parent_session_id``, and delegate subagents hang off their
+        parent the same way. Walking to the root gives every segment of
+        one user-facing conversation (and its delegation tree) a single
+        identifier — used for Nous Portal ``conversation=`` usage tagging.
+        Returns *session_id* unchanged when it has no recorded parent.
+        """
+        chain = self._session_lineage_root_to_tip(session_id)
+        return (chain[0] if chain and chain[0] else session_id)
 
     def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
         if not session_id:
@@ -7015,8 +7228,8 @@ class SessionDB:
             # Best-effort WAL checkpoint first, then VACUUM.
             try:
                 self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("WAL checkpoint (TRUNCATE) before VACUUM failed: %s", exc)
             self._conn.execute("VACUUM")
         return optimized
 

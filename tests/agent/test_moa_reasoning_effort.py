@@ -70,3 +70,93 @@ def test_call_llm_builder_translates_reasoning_config_to_extra_body():
         reasoning_config={"enabled": False},
     )
     assert off["extra_body"]["reasoning"] == {"enabled": False}
+
+
+class TestAggregatorGlobalFallback:
+    """#64187: the aggregator (MoA's acting model) resolves like any acting
+    model when its slot has no reasoning_effort: per-model override
+    (agent.reasoning_overrides for the slot's model) > global
+    agent.reasoning_effort. Reference advisors do NOT get this fallback
+    (side calls — cost containment)."""
+
+    def test_slot_value_wins_over_global(self, monkeypatch):
+        from agent import moa_loop
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"agent": {"reasoning_effort": "medium"}},
+        )
+        cfg = moa_loop._aggregator_reasoning_config({"reasoning_effort": "xhigh"})
+        assert cfg == {"enabled": True, "effort": "xhigh"}
+
+    def test_unset_slot_falls_back_to_global(self, monkeypatch):
+        from agent import moa_loop
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"agent": {"reasoning_effort": "high"}},
+        )
+        cfg = moa_loop._aggregator_reasoning_config({"provider": "openrouter", "model": "m"})
+        assert cfg == {"enabled": True, "effort": "high"}
+
+    def test_unset_slot_honors_per_model_override(self, monkeypatch):
+        """The aggregator's model gets its agent.reasoning_overrides entry —
+        same resolution as any acting model, not just the bare global."""
+        from agent import moa_loop
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "agent": {
+                    "reasoning_effort": "medium",
+                    "reasoning_overrides": {"claude-opus-4.8": "xhigh"},
+                }
+            },
+        )
+        cfg = moa_loop._aggregator_reasoning_config(
+            {"provider": "openrouter", "model": "anthropic/claude-opus-4.8"}
+        )
+        assert cfg == {"enabled": True, "effort": "xhigh"}
+
+    def test_slot_value_beats_per_model_override(self, monkeypatch):
+        from agent import moa_loop
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {
+                "agent": {
+                    "reasoning_effort": "medium",
+                    "reasoning_overrides": {"claude-opus-4.8": "xhigh"},
+                }
+            },
+        )
+        cfg = moa_loop._aggregator_reasoning_config(
+            {"model": "anthropic/claude-opus-4.8", "reasoning_effort": "low"}
+        )
+        assert cfg == {"enabled": True, "effort": "low"}
+
+    def test_global_yaml_false_disables(self, monkeypatch):
+        from agent import moa_loop
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"agent": {"reasoning_effort": False}},
+        )
+        cfg = moa_loop._aggregator_reasoning_config({})
+        assert cfg == {"enabled": False}
+
+    def test_no_slot_no_global_returns_none(self, monkeypatch):
+        from agent import moa_loop
+
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {})
+        assert moa_loop._aggregator_reasoning_config({}) is None
+
+    def test_reference_slots_do_not_inherit_global(self, monkeypatch):
+        """Advisors stay slot-or-default: global effort must NOT leak in."""
+        from agent import moa_loop
+
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"agent": {"reasoning_effort": "xhigh"}},
+        )
+        assert moa_loop._slot_reasoning_config({"provider": "p", "model": "m"}) is None

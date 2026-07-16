@@ -294,6 +294,74 @@ _TELEGRAM_IMAGE_EXT_TO_MIME = {
     ".gif": "image/gif",
 }
 
+def _coerce_duration_seconds(value: Any) -> Optional[int]:
+    """Round a raw length to whole positive seconds, or None if unusable."""
+    try:
+        secs = int(round(float(value)))
+    except (TypeError, ValueError):
+        return None
+    return secs if secs > 0 else None
+
+
+def _probe_voice_duration_seconds(path: str) -> Optional[int]:
+    """Best-effort audio length in whole seconds for outgoing voice/audio.
+
+    Telegram only auto-derives a clip's duration from container metadata for
+    short recordings; longer ones (roughly 5 min+) are sent with duration 0
+    and render as ``0:00`` in the player. We read the length locally and pass
+    it explicitly so the bubble shows the real time.
+
+    Mirrors ``gateway.run._probe_audio_duration``: stdlib ``wave`` for WAV,
+    then mutagen for OGG/Opus/MP3/M4A metadata, then an ``ffprobe`` fallback.
+    All three are optional — when none can read the file we return ``None``
+    and the caller omits ``duration``, falling back to Telegram's own
+    (possibly absent) metadata, i.e. the prior behavior. Blocking (mutagen
+    read + ffprobe subprocess), so call it via ``asyncio.to_thread``.
+    """
+    ext = os.path.splitext(path)[1].lower()
+
+    if ext == ".wav":
+        try:
+            import wave
+
+            with wave.open(path, "rb") as wf:
+                rate = wf.getframerate() or 0
+                if rate:
+                    secs = _coerce_duration_seconds(wf.getnframes() / float(rate))
+                    if secs is not None:
+                        return secs
+        except Exception:
+            pass
+
+    try:
+        import mutagen
+
+        audio = mutagen.File(path)
+        secs = _coerce_duration_seconds(
+            getattr(getattr(audio, "info", None), "length", None)
+        )
+        if secs is not None:
+            return secs
+    except Exception:
+        pass
+
+    try:
+        import shutil
+        import subprocess
+
+        if shutil.which("ffprobe"):
+            proc = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", path],
+                capture_output=True, text=True, timeout=5,
+            )
+            if proc.returncode == 0:
+                return _coerce_duration_seconds(proc.stdout.strip())
+    except Exception:
+        pass
+
+    return None
+
 
 def check_telegram_requirements() -> bool:
     """Check if Telegram dependencies are available.
@@ -1222,7 +1290,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "retrying without reply/topic anchor: %s",
                 self.name,
                 media_label,
-                send_err,
+                _redact_telegram_error_text(send_err),
             )
             if reset_media is not None:
                 reset_media()
@@ -1699,7 +1767,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     self._rich_send_disabled = True
                 logger.debug(
                     "[%s] sendRichMessage rejected (%s) — falling back to MarkdownV2",
-                    self.name, exc,
+                    self.name, _redact_telegram_error_text(exc),
                 )
                 return None
             # Transient / network / unknown: the request may have reached
@@ -1805,7 +1873,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     return SendResult(success=True, message_id=message_id)
                 logger.debug(
                     "[%s] rich editMessageText rejected (%s) — falling back to MarkdownV2 edit",
-                    self.name, exc,
+                    self.name, _redact_telegram_error_text(exc),
                 )
                 return None
             if "not modified" in str(exc).lower():
@@ -1883,12 +1951,12 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._rich_draft_disabled = True
                 logger.debug(
                     "[%s] sendRichMessageDraft unsupported (%s) — using legacy drafts",
-                    self.name, exc,
+                    self.name, _redact_telegram_error_text(exc),
                 )
             else:
                 logger.debug(
                     "[%s] sendRichMessageDraft transient failure (%s) — legacy draft this frame",
-                    self.name, exc,
+                    self.name, _redact_telegram_error_text(exc),
                 )
             return False
 
@@ -2155,13 +2223,13 @@ class TelegramAdapter(BasePlatformAdapter):
         if self._polling_error_task and not self._polling_error_task.done():
             logger.debug(
                 "[%s] Telegram polling recovery already scheduled; ignoring %s: %s",
-                self.name, reason, error,
+                self.name, reason, _redact_telegram_error_text(error),
             )
             return
         self._send_path_degraded = True
         logger.warning(
             "[%s] Telegram polling degraded (%s); gateway stays alive and will retry. Error: %s",
-            self.name, reason, error,
+            self.name, reason, _redact_telegram_error_text(error),
         )
         loop = asyncio.get_running_loop()
         self._polling_error_task = loop.create_task(self._handle_polling_network_error(error))
@@ -2188,7 +2256,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning(
                     "[%s] deleteWebhook failed with a recoverable network error; "
                     "continuing to polling so getUpdates/retry can recover: %s",
-                    self.name, err,
+                    self.name, _redact_telegram_error_text(err),
                 )
                 self._send_path_degraded = True
                 return False
@@ -2227,7 +2295,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning(
                     "[%s] Telegram polling bootstrap conflict; gateway stays alive "
                     "while conflict retry runs: %s",
-                    self.name, err,
+                    self.name, _redact_telegram_error_text(err),
                 )
                 loop = asyncio.get_running_loop()
                 self._polling_error_task = loop.create_task(self._handle_polling_conflict(err))
@@ -2722,7 +2790,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "held open on Telegram's servers. Waiting %ds for it to expire. "
                 "Error: %s",
                 self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
-                RETRY_DELAY, error,
+                RETRY_DELAY, _redact_telegram_error_text(error),
             )
             # Stop the local updater cleanly before sleeping.  If it's already
             # stopped (e.g. PTB raised before updater.running was set) this is
@@ -2779,7 +2847,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Telegram polling retry %d/%d failed: %s. "
                     "Scheduling next attempt.",
                     self.name, self._polling_conflict_count, MAX_CONFLICT_RETRIES,
-                    retry_err,
+                    _redact_telegram_error_text(retry_err),
                 )
                 # Schedule the next retry rather than returning silently.
                 # Returning here without either restarting polling or setting
@@ -2818,7 +2886,7 @@ class TelegramAdapter(BasePlatformAdapter):
         )
         logger.error(
             "[%s] %s Original error: %s",
-            self.name, message, error,
+            self.name, message, _redact_telegram_error_text(error),
         )
         # Snapshot whether we are the call that actually transitions to fatal.
         # A concurrent retry task scheduled by an earlier conflict may already
@@ -2895,7 +2963,7 @@ class TelegramAdapter(BasePlatformAdapter):
             else:
                 logger.warning(
                     "[%s] Failed to create DM topic '%s' in chat %s: %s",
-                    self.name, name, chat_id, e,
+                    self.name, name, chat_id, _redact_telegram_error_text(e),
                 )
             return None
 
@@ -3213,7 +3281,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 logger.warning(
                     "[%s] Could not register Telegram command menu: %s",
                     self.name,
-                    e,
+                    _redact_telegram_error_text(e),
                     exc_info=True,
                 )
 
@@ -3600,12 +3668,12 @@ class TelegramAdapter(BasePlatformAdapter):
                         self._background_tasks.add(self._polling_error_task)
                         self._polling_error_task.add_done_callback(self._background_tasks.discard)
                     elif self._looks_like_network_error(error):
-                        logger.warning("[%s] Telegram network error, scheduling reconnect: %s", self.name, error)
+                        logger.warning("[%s] Telegram network _redact_telegram_error_text(error), scheduling reconnect: %s", self.name, error)
                         self._polling_error_task = loop.create_task(self._handle_polling_network_error(error))
                         self._background_tasks.add(self._polling_error_task)
                         self._polling_error_task.add_done_callback(self._background_tasks.discard)
                     else:
-                        logger.error("[%s] Telegram polling error: %s", self.name, error, exc_info=True)
+                        logger.error("[%s] Telegram polling _redact_telegram_error_text(error): %s", self.name, error, exc_info=True)
 
                 # Store reference for retry use in _handle_polling_conflict
                 self._polling_error_callback_ref = _polling_error_callback
@@ -3684,7 +3752,7 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug(
                 "[%s] Failed to set bot status indicator to %r: %s",
-                self.name, text, e,
+                self.name, text, _redact_telegram_error_text(e),
             )
 
     async def _cancel_pending_delivery_tasks(self) -> None:
@@ -4498,7 +4566,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         logger.warning(
                             "[%s] Overflow split: MarkdownV2 first-chunk edit "
                             "failed, falling back to plain text: %s",
-                            self.name, fmt_err,
+                            self.name, _redact_telegram_error_text(fmt_err),
                         )
                         await self._bot.edit_message_text(
                             chat_id=normalize_telegram_chat_id(chat_id),
@@ -4520,9 +4588,9 @@ class TelegramAdapter(BasePlatformAdapter):
             else:
                 logger.error(
                     "[%s] Overflow split: first-chunk edit failed: %s",
-                    self.name, e, exc_info=True,
+                    self.name, _redact_telegram_error_text(e), exc_info=True,
                 )
-                return SendResult(success=False, error=str(e))
+                return SendResult(success=False, error=_redact_telegram_error_text(e))
 
         # Step 2 — send each remaining chunk as a continuation message,
         # threaded as a reply to the previous so the user sees them as a
@@ -4589,7 +4657,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         except Exception as _retry_err:
                             logger.warning(
                                 "[%s] Overflow continuation no-reply retry failed: %s",
-                                self.name, _retry_err,
+                                self.name, _redact_telegram_error_text(_retry_err),
                             )
                             sent_msg = None
                             break
@@ -4598,7 +4666,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         continue
                     logger.warning(
                         "[%s] Overflow continuation send failed: %s",
-                        self.name, send_err,
+                        self.name, _redact_telegram_error_text(send_err),
                     )
                     sent_msg = None
                     break
@@ -4669,7 +4737,7 @@ class TelegramAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug(
                 "[%s] Failed to delete Telegram message %s: %s",
-                self.name, message_id, e,
+                self.name, message_id, _redact_telegram_error_text(e),
             )
             return False
 
@@ -4770,14 +4838,14 @@ class TelegramAdapter(BasePlatformAdapter):
                     logger.debug(
                         "[%s] sendMessageDraft MarkdownV2 rejected, retrying "
                         "as plain text (chat=%s draft_id=%s): %s",
-                        self.name, chat_id, draft_id, e,
+                        self.name, chat_id, draft_id, _redact_telegram_error_text(e),
                     )
                     continue
                 logger.debug(
                     "[%s] sendMessageDraft failed (chat=%s draft_id=%s): %s",
                     self.name, chat_id, draft_id, e,
                 )
-                return SendResult(success=False, error=str(e))
+                return SendResult(success=False, error=_redact_telegram_error_text(e))
 
         return SendResult(success=False, error="draft_rejected")
 
@@ -4860,8 +4928,8 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            logger.warning("[%s] send_update_prompt failed: %s", self.name, e)
-            return SendResult(success=False, error=str(e))
+            logger.warning("[%s] send_update_prompt failed: %s", self.name, _redact_telegram_error_text(e))
+            return SendResult(success=False, error=_redact_telegram_error_text(e))
 
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str,
@@ -4939,8 +5007,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            logger.warning("[%s] send_exec_approval failed: %s", self.name, e)
-            return SendResult(success=False, error=str(e))
+            logger.warning("[%s] send_exec_approval failed: %s", self.name, _redact_telegram_error_text(e))
+            return SendResult(success=False, error=_redact_telegram_error_text(e))
 
     async def send_slash_confirm(
         self, chat_id: str, title: str, message: str, session_key: str,
@@ -4987,8 +5055,8 @@ class TelegramAdapter(BasePlatformAdapter):
             self._slash_confirm_state[confirm_id] = session_key
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            logger.warning("[%s] send_slash_confirm failed: %s", self.name, e)
-            return SendResult(success=False, error=str(e))
+            logger.warning("[%s] send_slash_confirm failed: %s", self.name, _redact_telegram_error_text(e))
+            return SendResult(success=False, error=_redact_telegram_error_text(e))
 
     async def send_clarify(
         self,
@@ -5069,8 +5137,8 @@ class TelegramAdapter(BasePlatformAdapter):
             self._clarify_state[clarify_id] = session_key
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            logger.warning("[%s] send_clarify failed: %s", self.name, e)
-            return SendResult(success=False, error=str(e))
+            logger.warning("[%s] send_clarify failed: %s", self.name, _redact_telegram_error_text(e))
+            return SendResult(success=False, error=_redact_telegram_error_text(e))
 
     async def send_model_picker(
         self,
@@ -5141,8 +5209,8 @@ class TelegramAdapter(BasePlatformAdapter):
 
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            logger.warning("[%s] send_model_picker failed: %s", self.name, e)
-            return SendResult(success=False, error=str(e))
+            logger.warning("[%s] send_model_picker failed: %s", self.name, _redact_telegram_error_text(e))
+            return SendResult(success=False, error=_redact_telegram_error_text(e))
 
     _PROVIDER_PAGE_SIZE = 10
     _MODEL_PAGE_SIZE = 8
@@ -6150,6 +6218,12 @@ class TelegramAdapter(BasePlatformAdapter):
             if not os.path.exists(audio_path):
                 return SendResult(success=False, error=self._missing_media_path_error("Audio", audio_path))
             
+            # Compute duration locally — Telegram drops it for long clips
+            # (~5 min+), which then show 0:00 in the player.
+            _duration_secs = await asyncio.to_thread(
+                _probe_voice_duration_seconds, audio_path
+            )
+
             with open(audio_path, "rb") as audio_file:
                 ext = os.path.splitext(audio_path)[1].lower()
                 # .ogg / .opus files -> send as voice (round playable bubble)
@@ -6170,6 +6244,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             "voice": audio_file,
                             "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
+                            "duration": _duration_secs,
                             **voice_thread_kwargs,
                             **self._notification_kwargs(metadata),
                         },
@@ -6196,6 +6271,7 @@ class TelegramAdapter(BasePlatformAdapter):
                             "audio": audio_file,
                             "caption": caption[:1024] if caption else None,
                             "reply_to_message_id": reply_to_id,
+                            "duration": _duration_secs,
                             **audio_thread_kwargs,
                             **self._notification_kwargs(metadata),
                         },
@@ -6219,7 +6295,7 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.error(
                 "[%s] Failed to send Telegram voice/audio, falling back to base adapter: %s",
                 self.name,
-                e,
+                _redact_telegram_error_text(e),
                 exc_info=True,
             )
             return await super().send_voice(chat_id, audio_path, caption, reply_to, metadata=metadata)
@@ -6345,7 +6421,7 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning(
                     "[%s] send_media_group failed (chunk %d/%d), falling back to per-image: %s",
-                    self.name, chunk_idx + 1, len(chunks), e,
+                    self.name, chunk_idx + 1, len(chunks), _redact_telegram_error_text(e),
                     exc_info=True,
                 )
                 # Fallback: send each photo in this chunk individually
@@ -6427,7 +6503,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     "[%s] Failed to send Telegram local image as photo, "
                     "trying document fallback: %s",
                     self.name,
-                    e,
+                    _redact_telegram_error_text(e),
                     exc_info=True,
                 )
             # Fallback to sending as document (file) — no dimension limit,
@@ -6607,7 +6683,7 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.warning(
                 "[%s] URL-based send_photo failed, trying file upload: %s",
                 self.name,
-                e,
+                _redact_telegram_error_text(e),
                 exc_info=True,
             )
             # Fallback: download and upload as file (supports up to 10MB)
@@ -6691,7 +6767,7 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.error(
                 "[%s] Failed to send Telegram animation, falling back to photo: %s",
                 self.name,
-                e,
+                _redact_telegram_error_text(e),
                 exc_info=True,
             )
             # Fallback: try as a regular photo
@@ -6778,7 +6854,7 @@ class TelegramAdapter(BasePlatformAdapter):
             logger.debug(
                 "[%s] Failed to send Telegram typing indicator: %s",
                 self.name,
-                e,
+                _redact_telegram_error_text(e),
                 exc_info=True,
             )
 
@@ -6811,7 +6887,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Failed to get Telegram chat info for %s: %s",
                 self.name,
                 chat_id,
-                e,
+                _redact_telegram_error_text(e),
                 exc_info=True,
             )
             return {"name": str(chat_id), "type": "dm", "error": str(e)}
@@ -7041,6 +7117,32 @@ class TelegramAdapter(BasePlatformAdapter):
         if isinstance(raw, list):
             return {str(part).strip() for part in raw if str(part).strip()}
         return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _telegram_free_response_topics(self) -> set[str]:
+        """Return topic-level free-response allowlist entries as ``<chat_id>:<thread_id>``.
+
+        Unlike ``free_response_chats`` (whole-chat), each entry opens a single
+        forum topic for free-response. A missing/omitted thread id on incoming
+        messages is normalized to the General topic (``1``).
+        """
+        raw = self.config.extra.get("free_response_topics")
+        if raw is None:
+            raw = os.getenv("TELEGRAM_FREE_RESPONSE_TOPICS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
+
+    def _telegram_is_free_response_topic(self, message: Message) -> bool:
+        """True when the message's chat/topic pair is in ``free_response_topics``."""
+        topics = self._telegram_free_response_topics()
+        if not topics:
+            return False
+        chat_id = str(getattr(getattr(message, "chat", None), "id", ""))
+        if not chat_id:
+            return False
+        thread_id = self._effective_message_thread_id(message)
+        topic_id = str(thread_id) if thread_id is not None else self._GENERAL_TOPIC_THREAD_ID
+        return f"{chat_id}:{topic_id}" in topics
 
     def _telegram_allowed_chats(self) -> set[str]:
         """Return the whitelist of group/supergroup chat IDs the bot will respond in.
@@ -7396,6 +7498,8 @@ class TelegramAdapter(BasePlatformAdapter):
         # if require_mention is disabled, every group message is a request.
         if chat_id_str in self._telegram_free_response_chats():
             return False
+        if self._telegram_is_free_response_topic(message):
+            return False
         if not self._telegram_require_mention():
             return False
         if self._is_reply_to_bot(message):
@@ -7503,7 +7607,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
             cached = cache_media_bytes(data, filename=filename, mime_type=mime, default_kind=kind)
         except Exception as exc:
-            logger.warning("[Telegram] Failed to cache observed group media: %s", exc, exc_info=True)
+            logger.warning("[Telegram] Failed to cache observed group media: %s", _redact_telegram_error_text(exc), exc_info=True)
             return
 
         if cached is None:
@@ -7551,7 +7655,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 filename = os.path.basename(getattr(file_obj, "file_path", "") or "")
             cached = cache_media_bytes(data, filename=filename, mime_type=mime, default_kind=kind)
         except Exception as exc:
-            logger.warning("[Telegram] Failed to cache replied-to media: %s", exc, exc_info=True)
+            logger.warning("[Telegram] Failed to cache replied-to media: %s", _redact_telegram_error_text(exc), exc_info=True)
             return
 
         if cached is None:
@@ -7761,6 +7865,8 @@ class TelegramAdapter(BasePlatformAdapter):
             return True
         if chat_id_str in self._telegram_free_response_chats():
             return True
+        if self._telegram_is_free_response_topic(message):
+            return True
         if not self._telegram_require_mention():
             return True
         if self._is_reply_to_bot(message):
@@ -7794,7 +7900,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 self._forum_command_registered.add(chat_id)
                 logger.info("[%s] Lazy-registered %d commands for forum chat %s", self.name, len(bot_commands), chat_id)
             except Exception as e:
-                logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, e)
+                logger.warning("[%s] Forum command lazy-registration failed: %s", self.name, _redact_telegram_error_text(e))
 
     def _effective_update_message(self, update: Update) -> Optional[Message]:
         """Return the message-like payload for normal messages and channel posts.
@@ -7925,6 +8031,7 @@ class TelegramAdapter(BasePlatformAdapter):
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+            profile=event.source.profile,
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:
@@ -8140,7 +8247,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return
 
             except Exception as e:
-                logger.warning("[Telegram] Failed to cache photo: %s", e, exc_info=True)
+                logger.warning("[Telegram] Failed to cache photo: %s", _redact_telegram_error_text(e), exc_info=True)
                 await self._surface_media_cache_failure(msg, event, "photo", e)
 
         # Download voice/audio messages to cache for STT transcription
@@ -8159,7 +8266,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_types = ["audio/ogg"]
                 logger.info("[Telegram] Cached user voice at %s", cached_path)
             except Exception as e:
-                logger.warning("[Telegram] Failed to cache voice: %s", e, exc_info=True)
+                logger.warning("[Telegram] Failed to cache voice: %s", _redact_telegram_error_text(e), exc_info=True)
                 await self._surface_media_cache_failure(msg, event, "voice message", e)
         elif msg.audio:
             try:
@@ -8176,7 +8283,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_types = ["audio/mp3"]
                 logger.info("[Telegram] Cached user audio at %s", cached_path)
             except Exception as e:
-                logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
+                logger.warning("[Telegram] Failed to cache audio: %s", _redact_telegram_error_text(e), exc_info=True)
                 await self._surface_media_cache_failure(msg, event, "audio file", e)
 
         elif msg.video:
@@ -8200,7 +8307,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_types = [SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4")]
                 logger.info("[Telegram] Cached user video at %s", cached_path)
             except Exception as e:
-                logger.warning("[Telegram] Failed to cache video: %s", e, exc_info=True)
+                logger.warning("[Telegram] Failed to cache video: %s", _redact_telegram_error_text(e), exc_info=True)
                 await self._surface_media_cache_failure(msg, event, "video file", e)
 
         # Download document files to cache for agent processing
@@ -8247,7 +8354,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     try:
                         cached_path = cache_image_from_bytes(bytes(image_bytes), ext=image_ext)
                     except ValueError as e:
-                        logger.warning("[Telegram] Failed to cache image document: %s", e, exc_info=True)
+                        logger.warning("[Telegram] Failed to cache image document: %s", _redact_telegram_error_text(e), exc_info=True)
                         event.text = (
                             f"Image document '{original_filename or doc_mime or ext or 'unknown'}' "
                             "could not be read as an image."
@@ -8333,7 +8440,7 @@ class TelegramAdapter(BasePlatformAdapter):
                         pass
 
             except Exception as e:
-                logger.warning("[Telegram] Failed to cache document: %s", e, exc_info=True)
+                logger.warning("[Telegram] Failed to cache document: %s", _redact_telegram_error_text(e), exc_info=True)
                 await self._surface_media_cache_failure(
                     msg, event, "attachment", e,
                     display_name=getattr(doc, "file_name", None) or None,
@@ -8450,7 +8557,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     emoji, set_name,
                 )
         except Exception as e:
-            logger.warning("[Telegram] Sticker analysis error: %s", e, exc_info=True)
+            logger.warning("[Telegram] Sticker analysis error: %s", _redact_telegram_error_text(e), exc_info=True)
             event.text = build_sticker_injection(
                 f"a sticker with emoji {emoji}" if emoji else "a sticker",
                 emoji, set_name,
@@ -8814,7 +8921,7 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return True
         except Exception as e:
-            logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, e)
+            logger.debug("[%s] set_message_reaction failed (%s): %s", self.name, emoji, _redact_telegram_error_text(e))
             return False
 
     async def _clear_reactions(self, chat_id: str, message_id: str) -> bool:
@@ -8835,7 +8942,7 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return True
         except Exception as e:
-            logger.debug("[%s] clear reactions failed: %s", self.name, e)
+            logger.debug("[%s] clear reactions failed: %s", self.name, _redact_telegram_error_text(e))
             return False
 
     async def on_processing_start(self, event: MessageEvent) -> None:
@@ -9021,6 +9128,11 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         if isinstance(frc, list):
             frc = ",".join(str(v) for v in frc)
         os.environ["TELEGRAM_FREE_RESPONSE_CHATS"] = str(frc)
+    frt = telegram_cfg.get("free_response_topics")
+    if frt is not None and not os.getenv("TELEGRAM_FREE_RESPONSE_TOPICS"):
+        if isinstance(frt, list):
+            frt = ",".join(str(v) for v in frt)
+        os.environ["TELEGRAM_FREE_RESPONSE_TOPICS"] = str(frt)
     ac = telegram_cfg.get("allowed_chats")
     if ac is not None and not os.getenv("TELEGRAM_ALLOWED_CHATS"):
         if isinstance(ac, list):
@@ -9063,7 +9175,7 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         if isinstance(group_allowed_chats, list):
             group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
         os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
-    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages"):
+    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages", "free_response_topics"):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])
     # Pass through telegram-specific extra keys (e.g. base_url proxy override),

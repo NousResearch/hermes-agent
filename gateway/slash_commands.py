@@ -330,12 +330,44 @@ class GatewaySlashCommandsMixin:
         return EphemeralReply(f"{header}{_tip_line}")
 
     async def _handle_profile_command(self, event: MessageEvent) -> str:
-        """Handle /profile — show active profile name and home directory."""
+        """Handle /profile — show the profile serving this source and its home.
+
+        On a multiplexed gateway the process-level active profile is always
+        the multiplexer's own (usually ``default``), so reporting it would
+        answer "default" in every chat regardless of which profile actually
+        serves the room/channel (``source.profile`` — stamped by the
+        ``/p/<profile>/`` URL prefix, a per-credential adapter, or a room→
+        profile map). When ``multiplex_profiles`` is on, report the stamped
+        profile and, like the scoped /reset banner (#59003), resolve the
+        displayed home under that profile's runtime scope. When multiplexing
+        is off (the default) the stamp is ignored — mirroring the gating in
+        ``_run_agent`` and ``_reset_notice_session_info`` — and the command
+        reports the active profile and default home, byte-identical to before.
+        """
         from hermes_constants import display_hermes_home
         from hermes_cli.profiles import get_active_profile_name
 
-        display = display_hermes_home()
-        profile_name = get_active_profile_name()
+        multiplexed = getattr(
+            getattr(self, "config", None), "multiplex_profiles", False
+        )
+        source = getattr(event, "source", None)
+
+        profile_name = ""
+        if multiplexed:
+            profile_name = (getattr(source, "profile", "") or "").strip()
+        profile_name = profile_name or get_active_profile_name()
+
+        if multiplexed:
+            try:
+                from gateway.run import _profile_runtime_scope
+
+                profile_home = self._resolve_profile_home_for_source(source)
+                with _profile_runtime_scope(profile_home):
+                    display = display_hermes_home()
+            except Exception:
+                display = display_hermes_home()
+        else:
+            display = display_hermes_home()
 
         lines = [
             t("gateway.profile.header", profile=profile_name),
@@ -1313,15 +1345,12 @@ class GatewaySlashCommandsMixin:
         # us.  The detached subprocess approach (setsid + bash) doesn't work
         # under systemd (KillMode=mixed kills the cgroup) or Docker (tini
         # exits when the gateway dies, taking the detached helper with it).
-        # systemd sets INVOCATION_ID; launchd sets XPC_SERVICE_NAME to the
-        # job label.  Without the launchd check, macOS /restart takes the
-        # detached path and exits 0, which KeepAlive.SuccessfulExit=false
-        # treats as a deliberate stop — the gateway stays dead until next
-        # login.  Interactive macOS shells inherit XPC_SERVICE_NAME=0, so
-        # "0" must count as not-under-launchd.
-        _under_service = bool(os.environ.get("INVOCATION_ID")) or os.environ.get(
-            "XPC_SERVICE_NAME", "0"
-        ) not in ("", "0")
+        # Native supervisor markers cover direct systemd/launchd starts. The
+        # explicit marker covers wrappers such as ``sudo env -i`` that strip
+        # those markers before execing the foreground gateway.
+        from gateway.restart import is_gateway_supervisor_process
+
+        _under_service = is_gateway_supervisor_process()
         _in_container = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
         if _under_service or _in_container:
             self.request_restart(detached=False, via_service=True)
@@ -1441,6 +1470,12 @@ class GatewaySlashCommandsMixin:
         from hermes_cli.providers import get_label
 
         raw_args = event.get_command_args().strip()
+        source = event.source
+        _command_profile_home = None
+        if getattr(getattr(self, "config", None), "multiplex_profiles", False):
+            _command_profile_home = getattr(
+                self, "_resolve_profile_home_for_source"
+            )(source)
 
         # Parse --provider, --global, --session, and --refresh flags
         (
@@ -1467,7 +1502,7 @@ class GatewaySlashCommandsMixin:
         current_api_key = ""
         user_provs = None
         custom_provs = None
-        config_path = _hermes_home / "config.yaml"
+        config_path = (_command_profile_home or _hermes_home) / "config.yaml"
         try:
             cfg = _load_gateway_config()
             if cfg:
@@ -1485,9 +1520,8 @@ class GatewaySlashCommandsMixin:
         except Exception:
             pass
 
-        # Check for session override
-        source = event.source
-        # Normalize the source the same way a normal message turn does
+        # Check for session override. Normalize the source the same way a normal
+        # message turn does
         # (Telegram DM topic recovery) before deriving the override key, so
         # the override is stored under the key the next message turn reads
         # (#30479).
@@ -1503,7 +1537,7 @@ class GatewaySlashCommandsMixin:
         # No args: show interactive picker (Telegram/Discord) or text list
         if not model_input and not explicit_provider:
             # Try interactive picker if the platform supports it
-            adapter = self.adapters.get(source.platform)
+            adapter = getattr(self, "_adapter_for_source")(source)
             has_picker = (
                 adapter is not None
                 and getattr(type(adapter), "send_model_picker", None) is not None
@@ -1536,8 +1570,9 @@ class GatewaySlashCommandsMixin:
                     _cur_provider = current_provider
                     _cur_base_url = current_base_url
                     _cur_api_key = current_api_key
+                    _picker_profile_home = _command_profile_home
 
-                    async def _on_model_selected(
+                    async def _on_model_selected_scoped(
                         _chat_id: str, model_id: str, provider_slug: str
                     ) -> str:
                         """Perform the model switch and return confirmation text."""
@@ -1735,6 +1770,20 @@ class GatewaySlashCommandsMixin:
                         else:
                             lines.append(t("gateway.model.session_only_hint"))
                         return "\n".join(lines)
+
+                    async def _on_model_selected(
+                        _chat_id: str, model_id: str, provider_slug: str
+                    ) -> str:
+                        if _picker_profile_home is None:
+                            return await _on_model_selected_scoped(
+                                _chat_id, model_id, provider_slug
+                            )
+                        from gateway.run import _profile_runtime_scope
+
+                        with _profile_runtime_scope(_picker_profile_home):
+                            return await _on_model_selected_scoped(
+                                _chat_id, model_id, provider_slug
+                            )
 
                     metadata = self._thread_metadata_for_source(source, self._reply_anchor_for_event(event))
                     result = await adapter.send_model_picker(
@@ -2667,6 +2716,7 @@ class GatewaySlashCommandsMixin:
             /reasoning hide|off              Hide model reasoning from responses
         """
         from gateway.run import _hermes_home, _platform_config_key
+        from hermes_constants import parse_reasoning_effort
         import yaml
 
         raw_args = event.get_command_args().strip()
@@ -2757,11 +2807,8 @@ class GatewaySlashCommandsMixin:
             self._reasoning_config = self._load_reasoning_config()
             self._evict_cached_agent(session_key)
             return t("gateway.reasoning.reset_done")
-        if effort == "none":
-            parsed = {"enabled": False}
-        elif effort in {"minimal", "low", "medium", "high", "xhigh", "max", "ultra"}:
-            parsed = {"enabled": True, "effort": effort}
-        else:
+        parsed = parse_reasoning_effort(effort)
+        if parsed is None:
             return t(
                 "gateway.reasoning.unknown_arg",
                 arg=effort or raw_args.lower(),
@@ -3358,6 +3405,7 @@ class GatewaySlashCommandsMixin:
                     compressed,
                     approx_tokens,
                     new_tokens,
+                    compression_state=compressor,
                 )
                 # Detect summary-generation failure so we can surface a
                 # visible warning to the user even on the manual /compress
@@ -3368,6 +3416,11 @@ class GatewaySlashCommandsMixin:
                 # passed above so any active cooldown is bypassed.
                 _summary_aborted = bool(getattr(compressor, "_last_compress_aborted", False))
                 _summary_err = getattr(compressor, "_last_summary_error", None)
+                # Force-redact provider exception text at this UI boundary
+                # even when global redaction is disabled.
+                if _summary_err:
+                    from agent.redact import redact_sensitive_text
+                    _summary_err = redact_sensitive_text(_summary_err, force=True)
                 # Separately: did the user's CONFIGURED aux model fail
                 # and we recovered via main?  Surface that as an info
                 # note so they can fix their config.

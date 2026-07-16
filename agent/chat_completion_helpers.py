@@ -504,6 +504,29 @@ def interruptible_api_call(agent, api_kwargs: dict):
         if _codex_floor:
             _stale_timeout = max(_stale_timeout, _codex_floor)
 
+    # ── Codex absolute hard ceiling (#64507) ──────────────────────────
+    # ``openai_codex_stale_timeout_floor`` *raises* the stale timeout (up to
+    # 1200s at >100k tokens) so healthy gateway-scale payloads aren't aborted.
+    # The scaled no-byte TTFB watchdog catches dead streams that never emit a
+    # first byte, but a request that emits SOME bytes and then wedges (the
+    # issue-64507 symptom: vision-inflated request, worker idle, no ended_at)
+    # is only reclaimed at the (high) stale floor. Add a flat, finite hard
+    # ceiling on total request time that ALWAYS applies to openai-codex
+    # requests regardless of the TTFB/stale interaction, so a stalled request
+    # is recovered (retry loop / visible failure) instead of hanging
+    # indefinitely. The default sits ABOVE the maximum stale floor (1200s) so
+    # it never clamps an intentionally-raised timeout for healthy large
+    # requests — it is a backstop against unbounded growth, not a tighter
+    # limit. Tunable via HERMES_CODEX_HARD_TIMEOUT_SECONDS (set to 0 to
+    # disable the ceiling entirely; that restores the pre-fix behavior).
+    _codex_hard_timeout = _env_float("HERMES_CODEX_HARD_TIMEOUT_SECONDS", 1500.0)
+    if (
+        _codex_watchdog_enabled
+        and _openai_codex_backend
+        and _codex_hard_timeout > 0
+    ):
+        _stale_timeout = min(_stale_timeout, _codex_hard_timeout)
+
     if _est_tokens_for_codex_watchdog > 100_000:
         _codex_idle_timeout_default = 180.0
     elif _est_tokens_for_codex_watchdog > 50_000:
@@ -534,25 +557,28 @@ def interruptible_api_call(agent, api_kwargs: dict):
             and _ttfb_disable_above > 0
             and _est_tokens_for_codex_watchdog >= _ttfb_disable_above
         ):
-            _ttfb_enabled = False
-            logger.info(
-                "Disabling openai-codex no-byte TTFB watchdog for large request "
-                "(context=~%s tokens >= %.0f). Waiting for backend response instead. "
-                "Set HERMES_CODEX_TTFB_STRICT=1 to force early reconnects.",
-                f"{_est_tokens_for_codex_watchdog:,}",
-                _ttfb_disable_above,
-            )
-        else:
-            _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 120.0)
-            if _ttfb_cap > 0 and _ttfb_timeout > _ttfb_cap:
+            _large_request_ttfb_timeout = _codex_idle_timeout_default
+            if _ttfb_timeout < _large_request_ttfb_timeout:
                 logger.info(
-                    "Capping openai-codex no-byte TTFB timeout from %.0fs to %.0fs "
-                    "(context=~%s tokens). Set HERMES_CODEX_TTFB_MAX_SECONDS to tune.",
+                    "Scaling openai-codex no-byte TTFB watchdog from %.0fs to %.0fs "
+                    "for large request (context=~%s tokens >= %.0f). "
+                    "Set HERMES_CODEX_TTFB_STRICT=1 to keep the smaller cutoff.",
                     _ttfb_timeout,
-                    _ttfb_cap,
+                    _large_request_ttfb_timeout,
                     f"{_est_tokens_for_codex_watchdog:,}",
+                    _ttfb_disable_above,
                 )
-                _ttfb_timeout = _ttfb_cap
+                _ttfb_timeout = _large_request_ttfb_timeout
+        _ttfb_cap = _env_float("HERMES_CODEX_TTFB_MAX_SECONDS", 120.0)
+        if _ttfb_cap > 0 and _ttfb_timeout > _ttfb_cap:
+            logger.info(
+                "Capping openai-codex no-byte TTFB timeout from %.0fs to %.0fs "
+                "(context=~%s tokens). Set HERMES_CODEX_TTFB_MAX_SECONDS to tune.",
+                _ttfb_timeout,
+                _ttfb_cap,
+                f"{_est_tokens_for_codex_watchdog:,}",
+            )
+            _ttfb_timeout = _ttfb_cap
 
     _codex_idle_enabled = _codex_watchdog_enabled
     _codex_idle_timeout = _env_float(
@@ -578,12 +604,23 @@ def interruptible_api_call(agent, api_kwargs: dict):
         t.join(timeout=0.3)
         _poll_count += 1
 
-        # Touch activity every ~30s so the gateway's inactivity
-        # monitor knows we're alive while waiting for the response.
+        # Every ~30s: touch activity for the gateway inactivity monitor AND
+        # rewrite the live spinner/status line so CLI/TUI/Desktop users see
+        # what the agent is waiting on instead of an unexplained generic
+        # spinner (the "infinite thinking" complaint — the wait itself is
+        # usually a slow/overloaded provider, but the UI never said so).
         if _poll_count % 100 == 0:  # 100 × 0.3s = 30s
             _elapsed = time.time() - _call_start
-            agent._touch_activity(
-                f"waiting for non-streaming response ({int(_elapsed)}s elapsed)"
+            _deadline = _stale_timeout
+            if (
+                _ttfb_enabled
+                and getattr(agent, "_codex_stream_last_event_ts", None) is None
+            ):
+                _deadline = min(_deadline, _ttfb_timeout)
+            agent._emit_wait_notice(
+                f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
+                f"{int(_elapsed)}s with no response yet (provider may be slow "
+                f"or overloaded; auto-reconnect at {int(_deadline)}s)"
             )
 
         _elapsed = time.time() - _call_start
@@ -628,6 +665,10 @@ def interruptible_api_call(agent, api_kwargs: dict):
                 _close_request_client_once("codex_ttfb_kill")
             except Exception:
                 pass
+            agent._emit_wait_notice(
+                f"⚠ no response from provider in {int(_elapsed)}s — "
+                f"reconnecting..."
+            )
             agent._touch_activity(
                 f"codex stream killed after {int(_elapsed)}s with no first byte"
             )
@@ -3152,9 +3193,29 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
         if _hb_now - _last_heartbeat >= _HEARTBEAT_INTERVAL:
             _last_heartbeat = _hb_now
             _waiting_secs = int(_hb_now - last_chunk_time["t"])
-            agent._touch_activity(
-                f"waiting for stream response ({_waiting_secs}s, no chunks yet)"
-            )
+            if _waiting_secs >= _HEARTBEAT_INTERVAL:
+                # No chunks for 30s+ — rewrite the live spinner/status line
+                # so CLI/TUI/Desktop users see WHAT the wait is (slow or
+                # overloaded provider / long thinking pause) instead of an
+                # unexplained generic spinner, and WHEN recovery kicks in.
+                if (
+                    _stream_stale_timeout is not None
+                    and _stream_stale_timeout != float("inf")
+                ):
+                    _recovery = f"; auto-reconnect at {int(_stream_stale_timeout)}s"
+                else:
+                    _recovery = ""
+                agent._emit_wait_notice(
+                    f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
+                    f"{_waiting_secs}s with no output yet (provider may be "
+                    f"slow or overloaded, or the model is thinking{_recovery})"
+                )
+            else:
+                # Chunks are flowing — keep the activity tracker fresh but
+                # leave the live display alone.
+                agent._touch_activity(
+                    f"waiting for stream response ({_waiting_secs}s, no chunks yet)"
+                )
 
         # Detect stale streams: connections kept alive by SSE pings
         # but delivering no real chunks.  Kill the client so the
@@ -3197,6 +3258,10 @@ def interruptible_streaming_api_call(agent, api_kwargs: dict, *, on_first_delta=
             # Reset the timer so we don't kill repeatedly while
             # the inner thread processes the closure.
             last_chunk_time["t"] = time.time()
+            agent._emit_wait_notice(
+                f"⚠ no output from provider for {int(_stale_elapsed)}s — "
+                f"reconnecting..."
+            )
             agent._touch_activity(
                 f"stale stream detected after {int(_stale_elapsed)}s, reconnecting"
             )

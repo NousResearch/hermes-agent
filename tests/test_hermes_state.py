@@ -5180,6 +5180,75 @@ class TestApplyWalProbe:
         assert not any("checkpoint_fullfsync" in sql for sql in conn.executed), (
             "checkpoint_fullfsync must not be issued off macOS"
         )
+        assert not any("synchronous=FULL" in sql for sql in conn.executed), (
+            "synchronous=FULL must not be issued off macOS"
+        )
+
+    def test_macos_synchronous_full_enforced_fresh(self, tmp_path, monkeypatch):
+        """On Darwin, apply_wal_with_fallback enforces synchronous=FULL (issue #63531)."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+
+        db_path = tmp_path / "macos_fresh_sync.db"
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        assert any("synchronous=FULL" in sql for sql in conn.executed), (
+            "synchronous=FULL must be enforced on macOS"
+        )
+
+    def test_macos_synchronous_full_enforced_already_wal(self, tmp_path, monkeypatch):
+        """synchronous=FULL is enforced even when DB is already in WAL mode (issue #63531)."""
+        import sqlite3
+        import hermes_state
+        from hermes_state import apply_wal_with_fallback
+
+        class _TracingConn(sqlite3.Connection):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                self.executed = []
+
+            def execute(self, sql, params=()):
+                self.executed.append(sql)
+                return super().execute(sql, params)
+
+        # Prime the file into WAL mode first (simulating an existing WAL DB).
+        db_path = tmp_path / "macos_wal_sync.db"
+        with sqlite3.connect(str(db_path)) as seed:
+            seed.execute("PRAGMA journal_mode=WAL")
+
+        monkeypatch.setattr(hermes_state.sys, "platform", "darwin")
+
+        conn = _TracingConn(str(db_path))
+        try:
+            result = apply_wal_with_fallback(conn)
+        finally:
+            conn.close()
+
+        assert result == "wal"
+        # The early-return path for existing WAL must also enforce synchronous=FULL.
+        assert any("synchronous=FULL" in sql for sql in conn.executed), (
+            "synchronous=FULL must be enforced even on existing WAL DBs"
+        )
+        assert not any("journal_mode=WAL" in sql for sql in conn.executed), (
+            "set-pragma must not run when already in WAL mode"
+        )
 
     def test_apply_wal_concurrent_connects_no_eio(self, tmp_path):
         """20 threads calling connect() on the same DB must not see disk I/O error."""
@@ -5558,6 +5627,34 @@ def test_gateway_session_peer_round_trip_and_recovery(db):
     assert recovered["id"] == "gw-session"
 
 
+def test_gateway_session_recovery_reopens_ws_orphan_reap_rows(db):
+    """Rows wrongly ended by the TUI ws-orphan reaper must be recoverable (#63207)."""
+    db.create_session(
+        "reaped-gw-session",
+        "telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    db.append_message("reaped-gw-session", "user", "hello")
+    db.end_session("reaped-gw-session", "ws_orphan_reap")
+
+    recovered = db.find_latest_gateway_session_for_peer(
+        source="telegram",
+        user_id="user-1",
+        session_key="agent:main:telegram:dm:chat-1",
+        chat_id="chat-1",
+        chat_type="dm",
+    )
+    assert recovered["id"] == "reaped-gw-session"
+
+    db.reopen_session("reaped-gw-session")
+    row = db.get_session("reaped-gw-session")
+    assert row["ended_at"] is None
+    assert row["end_reason"] is None
+
+
 def test_gateway_session_recovery_reopens_legacy_agent_close_rows(db):
     db.create_session(
         "closed-gw-session",
@@ -5789,6 +5886,14 @@ def test_expired_compression_failure_cooldown_is_ignored(db):
     db.record_compression_failure_cooldown("s1", time.time() - 60.0, "stale")
 
     assert db.get_compression_failure_cooldown("s1") is None
+
+
+def test_compression_fallback_streak_round_trips(db):
+    db.create_session("s1", "cli")
+
+    assert db.get_compression_fallback_streak("s1") == 0
+    db.set_compression_fallback_streak("s1", 2)
+    assert db.get_compression_fallback_streak("s1") == 2
 
 
 def test_refresh_compression_lock_requires_holder_and_preserves_reclaimability(db, monkeypatch):

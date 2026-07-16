@@ -504,6 +504,21 @@ def compress_context(
             force=force,
         )
 
+    # Every automatic entrypoint must honor compressor-owned cooldown and
+    # breaker state. Gateway hygiene constructs a fresh AIAgent, so the
+    # persisted fallback streak is loaded by bind_session_state() before this.
+    if not force:
+        blocked = getattr(
+            type(agent.context_compressor),
+            "_automatic_compression_blocked",
+            None,
+        )
+        if callable(blocked) and blocked(agent.context_compressor):
+            existing_prompt = getattr(agent, "_cached_system_prompt", None)
+            if not existing_prompt:
+                existing_prompt = agent._build_system_prompt(system_message)
+            return messages, existing_prompt
+
     # Lazy feasibility check — run the auxiliary-provider probe + context
     # length lookup just-in-time on the first compression attempt instead of
     # at AIAgent.__init__. Saves ~400ms cold off every short session that
@@ -717,6 +732,17 @@ def compress_context(
         # session isn't permanently blocked from future compression.
         _release_lock()
         raise
+
+    # Capture boundary quality before session-rotation callbacks run. Built-in
+    # and plugin lifecycle hooks may reset per-session compressor fields while
+    # rebinding to the child id; the completed attempt's verdict must survive
+    # that rebind and be recorded only after the full boundary commits.
+    _compression_made_progress = bool(
+        getattr(agent.context_compressor, "_last_compression_made_progress", False)
+    )
+    _compression_used_fallback = bool(
+        getattr(agent.context_compressor, "_last_summary_fallback_used", False)
+    )
 
     # If compression aborted (aux LLM failed to produce a usable summary)
     # the compressor returns the input messages unchanged.  Surface the
@@ -1046,8 +1072,19 @@ def compress_context(
         # the full compaction boundary. Exceptions, aborts, and no-op attempts
         # leave this false, so unrelated later usage cannot be charged to an
         # attempt that never changed the transcript.
-        if getattr(agent.context_compressor, "_last_compression_made_progress", False):
-            agent.context_compressor._verify_compaction_cleared_threshold = True
+        if _compression_made_progress:
+            record_boundary = getattr(
+                type(agent.context_compressor),
+                "record_completed_compaction",
+                None,
+            )
+            if callable(record_boundary):
+                record_boundary(
+                    agent.context_compressor,
+                    used_fallback=_compression_used_fallback,
+                )
+            else:
+                agent.context_compressor._verify_compaction_cleared_threshold = True
 
         # Clear the file-read dedup cache.  After compression the original
         # read content is summarised away — if the model re-reads the same

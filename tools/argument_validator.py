@@ -96,6 +96,8 @@ def validate_tool_arguments(
     args: dict[str, Any],
     registry: Any,
     task_id: Optional[str] = None,
+    check_existence: bool = True,
+    check_required: bool = True,
 ) -> tuple[bool, str]:
     """Validate tool arguments before execution.
 
@@ -108,9 +110,10 @@ def validate_tool_arguments(
     schema: dict[str, Any] = getattr(entry, "schema", None) or {}
 
     required = _get_required_fields(schema)
-    missing = [f for f in required if f not in args or args[f] is None]
-    if missing:
-        return False, f"Missing required parameter(s): {', '.join(missing)}."
+    if check_required:
+        missing = [f for f in required if f not in args or args[f] is None]
+        if missing:
+            return False, f"Missing required parameter(s): {', '.join(missing)}."
 
     properties: Optional[dict[str, Any]] = None
     for key in ("parameters", "input"):
@@ -151,7 +154,9 @@ def validate_tool_arguments(
 
     # On remote/container backends the path lives inside the sandbox, not on
     # the host FS — os.path.exists() here is meaningless, so skip the check.
-    if tool_name in _PATH_EXISTENCE_TOOLS and not (
+    # Also skipped when check_existence=False (e.g. called from
+    # handle_function_call where the tool itself surfaces file-not-found).
+    if tool_name in _PATH_EXISTENCE_TOOLS and check_existence and not (
         task_id is not None and _uses_remote_backend(task_id)
     ):
         path = args.get("path")

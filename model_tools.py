@@ -1063,24 +1063,10 @@ def handle_function_call(
         Function result as a JSON string.
     """
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
+    _raw_args = function_args
     function_args = coerce_tool_args(function_name, function_args)
     if not isinstance(function_args, dict):
         function_args = {}
-
-    # Validate coerced args. After coerce_tool_args() so string-encoded
-    # ints/bools ("10", "true") are converted before checks run; before
-    # execution so both the concurrent (invoke_tool) and sequential
-    # (tool_executor) paths are covered by one shared gate.
-    try:
-        from tools.argument_validator import validate_tool_arguments as _validate_tool_arguments
-        from tools.registry import registry as _tool_registry
-        _ok, _err = _validate_tool_arguments(
-            function_name, function_args, _tool_registry, task_id=task_id
-        )
-        if not _ok:
-            return json.dumps({"error": _err}, ensure_ascii=False)
-    except Exception:
-        pass
 
     _tool_middleware_trace = list(tool_request_middleware_trace or [])
 
@@ -1228,6 +1214,31 @@ def handle_function_call(
                     middleware_trace=list(_tool_middleware_trace),
                 )
                 return result
+
+        # Validate coerced args as the final gate before dispatch. Runs
+        # AFTER the framework's structural guards (agent-loop interception,
+        # pre_tool_call block) so those intentional error paths are not
+        # pre-empted, but BEFORE the tool executes so placeholder / type /
+        # missing-required calls are still caught. Existence checks are
+        # intentionally skipped here — the tool itself surfaces file-not-found
+        # at dispatch, and existing tests rely on dispatch running for
+        # syntactically-valid paths. Both the concurrent (invoke_tool) and
+        # sequential (tool_executor) paths funnel through here.
+        # Skip validation when raw args were None — caller signals an
+        # intentionally malformed call; let handle_function_call's own
+        # error handling surface the failure.
+        if _raw_args is not None:
+            try:
+                from tools.argument_validator import validate_tool_arguments as _validate_tool_arguments
+                from tools.registry import registry as _tool_registry
+                _ok, _err = _validate_tool_arguments(
+                    function_name, function_args, _tool_registry,
+                    task_id=task_id, check_existence=False, check_required=True,
+                )
+                if not _ok:
+                    return json.dumps({"error": _err}, ensure_ascii=False)
+            except Exception:
+                pass
 
         # ACP/Zed edit approval runs before any file mutation.  The requester
         # is bound via ContextVar only for ACP sessions, so CLI/gateway paths

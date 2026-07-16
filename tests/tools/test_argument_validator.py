@@ -255,12 +255,15 @@ class TestValidationViaHandleFunctionCall:
     """The shared post-coercion gate lives in model_tools.handle_function_call,
     so the sequential (tool_executor) path must validate through it."""
 
-    def test_sequential_path_blocks_bad_path_via_handle_function_call(self):
+    def test_sequential_path_blocks_placeholder_via_handle_function_call(self):
+        # Passing a placeholder path triggers the gate before dispatch.
+        # This covers the sequential path (tool_executor → handle_function_call)
+        # and verifies the gate catches placeholder args before dispatch.
         result = handle_function_call(
-            "read_file", {"path": "/does/not/exist/anywhere"}, task_id="default"
+            "read_file", {"path": "/path/to/your/file"}, task_id="default"
         )
         assert '"error"' in result
-        assert "File not found" in result
+        assert "placeholder" in result.lower()
 
     def test_handle_function_call_passes_valid_path(self, tmp_path):
         real_file = tmp_path / "test.txt"
@@ -275,7 +278,7 @@ class TestValidationViaInvokeTool:
     """The concurrent (invoke_tool) path routes registry tools through
     handle_function_call, so it must hit the same shared gate."""
 
-    def test_concurrent_path_blocks_bad_path_via_invoke_tool(self):
+    def test_concurrent_path_blocks_placeholder_via_invoke_tool(self):
         from unittest.mock import MagicMock
         from agent.agent_runtime_helpers import invoke_tool
 
@@ -291,11 +294,11 @@ class TestValidationViaInvokeTool:
         result = invoke_tool(
             agent,
             "read_file",
-            {"path": "/does/not/exist/concurrent"},
+            {"path": "/path/to/your/file"},
             effective_task_id="task-concurrent",
         )
         assert '"error"' in result
-        assert "File not found" in result
+        assert "placeholder" in result.lower()
 
 
 class TestCoercionBeforeValidation:

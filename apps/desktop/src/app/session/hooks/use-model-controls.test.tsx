@@ -197,8 +197,10 @@ describe('useModelControls', () => {
     await result.current.refreshCurrentModel()
     expect($currentModel.get()).toBe('anthropic/claude-sonnet-4.6')
 
-    // A profile swap forces a reseed to the new profile's default.
+    // A fresh new chat (or profile swap) explicitly reseeds from the profile
+    // default instead of inheriting the prior sticky composer selection.
     await result.current.refreshCurrentModel(true)
     expect($currentModel.get()).toBe('openai/gpt-5.5')
+    expect($currentProvider.get()).toBe('openai-codex')
   })
 })

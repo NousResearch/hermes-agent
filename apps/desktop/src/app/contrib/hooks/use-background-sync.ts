@@ -129,7 +129,7 @@ export function useBackgroundSync({
   // model + config so the composer pill reflects the profile default.
   useEffect(() => {
     if (gatewayState === 'open' && !activeSessionId && freshDraftReady) {
-      void refreshCurrentModel()
+      void refreshCurrentModel(true)
       void refreshHermesConfig()
     }
   }, [activeSessionId, freshDraftReady, gatewayState, refreshCurrentModel, refreshHermesConfig])

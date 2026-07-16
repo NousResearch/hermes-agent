@@ -100,9 +100,41 @@ const baseProps = {
   statusColor: DEFAULT_THEME.color.ok,
   t: DEFAULT_THEME,
   turnStartedAt: null,
-  usage: { context_max: 200_000, context_percent: 25, context_used: 50_000, total: 50_000 },
+  usage: {
+    calls: 0,
+    context_max: 200_000,
+    context_percent: 25,
+    context_used: 50_000,
+    input: 0,
+    output: 0,
+    total: 50_000
+  },
   voiceLabel: ''
 }
+
+describe('StatusRule session cost', () => {
+  it('renders truthful session cost when enabled', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 160,
+      showCost: true,
+      usage: { ...baseProps.usage, cost_status: 'estimated', cost_usd: 0.1234 }
+    })
+
+    expect(textContent(element)).toContain('~$0.12')
+  })
+
+  it('hides session cost when disabled', () => {
+    const element = StatusRule({
+      ...baseProps,
+      cols: 160,
+      showCost: false,
+      usage: { ...baseProps.usage, cost_status: 'estimated', cost_usd: 0.1234 }
+    })
+
+    expect(textContent(element)).not.toContain('~$0.12')
+  })
+})
 
 describe('StatusRule background-subagent indicator', () => {
   it('renders ⛓ N on a wide terminal when subagents are running', () => {

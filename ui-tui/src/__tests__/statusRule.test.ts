@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 
 import type { StatusBarSegments } from '../components/appChrome.js'
-import { busyIndicatorWidth, statusBarSegments, statusRuleWidths } from '../components/appChrome.js'
+import {
+  busyIndicatorWidth,
+  formatSessionCost,
+  statusBarSegments,
+  statusRuleWidths
+} from '../components/appChrome.js'
 
 describe('statusRuleWidths', () => {
   it('keeps the status rule within the terminal width', () => {
@@ -101,6 +106,21 @@ describe('statusBarSegments', () => {
       expect(visible).toBeLessThanOrEqual(prevCount)
       prevCount = visible
     }
+  })
+})
+
+describe('formatSessionCost', () => {
+  it('preserves actual, estimated, included, and unavailable billing states', () => {
+    expect(formatSessionCost(0.1234, 'estimated')).toBe('~$0.12')
+    expect(formatSessionCost(0.005, 'actual')).toBe('$0.0050')
+    expect(formatSessionCost(undefined, 'included')).toBe('included')
+    expect(formatSessionCost(undefined, 'unknown')).toBe('cost n/a')
+    expect(formatSessionCost(1, 'exact')).toBe('cost n/a')
+  })
+
+  it('does not render invalid numeric amounts as money', () => {
+    expect(formatSessionCost(Number.NaN, 'estimated')).toBe('cost n/a')
+    expect(formatSessionCost(-1, 'actual')).toBe('cost n/a')
   })
 })
 

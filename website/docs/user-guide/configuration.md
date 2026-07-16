@@ -1469,13 +1469,14 @@ display:
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
   bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
   show_reasoning: false   # Show model reasoning/thinking above each response (toggle with /reasoning show|hide)
+  show_reasoning_effort: false  # Show the effective reasoning level in CLI/TUI status chrome
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
-  show_cost: false        # Show estimated $ cost in the CLI status bar
+  show_cost: false        # Show actual/estimated/included/unavailable session cost in CLI/TUI status chrome
   timestamps: false       # When true, prefixes user and assistant labels with [HH:MM] timestamps in the CLI / TUI transcript
   tool_preview_length: 0  # Max chars for tool call previews (0 = no limit, show full paths/commands)
   runtime_footer:         # Gateway: append a runtime-context footer to final replies
     enabled: false
-    fields: ["model", "context_pct", "cwd"]
+    fields: ["model", "reasoning_effort", "cost", "context_pct", "cwd"]
   file_mutation_verifier: true    # Append an advisory footer when write_file/patch calls failed this turn
   credits_notices: true   # Nous credits status-bar notices (usage bands, grant-spent, depleted). false = silence them; /usage still works
   language: en            # UI language for static messages (approval prompts, some gateway replies). en | zh | zh-hant | ja | de | es | fr | tr | uk | af | ko | it | ga | pt | ru | hu
@@ -1538,13 +1539,13 @@ Tool progress requires a gateway adapter that can display progress updates safel
 
 ### Runtime-metadata footer (gateway only)
 
-When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The current footer can show the model, context-window percentage, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
+When `display.runtime_footer.enabled: true`, Hermes appends a small runtime-context footer to the **final** message of each gateway turn. The footer can show the model, effective reasoning effort, truthful session cost/status, context-window percentage, and current working directory. Off by default; opt in per-gateway if your team wants every reply to include this provenance.
 
 ```yaml
 display:
   runtime_footer:
     enabled: true
-    fields: ["model", "context_pct", "cwd"]   # supported fields: model, context_pct, cwd
+    fields: ["model", "reasoning_effort", "cost", "context_pct", "cwd"]
 ```
 
 The `/footer` slash command toggles this at runtime in any session.
@@ -1552,10 +1553,10 @@ The `/footer` slash command toggles this at runtime in any session.
 Example footer appended to a Telegram/Discord/Slack reply:
 
 ```
-— claude-opus-4.7 · 12 tool calls · 2m 14s · $0.042
+claude-opus-4.8 · reasoning high · cost ~$0.04 · 6% · ~/project
 ```
 
-Only the **final** message of a turn gets the footer; interim updates stay clean.
+Only the **final** message of a turn gets the footer; interim updates stay clean. Estimated values use `~$`, actual values use `$`, subscription-backed usage shows `cost included`, and unknown pricing shows `cost unavailable` instead of fabricating `$0`.
 
 ### Per-platform progress overrides
 

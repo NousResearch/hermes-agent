@@ -3244,6 +3244,12 @@ def _get_usage(agent) -> dict:
         "total": g("session_total_tokens"),
         "calls": g("session_api_calls"),
     }
+    session_cost = getattr(agent, "session_estimated_cost_usd", None)
+    if isinstance(session_cost, (int, float)) and not isinstance(session_cost, bool):
+        usage["cost_usd"] = float(session_cost)
+    usage["cost_status"] = str(
+        getattr(agent, "session_cost_status", "unknown") or "unknown"
+    )
     comp = getattr(agent, "context_compressor", None)
     if comp:
         # context_used is the *current-window* occupancy. Do NOT fall back to
@@ -3365,7 +3371,8 @@ def _session_info(agent, session: dict | None = None) -> dict:
     session_key = str(
         (session or {}).get("session_key") or getattr(agent, "session_id", "") or ""
     )
-    cfg_personality = ((_load_cfg().get("display") or {}).get("personality") or "")
+    display_cfg = _load_cfg().get("display") or {}
+    cfg_personality = display_cfg.get("personality") or ""
     personality = (session or {}).get("personality", cfg_personality)
     reasoning_config = getattr(agent, "reasoning_config", None)
     reasoning_effort = ""
@@ -3401,6 +3408,10 @@ def _session_info(agent, session: dict | None = None) -> dict:
         "model": getattr(agent, "model", ""),
         "provider": getattr(agent, "provider", ""),
         "reasoning_effort": reasoning_effort,
+        "show_reasoning_effort": bool(
+            display_cfg.get("show_reasoning_effort", False)
+        ),
+        "show_cost": bool(display_cfg.get("show_cost", False)),
         "service_tier": service_tier,
         "fast": service_tier == "priority",
         "yolo": yolo,

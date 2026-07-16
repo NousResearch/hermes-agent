@@ -147,6 +147,43 @@ def test_format_footer_unknown_field_silently_ignored():
     assert out == "gpt-5.4 · 50%"
 
 
+def test_format_footer_supports_reasoning_and_estimated_cost():
+    out = format_runtime_footer(
+        model="openai/gpt-5.6-sol",
+        context_tokens=50,
+        context_length=100,
+        cwd="/x",
+        reasoning_effort="high",
+        estimated_cost_usd=0.1234,
+        cost_status="estimated",
+        fields=("model", "reasoning_effort", "cost", "context_pct"),
+    )
+
+    assert out == "gpt-5.6-sol · reasoning high · cost ~$0.12 · 50%"
+
+
+def test_format_footer_preserves_included_and_unavailable_cost_states():
+    included = format_runtime_footer(
+        model="m",
+        context_tokens=0,
+        context_length=None,
+        estimated_cost_usd=0,
+        cost_status="included",
+        fields=("cost",),
+    )
+    unavailable = format_runtime_footer(
+        model="m",
+        context_tokens=0,
+        context_length=None,
+        estimated_cost_usd=None,
+        cost_status="unknown",
+        fields=("cost",),
+    )
+
+    assert included == "cost included"
+    assert unavailable == "cost unavailable"
+
+
 # ---------------------------------------------------------------------------
 # resolve_footer_config
 # ---------------------------------------------------------------------------

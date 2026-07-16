@@ -1232,6 +1232,22 @@ display:
   #   false: Hide reasoning (default)
   show_reasoning: false
 
+  # Show the effective reasoning effort in CLI/TUI status chrome.
+  # This reports the live session setting (for example r:high or r:default),
+  # not the model's hidden reasoning text.
+  show_reasoning_effort: false
+
+  # Show truthful cumulative session billing state in CLI/TUI status chrome.
+  # Estimated cost is prefixed with ~; actual, included, and unavailable states
+  # are kept distinct. Off by default.
+  show_cost: false
+
+  # Append selected runtime metadata to final gateway replies only.
+  # Supported fields: model, reasoning_effort, cost, context_pct, cwd.
+  runtime_footer:
+    enabled: false
+    fields: [model, context_pct, cwd]
+
   # Stream tokens to the terminal as they arrive instead of waiting for the
   # full response. The response box opens on first token and text appears
   # line-by-line. Tool calls are still captured silently.

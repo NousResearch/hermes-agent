@@ -25,6 +25,7 @@ from __future__ import annotations
 import os
 
 from agent.codex_responses_adapter import _summarize_user_message_for_log
+from agent.runtime_display import effective_reasoning_effort
 
 
 def finalize_turn(
@@ -446,6 +447,9 @@ def finalize_turn(
         "model": agent.model,
         "provider": agent.provider,
         "base_url": agent.base_url,
+        "reasoning_effort": effective_reasoning_effort(
+            getattr(agent, "reasoning_config", None)
+        ),
         "input_tokens": agent.session_input_tokens,
         "output_tokens": agent.session_output_tokens,
         "cache_read_tokens": agent.session_cache_read_tokens,

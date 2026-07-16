@@ -213,6 +213,27 @@ function ctxBar(pct: number | undefined, w = 10) {
   return '█'.repeat(filled) + '░'.repeat(w - filled)
 }
 
+export function formatSessionCost(amount: number | undefined, status: string | undefined): string {
+  const normalized = (status ?? '').trim().toLowerCase()
+
+  if (normalized === 'included') {
+    return 'included'
+  }
+
+  if (
+    (normalized !== 'actual' && normalized !== 'estimated') ||
+    typeof amount !== 'number' ||
+    !Number.isFinite(amount) ||
+    amount < 0
+  ) {
+    return 'cost n/a'
+  }
+
+  const value = amount < 0.01 ? amount.toFixed(4) : amount.toFixed(2)
+
+  return `${normalized === 'estimated' ? '~' : ''}$${value}`
+}
+
 // `minLeftContent` is the display width of the high-priority left segments
 // (status indicator + model + context). Reserving it makes the cwd/branch
 // segment on the right yield FIRST on narrow terminals, instead of squeezing
@@ -411,6 +432,7 @@ export function StatusRule({
   model,
   modelFast,
   modelReasoningEffort,
+  showCost,
   indicatorStyle = 'kaomoji',
   notice,
   usage,
@@ -528,6 +550,8 @@ export function StatusRule({
     subagentCount === 1 ? '↩ resumes when subagent finishes' : `↩ resumes when ${subagentCount} subagents finish`
 
   const showResumeHint = !busy && subagentCount > 0 && fits(SEP + stringWidth(resumeHintText))
+  const costText = showCost ? formatSessionCost(usage.cost_usd, usage.cost_status) : ''
+  const showSessionCost = !!costText && fits(SEP + stringWidth(costText))
   // Dev-gated readout (HERMES_DEV_CREDITS), lowest priority,
   // so it consumes tail budget LAST and drops first on a narrow terminal.
   const showDevCredits = !!devCreditsText && fits(SEP + stringWidth(devCreditsText))
@@ -643,6 +667,12 @@ export function StatusRule({
           <Text color={t.color.muted} dim wrap="truncate-end">
             {' │ '}
             {resumeHintText}
+          </Text>
+        ) : null}
+        {showSessionCost ? (
+          <Text color={t.color.muted} wrap="truncate-end">
+            {' │ '}
+            {costText}
           </Text>
         ) : null}
         {showDevCredits ? (
@@ -779,6 +809,7 @@ interface StatusRuleProps {
   model: string
   modelFast?: boolean
   modelReasoningEffort?: string
+  showCost?: boolean
   indicatorStyle?: IndicatorStyle
   notice?: Notice | null
   sessionStartedAt?: null | number

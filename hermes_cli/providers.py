@@ -28,6 +28,27 @@ from utils import base_url_host_matches, base_url_hostname
 logger = logging.getLogger(__name__)
 
 
+# -- ACP provider set --------------------------------------------------------
+# Providers backed by an external ACP subprocess (Copilot CLI, Devin CLI, ...).
+# Add a slug here when adding a new external_process ACP provider so the
+# ~15 runtime branch guards across agent/ and hermes_cli/ pick it up in one place.
+ACP_PROVIDERS: frozenset[str] = frozenset({"copilot-acp", "devin-acp"})
+
+
+def is_acp_provider(provider: str) -> bool:
+    """True when *provider* is an ACP-subprocess-backed provider."""
+    return (provider or "").strip().lower() in ACP_PROVIDERS
+
+
+def is_acp_base_url(base_url: str) -> bool:
+    """True when *base_url* is an ACP marker URL (``acp://<provider>``).
+
+    Distinct from ``acp+tcp://`` — that scheme is a remote-TCP ACP transport
+    handled separately from the local-subprocess spawn path.
+    """
+    return str(base_url or "").lower().startswith("acp://")
+
+
 # -- Hermes overlay ----------------------------------------------------------
 # Hermes-specific metadata that models.dev doesn't provide.
 
@@ -93,6 +114,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         auth_type="external_process",
         base_url_override="acp://copilot",
         base_url_env_var="COPILOT_ACP_BASE_URL",
+    ),
+    "devin-acp": HermesOverlay(
+        transport="codex_responses",
+        auth_type="external_process",
+        base_url_override="acp://devin",
+        base_url_env_var="DEVIN_ACP_BASE_URL",
     ),
     "github-copilot": HermesOverlay(
         transport="openai_chat",
@@ -296,6 +323,12 @@ ALIASES: Dict[str, str] = {
     "github": "github-copilot",
     "github-copilot-acp": "copilot-acp",
 
+    # devin-acp
+    "devin": "devin-acp",
+    "devin-acp-agent": "devin-acp",
+    "cognition": "devin-acp",
+    "cognition-devin": "devin-acp",
+
     # opencode (models.dev ID for OpenCode Zen)
     "opencode-zen": "opencode",
     "zen": "opencode",
@@ -382,6 +415,7 @@ _LABEL_OVERRIDES: Dict[str, str] = {
     "nous": "Nous Portal",
     "openai-codex": "OpenAI Codex",
     "copilot-acp": "GitHub Copilot ACP",
+    "devin-acp": "Devin ACP",
     "stepfun": "StepFun Step Plan",
     "xiaomi": "Xiaomi MiMo",
     "gmi": "GMI Cloud",

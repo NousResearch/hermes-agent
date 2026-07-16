@@ -66,7 +66,16 @@ from agent.retry_utils import (
 )
 from agent.trajectory import has_incomplete_scratchpad
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
+from hermes_cli.providers import ACP_PROVIDERS as _ACP_PROVIDERS, is_acp_base_url
 from hermes_constants import PARTIAL_STREAM_STUB_ID
+
+
+def _is_acp_agent(agent) -> bool:
+    """True when *agent* is bound to an ACP-subprocess-backed provider."""
+    return (
+        (getattr(agent, "provider", "") or "") in _ACP_PROVIDERS
+        or is_acp_base_url(getattr(agent, "base_url", "") or "")
+    )
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
 from utils import base_url_host_matches, env_var_enabled
@@ -1324,8 +1333,7 @@ def run_conversation(
                 # stream.  Mirror the ACP exclusion used for Responses
                 # API upgrade (lines ~1083-1085).
                 elif (
-                    agent.provider in {"copilot-acp"}
-                    or str(agent.base_url or "").lower().startswith("acp://copilot")
+                    _is_acp_agent(agent)
                     or str(agent.base_url or "").lower().startswith("acp+tcp://")
                 ):
                     _use_streaming = False

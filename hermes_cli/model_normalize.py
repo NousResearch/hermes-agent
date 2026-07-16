@@ -79,6 +79,7 @@ _DOT_TO_HYPHEN_PROVIDERS: frozenset[str] = frozenset({
 _STRIP_VENDOR_ONLY_PROVIDERS: frozenset[str] = frozenset({
     "copilot",
     "copilot-acp",
+    "devin-acp",
     "openai-codex",
 })
 

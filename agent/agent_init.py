@@ -48,7 +48,17 @@ from agent.tool_guardrails import (
     ToolGuardrailDecision,
 )
 from hermes_cli.config import cfg_get
+from hermes_cli.providers import ACP_PROVIDERS as _ACP_PROVIDERS
 from hermes_cli.timeouts import get_provider_request_timeout
+
+
+def _ACP_PROVIDERS_LOCAL() -> frozenset[str]:
+    """Return the set of ACP-subprocess-backed provider slugs.
+
+    Small indirection so future ACP additions only touch
+    ``hermes_cli.providers.ACP_PROVIDERS``.
+    """
+    return _ACP_PROVIDERS
 from hermes_constants import get_hermes_home
 from utils import base_url_host_matches, is_truthy_value
 
@@ -521,8 +531,8 @@ def init_agent(
     if (
         api_mode is None
         and agent.api_mode == "chat_completions"
-        and agent.provider != "copilot-acp"
-        and not str(agent.base_url or "").lower().startswith("acp://copilot")
+        and agent.provider not in _ACP_PROVIDERS_LOCAL()
+        and not str(agent.base_url or "").lower().startswith("acp://")
         and not str(agent.base_url or "").lower().startswith("acp+tcp://")
         and not agent._is_azure_openai_url()
         and (
@@ -946,7 +956,7 @@ def init_agent(
                 client_kwargs = {"api_key": api_key, "base_url": base_url}
             if _provider_timeout is not None:
                 client_kwargs["timeout"] = _provider_timeout
-            if agent.provider == "copilot-acp":
+            if agent.provider in _ACP_PROVIDERS_LOCAL():
                 client_kwargs["command"] = agent.acp_command
                 client_kwargs["args"] = agent.acp_args
             effective_base = base_url

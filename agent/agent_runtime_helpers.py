@@ -1698,7 +1698,8 @@ def create_openai_client(agent, client_kwargs: dict, *, reason: str, shared: boo
     httpx_verify = resolve_httpx_verify(ca_bundle=ssl_ca_cert, ssl_verify=ssl_verify_cfg)
     _validate_proxy_env_urls()
     _validate_base_url(client_kwargs.get("base_url"))
-    if agent.provider == "copilot-acp" or str(client_kwargs.get("base_url", "")).startswith("acp://copilot"):
+    from hermes_cli.providers import ACP_PROVIDERS as _ACP_PROVIDERS
+    if agent.provider in _ACP_PROVIDERS or str(client_kwargs.get("base_url", "")).lower().startswith("acp://"):
         from agent.copilot_acp_client import CopilotACPClient
 
         client = CopilotACPClient(**client_kwargs)

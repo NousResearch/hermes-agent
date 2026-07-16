@@ -1527,6 +1527,54 @@ class TestQuickSnapshot:
         conn.close()
         assert len(rows) == 1
 
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits")
+    def test_restore_missing_state_db_preserves_snapshot_permissions(self, hermes_home):
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        snapshot_db = hermes_home / "state-snapshots" / snap_id / "state.db"
+        snapshot_db.chmod(0o600)
+        (hermes_home / "state.db").unlink()
+
+        assert restore_quick_snapshot(snap_id, hermes_home=hermes_home) is True
+        assert (hermes_home / "state.db").stat().st_mode & 0o777 == 0o600
+
+    def test_restore_state_db_while_session_db_is_open(self, tmp_path):
+        """A live WAL connection must see the restored database and stay usable."""
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+        from hermes_state import SessionDB
+
+        home = tmp_path / ".hermes"
+        home.mkdir()
+        (home / "config.yaml").write_text("model: {}\n")
+
+        db_path = home / "state.db"
+        live_db = SessionDB(db_path)
+        try:
+            live_db.create_session("saved", "cli")
+            assert live_db._conn.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+
+            snap_id = create_quick_snapshot(hermes_home=home)
+            live_db.create_session("newer", "cli")
+
+            assert restore_quick_snapshot(snap_id, hermes_home=home) is True
+            assert live_db.get_session("saved") is not None
+            assert live_db.get_session("newer") is None
+
+            # Restoring must not leave the live connection pointing at an
+            # unlinked database file.
+            live_db.create_session("after-restore", "cli")
+        finally:
+            live_db.close()
+
+        reopened = SessionDB(db_path)
+        try:
+            assert reopened.get_session("saved") is not None
+            assert reopened.get_session("newer") is None
+            assert reopened.get_session("after-restore") is not None
+        finally:
+            reopened.close()
+
     def test_restore_nonexistent(self, hermes_home):
         from hermes_cli.backup import restore_quick_snapshot
         assert restore_quick_snapshot("nonexistent", hermes_home=hermes_home) is False

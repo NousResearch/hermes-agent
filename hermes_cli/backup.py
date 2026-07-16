@@ -276,6 +276,26 @@ def _safe_copy_db(src: Path, dst: Path) -> bool:
             return False
 
 
+def _restore_db(src: Path, dst: Path) -> bool:
+    """Restore a SQLite snapshot without replacing a live database file."""
+    source_conn = None
+    destination_conn = None
+    try:
+        source_conn = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+        destination_conn = sqlite3.connect(str(dst))
+        source_conn.backup(destination_conn)
+        shutil.copymode(src, dst)
+        return True
+    except sqlite3.Error as exc:
+        logger.error("Failed to restore SQLite database %s: %s", dst, exc)
+        return False
+    finally:
+        if destination_conn is not None:
+            destination_conn.close()
+        if source_conn is not None:
+            source_conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Backup
 # ---------------------------------------------------------------------------
@@ -1013,11 +1033,10 @@ def restore_quick_snapshot(
 
         try:
             if dst.suffix == ".db":
-                # Atomic-ish replace for databases
-                tmp = dst.parent / f".{dst.name}.snap_restore"
-                shutil.copy2(src, tmp)
-                dst.unlink(missing_ok=True)
-                shutil.move(str(tmp), str(dst))
+                # Restore through SQLite so live WAL connections remain
+                # attached to this database and immediately see the snapshot.
+                if not _restore_db(src, dst):
+                    continue
             else:
                 shutil.copy2(src, dst)
             restored += 1

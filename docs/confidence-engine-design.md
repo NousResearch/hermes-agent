@@ -6,7 +6,7 @@
 
 Memory in long-running AI agents grows without bound. Entries accumulate — some are transient troubleshooting notes, others are permanent user preferences — but they're all treated equally. When the memory cap is hit, the agent evicts blindly, often sacrificing high-value recent information while keeping stale transient data.
 
-At 162 entries across 4 months of daily use, this problem became concrete. The agent started dropping freshly written preferences to make room for months-old completed-task records.
+At 134 entries across 10 days of use, this problem became concrete. The agent started dropping freshly written preferences to make room for months-old completed-task records.
 
 ## Solution: Four-Dimensional Scoring
 
@@ -68,11 +68,11 @@ All bonuses clamped to [-0.3, 0.3].
 
 ## Production Validation
 
-The full engine (with project-specific safelist, language-specific regex patterns, and source classification from a separate Phase 5b pipeline) has been scoring 128 memory entries. Key observations:
+The full engine (with project-specific safelist, language-specific regex patterns, and source classification from a separate Phase 5b pipeline) has been scoring 134 memory entries in early testing. Key observations:
 
-- **0 false evictions**: No user-stated critical facts have been flagged for eviction
+- **No false evictions observed in initial testing**: No user-stated critical facts have been flagged for eviction
 - **3:1 signal ratio**: ~75% of entries fall into long-term/permanent tiers, ~25% into review/evict tiers — manageable churn
-- **Batch performance**: `assess_batch(162)` completes in <50ms on consumer hardware
+- **Batch performance**: `assess_batch(134)` completes in <50ms on consumer hardware
 
 ## What's Omitted from the Generic Version
 

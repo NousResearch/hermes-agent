@@ -877,10 +877,11 @@ _SSH_CMD_RE = re.compile(
 
 
 def _has_chained_local_sudo(command: str) -> bool:
-    """True if command has a non-quoted ``&& sudo`` or ``|| sudo`` after SSH host.
+    """True if command has a non-quoted ``&& sudo``, ``|| sudo`` or ``; sudo`` after SSH host.
 
     Uses shlex (quote-aware) to avoid false positives on ``&&`` inside the
     remote command string (e.g. ``ssh host 'sudo a && sudo b'``).
+    Also handles ``/usr/bin/ssh`` (not just bare ``ssh``).
     """
     try:
         import shlex
@@ -892,7 +893,7 @@ def _has_chained_local_sudo(command: str) -> bool:
     past_host = False
 
     for i, tok in enumerate(tokens):
-        if tok == "ssh" and not in_ssh:
+        if tok in ("ssh", "/usr/bin/ssh") and not in_ssh:
             in_ssh = True
             continue
         if in_ssh and not past_host:
@@ -900,7 +901,7 @@ def _has_chained_local_sudo(command: str) -> bool:
                 continue  # SSH option (-p, -o, -J, etc.)
             past_host = True  # This token is the [user@]host
             continue
-        if past_host and tok in ("&&", "||"):
+        if past_host and tok in ("&&", "||", ";"):
             if i + 1 < len(tokens) and tokens[i + 1] == "sudo":
                 return True
     return False

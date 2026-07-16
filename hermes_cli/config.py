@@ -746,6 +746,10 @@ DEFAULT_CONFIG = {
     # Gemini 5000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
         "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "neutts" (local)
+        # Text preprocessing: strip markdown, replace emojis with spoken text,
+        # remove pseudo-graphics before sending to TTS engine.
+        "preprocess": True,   # set false to pass raw text to TTS
+        "language": "",        # ISO 639-1 code for emoji speech (e.g. "ru"); "" = auto-detect
         "edge": {
             "voice": "en-US-AriaNeural",
             # Popular: AriaNeural, JennyNeural, AndrewNeural, BrianNeural, SoniaNeural

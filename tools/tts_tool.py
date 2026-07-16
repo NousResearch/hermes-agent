@@ -1530,7 +1530,13 @@ def stream_tts_to_speaker(
             """Display sentence and optionally generate + play audio."""
             if stop_event.is_set():
                 return
-            cleaned = _strip_markdown_for_tts(sentence).strip()
+            # Apply full preprocessing (emoji speech, pseudo-graphics, etc.)
+            # not just markdown stripping, so streaming TTS sounds natural too.
+            if tts_config.get("preprocess", True):
+                lang = _get_tts_language(tts_config)
+                cleaned = _preprocess_tts_text(sentence, lang=lang).strip()
+            else:
+                cleaned = _strip_markdown_for_tts(sentence).strip()
             if not cleaned:
                 return
             # Skip duplicate/near-duplicate sentences (LLM repetition)

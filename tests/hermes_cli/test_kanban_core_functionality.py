@@ -2512,6 +2512,58 @@ def test_dispatch_reconciles_blocked_task_with_stale_running_run(kanban_home):
         conn.close()
 
 
+def test_dispatch_reconcile_dangling_pointer_preserves_foreign_active_run(kanban_home):
+    """A non-running task cannot close another task's active run by pointer."""
+    conn = kb.connect()
+    try:
+        owner_id = kb.create_task(conn, title="foreign run owner", assignee="worker")
+        dangling_id = kb.create_task(conn, title="dangling foreign pointer", assignee="worker")
+        assert kb.claim_task(conn, owner_id)
+        foreign_run_id = kb.latest_run(conn, owner_id).id
+        completed_at = int(time.time()) - 11
+        with kb.write_txn(conn):
+            conn.execute(
+                """
+                UPDATE tasks
+                   SET status = 'done',
+                       result = ?,
+                       completed_at = ?,
+                       current_run_id = ?,
+                       worker_pid = ?,
+                       claim_lock = 'test-host:foreign',
+                       claim_expires = ?
+                 WHERE id = ?
+                """,
+                (
+                    "completed with bad pointer",
+                    completed_at,
+                    foreign_run_id,
+                    123456,
+                    completed_at - 1,
+                    dangling_id,
+                ),
+            )
+
+        kb.dispatch_once(conn, spawn_fn=lambda _task, _workspace: None)
+
+        dangling = kb.get_task(conn, dangling_id)
+        assert dangling.status == "done"
+        assert dangling.current_run_id is None
+        assert dangling.worker_pid is None
+        assert dangling.claim_lock is None
+
+        owner = kb.get_task(conn, owner_id)
+        assert owner.status == "running"
+        assert owner.current_run_id == foreign_run_id
+        foreign_run = kb.get_run(conn, foreign_run_id)
+        assert foreign_run.task_id == owner_id
+        assert foreign_run.status == "running"
+        assert foreign_run.outcome is None
+        assert foreign_run.ended_at is None
+    finally:
+        conn.close()
+
+
 def test_migration_backfill_idempotent_under_re_run(tmp_path, monkeypatch):
     """init_db must be safe to re-run repeatedly. Each call should leave
     at most one run row per in-flight task, even if called while a

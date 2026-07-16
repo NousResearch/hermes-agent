@@ -5878,6 +5878,7 @@ def _reconcile_nonrunning_active_runs(conn: sqlite3.Connection) -> list[str]:
                 r.ended_at AS run_ended_at
             FROM tasks t
             LEFT JOIN task_runs r ON r.id = t.current_run_id
+                                  AND r.task_id = t.id
             WHERE t.status != 'running'
               AND t.current_run_id IS NOT NULL
             """

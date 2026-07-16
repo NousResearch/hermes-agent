@@ -1981,9 +1981,20 @@ def resolve_runtime_provider(
         # a bearer-only setup fails at runtime with "could not resolve
         # credentials from session"). Route these users through the Converse
         # API regardless of model. Ref: #28156.
+        #
+        # An explicit ``model.api_mode: bedrock_converse`` in config forces the
+        # Converse path too — letting users opt Claude into Converse even under
+        # SigV4 (e.g. to exercise the multi-model path). Either signal — a
+        # bearer token or the explicit override — sends Claude to Converse; the
+        # Converse path preserves the 1M context window by injecting the
+        # 1M-context beta (see bedrock_adapter.build_converse_kwargs).
         _current_model = str(target_model or model_cfg.get("default") or "").strip()
         _has_bearer_token = bool(os.environ.get("AWS_BEARER_TOKEN_BEDROCK", "").strip())
-        if is_anthropic_bedrock_model(_current_model) and not _has_bearer_token:
+        _forces_converse = (
+            _has_bearer_token
+            or _parse_api_mode(model_cfg.get("api_mode")) == "bedrock_converse"
+        )
+        if is_anthropic_bedrock_model(_current_model) and not _forces_converse:
             # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
             runtime = {
                 "provider": "bedrock",

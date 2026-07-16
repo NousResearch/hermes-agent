@@ -992,6 +992,21 @@ def build_converse_kwargs(
     if guardrail_config:
         kwargs["guardrailConfig"] = guardrail_config
 
+    # Unlock the 1M context window for Claude models routed through Converse.
+    # The AnthropicBedrock SDK path attaches this as a client-level
+    # ``anthropic-beta`` header (see build_anthropic_bedrock_client); the
+    # Converse API expects it inside ``additionalModelRequestFields``. Without
+    # it, Bedrock caps these models at 200K even though Anthropic serves 1M.
+    # Bedrock ignores the beta for Claude models that don't support it, so it
+    # is safe to send to any Claude model — but ``anthropic_beta`` is an
+    # Anthropic-only field, so gate on Claude to avoid a ValidationException on
+    # non-Claude Converse models (Nova, Llama, DeepSeek, etc.).
+    if is_anthropic_bedrock_model(model):
+        from agent.anthropic_adapter import _CONTEXT_1M_BETA
+
+        extra_fields = kwargs.setdefault("additionalModelRequestFields", {})
+        extra_fields["anthropic_beta"] = [_CONTEXT_1M_BETA]
+
     return kwargs
 
 

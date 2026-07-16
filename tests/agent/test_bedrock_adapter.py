@@ -700,6 +700,44 @@ class TestBuildConverseKwargs:
         )
         assert "toolConfig" not in kwargs
 
+    def test_injects_1m_context_beta_for_claude(self):
+        """Claude on the Converse path must carry the 1M-context beta so the
+        window matches the AnthropicBedrock SDK path (which sends it as a
+        client-level ``anthropic-beta`` header)."""
+        from agent.anthropic_adapter import _CONTEXT_1M_BETA
+        from agent.bedrock_adapter import build_converse_kwargs
+
+        for model_id in (
+            "anthropic.claude-sonnet-4-6-20250514-v1:0",
+            "us.anthropic.claude-opus-4-8",
+            "global.anthropic.claude-sonnet-5",
+        ):
+            kwargs = build_converse_kwargs(
+                model=model_id,
+                messages=[{"role": "user", "content": "Hi"}],
+            )
+            assert kwargs["additionalModelRequestFields"]["anthropic_beta"] == [
+                _CONTEXT_1M_BETA
+            ]
+
+    def test_omits_anthropic_beta_for_non_claude(self):
+        """``anthropic_beta`` is Anthropic-only — non-Claude Converse models
+        (Nova, Llama, DeepSeek) must not receive it, or Bedrock raises a
+        ValidationException."""
+        from agent.bedrock_adapter import build_converse_kwargs
+
+        for model_id in (
+            "us.amazon.nova-pro-v1:0",
+            "meta.llama3-1-70b-instruct-v1:0",
+            "deepseek.r1-v1:0",
+        ):
+            kwargs = build_converse_kwargs(
+                model=model_id,
+                messages=[{"role": "user", "content": "Hi"}],
+            )
+            extra = kwargs.get("additionalModelRequestFields", {})
+            assert "anthropic_beta" not in extra
+
 
 # ---------------------------------------------------------------------------
 # Model discovery
@@ -1760,7 +1798,7 @@ class TestBearerTokenRoutesToConverse:
     AWS_BEARER_TOKEN_BEDROCK. Ref: #28156.
     """
 
-    def _resolve(self, monkeypatch, *, bearer: bool):
+    def _resolve(self, monkeypatch, *, bearer: bool, api_mode=None):
         import os
 
         from hermes_cli import runtime_provider as rp
@@ -1772,14 +1810,14 @@ class TestBearerTokenRoutesToConverse:
         monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
         assert "AWS_BEARER_TOKEN_BEDROCK" in os.environ or not bearer
 
-        monkeypatch.setattr(
-            rp,
-            "_get_model_config",
-            lambda: {
-                "default": "us.anthropic.claude-sonnet-4-6",
-                "provider": "bedrock",
-            },
-        )
+        model_cfg = {
+            "default": "us.anthropic.claude-sonnet-4-6",
+            "provider": "bedrock",
+        }
+        if api_mode is not None:
+            model_cfg["api_mode"] = api_mode
+
+        monkeypatch.setattr(rp, "_get_model_config", lambda: model_cfg)
         monkeypatch.setattr(rp, "load_config", lambda: {"bedrock": {}})
         return rp.resolve_runtime_provider(requested="bedrock")
 
@@ -1792,5 +1830,29 @@ class TestBearerTokenRoutesToConverse:
     def test_sigv4_claude_still_uses_anthropic_bedrock_sdk(self, monkeypatch):
         """Without a bearer token, Claude keeps the AnthropicBedrock SDK path."""
         runtime = self._resolve(monkeypatch, bearer=False)
+        assert runtime["api_mode"] == "anthropic_messages"
+        assert runtime.get("bedrock_anthropic") is True
+
+    def test_explicit_api_mode_forces_converse_under_sigv4(self, monkeypatch):
+        """An explicit ``api_mode: bedrock_converse`` routes Claude through
+        Converse even without a bearer token (SigV4)."""
+        runtime = self._resolve(
+            monkeypatch, bearer=False, api_mode="bedrock_converse"
+        )
+        assert runtime["api_mode"] == "bedrock_converse"
+        assert "bedrock_anthropic" not in runtime
+
+    def test_explicit_api_mode_does_not_break_bearer_route(self, monkeypatch):
+        """The explicit override coexists with bearer-token auto-routing."""
+        runtime = self._resolve(
+            monkeypatch, bearer=True, api_mode="bedrock_converse"
+        )
+        assert runtime["api_mode"] == "bedrock_converse"
+        assert "bedrock_anthropic" not in runtime
+
+    def test_unset_api_mode_keeps_anthropic_sdk_under_sigv4(self, monkeypatch):
+        """Without the override or a bearer token, Claude keeps the SDK path —
+        the explicit override must not change the default."""
+        runtime = self._resolve(monkeypatch, bearer=False, api_mode=None)
         assert runtime["api_mode"] == "anthropic_messages"
         assert runtime.get("bedrock_anthropic") is True

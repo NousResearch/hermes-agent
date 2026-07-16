@@ -196,6 +196,11 @@ def generate_title(
             main_runtime=main_runtime,
         )
         content = extract_content_or_reasoning(response).strip()
+        # extract_content_or_reasoning only strips closed reasoning tags.
+        # Run the canonical scrubber next so standalone tool-call XML (and
+        # its payload) is removed before title cleanup — same path CLI uses.
+        from agent.agent_runtime_helpers import strip_think_blocks
+        content = strip_think_blocks(None, content).strip()
         return _clean_generated_title(content)
     except Exception as e:
         # Log at WARNING so this shows up in agent.log without debug mode.

@@ -9103,11 +9103,20 @@ def _(rid, params: dict) -> dict:
     with session["history_lock"]:
         session["_turn_cancel_requested"] = True
         session["queued_prompt"] = None
+    stale_cleared = False
     if not run_thread_alive:
         with session["history_lock"]:
             if session.get("running"):
                 session["running"] = False
                 _clear_inflight_turn(session)
+                stale_cleared = True
+    # A stale-flag recovery clears `running` server-side but the run loop's
+    # `finally` (which normally re-emits session.info) never ran — so without an
+    # explicit emit here the client's busy flag stays stuck true forever: the
+    # composer wedges on Stop and the queued-prompt auto-drain, gated on
+    # !isBusy, never fires. Push the settled state to the client now.
+    if stale_cleared:
+        _emit_session_info_for_session(str(params.get("session_id") or ""), session)
 
     # Stop = stop the TURN (cooperative interrupt above also kills the in-flight
     # foreground subprocess). Background processes the agent started (dev servers,

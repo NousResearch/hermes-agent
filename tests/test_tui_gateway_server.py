@@ -150,6 +150,60 @@ def test_handoff_fail_marks_only_inflight_rows(monkeypatch):
         server._sessions.pop(sid, None)
 
 
+def test_interrupt_stale_running_emits_settle(monkeypatch):
+    """A stale running flag must settle the client's busy state after Stop."""
+
+    class FakeAgent:
+        model = "m"
+        provider = "p"
+
+        def interrupt(self):
+            pass
+
+    events: list[tuple[str, str, dict | None]] = []
+    monkeypatch.setattr(
+        server,
+        "_emit",
+        lambda event, session_id, payload=None: events.append(
+            (event, session_id, payload)
+        ),
+    )
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda agent, session=None: {
+            "running": bool((session or {}).get("running"))
+        },
+    )
+
+    sid = "rt-stale-interrupt"
+    dead_thread = threading.Thread(target=lambda: None)
+    dead_thread.start()
+    dead_thread.join()
+
+    session = {
+        "session_key": "stored-stale",
+        "history_lock": threading.RLock(),
+        "agent": FakeAgent(),
+        "running": True,
+        "_run_thread": dead_thread,
+        "inflight_turn": {"text": "hi"},
+    }
+    server._sessions[sid] = session
+    try:
+        monkeypatch.setattr(server, "_sess", lambda params, rid: (session, None))
+        response = server._methods["session.interrupt"](
+            "r1", {"session_id": sid}
+        )
+
+        assert response["result"] == {"status": "interrupted"}
+        assert session["running"] is False
+        assert session["inflight_turn"] is None
+        assert events == [("session.info", sid, {"running": False})]
+    finally:
+        server._sessions.pop(sid, None)
+
+
 def test_dashboard_process_isolation_config_defaults_without_default_merge(monkeypatch):
     """tui_gateway.server::_load_cfg is raw YAML, so defaults live at read site."""
     monkeypatch.setattr(server, "_load_cfg", lambda: {})

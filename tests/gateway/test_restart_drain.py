@@ -1,4 +1,5 @@
 import asyncio
+import os
 import shutil
 import subprocess
 from datetime import datetime
@@ -478,22 +479,128 @@ async def test_shutdown_notification_send_failure_does_not_block():
 
 
 @pytest.mark.asyncio
-async def test_update_planned_stop_suppresses_all_shutdown_notifications():
-    """Routine updates stay quiet while preserving normal stop notifications."""
-    from gateway.config import HomeChannel, Platform
+@pytest.mark.parametrize(
+    ("marker_kind", "expected_notifications"),
+    [
+        pytest.param("update-suppressed", 0, id="update-opt-out"),
+        pytest.param("update-visible", 1, id="update-default"),
+        pytest.param("legacy", 1, id="legacy-marker"),
+    ],
+)
+async def test_planned_stop_marker_flows_through_signal_handler_to_notification_delivery(
+    marker_kind,
+    expected_notifications,
+    monkeypatch,
+    tmp_path,
+):
+    """Exercise config -> marker -> signal handler -> notification delivery.
+
+    This is fully in-process: it captures the registered signal callback and
+    replaces ``runner.stop`` with a notification-only coroutine. No OS signal
+    is sent and no live gateway or Hermes session is stopped.
+    """
+    from gateway import status as status_mod
+    from hermes_cli import main as cli_main
+
+    marker = tmp_path / ".gateway-planned-stop.json"
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(status_mod, "_get_planned_stop_marker_path", lambda: marker)
+    monkeypatch.setattr(status_mod, "_get_process_start_time", lambda _pid: 42)
+
+    if marker_kind == "legacy":
+        assert status_mod.write_planned_stop_marker(target_pid=os.getpid()) is True
+    else:
+        enabled = marker_kind == "update-visible"
+        (tmp_path / "config.yaml").write_text(
+            f"updates:\n  gateway_shutdown_notification: {str(enabled).lower()}\n",
+            encoding="utf-8",
+        )
+        assert cli_main._write_update_planned_stop_marker(tmp_path, os.getpid()) is True
 
     runner, adapter = make_restart_runner()
-    runner._suppress_shutdown_notifications = True
     runner._running_agents["agent:main:telegram:dm:999"] = MagicMock()
-    runner.config.platforms[Platform.TELEGRAM].home_channel = HomeChannel(
-        platform=Platform.TELEGRAM,
-        chat_id="home-42",
-        name="Ops Home",
+    runner._exit_cleanly = False
+    runner._exit_with_failure = False
+    stopped = asyncio.Event()
+    registered_signal_handlers = {}
+
+    async def notification_only_stop():
+        await runner._notify_active_sessions_of_shutdown()
+        runner._running = False
+        stopped.set()
+
+    async def start_and_invoke_registered_handler():
+        callback, args = registered_signal_handlers[gateway_run.signal.SIGTERM]
+        callback(*args)
+        await asyncio.wait_for(stopped.wait(), timeout=1)
+        runner._exit_cleanly = True
+        return True
+
+    runner.stop = notification_only_stop
+    runner.start = start_and_invoke_registered_handler
+
+    # Keep start_gateway's real signal-handler wiring while replacing every
+    # process-, lock-, network-, diagnostic-, and live-service boundary.
+    monkeypatch.setattr(gateway_run, "GatewayRunner", lambda _config: runner)
+    monkeypatch.setattr("gateway.code_skew.record_boot_fingerprint", lambda: None)
+    monkeypatch.setattr(
+        "hermes_cli.security_audit_startup.log_startup_security_warnings",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr("tools.skills_sync.sync_skills", lambda quiet=True: None)
+    monkeypatch.setattr(
+        "hermes_logging.setup_logging", lambda hermes_home, mode: tmp_path
+    )
+    monkeypatch.setattr(status_mod, "get_running_pid", lambda: None)
+    monkeypatch.setattr(status_mod, "acquire_gateway_runtime_lock", lambda: True)
+    monkeypatch.setattr(status_mod, "write_pid_file", lambda: None)
+    monkeypatch.setattr(status_mod, "remove_pid_file", lambda: None)
+    monkeypatch.setattr(status_mod, "release_gateway_runtime_lock", lambda: None)
+    monkeypatch.setattr("atexit.register", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        "hermes_cli.nous_auth_keepalive.start_nous_auth_keepalive", lambda: None
+    )
+    monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", lambda: None)
+    monkeypatch.setattr(
+        gateway_run, "_ensure_windows_gateway_venv_imports", lambda: None
+    )
+    monkeypatch.setattr(
+        gateway_run, "_run_planned_stop_watcher", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr(
+        "gateway.shutdown_forensics.snapshot_shutdown_context",
+        lambda _signal: {"signal": "SIGTERM"},
+    )
+    monkeypatch.setattr(
+        "gateway.shutdown_forensics.format_context_for_log", lambda _context: "test"
+    )
+    monkeypatch.setattr(
+        "gateway.shutdown_forensics.spawn_async_diagnostic",
+        lambda *_args, **_kwargs: None,
     )
 
-    await runner._notify_active_sessions_of_shutdown()
+    loop = asyncio.get_running_loop()
+    monkeypatch.setattr(
+        loop,
+        "add_signal_handler",
+        lambda sig, callback, *args: registered_signal_handlers.__setitem__(
+            sig, (callback, args)
+        ),
+    )
+    monkeypatch.setattr(loop, "set_exception_handler", lambda _handler: None)
 
-    assert adapter.sent == []
+    assert (
+        await gateway_run.start_gateway(
+            config=runner.config,
+            replace=False,
+            verbosity=None,
+        )
+        is True
+    )
+
+    assert not marker.exists(), "the signal handler must consume the marker"
+    assert len(adapter.sent) == expected_notifications
 
 
 @pytest.mark.asyncio

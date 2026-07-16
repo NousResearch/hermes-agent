@@ -5395,6 +5395,7 @@ async def _standalone_send(
     message,
     *,
     thread_id=None,
+    reply_to_message_id=None,
     media_files=None,
     force_document=False,
 ):
@@ -5414,7 +5415,12 @@ async def _standalone_send(
         domain_name = getattr(adapter, "_domain_name", "feishu")
         domain = FEISHU_DOMAIN if domain_name != "lark" else LARK_DOMAIN
         adapter._client = adapter._build_lark_client(domain)
-        metadata = {"thread_id": thread_id} if thread_id else None
+        metadata = {}
+        if thread_id:
+            metadata["thread_id"] = thread_id
+        if reply_to_message_id:
+            metadata["reply_to_message_id"] = reply_to_message_id
+        metadata = metadata or None
 
         last_result = None
         if message.strip():

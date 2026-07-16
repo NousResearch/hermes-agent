@@ -9597,6 +9597,42 @@ class TestResolveRuntimeWithFallback:
         assert resolution.selected_model == "z-ai/glm-5.2"
         assert resolution.used_fallback is True
 
+    def test_fallback_entry_key_env_resolves_api_key(self, monkeypatch):
+        """A fallback entry naming its key via key_env passes the resolved
+        env value as explicit_api_key (#43861, @VrtxOmega)."""
+        from hermes_cli.auth import AuthError
+
+        monkeypatch.setenv("FB_TEST_KEY", "env-resolved-key")
+        captured = {}
+        fallback_runtime = {"provider": "openrouter", "api_key": "x"}
+
+        def fake_resolve(**kwargs):
+            if kwargs.get("requested") == "openai-codex":
+                raise AuthError("No Codex credentials stored")
+            captured.update(kwargs)
+            return fallback_runtime
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+        monkeypatch.setattr(
+            server,
+            "_load_fallback_model",
+            lambda: [
+                {
+                    "provider": "openrouter",
+                    "model": "z-ai/glm-5.2",
+                    "key_env": "FB_TEST_KEY",
+                }
+            ],
+        )
+        resolution = server._resolve_runtime_with_fallback(
+            {"requested": "openai-codex"}
+        )
+        assert resolution.used_fallback is True
+        assert captured.get("explicit_api_key") == "env-resolved-key"
+
     def test_auth_error_all_fallbacks_fail_raises(self, monkeypatch):
         """When all fallbacks also fail, re-raise the original AuthError."""
         from hermes_cli.auth import AuthError

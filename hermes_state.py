@@ -25,25 +25,17 @@ import threading
 import time
 from pathlib import Path
 
+from hermes_sqlite_backend import select_sqlite_backend
+
 # Modern-SQLite opt-in. When the user installs `hermes-agent[modern-sqlite]`
-# (or pip-installs `pysqlite3-binary` directly), transparently route every
-# downstream `import sqlite3` through pysqlite3, which ships a statically
-# linked SQLite >= 3.45 with the trigram FTS5 tokenizer compiled in. This is
-# the supported escape hatch for distros that pin an old libsqlite3 (RHEL 8 /
-# Rocky 8 / Alma 8 ship 3.26.0, Amazon Linux 2 ships 3.7.x, older Debian /
-# Ubuntu LTS releases are similar). Falls through to stdlib sqlite3 silently
-# when the extra isn't installed . No behavior change for default installs.
-# Must run before `import sqlite3` so the swap is visible to this module too.
-if "sqlite3" not in sys.modules and os.environ.get("HERMES_DISABLE_PYSQLITE3_SHIM") != "1":
-    try:
-        import pysqlite3  # type: ignore[import-not-found]
+# (or pip-installs `pysqlite3-binary` directly), route this module's sqlite3
+# import through pysqlite3 before stdlib sqlite3 is bound in-process. The
+# shared helper is also imported early by gateway.run so the long-lived gateway
+# path sees the same backend selection before its own top-level `import
+# sqlite3`.
+select_sqlite_backend()
 
-        sys.modules["sqlite3"] = pysqlite3
-        sys.modules["sqlite3.dbapi2"] = pysqlite3.dbapi2
-    except ImportError:
-        pass
-
-import sqlite3  # noqa: E402: must follow the pysqlite3 shim above
+import sqlite3  # noqa: E402: must follow the backend-selection hook above
 
 from agent.memory_manager import sanitize_context  # noqa: E402
 from agent.message_sanitization import _sanitize_surrogates  # noqa: E402
@@ -243,8 +235,7 @@ def _check_sqlite_capabilities() -> None:
             "To enable trigram without touching the system library, install the "
             "modern-sqlite extra into this venv: "
             "`%s -m pip install 'hermes-agent[modern-sqlite]'` "
-            "(ships pysqlite3-binary with a static modern SQLite). "
-            "Set HERMES_DISABLE_PYSQLITE3_SHIM=1 to opt out of the auto-shim.",
+            "(ships pysqlite3-binary with a static modern SQLite).",
             version,
             *_TRIGRAM_MIN_VERSION,
             sys.executable,

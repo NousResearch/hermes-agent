@@ -124,8 +124,8 @@ class TestSqliteCapabilityWarning:
 
 
 class TestPysqlite3Shim:
-    """The auto-shim must be opt-in (only when pysqlite3 is installed) and
-    must respect HERMES_DISABLE_PYSQLITE3_SHIM."""
+    """The auto-shim must be opt-in: it activates only when pysqlite3 is
+    installed (via the modern-sqlite extra), never on a default install."""
 
     def test_stdlib_sqlite3_used_when_pysqlite3_not_installed(self):
         """Default install path: sqlite3 module is the stdlib one."""

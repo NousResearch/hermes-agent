@@ -146,9 +146,11 @@ dependencies = [
 # substring + CJK session search. RHEL 8 / Rocky 8 / Alma 8 ship 3.26.0,
 # Amazon Linux 2 ships 3.7.x, and older Debian / Ubuntu LTS releases land
 # in the same window. Installing this extra is the supported escape hatch:
-# `pip install 'hermes-agent[modern-sqlite]'`. hermes_state.py auto-detects
-# pysqlite3 at import and routes every downstream `import sqlite3` through
-# it (`HERMES_DISABLE_PYSQLITE3_SHIM=1` opts out). See issue #41030.
+# `pip install 'hermes-agent[modern-sqlite]'`. gateway/run.py and
+# hermes_state.py import a shared early backend-selection hook before their
+# first `import sqlite3`, so gateway/session-search paths bind sqlite3 to
+# pysqlite3 when the extra is installed. Default installs are unaffected —
+# stdlib sqlite3 is used when pysqlite3 isn't present. See issue #41030.
 modern-sqlite = ["pysqlite3-binary>=0.5.0,<0.7"]
 # Native Anthropic provider — only needed when provider=anthropic (not via
 # OpenRouter or other aggregators).

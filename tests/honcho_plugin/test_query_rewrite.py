@@ -100,6 +100,7 @@ def test_long_input_keeps_both_ends_with_a_hard_bound():
 
 def _provider(query_rewriter, *, depth=1):
     provider = HonchoMemoryProvider(query_rewriter=query_rewriter)
+    provider._query_rewrite_enabled = True
     provider._manager = MagicMock()
     provider._manager.dialectic_query.return_value = "memory synthesis"
     provider._session_key = "test-session"
@@ -189,6 +190,7 @@ def test_first_user_message_is_not_shadowed_by_generic_dialectic_prewarm():
         enabled=True,
         recall_mode="hybrid",
         timeout=1,
+        query_rewrite=True,
     )
 
     with (
@@ -237,3 +239,24 @@ def test_query_rewrite_has_an_independent_auxiliary_model_config():
     assert task_config["provider"] == "auto"
     assert task_config["timeout"] == 8
     assert TASK_KEY in {key for key, _name, _description in _AUX_TASKS}
+
+
+def test_query_rewrite_disabled_by_default():
+    """queryRewrite defaults OFF — the rewriter must not add an LLM call."""
+    rewriter = MagicMock(return_value="What does the user prefer?")
+    provider = _provider(rewriter)
+    provider._query_rewrite_enabled = False
+
+    provider._run_dialectic_depth("what did we decide?")
+
+    rewriter.assert_not_called()
+    provider._manager.dialectic_query.assert_called_once()
+
+
+def test_config_defaults_keep_latency_additions_off():
+    from plugins.memory.honcho.client import HonchoClientConfig
+
+    cfg = HonchoClientConfig(api_key="k", enabled=True)
+    assert cfg.query_rewrite is False
+    assert cfg.first_turn_base_wait == 3.0
+    assert cfg.first_turn_dialectic_wait == 2.0

@@ -46,6 +46,8 @@ def _paths_from_git(base: str) -> list[str]:
         )
     except subprocess.TimeoutExpired as exc:
         raise RuntimeError("git diff timed out while collecting changed paths") from exc
+    except OSError as exc:
+        raise RuntimeError(f"unable to execute git while collecting changed paths: {exc}") from exc
     if proc.returncode != 0:
         detail = proc.stderr.strip() or proc.stdout.strip() or "git diff failed"
         raise RuntimeError(detail)

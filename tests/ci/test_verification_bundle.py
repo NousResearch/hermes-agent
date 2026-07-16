@@ -35,6 +35,44 @@ def _ids(bundle) -> set[str]:
     return {cmd.id for cmd in bundle.commands}
 
 
+def _init_git_repo(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init"], cwd=path, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    subprocess.run(
+        ["git", "config", "user.email", "tester@example.invalid"],
+        cwd=path,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    subprocess.run(
+        ["git", "config", "user.name", "Test Runner"],
+        cwd=path,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _bash_or_skip() -> str:
+    bash = shutil.which("bash")
+    if not bash or not shutil.which("git") or not shutil.which("python"):
+        pytest.skip("bash, git, and python are required to smoke-test generated shell commands")
+    probe = subprocess.run(
+        [bash, "-lc", "printf ok"],
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+    if probe.returncode != 0 or probe.stdout != "ok":
+        pytest.skip("bash is present but unavailable in this environment")
+    return bash
+
+
 def test_gateway_and_desktop_store_paths_get_focused_checks():
     mod = _load_bundle()
 
@@ -340,6 +378,105 @@ def test_generated_added_line_security_scan_command_redacts_and_uses_lhs(tmp_pat
     assert "untracked-dummy-value" not in untracked_risky.stderr
 
 
+def test_generated_security_scan_rejects_untracked_windows_junction_ancestor(tmp_path):
+    if os.name != "nt":
+        pytest.skip("Windows junction coverage only applies on Windows")
+    mod = _load_bundle()
+    bash = _bash_or_skip()
+    repo = tmp_path / "repo"
+    outside = tmp_path / "outside"
+    _init_git_repo(repo)
+    outside.mkdir()
+    (outside / "safe.py").write_text("safe = True\n", encoding="utf-8")
+    junction = repo / "junction"
+    proc = subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink /J junction ..\\outside"],
+        cwd=repo,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout).decode("cp949", errors="replace")
+        pytest.skip(f"junction creation unavailable: {detail}")
+
+    try:
+        assert junction.is_symlink() is False
+        command = mod._added_line_security_scan_command()
+        scanned = subprocess.run(
+            [bash, "-lc", command],
+            cwd=repo,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            capture_output=True,
+            check=False,
+        )
+        assert scanned.returncode == 1
+        assert "redacted-hit" in scanned.stdout
+        assert "safe = True" not in scanned.stdout
+        assert "safe = True" not in scanned.stderr
+    finally:
+        subprocess.run(
+            ["cmd.exe", "/d", "/c", "rmdir junction"],
+            cwd=repo,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            check=False,
+        )
+
+
+def test_generated_security_scan_fails_closed_for_staged_and_untracked_utf16(tmp_path):
+    mod = _load_bundle()
+    bash = _bash_or_skip()
+    command = mod._added_line_security_scan_command()
+    term = "api" + "_key"
+    marker = "utf16-dummy-value"
+
+    staged_repo = tmp_path / "staged"
+    _init_git_repo(staged_repo)
+    staged_file = staged_repo / "staged.py"
+    staged_file.write_text(f'{term} = "{marker}"\n', encoding="utf-16")
+    subprocess.run(
+        ["git", "add", "--", staged_file.name],
+        cwd=staged_repo,
+        check=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    staged = subprocess.run(
+        [bash, "-lc", command],
+        cwd=staged_repo,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+    assert staged.returncode == 1
+    assert "redacted-hit" in staged.stdout
+    assert marker not in staged.stdout
+    assert marker not in staged.stderr
+
+    untracked_repo = tmp_path / "untracked"
+    _init_git_repo(untracked_repo)
+    (untracked_repo / "untracked.py").write_text(f'{term} = "{marker}"\n', encoding="utf-16")
+    untracked = subprocess.run(
+        [bash, "-lc", command],
+        cwd=untracked_repo,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        capture_output=True,
+        check=False,
+    )
+    assert untracked.returncode == 1
+    assert "redacted-hit" in untracked.stdout
+    assert marker not in untracked.stdout
+    assert marker not in untracked.stderr
+
+
 def test_stdout_only_cli_does_not_write_import_bytecode(tmp_path):
     scripts_dir = tmp_path / "scripts"
     ci_dir = scripts_dir / "ci"
@@ -420,3 +557,30 @@ def test_from_git_rejects_dash_prefixed_base_ref():
     assert proc.returncode == 2
     assert proc.stdout == ""
     assert "base" in proc.stderr.lower()
+
+
+def test_from_git_missing_executable_returns_clean_public_error():
+    env = os.environ.copy()
+    env["PATH"] = ""
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            str(CLI_PATH),
+            "--from-git",
+            "--base",
+            "HEAD",
+            "--format",
+            "json",
+        ],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert proc.returncode == 2
+    assert proc.stdout == ""
+    assert "git" in proc.stderr.lower()
+    assert "traceback" not in proc.stderr.lower()

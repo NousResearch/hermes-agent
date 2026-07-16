@@ -2,17 +2,25 @@
  * Tests for src/app/transcript-preload.ts.
  */
 
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it } from 'vitest'
 
 import type { SessionInfo } from '@/types/hermes'
 
 import { MAX_PRELOAD, preloadTranscripts, selectPreloadSessions } from './transcript-preload'
+import { clearStashedTranscripts, readStashedTranscript } from './transcript-stash'
 
 function s(id: string, extra: Partial<SessionInfo> = {}): SessionInfo {
   return { id, title: `t-${id}`, pinned: false, archived: false, ...extra } as SessionInfo
 }
 
 const noSleep = () => Promise.resolve()
+
+// preloadTranscripts hydrates the module-global in-memory stash as a direct
+// side effect; drop it after every test so leaked entries can't skew the
+// stash suite's count assertions when they share a worker.
+afterEach(() => {
+  clearStashedTranscripts()
+})
 
 describe('selectPreloadSessions', () => {
   it('pinned first, then visible order, capped', () => {
@@ -35,16 +43,19 @@ describe('preloadTranscripts', () => {
   it('fetches sequentially, pushes rows to the cache, returns the count', async () => {
     const fetched: string[] = []
     const pushed: string[] = []
+
     const n = await preloadTranscripts({
       gatewayUrl: 'http://g',
       sessions: [s('p1', { pinned: true }), s('v1')],
       fetchMessages: (async (id: string) => {
         fetched.push(id)
+
         return { messages: [{ role: 'user', content: 'hi' }] }
       }) as never,
       push: ((_url: string, id: string) => pushed.push(id)) as never,
       sleep: noSleep
     })
+
     expect(n).toBe(2)
     expect(fetched).toEqual(['p1', 'v1'])
     expect(pushed).toEqual(['p1', 'v1'])
@@ -52,6 +63,7 @@ describe('preloadTranscripts', () => {
 
   it('skips fresh-cached sessions and empty transcripts', async () => {
     const pushed: string[] = []
+
     const n = await preloadTranscripts({
       gatewayUrl: 'http://g',
       sessions: [s('cached'), s('empty'), s('real')],
@@ -60,39 +72,46 @@ describe('preloadTranscripts', () => {
       push: ((_u: string, id: string) => pushed.push(id)) as never,
       sleep: noSleep
     })
+
     expect(n).toBe(1)
     expect(pushed).toEqual(['real'])
   })
 
   it('a fetch error skips that session and continues (fail-open)', async () => {
     const pushed: string[] = []
+
     const n = await preloadTranscripts({
       gatewayUrl: 'http://g',
       sessions: [s('bad'), s('good')],
       fetchMessages: (async (id: string) => {
-        if (id === 'bad') throw new Error('boom')
+        if (id === 'bad') {throw new Error('boom')}
+
         return { messages: [{ role: 'user', content: 'hi' }] }
       }) as never,
       push: ((_u: string, id: string) => pushed.push(id)) as never,
       sleep: noSleep
     })
+
     expect(n).toBe(1)
     expect(pushed).toEqual(['good'])
   })
 
   it('stops when shouldStop flips true; no gatewayUrl -> no-op', async () => {
     let calls = 0
+
     const n = await preloadTranscripts({
       gatewayUrl: 'http://g',
       sessions: [s('a'), s('b'), s('c')],
       fetchMessages: (async () => {
         calls += 1
+
         return { messages: [{ role: 'user', content: 'hi' }] }
       }) as never,
       push: (() => undefined) as never,
       sleep: noSleep,
       shouldStop: () => calls >= 1
     })
+
     expect(n).toBe(1)
 
     expect(
@@ -107,6 +126,7 @@ describe('preloadTranscripts', () => {
       sessions: [s('x', { profile: 'daedalus' } as never)],
       fetchMessages: (async (id: string, profile?: string | null) => {
         seen.push([id, profile])
+
         return { messages: [{ role: 'user', content: 'hi' }] }
       }) as never,
       push: (() => undefined) as never,
@@ -130,8 +150,26 @@ describe('preloadTranscripts', () => {
       sleep: noSleep
     })
     expect(pushedRows).toHaveLength(1)
+
     for (const row of pushedRows[0] as Array<{ parts?: unknown }>) {
       expect(Array.isArray(row.parts)).toBe(true)
     }
+  })
+})
+
+describe('preload hydrates the in-memory stash (instant first click)', () => {
+  it('stashes preloaded rows so readStashedTranscript hits synchronously', async () => {
+    await preloadTranscripts({
+      gatewayUrl: 'http://gw',
+      sessions: [s('warm1')],
+      fetchMessages: (async () => ({ messages: [{ role: 'user', content: 'hi' }] })) as never,
+      push: (() => undefined) as never,
+      sleep: noSleep
+    })
+
+    const rows = readStashedTranscript('warm1')
+
+    expect(rows).not.toBeNull()
+    expect(rows!.length).toBeGreaterThan(0)
   })
 })

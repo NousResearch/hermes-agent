@@ -2,7 +2,6 @@
 
 import type { SyntaxHighlighterProps } from '@assistant-ui/react-streamdown'
 import { type FC, useMemo } from 'react'
-import ShikiHighlighter from 'react-shiki'
 
 import {
   CodeCard,
@@ -13,6 +12,7 @@ import {
   CodeCardTitle
 } from '@/components/chat/code-card'
 import { ExpandableBlock } from '@/components/chat/expandable-block'
+import { SHIKI_COLOR_REPLACEMENTS, SHIKI_THEME, useCachedShikiHtml } from '@/components/chat/shiki-html-cache'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
 import { codiconForLanguage, isLikelyProseCodeBlock, sanitizeLanguageTag } from '@/lib/markdown-code'
@@ -23,29 +23,17 @@ import { codiconForLanguage, isLikelyProseCodeBlock, sanitizeLanguageTag } from 
  * `data-streamdown="code-block"` chrome from styles.css. Anything that wants
  * a card-shaped code surface should compose `CodeCard*` directly.
  *
- * `react-shiki` full bundle so all `bundledLanguages` work; theme switches
- * follow the document `color-scheme` via `defaultColor="light-dark()"`.
+ * Highlighting is cache-first (shiki-html-cache): a fence that has been
+ * highlighted before this app run renders its colored HTML in the SAME commit
+ * it mounts — remounts (session switch wholesale-replace, idle budget raise)
+ * never show the plain->highlighted swap. Only the first-ever render of a
+ * given fence tokenizes async (plain code shows for that one pass).
  */
 interface HermesSyntaxHighlighterProps extends SyntaxHighlighterProps {
   defer?: boolean
 }
 
-// `github-dark-dimmed` is GitHub's lower-contrast dark palette — the vivid
-// `github-dark-default` tokens read harsh at our small code size. Shared by the
-// inline diff renderer too (see diff-lines.tsx) so code + diffs match.
-export const SHIKI_THEME = { dark: 'github-dark-dimmed', light: 'github-light-default' } as const
-
-/**
- * `github-light-default` colors comments `#6e7781` (~4.2:1 against the code
- * card background) — borderline unreadable at our 11px code size, and worst of
- * all for shell snippets where a single `#` turns the rest of the line into one
- * long comment span. Remap light-mode comments to GitHub's darker muted gray
- * (`#57606a`, ~6.4:1). Dark mode (`#8b949e`, ~6.1:1) already reads fine, so we
- * leave it untouched. Keyed per theme name so the bump only applies in light.
- */
-const SHIKI_COLOR_REPLACEMENTS: Record<string, Record<string, string>> = {
-  'github-light-default': { '#6e7781': '#57606a' }
-}
+export { SHIKI_COLOR_REPLACEMENTS, SHIKI_THEME }
 
 const MAX_HIGHLIGHT_CHARS = 150_000
 const MAX_HIGHLIGHT_LINES = 3_000
@@ -115,6 +103,21 @@ const PlainCode: FC<{ code: string }> = ({ code }) => {
   )
 }
 
+// Renders the cache-first highlighted HTML; falls back to plain code while the
+// first-ever tokenize of this fence is in flight (or if it failed).
+const CachedHighlight: FC<{ code: string; language: string }> = ({ code, language }) => {
+  const { html } = useCachedShikiHtml(code, language)
+
+  if (html === null) {
+    return <PlainCode code={code} />
+  }
+
+  // Shiki output: static HTML from our own tokenizer over escaped code — the
+  // standard shiki consumption pattern (upstream react-shiki does the same).
+  // eslint-disable-next-line react/no-danger
+  return <div dangerouslySetInnerHTML={{ __html: html }} />
+}
+
 export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
   components: { Pre },
   language,
@@ -158,22 +161,7 @@ export const SyntaxHighlighter: FC<HermesSyntaxHighlighterProps> = ({
       <CodeCardBody>
         <ExpandableBlock>
           <Pre className="aui-shiki m-0 overflow-hidden bg-transparent p-0">
-            {plain ? (
-              <PlainCode code={trimmed} />
-            ) : (
-              <ShikiHighlighter
-                addDefaultStyles={false}
-                as="div"
-                colorReplacements={SHIKI_COLOR_REPLACEMENTS}
-                defaultColor="light-dark()"
-                delay={120}
-                language={language || 'text'}
-                showLanguage={false}
-                theme={SHIKI_THEME}
-              >
-                {trimmed}
-              </ShikiHighlighter>
-            )}
+            {plain ? <PlainCode code={trimmed} /> : <CachedHighlight code={trimmed} language={language || 'text'} />}
           </Pre>
         </ExpandableBlock>
       </CodeCardBody>

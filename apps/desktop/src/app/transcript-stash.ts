@@ -15,9 +15,11 @@ import type { ChatMessage } from '@/lib/chat-messages'
 // whatever the live store last held for that session, and every live payload
 // (prefetch/resume/stream) overwrites the paint wholesale (invariant I1).
 
-// ~8 sessions × up to a few MB of rows ≈ bounded tens of MB; generous enough
-// to cover an alt-tab working set, small enough to never matter for RSS.
-const MAX_ENTRIES = 8
+// Sized to hold the full boot preload set (MAX_PRELOAD = 12 pinned+visible
+// sessions) PLUS a handful of manually visited sessions without evicting
+// either group. Rows are references shared with the store/disk-cache path —
+// per-entry cost is one array of pointers; tens of MB worst case in aggregate.
+export const MAX_STASH_ENTRIES = 20
 
 const entries = new Map<string, ChatMessage[]>()
 
@@ -37,7 +39,7 @@ export function stashTranscript(storedSessionId: string | null | undefined, rows
   entries.delete(storedSessionId)
   entries.set(storedSessionId, rows)
 
-  while (entries.size > MAX_ENTRIES) {
+  while (entries.size > MAX_STASH_ENTRIES) {
     const oldest = entries.keys().next().value
 
     if (oldest === undefined) {

@@ -470,18 +470,20 @@ async def test_image_file_still_sets_photo_type():
 
 
 # ---------------------------------------------------------------------------
-# Received-file path resolution (SIMPLEX_FILES_FOLDER)
+# Received-file path resolution (extra.files_folder)
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_relative_file_path_resolved_against_files_folder(monkeypatch, tmp_path):
+async def test_relative_file_path_resolved_against_files_folder(tmp_path):
     """The daemon reports paths relative to its --files-folder; the adapter
     must hand the gateway an absolute path it can actually open."""
     from gateway.config import PlatformConfig
 
-    monkeypatch.setenv("SIMPLEX_FILES_FOLDER", str(tmp_path))
-    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "files_folder": str(tmp_path)},
+    )
     adapter = SimplexAdapter(cfg)
     dispatched = []
 
@@ -496,11 +498,13 @@ async def test_relative_file_path_resolved_against_files_folder(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
-async def test_absolute_file_path_not_rewritten(monkeypatch, tmp_path):
+async def test_absolute_file_path_not_rewritten(tmp_path):
     from gateway.config import PlatformConfig
 
-    monkeypatch.setenv("SIMPLEX_FILES_FOLDER", str(tmp_path))
-    cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
+    cfg = PlatformConfig(
+        enabled=True,
+        extra={"ws_url": "ws://localhost:5225", "files_folder": str(tmp_path)},
+    )
     adapter = SimplexAdapter(cfg)
     dispatched = []
 
@@ -514,11 +518,10 @@ async def test_absolute_file_path_not_rewritten(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_relative_file_path_without_base_unchanged(monkeypatch):
-    """No SIMPLEX_FILES_FOLDER configured — pass the path through as before."""
+async def test_relative_file_path_without_base_unchanged():
+    """No files_folder configured — pass the path through as before."""
     from gateway.config import PlatformConfig
 
-    monkeypatch.delenv("SIMPLEX_FILES_FOLDER", raising=False)
     cfg = PlatformConfig(enabled=True, extra={"ws_url": "ws://localhost:5225"})
     adapter = SimplexAdapter(cfg)
     dispatched = []

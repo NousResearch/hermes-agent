@@ -32,14 +32,16 @@ Optional environment variables:
                                for any group. Omit to disable groups entirely.
     SIMPLEX_HOME_CHANNEL       Default contact/group ID for cron delivery
     SIMPLEX_HOME_CHANNEL_NAME  Human label for the home channel
-    SIMPLEX_FILES_FOLDER       Absolute path of the daemon's --files-folder;
-                               used to resolve the relative file paths the
-                               daemon reports for received attachments
     HERMES_SIMPLEX_TEXT_BATCH_DELAY
                                Quiet-period seconds (default: 0.8) used to
                                concatenate rapid-fire inbound text messages
                                into a single MessageEvent — same pattern as
                                Telegram's text batching.
+
+Optional ``config.yaml`` settings (``platforms.simplex.extra``):
+    files_folder               Absolute path of the daemon's --files-folder;
+                               used to resolve the relative file paths the
+                               daemon reports for received attachments
 
 The ``websockets`` Python package is imported lazily — the plugin is
 discoverable and ``hermes setup`` can describe it even when websockets is
@@ -165,9 +167,7 @@ class SimplexAdapter(BasePlatformAdapter):
         # Mirrors the daemon's ``--files-folder`` flag. The daemon reports
         # received-file paths relative to it and offers no WS API to query
         # it (``/_files_folder`` is a setter only).
-        self.files_folder = os.getenv("SIMPLEX_FILES_FOLDER", "") or extra.get(
-            "files_folder", ""
-        )
+        self.files_folder = extra.get("files_folder", "")
 
         # Group allowlist. Without ``SIMPLEX_GROUP_ALLOWED``, group messages
         # are ignored entirely (safer default — a bot in a group otherwise

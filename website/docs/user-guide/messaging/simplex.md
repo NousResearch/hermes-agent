@@ -38,7 +38,8 @@ Keep `--temp-folder` on the **same filesystem** as `--files-folder`. Without
 distros where `/tmp` is tmpfs (Fedora and derivatives, among others) the
 final cross-filesystem move fails silently and every received file wedges at
 100% with a 0-byte destination — no error is logged anywhere. If you set
-`--files-folder`, also set `SIMPLEX_FILES_FOLDER` to the same path (see below).
+`--files-folder`, also point `platforms.simplex.extra.files_folder` at the
+same path in `config.yaml` (see below).
 :::
 
 ## Configure Hermes
@@ -70,8 +71,23 @@ SIMPLEX_HOME_CHANNEL=<contact-id>
 | `SIMPLEX_GROUP_ALLOWED` | Optional | Comma-separated group IDs the bot participates in, or `*` for any group. Omit to ignore group messages entirely |
 | `SIMPLEX_HOME_CHANNEL` | Optional | Default contact/group ID for cron job delivery |
 | `SIMPLEX_HOME_CHANNEL_NAME` | Optional | Human label for the home channel |
-| `SIMPLEX_FILES_FOLDER` | Optional | Absolute path of the daemon's `--files-folder`. Required for received attachments (images, documents) to reach the agent when the daemon uses a files folder — the daemon reports those paths relative to it |
 | `HERMES_SIMPLEX_TEXT_BATCH_DELAY` | Optional | Quiet-period seconds (default: `0.8`) used to concatenate rapid-fire inbound text messages into one event |
+
+### Received attachments (`config.yaml`)
+
+If the daemon runs with `--files-folder`, tell Hermes where that folder is
+under `platforms.simplex.extra` in `~/.hermes/config.yaml`:
+
+```yaml
+platforms:
+  simplex:
+    extra:
+      files_folder: /home/you/.hermes/simplex/files
+```
+
+The daemon reports received-attachment paths relative to its `--files-folder`
+and offers no API to query it, so without this setting incoming images and
+documents never reach the agent.
 
 ## Find your contact ID or display name
 

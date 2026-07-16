@@ -47,12 +47,6 @@ optional_env:
     description: "Human label for the home channel (defaults to the ID)"
     prompt: "Home channel display name (or empty)"
     password: false
-  - name: SIMPLEX_FILES_FOLDER
-    description: >-
-      Absolute path of the daemon's --files-folder. Used to resolve the
-      relative file paths the daemon reports for received attachments.
-    prompt: "Daemon files folder (matches --files-folder, or empty)"
-    password: false
   - name: HERMES_SIMPLEX_TEXT_BATCH_DELAY
     description: >-
       Quiet-period seconds (default: 0.8) used to concatenate rapid-fire

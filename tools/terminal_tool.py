@@ -1253,6 +1253,32 @@ def _is_unusable_container_cwd(cwd: str) -> bool:
     return False
 
 
+def _env_type_from_env(env) -> str:
+    """Extract the backend type from an environment instance by class name.
+
+    Environment subclasses encode their backend type in the class name
+    (*LocalEnvironment*, *DockerEnvironment*, etc.).  This helper normalises
+    the class name to the short string used in ``_get_env_config()`` and
+    ``TERMINAL_ENV`` so the caller can compare cached vs desired backend.
+
+    Returns ``"unknown"`` when the class doesn't match any known backend.
+    """
+    name = env.__class__.__name__.lower()
+    if "local" in name:
+        return "local"
+    if "ssh" in name:
+        return "ssh"
+    if "docker" in name:
+        return "docker"
+    if "singularity" in name:
+        return "singularity"
+    if "modal" in name:
+        return "modal"
+    if "daytona" in name:
+        return "daytona"
+    return "unknown"
+
+
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
@@ -1643,6 +1669,127 @@ def get_active_env(task_id: str):
     lookup = _resolve_container_task_id(task_id)
     with _env_lock:
         return _active_environments.get(lookup) or _active_environments.get(task_id)
+
+
+def ensure_task_env(task_id: Optional[str] = None):
+    """Lazily create and cache the sandbox environment if it doesn't exist.
+
+    Used by vision_analyze (via image_source.py) to ensure the sandbox
+    environment is initialized before trying to read remote files, matching
+    the lazy initialization behavior of :func:`terminal_tool` (which creates
+    the env on the first terminal command).  Under a local backend this is a
+    no-op (no sandbox needed); under a non-local backend (ssh, docker, …) it
+    creates the environment if none is cached for *task_id*.
+
+    Returns the environment instance, or ``None`` when the backend is local
+    or creation fails.
+    """
+    config = _get_env_config()
+    env_type = config["env_type"]
+
+    # Local backend needs no sandbox env — images are read host-side.
+    if env_type == "local":
+        return None
+
+    effective_task_id = _resolve_container_task_id(task_id)
+
+    # Fast path: already cached — just refresh activity and return.
+    existing = get_active_env(effective_task_id)
+    if existing is not None:
+        return existing
+
+    # Resolve per-task overrides (image, cwd) before env creation.
+    overrides = resolve_task_overrides(task_id)
+
+    if env_type == "docker":
+        image = overrides.get("docker_image") or config["docker_image"]
+    elif env_type == "singularity":
+        image = overrides.get("singularity_image") or config["singularity_image"]
+    elif env_type == "modal":
+        image = overrides.get("modal_image") or config["modal_image"]
+    elif env_type == "daytona":
+        image = overrides.get("daytona_image") or config["daytona_image"]
+    else:
+        image = ""
+
+    cwd = config["cwd"]
+    effective_timeout = config["timeout"]
+
+    # Per-task creation lock so concurrent callers share one creation.
+    with _creation_locks_lock:
+        if effective_task_id not in _creation_locks:
+            _creation_locks[effective_task_id] = threading.Lock()
+        task_lock = _creation_locks[effective_task_id]
+
+    with task_lock:
+        # Double-check after acquiring lock.
+        existing = get_active_env(effective_task_id)
+        if existing is not None:
+            return existing
+
+        ssh_config = None
+        if env_type == "ssh":
+            ssh_config = {
+                "host": config.get("ssh_host", ""),
+                "user": config.get("ssh_user", ""),
+                "port": config.get("ssh_port", 22),
+                "key": config.get("ssh_key", ""),
+                "persistent": config.get("ssh_persistent", False),
+            }
+
+        container_config = None
+        if env_type in _CONTAINER_BACKENDS:
+            container_config = {
+                "container_cpu": config.get("container_cpu", 1),
+                "container_memory": config.get("container_memory", 5120),
+                "container_disk": config.get("container_disk", 51200),
+                "container_persistent": config.get("container_persistent", True),
+                "modal_mode": config.get("modal_mode", "auto"),
+                "docker_volumes": config.get("docker_volumes", []),
+                "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
+                "docker_forward_env": config.get("docker_forward_env", []),
+                "docker_env": config.get("docker_env", {}),
+                "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                "docker_network": config.get("docker_network", True),
+                "docker_extra_args": config.get("docker_extra_args", []),
+                "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
+                "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+            }
+
+        local_config = None
+        if env_type == "local":
+            local_config = {
+                "persistent": config.get("local_persistent", False),
+            }
+
+        try:
+            new_env = _create_environment(
+                env_type=env_type,
+                image=image,
+                cwd=cwd,
+                timeout=effective_timeout,
+                ssh_config=ssh_config,
+                container_config=container_config,
+                local_config=local_config,
+                task_id=effective_task_id,
+                host_cwd=config.get("host_cwd"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to lazily initialize %s environment for task %s: %s",
+                env_type, effective_task_id[:8], exc,
+            )
+            return None
+
+        with _env_lock:
+            _active_environments[effective_task_id] = new_env
+            _last_activity[effective_task_id] = time.time()
+
+        logger.info(
+            "%s environment lazily initialized for task %s (vision_analyze)",
+            env_type, effective_task_id[:8],
+        )
+        return new_env
 
 
 def is_persistent_env(task_id: str) -> bool:
@@ -2177,7 +2324,18 @@ def terminal_tool(
             if _existing_key is not None:
                 _last_activity[_existing_key] = time.time()
                 env = _active_environments[_existing_key]
-                needs_creation = False
+                cached_env_type = _env_type_from_env(env)
+                if cached_env_type != "unknown" and cached_env_type != env_type:
+                    logger.warning(
+                        "Cached environment type '%s' != desired '%s', recreating",
+                        cached_env_type, env_type,
+                    )
+                    if hasattr(env, "close"):
+                        env.close()
+                    del _active_environments[_existing_key]
+                    needs_creation = True
+                else:
+                    needs_creation = False
             else:
                 needs_creation = True
 
@@ -2198,7 +2356,18 @@ def terminal_tool(
                     if _existing_key is not None:
                         _last_activity[_existing_key] = time.time()
                         env = _active_environments[_existing_key]
-                        needs_creation = False
+                        cached_env_type = _env_type_from_env(env)
+                        if cached_env_type != "unknown" and cached_env_type != env_type:
+                            logger.warning(
+                                "Cached environment type '%s' != desired '%s', recreating",
+                                cached_env_type, env_type,
+                            )
+                            if hasattr(env, "close"):
+                                env.close()
+                            del _active_environments[_existing_key]
+                            needs_creation = True
+                        else:
+                            needs_creation = False
 
                 if needs_creation:
                     if env_type == "singularity":

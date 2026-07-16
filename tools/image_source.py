@@ -282,9 +282,26 @@ async def _resolve_container_fallback(p: Path, ctx: ResolveContext, src: str) ->
 
     Fail-closed: if there is no active sandbox env we refuse rather than falling
     back to a host read, so a non-cache host path under a sandbox never leaks.
+
+    Lazily initializes the sandbox environment first (matching terminal tool
+    behavior) so that backends like SSH that require a connection handshake
+    are ready before we try to read the file.  See issue #62825.
     """
     import asyncio
     import shlex
+
+    # Lazily ensure the sandbox env is created before trying to read from it.
+    # This mirrors what :func:`terminal_tool.terminal_tool` does: it creates
+    # the environment on the first command.  Without this, ``vision_analyze``
+    # on a remote path under an SSH backend raises "no active sandbox session"
+    # because the SSH connection was never established — only the terminal tool
+    # triggers env creation, and the user's first action may be vision_analyze.
+    if ctx.task_id:
+        try:
+            from tools.terminal_tool import ensure_task_env
+            ensure_task_env(ctx.task_id)
+        except Exception:
+            pass
 
     env = _get_active_env(ctx.task_id)
     if env is None:

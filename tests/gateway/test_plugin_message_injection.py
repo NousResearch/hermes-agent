@@ -226,6 +226,44 @@ async def test_dispatch_rechecks_current_authorization(raises):
 
 
 @pytest.mark.asyncio
+async def test_dispatch_rejects_stored_role_only_authorization(monkeypatch):
+    """A stored adapter role grant must be revalidated against current core auth."""
+    for key in (
+        "DISCORD_ALLOWED_USERS",
+        "DISCORD_ALLOW_ALL_USERS",
+        "GATEWAY_ALLOWED_USERS",
+        "GATEWAY_ALLOW_ALL_USERS",
+    ):
+        monkeypatch.delenv(key, raising=False)
+
+    adapter = MagicMock(spec=BasePlatformAdapter)
+    adapter.handle_message = AsyncMock()
+    entry = _entry()
+    entry.session_key = "agent:main:discord:dm:42"
+    entry.platform = Platform.DISCORD
+    source = entry.origin
+    assert source is not None
+    source.platform = Platform.DISCORD
+    source.role_authorized = True
+
+    runner = _runner(entry)
+    runner.adapters = {Platform.DISCORD: adapter}
+    runner.config = GatewayConfig()
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = False
+    del runner._is_user_authorized
+
+    accepted = await runner._dispatch_plugin_message_injection(
+        session_key=entry.session_key,
+        content="wake up",
+        plugin_id="notify-plugin",
+    )
+
+    assert accepted is False
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_dispatch_stops_when_gateway_drains_during_lookup():
     adapter = SimpleNamespace(handle_message=AsyncMock())
     runner = _runner(_entry(), adapter)

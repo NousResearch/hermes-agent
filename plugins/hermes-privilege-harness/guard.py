@@ -28,7 +28,8 @@ REQUEST_SOCK = os.environ.get("VIP_REQUEST_SOCK", "/var/run/hermes-vip/request.s
 # Every sudo_execute includes HMAC-SHA256(command, secret) as stamp.
 # Daemon verifies the HMAC before executing.
 _stamp_secret: bytes = os.urandom(32)
-_stamps: dict[str, str] = {}  # command[:120] → HMAC hex digest
+_stamps: dict[str, str] = {}
+_nonce: str = ""  # command[:120] → HMAC hex digest
 _secret_registered: bool = False
 
 
@@ -52,8 +53,10 @@ def _register_stamp_secret():
             data = s.recv(mlen)
             resp = json.loads(data.decode())
             if resp.get("status") == "ok":
+                global _nonce, _secret_registered
+                _nonce = resp.get("nonce", "")
                 _secret_registered = True
-                logger.info("stamp secret registered with daemon")
+                logger.info("stamp secret registered nonce=%s", _nonce[:8])
     except Exception as exc:
         logger.warning("failed to register stamp secret: %s", exc)
     finally:
@@ -69,7 +72,7 @@ def _stamp(command: str):
 def _verify(command: str) -> bool:
     """Verify the command was stamped by check(). Returns True and clears stamp."""
     key = command[:120]
-    return _stamps.pop(key, None) is not None
+    return key in _stamps
 
 
 # ── pre_tool_call ──
@@ -117,6 +120,7 @@ def vip_sudo(command: str, reason: str = "") -> str:
         "reason": reason or "privilege request",
         "origin": {"channel": "vip_sudo", "timestamp": time.time()},
         "stamp": _stamps.pop(command[:120], ""),
+        "nonce": _nonce,
     }
     payload = json.dumps(req).encode()
 

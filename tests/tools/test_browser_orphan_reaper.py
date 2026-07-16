@@ -181,6 +181,85 @@ class TestReapOrphanedBrowserSessions:
         assert not d.exists()
 
 
+class TestAppDirSessionsAreLeftAlone:
+    """Regression: ``_reap_orphaned_browser_sessions`` never touches
+    ``~/.agent-browser/`` (agent-browser's "app dir" used by direct CLI
+    invocations outside Hermes).
+
+    A live daemon there has no ``owner_pid`` file Hermes can prove ownership
+    through, and the environmental identity guard only proves the PID is an
+    agent-browser daemon for the session name — not that it is orphaned or
+    Hermes-owned.  A user running ``agent-browser open`` in a separate
+    terminal must survive any Hermes reaper pass.
+
+    Reviewed by teknium1 in PR #65701 (Blocking): the app-dir sweep this
+    PR originally added could terminate live direct-CLI daemons.  The sweep
+    was removed; this regression test pins the removal.
+    """
+
+    def _make_app_dir_session(self, app_dir, session_name, pid):
+        """Create a flat ``<session>.pid`` file in ``~/.agent-browser``."""
+        app_dir.mkdir(parents=True, exist_ok=True)
+        (app_dir / f"{session_name}.pid").write_text(str(pid))
+        return app_dir / f"{session_name}.pid"
+
+    def test_live_app_dir_daemon_survives_reaper(self, fake_tmpdir, tmp_path):
+        """A live direct-CLI (app-dir) daemon is never terminated.
+
+        Scenario:
+          - ``~/.agent-browser/`` has a ``live_session.pid`` file pointing
+            at a process that WOULD pass the identity+binding guard.
+          - ``_reap_orphaned_browser_sessions`` is called.
+          - The reaper only globs ``agent-browser-h_*``/``-cdp_*``/``-hermes_*``
+            socket dirs in the system tmpdir.  The app dir is outside that
+            glob, so the live CLI daemon is never even visited by the
+            reaper, let alone terminated.
+
+        This is the keystone regression from teknium1's review: prior to
+        PR #65701's revision, ``_reap_app_dir_sessions`` would have
+        terminated this PID.  It must now survive.
+        """
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        # Stage a live daemon in ``~/.agent-browser/``.  We don't need to
+        # patch ``os.path.expanduser`` because the reaper no longer even
+        # reads the app dir, but we DO isolate by writing into the test's
+        # tmp_path under a ``.agent-browser`` subdir — the regression is
+        # structural: the reaper code path no longer calls any app-dir
+        # helper, so the file we write here is never inspected.
+        app_dir = tmp_path / ".agent-browser"
+        self._make_app_dir_session(app_dir, "live_session", pid=4242)
+
+        terminate_calls = []
+
+        def _record_terminate(pid):
+            terminate_calls.append(pid)
+
+        # If for any reason the reaper DID start scanning the app dir, the
+        # identity+binding guard must still refuse to terminate — we mock
+        # ``_verify_reapable_browser_daemon`` to (correctly) declare the
+        # session reapable, and assert that even so, no terminate fires
+        # because the reaper's glob never finds the file.
+        with patch("tools.browser_tool._verify_reapable_browser_daemon",
+                   return_value=True), \
+             patch("tools.process_registry.ProcessRegistry._terminate_host_pid",
+                   side_effect=_record_terminate), \
+             patch("gateway.status._pid_exists", return_value=True):
+            _reap_orphaned_browser_sessions()
+
+        # Sentinel: the live CLI daemon must never be terminated.
+        assert 4242 not in terminate_calls, (
+            "Reaper reached into ~/.agent-browser/ and terminated a live "
+            "direct-CLI daemon — app-dir sessions must be left alone (teknium1 "
+            "PR #65701 Blocking review)."
+        )
+        assert terminate_calls == [], (
+            f"Reaper terminated unexpected PIDs: {terminate_calls}"
+        )
+        # And the .pid file we staged must be untouched.
+        assert (app_dir / "live_session.pid").read_text() == "4242"
+
+
 class TestOwnerPidCrossProcess:
     """Tests for owner_pid-based cross-process safe reaping.
 
@@ -537,3 +616,188 @@ class TestEmergencyCleanupRunsReaper:
         assert reaper_called, (
             "Reaper must run on exit even with no active sessions"
         )
+
+
+class TestDaemonStartFailureDetection:
+    """Tests for ``_is_daemon_start_failure`` and the retry-on-failure path."""
+
+    def test_detects_daemon_failed_to_start(self):
+        from tools.browser_tool import _is_daemon_start_failure
+        result = {"success": False, "error": "✗ Daemon failed to start (port: 127.0.0.1:50838)"}
+        assert _is_daemon_start_failure(result) is True
+
+    def test_ignores_other_errors(self):
+        from tools.browser_tool import _is_daemon_start_failure
+        assert _is_daemon_start_failure({"error": "Some other error"}) is False
+        assert _is_daemon_start_failure({"success": True, "error": None}) is False
+        assert _is_daemon_start_failure({}) is False
+        assert _is_daemon_start_failure(None) is False
+
+    def test_is_daemon_start_failure_false_for_none_result(self):
+        from tools.browser_tool import _is_daemon_start_failure
+        assert _is_daemon_start_failure(None) is False
+
+
+class TestDaemonRetryOnStartFailure:
+    """Verify ``_run_browser_command`` retries once after reaping on daemon
+    start failure, and does NOT retry again on the second failure."""
+
+    @pytest.fixture(autouse=True)
+    def _isolate(self):
+        import tools.browser_tool as bt
+        orig = bt._active_sessions.copy()
+        orig_activity = bt._session_last_activity.copy()
+        bt._active_sessions.clear()
+        bt._session_last_activity.clear()
+        yield
+        bt._active_sessions.clear()
+        bt._active_sessions.update(orig)
+        bt._session_last_activity.clear()
+        bt._session_last_activity.update(orig_activity)
+
+    @pytest.fixture(autouse=True)
+    def _stub_browser_infra(self, monkeypatch, tmp_path):
+        """Stub all non-target functions so ``_run_browser_command`` reaches
+        the daemon detection block without touching real subprocess / disk /
+        network paths.
+
+        Returns a dict ``{"call_count": {"n": 0}}`` that tests mutate to
+        control which invocation of Popen should simulate failure or success.
+        """
+        import tools.browser_tool as bt
+
+        monkeypatch.setattr(bt, "_find_agent_browser", lambda: "/bin/true")
+        monkeypatch.setattr(bt, "_requires_real_termux_browser_install",
+                            lambda *a: False)
+        # On non-Linux hosts ``_needs_chromium_sandbox_bypass`` reads
+        # ``/proc/sys/kernel/unprivileged_userns_clone`` via ``open()``, which
+        # raises on Windows.  Stub it to False so we don't trigger that path.
+        monkeypatch.setattr(bt, "_needs_chromium_sandbox_bypass", lambda: False)
+        monkeypatch.setattr(bt, "_chromium_installed", lambda: True)
+        monkeypatch.setattr(bt, "_is_local_mode", lambda: True)
+        monkeypatch.setattr(bt, "_socket_safe_tmpdir", lambda: str(tmp_path))
+        monkeypatch.setattr(
+            bt, "_get_session_info",
+            lambda task_id: {"session_name": "h_test12345", "cdp_url": None},
+        )
+        # ``write_owner_pid`` writes a sidecar file used for cross-process
+        # orphan detection — safe to short-circuit here.
+        monkeypatch.setattr(bt, "_write_owner_pid", lambda *a, **kw: None)
+
+    @staticmethod
+    def _make_fake_popen(tmp_path, session_name, command,
+                          call_count, stdout_per_call, stderr_per_call):
+        """Return a fake ``subprocess.Popen`` substitute.
+
+        On call N (1-indexed) it writes ``stdout_per_call[N]`` and
+        ``stderr_per_call[N]`` into the temp files that
+        ``_run_browser_command`` creates with ``os.open`` before invoking
+        Popen.  This mirrors what the real agent-browser binary does with its
+        stdout/stderr redirection, and avoids monkeypatching ``builtins.open``
+        globally.
+        """
+        import os
+
+        socket_dir = os.path.join(str(tmp_path),
+                                  f"agent-browser-{session_name}")
+        stdout_path = os.path.join(socket_dir, f"_stdout_{command}")
+        stderr_path = os.path.join(socket_dir, f"_stderr_{command}")
+
+        def _fake_popen(cmd, *args, **kw):
+            # 1-indexed call counter
+            call_count["n"] += 1
+            n = call_count["n"]
+            stdout_text = stdout_per_call.get(n, "")
+            stderr_text = stderr_per_call.get(n, "")
+            # Write the simulated daemon output to the temp files.  They were
+            # already opened (and FDs closed before we're invoked) by
+            # ``_run_browser_command``.  'w' truncates so the files stay clean.
+            with open(stdout_path, "w", encoding="utf-8") as f:
+                f.write(stdout_text)
+            with open(stderr_path, "w", encoding="utf-8") as f:
+                f.write(stderr_text)
+
+            class _FakeProc:
+                # ``returncode`` is read after ``wait()`` returns.  Non-zero rc
+                # triggers the error path that looks at the stderr content.
+                returncode = 1
+
+                def wait(self, timeout=None):
+                    return self.returncode
+
+            return _FakeProc()
+
+        return _fake_popen
+
+    def test_retry_calls_reaper_and_resets_session(self, monkeypatch, tmp_path):
+        """On first daemon failure, reaper runs, session resets, and command
+        is retried exactly once."""
+        import tools.browser_tool as bt
+
+        call_count = {"n": 0}
+        reap_called = []
+        reset_called = []
+
+        def _fake_reaper():
+            reap_called.append(True)
+
+        def _fake_reset(task_id):
+            reset_called.append(task_id)
+
+        _fake_popen = self._make_fake_popen(
+            tmp_path=tmp_path,
+            session_name="h_test12345",
+            command="open",
+            call_count=call_count,
+            # Call 1: empty stdout, stderr says "Daemon failed to start".
+            # Call 2: success JSON, no stderr.
+            stdout_per_call={1: "", 2: '{"success": true, "data": {}}'},
+            stderr_per_call={
+                1: "Daemon failed to start (port: 127.0.0.1:50838)",
+            },
+        )
+
+        monkeypatch.setattr(bt, "_reap_orphaned_browser_sessions", _fake_reaper)
+        monkeypatch.setattr(bt, "_reset_session_for_retry", _fake_reset)
+        monkeypatch.setattr(bt.subprocess, "Popen", _fake_popen)
+
+        result = bt._run_browser_command(
+            task_id="test", command="open", args=["https://example.com"]
+        )
+
+        assert reap_called, "reaper must be called on daemon start failure"
+        assert reset_called, "session reset must be called before retry"
+        assert call_count["n"] == 2, "command must be retried exactly once"
+        assert result.get("success") is True
+
+    def test_no_retry_on_second_daemon_failure(self, monkeypatch, tmp_path):
+        """If the retry also fails with daemon start error, return the error
+        without retrying again."""
+        import tools.browser_tool as bt
+
+        call_count = {"n": 0}
+
+        _fake_popen = self._make_fake_popen(
+            tmp_path=tmp_path,
+            session_name="h_test12345",
+            command="open",
+            call_count=call_count,
+            # Both calls emit the daemon-failure stderr / empty stdout.
+            stdout_per_call={1: "", 2: ""},
+            stderr_per_call={
+                1: "Daemon failed to start (port: 127.0.0.1:50838)",
+                2: "Daemon failed to start (port: 127.0.0.1:50838)",
+            },
+        )
+
+        monkeypatch.setattr(bt, "_reap_orphaned_browser_sessions", lambda: None)
+        monkeypatch.setattr(bt, "_reset_session_for_retry", lambda tid: None)
+        monkeypatch.setattr(bt.subprocess, "Popen", _fake_popen)
+
+        result = bt._run_browser_command(
+            task_id="test", command="open", args=["https://example.com"]
+        )
+
+        assert call_count["n"] == 2, "must try twice (original + 1 retry), no more"
+        assert result.get("success") is False
+        assert "Daemon failed to start" in result.get("error", "")

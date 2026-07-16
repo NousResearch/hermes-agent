@@ -1650,8 +1650,8 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
         socket_base_l and socket_base_l in cmdline)
     if not bound:
         try:
-            env_dir = (proc.environ() or {}).get(
-                "AGENT_BROWSER_SOCKET_DIR", "")
+            env = proc.environ() or {}
+            env_dir = env.get("AGENT_BROWSER_SOCKET_DIR", "")
             bound = bool(env_dir) and os.path.normpath(env_dir) == \
                 os.path.normpath(socket_dir)
         except (psutil.AccessDenied, psutil.NoSuchProcess, OSError):
@@ -1667,6 +1667,19 @@ def _verify_reapable_browser_daemon(daemon_pid: int, socket_dir: str,
         return False
 
     return True
+
+
+def _is_daemon_start_failure(result: Dict[str, Any]) -> bool:
+    """Detect the ``Daemon failed to start`` error pattern from agent-browser.
+
+    The native agent-browser binary emits this message to stderr when the
+    daemon cannot bind its TCP port (Windows) or Unix socket — most commonly
+    because a zombie daemon from a previous crashed Hermes process is still
+    holding the port.  The error reaches ``_run_browser_command`` as a
+    non-zero return code with the message in ``result["error"]``.
+    """
+    error = (result or {}).get("error", "")
+    return bool(error and "Daemon failed to start" in error)
 
 
 def _reap_orphaned_browser_sessions():
@@ -1703,6 +1716,9 @@ def _reap_orphaned_browser_sessions():
     socket_dirs += glob.glob(os.path.join(tmpdir, "agent-browser-hermes_*"))
 
     if not socket_dirs:
+        # No Hermes-managed session dirs to scan.  Direct CLI invocations
+        # outside Hermes use ``~/.agent-browser/`` but their daemons are
+        # not Hermes-owned — we leave them alone (see PR #65701 review).
         return
 
     # Build set of session_names currently tracked by this process (fallback path)
@@ -1791,7 +1807,8 @@ def _reap_orphaned_browser_sessions():
         shutil.rmtree(socket_dir, ignore_errors=True)
 
     if reaped:
-        logger.info("Reaped %d orphaned browser session(s) from previous run(s)", reaped)
+        logger.info("Reaped %d orphaned browser session(s) from previous run(s)",
+                     reaped)
 
 
 def _browser_cleanup_thread_worker():
@@ -2297,12 +2314,38 @@ def _extract_screenshot_path_from_text(text: str) -> Optional[str]:
     return None
 
 
+def _reset_session_for_retry(task_id: str) -> None:
+    """Drop a browser session from tracking so a daemon-start retry can
+    regenerate it with a fresh session name and socket dir.
+
+    Called between the failed ``open``/``goto`` and the retry when the reaper
+    has killed the zombie that was holding the port.  Without this reset,
+    ``_get_session_info`` would return the cached (dead) session info
+    pointing at the same socket dir whose daemon just failed to start.
+    """
+    with _cleanup_lock:
+        session_info = _active_sessions.pop(task_id, None)
+        _session_last_activity.pop(task_id, None)
+        _last_active_session_key.pop(task_id, None)
+
+    if session_info:
+        session_name = session_info.get("session_name", "")
+        if session_name:
+            socket_dir = os.path.join(
+                _socket_safe_tmpdir(),
+                f"agent-browser-{session_name}",
+            )
+            if os.path.exists(socket_dir):
+                shutil.rmtree(socket_dir, ignore_errors=True)
+
+
 def _run_browser_command(
     task_id: str,
     command: str,
     args: List[str] = None,
     timeout: Optional[int] = None,
     _engine_override: Optional[str] = None,
+    _daemon_retried: bool = False,
 ) -> Dict[str, Any]:
     """
     Run an agent-browser CLI command using our pre-created Browserbase session.
@@ -2316,6 +2359,8 @@ def _run_browser_command(
         _engine_override: Force a specific engine for this call only.  Used
                           internally by the Lightpanda fallback to retry with
                           Chrome without touching global state.
+        _daemon_retried: Internal guard against retrying more than once on a
+                         daemon start failure.  Caller should not set this.
 
     Returns:
         Parsed JSON response from agent-browser
@@ -2601,6 +2646,38 @@ def _run_browser_command(
     except Exception as e:
         logger.warning("browser '%s' exception: %s", command, e, exc_info=True)
         result = {"success": False, "error": str(e)}
+
+    # --- Daemon start failure: reap zombies and retry once -----------
+    # When a previous Hermes process crashed, its agent-browser daemon may
+    # still be alive, holding the TCP port (Windows) or Unix socket that the
+    # new session's daemon needs to bind.  The orphan reaper running in the
+    # background cleanup thread handles this on a best-effort basis, but it
+    # races with the first browser command — the ``open``/``goto`` call may
+    # hit the EADDRINUSE before the reaper has had a chance to sweep.
+    #
+    # Detect the "Daemon failed to start" error, synchronously run the reaper
+    # to kill the zombie, then retry the command exactly once.  This is
+    # Windows-specific in practice (Unix uses domain sockets and gets
+    # ``EADDRINUSE`` far less often because session names are random UUIDs),
+    # but the fix is platform-agnostic and harmless on Unix.
+    if _is_daemon_start_failure(result) and not _daemon_retried:
+        logger.info(
+            "browser '%s' got daemon start failure; running reaper and "
+            "retrying (task=%s)", command, task_id,
+        )
+        try:
+            _reap_orphaned_browser_sessions()
+        except Exception as reap_err:
+            logger.warning("Reaper on daemon failure failed: %s", reap_err)
+        # Close and recreate the session so the next attempt starts fresh.
+        # The zombie's port may have been freed by the reaper; the new daemon
+        # for this session name can now bind it.
+        _reset_session_for_retry(task_id)
+        return _run_browser_command(
+            task_id, command, args, timeout,
+            _engine_override=_engine_override,
+            _daemon_retried=True,
+        )
 
     # --- Lightpanda automatic Chrome fallback ---
     # If engine is lightpanda and the result looks broken, retry with Chrome.

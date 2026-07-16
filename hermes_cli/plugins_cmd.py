@@ -246,6 +246,38 @@ def _resolve_subdir_within(clone_root: Path, subdir: str) -> Path:
     return candidate
 
 
+def _has_plugin_marker(path: Path) -> bool:
+    """Return ``True`` if *path* has a plugin-y file at root.
+
+    Checks for ``plugin.yaml``, ``plugin.yml``, or ``__init__.py`` — any of
+    which is enough for the installer / discovery system to recognise a
+    plugin directory.
+    """
+    return any(
+        (path / name).exists()
+        for name in ("plugin.yaml", "plugin.yml", "__init__.py")
+    )
+
+
+def _find_sole_plugin_subdir(clone_root: Path) -> Optional[Path]:
+    """Scan one level deep in *clone_root* for a single candidate plugin dir.
+
+    Returns the subdirectory path if **exactly one** child directory contains
+    a plugin marker (``plugin.yaml`` / ``plugin.yml`` / ``__init__.py``).
+    Returns ``None`` when there are zero or multiple candidates — the caller
+    should fall back to treating the repo root as the plugin directory.
+    """
+    candidates: list[Path] = []
+    for child in sorted(clone_root.iterdir()):
+        if not child.is_dir():
+            continue
+        if child.name.startswith((".", "_")):
+            continue
+        if _has_plugin_marker(child):
+            candidates.append(child)
+    return candidates[0] if len(candidates) == 1 else None
+
+
 def _repo_name_from_url(url: str) -> str:
     """Extract the repo name from a Git URL for the plugin directory name."""
     # Strip trailing .git and slashes
@@ -493,6 +525,17 @@ def _install_plugin_core(identifier: str, *, force: bool) -> tuple[Path, dict, s
             tmp_target = _resolve_subdir_within(tmp_clone, subdir)
         else:
             tmp_target = tmp_clone
+            # Auto-detect: if the repo root has no plugin markers, scan one
+            # level deep for exactly one subdirectory that looks like a
+            # plugin and install that instead.
+            if not _has_plugin_marker(tmp_clone) and tmp_clone.is_dir():
+                candidate = _find_sole_plugin_subdir(tmp_clone)
+                if candidate is not None:
+                    tmp_target = candidate
+                    subdir = str(candidate.relative_to(tmp_clone))
+                    logger.info(
+                        "Auto-detected plugin in subdirectory '%s'", subdir
+                    )
 
         manifest = _read_manifest(tmp_target)
         plugin_name = manifest.get("name") or (

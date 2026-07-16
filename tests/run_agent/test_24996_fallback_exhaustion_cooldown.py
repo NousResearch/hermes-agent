@@ -130,3 +130,54 @@ class TestExhaustionArmsCooldown:
             assert agent._try_activate_fallback() is False
             cooldown = getattr(agent, "_rate_limited_until", 0)
         assert cooldown == far_future
+
+    def test_exhaustion_does_not_extend_active_cooldown(self):
+        """Repeated calls on an already-exhausted chain must not re-arm the
+        exhaustion cooldown while it is still active.  This prevents a
+        sub-window retry loop from permanently locking out the primary
+        restore (#57582)."""
+        fbs = [
+            {"provider": "openai", "model": "gpt-4o"},
+            {"provider": "zai", "model": "glm-4.7"},
+        ]
+        agent = _make_agent(fallback_model=fbs)
+        agent._rate_limited_until = 0
+        frozen = 1_000.0
+
+        # Walk to exhaustion and arm the cooldown.
+        with (
+            patch("agent.chat_completion_helpers.time.monotonic", return_value=frozen),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(), "resolved"),
+            ),
+        ):
+            assert agent._try_activate_fallback() is True
+            assert agent._try_activate_fallback() is True
+            assert agent._try_activate_fallback() is False
+        first_cooldown = getattr(agent, "_rate_limited_until", 0)
+        assert first_cooldown == frozen + _FALLBACK_EXHAUSTED_COOLDOWN_S
+
+        # Still within the cooldown window -- must NOT extend.
+        still_in_window = frozen + _FALLBACK_EXHAUSTED_COOLDOWN_S - 1.0
+        with (
+            patch("agent.chat_completion_helpers.time.monotonic", return_value=still_in_window),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(), "resolved"),
+            ),
+        ):
+            assert agent._try_activate_fallback() is False
+        assert getattr(agent, "_rate_limited_until", 0) == first_cooldown
+
+        # After cooldown expires -- a new window IS armed.
+        after_expiry = frozen + _FALLBACK_EXHAUSTED_COOLDOWN_S + 0.5
+        with (
+            patch("agent.chat_completion_helpers.time.monotonic", return_value=after_expiry),
+            patch(
+                "agent.auxiliary_client.resolve_provider_client",
+                return_value=(_mock_client(), "resolved"),
+            ),
+        ):
+            assert agent._try_activate_fallback() is False
+        assert getattr(agent, "_rate_limited_until", 0) == after_expiry + _FALLBACK_EXHAUSTED_COOLDOWN_S

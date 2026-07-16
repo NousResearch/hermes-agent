@@ -240,7 +240,7 @@ def test_agy_transport_uses_print_mode_and_strips_default_acp_args(monkeypatch, 
     assert captured["kwargs"]["env"]["HOME"]
 
 
-def test_agy_transport_rejects_agentapi_args(tmp_path):
+def test_agy_transport_selects_agentapi_mode_for_agentapi_args(tmp_path):
     client = CopilotACPClient(
         api_key="copilot-acp",
         base_url="acp://copilot",
@@ -249,5 +249,46 @@ def test_agy_transport_rejects_agentapi_args(tmp_path):
         acp_cwd=str(tmp_path),
     )
 
-    with pytest.raises(RuntimeError, match="print mode"):
+    assert client._transport_mode == "antigravity-agentapi"
+
+
+def test_agentapi_mode_requires_antigravity_env(monkeypatch, tmp_path):
+    monkeypatch.delenv("ANTIGRAVITY_LS_ADDRESS", raising=False)
+    monkeypatch.delenv("ANTIGRAVITY_PROJECT_ID", raising=False)
+
+    client = CopilotACPClient(
+        api_key="copilot-acp",
+        base_url="acp://copilot",
+        acp_command="agy",
+        acp_args=["agentapi"],
+        acp_cwd=str(tmp_path),
+    )
+
+    with pytest.raises(RuntimeError, match="ANTIGRAVITY_LS_ADDRESS"):
         client._run_prompt("hello", timeout_seconds=5)
+
+
+def test_close_resets_agentapi_chat_state_without_active_process(tmp_path):
+    class _Transport:
+        def __init__(self) -> None:
+            self.reset_calls = 0
+
+        def reset_conversation(self) -> None:
+            self.reset_calls += 1
+
+    client = CopilotACPClient(
+        api_key="copilot-acp",
+        base_url="acp://copilot",
+        acp_command="agy",
+        acp_args=["agentapi"],
+        acp_cwd=str(tmp_path),
+    )
+    transport = _Transport()
+    client._agentapi_client = transport
+    client._agentapi_previous_input_fingerprints = ("fingerprint",)
+
+    client.close()
+
+    assert client.is_closed is True
+    assert client._agentapi_previous_input_fingerprints == ()
+    assert transport.reset_calls == 1

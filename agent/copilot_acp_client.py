@@ -1,7 +1,8 @@
 """OpenAI-compatible shim for external autonomous CLI workers.
 
 Primarily this forwards Hermes requests to `copilot --acp --stdio`, but it also
-supports Google Antigravity CLI (`agy`) in one-shot print mode. Each request is
+supports Google Antigravity CLI (`agy`) — in `agy agentapi` conversation mode
+when the ACP args ask for it, otherwise in one-shot print mode. Each request is
 converted into a single prompt and the external CLI's final text reply is mapped
 back into the minimal shape Hermes expects from an OpenAI client.
 """
@@ -21,6 +22,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+from agent.antigravity_agentapi_client import AntigravityAgentAPIClient, is_agentapi_args
 from agent.file_safety import get_read_block_error, is_write_denied
 from agent.redact import redact_sensitive_text
 
@@ -83,19 +85,23 @@ def _is_antigravity_command(command: str | None) -> bool:
     return name in {"agy", "agy.exe", "antigravity", "antigravity.exe"}
 
 
+def _resolve_transport_mode(command: str | None, args: list[str]) -> str:
+    if not _is_antigravity_command(command):
+        return "copilot-acp"
+    # `agy agentapi` drives a real conversation; plain `agy` stays on the
+    # backward-compatible one-shot print path.
+    if is_agentapi_args(args):
+        return "antigravity-agentapi"
+    return "antigravity-print"
+
+
 def _sanitize_antigravity_args(args: list[str]) -> list[str]:
     cleaned: list[str] = []
     skip_exact = {"--acp", "--stdio", "-p", "--print"}
     for arg in args:
         token = str(arg).strip()
-        lower = token.lower()
-        if lower in skip_exact:
+        if token.lower() in skip_exact:
             continue
-        if lower == "agentapi":
-            raise RuntimeError(
-                "Hermes Antigravity subagent transport currently supports agy print mode, "
-                "not `agy agentapi`. Omit ACP default args and let Hermes call `agy -p` for you."
-            )
         cleaned.append(token)
     return cleaned
 
@@ -263,6 +269,40 @@ def _render_message_content(content: Any) -> str:
     return str(content).strip()
 
 
+def _normalize_for_fingerprint(value: Any) -> Any:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    if isinstance(value, dict):
+        return {
+            str(key): _normalize_for_fingerprint(val)
+            for key, val in sorted(value.items(), key=lambda item: str(item[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_normalize_for_fingerprint(item) for item in value]
+    if isinstance(value, set):
+        return sorted(_normalize_for_fingerprint(item) for item in value)
+    return repr(value)
+
+
+def _message_fingerprint(message: dict[str, Any]) -> str:
+    return json.dumps(
+        _normalize_for_fingerprint(message),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+
+
+def _is_prefix(prefix: tuple[str, ...], full: tuple[str, ...]) -> bool:
+    if len(prefix) > len(full):
+        return False
+    return full[: len(prefix)] == prefix
+
+
+def _message_role(message: dict[str, Any]) -> str:
+    return str(message.get("role") or "").strip().lower()
+
+
 def _extract_tool_calls_from_text(text: str) -> tuple[list[SimpleNamespace], str]:
     if not isinstance(text, str) or not text.strip():
         return [], ""
@@ -384,16 +424,15 @@ class CopilotACPClient:
         self._default_headers = dict(default_headers or {})
         self._acp_command = acp_command or command or _resolve_command()
         self._acp_args = list(acp_args or args or _resolve_args())
-        self._transport_mode = (
-            "antigravity-print"
-            if _is_antigravity_command(self._acp_command)
-            else "copilot-acp"
-        )
+        self._transport_mode = _resolve_transport_mode(self._acp_command, self._acp_args)
         self._acp_cwd = str(Path(acp_cwd or os.getcwd()).resolve())
+        self._agentapi_client: AntigravityAgentAPIClient | None = None
         self.chat = _ACPChatNamespace(self)
         self.is_closed = False
         self._active_process: subprocess.Popen[str] | None = None
         self._active_process_lock = threading.Lock()
+        self._agentapi_chat_state_lock = threading.RLock()
+        self._agentapi_previous_input_fingerprints: tuple[str, ...] = ()
 
     def close(self) -> None:
         proc: subprocess.Popen[str] | None
@@ -401,16 +440,18 @@ class CopilotACPClient:
             proc = self._active_process
             self._active_process = None
         self.is_closed = True
-        if proc is None:
-            return
         try:
-            proc.terminate()
-            proc.wait(timeout=2)
-        except Exception:
-            try:
-                proc.kill()
-            except Exception:
-                pass
+            if proc is not None:
+                try:
+                    proc.terminate()
+                    proc.wait(timeout=2)
+                except Exception:
+                    try:
+                        proc.kill()
+                    except Exception:
+                        pass
+        finally:
+            self._reset_agentapi_chat_state()
 
     def _create_chat_completion(
         self,
@@ -422,12 +463,6 @@ class CopilotACPClient:
         tool_choice: Any = None,
         **_: Any,
     ) -> Any:
-        prompt_text = _format_messages_as_prompt(
-            messages or [],
-            model=model,
-            tools=tools,
-            tool_choice=tool_choice,
-        )
         # Normalise timeout: run_agent.py may pass an httpx.Timeout object
         # (used natively by the OpenAI SDK) rather than a plain float.
         if timeout is None:
@@ -443,11 +478,25 @@ class CopilotACPClient:
             ]
             _numeric = [float(v) for v in _candidates if isinstance(v, (int, float))]
             _effective_timeout = max(_numeric) if _numeric else _DEFAULT_TIMEOUT_SECONDS
-
-        response_text, reasoning_text = self._run_prompt(
-            prompt_text,
-            timeout_seconds=_effective_timeout,
-        )
+        if self._transport_mode == "antigravity-agentapi":
+            response_text, reasoning_text = self._run_agentapi_chat_completion(
+                model=model,
+                messages=messages or [],
+                timeout_seconds=_effective_timeout,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
+        else:
+            prompt_text = _format_messages_as_prompt(
+                messages or [],
+                model=model,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
+            response_text, reasoning_text = self._run_prompt(
+                prompt_text,
+                timeout_seconds=_effective_timeout,
+            )
 
         tool_calls, cleaned_text = _extract_tool_calls_from_text(response_text)
 
@@ -473,6 +522,13 @@ class CopilotACPClient:
         )
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
+        if self._transport_mode == "antigravity-agentapi":
+            text = self._antigravity_agentapi_client().send_prompt(
+                prompt_text,
+                timeout_seconds=timeout_seconds,
+            )
+            return text, ""
+
         if self._transport_mode == "antigravity-print":
             return self._run_antigravity_print_prompt(
                 prompt_text,
@@ -637,6 +693,82 @@ class CopilotACPClient:
             return "".join(text_parts), "".join(reasoning_parts)
         finally:
             self.close()
+
+    def _run_agentapi_chat_completion(
+        self,
+        *,
+        model: str | None,
+        messages: list[dict[str, Any]],
+        timeout_seconds: float,
+        tools: list[dict[str, Any]] | None,
+        tool_choice: Any,
+    ) -> tuple[str, str]:
+        current_fingerprints = tuple(_message_fingerprint(message) for message in messages)
+
+        with self._agentapi_chat_state_lock:
+            transport = self._antigravity_agentapi_client()
+            prompt_messages = messages
+            reset_before_send = False
+            previous_fingerprints = self._agentapi_previous_input_fingerprints
+
+            if previous_fingerprints:
+                if _is_prefix(previous_fingerprints, current_fingerprints):
+                    delta_start = len(previous_fingerprints)
+                    prompt_messages = list(messages[delta_start:])
+                    if prompt_messages and _message_role(prompt_messages[0]) == "assistant":
+                        prompt_messages = prompt_messages[1:]
+                    if not prompt_messages:
+                        reset_before_send = True
+                        prompt_messages = messages
+                else:
+                    reset_before_send = True
+
+            if reset_before_send:
+                self._reset_agentapi_chat_state_locked(reset_transport=True)
+
+            prompt_text = _format_messages_as_prompt(
+                prompt_messages,
+                model=model,
+                tools=tools,
+                tool_choice=tool_choice,
+            )
+
+            try:
+                response_text = transport.send_prompt(
+                    prompt_text,
+                    timeout_seconds=timeout_seconds,
+                )
+            except Exception:
+                self._reset_agentapi_chat_state_locked(reset_transport=True)
+                raise
+
+            self._agentapi_previous_input_fingerprints = current_fingerprints
+            return response_text, ""
+
+    def _antigravity_agentapi_client(self) -> AntigravityAgentAPIClient:
+        """The agentapi transport, cached so later turns reuse the conversation."""
+
+        if self._agentapi_client is None:
+            self._agentapi_client = AntigravityAgentAPIClient(
+                command=self._acp_command,
+                args=self._acp_args,
+                cwd=self._acp_cwd,
+                env_factory=_build_subprocess_env,
+            )
+        return self._agentapi_client
+
+    def _reset_agentapi_chat_state(self) -> None:
+        with self._agentapi_chat_state_lock:
+            self._reset_agentapi_chat_state_locked(reset_transport=True)
+
+    def _reset_agentapi_chat_state_locked(self, *, reset_transport: bool) -> None:
+        self._agentapi_previous_input_fingerprints = ()
+        if not reset_transport:
+            return
+        transport = self._agentapi_client
+        reset_conversation = getattr(transport, "reset_conversation", None)
+        if callable(reset_conversation):
+            reset_conversation()
 
     def _run_antigravity_print_prompt(
         self,

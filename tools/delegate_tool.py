@@ -2884,7 +2884,11 @@ DELEGATE_TASK_SCHEMA = {
                         "acp_args": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "Per-task ACP args override. Leave empty unless acp_command is set.",
+                            "description": (
+                                "Per-task external CLI args override. For Antigravity, use "
+                                "['agentapi'] for the persistent conversation transport or [] "
+                                "for one-shot print mode. Leave empty unless acp_command is set."
+                            ),
                         },
                         "role": {
                             "type": "string",
@@ -2909,9 +2913,11 @@ DELEGATE_TASK_SCHEMA = {
                 "description": (
                     "Override external agent command for child agents (e.g. 'copilot' or 'agy'). "
                     "When set, children use an external CLI transport instead of inheriting "
-                    "the parent's transport. Requires a compatible CLI "
-                    "(currently GitHub Copilot CLI via 'copilot --acp --stdio', and Antigravity CLI via 'agy -p'). "
-                    "See agent/copilot_acp_client.py for the implementation. "
+                    "the parent's transport. Supported local paths include GitHub Copilot CLI "
+                    "via 'copilot --acp --stdio' and Antigravity CLI via either persistent "
+                    "'agy agentapi' or one-shot 'agy -p'. "
+                    "See agent/copilot_acp_client.py for the compatibility shim and "
+                    "agent/antigravity_agentapi_client.py for the conversation transport. "
                     "IMPORTANT: Do NOT set this unless the user has explicitly told you "
                     "a specific compatible CLI is installed and configured. "
                     "Leave empty to use the parent's default transport (Hermes subagents)."
@@ -2921,9 +2927,10 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": (
-                    "Arguments for the ACP command (default: ['--acp', '--stdio']). "
-                    "Only used when acp_command is set. "
-                    "Leave empty unless acp_command is explicitly provided."
+                    "Arguments for the external CLI transport. Copilot defaults to "
+                    "['--acp', '--stdio']; Antigravity uses ['agentapi'] for the "
+                    "persistent conversation transport and [] for one-shot print mode. "
+                    "Only used when acp_command is set."
                 ),
             },
         },

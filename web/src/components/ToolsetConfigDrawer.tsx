@@ -2,11 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ExternalLink, Loader2, Terminal, X } from "lucide-react";
 import { api } from "@/lib/api";
-import type {
-  ToolsetConfig,
-  ToolsetInfo,
-  ToolsetProvider,
-} from "@/lib/api";
+import type { ToolsetConfig, ToolsetInfo, ToolsetProvider } from "@/lib/api";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Input } from "@nous-research/ui/ui/components/input";
@@ -35,7 +31,12 @@ interface Props {
  * the toolset on/off, pick a provider, enter API keys, and run a provider's
  * post-setup install hook (npm/pip/binary) with a live log tail.
  */
-export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Props) {
+export function ToolsetConfigDrawer({
+  toolset,
+  profile,
+  onClose,
+  onChanged,
+}: Props) {
   const { format, t } = useI18n();
   const { toast, showToast } = useToast();
   const [config, setConfig] = useState<ToolsetConfig | null>(null);
@@ -132,10 +133,10 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
       setEnabled(next);
       showToast(
         format(
-          next
-            ? t.toolsetConfig.enabledNamed
-            : t.toolsetConfig.disabledNamed,
-          { name: toolset.label || toolset.name },
+          next ? t.toolsetConfig.enabledNamed : t.toolsetConfig.disabledNamed,
+          {
+            name: toolset.label || toolset.name,
+          },
         ),
         "success",
       );
@@ -223,6 +224,7 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
   };
 
   const labelText = toolset.label?.trim() || toolset.name;
+  const platformText = toolset.platform_label?.trim() || toolset.platform;
 
   return createPortal(
     <div
@@ -265,12 +267,18 @@ export function ToolsetConfigDrawer({ toolset, profile, onClose, onChanged }: Pr
               checked={enabled}
               onCheckedChange={(v) => void handleToggle(v)}
               disabled={toggling}
-              aria-label={t.toolsetConfig.enableToolset}
+              aria-label={format(t.toolsetConfig.enableToolsetForPlatform, {
+                platform: platformText,
+              })}
             />
             <span className="text-xs text-muted-foreground">
               {enabled
-                ? t.toolsetConfig.enabledForAgent
-                : t.toolsetConfig.disabled}
+                ? format(t.toolsetConfig.enabledForPlatform, {
+                    platform: platformText,
+                  })
+                : format(t.toolsetConfig.disabledForPlatform, {
+                    platform: platformText,
+                  })}
             </span>
           </div>
         </header>

@@ -436,6 +436,12 @@ export const en: Translations = {
     failedToRestart: "Failed to restart: {error}",
     failedToSave: "Failed to save: {error}",
     fixHighlightedFields: "Fix the highlighted fields before saving.",
+    invalidTelegramBotToken:
+      "Paste the complete token from @BotFather (for example, 123456789:ABC…).",
+    invalidTelegramUserId: "{value} is not a numeric Telegram user ID.",
+    invalidSlackTokenPrefix: "{field} must start with {prefix}",
+    invalidSlackMemberId:
+      "{value} does not look like a Slack member ID. Use IDs like U01ABC2DEF3.",
     gatewayNotRunning:
       "The gateway is not running. Configure channels here, then start the gateway with {command} (or the Restart button above).",
     gatewayRestarting: "Gateway restarting...",
@@ -449,6 +455,19 @@ export const en: Translations = {
     saveAndEnable: "Save & enable",
     saved: "{name} saved",
     setupGuide: "Setup guide",
+    telegramManualTitle: "Use your own Telegram bot",
+    telegramBotFatherGuide: "BotFather guide",
+    telegramManualIntro:
+      "Connect a bot you already own, or create one in Telegram before filling in this form.",
+    telegramManualCreateBot:
+      "Open @BotFather, send /newbot, and follow its prompts.",
+    telegramManualCopyToken: "Copy the complete bot token BotFather gives you.",
+    telegramManualFindUserId:
+      "Message @userinfobot to find your numeric Telegram user ID, then add it below for immediate access.",
+    telegramOpenBotFather: "Open @BotFather",
+    telegramFindUserId: "Find my user ID",
+    telegramPairingFallback:
+      "You can leave allowed users blank. Hermes will then send new DM users a code that you approve from the Pairing page.",
     test: "Test",
     onboarding: {
       add: "Add",
@@ -485,6 +504,22 @@ export const en: Translations = {
       selfChatMode: "Self-chat",
       setUpWithQr: "Set up with QR",
       starting: "Starting…",
+      recommended: "recommended",
+      telegramChooseMethod: "Choose how to connect your Telegram bot",
+      telegramChooseMethodHint:
+        "Both options connect a bot you control and save its credentials only to this Hermes installation.",
+      telegramQuickSetup: "Quick setup",
+      telegramQuickSetupHint:
+        "Scan a QR code and confirm in Telegram. Hermes creates the bot and detects your Telegram user ID automatically.",
+      telegramCreateWithQr: "Create with QR",
+      telegramOwnBot: "Use your own bot",
+      telegramOwnBotHint:
+        "Create a bot with @BotFather, or connect one you already have, by entering its token and choosing who can use it.",
+      telegramManualSetup: "Manual setup",
+      telegramConfiguredReplaceHint:
+        "Telegram credentials are already configured. A new QR setup or bot token will replace the current bot when you save.",
+      telegramFinishQrFirst:
+        "Finish or cancel the current QR setup before switching methods.",
       telegramAddAtLeastOne: "Add at least one Telegram user ID.",
       telegramPairingExpired:
         "Telegram pairing expired. Start a new QR setup to try again.",
@@ -1179,8 +1214,11 @@ export const en: Translations = {
     error: "Error: {error}",
     nameRequired: "Name required",
     urlRequired: "URL required",
+    bearerTokenRequired: "Bearer token required",
     commandRequired: "Command required",
+    invalidServer: "Invalid MCP server",
     added: "Added ✓",
+    addedOAuth: "Added — authenticate with OAuth",
     addFailed: "Failed to add: {error}",
     toolsFound: "{name}: {count} tool(s)",
     failed: "Failed",
@@ -1203,6 +1241,19 @@ export const en: Translations = {
     command: "Command",
     args: "Args",
     environment: "Environment (KEY=VALUE per line)",
+    authentication: "Authentication",
+    authNone: "None",
+    bearerToken: "Bearer token",
+    bearerTokenPlaceholder: "Token or Bearer token",
+    bearerTokenStorageHint:
+      "Stored in this profile's .env; config.yaml keeps only an environment-variable reference.",
+    oauthAddHint:
+      "Add the server, then use Authenticate. Hermes opens the OAuth browser on the machine running the Dashboard backend.",
+    oauthComplete: "{name}: OAuth authentication complete",
+    oauthFailed: "{name}: {error}",
+    oauthError: "OAuth error: {error}",
+    authenticateWithOAuth: "Authenticate with OAuth",
+    bearerAuth: "bearer",
     adding: "Adding…",
     add: "Add",
     installTitle: "Install {name}",
@@ -1307,8 +1358,6 @@ export const en: Translations = {
       mcp: "MCPs",
       review: "Review",
     },
-    mcpNameRequired: "MCP server needs a name",
-    mcpEndpointRequired: "Give the MCP server a URL or a command",
     invalidName: "Invalid profile name (lowercase, digits, - and _)",
     created: 'Profile "{name}" created',
     createdInstalling:
@@ -1339,10 +1388,13 @@ export const en: Translations = {
     removeNamed: "Remove {name}",
     mcpHint:
       "Add MCP servers for this profile. HTTP servers take a URL; stdio servers take a command and arguments.",
+    mcpConfigured: "{count} configured",
     serverName: "Server name",
-    serverUrl: "URL (https://…/mcp)",
-    serverCommand: "Command (e.g. npx)",
-    serverArgs: "Args (space-separated)",
+    serverNamePlaceholder: "e.g. project-tools",
+    bearerTokenStorageHint:
+      "The token is saved with this profile's MCP configuration.",
+    oauthAfterCreateHint:
+      "Create the profile first, then complete OAuth from the MCP page.",
     addServer: "Add server",
     remove: "Remove",
     name: "Name",
@@ -1381,9 +1433,9 @@ export const en: Translations = {
     close: "Close",
     active: "Active",
     inactive: "Inactive",
-    enableToolset: "Enable toolset",
-    enabledForAgent: "Enabled for the agent",
-    disabled: "Disabled",
+    enableToolsetForPlatform: "Enable toolset for {platform}",
+    enabledForPlatform: "Enabled for {platform}",
+    disabledForPlatform: "Disabled for {platform}",
     noBackends:
       "This toolset has no configurable backends — toggle it on or off above. It works with no provider selection or API keys.",
     noProviders: "No providers are available for this toolset in this install.",

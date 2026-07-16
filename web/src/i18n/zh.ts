@@ -427,6 +427,12 @@ export const zh: TranslationOverlay = {
     failedToRestart: "重启失败：{error}",
     failedToSave: "保存失败：{error}",
     fixHighlightedFields: "请先修正标出的字段，再保存。",
+    invalidTelegramBotToken:
+      "请粘贴 @BotFather 提供的完整令牌（例如 123456789:ABC…）。",
+    invalidTelegramUserId: "{value} 不是有效的 Telegram 数字用户 ID。",
+    invalidSlackTokenPrefix: "{field} 必须以 {prefix} 开头",
+    invalidSlackMemberId:
+      "{value} 不是有效的 Slack 成员 ID。请使用类似 U01ABC2DEF3 的 ID。",
     gatewayNotRunning:
       "网关未运行。你可以先在这里配置渠道，然后通过 {command} 启动网关，或使用上方的重启按钮。",
     gatewayRestarting: "网关正在重启…",
@@ -440,6 +446,19 @@ export const zh: TranslationOverlay = {
     saveAndEnable: "保存并启用",
     saved: "{name} 已保存",
     setupGuide: "设置指南",
+    telegramManualTitle: "使用你自己的 Telegram 机器人",
+    telegramBotFatherGuide: "BotFather 指南",
+    telegramManualIntro:
+      "连接你已有的机器人，或先在 Telegram 中创建机器人，再填写此表单。",
+    telegramManualCreateBot:
+      "打开 @BotFather，发送 /newbot，并按照提示完成创建。",
+    telegramManualCopyToken: "复制 BotFather 提供的完整机器人令牌。",
+    telegramManualFindUserId:
+      "向 @userinfobot 发送消息以获取你的 Telegram 数字用户 ID，然后在下方添加，即可立即访问。",
+    telegramOpenBotFather: "打开 @BotFather",
+    telegramFindUserId: "查找我的用户 ID",
+    telegramPairingFallback:
+      "允许的用户可以留空。之后新的私信用户会收到配对码，你可以在「配对」页面批准。",
     test: "测试",
     onboarding: {
       add: "添加",
@@ -474,6 +493,21 @@ export const zh: TranslationOverlay = {
       selfChatMode: "给自己发消息",
       setUpWithQr: "通过二维码设置",
       starting: "正在启动…",
+      recommended: "推荐",
+      telegramChooseMethod: "选择 Telegram 机器人的连接方式",
+      telegramChooseMethodHint:
+        "两种方式都会连接由你控制的机器人，并且只把凭据保存到当前 Hermes 安装中。",
+      telegramQuickSetup: "快速设置",
+      telegramQuickSetupHint:
+        "扫描二维码并在 Telegram 中确认。Hermes 会创建机器人并自动识别你的 Telegram 用户 ID。",
+      telegramCreateWithQr: "通过二维码创建",
+      telegramOwnBot: "使用你自己的机器人",
+      telegramOwnBotHint:
+        "使用 @BotFather 创建机器人，或输入现有机器人的令牌，并选择允许使用它的用户。",
+      telegramManualSetup: "手动设置",
+      telegramConfiguredReplaceHint:
+        "已配置 Telegram 凭据。保存新的二维码设置或机器人令牌时，会替换当前机器人。",
+      telegramFinishQrFirst: "切换设置方式前，请先完成或取消当前二维码设置。",
       telegramAddAtLeastOne: "请至少添加一个 Telegram 用户 ID。",
       telegramPairingExpired: "Telegram 配对已过期。请重新启动二维码设置。",
       telegramUserIdPlaceholder: "Telegram 用户 ID",
@@ -1143,8 +1177,11 @@ export const zh: TranslationOverlay = {
     error: "错误：{error}",
     nameRequired: "请输入名称",
     urlRequired: "请输入 URL",
+    bearerTokenRequired: "请输入 Bearer 令牌",
     commandRequired: "请输入命令",
+    invalidServer: "MCP 服务器配置无效",
     added: "已添加 ✓",
+    addedOAuth: "已添加，请继续完成 OAuth 认证",
     addFailed: "添加失败：{error}",
     toolsFound: "{name}：发现 {count} 个工具",
     failed: "失败",
@@ -1167,6 +1204,19 @@ export const zh: TranslationOverlay = {
     command: "命令",
     args: "参数",
     environment: "环境变量（每行一个 KEY=VALUE）",
+    authentication: "认证方式",
+    authNone: "无",
+    bearerToken: "Bearer 令牌",
+    bearerTokenPlaceholder: "令牌或 Bearer 令牌",
+    bearerTokenStorageHint:
+      "令牌存储在此配置档案的 .env 中；config.yaml 只保留环境变量引用。",
+    oauthAddHint:
+      "添加服务器后，请使用“认证”继续操作。Hermes 会在运行管理面板后端的主机上打开 OAuth 浏览器。",
+    oauthComplete: "{name}：OAuth 认证已完成",
+    oauthFailed: "{name}：{error}",
+    oauthError: "OAuth 错误：{error}",
+    authenticateWithOAuth: "使用 OAuth 认证",
+    bearerAuth: "Bearer 令牌",
     adding: "正在添加…",
     add: "添加",
     installTitle: "安装 {name}",
@@ -1264,8 +1314,6 @@ export const zh: TranslationOverlay = {
       mcp: "MCP",
       review: "确认",
     },
-    mcpNameRequired: "请输入 MCP 服务器名称",
-    mcpEndpointRequired: "请为 MCP 服务器填写 URL 或命令",
     invalidName:
       "多 Agent 配置名称无效，只能使用小写字母、数字、连字符和下划线",
     created: "多 Agent 配置“{name}”已创建",
@@ -1296,10 +1344,12 @@ export const zh: TranslationOverlay = {
     removeNamed: "移除 {name}",
     mcpHint:
       "为此多 Agent 配置添加 MCP 服务器。HTTP 服务器需要 URL；stdio 服务器需要命令和参数。",
+    mcpConfigured: "已配置 {count} 个",
     serverName: "服务器名称",
-    serverUrl: "URL（https://…/mcp）",
-    serverCommand: "命令（例如 npx）",
-    serverArgs: "参数（以空格分隔）",
+    serverNamePlaceholder: "例如：project-tools",
+    bearerTokenStorageHint: "令牌会随此多 Agent 配置的 MCP 设置一同保存。",
+    oauthAfterCreateHint:
+      "请先创建多 Agent 配置，然后在 MCP 页面完成 OAuth 授权。",
     addServer: "添加服务器",
     remove: "移除",
     name: "名称",
@@ -1338,9 +1388,9 @@ export const zh: TranslationOverlay = {
     close: "关闭",
     active: "活动",
     inactive: "未活动",
-    enableToolset: "启用工具集",
-    enabledForAgent: "已为 Agent 启用",
-    disabled: "已禁用",
+    enableToolsetForPlatform: "为 {platform} 启用工具集",
+    enabledForPlatform: "已为 {platform} 启用",
+    disabledForPlatform: "已为 {platform} 禁用",
     noBackends:
       "此工具集没有可配置的后端。可在上方直接启用或禁用，无需选择服务商或填写 API 密钥。",
     noProviders: "当前安装中没有适用于此工具集的服务商。",

@@ -30,13 +30,7 @@ import type { ModelOptionProvider, OAuthProvider } from '@/types/hermes'
 import { DocsLink, FlowPanel, Status } from './flow'
 import { FeaturedProviderRow, KeyProviderRow, ProviderRow, sortProviders } from './providers'
 
-export {
-  FeaturedProviderRow,
-  KeyProviderRow,
-  ProviderRow,
-  providerTitle,
-  sortProviders
-} from './providers'
+export { FeaturedProviderRow, KeyProviderRow, ProviderRow, providerTitle, sortProviders } from './providers'
 
 interface DesktopOnboardingOverlayProps {
   enabled: boolean
@@ -410,10 +404,12 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
   // Which key-form option to preselect when we flip to 'apikey' mode. The
   // OpenRouter row selects its key; the generic link lands on the first option.
   const [apiKeyInitialEnv, setApiKeyInitialEnv] = useState<string | undefined>(undefined)
+
   const openKeyForm = (envKey?: string) => {
     setApiKeyInitialEnv(envKey)
     setOnboardingMode('apikey')
   }
+
   const ordered = useMemo(() => (providers ? sortProviders(providers) : []), [providers])
   const hasOauth = ordered.length > 0
   const apiKeyOptions = useApiKeyCatalog()
@@ -483,13 +479,7 @@ export function Picker({ ctx }: { ctx: OnboardingContext }) {
             In manual mode the overlay already has a close affordance, so the
             "choose later" escape would be redundant — hide it. */}
         {manual ? <span /> : <ChooseLaterLink />}
-        <Button
-          className="-mr-2 font-medium"
-          onClick={() => openKeyForm()}
-          size="xs"
-          type="button"
-          variant="text"
-        >
+        <Button className="-mr-2 font-medium" onClick={() => openKeyForm()} size="xs" type="button" variant="text">
           {t.onboarding.haveApiKey}
         </Button>
       </div>

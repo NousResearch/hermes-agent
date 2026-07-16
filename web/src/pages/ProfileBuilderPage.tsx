@@ -10,7 +10,19 @@ import { Checkbox } from "@nous-research/ui/ui/components/checkbox";
 import { Toast } from "@nous-research/ui/ui/components/toast";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { api } from "@/lib/api";
-import type { McpServerCreate, SkillInfo, SkillHubResult } from "@/lib/api";
+import type {
+  McpHttpAuth,
+  McpServerCreate,
+  SkillInfo,
+  SkillHubResult,
+} from "@/lib/api";
+import {
+  buildMcpServerCreate,
+  emptyMcpServerDraft,
+  McpServerCreateError,
+  type McpServerDraft,
+  type McpTransport,
+} from "@/lib/mcp-server-create";
 import { cn } from "@/lib/utils";
 import { useI18n } from "@/i18n";
 
@@ -73,12 +85,7 @@ export default function ProfileBuilderPage() {
 
   // ── Step 4: MCPs ──────────────────────────────────────────────────
   const [mcpServers, setMcpServers] = useState<McpServerCreate[]>([]);
-  const [mcpDraft, setMcpDraft] = useState<{
-    name: string;
-    url: string;
-    command: string;
-    args: string;
-  }>({ name: "", url: "", command: "", args: "" });
+  const [mcpDraft, setMcpDraft] = useState<McpServerDraft>(emptyMcpServerDraft);
 
   // ── Submit ────────────────────────────────────────────────────────
   const [creating, setCreating] = useState(false);
@@ -95,7 +102,11 @@ export default function ProfileBuilderPage() {
         const flat: ModelChoice[] = [];
         for (const prov of res.providers ?? []) {
           for (const m of prov.models ?? []) {
-            flat.push({ provider: prov.slug, model: m, label: `${prov.name} · ${m}` });
+            flat.push({
+              provider: prov.slug,
+              model: m,
+              label: `${prov.name} · ${m}`,
+            });
           }
         }
         setModelChoices(flat);
@@ -156,27 +167,54 @@ export default function ProfileBuilderPage() {
     setHubSkills((prev) => prev.filter((x) => x.identifier !== identifier));
 
   const addMcpDraft = () => {
-    const n = mcpDraft.name.trim();
-    if (!n) {
-      showToast(t.profileBuilder.mcpNameRequired, "error");
+    let entry: McpServerCreate;
+    try {
+      entry = buildMcpServerCreate(mcpDraft);
+    } catch (error) {
+      const validationCopy = {
+        "name-required": t.mcp.nameRequired,
+        "url-required": t.mcp.urlRequired,
+        "bearer-token-required": t.mcp.bearerTokenRequired,
+        "command-required": t.mcp.commandRequired,
+      } as const;
+      showToast(
+        error instanceof McpServerCreateError
+          ? validationCopy[error.code]
+          : t.mcp.invalidServer,
+        "error",
+      );
       return;
     }
-    if (!mcpDraft.url.trim() && !mcpDraft.command.trim()) {
-      showToast(t.profileBuilder.mcpEndpointRequired, "error");
-      return;
-    }
-    const entry: McpServerCreate = { name: n };
-    if (mcpDraft.url.trim()) entry.url = mcpDraft.url.trim();
-    if (mcpDraft.command.trim()) {
-      entry.command = mcpDraft.command.trim();
-      const args = mcpDraft.args.trim();
-      if (args) entry.args = args.split(/\s+/);
-    }
-    setMcpServers((prev) => [...prev.filter((s) => s.name !== n), entry]);
-    setMcpDraft({ name: "", url: "", command: "", args: "" });
+    setMcpServers((prev) => [
+      ...prev.filter((server) => server.name !== entry.name),
+      entry,
+    ]);
+    setMcpDraft(emptyMcpServerDraft());
   };
   const removeMcp = (n: string) =>
     setMcpServers((prev) => prev.filter((s) => s.name !== n));
+
+  const setMcpTransport = (transport: McpTransport) => {
+    setMcpDraft((draft) =>
+      transport === "http"
+        ? { ...draft, transport, command: "", args: "", env: "" }
+        : {
+            ...draft,
+            transport,
+            url: "",
+            httpAuth: "none",
+            bearerToken: "",
+          },
+    );
+  };
+
+  const setMcpHttpAuth = (httpAuth: McpHttpAuth) => {
+    setMcpDraft((draft) => ({
+      ...draft,
+      httpAuth,
+      bearerToken: httpAuth === "header" ? draft.bearerToken : "",
+    }));
+  };
 
   const filteredModels = useMemo(() => {
     if (!modelChoices) return [];
@@ -200,7 +238,9 @@ export default function ProfileBuilderPage() {
   const pickedModel = useMemo(
     () =>
       modelChoice
-        ? modelChoices?.find((c) => `${c.provider}\u0000${c.model}` === modelChoice)
+        ? modelChoices?.find(
+            (c) => `${c.provider}\u0000${c.model}` === modelChoice,
+          )
         : undefined,
     [modelChoice, modelChoices],
   );
@@ -222,7 +262,9 @@ export default function ProfileBuilderPage() {
         model: pickedModel?.model,
         mcp_servers: mcpServers.length ? mcpServers : undefined,
         keep_skills: keepAll ? undefined : Array.from(keptSkills),
-        hub_skills: hubSkills.length ? hubSkills.map((s) => s.identifier) : undefined,
+        hub_skills: hubSkills.length
+          ? hubSkills.map((s) => s.identifier)
+          : undefined,
       });
       const pending = (res.hub_installs ?? []).filter((h) => h.pid).length;
       showToast(
@@ -290,7 +332,9 @@ export default function ProfileBuilderPage() {
                   id="pb-name"
                   placeholder="coder"
                   value={name}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => setName(e.target.value)}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                    setName(e.target.value)
+                  }
                 />
                 {name && !nameValid && (
                   <p className="text-xs text-destructive">
@@ -349,7 +393,9 @@ export default function ProfileBuilderPage() {
                         onClick={() => setModelChoice(key)}
                         className={cn(
                           "block w-full rounded px-3 py-2 text-left text-sm",
-                          modelChoice === key ? "bg-primary/10" : "hover:bg-muted",
+                          modelChoice === key
+                            ? "bg-primary/10"
+                            : "hover:bg-muted",
                         )}
                       >
                         {c.label}
@@ -431,7 +477,11 @@ export default function ProfileBuilderPage() {
                       if (e.key === "Enter") runHubSearch();
                     }}
                   />
-                  <Button outlined onClick={runHubSearch} disabled={hubSearching}>
+                  <Button
+                    outlined
+                    onClick={runHubSearch}
+                    disabled={hubSearching}
+                  >
                     {hubSearching
                       ? t.profileBuilder.searching
                       : t.profileBuilder.search}
@@ -485,69 +535,238 @@ export default function ProfileBuilderPage() {
           )}
 
           {step === "mcp" && (
-            <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                {t.profileBuilder.mcpHint}
-              </p>
-              <div className="grid grid-cols-2 gap-2">
-                <Input
-                  placeholder={t.profileBuilder.serverName}
-                  value={mcpDraft.name}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                    setMcpDraft({ ...mcpDraft, name: e.target.value })
-                  }
-                />
-                <Input
-                  placeholder={t.profileBuilder.serverUrl}
-                  value={mcpDraft.url}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                    setMcpDraft({ ...mcpDraft, url: e.target.value })
-                  }
-                />
-                <Input
-                  placeholder={t.profileBuilder.serverCommand}
-                  value={mcpDraft.command}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                    setMcpDraft({ ...mcpDraft, command: e.target.value })
-                  }
-                />
-                <Input
-                  placeholder={t.profileBuilder.serverArgs}
-                  value={mcpDraft.args}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                    setMcpDraft({ ...mcpDraft, args: e.target.value })
-                  }
-                />
-              </div>
-              <Button outlined onClick={addMcpDraft}>
-                {t.profileBuilder.addServer}
-              </Button>
-              {mcpServers.length > 0 && (
+            <div className="space-y-5">
+              <div className="flex flex-wrap items-start justify-between gap-3">
                 <div className="space-y-1">
+                  <h3 className="font-expanded text-base font-bold tracking-[0.04em]">
+                    {t.profileBuilder.mcpServers}
+                  </h3>
+                  <p className="text-sm text-muted-foreground">
+                    {t.profileBuilder.mcpHint}
+                  </p>
+                </div>
+                <span
+                  className="text-xs text-muted-foreground"
+                  aria-live="polite"
+                >
+                  {format(t.profileBuilder.mcpConfigured, {
+                    count: mcpServers.length,
+                  })}
+                </span>
+              </div>
+
+              <div className="space-y-4 border border-border bg-background/20 p-4 md:p-5">
+                <h4 className="font-medium">{t.profileBuilder.addServer}</h4>
+
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="grid gap-1.5">
+                    <Label htmlFor="pb-mcp-name">
+                      {t.profileBuilder.serverName}
+                    </Label>
+                    <Input
+                      id="pb-mcp-name"
+                      placeholder={t.profileBuilder.serverNamePlaceholder}
+                      value={mcpDraft.name}
+                      onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                        setMcpDraft({ ...mcpDraft, name: e.target.value })
+                      }
+                    />
+                  </div>
+                  <div className="grid gap-1.5">
+                    <Label>{t.mcp.transport}</Label>
+                    <div
+                      className="grid grid-cols-2 border border-border bg-background/30 p-0.5"
+                      role="group"
+                      aria-label={t.mcp.transport}
+                    >
+                      {(
+                        [
+                          ["http", t.mcp.httpSse],
+                          ["stdio", t.mcp.stdio],
+                        ] as const
+                      ).map(([value, label]) => (
+                        <button
+                          key={value}
+                          type="button"
+                          aria-pressed={mcpDraft.transport === value}
+                          className={cn(
+                            "px-3 py-2 text-sm font-medium transition-colors",
+                            mcpDraft.transport === value
+                              ? "bg-primary text-primary-foreground"
+                              : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                          )}
+                          onClick={() => setMcpTransport(value)}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+
+                {mcpDraft.transport === "http" ? (
+                  <>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="pb-mcp-url">{t.mcp.url}</Label>
+                      <Input
+                        id="pb-mcp-url"
+                        placeholder="https://example.com/mcp"
+                        value={mcpDraft.url}
+                        onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                          setMcpDraft({ ...mcpDraft, url: e.target.value })
+                        }
+                      />
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label>{t.mcp.authentication}</Label>
+                      <div
+                        className="grid grid-cols-3 border border-border bg-background/30 p-0.5 md:max-w-md"
+                        role="group"
+                        aria-label={t.mcp.authentication}
+                      >
+                        {(
+                          [
+                            ["none", t.mcp.authNone],
+                            ["header", t.mcp.bearerToken],
+                            ["oauth", "OAuth"],
+                          ] as const
+                        ).map(([value, label]) => (
+                          <button
+                            key={value}
+                            type="button"
+                            aria-pressed={mcpDraft.httpAuth === value}
+                            className={cn(
+                              "px-2 py-2 text-sm font-medium transition-colors",
+                              mcpDraft.httpAuth === value
+                                ? "bg-primary text-primary-foreground"
+                                : "text-muted-foreground hover:bg-muted hover:text-foreground",
+                            )}
+                            onClick={() => setMcpHttpAuth(value)}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                    {mcpDraft.httpAuth === "header" && (
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="pb-mcp-bearer-token">
+                          {t.mcp.bearerToken}
+                        </Label>
+                        <Input
+                          id="pb-mcp-bearer-token"
+                          type="password"
+                          autoComplete="new-password"
+                          placeholder={t.mcp.bearerTokenPlaceholder}
+                          value={mcpDraft.bearerToken}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                            setMcpDraft({
+                              ...mcpDraft,
+                              bearerToken: e.target.value,
+                            })
+                          }
+                        />
+                        <p className="text-xs text-muted-foreground">
+                          {t.profileBuilder.bearerTokenStorageHint}
+                        </p>
+                      </div>
+                    )}
+                    {mcpDraft.httpAuth === "oauth" && (
+                      <p className="text-xs text-muted-foreground">
+                        {t.profileBuilder.oauthAfterCreateHint}
+                      </p>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div className="grid gap-4 md:grid-cols-2">
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="pb-mcp-command">{t.mcp.command}</Label>
+                        <Input
+                          id="pb-mcp-command"
+                          placeholder="npx"
+                          value={mcpDraft.command}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                            setMcpDraft({
+                              ...mcpDraft,
+                              command: e.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                      <div className="grid gap-1.5">
+                        <Label htmlFor="pb-mcp-args">{t.mcp.args}</Label>
+                        <Input
+                          id="pb-mcp-args"
+                          placeholder="-y @modelcontextprotocol/server"
+                          value={mcpDraft.args}
+                          onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                            setMcpDraft({ ...mcpDraft, args: e.target.value })
+                          }
+                        />
+                      </div>
+                    </div>
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="pb-mcp-env">{t.mcp.environment}</Label>
+                      <textarea
+                        id="pb-mcp-env"
+                        className="flex min-h-[80px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:border-foreground/25 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30"
+                        placeholder={"API_KEY=secret\nDEBUG=1"}
+                        value={mcpDraft.env}
+                        onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) =>
+                          setMcpDraft({ ...mcpDraft, env: e.target.value })
+                        }
+                      />
+                    </div>
+                  </>
+                )}
+
+                <div className="flex justify-end">
+                  <Button onClick={addMcpDraft}>
+                    {t.profileBuilder.addServer}
+                  </Button>
+                </div>
+              </div>
+
+              {mcpServers.length > 0 && (
+                <div className="space-y-2">
                   {mcpServers.map((s) => (
                     <div
                       key={s.name}
-                      className="flex items-center justify-between rounded bg-muted px-3 py-1.5 text-sm"
+                      className="flex items-center justify-between gap-4 border border-border bg-muted/40 p-4 text-sm"
                     >
-                      <span>
-                        <span className="font-medium">{s.name}</span>{" "}
-                        <span className="text-xs text-muted-foreground">
-                          {s.url || `${s.command} ${(s.args || []).join(" ")}`}
+                      <span className="min-w-0">
+                        <span className="flex flex-wrap items-center gap-2">
+                          <span className="font-medium">{s.name}</span>
+                          <Badge tone="outline">
+                            {s.url ? "HTTP" : "stdio"}
+                          </Badge>
+                          {s.auth && (
+                            <Badge tone="outline">
+                              {t.mcp.authLabel}{" "}
+                              {s.auth === "header" ? t.mcp.bearerAuth : s.auth}
+                            </Badge>
+                          )}
+                        </span>
+                        <span className="mt-1 block break-all text-xs text-muted-foreground">
+                          {s.url || [s.command, ...(s.args || [])].join(" ")}
                         </span>
                       </span>
-                      <button
-                        className="text-xs text-destructive"
+                      <Button
+                        size="sm"
+                        ghost
+                        destructive
+                        className="shrink-0"
                         onClick={() => removeMcp(s.name)}
                       >
                         {t.profileBuilder.remove}
-                      </button>
+                      </Button>
                     </div>
                   ))}
                 </div>
               )}
             </div>
           )}
-
           {step === "review" && (
             <div className="space-y-3 text-sm">
               <ReviewRow
@@ -583,7 +802,8 @@ export default function ProfileBuilderPage() {
               />
               {!keepAll && hubSkills.length > 0 && (
                 <p className="pl-24 text-xs text-muted-foreground">
-                  {t.profileBuilder.hub} {hubSkills.map((s) => s.name).join(", ")}
+                  {t.profileBuilder.hub}{" "}
+                  {hubSkills.map((s) => s.name).join(", ")}
                 </p>
               )}
               {keepAll && hubSkills.length > 0 && (

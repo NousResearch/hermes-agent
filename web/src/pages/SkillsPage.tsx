@@ -1,4 +1,10 @@
-import { useEffect, useLayoutEffect, useState, useMemo, useCallback } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useState,
+  useMemo,
+  useCallback,
+} from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Package,
@@ -44,7 +50,12 @@ import { ToolsetConfigDrawer } from "@/components/ToolsetConfigDrawer";
 import { SkillEditorDialog } from "@/components/SkillEditorDialog";
 import { useToast } from "@nous-research/ui/hooks/use-toast";
 import { Toast } from "@nous-research/ui/ui/components/toast";
-import { Card, CardContent, CardHeader, CardTitle } from "@nous-research/ui/ui/components/card";
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@nous-research/ui/ui/components/card";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { ListItem } from "@nous-research/ui/ui/components/list-item";
@@ -149,9 +160,7 @@ export default function SkillsPage() {
   // appends the param automatically; we still pass it explicitly where the
   // call signature supports it (clearer, and robust if a caller bypasses
   // the auto-injection).
-  const {
-    profile: selectedProfile,
-  } = useProfileScope();
+  const { profile: selectedProfile } = useProfileScope();
 
   useEffect(() => {
     // Promise-chain shape: setState fires only inside async callbacks so the
@@ -178,19 +187,20 @@ export default function SkillsPage() {
   const handleToggleSkill = async (skill: SkillInfo) => {
     setTogglingSkills((prev) => new Set(prev).add(skill.name));
     try {
-      await api.toggleSkill(skill.name, !skill.enabled, selectedProfile || undefined);
+      await api.toggleSkill(
+        skill.name,
+        !skill.enabled,
+        selectedProfile || undefined,
+      );
       setSkills((prev) =>
         prev.map((s) =>
           s.name === skill.name ? { ...s, enabled: !s.enabled } : s,
         ),
       );
       showToast(
-        format(
-          skill.enabled
-            ? t.skills.disabledNamed
-            : t.skills.enabledNamed,
-          { name: skill.name },
-        ),
+        format(skill.enabled ? t.skills.disabledNamed : t.skills.enabledNamed, {
+          name: skill.name,
+        }),
         "success",
       );
     } catch {
@@ -210,7 +220,7 @@ export default function SkillsPage() {
   /* ---- Refresh toolsets after a config change ---- */
   const refreshToolsets = async () => {
     try {
-      const tsets = await api.getToolsets();
+      const tsets = await api.getToolsets(selectedProfile || undefined);
       setToolsets(tsets);
     } catch {
       /* non-fatal: the drawer already toasted on the failing write */
@@ -248,7 +258,10 @@ export default function SkillsPage() {
     if (url) segs.push(`URL: ${url}`);
     if (text) segs.push(text);
     // Flatten to a single line — the chat composer submits on the first Enter.
-    const composed = segs.join("; ").replace(/\s*\n\s*/g, " ").trim();
+    const composed = segs
+      .join("; ")
+      .replace(/\s*\n\s*/g, " ")
+      .trim();
     if (!composed) return;
     setLearnOpen(false);
     navigate(`/chat?learn=${encodeURIComponent(composed)}`);
@@ -357,15 +370,7 @@ export default function SkillsPage() {
       setAfterTitle(null);
       setEnd(null);
     };
-  }, [
-    enabledCount,
-    loading,
-    search,
-    setAfterTitle,
-    setEnd,
-    skills.length,
-    t,
-  ]);
+  }, [enabledCount, loading, search, setAfterTitle, setEnd, skills.length, t]);
 
   const filteredToolsets = useMemo(() => {
     return toolsets.filter(
@@ -660,7 +665,10 @@ export default function SkillsPage() {
               )}
             </>
           ) : (
-            <HubBrowser showToast={showToast} profile={selectedProfile || undefined} />
+            <HubBrowser
+              showToast={showToast}
+              profile={selectedProfile || undefined}
+            />
           )}
         </div>
       </div>
@@ -683,9 +691,7 @@ export default function SkillsPage() {
         <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>{t.skills.learnSkill}</DialogTitle>
-            <DialogDescription>
-              {t.skills.learnDescription}
-            </DialogDescription>
+            <DialogDescription>{t.skills.learnDescription}</DialogDescription>
           </DialogHeader>
           <div className="grid gap-3 py-2">
             <div className="grid gap-1.5">
@@ -727,7 +733,9 @@ export default function SkillsPage() {
             <Button
               onClick={submitLearn}
               prefix={<Sparkles />}
-              disabled={!learnDir.trim() && !learnUrl.trim() && !learnText.trim()}
+              disabled={
+                !learnDir.trim() && !learnUrl.trim() && !learnText.trim()
+              }
             >
               {t.skills.learnIt}
             </Button>
@@ -759,9 +767,7 @@ function SkillRow({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 mb-0.5">
           <span
-            className={`font-mono-ui text-sm ${
-              skill.enabled ? "text-foreground" : "text-muted-foreground"
-            }`}
+            className={`font-mono-ui text-sm ${skill.enabled ? "text-foreground" : "text-muted-foreground"}`}
           >
             {skill.name}
           </span>
@@ -821,7 +827,10 @@ interface SkillRowProps {
 /* ------------------------------------------------------------------ */
 
 /** Map a trust level to a Badge tone + label + icon. */
-function trustVisual(level: string, t: Translations): {
+function trustVisual(
+  level: string,
+  t: Translations,
+): {
   tone: "success" | "secondary" | "warning" | "outline";
   label: string;
 } {
@@ -838,7 +847,10 @@ function trustVisual(level: string, t: Translations): {
 }
 
 /** Map a scan verdict to tone + icon. */
-function verdictVisual(verdict: string, t: Translations): {
+function verdictVisual(
+  verdict: string,
+  t: Translations,
+): {
   tone: "success" | "warning" | "destructive";
   Icon: React.ComponentType<{ className?: string }>;
   label: string;
@@ -863,7 +875,10 @@ function verdictVisual(verdict: string, t: Translations): {
   }
 }
 
-const SEVERITY_TONE: Record<string, "destructive" | "warning" | "secondary" | "outline"> = {
+const SEVERITY_TONE: Record<
+  string,
+  "destructive" | "warning" | "secondary" | "outline"
+> = {
   critical: "destructive",
   high: "destructive",
   medium: "warning",
@@ -893,7 +908,9 @@ function HubBrowser({
   const [sourcesLoading, setSourcesLoading] = useState(true);
 
   // identifier -> installed entry (drives "Installed" badges).
-  const [installed, setInstalled] = useState<Record<string, SkillHubInstalledEntry>>({});
+  const [installed, setInstalled] = useState<
+    Record<string, SkillHubInstalledEntry>
+  >({});
 
   // Live action log for the most recent install/update.
   const [action, setAction] = useState<string | null>(null);
@@ -987,10 +1004,7 @@ function HubBrowser({
     async (identifier: string) => {
       try {
         const res = await api.installSkillFromHub(identifier, profile);
-        showToast(
-          format(t.skills.hub.installing, { identifier }),
-          "success",
-        );
+        showToast(format(t.skills.hub.installing, { identifier }), "success");
         setActionLog([]);
         setActionRunning(true);
         setAction(res.name);
@@ -1049,7 +1063,9 @@ function HubBrowser({
               size="sm"
               onClick={() => void runSearch()}
               disabled={searching || !query.trim()}
-              prefix={searching ? <Spinner /> : <Search className="h-3.5 w-3.5" />}
+              prefix={
+                searching ? <Spinner /> : <Search className="h-3.5 w-3.5" />
+              }
             >
               {t.skills.hub.search}
             </Button>
@@ -1093,9 +1109,7 @@ function HubBrowser({
               )}
             </div>
             <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words bg-background/50 border border-border p-2 text-xs font-mono text-muted-foreground">
-              {actionLog.length
-                ? actionLog.join("\n")
-                : t.skills.hub.starting}
+              {actionLog.length ? actionLog.join("\n") : t.skills.hub.starting}
             </pre>
           </CardContent>
         </Card>
@@ -1200,9 +1214,7 @@ function ConnectedHubs({
   const { t } = useI18n();
   if (loading) {
     return (
-      <p className="text-xs text-muted-foreground">
-        {t.skills.hub.connecting}
-      </p>
+      <p className="text-xs text-muted-foreground">{t.skills.hub.connecting}</p>
     );
   }
   if (sources.length === 0) {
@@ -1359,7 +1371,12 @@ function HubResultCard({
             {t.skills.hub.details}
           </Button>
           {installed ? (
-            <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
+            <Button
+              size="sm"
+              ghost
+              disabled
+              prefix={<CheckCircle2 className="h-3.5 w-3.5" />}
+            >
               {t.skills.hub.installed}
             </Button>
           ) : (
@@ -1401,6 +1418,7 @@ function SkillDetailDialog({
 
   useEffect(() => {
     let cancelled = false;
+    setPreviewLoading(true);
     api
       .previewSkillFromHub(result.identifier)
       .then((p) => !cancelled && setPreview(p))
@@ -1424,10 +1442,7 @@ function SkillDetailDialog({
       const s = await api.scanSkillFromHub(result.identifier);
       setScan(s);
     } catch (e) {
-      showToast(
-        format(t.skills.hub.scanFailed, { error: String(e) }),
-        "error",
-      );
+      showToast(format(t.skills.hub.scanFailed, { error: String(e) }), "error");
     } finally {
       setScanning(false);
     }
@@ -1502,7 +1517,12 @@ function SkillDetailDialog({
               </a>
             )}
             {installed ? (
-              <Button size="sm" ghost disabled prefix={<CheckCircle2 className="h-3.5 w-3.5" />}>
+              <Button
+                size="sm"
+                ghost
+                disabled
+                prefix={<CheckCircle2 className="h-3.5 w-3.5" />}
+              >
                 {t.skills.hub.installed}
               </Button>
             ) : (
@@ -1543,7 +1563,9 @@ function SkillDetailDialog({
                     <span className="font-mondwest tracking-[0.1em] uppercase">
                       {t.skills.hub.files}{" "}
                     </span>
-                    <span className="font-mono">{preview.files.join("  ")}</span>
+                    <span className="font-mono">
+                      {preview.files.join("  ")}
+                    </span>
                   </div>
                 )}
                 <pre className="whitespace-pre-wrap break-words bg-background/50 border border-border p-3 text-xs font-mono text-text-secondary leading-relaxed">
@@ -1666,7 +1688,10 @@ function ScanPanel({
         <div className="flex flex-col border border-border divide-y divide-border">
           {scan.findings.map((f, i) => (
             <div key={i} className="flex items-start gap-2 p-2">
-              <Badge tone={SEVERITY_TONE[f.severity] || "outline"} className="text-xs shrink-0">
+              <Badge
+                tone={SEVERITY_TONE[f.severity] || "outline"}
+                className="text-xs shrink-0"
+              >
                 {f.severity}
               </Badge>
               <div className="flex-1 min-w-0">

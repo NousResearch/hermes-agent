@@ -20,7 +20,10 @@ type Stage = 'provider' | 'key' | 'model' | 'disconnect'
 
 type ProviderRow = { name: string; provider: ModelOptionProvider }
 
-export function providerIndexAfterClearingFilter(providerRows: ProviderRow[], provider: ModelOptionProvider | undefined) {
+export function providerIndexAfterClearingFilter(
+  providerRows: ProviderRow[],
+  provider: ModelOptionProvider | undefined
+) {
   if (!provider) {
     return -1
   }
@@ -478,7 +481,9 @@ export function ModelPicker({
         </Text>
 
         <Text color={t.color.accent} wrap="truncate-end">
-{'  '}{masked || ti('modelPicker.empty')}{keySaving ? '' : '▎'}
+          {'  '}
+          {masked || ti('modelPicker.empty')}
+          {keySaving ? '' : '▎'}
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
@@ -529,7 +534,9 @@ export function ModelPicker({
         </Text>
 
         {keySaving ? (
-          <Text color={t.color.muted} wrap="truncate-end">{ti('modelPicker.disconnecting')}</Text>
+          <Text color={t.color.muted} wrap="truncate-end">
+            {ti('modelPicker.disconnecting')}
+          </Text>
         ) : (
           <OverlayHint t={t}>{ti('picker.confirmHint')}</OverlayHint>
         )}
@@ -543,9 +550,12 @@ export function ModelPicker({
       const authMark = p.authenticated === false ? '○' : p.is_current ? '*' : '●'
       const modelCount = p.total_models ?? p.models?.length ?? 0
 
-      const suffix = p.authenticated === false
-        ? (p.auth_type === 'api_key' ? ti('modelPicker.noKey') : ti('modelPicker.needsSetup'))
-        : ti('modelPicker.modelsCount', { count: String(modelCount) })
+      const suffix =
+        p.authenticated === false
+          ? p.auth_type === 'api_key'
+            ? ti('modelPicker.noKey')
+            : ti('modelPicker.needsSetup')
+          : ti('modelPicker.modelsCount', { count: String(modelCount) })
 
       return `${authMark} ${name} · ${suffix}`
     })
@@ -607,12 +617,16 @@ export function ModelPicker({
         )}
 
         <Text color={t.color.muted} wrap="truncate-end">
-          {offset + VISIBLE < rows.length ? ` ${ti('sys.moreBelow', { count: String(rows.length - offset - VISIBLE) })}` : ' '}
+          {offset + VISIBLE < rows.length
+            ? ` ${ti('sys.moreBelow', { count: String(rows.length - offset - VISIBLE) })}`
+            : ' '}
         </Text>
 
         <Text color={t.color.muted} wrap="truncate-end">
           {allowPersistGlobal
-            ? ti('modelPicker.persist', { scope: persistGlobal ? ti('modelPicker.persistGlobal') : ti('modelPicker.persistSession') })
+            ? ti('modelPicker.persist', {
+                scope: persistGlobal ? ti('modelPicker.persistGlobal') : ti('modelPicker.persistSession')
+              })
             : ti('modelPicker.persistOnly', { scope: ti('modelPicker.persistSession') })}
         </Text>
         <OverlayHint t={t}>{ti('modelPicker.providerFilterHint')}</OverlayHint>
@@ -631,7 +645,9 @@ export function ModelPicker({
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {ti('modelPicker.providerBack', { provider: filteredProviderRows[providerIdx]?.name || ti('modelPicker.unknownProvider') })}
+        {ti('modelPicker.providerBack', {
+          provider: filteredProviderRows[providerIdx]?.name || ti('modelPicker.unknownProvider')
+        })}
       </Text>
       <Text color={filter ? t.color.accent : t.color.muted} wrap="truncate-end">
         {filter ? ti('modelPicker.filtering', { query: `${filter}▎` }) : ti('modelPicker.filterHint')}
@@ -676,12 +692,16 @@ export function ModelPicker({
       })}
 
       <Text color={t.color.muted} wrap="truncate-end">
-        {offset + VISIBLE < models.length ? ` ${ti('sys.moreBelow', { count: String(models.length - offset - VISIBLE) })}` : ' '}
+        {offset + VISIBLE < models.length
+          ? ` ${ti('sys.moreBelow', { count: String(models.length - offset - VISIBLE) })}`
+          : ' '}
       </Text>
 
       <Text color={t.color.muted} wrap="truncate-end">
         {allowPersistGlobal
-          ? ti('modelPicker.persist', { scope: persistGlobal ? ti('modelPicker.persistGlobal') : ti('modelPicker.persistSession') })
+          ? ti('modelPicker.persist', {
+              scope: persistGlobal ? ti('modelPicker.persistGlobal') : ti('modelPicker.persistSession')
+            })
           : ti('modelPicker.persistOnly', { scope: ti('modelPicker.persistSession') })}
       </Text>
       <OverlayHint t={t}>

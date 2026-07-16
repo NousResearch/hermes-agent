@@ -93,7 +93,14 @@ export const PetPane = memo(function PetPane() {
   }
 
   return (
-    <NoSelect bottom={PET_BOTTOM} flexShrink={0} paddingLeft={PET_PAD_LEFT} paddingTop={1} position="absolute" right={PET_RIGHT}>
+    <NoSelect
+      bottom={PET_BOTTOM}
+      flexShrink={0}
+      paddingLeft={PET_PAD_LEFT}
+      paddingTop={1}
+      position="absolute"
+      right={PET_RIGHT}
+    >
       {kitty ? <PetKitty color={kitty.color} placeholder={kitty.placeholder} /> : null}
       {!kitty && grid ? <PetSprite grid={grid} /> : null}
     </NoSelect>
@@ -283,11 +290,19 @@ const ComposerPane = memo(function ComposerPane({
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
-  const placeholderKey = useMemo<TranslationKey>(() => pick([
-    'input.placeholder1', 'input.placeholder2', 'input.placeholder3',
-    'input.placeholder4', 'input.placeholder5', 'input.placeholder6',
-    'input.placeholder7'
-  ]), [])
+  const placeholderKey = useMemo<TranslationKey>(
+    () =>
+      pick([
+        'input.placeholder1',
+        'input.placeholder2',
+        'input.placeholder3',
+        'input.placeholder4',
+        'input.placeholder5',
+        'input.placeholder6',
+        'input.placeholder7'
+      ]),
+    []
+  )
 
   const captureInputDrag = (e: GutterMouseEvent) => {
     if (e.button !== 0) {
@@ -344,7 +359,9 @@ const ComposerPane = memo(function ComposerPane({
 
       {ui.bgTasks.size > 0 && (
         <Text color={ui.theme.color.muted}>
-          {i18n.t('task.backgroundRunning', { count: String(ui.bgTasks.size), noun: ui.bgTasks.size === 1 ? 'task' : 'tasks' })}
+          {i18n.t(ui.bgTasks.size === 1 ? 'task.backgroundRunningOne' : 'task.backgroundRunningMany', {
+            count: String(ui.bgTasks.size)
+          })}
         </Text>
       )}
 

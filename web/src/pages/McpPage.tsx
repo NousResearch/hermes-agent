@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
-import { Package, Power, Server, Trash2, X, Zap } from "lucide-react";
+import { KeyRound, Package, Power, Server, Trash2, X, Zap } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Select, SelectOption } from "@nous-research/ui/ui/components/select";
@@ -9,8 +9,8 @@ import { api } from "@/lib/api";
 import type {
   McpCatalogDiagnostic,
   McpCatalogEntry,
+  McpHttpAuth,
   McpServer,
-  McpServerCreate,
   McpTestResult,
 } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
@@ -24,8 +24,11 @@ import { Label } from "@nous-research/ui/ui/components/label";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { cn, themedBody } from "@/lib/utils";
 import { useI18n } from "@/i18n";
-
-type Transport = "http" | "stdio";
+import {
+  buildMcpServerCreate,
+  McpServerCreateError,
+  type McpTransport,
+} from "@/lib/mcp-server-create";
 
 function isHttpUrl(value: string): boolean {
   return /^https?:\/\//i.test(value.trim());
@@ -33,29 +36,6 @@ function isHttpUrl(value: string): boolean {
 
 function truncateText(value: string, maxLength: number): string {
   return value.length > maxLength ? value.slice(0, maxLength) + "..." : value;
-}
-
-function parseArgs(raw: string): string[] {
-  return raw
-    .split(/[\s,]+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
-}
-
-function parseEnv(raw: string): Record<string, string> {
-  const env: Record<string, string> = {};
-  raw
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .forEach((line) => {
-      const idx = line.indexOf("=");
-      if (idx === -1) return;
-      const key = line.slice(0, idx).trim();
-      const value = line.slice(idx + 1).trim();
-      if (key) env[key] = value;
-    });
-  return env;
 }
 
 const TRANSPORT_TONE: Record<string, "success" | "warning" | "secondary"> = {
@@ -76,13 +56,18 @@ export default function McpPage() {
   // Add server modal state
   const [createModalOpen, setCreateModalOpen] = useState(false);
   const [name, setName] = useState("");
-  const [transport, setTransport] = useState<Transport>("http");
+  const [transport, setTransport] = useState<McpTransport>("http");
   const [url, setUrl] = useState("");
+  const [httpAuth, setHttpAuth] = useState<McpHttpAuth>("none");
+  const [bearerToken, setBearerToken] = useState("");
   const [command, setCommand] = useState("");
   const [args, setArgs] = useState("");
   const [env, setEnv] = useState("");
   const [creating, setCreating] = useState(false);
-  const closeCreateModal = useCallback(() => setCreateModalOpen(false), []);
+  const closeCreateModal = useCallback(() => {
+    setBearerToken("");
+    setCreateModalOpen(false);
+  }, []);
   const createModalRef = useModalBehavior({
     open: createModalOpen,
     onClose: closeCreateModal,
@@ -90,9 +75,10 @@ export default function McpPage() {
 
   // Test results keyed by server name
   const [testing, setTesting] = useState<string | null>(null);
-  const [testResults, setTestResults] = useState<
-    Record<string, McpTestResult>
-  >({});
+  const [authenticating, setAuthenticating] = useState<string | null>(null);
+  const [testResults, setTestResults] = useState<Record<string, McpTestResult>>(
+    {},
+  );
 
   // Enable/disable state
   const [togglingName, setTogglingName] = useState<string | null>(null);
@@ -138,35 +124,47 @@ export default function McpPage() {
   }, [loadServers, loadCatalog]);
 
   const handleCreate = async () => {
-    if (!name.trim()) {
-      showToast(t.mcp.nameRequired, "error");
+    let body;
+    try {
+      body = buildMcpServerCreate({
+        name,
+        transport,
+        url,
+        httpAuth,
+        bearerToken,
+        command,
+        args,
+        env,
+      });
+    } catch (error) {
+      const validationCopy = {
+        "name-required": t.mcp.nameRequired,
+        "url-required": t.mcp.urlRequired,
+        "bearer-token-required": t.mcp.bearerTokenRequired,
+        "command-required": t.mcp.commandRequired,
+      } as const;
+      showToast(
+        error instanceof McpServerCreateError
+          ? validationCopy[error.code]
+          : t.mcp.invalidServer,
+        "error",
+      );
       return;
     }
-    if (transport === "http" && !url.trim()) {
-      showToast(t.mcp.urlRequired, "error");
-      return;
-    }
-    if (transport === "stdio" && !command.trim()) {
-      showToast(t.mcp.commandRequired, "error");
-      return;
-    }
+
     setCreating(true);
     try {
-      const body: McpServerCreate = { name: name.trim() };
-      if (transport === "http") {
-        body.url = url.trim();
-      } else {
-        body.command = command.trim();
-        const argList = parseArgs(args);
-        if (argList.length) body.args = argList;
-      }
-      const envMap = parseEnv(env);
-      if (Object.keys(envMap).length) body.env = envMap;
-
       await api.addMcpServer(body);
-      showToast(t.mcp.added, "success");
+      showToast(
+        transport === "http" && httpAuth === "oauth"
+          ? t.mcp.addedOAuth
+          : t.mcp.added,
+        "success",
+      );
       setName("");
       setUrl("");
+      setHttpAuth("none");
+      setBearerToken("");
       setCommand("");
       setArgs("");
       setEnv("");
@@ -209,15 +207,39 @@ export default function McpPage() {
     }
   };
 
+  const handleAuthenticate = async (server: McpServer) => {
+    setAuthenticating(server.name);
+    try {
+      const result = await api.authMcpServer(server.name);
+      setTestResults((prev) => ({ ...prev, [server.name]: result }));
+      if (result.ok) {
+        showToast(
+          format(t.mcp.oauthComplete, { name: server.name }),
+          "success",
+        );
+      } else {
+        showToast(
+          format(t.mcp.oauthFailed, {
+            name: server.name,
+            error: result.error ?? t.mcp.failed,
+          }),
+          "error",
+        );
+      }
+    } catch (e) {
+      showToast(format(t.mcp.oauthError, { error: String(e) }), "error");
+    } finally {
+      setAuthenticating(null);
+    }
+  };
+
   const handleToggleEnabled = async (server: McpServer) => {
     const next = !server.enabled;
     setTogglingName(server.name);
     try {
       await api.setMcpServerEnabled(server.name, next);
       setServers((prev) =>
-        prev.map((s) =>
-          s.name === server.name ? { ...s, enabled: next } : s,
-        ),
+        prev.map((s) => (s.name === server.name ? { ...s, enabled: next } : s)),
       );
       setRestartPending(true);
     } catch (e) {
@@ -271,10 +293,7 @@ export default function McpPage() {
         setInstallEnv({});
         await Promise.all([loadServers(), loadCatalog()]);
       } catch (e) {
-        showToast(
-          format(t.mcp.installFailed, { error: String(e) }),
-          "error",
-        );
+        showToast(format(t.mcp.installFailed, { error: String(e) }), "error");
       } finally {
         setInstallingName(null);
       }
@@ -367,9 +386,7 @@ export default function McpPage() {
         <div
           ref={createModalRef}
           className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
-          onClick={(e) =>
-            e.target === e.currentTarget && setCreateModalOpen(false)
-          }
+          onClick={(e) => e.target === e.currentTarget && closeCreateModal()}
           role="dialog"
           aria-modal="true"
           aria-labelledby="create-mcp-title"
@@ -383,7 +400,7 @@ export default function McpPage() {
             <Button
               ghost
               size="icon"
-              onClick={() => setCreateModalOpen(false)}
+              onClick={closeCreateModal}
               className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
               aria-label={t.common.close}
             >
@@ -416,7 +433,11 @@ export default function McpPage() {
                 <Select
                   id="mcp-transport"
                   value={transport}
-                  onValueChange={(v) => setTransport(v as Transport)}
+                  onValueChange={(value) => {
+                    const nextTransport = value as McpTransport;
+                    setTransport(nextTransport);
+                    if (nextTransport === "stdio") setBearerToken("");
+                  }}
                 >
                   <SelectOption value="http">{t.mcp.httpSse}</SelectOption>
                   <SelectOption value="stdio">{t.mcp.stdio}</SelectOption>
@@ -424,15 +445,58 @@ export default function McpPage() {
               </div>
 
               {transport === "http" ? (
-                <div className="grid gap-2">
-                  <Label htmlFor="mcp-url">{t.mcp.url}</Label>
-                  <Input
-                    id="mcp-url"
-                    placeholder="https://example.com/mcp"
-                    value={url}
-                    onChange={(e) => setUrl(e.target.value)}
-                  />
-                </div>
+                <>
+                  <div className="grid gap-2">
+                    <Label htmlFor="mcp-url">{t.mcp.url}</Label>
+                    <Input
+                      id="mcp-url"
+                      placeholder="https://example.com/mcp"
+                      value={url}
+                      onChange={(e) => setUrl(e.target.value)}
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="mcp-auth">{t.mcp.authentication}</Label>
+                    <Select
+                      id="mcp-auth"
+                      value={httpAuth}
+                      onValueChange={(value) => {
+                        const nextAuth = value as McpHttpAuth;
+                        setHttpAuth(nextAuth);
+                        if (nextAuth !== "header") setBearerToken("");
+                      }}
+                    >
+                      <SelectOption value="none">{t.mcp.authNone}</SelectOption>
+                      <SelectOption value="header">
+                        {t.mcp.bearerToken}
+                      </SelectOption>
+                      <SelectOption value="oauth">OAuth</SelectOption>
+                    </Select>
+                  </div>
+                  {httpAuth === "header" && (
+                    <div className="grid gap-2">
+                      <Label htmlFor="mcp-bearer-token">
+                        {t.mcp.bearerToken}
+                      </Label>
+                      <Input
+                        id="mcp-bearer-token"
+                        type="password"
+                        autoComplete="new-password"
+                        placeholder={t.mcp.bearerTokenPlaceholder}
+                        value={bearerToken}
+                        onChange={(e) => setBearerToken(e.target.value)}
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        {t.mcp.bearerTokenStorageHint}
+                      </p>
+                    </div>
+                  )}
+                  {httpAuth === "oauth" && (
+                    <p className="text-xs text-muted-foreground">
+                      {t.mcp.oauthAddHint}
+                    </p>
+                  )}
+                </>
               ) : (
                 <>
                   <div className="grid gap-2">
@@ -453,20 +517,18 @@ export default function McpPage() {
                       onChange={(e) => setArgs(e.target.value)}
                     />
                   </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="mcp-env">{t.mcp.environment}</Label>
+                    <textarea
+                      id="mcp-env"
+                      className="flex min-h-[80px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
+                      placeholder={"API_KEY=secret\nDEBUG=1"}
+                      value={env}
+                      onChange={(e) => setEnv(e.target.value)}
+                    />
+                  </div>
                 </>
               )}
-
-              <div className="grid gap-2">
-                <Label htmlFor="mcp-env">{t.mcp.environment}</Label>
-                <textarea
-                  id="mcp-env"
-                  className="flex min-h-[80px] w-full border border-border bg-background/40 px-3 py-2 text-sm font-courier shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-foreground/30 focus-visible:border-foreground/25"
-                  placeholder={"API_KEY=secret\nDEBUG=1"}
-                  value={env}
-                  onChange={(e) => setEnv(e.target.value)}
-                />
-              </div>
-
               <div className="flex justify-end">
                 <Button
                   className="uppercase"
@@ -488,9 +550,7 @@ export default function McpPage() {
         <div
           ref={installModalRef}
           className="fixed inset-0 z-[100] flex items-center justify-center bg-background/85 p-4"
-          onClick={(e) =>
-            e.target === e.currentTarget && setInstallEntry(null)
-          }
+          onClick={(e) => e.target === e.currentTarget && setInstallEntry(null)}
           role="dialog"
           aria-modal="true"
           aria-labelledby="install-mcp-title"
@@ -613,6 +673,14 @@ export default function McpPage() {
                     >
                       {server.transport}
                     </Badge>
+                    {server.auth && (
+                      <Badge tone="outline">
+                        {t.mcp.authLabel}{" "}
+                        {server.auth === "header"
+                          ? t.mcp.bearerAuth
+                          : server.auth}
+                      </Badge>
+                    )}
                     {!server.enabled && (
                       <Badge tone="outline">{t.mcp.disabled}</Badge>
                     )}
@@ -630,9 +698,7 @@ export default function McpPage() {
                       </span>
                     )}
                     {envCount > 0 && (
-                      <span>
-                        {format(t.mcp.envVars, { count: envCount })}
-                      </span>
+                      <span>{format(t.mcp.envVars, { count: envCount })}</span>
                     )}
                   </div>
                   {result && (
@@ -657,6 +723,25 @@ export default function McpPage() {
                 </div>
 
                 <div className="flex items-center gap-1 shrink-0">
+                  {server.auth === "oauth" && (
+                    <Button
+                      ghost
+                      size="sm"
+                      title={t.mcp.authenticateWithOAuth}
+                      onClick={() => handleAuthenticate(server)}
+                      disabled={authenticating === server.name}
+                      prefix={
+                        authenticating === server.name ? (
+                          <Spinner />
+                        ) : (
+                          <KeyRound />
+                        )
+                      }
+                    >
+                      {t.mcp.authenticateWithOAuth}
+                    </Button>
+                  )}
+
                   <Button
                     ghost
                     size="sm"
@@ -665,11 +750,7 @@ export default function McpPage() {
                     onClick={() => handleToggleEnabled(server)}
                     disabled={togglingName === server.name}
                     prefix={
-                      togglingName === server.name ? (
-                        <Spinner />
-                      ) : (
-                        <Power />
-                      )
+                      togglingName === server.name ? <Spinner /> : <Power />
                     }
                     className={server.enabled ? "text-success" : undefined}
                   >
@@ -806,9 +887,7 @@ export default function McpPage() {
                       ) : (
                         <code className="font-mono">{entry.install_url}</code>
                       )}
-                      {entry.install_ref && (
-                        <span> @ {entry.install_ref}</span>
-                      )}
+                      {entry.install_ref && <span> @ {entry.install_ref}</span>}
                     </p>
                   )}
                   {entry.bootstrap.length > 0 && (
@@ -820,7 +899,10 @@ export default function McpPage() {
                       </summary>
                       <ul className="mt-1 ml-3 list-disc space-y-0.5">
                         {entry.bootstrap.map((cmd, i) => (
-                          <li key={`${entry.name}-bs-${i}`} className="break-all">
+                          <li
+                            key={`${entry.name}-bs-${i}`}
+                            className="break-all"
+                          >
                             <code className="font-mono">{cmd}</code>
                           </li>
                         ))}

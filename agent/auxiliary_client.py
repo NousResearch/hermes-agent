@@ -6283,18 +6283,27 @@ def _get_task_timeout(task: str, default: float = _DEFAULT_AUX_TIMEOUT) -> float
     return default
 
 
-def _effective_aux_timeout(task: str, timeout: Optional[float]) -> float:
+def _effective_aux_timeout(
+    task: str,
+    timeout: Optional[float],
+    default: float = _DEFAULT_AUX_TIMEOUT,
+) -> float:
     """Resolve the effective timeout for an auxiliary LLM call.
 
     Uses the caller-provided ``timeout`` when given; otherwise reads
-    ``auxiliary.{task}.timeout`` from config via :func:`_get_task_timeout`.
+    ``auxiliary.{task}.timeout`` from config via :func:`_get_task_timeout`,
+    falling back to ``default``.  Callers with a historical task-specific
+    fallback can supply it without resolving the timeout before this helper
+    applies task-level policy.
     For the ``compression`` task only, applies a bounded floor so a reasoning
     model summarising a large context is not cut off by the default timeout
     (#54915).  The floor is intentionally skipped when the caller passes an
     explicit ``timeout=`` — explicit per-call deadlines are always honoured —
     and it is a minimum (``max``), so a config value already above it is kept.
     """
-    effective = timeout if timeout is not None else _get_task_timeout(task)
+    effective = (
+        timeout if timeout is not None else _get_task_timeout(task, default=default)
+    )
     if timeout is None and task == "compression":
         effective = max(effective, _COMPRESSION_TIMEOUT_FLOOR_SECONDS)
     return effective

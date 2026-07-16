@@ -219,6 +219,19 @@ def _resolve_isolated_python() -> list[str]:
     if override:
         return override.split()
 
+    state_cfg = _read_state_config()
+    cfg_python = (state_cfg.get("python") or "").strip()
+    if cfg_python:
+        path = Path(cfg_python).expanduser()
+        if path.is_file():
+            return [str(path)]
+
+    root = resolve_root()
+    if os.name == "nt":
+        repo_python = root / ".venv" / "Scripts" / "python.exe"
+    else:
+        repo_python = root / ".venv" / "bin" / "python"
+
     def _can_import_anthropic(argv: list[str]) -> bool:
         try:
             proc = subprocess.run(
@@ -231,12 +244,17 @@ def _resolve_isolated_python() -> list[str]:
         except Exception:
             return False
 
-    candidates: list[list[str]] = [
-        [sys.executable],
-        ["py", "-3"],
-        ["python3"],
-        ["python"],
-    ]
+    candidates: list[list[str]] = []
+    if repo_python.is_file():
+        candidates.append([str(repo_python)])
+    candidates.extend(
+        [
+            [sys.executable],
+            ["py", "-3"],
+            ["python3"],
+            ["python"],
+        ]
+    )
     for argv in candidates:
         if _can_import_anthropic(argv):
             return argv

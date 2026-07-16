@@ -13,6 +13,17 @@ repository-native policy in `scripts/merge_tools/` is the authoritative merge
 mechanism; keep upstream behavior as the base and reapply only a verified fork
 advantage.
 
+### Local workspace guardrails
+
+For fork-owned plugins, merge overlays, Windows operations, and local output,
+read the nearest guide under `fork/` before editing. Keep generated media,
+runtime state, release bundles, node modules, credentials, logs, and `_docs/`
+evidence out of publication. Use `config.yaml` for non-secret behavior and
+`.env` only for credentials. On Windows, restart the stack with
+`scripts/windows/restart-hermes-stack.ps1` without `-StartLlama` unless the
+operator explicitly requests llama; a Desktop rebuild requires a live probe of
+the newest ready backend port.
+
 ## What Hermes Is
 
 Hermes is a personal AI agent that runs the same agent core across a CLI, a

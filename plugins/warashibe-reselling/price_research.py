@@ -128,6 +128,7 @@ def _parse_mercari_item_links(page: Any, base_url: str, limit: int) -> list[dict
         if item_url in seen:
             continue
         seen.add(item_url)
+
         raw = _text(row)
         if not raw:
             try:
@@ -193,7 +194,6 @@ def _parse_yahoo_product(page: Any, base_url: str, limit: int) -> list[dict[str,
 
 
 def _parse_ebay_itm_cards(page: Any, base_url: str, limit: int) -> list[dict[str, Any]]:
-    """eBay 2026 cards: climb parents of /itm/ links and parse 円 / $ prices."""
     try:
         raw_items = page.evaluate(
             """() => {
@@ -213,11 +213,7 @@ def _parse_ebay_itm_cards(page: Any, base_url: str, limit: int) -> list[dict[str
                 if (!text || !/\\d/.test(text)) continue;
                 if (/Shop on eBay/i.test(text) && text.length < 120) continue;
                 seen.add(m[1]);
-                out.push({
-                  id: m[1],
-                  href: (a.href || '').split('?')[0],
-                  text: text.slice(0, 280),
-                });
+                out.push({id: m[1], href: (a.href || '').split('?')[0], text: text.slice(0, 280)});
                 if (out.length >= 30) break;
               }
               return out;
@@ -317,14 +313,13 @@ def _search_amazon_official(keyword: str, limit: int) -> dict[str, Any]:
         )
         return result
 
-    # Optional dependency; fail soft if package missing.
     try:
-        from paapi5_python_sdk.api.default_api import DefaultApi  # type: ignore
-        from paapi5_python_sdk.models.search_items_request import SearchItemsRequest  # type: ignore
-        from paapi5_python_sdk.models.partner_type import PartnerType  # type: ignore
-        from paapi5_python_sdk.models.search_items_resource import SearchItemsResource  # type: ignore
-        from paapi5_python_sdk.rest import ApiException  # type: ignore
-    except Exception as exc:  # noqa: BLE001
+        from paapi5_python_sdk.api.default_api import DefaultApi
+        from paapi5_python_sdk.models.search_items_request import SearchItemsRequest
+        from paapi5_python_sdk.models.partner_type import PartnerType
+        from paapi5_python_sdk.models.search_items_resource import SearchItemsResource
+        from paapi5_python_sdk.rest import ApiException
+    except Exception as exc:
         result["skipped"] = True
         result["skip_reason"] = f"PA-API SDK unavailable: {exc}"
         return result
@@ -379,7 +374,7 @@ def _search_amazon_official(keyword: str, limit: int) -> dict[str, Any]:
         result["count"] = len(items_out)
         result["skipped"] = False
         return result
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         result["skipped"] = True
         result["skip_reason"] = f"PA-API request failed: {exc}"
         return result
@@ -462,7 +457,7 @@ def search_markets(
     for platform in selected:
         try:
             results.append(search_prices(keyword, platform, limit, dry_run=dry_run))
-        except Exception as exc:  # noqa: BLE001
+        except Exception as exc:
             results.append(
                 {
                     "keyword": keyword,
@@ -490,7 +485,6 @@ def find_arbitrage(
     budget_yen: int | None = None,
 ) -> dict[str, Any]:
     """Scan markets and rank buy→sell combos that pass warashibe profit gates."""
-    # Local import avoids circular issues when CLI loads modules loosely.
     try:
         from . import core
     except ImportError:
@@ -498,13 +492,10 @@ def find_arbitrage(
 
     selected = platforms or ["mercari", "yahoo_auction", "ebay", "amazon_jp"]
     market = search_markets(keyword, selected, limit, dry_run=dry_run)
-    # KPI thresholds (core.KPI_DEFAULTS is the single source of truth)
     profit_yen = int(min_profit_yen) if min_profit_yen is not None else core.KPI_DEFAULTS["min_profit_yen"]
     profit_rate = float(min_profit_rate) if min_profit_rate is not None else core.KPI_DEFAULTS["min_profit_rate"]
-    # Arb scans often target mid-ticket niches (GPU/golf); default wider than beginner 1万円.
     budget = int(budget_yen) if budget_yen is not None else int(os.environ.get("WARASHIBE_ARB_BUDGET", "80000"))
 
-    # Shipping/overhead estimates by buy→sell route (yen).
     route_ship = {
         ("mercari", "yahoo_auction"): 700,
         ("yahoo_auction", "mercari"): 700,
@@ -533,7 +524,6 @@ def find_arbitrage(
             if not isinstance(landed, int) or landed <= 0:
                 continue
             usable.append({**item, "landed_price": landed})
-        # Drop extreme 1-yen junk if there is a denser cluster.
         if len(usable) >= 3:
             prices = sorted(i["landed_price"] for i in usable)
             median = prices[len(prices) // 2]
@@ -544,14 +534,18 @@ def find_arbitrage(
     for buy_p, buy_items in by_platform.items():
         if not buy_items:
             continue
-        buy_item = min(buy_items, key=lambda x: x["landed_price"])
+        # Filter buy items: exclude unrealistically cheap prices (< 5% of budget or < ¥3,000)
+        # These are typically auction start prices, not usable buy-it-now prices.
+        sane = [i for i in buy_items if i["landed_price"] >= max(3000, int(budget * 0.05))]
+        if not sane:
+            continue
+        buy_item = min(sane, key=lambda x: x["landed_price"])
         buy_price = int(buy_item["landed_price"])
         if buy_price > budget:
             continue
         for sell_p, sell_items in by_platform.items():
             if sell_p == buy_p or not sell_items:
                 continue
-            # Conservative sell: upper quartile, not absolute max.
             sells = sorted(int(i["landed_price"]) for i in sell_items)
             sell_price = sells[int(len(sells) * 0.75)] if len(sells) >= 4 else sells[-1]
             ship = route_ship.get((buy_p, sell_p), 1000)
@@ -562,7 +556,6 @@ def find_arbitrage(
                 shipping_out=ship,
                 packaging=int(core.DEFAULTS.get("packaging_cost", 80)),
             )
-            # Override go with explicit thresholds (also handles ebay fee_flat quirks).
             go = profit["profit"] >= profit_yen and profit["profit_rate"] >= profit_rate
             sell_item = max(sell_items, key=lambda x: x.get("landed_price") or 0)
             combos.append(
@@ -584,6 +577,12 @@ def find_arbitrage(
                 }
             )
 
+    # Flag Japan→eBay specific combos
+    for c in combos:
+        c["japan_to_ebay"] = c["buy_platform"] in ("mercari", "yahoo_auction") and c["sell_platform"] == "ebay"
+        if c["japan_to_ebay"]:
+            c["export_premium"] = round((c["sell_price"] - c["buy_price"]) / c["buy_price"], 3) if c["buy_price"] else 0
+
     combos.sort(key=lambda c: (c["go"], c["profit"]), reverse=True)
     winners = [c for c in combos if c["go"]]
     return {
@@ -598,6 +597,48 @@ def find_arbitrage(
         "combos": combos,
         "winners": winners,
         "winner_count": len(winners),
+    }
+
+
+def find_japan_to_ebay(
+    keyword: str,
+    platforms: list[str] | None = None,
+    limit: int = 8,
+    *,
+    dry_run: bool = False,
+    min_profit_yen: int | None = None,
+    min_profit_rate: float | None = None,
+    budget_yen: int | None = None,
+    min_export_premium: float = 0.5,
+) -> dict[str, Any]:
+    """Find items cheap in Japan (Mercari/Yahoo) but high on eBay.
+
+    Returns only Japan→eBay routes that exceed the export premium threshold.
+    """
+    result = find_arbitrage(
+        keyword,
+        platforms,
+        limit,
+        dry_run=dry_run,
+        min_profit_yen=min_profit_yen,
+        min_profit_rate=min_profit_rate,
+        budget_yen=budget_yen,
+    )
+    j2e = [c for c in result.get("combos", []) if c.get("japan_to_ebay") and c.get("export_premium", 0) >= min_export_premium]
+    j2e.sort(key=lambda c: (c.get("export_premium", 0), c.get("profit", 0)), reverse=True)
+    return {
+        "keyword": keyword,
+        "mode": "japan_to_ebay",
+        "retrieved_at": datetime.now(timezone.utc).isoformat(),
+        "thresholds": {
+            "min_profit_yen": result["thresholds"]["min_profit_yen"],
+            "min_profit_rate": result["thresholds"]["min_profit_rate"],
+            "min_export_premium": min_export_premium,
+            "budget_yen": result["thresholds"]["budget_yen"],
+        },
+        "market": result["market"],
+        "combos": j2e,
+        "count": len(j2e),
     }
 
 
@@ -639,6 +680,7 @@ __all__ = [
     "search_prices",
     "search_markets",
     "find_arbitrage",
+    "find_japan_to_ebay",
     "handle_price_research",
     "PRICE_RESEARCH_SCHEMA",
     "TARGETS",

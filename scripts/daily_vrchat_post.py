@@ -27,6 +27,8 @@ IRODORI_TTS_URL = "http://127.0.0.1:8088"
 IRODORI_VENV_PYTHON = r"C:\Users\downl\Documents\New project\irodori-tts-server\.venv\Scripts\python.exe"
 IRODORI_SERVER_DIR = r"C:\Users\downl\Documents\New project\irodori-tts-server"
 OUTPUT_DIR = Path(r"C:\Users\downl\Documents\New project\hermes-agent\output\daily_posts")
+HERMES_REPO_ROOT = Path(r"C:\Users\downl\Documents\New project\hermes-agent")
+HERMES_POST_PYTHON = HERMES_REPO_ROOT / ".venv-vrchat-post311" / "Scripts" / "python.exe"
 
 # Hakua morning greetings
 HAKUA_MORNING_TEXTS = [
@@ -38,14 +40,40 @@ HAKUA_MORNING_TEXTS = [
 ]
 
 def pick_random_photo() -> Path | None:
-    extensions = (".png", ".jpg", ".jpeg", ".PNG", ".JPG", ".JPEG")
-    photos = []
-    for ext in extensions:
-        photos.extend(VRCHAT_PHOTOS_DIR.rglob(f"*{ext}"))
+    """Choose randomly from the newest VRChat images, not the whole archive."""
+    extensions = {".png", ".jpg", ".jpeg"}
+    photos = [
+        path for path in VRCHAT_PHOTOS_DIR.rglob("*")
+        if path.is_file() and path.suffix.lower() in extensions
+    ]
     if not photos:
         print("No VRChat photos found!", file=sys.stderr)
         return None
-    return random.choice(photos)
+    photos.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+    recent = photos[:10]
+    return random.choice(recent)
+
+def generate_ai_script(photo: Path) -> str:
+    """Generate a fresh short Japanese narration through the Hermes CLI."""
+    prompt = (
+        "朝7時のVRChat写真投稿用に、はくあが話す日本語ナレーションを1つ作ってください。"
+        "写真のファイル名から想像できる範囲だけを使い、60文字以内、自然で優しい一文、"
+        "説明や引用符やハッシュタグは不要です。毎回表現を変えてください。\n"
+        f"写真ファイル名: {photo.name}"
+    )
+    try:
+        result = subprocess.run(
+            ["hermes", "-z", prompt, "--cli"],
+            capture_output=True, text=True, timeout=90,
+            cwd=str(HERMES_REPO_ROOT), encoding="utf-8", errors="replace",
+        )
+        text = (result.stdout or "").strip().splitlines()
+        text = " ".join(line.strip() for line in text if line.strip())
+        if result.returncode == 0 and text:
+            return text.strip("\"'")[:140]
+    except Exception as exc:
+        print(f"AI script generation failed: {exc}", file=sys.stderr)
+    return "おはようございます。今日もVRChatで素敵な時間を過ごしましょう。"
 
 def is_irodori_server_running() -> bool:
     try:
@@ -61,8 +89,11 @@ def start_irodori_server():
     print("Starting Irodori-TTS server...")
     # Use the virtual environment's python
     cmd = [IRODORI_VENV_PYTHON, "-m", "irodori_openai_tts", "--host", "127.0.0.1", "--port", "8088"]
+    # Prepare environment without HF_HUB_ENABLE_HF_TRANSFER
+    env = os.environ.copy()
+    env.pop("HF_HUB_ENABLE_HF_TRANSFER", None)  # Remove if present
     # Start the process in the background
-    subprocess.Popen(cmd, cwd=IRODORI_SERVER_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    subprocess.Popen(cmd, cwd=IRODORI_SERVER_DIR, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, env=env)
     # Wait for the server to be ready
     for _ in range(30):
         if is_irodori_server_running():
@@ -100,6 +131,7 @@ def create_mp4(image_path: Path, audio_path: Path, output_path: Path) -> bool:
         "ffmpeg", "-y",
         "-loop", "1", "-i", str(image_path),
         "-i", str(audio_path),
+        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p",
         "-c:v", "libx264", "-tune", "stillimage",
         "-c:a", "aac", "-b:a", "192k",
         "-pix_fmt", "yuv420p",
@@ -126,36 +158,34 @@ def post_via_hermes_lm_twitterer(media_path: Path, tweet_text: str) -> bool:
     shutil.copy2(media_path, dst_media_path)
     print(f"Copied media to LM Twitterer media dir: {dst_media_path}")
 
-    # Build the hermes command for lm-twitterer post
-    hermes_cmd = "hermes"
-    try:
-        subprocess.run([hermes_cmd, "--version"], capture_output=True, check=True)
-    except (FileNotFoundError, subprocess.CalledProcessError):
-        hermes_cmd = [sys.executable, "-m", "hermes"]
+    # Build the Hermes command using the dedicated uv Python 3.11 venv.
+    # Python 3.13/3.14 currently break lm-twitterer's js2py dependency.
+    if not HERMES_POST_PYTHON.exists():
+        print(f"Hermes post Python not found: {HERMES_POST_PYTHON}", file=sys.stderr)
+        return False
 
-    # Prepare arguments: hermes lm-twitterer post --media <path> --text "<text>" --live
-    args = [
+    # Prepare arguments: python -m hermes_cli.main lm-twitterer post --media <path> --text "<text>" --live
+    cmd = [
+        str(HERMES_POST_PYTHON),
+        "-m", "hermes_cli.main",
         "lm-twitterer",
         "post",
         "--media", str(dst_media_path),
         "--text", tweet_text,
-        "--live"
+        "--live",
     ]
-    if isinstance(hermes_cmd, list):
-        cmd = hermes_cmd + args
-    else:
-        cmd = [hermes_cmd] + args
 
     print(f"Running: {' '.join(cmd)}")
     try:
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        if result.returncode == 0:
-            print(f"Tweet posted successfully via Hermes LM Twitterer.")
-            # Optionally parse output for URL
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180, cwd=str(HERMES_REPO_ROOT))
+        combined = (result.stdout or "") + "\n" + (result.stderr or "")
+        if result.returncode == 0 and '"posted": false' not in combined and '"ok": false' not in combined:
+            print(result.stdout.strip())
+            print("Tweet posted successfully via Hermes LM Twitterer.")
             return True
-        else:
-            print(f"Hermes LM Twitterer failed: {result.stderr}", file=sys.stderr)
-            return False
+        print(f"Hermes LM Twitterer failed (returncode={result.returncode}):", file=sys.stderr)
+        print(combined.strip(), file=sys.stderr)
+        return False
     except Exception as e:
         print(f"Error running Hermes LM Twitterer: {e}", file=sys.stderr)
         return False
@@ -166,8 +196,8 @@ def main():
     if not photo:
         return 1
     print(f"Selected photo: {photo}")
-    tweet_text = random.choice(HAKUA_MORNING_TEXTS) + " #hermesagent"
-    print(f"Tweet text: {tweet_text}")
+    tweet_text = generate_ai_script(photo) + " #hermesagent はくあ"
+    print(f"AI-generated script: {tweet_text}")
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
     audio_path = OUTPUT_DIR / f"hakua_{timestamp}.wav"
     mp4_path = OUTPUT_DIR / f"hakua_{timestamp}.mp4"

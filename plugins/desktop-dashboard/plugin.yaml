@@ -1,0 +1,29 @@
+name: desktop-dashboard
+version: 1.0.0
+description: "デスクトップ常駐ダッシュボード: デジタル/アナログ時計、天気、X日本トレンド、AI関連トレンド、i18n、OS時刻同期"
+author: "Hermes Agent"
+license: "MIT"
+kind: "standalone"
+provides_tools:
+  - "desktop_dashboard"
+provides_hooks: []
+hooks:
+  - "post_tool_call"
+  - "on_session_end"
+requires_env: []
+config_schema:
+  city:
+    type: string
+    default: "日野市"
+  latitude:
+    type: number
+    default: 35.6693
+  longitude:
+    type: number
+    default: 139.3956
+  weather_refresh_ms:
+    type: integer
+    default: 900000
+  trend_refresh_ms:
+    type: integer
+    default: 1800000

@@ -1,0 +1,17 @@
+name: sillytavern
+version: 0.1.0
+description: "Hermes bridge for the pinned SillyTavern frontend and local chat-completions server."
+author: "Hermes Agent"
+kind: standalone
+platforms:
+  - linux
+  - macos
+  - windows
+provides_tools:
+  - sillytavern_capabilities
+  - sillytavern_status
+  - sillytavern_start
+  - sillytavern_stop
+  - sillytavern_generate
+provides_cli:
+  - sillytavern

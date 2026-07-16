@@ -6137,6 +6137,150 @@ def test_interrupt_before_agent_ready_prevents_late_turn_start(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_cancelled_turn_before_agent_ready_emits_error_event(monkeypatch):
+    """A turn cancelled during lazy agent startup must surface an error event.
+
+    Sibling of test_interrupt_before_agent_ready_prevents_late_turn_start: that
+    test only asserts `_run_prompt_submit` is skipped, mocking `_emit` to a
+    no-op so it cannot catch a silent drop. This test captures `_emit` and
+    asserts the client receives an `error` event with a human-readable message,
+    so the Desktop composer can show feedback instead of hanging on a
+    `{"status":"streaming"}` reply that never produces a turn (issue #63078
+    server-side half).
+    """
+    threads = []
+    emitted = []
+    calls = {"run_prompt": 0}
+
+    class _FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+            threads.append(self)
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return True
+
+    session = _session()
+    session["agent"] = None
+    server._sessions["sid"] = session
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _FakeThread)
+        monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
+        monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
+        monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+        monkeypatch.setattr(server, "_wait_agent", lambda session, rid: None)
+        monkeypatch.setattr(
+            server,
+            "_run_prompt_submit",
+            lambda *args, **kwargs: calls.__setitem__(
+                "run_prompt", calls["run_prompt"] + 1
+            ),
+        )
+
+        submit = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hello"},
+            }
+        )
+        assert submit.get("result"), f"got error: {submit.get('error')}"
+        assert session["running"] is True
+
+        # User hits Stop while the agent is still building.
+        stop = server.handle_request(
+            {"id": "2", "method": "session.interrupt", "params": {"session_id": "sid"}}
+        )
+        assert stop.get("result"), f"got error: {stop.get('error')}"
+        assert session.get("_turn_cancel_requested") is True
+
+        # The deferred run thread now wakes up; without the emit it would bail
+        # silently and the Desktop would never learn the turn was dropped.
+        threads[0].target()
+
+        assert calls["run_prompt"] == 0
+        assert session["running"] is False
+        assert session.get("inflight_turn") is None
+        # Exactly one error event addressed to this session.
+        error_events = [e for e in emitted if e and len(e) >= 2 and e[0] == "error" and e[1] == "sid"]
+        assert len(error_events) == 1, f"expected one error event, got: {emitted}"
+        msg = error_events[0][2].get("message", "")
+        assert "cancelled" in msg.lower(), f"unexpected message: {msg}"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_not_running_before_agent_ready_emits_error_event(monkeypatch):
+    """When `running` is cleared by something other than an explicit interrupt
+    (e.g. a concurrent session.create race that resets the flag), the deferred
+    run thread must still emit an error event rather than disappearing silently.
+    """
+    threads = []
+    emitted = []
+    calls = {"run_prompt": 0}
+
+    class _FakeThread:
+        def __init__(self, target=None, daemon=None):
+            self.target = target
+            threads.append(self)
+
+        def start(self):
+            return None
+
+        def is_alive(self):
+            return True
+
+    session = _session()
+    session["agent"] = None
+    server._sessions["sid"] = session
+
+    try:
+        monkeypatch.setattr(server.threading, "Thread", _FakeThread)
+        monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: emitted.append(args))
+        monkeypatch.setattr(server, "_ensure_session_db_row", lambda session: None)
+        monkeypatch.setattr(server, "_persist_branch_seed", lambda session: None)
+        monkeypatch.setattr(server, "_start_agent_build", lambda sid, session: None)
+        monkeypatch.setattr(server, "_wait_agent", lambda session, rid: None)
+        monkeypatch.setattr(
+            server,
+            "_run_prompt_submit",
+            lambda *args, **kwargs: calls.__setitem__(
+                "run_prompt", calls["run_prompt"] + 1
+            ),
+        )
+
+        submit = server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "hello"},
+            }
+        )
+        assert submit.get("result"), f"got error: {submit.get('error')}"
+        assert session["running"] is True
+
+        # Simulate a concurrent path clearing `running` without setting the
+        # cancel flag (the other branch of the guard).
+        with session["history_lock"]:
+            session["running"] = False
+
+        threads[0].target()
+
+        assert calls["run_prompt"] == 0
+        assert session.get("inflight_turn") is None
+        error_events = [e for e in emitted if e and len(e) >= 2 and e[0] == "error" and e[1] == "sid"]
+        assert len(error_events) == 1, f"expected one error event, got: {emitted}"
+        msg = error_events[0][2].get("message", "")
+        assert "no longer running" in msg.lower(), f"unexpected message: {msg}"
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_clear_pending_without_sid_clears_all():
     """_clear_pending(None) is the shutdown path — must still release
     every pending prompt regardless of owning session."""

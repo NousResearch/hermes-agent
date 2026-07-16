@@ -8549,6 +8549,21 @@ def _(rid, params: dict) -> dict:
             if session.get("_turn_cancel_requested") or not session.get("running"):
                 session["running"] = False
                 _clear_inflight_turn(session)
+                # Surface the cancellation to the client. Without this emit the
+                # turn vanishes silently — the Desktop sees `prompt.submit`
+                # return `{"status": "streaming"}` but never receives a
+                # `message.start` or `error` event, so the composer shows no
+                # feedback (issue #63078 server-side half). Match the
+                # `_wait_agent` error branch above: emit, then bail.
+                _emit(
+                    "error",
+                    sid,
+                    {
+                        "message": "Turn cancelled before the agent was ready"
+                        if session.get("_turn_cancel_requested")
+                        else "Session no longer running before the agent was ready"
+                    },
+                )
                 return
         _run_prompt_submit(rid, sid, session, text)
 

@@ -292,9 +292,10 @@ TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "Keep working until the task is actually complete. Do not stop with a summary of "
     "what you plan to do next time. If you have tools available that can accomplish "
     "the task, use them instead of telling the user what you would do.\n"
-    "Every response should either (a) contain tool calls that make progress, or "
-    "(b) deliver a final result to the user. Responses that only describe intentions "
-    "without acting are not acceptable."
+    "Every response should either (a) contain tool calls that make progress, "
+    "(b) deliver a final result to the user, or (c) ask the user a genuinely "
+    "blocking question about intent or scope that only they can answer. Responses "
+    "that only describe intentions without acting are not acceptable."
 )
 
 # Model name substrings that trigger tool-use enforcement guidance.
@@ -329,7 +330,14 @@ TASK_COMPLETION_GUIDANCE = (
     "approach, ask the user). NEVER substitute plausible-looking fabricated "
     "output (made-up data, invented file contents, synthesised API responses) "
     "for results you couldn't actually produce. Reporting a blocker honestly "
-    "is always better than inventing a result."
+    "is always better than inventing a result.\n"
+    "Clarifying scope is progress, not stopping. Tools can retrieve facts, but "
+    "they cannot decide what the user wants: when an open-ended build/change "
+    "request leaves goal, scale, or constraints unstated, ask ONE upfront "
+    "clarifying question (use the clarify tool if available) instead of filling "
+    "the gaps with ambitious assumptions. If you cannot ask, state your "
+    "assumptions explicitly and build the SMALLEST version that satisfies the "
+    "request — the user can always ask for more."
 )
 
 # Universal parallel-tool-call guidance — applied to ALL models.
@@ -412,8 +420,10 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "- 'Is port 443 open?' → check THIS machine (don't ask 'open where?')\n"
     "- 'What OS am I running?' → check the live system (don't use user profile)\n"
     "- 'What time is it?' → run `date` (don't guess)\n"
-    "Only ask for clarification when the ambiguity genuinely changes what tool "
-    "you would call.\n"
+    "For quick factual questions, only ask for clarification when the ambiguity "
+    "genuinely changes what tool you would call. This rule is about lookups — it "
+    "does NOT apply to open-ended build/change requests, where intent and scope "
+    "ambiguity is resolved by asking the user (see <missing_context>).\n"
     "</act_dont_ask>\n"
     "\n"
     "<prerequisite_checks>\n"
@@ -436,8 +446,15 @@ OPENAI_MODEL_EXECUTION_GUIDANCE = (
     "- If required context is missing, do NOT guess or hallucinate an answer.\n"
     "- Use the appropriate lookup tool when missing information is retrievable "
     "(search_files, web_search, read_file, etc.).\n"
-    "- Ask a clarifying question only when the information cannot be retrieved by tools.\n"
-    "- If you must proceed with incomplete information, label assumptions explicitly.\n"
+    "- Ask a clarifying question when the information cannot be retrieved by tools, "
+    "OR when the ambiguity is about the user's intent, scope, or preference — a "
+    "decision only the user can make. Tools can fill in facts; they cannot decide "
+    "what the user actually wants. On an open-ended build/change request, prefer "
+    "one upfront clarifying question (goal, scale, constraints) over building on "
+    "maximal assumptions.\n"
+    "- If you must proceed with incomplete information, label assumptions explicitly "
+    "and default to the SMALLEST solution that satisfies the request, not the most "
+    "ambitious one.\n"
     "</missing_context>"
 )
 

@@ -1210,6 +1210,11 @@ def _cmd_boards_set_default_workdir(args: argparse.Namespace) -> int:
 # ---------------------------------------------------------------------------
 
 
+# SQLite INTEGER ceiling (2**63 - 1) — the largest whole-second value that
+# can be persisted without overflow in the kanban database.
+_MAX_DURATION_SECONDS = (1 << 63) - 1
+
+
 def _parse_duration(val) -> Optional[int]:
     """Parse ``30s`` / ``5m`` / ``2h`` / ``1d`` or a raw integer → seconds.
 
@@ -1231,11 +1236,16 @@ def _parse_duration(val) -> Optional[int]:
             n = float(s[:-1])
         except ValueError as exc:
             raise ValueError(f"malformed duration {val!r}") from exc
-        # float() accepts huge strings as +inf; int(inf * k) raises
-        # OverflowError which the CLI caller only catches ValueError for.
-        if not math.isfinite(n):
+        # Validate the *converted* seconds, not just the parsed float.
+        # A finite float like 1e308 becomes inf after multiplying by
+        # the unit scale (e.g. 86400 for days), and int(inf) raises
+        # OverflowError — which the CLI caller only catches ValueError
+        # for.  Also enforce the SQLite INTEGER ceiling (2**63-1) so
+        # that persisted values remain representable.
+        seconds = n * units[s[-1]]
+        if not math.isfinite(seconds) or seconds > _MAX_DURATION_SECONDS:
             raise ValueError(f"malformed duration {val!r}: value too large")
-        return int(n * units[s[-1]])
+        return int(seconds)
     raise ValueError(f"malformed duration {val!r} (expected 30s, 5m, 2h, 1d, or a number)")
 
 

@@ -1377,11 +1377,14 @@ def test_parse_duration_rejects_garbage():
 
 def test_parse_duration_rejects_huge_value_as_value_error():
     """A value that float() turns into +inf must raise ValueError, not
-    OverflowError — the CLI caller only catches ValueError (#_parse_duration)."""
+    OverflowError — the CLI caller only catches ValueError."""
     from hermes_cli.kanban import _parse_duration
     import pytest as _p
     with _p.raises(ValueError):
         _parse_duration("9" * 310 + "d")
+    # Finite float that overflows after unit scaling (1e308 * 86400 → inf).
+    with _p.raises(ValueError):
+        _parse_duration("1e308d")
 
 
 

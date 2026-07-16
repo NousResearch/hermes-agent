@@ -5262,6 +5262,44 @@ class TestFTSExternalContentMigration:
         finally:
             db.close()
 
+    def test_cjk_like_fallback_hides_rewound_messages(self, tmp_path):
+        """The CJK LIKE fallback must honor the same visibility rule as the
+        FTS5 paths: rewound rows (active=0, compacted=0) are hidden unless
+        include_inactive=True; compaction-archived rows (active=0,
+        compacted=1) stay discoverable (#38763)."""
+        db = SessionDB(db_path=tmp_path / "fresh.db")
+        try:
+            db.create_session(session_id="s1", source="cli")
+            db.append_message("s1", role="user", content="被撤销的搜索目标内容")
+            db.append_message("s1", role="user", content="被压缩归档的搜索目标内容")
+
+            def _flags(conn):
+                # First row: rewound (active=0, compacted=0) — hidden.
+                conn.execute(
+                    "UPDATE messages SET active = 0 WHERE content LIKE '%撤销%'"
+                )
+                # Second row: compaction-archived (active=0, compacted=1) — visible.
+                conn.execute(
+                    "UPDATE messages SET active = 0, compacted = 1 "
+                    "WHERE content LIKE '%归档%'"
+                )
+            db._execute_write(_flags)
+
+            # Short-CJK query (2 chars — below the 3-char trigram minimum)
+            # forces the LIKE fallback; both rows contain the token 内容.
+            # search_messages strips full content from results — assert on
+            # the snippet column instead.
+            hits = db.search_messages("内容")
+            snippets = [h["snippet"] or "" for h in hits]
+            assert any("归档" in s for s in snippets), "archived row must stay visible"
+            assert not any("撤销" in s for s in snippets), "rewound row must be hidden"
+
+            # include_inactive=True surfaces everything.
+            all_hits = db.search_messages("内容", include_inactive=True)
+            assert len(all_hits) == 2
+        finally:
+            db.close()
+
 
 # ---------------------------------------------------------------------------
 # apply_wal_with_fallback — read-only probe tests

@@ -1860,7 +1860,10 @@ class SessionDB:
                         logger.warning(
                             "state.db v23 migration: rebuilding FTS indexes for "
                             "%d messages — this one-time step may take several "
-                            "minutes on large databases; do not interrupt.",
+                            "minutes on large databases; do not interrupt. It "
+                            "runs in a single transaction and may transiently "
+                            "need free disk space on the order of the current "
+                            "database size.",
                             _msg_count,
                         )
                     self._drop_fts_triggers(cursor)
@@ -5520,6 +5523,11 @@ class SessionDB:
                     )
                     like_params += [f"%{esc}%", f"%{esc}%", f"%{esc}%"]
                 like_where = [f"({' OR '.join(token_clauses)})"]
+                if not include_inactive:
+                    # Same visibility rule as the FTS5 paths: live rows and
+                    # compaction-archived rows are discoverable; rewind/undo
+                    # rows (active=0, compacted=0) are hidden (#38763).
+                    like_where.append("(m.active = 1 OR m.compacted = 1)")
                 if source_filter is not None:
                     like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     like_params.extend(source_filter)

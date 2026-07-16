@@ -2374,7 +2374,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if err:
             return err
 
-        unknown = sorted(set(body) - {"query", "session_ids", "limit"})
+        unknown = sorted(set(body) - {"query", "session_ids", "session_aliases", "limit"})
         if unknown:
             return web.json_response(
                 _openai_error(
@@ -2404,6 +2404,7 @@ class APIServerAdapter(BasePlatformAdapter):
             )
         from gateway.session import _is_path_unsafe
         session_ids: List[str] = []
+        session_id_set: set[str] = set()
         for raw_session_id in raw_session_ids:
             if (
                 not isinstance(raw_session_id, str)
@@ -2416,8 +2417,29 @@ class APIServerAdapter(BasePlatformAdapter):
                     _openai_error("Invalid session ID in session_ids", code="invalid_session_ids"),
                     status=400,
                 )
-            if raw_session_id not in session_ids:
+            if raw_session_id not in session_id_set:
                 session_ids.append(raw_session_id)
+                session_id_set.add(raw_session_id)
+        raw_session_aliases = body.get("session_aliases", {})
+        if not isinstance(raw_session_aliases, dict) or len(raw_session_aliases) > len(session_ids):
+            return web.json_response(
+                _openai_error(
+                    "session_aliases must be an object bounded by session_ids",
+                    code="invalid_session_aliases",
+                ),
+                status=400,
+            )
+        session_aliases: Dict[str, str] = {}
+        for physical_id, public_id in raw_session_aliases.items():
+            if physical_id not in session_id_set or public_id not in session_id_set:
+                return web.json_response(
+                    _openai_error(
+                        "session_aliases keys and values must be present in session_ids",
+                        code="invalid_session_aliases",
+                    ),
+                    status=400,
+                )
+            session_aliases[physical_id] = public_id
         raw_limit = body.get("limit", 100)
         if isinstance(raw_limit, bool) or not isinstance(raw_limit, int) or not 1 <= raw_limit <= 500:
             return web.json_response(
@@ -2444,7 +2466,7 @@ class APIServerAdapter(BasePlatformAdapter):
             matches = db.search_messages(
                 query,
                 role_filter=["user", "assistant"],
-                limit=raw_limit + 1,
+                limit=len(session_ids),
                 include_inactive=False,
                 session_id_filter=session_ids,
                 include_context=False,
@@ -2457,14 +2479,17 @@ class APIServerAdapter(BasePlatformAdapter):
             truncated = False
             for match in matches:
                 matched_id = str(match.get("session_id") or "")
-                if matched_id not in allowed or matched_id in seen:
+                if matched_id not in allowed:
+                    continue
+                public_id = session_aliases.get(matched_id, matched_id)
+                if public_id in seen:
                     continue
                 if len(found) >= raw_limit:
                     truncated = True
                     break
-                seen.add(matched_id)
+                seen.add(public_id)
                 found.append({
-                    "id": matched_id,
+                    "id": public_id,
                     "title": match.get("session_title") or "Untitled",
                     "started_at": match.get("session_started"),
                 })

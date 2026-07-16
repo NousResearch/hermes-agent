@@ -379,6 +379,38 @@ async def test_session_search_rejects_non_json_media_type(adapter):
 
 
 @pytest.mark.asyncio
+async def test_session_search_groups_explicit_aliases_before_result_limit(adapter, session_db):
+    session_ids = []
+    session_aliases = {}
+    for index in range(251):
+        root = f"root-{index}"
+        tip = f"tip-{index}"
+        for session_id in (root, tip):
+            session_db.create_session(session_id, "api_server")
+            session_db.append_message(session_id, "user", "needle")
+            session_ids.append(session_id)
+        session_aliases[root] = tip
+
+    app = _create_session_app(adapter)
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.post(
+            "/api/sessions/search",
+            json={
+                "query": "needle",
+                "session_ids": session_ids,
+                "session_aliases": session_aliases,
+                "limit": 500,
+            },
+        )
+        payload = await response.json()
+
+    assert response.status == 200
+    assert len(payload["data"]) == 251
+    assert len({item["id"] for item in payload["data"]}) == 251
+    assert payload["truncated"] is False
+
+
+@pytest.mark.asyncio
 async def test_session_search_accepts_webui_maximum_scope(adapter, session_db):
     session_ids = [f"owned-{index}" for index in range(20_000)]
     app = _create_session_app(adapter)

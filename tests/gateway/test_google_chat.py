@@ -1359,6 +1359,8 @@ class TestNativeAttachmentDelivery:
         sent_body = adapter._create_message.call_args.args[1]
         assert "/setup-files" in sent_body["text"]
         assert "report.pdf" in sent_body["text"]
+        assert "Could not attach" in sent_body["text"]
+        assert "No he podido adjuntar" not in sent_body["text"]
 
     @pytest.mark.asyncio
     async def test_send_file_two_step_native_upload_when_user_oauth_ready(self, adapter, tmp_path):

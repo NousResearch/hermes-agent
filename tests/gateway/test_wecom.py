@@ -393,6 +393,26 @@ class TestMediaHelpers:
 
         assert decrypted == plaintext
 
+    def test_guess_filename_decodes_content_disposition(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        result = WeComAdapter._guess_filename(
+            "https://example.com/file",
+            'attachment; filename="%E6%B5%8B%E8%AF%95%E6%96%87%E4%BB%B6.pdf"',
+            "application/pdf",
+        )
+        assert result == "测试文件.pdf"
+
+    def test_guess_filename_decodes_url_path(self):
+        from plugins.platforms.wecom.adapter import WeComAdapter
+
+        result = WeComAdapter._guess_filename(
+            "https://example.com/%E6%B5%8B%E8%AF%95%E6%96%87%E4%BB%B6.pdf",
+            None,
+            "application/pdf",
+        )
+        assert result == "测试文件.pdf"
+
     @pytest.mark.asyncio
     async def test_load_outbound_media_rejects_placeholder_path(self):
         from plugins.platforms.wecom.adapter import WeComAdapter

@@ -834,7 +834,20 @@ export function useSessionActions({
 
         return true
       } catch (err) {
-        notifyError(err, copy.branchFailed)
+        // Backend restart / WS drop mid-RPC leaves the branch uncreated with no
+        // recovery path. Surface a persistent error with a retry action so the
+        // user can re-attempt without re-doing the whole branch flow.
+        notify({
+          kind: 'error',
+          title: copy.branchFailed,
+          message: err instanceof Error ? err.message : String(err),
+          action: {
+            label: t.common.retry,
+            onClick: () => {
+              void forkBranch(branchMessages, parentStoredId, cwd)
+            }
+          }
+        })
 
         return false
       } finally {
@@ -851,6 +864,7 @@ export function useSessionActions({
       navigate,
       requestGateway,
       selectedStoredSessionIdRef,
+      t,
       updateSessionState
     ]
   )

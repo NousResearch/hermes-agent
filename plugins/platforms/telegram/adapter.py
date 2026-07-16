@@ -7034,6 +7034,18 @@ class TelegramAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("TELEGRAM_EXCLUSIVE_BOT_MENTIONS", "true").lower() in {"true", "1", "yes", "on"}
 
+    def _telegram_bot_reply_requires_mention(self) -> bool:
+        """Return whether bot-authored replies must explicitly mention this bot."""
+        env_value = os.getenv("TELEGRAM_BOT_REPLY_REQUIRES_MENTION")
+        if env_value is not None:
+            return env_value.lower() in {"true", "1", "yes", "on"}
+        configured = self.config.extra.get("bot_reply_requires_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in {"true", "1", "yes", "on"}
+            return bool(configured)
+        return False
+
     def _telegram_free_response_chats(self) -> set[str]:
         raw = self.config.extra.get("free_response_chats")
         if raw is None:
@@ -7764,6 +7776,12 @@ class TelegramAdapter(BasePlatformAdapter):
         if not self._telegram_require_mention():
             return True
         if self._is_reply_to_bot(message):
+            from_user = getattr(message, "from_user", None)
+            if (
+                self._telegram_bot_reply_requires_mention()
+                and getattr(from_user, "is_bot", False)
+            ):
+                return self._message_mentions_bot(message)
             return True
         # When guest_mode is True, _is_guest_mention already called
         # _message_mentions_bot above — skip the redundant second call.
@@ -9011,6 +9029,13 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         os.environ["TELEGRAM_MENTION_PATTERNS"] = _json.dumps(telegram_cfg["mention_patterns"])
     if "exclusive_bot_mentions" in telegram_cfg and not os.getenv("TELEGRAM_EXCLUSIVE_BOT_MENTIONS"):
         os.environ["TELEGRAM_EXCLUSIVE_BOT_MENTIONS"] = str(telegram_cfg["exclusive_bot_mentions"]).lower()
+    if (
+        "bot_reply_requires_mention" in telegram_cfg
+        and not os.getenv("TELEGRAM_BOT_REPLY_REQUIRES_MENTION")
+    ):
+        os.environ["TELEGRAM_BOT_REPLY_REQUIRES_MENTION"] = str(
+            telegram_cfg["bot_reply_requires_mention"]
+        ).lower()
     if "allow_bots" in telegram_cfg and not os.getenv("TELEGRAM_ALLOW_BOTS"):
         os.environ["TELEGRAM_ALLOW_BOTS"] = str(telegram_cfg["allow_bots"]).lower()
     if "guest_mode" in telegram_cfg and not os.getenv("TELEGRAM_GUEST_MODE"):
@@ -9064,7 +9089,12 @@ def _apply_yaml_config(yaml_cfg: dict, telegram_cfg: dict) -> dict | None:
         if isinstance(group_allowed_chats, list):
             group_allowed_chats = ",".join(str(v) for v in group_allowed_chats)
         os.environ["TELEGRAM_GROUP_ALLOWED_CHATS"] = str(group_allowed_chats)
-    for _key in ("guest_mode", "disable_link_previews", "observe_unmentioned_group_messages"):
+    for _key in (
+        "guest_mode",
+        "disable_link_previews",
+        "observe_unmentioned_group_messages",
+        "bot_reply_requires_mention",
+    ):
         if _key in telegram_cfg:
             extras.setdefault(_key, telegram_cfg[_key])
     # Pass through telegram-specific extra keys (e.g. base_url proxy override),

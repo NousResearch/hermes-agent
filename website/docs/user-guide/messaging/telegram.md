@@ -538,6 +538,7 @@ Hermes Agent works in Telegram group chats with a few considerations:
   - `/command@botusername` (Telegram's bot-menu command form that includes the bot name)
   - matches for one of your configured regex wake words in `telegram.mention_patterns`
 - In groups with multiple Hermes bots, `telegram.exclusive_bot_mentions` keeps routing deterministic. When a message explicitly mentions one or more Telegram bot usernames, only the mentioned bot profiles process it; other Hermes bots ignore it before reply and wake-word fallbacks run. This is enabled by default.
+- For bot-to-bot groups, `telegram.bot_reply_requires_mention: true` keeps human reply-to-bot behavior but requires messages sent by other bots to explicitly `@botusername` before a reply-to-bot fallback can trigger this bot. This is disabled by default for compatibility.
 - Use `telegram.ignored_threads` to keep Hermes silent in specific Telegram forum topics, even when the group would otherwise allow free responses or mention-triggered replies
 - If `telegram.require_mention` is left unset or false, Hermes keeps the previous open-group behavior and responds to normal group messages it can see
 
@@ -551,12 +552,13 @@ Recommended group config:
 telegram:
   require_mention: true
   exclusive_bot_mentions: true
+  bot_reply_requires_mention: true
   mention_patterns: []
 ```
 
 With this setup, a group message like `@research_bot @ops_bot summarize this` is processed by `research_bot` and `ops_bot` only. Other Hermes bots in the group stay silent, even if the message is a reply to one of their earlier messages or would otherwise match a shared wake word.
 
-Set `exclusive_bot_mentions: false` only for legacy groups where explicit mentions should not override reply and wake-word triggers.
+Set `exclusive_bot_mentions: false` only for legacy groups where explicit mentions should not override reply and wake-word triggers. Leave `bot_reply_requires_mention` unset or false if you intentionally want bot-authored replies to trigger the same way as human replies.
 
 To operate several profiles, run the gateway command once per profile. For example:
 

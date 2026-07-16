@@ -385,6 +385,7 @@ AUTHOR_MAP = {
     "frowte3k@gmail.com": "Frowtek",
     "211828103+julio-cloudvisor@users.noreply.github.com": "julio-cloudvisor",
     "17778+kweiner@users.noreply.github.com": "kweiner",
+    "ken@kenweiner.com": "kweiner",
     "223516181+faisfamilytravel@users.noreply.github.com": "faisfamilytravel",
     "45189813+baofuen@users.noreply.github.com": "baofuen",
     "interstellar.consulting@gmail.com": "Interstellar-code",

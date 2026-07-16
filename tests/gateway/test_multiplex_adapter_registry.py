@@ -182,7 +182,12 @@ class TestSecondaryProfileConfigHandling:
 
         reviewer_cfg = GatewayConfig(multiplex_profiles=True)
         reviewer_cfg.platforms = {
-            Platform.FEISHU: PlatformConfig(enabled=True),
+            # connection_mode=webhook: with #52563's conditional check merged,
+            # default (websocket) Feishu no longer binds a port — only webhook
+            # mode should be reported here.
+            Platform.FEISHU: PlatformConfig(
+                enabled=True, extra={"connection_mode": "webhook"}
+            ),
             Platform.WEBHOOK: PlatformConfig(enabled=True, extra={"port": 8644}),
             Platform.TELEGRAM: PlatformConfig(enabled=True, token="t"),
         }

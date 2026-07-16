@@ -483,6 +483,12 @@ await page.evaluate(async (base) => {
 await page.waitForSelector(".cal-event-ext", { state: "detached", timeout: 10000 });
 check("unsubscribe clears external events", true);
 
+// ---- crypto global bar + trending -----------------------------------------------
+await page.waitForSelector(".global-bar");
+check("markets global bar renders", (await page.locator(".global-bar .gm-stat").count()) >= 3);
+check("fear & greed gauge shows", /\d/.test(await page.locator(".gm-fg-v").innerText()));
+check("trending strip renders chips", (await page.locator(".trend-chip").count()) >= 3);
+
 // ---- crypto detail drawer (chart + indicators) ----------------------------------
 await page.waitForSelector(".market-row");
 await page.locator(".market-row").first().click();

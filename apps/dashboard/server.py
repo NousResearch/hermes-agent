@@ -1107,6 +1107,61 @@ def sample_coin_chart(coin_id: str, days: int) -> dict:
     return _chart_payload(coin_id, days, _synth_candles(coin_id, days, base), "sample")
 
 
+CRYPTO_GLOBAL_TTL = 5 * 60
+CRYPTO_TRENDING_TTL = 10 * 60
+
+
+def _fear_greed() -> dict | None:
+    try:
+        raw = json.loads(fetch_url("https://api.alternative.me/fng/?limit=1", timeout=6))
+        entry = raw["data"][0]
+        return {"value": int(entry["value"]), "label": entry["value_classification"]}
+    except Exception:
+        return None
+
+
+def live_crypto_global() -> dict:
+    g = json.loads(fetch_url("https://api.coingecko.com/api/v3/global"))["data"]
+    return {
+        "source": "live",
+        "marketCap": g["total_market_cap"]["usd"],
+        "volume": g["total_volume"]["usd"],
+        "btcDominance": g["market_cap_percentage"]["btc"],
+        "ethDominance": g["market_cap_percentage"].get("eth"),
+        "change24h": g.get("market_cap_change_percentage_24h_usd"),
+        "coins": g.get("active_cryptocurrencies"),
+        "fearGreed": _fear_greed(),
+    }
+
+
+def sample_crypto_global() -> dict:
+    return {
+        "source": "sample", "marketCap": 3.62e12, "volume": 1.41e11,
+        "btcDominance": 54.2, "ethDominance": 12.8, "change24h": 1.83,
+        "coins": 13500, "fearGreed": {"value": 62, "label": "Greed"},
+    }
+
+
+def live_crypto_trending() -> dict:
+    raw = json.loads(fetch_url("https://api.coingecko.com/api/v3/search/trending"))
+    coins = []
+    for entry in raw.get("coins", [])[:10]:
+        item = entry.get("item", {})
+        coins.append({
+            "id": item.get("id"), "symbol": (item.get("symbol") or "").upper(),
+            "name": item.get("name"), "rank": item.get("market_cap_rank"),
+        })
+    return {"source": "live", "coins": coins}
+
+
+def sample_crypto_trending() -> dict:
+    names = [("pepe", "PEPE", "Pepe", 45), ("arbitrum", "ARB", "Arbitrum", 52),
+             ("sui", "SUI", "Sui", 28), ("render-token", "RNDR", "Render", 31),
+             ("celestia", "TIA", "Celestia", 60)]
+    return {"source": "sample",
+            "coins": [{"id": i, "symbol": s, "name": n, "rank": r} for i, s, n, r in names]}
+
+
 # ---------------------------------------------------------------------------
 # API dispatch: try cache → live → sample
 # ---------------------------------------------------------------------------
@@ -1340,6 +1395,14 @@ class Api:
             lambda: live_coin_chart(coin_id, days),
             lambda: sample_coin_chart(coin_id, days),
         )
+
+    def crypto_global(self, params: dict) -> dict:
+        return self._cached("crypto:global", CRYPTO_GLOBAL_TTL,
+                            live_crypto_global, sample_crypto_global)
+
+    def crypto_trending(self, params: dict) -> dict:
+        return self._cached("crypto:trending", CRYPTO_TRENDING_TTL,
+                            live_crypto_trending, sample_crypto_trending)
 
     def worldstate(self, params: dict) -> dict:
         cached = CACHE.get("worldstate")
@@ -1751,6 +1814,8 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/markets": "markets",
         "/api/crypto/coin": "crypto_coin",
         "/api/crypto/chart": "crypto_chart",
+        "/api/crypto/global": "crypto_global",
+        "/api/crypto/trending": "crypto_trending",
         "/api/worldstate": "worldstate",
         "/api/reader": "reader",
         "/api/health": "health",

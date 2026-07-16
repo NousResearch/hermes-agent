@@ -441,6 +441,31 @@ class MarketsWatchlistTests(unittest.TestCase):
         data = self.api.markets({"ids": [raw]})  # must not blow up
         self.assertIn("assets", data)
 
+    def test_sample_market_assets_carry_id(self):
+        data = self.api.markets({"ids": ["bitcoin"]})
+        self.assertEqual(data["assets"][0]["id"], "bitcoin")
+
+    def test_coin_detail_and_chart_sample(self):
+        d = self.api.crypto_coin({"id": ["bitcoin"]})
+        self.assertEqual(d["symbol"], "BITC")
+        self.assertGreater(d["price"], 0)
+        c = self.api.crypto_chart({"id": ["bitcoin"], "days": ["30"]})
+        self.assertGreaterEqual(len(c["candles"]), 2)
+        self.assertIn("sma20", c["overlays"])
+        self.assertTrue(all(k in c["candles"][0] for k in ("t", "o", "h", "l", "c")))
+
+    def test_chart_days_clamped(self):
+        c = self.api.crypto_chart({"id": ["bitcoin"], "days": ["999"]})
+        self.assertEqual(c["days"], 30)  # unknown range → default 30
+
+    def test_crypto_global_and_trending_sample(self):
+        g = self.api.crypto_global({})
+        self.assertGreater(g["btcDominance"], 0)
+        self.assertIn("value", g["fearGreed"])
+        t = self.api.crypto_trending({})
+        self.assertTrue(t["coins"])
+        self.assertIn("symbol", t["coins"][0])
+
 
 class MemoryAndToolsTests(unittest.TestCase):
     def setUp(self):

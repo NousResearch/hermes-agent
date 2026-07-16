@@ -20,6 +20,27 @@ const pct = (v) => {
     `${up ? "+" : ""}${v.toFixed(2)}%`);
 };
 
+// Fear & Greed zone → color class (0-24 extreme fear … 75-100 extreme greed).
+const fgZone = (v) => v >= 75 ? "fg-egreed" : v >= 55 ? "fg-greed"
+  : v >= 45 ? "fg-neutral" : v >= 25 ? "fg-fear" : "fg-efear";
+
+function globalBar(g) {
+  const stat = (label, value) => h("div.gm-stat", {},
+    h("span.muted.small", {}, label), h("span.gm-v", {}, value));
+  const fg = g.fearGreed;
+  return h("div.global-bar", {},
+    stat("MCAP", fmtBig(g.marketCap)),
+    stat("BTC DOM", g.btcDominance != null ? `${g.btcDominance.toFixed(1)}%` : "—"),
+    stat("VOL 24H", fmtBig(g.volume)),
+    stat("24H", g.change24h != null
+      ? h("span", { class: g.change24h >= 0 ? "delta-up" : "delta-down" },
+          `${g.change24h >= 0 ? "+" : ""}${g.change24h.toFixed(2)}%`) : "—"),
+    fg ? h("div.gm-fg", { class: `gm-fg ${fgZone(fg.value)}`, title: `Fear & Greed: ${fg.label}` },
+      h("span.gm-fg-v", {}, String(fg.value)),
+      h("span.small", {}, fg.label.toUpperCase())) : null,
+  );
+}
+
 // Shared detail renderer: a coin drawer with stats, a range-selectable candle
 // chart (with SMA/Bollinger overlays) and the technical read-outs. Opened by a
 // market-row click (ctx.detailCoin set) or the widget's ⤢ button (first coin).
@@ -130,9 +151,13 @@ const exportRef = {
 
     const draw = async () => {
       clear(body).append(h("div.widget-loading", {}, "Loading prices…"));
-      let data;
+      let data; let glob = null; let trending = null;
       try {
-        data = await ctx.api.markets(watchlist());
+        [data, glob, trending] = await Promise.all([
+          ctx.api.markets(watchlist()),
+          ctx.api.cryptoGlobal().catch(() => null),
+          ctx.api.cryptoTrending().catch(() => null),
+        ]);
       } catch (err) {
         clear(body).append(h("div.widget-error", {}, `Markets unavailable: ${err.message}`));
         return;
@@ -176,9 +201,29 @@ const exportRef = {
           ),
         );
       }
-      clear(body).append(rows,
+      const trendStrip = trending?.coins?.length
+        ? h("div.trend-strip", {},
+            h("span.muted.small.trend-label", {}, "🔥 TRENDING"),
+            trending.coins.slice(0, 6).map((c) => h("button.trend-chip", {
+              type: "button", title: `${c.name} — add to watchlist`,
+              onclick: () => {
+                if (watchlist().includes(c.id)) { toast("Already watching " + c.symbol); return; }
+                if (watchlist().length >= 15) { toast("Watchlist is full (15)", "error"); return; }
+                store.update((s) => {
+                  if (!s.markets) s.markets = { ids: [] };
+                  s.markets.ids = [...watchlist(), c.id];
+                }, "markets");
+                draw();
+              },
+            }, c.symbol)))
+        : null;
+
+      clear(body).append(
+        glob ? globalBar(glob) : null,
+        rows,
+        trendStrip,
         h("div.market-note-row", {},
-          h("span.muted.small", {}, "24h change · 7-day trend"),
+          h("span.muted.small", {}, "24h change · 7-day trend · tap a coin for detail"),
           h("button.link-btn", { type: "button", onclick: addAsset }, "+ watch asset"),
         ));
     };

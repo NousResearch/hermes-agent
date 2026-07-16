@@ -942,6 +942,36 @@ a { color: inherit; }
 
 /* ---------- markets ---------- */
 
+/* global market bar + trending strip */
+.global-bar {
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 6px 2px 10px; margin-bottom: 6px;
+  border-bottom: 1px solid var(--hairline);
+}
+.gm-stat { display: flex; flex-direction: column; line-height: 1.2; }
+.gm-stat .muted { letter-spacing: 0.1em; }
+.gm-v { font-variant-numeric: tabular-nums; font-size: 13px; }
+.gm-fg {
+  margin-left: auto; display: flex; align-items: baseline; gap: 6px;
+  border: 1px solid var(--hairline-2); border-radius: 3px; padding: 3px 9px;
+}
+.gm-fg-v { font-size: 16px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.gm-fg.fg-efear  { color: var(--status-critical); border-color: color-mix(in srgb, var(--status-critical) 45%, transparent); }
+.gm-fg.fg-fear   { color: var(--status-serious); border-color: color-mix(in srgb, var(--status-serious) 45%, transparent); }
+.gm-fg.fg-neutral { color: var(--status-warning); border-color: color-mix(in srgb, var(--status-warning) 45%, transparent); }
+.gm-fg.fg-greed  { color: var(--status-good); border-color: color-mix(in srgb, var(--status-good) 45%, transparent); }
+.gm-fg.fg-egreed { color: var(--status-good); border-color: color-mix(in srgb, var(--status-good) 60%, transparent); background: color-mix(in srgb, var(--status-good) 10%, transparent); }
+
+.trend-strip { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; padding: 10px 2px 2px; }
+.trend-label { flex: 0 0 auto; letter-spacing: 0.1em; }
+.trend-chip {
+  font: inherit; font-size: 11px; letter-spacing: 0.04em;
+  background: var(--surface-2); color: var(--ink-2);
+  border: 1px solid var(--hairline-2); border-radius: 3px;
+  padding: 2px 8px; cursor: pointer;
+}
+.trend-chip:hover { border-color: var(--accent); color: var(--accent); }
+
 .market-rows { display: flex; flex-direction: column; }
 .market-row {
   display: flex;

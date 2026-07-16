@@ -45,8 +45,8 @@ describe('ContextUsagePanel reconciliation', () => {
       </I18nProvider>
     )
 
-    await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(2))
     expect(screen.getByText(/~200k \/ 372k/)).toBeTruthy()
+    await waitFor(() => expect(requestGateway).toHaveBeenCalledTimes(2))
     expect(requestGateway).toHaveBeenLastCalledWith('session.context_breakdown', { session_id: 'runtime-1' })
   })
 })

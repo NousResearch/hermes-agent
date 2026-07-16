@@ -4076,6 +4076,7 @@ class GatewaySlashCommandsMixin:
                     non_chat_tokens=non_chat_tokens,
                     transcript_rewritten=_rewritten,
                     full_before_count=len(history),
+                    compression_state=compressor,
                 )
                 # Granular reconciling breakdown (the same CompactionStats +
                 # renderer the auto-compaction announce uses): Messages /
@@ -4172,6 +4173,11 @@ class GatewaySlashCommandsMixin:
                 # passed above so any active cooldown is bypassed.
                 _summary_aborted = bool(getattr(compressor, "_last_compress_aborted", False))
                 _summary_err = getattr(compressor, "_last_summary_error", None)
+                # Force-redact provider exception text at this UI boundary
+                # even when global redaction is disabled.
+                if _summary_err:
+                    from agent.redact import redact_sensitive_text
+                    _summary_err = redact_sensitive_text(_summary_err, force=True)
                 # Separately: did the user's CONFIGURED aux model fail
                 # and we recovered via main?  Surface that as an info
                 # note so they can fix their config.

@@ -939,6 +939,30 @@
         });
     }, [selectedIds, loadBoard, board, t]);
 
+    const batchTake = useCallback(function () {
+      if (selectedIds.size === 0) return;
+      const ids = Array.from(selectedIds);
+      if (!window.confirm(`Plan conflicts and take ${ids.length} selected task(s)? Conflicting tasks will be ordered; independent tasks stay parallel.`)) return;
+      SDK.fetchJSON(withBoard(`${API}/tasks/batch-take`, board), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ids }),
+      }).then(function (res) {
+        if (!res.ok) {
+          setError(`Batch take failed: ${res.reason || "planner did not return a plan"}`);
+          return;
+        }
+        const skipped = (res.skipped || []).length;
+        const edges = (res.edges || []).length;
+        setError(`Batch planned: ${res.promoted.length} ready, ${res.waiting.length} waiting, ${edges} ordering link(s)${skipped ? `; ${skipped} skipped` : ""}.`);
+        clearSelected();
+        loadBoard();
+      }).catch(function (e) {
+        setError(`Batch take failed: ${parseApiErrorMessage(e)}`);
+        setFailedIds(new Set(ids));
+      });
+    }, [selectedIds, board, clearSelected, loadBoard]);
+
     // --- board switching ----------------------------------------------------
     const switchBoard = useCallback(function (nextSlug) {
       if (!nextSlug || nextSlug === board) return;
@@ -1064,6 +1088,7 @@
        selectedIds.size > 0 ? h(BulkActionBar, {
          count: selectedIds.size,
          assignees: (boardData && boardData.assignees) || [],
+         onBatchTake: batchTake,
          onApply: applyBulk,
          onClear: clearSelected,
          onSelectAllVisible: selectAllVisible,
@@ -2125,6 +2150,11 @@
     return h("div", { className: "hermes-kanban-bulk" },
       h("span", { className: "hermes-kanban-bulk-count" },
         `${props.count} ${tx(t, "selected", "selected")}`),
+      h(Button, {
+        onClick: props.onBatchTake,
+        size: "sm",
+        title: "Ask the batch planner to order only overlapping tasks, then make the independent work ready in parallel.",
+      }, "Plan & take"),
       h(Button, {
         onClick: function () { props.onApply({ status: "todo" }); },
         size: "sm",

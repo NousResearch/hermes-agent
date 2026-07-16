@@ -599,7 +599,10 @@ class CreateTaskBody(BaseModel):
     assignee: Optional[str] = None
     tenant: Optional[str] = None
     priority: int = 0
-    workspace_kind: str = "scratch"
+    # Omitted means use the board's safe default: a worktree for a Git
+    # project, a persistent directory for a non-Git project, scratch only
+    # for boards with no project directory.
+    workspace_kind: Optional[str] = None
     workspace_path: Optional[str] = None
     parents: list[str] = Field(default_factory=list)
     triage: bool = False
@@ -615,13 +618,21 @@ def create_task(payload: CreateTaskBody, board: Optional[str] = Query(None)):
     board = _resolve_board(board)
     conn = _conn(board=board)
     try:
+        # The API is used by more than the bundled UI. Resolve an omitted
+        # workspace here too, so script/API-created tasks get the same Git
+        # worktree isolation as dashboard-created tasks.
+        workspace_kind = payload.workspace_kind
+        if workspace_kind is None:
+            workspace_kind = _default_workspace_kind(
+                kanban_db.read_board_metadata(board or kanban_db.DEFAULT_BOARD)
+            )
         task_id = kanban_db.create_task(
             conn,
             title=payload.title,
             body=payload.body,
             assignee=payload.assignee,
             created_by="dashboard",
-            workspace_kind=payload.workspace_kind,
+            workspace_kind=workspace_kind,
             workspace_path=payload.workspace_path,
             tenant=payload.tenant,
             priority=payload.priority,
@@ -1269,6 +1280,32 @@ def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
         return {"results": results}
     finally:
         conn.close()
+
+
+class BatchTakeBody(BaseModel):
+    ids: list[str]
+
+
+@router.post("/tasks/batch-take")
+def batch_take(payload: BatchTakeBody, board: Optional[str] = Query(None)):
+    """Plan conflicts within a selected batch, then promote runnable cards.
+
+    The auxiliary planner is advisory: all proposed edges pass through the
+    canonical Kanban DAG validator, and tasks with unfinished parents remain
+    in Todo until normal dependency promotion makes them runnable.
+    """
+    board = _resolve_board(board)
+    with kanban_db.scoped_current_board(board or kanban_db.DEFAULT_BOARD):
+        from hermes_cli import kanban_batch_take
+        outcome = kanban_batch_take.plan_and_take(payload.ids)
+    return {
+        "ok": outcome.ok,
+        "reason": outcome.reason,
+        "edges": outcome.edges or [],
+        "promoted": outcome.promoted or [],
+        "waiting": outcome.waiting or [],
+        "skipped": outcome.skipped or [],
+    }
 
 
 # ---------------------------------------------------------------------------

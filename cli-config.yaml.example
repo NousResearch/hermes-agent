@@ -100,6 +100,8 @@ model:
   # providers:
   #   my-proxy:
   #     base_url: "https://llm.internal.example.com/v1"
+  #     # Optional full catalog URL when model discovery is hosted elsewhere.
+  #     models_url: "https://catalog.internal.example.com/api/models"
   #     key_env: "MY_PROXY_API_KEY"
   #     extra_headers:
   #       CF-Access-Client-Id: "xxxx.access"

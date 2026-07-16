@@ -1231,6 +1231,22 @@ extra_body:
 
 The `hermes model` → Custom Endpoint wizard now prompts for `api_mode` explicitly and persists your answer to `config.yaml`. URL-based auto-detection (e.g. `/anthropic` paths → `anthropic_messages`) still happens as a fallback when the field is left blank.
 
+If model discovery uses a different endpoint from inference, set `models_url`
+to the complete catalog URL. Hermes uses it for model listing and `/model`
+validation without changing where chat requests are sent:
+
+```yaml
+custom_providers:
+  - name: remote-lm-studio
+    base_url: https://lm.example.com/v1
+    models_url: https://lm.example.com/api/v1/models
+    key_env: LM_API_KEY
+```
+
+`models_url` accepts both OpenAI-compatible `data[].id` catalogs and LM Studio
+native `models[].key` catalogs. When omitted, Hermes keeps probing
+`{base_url}/models` and its existing `/v1` fallback.
+
 **Native vision for custom-provider models.** If your custom endpoint serves a vision-capable model that isn't in models.dev, set `model.supports_vision: true` so Hermes routes attached images natively (as `image_url` parts) instead of pre-processing them through `vision_analyze`. Single knob — no need to also set `agent.image_input_mode: native`.
 
 ```yaml

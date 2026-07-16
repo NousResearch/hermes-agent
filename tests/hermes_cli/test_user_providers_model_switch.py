@@ -231,6 +231,44 @@ def test_user_provider_live_model_probe_uses_extra_headers(monkeypatch):
     assert user_prov["models"] == ["live-model"]
 
 
+def test_user_provider_live_model_probe_uses_models_url(monkeypatch):
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr("hermes_cli.providers.HERMES_OVERLAYS", {})
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
+        return ["catalog-model"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+
+    providers = list_authenticated_providers(
+        current_provider="remote-lm-studio",
+        user_providers={
+            "remote-lm-studio": {
+                "base_url": "https://lm.example.com/v1",
+                "models_url": "https://lm.example.com/api/v1/models",
+                "api_key": "local-key",
+            }
+        },
+        custom_providers=[],
+    )
+
+    user_prov = next(p for p in providers if p.get("is_user_defined"))
+    assert calls == [
+        (
+            "local-key",
+            "https://lm.example.com/v1",
+            {
+                "headers": None,
+                "models_url": "https://lm.example.com/api/v1/models",
+            },
+        )
+    ]
+    assert user_prov["models"] == ["catalog-model"]
+
+
 def test_list_authenticated_providers_dict_models_without_default_model(monkeypatch):
     """Dict-format ``models:`` without a ``default_model`` must still expose
     every dict key, not collapse to an empty list."""
@@ -344,6 +382,7 @@ def test_resolve_provider_full_user_config_openai_beats_alias():
         "openai": {
             "name": "OpenAI-API",
             "api": "https://api.openai.com/v1",
+            "models_url": "https://catalog.example.com/openai/models",
             "transport": "codex_responses",
             "models": {"gpt-5.4-nano": {}},
         }
@@ -354,6 +393,7 @@ def test_resolve_provider_full_user_config_openai_beats_alias():
     assert pdef.id == "openai"
     assert pdef.source == "user-config"
     assert pdef.base_url == "https://api.openai.com/v1"
+    assert pdef.models_url == "https://catalog.example.com/openai/models"
     assert "openrouter" not in pdef.base_url
 
 

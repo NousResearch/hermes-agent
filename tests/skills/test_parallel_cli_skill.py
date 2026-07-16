@@ -40,6 +40,7 @@ def test_frontmatter_matches_hermes_rules(frontmatter: str) -> None:
     description = _frontmatter_value(frontmatter, "description")
     assert len(description) <= 60
     assert description.endswith(".")
+    assert description.startswith("Optional ")
     assert (
         _frontmatter_value(frontmatter, "author").split(",", 1)[0]
         == "George Pickett (@grp06)"
@@ -107,7 +108,6 @@ def test_monitor_read_and_mutation_examples_are_separate(source: str) -> None:
         "parallel-cli login --no-browser --json",
         'terminal(command="parallel-cli login --no-browser --json", background=true, notify_on_complete=true)',
         'process(action="poll", session_id="...")',
-        "--excerpt-max-chars-total 27000",
         "parallel-cli findall entity-search",
         "parallel-cli monitor cancel",
         "parallel-cli monitor trigger",

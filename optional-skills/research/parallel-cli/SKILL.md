@@ -1,6 +1,6 @@
 ---
 name: parallel-cli
-description: Use Parallel for web research, enrichment, and monitoring.
+description: Optional Parallel web research, enrichment, and monitoring.
 version: 1.2.1
 author: George Pickett (@grp06), Hermes Agent
 license: MIT
@@ -15,7 +15,7 @@ metadata:
 
 Use `parallel-cli` through Hermes's `terminal` tool when the user explicitly requests Parallel or needs Parallel-specific research, enrichment, entity discovery, or monitoring. For ordinary one-off lookups, prefer Hermes native `web_search` and `web_extract`.
 
-Parallel is a hosted service with a free tier and paid usage. This skill covers agent-safe, non-interactive CLI workflows; it does not replace Hermes's native web tools.
+Parallel is an optional third-party hosted service with a free tier and paid usage. This skill covers agent-safe, non-interactive CLI workflows; it does not replace Hermes's native web tools.
 
 ## When to Use
 
@@ -123,7 +123,6 @@ parallel-cli search \
   -q "React 19 migration" \
   --mode basic \
   --max-results 10 \
-  --excerpt-max-chars-total 27000 \
   -o react-19-search.json
 ```
 
@@ -156,6 +155,8 @@ parallel-cli research run \
   --no-wait \
   --json
 ```
+
+Run `parallel-cli research processors --json` when current processor characteristics matter instead of relying on a memorized tier list.
 
 Capture both returned fields:
 
@@ -246,6 +247,7 @@ parallel-cli monitor create "Track Tesla SEC filings" --frequency 1d --json
 Capture `monitor_id` and verify creation with `get` rather than scanning the list. Run only the operation needed for the user's request:
 
 ```bash
+parallel-cli monitor list --json
 parallel-cli monitor get mon_xxx --json
 parallel-cli monitor events mon_xxx --json
 parallel-cli monitor events mon_xxx --event-group-id egrp_xxx --json

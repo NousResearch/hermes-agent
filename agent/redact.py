@@ -436,7 +436,7 @@ def _canonical_url_param_name(name: str) -> str:
         if next_value == decoded:
             break
         decoded = next_value
-    return decoded.casefold()
+    return decoded.casefold().replace("-", "_")
 
 
 def _redact_strict_url_credentials(text: str) -> str:

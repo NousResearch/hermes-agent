@@ -119,6 +119,10 @@ def test_provider_context_is_strictly_sanitized_before_plugin_engine(monkeypatch
     fragment_secret = "FRAG_SECRET"
     relative_secret = "REL_SECRET"
     encoded_key_secret = "ENC_SECRET"
+    hyphen_client_secret = "HYPHEN_CLIENT_SECRET"
+    hyphen_access_secret = "HYPHEN_ACCESS_SECRET"
+    hyphen_api_secret = "HYPHEN_API_SECRET"
+    encoded_hyphen_secret = "ENCODED_HYPHEN_SECRET"
     network_userinfo_secret = "NET_SECRET"
     manager = MagicMock()
     manager.on_pre_compress.return_value = (
@@ -128,6 +132,10 @@ def test_provider_context_is_strictly_sanitized_before_plugin_engine(monkeypatch
         f"fragment: https://x.test/#access_token={fragment_secret}&view=public\n"
         f"relative: /resume?token={relative_secret}&view=public\n"
         f"encoded: https://x.test/cb?client%5Fsecret={encoded_key_secret}&view=public\n"
+        f"hyphen-client: /resume?client-secret={hyphen_client_secret}&view=public\n"
+        f"hyphen-access: /resume?Access-Token={hyphen_access_secret}&view=public\n"
+        f"hyphen-api: /resume?api-key={hyphen_api_secret}&view=public\n"
+        f"encoded-hyphen: /resume?client%2Dsecret={encoded_hyphen_secret}&view=public\n"
         f"network: //user:{network_userinfo_secret}@x.test/path"
     )
     received = []
@@ -154,12 +162,20 @@ def test_provider_context_is_strictly_sanitized_before_plugin_engine(monkeypatch
     assert fragment_secret not in context
     assert relative_secret not in context
     assert encoded_key_secret not in context
+    assert hyphen_client_secret not in context
+    assert hyphen_access_secret not in context
+    assert hyphen_api_secret not in context
+    assert encoded_hyphen_secret not in context
     assert network_userinfo_secret not in context
     assert "access_token=***" in context
     assert "https://user:***@example.test/private" in context
     assert "https://x.test/#access_token=***&view=public" in context
     assert "/resume?token=***&view=public" in context
     assert "client%5Fsecret=***&view=public" in context
+    assert "client-secret=***&view=public" in context
+    assert "Access-Token=***&view=public" in context
+    assert "api-key=***&view=public" in context
+    assert "client%2Dsecret=***&view=public" in context
     assert "//user:***@x.test/path" in context
 
 

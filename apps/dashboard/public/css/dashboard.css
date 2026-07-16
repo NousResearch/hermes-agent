@@ -841,6 +841,34 @@ a { color: inherit; }
 .evolve-rollback { padding: 3px 9px; font-size: 11px; color: var(--muted); }
 .evolve-rollback:hover { color: var(--status-warning); border-color: color-mix(in srgb, var(--status-warning) 45%, transparent); }
 
+/* ---------- gaming ---------- */
+.game-section { margin-top: 10px; }
+.game-label { letter-spacing: 0.12em; margin-bottom: 6px; }
+.game-free-list { display: flex; flex-direction: column; gap: 4px; }
+.game-free {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  background: var(--surface-2); border: 1px solid var(--hairline); border-radius: 4px;
+  color: inherit; font: inherit; padding: 7px 9px; cursor: pointer;
+}
+.game-free:hover { border-color: var(--accent); }
+.game-free-tag {
+  flex: 0 0 auto; font-family: ui-monospace, Menlo, monospace; font-size: 9px;
+  letter-spacing: 0.08em; border-radius: 2px; padding: 2px 6px;
+}
+.free-now { color: var(--accent-ink); background: var(--accent); }
+.free-soon { color: var(--ink-2); border: 1px solid var(--hairline-2); }
+.game-title { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.game-deals { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 6px; }
+.game-deal {
+  display: flex; align-items: center; gap: 6px; text-align: left;
+  background: none; border: 1px solid var(--hairline); border-radius: 4px;
+  color: inherit; font: inherit; padding: 6px 8px; cursor: pointer; min-width: 0;
+}
+.game-deal:hover { border-color: var(--accent); background: var(--surface-2); }
+.game-disc { flex: 0 0 auto; font-family: ui-monospace, Menlo, monospace; font-size: 11px; font-weight: 700; color: var(--status-good); }
+.game-deal-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 12px; }
+.game-deal-price { flex: 0 0 auto; font-variant-numeric: tabular-nums; font-size: 12px; }
+
 /* ---------- socials hub ---------- */
 .social-head { display: flex; align-items: center; gap: 8px; }
 .social-sub { margin-left: auto; font-family: ui-monospace, Menlo, monospace; font-size: 11px; }

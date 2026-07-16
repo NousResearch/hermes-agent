@@ -184,6 +184,38 @@ class SampleFallbackTests(unittest.TestCase):
         data = self.api.news({"topic": ["gaming"], "limit": ["10"]})
         self.assertTrue(data["items"])
 
+    def test_gaming_free_and_deals_sample(self):
+        f = self.api.gaming_free({})
+        self.assertTrue(f["current"])
+        self.assertIn("title", f["current"][0])
+        d = self.api.gaming_deals({})
+        self.assertTrue(d["deals"])
+        self.assertIn("discount", d["deals"][0])
+
+    def test_steam_deals_normalizer_drops_undiscounted(self):
+        raw = {"specials": {"items": [
+            {"id": 1, "name": "On Sale", "discounted": True, "discount_percent": 50,
+             "final_price": 999, "header_image": "x"},
+            {"id": 2, "name": "Full Price", "discounted": False},
+        ]}}
+        import unittest.mock as mock
+        with mock.patch.object(server, "fetch_url", return_value=json.dumps(raw).encode()):
+            out = server.live_steam_deals()
+        self.assertEqual(len(out["deals"]), 1)
+        self.assertEqual(out["deals"][0]["price"], 9.99)
+
+    def test_epic_free_games_normalizer(self):
+        raw = {"data": {"Catalog": {"searchStore": {"elements": [
+            {"title": "Freebie", "productSlug": "freebie", "keyImages": [{"type": "Thumbnail", "url": "u"}],
+             "promotions": {"promotionalOffers": [{"promotionalOffers": [{"endDate": "2026-08-01T00:00:00Z"}]}],
+                            "upcomingPromotionalOffers": []}},
+        ]}}}}
+        import unittest.mock as mock
+        with mock.patch.object(server, "fetch_url", return_value=json.dumps(raw).encode()):
+            out = server.live_free_games()
+        self.assertEqual(out["current"][0]["title"], "Freebie")
+        self.assertTrue(out["current"][0]["url"].endswith("/freebie"))
+
     def test_cache_hit_returns_same_object(self):
         first = self.api.news({"topic": ["top"], "limit": ["10"]})
         second = self.api.news({"topic": ["top"], "limit": ["10"]})

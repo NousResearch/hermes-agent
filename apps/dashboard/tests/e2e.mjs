@@ -116,7 +116,7 @@ check("topbar brand", await page.locator(".brand-name").innerText() === "HERMES/
 check("dark theme default", await page.evaluate(() => document.documentElement.dataset.theme) === "dark");
 
 // ---- widgets render --------------------------------------------------------
-for (const type of ["clock", "worldstate", "agent", "weather", "launcher", "news", "reading", "tasks", "markets", "scores", "socials", "calendar", "notes", "focus", "system"]) {
+for (const type of ["clock", "worldstate", "agent", "weather", "launcher", "news", "reading", "tasks", "markets", "scores", "socials", "gaming", "calendar", "notes", "focus", "system"]) {
   await page.waitForSelector(`.widget-${type}`, { timeout: 10000 });
   check(`widget ${type} present`, true);
 }
@@ -490,6 +490,11 @@ await page.evaluate(async (base) => {
 }, BASE);
 await page.waitForSelector(".cal-event-ext", { state: "detached", timeout: 10000 });
 check("unsubscribe clears external events", true);
+
+// ---- gaming (free games + deals) -------------------------------------------------
+await page.waitForSelector(".widget-gaming .game-free, .widget-gaming .game-deal");
+check("gaming free games render", (await page.locator(".widget-gaming .game-free").count()) >= 1);
+check("gaming steam deals render", (await page.locator(".widget-gaming .game-deal").count()) >= 1);
 
 // ---- socials hub -----------------------------------------------------------------
 await page.waitForSelector(".widget-socials .social-item");

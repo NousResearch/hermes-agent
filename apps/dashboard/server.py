@@ -942,6 +942,88 @@ def sample_scores(league: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Gaming data — Epic free games + Steam specials (both no-key)
+# ---------------------------------------------------------------------------
+GAMING_TTL = 30 * 60
+
+
+def _epic_image(elem: dict) -> str:
+    for img in elem.get("keyImages", []) or []:
+        if img.get("type") in ("OfferImageWide", "DieselStoreFrontWide", "Thumbnail"):
+            return img.get("url", "")
+    imgs = elem.get("keyImages") or []
+    return imgs[0].get("url", "") if imgs else ""
+
+
+def live_free_games() -> dict:
+    url = ("https://store-site-backend-static.ak.epicgames.com/freeGamesPromotions"
+           "?locale=en-US&country=US&allowCountries=US")
+    raw = json.loads(fetch_url(url))
+    elements = (((raw.get("data") or {}).get("Catalog") or {}).get("searchStore") or {}).get("elements", [])
+    current, upcoming = [], []
+    for elem in elements:
+        try:
+            promos = elem.get("promotions") or {}
+            slug = elem.get("productSlug") or elem.get("urlSlug") or ""
+            base = {"title": elem.get("title"), "image": _epic_image(elem),
+                    "url": f"https://store.epicgames.com/en-US/p/{slug}" if slug else "https://store.epicgames.com/en-US/free-games"}
+            now_offers = promos.get("promotionalOffers") or []
+            up_offers = promos.get("upcomingPromotionalOffers") or []
+            if now_offers:
+                offer = (now_offers[0].get("promotionalOffers") or [{}])[0]
+                current.append({**base, "end": offer.get("endDate")})
+            elif up_offers:
+                offer = (up_offers[0].get("promotionalOffers") or [{}])[0]
+                upcoming.append({**base, "start": offer.get("startDate")})
+        except Exception:
+            continue
+    return {"source": "live", "current": current, "upcoming": upcoming}
+
+
+def live_steam_deals() -> dict:
+    raw = json.loads(fetch_url("https://store.steampowered.com/api/featuredcategories/?cc=us&l=en"))
+    specials = ((raw.get("specials") or {}).get("items")) or []
+    deals = []
+    for it in specials[:12]:
+        try:
+            if not it.get("discounted"):
+                continue
+            deals.append({
+                "id": it.get("id"), "name": it.get("name"),
+                "image": it.get("header_image") or it.get("large_capsule_image"),
+                "discount": it.get("discount_percent"),
+                "price": round((it.get("final_price") or 0) / 100, 2),
+                "url": f"https://store.steampowered.com/app/{it.get('id')}",
+            })
+        except Exception:
+            continue
+    return {"source": "live", "deals": deals}
+
+
+def sample_free_games() -> dict:
+    now = datetime.now(timezone.utc)
+    return {"source": "sample",
+            "current": [
+                {"title": "Neon Drifter", "image": "", "url": "https://store.epicgames.com/en-US/free-games",
+                 "end": (now + timedelta(days=4)).isoformat()},
+                {"title": "Ember & Ash", "image": "", "url": "https://store.epicgames.com/en-US/free-games",
+                 "end": (now + timedelta(days=4)).isoformat()}],
+            "upcoming": [
+                {"title": "Starforge Tactics", "image": "", "url": "https://store.epicgames.com/en-US/free-games",
+                 "start": (now + timedelta(days=4)).isoformat()}]}
+
+
+def sample_steam_deals() -> dict:
+    demo = [("Deep Rock Galactic", 67, 9.89), ("Hades II", 20, 23.99),
+            ("Baldur's Gate 3", 20, 47.99), ("Vampire Survivors", 40, 2.99),
+            ("Stardew Valley", 25, 10.49), ("Hollow Knight", 50, 7.49)]
+    return {"source": "sample",
+            "deals": [{"id": 1000 + i, "name": n, "image": "", "discount": d, "price": p,
+                       "url": f"https://store.steampowered.com/app/{1000 + i}"}
+                      for i, (n, d, p) in enumerate(demo)]}
+
+
+# ---------------------------------------------------------------------------
 # Socials hub — read-only, no-account feeds (Hacker News, Lobsters, Reddit)
 # ---------------------------------------------------------------------------
 SOCIAL_TTL = 5 * 60
@@ -1568,6 +1650,12 @@ class Api:
             lambda: sample_coin_chart(coin_id, days),
         )
 
+    def gaming_free(self, params: dict) -> dict:
+        return self._cached("gaming:free", GAMING_TTL, live_free_games, sample_free_games)
+
+    def gaming_deals(self, params: dict) -> dict:
+        return self._cached("gaming:deals", GAMING_TTL, live_steam_deals, sample_steam_deals)
+
     def social(self, params: dict) -> dict:
         network = params.get("network", ["hn"])[0].lower()
         if network == "hn":
@@ -2015,6 +2103,8 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/crypto/trending": "crypto_trending",
         "/api/scores": "scores",
         "/api/social": "social",
+        "/api/gaming/free": "gaming_free",
+        "/api/gaming/deals": "gaming_deals",
         "/api/worldstate": "worldstate",
         "/api/reader": "reader",
         "/api/health": "health",

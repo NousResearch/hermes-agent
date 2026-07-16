@@ -22,6 +22,7 @@ function defaultState() {
       { id: uid(), type: "markets", size: "m" },
       { id: uid(), type: "scores", size: "m" },
       { id: uid(), type: "socials", size: "m" },
+      { id: uid(), type: "gaming", size: "m" },
       { id: uid(), type: "calendar", size: "m" },
       { id: uid(), type: "notes", size: "m" },
       { id: uid(), type: "focus", size: "s" },

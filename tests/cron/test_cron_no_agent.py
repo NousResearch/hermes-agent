@@ -474,6 +474,74 @@ def test_no_agent_silence_clears_key_so_same_alert_can_recur(
     assert deliveries == ["same alert", "same alert"]
 
 
+def test_no_agent_dedup_toggle_clears_stale_keys_before_reenable(
+    hermes_env, monkeypatch
+):
+    """A disabled interval must break the prior delivery-dedup sequence."""
+    from cron.jobs import create_job, get_job, update_job
+    import cron.scheduler as scheduler
+
+    (hermes_env / "scripts" / "alert.sh").write_text("echo alert\n")
+    job = create_job(
+        prompt=None,
+        schedule="every 5m",
+        script="alert.sh",
+        no_agent=True,
+        deduplicate_delivery=True,
+        deliver="telegram:raw-private-chat-id",
+    )
+    outputs = iter(["alert A", "alert B", "alert A"])
+    monkeypatch.setattr(
+        scheduler,
+        "run_job",
+        lambda job, defer_agent_teardown=None: (
+            True,
+            "doc",
+            next(outputs),
+            None,
+        ),
+    )
+    monkeypatch.setattr(
+        scheduler, "save_job_output", lambda job_id, output: f"/tmp/{job_id}.md"
+    )
+    monkeypatch.setattr(
+        scheduler,
+        "_resolve_delivery_targets",
+        lambda job: [{"platform": "telegram", "chat_id": "raw-private-chat-id"}],
+    )
+    deliveries = []
+
+    def deliver(job, output, adapters=None, loop=None, receipt_out=None):
+        deliveries.append(output)
+        if receipt_out is not None:
+            receipt_out.update(
+                {
+                    "confirmation": "confirmed",
+                    "dedup_holds_key": True,
+                    "message_id_hashes": [],
+                    "attempt_counts": [1],
+                    "thread_fallback": False,
+                    "error_kind": None,
+                }
+            )
+        return None
+
+    monkeypatch.setattr(scheduler, "_deliver_result", deliver)
+
+    assert scheduler.run_one_job(job) is True
+    after_a = get_job(job["id"])
+    assert after_a["last_delivery_key"].startswith("sha256:")
+
+    dedup_disabled = update_job(job["id"], {"deduplicate_delivery": False})
+    assert scheduler.run_one_job(dedup_disabled) is True
+    dedup_reenabled = update_job(job["id"], {"deduplicate_delivery": True})
+
+    assert scheduler.run_one_job(dedup_reenabled) is True
+    after_a_recurrence = get_job(job["id"])
+    assert deliveries == ["alert A", "alert B", "alert A"]
+    assert after_a_recurrence["last_delivery_receipt"]["confirmation"] == "confirmed"
+
+
 @pytest.mark.parametrize("confirmation", ["partial", "assumed", "unconfirmed"])
 def test_no_agent_newer_delivery_hold_replaces_obsolete_confirmed_key(
     hermes_env, monkeypatch, confirmation

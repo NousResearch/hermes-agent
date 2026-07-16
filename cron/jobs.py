@@ -1326,6 +1326,17 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             updated = _apply_skill_fields({**job, **updates})
             if updated.get("deduplicate_delivery") and not updated.get("no_agent"):
                 raise ValueError("deduplicate_delivery=True requires no_agent=True")
+            if (
+                "deduplicate_delivery" in updates
+                and bool(updated.get("deduplicate_delivery"))
+                != bool(job.get("deduplicate_delivery"))
+            ):
+                # Toggling dedup starts a new suppression sequence. Runs while
+                # dedup is disabled intentionally do not maintain these keys,
+                # so carrying either one across the mode boundary can suppress
+                # a later non-consecutive alert after dedup is re-enabled.
+                updated["last_delivery_key"] = None
+                updated["last_delivery_hold_key"] = None
             schedule_changed = "schedule" in updates
             inference_fields_changed = bool(
                 {"provider", "model", "base_url", "no_agent"}.intersection(updates)

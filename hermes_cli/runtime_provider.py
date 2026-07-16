@@ -1386,6 +1386,7 @@ def _resolve_explicit_runtime(
     model_cfg: Dict[str, Any],
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
     explicit_api_key = str(explicit_api_key or "").strip()
     explicit_base_url = str(explicit_base_url or "").strip().rstrip("/")
@@ -1508,7 +1509,11 @@ def _resolve_explicit_runtime(
 
         api_mode = "chat_completions"
         if provider == "copilot":
-            api_mode = _copilot_runtime_api_mode(model_cfg, api_key)
+            api_mode = _copilot_runtime_api_mode(
+                model_cfg,
+                api_key,
+                target_model=target_model,
+            )
         elif provider == "xai":
             api_mode = "codex_responses"
         else:
@@ -1710,6 +1715,7 @@ def resolve_runtime_provider(
         model_cfg=model_cfg,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        target_model=target_model,
     )
     if explicit_runtime:
         return explicit_runtime
@@ -2082,7 +2088,11 @@ def resolve_runtime_provider(
         base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
         api_mode = "chat_completions"
         if provider == "copilot":
-            api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))
+            api_mode = _copilot_runtime_api_mode(
+                model_cfg,
+                creds.get("api_key", ""),
+                target_model=target_model,
+            )
         elif provider == "xai":
             api_mode = "codex_responses"
         else:

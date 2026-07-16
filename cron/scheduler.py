@@ -3030,6 +3030,7 @@ def run_job(
             resolve_runtime_provider,
             format_runtime_provider_error,
         )
+        from hermes_cli.fallback_config import resolve_fallback_runtime
         from hermes_cli.auth import AuthError
 
         # F8 runtime backstop: never resolve a stored provider/base_url pair that
@@ -3059,12 +3060,7 @@ def run_job(
             runtime = None
             for entry in fb_list:
                 try:
-                    fb_kwargs = {"requested": entry.get("provider")}
-                    if entry.get("base_url"):
-                        fb_kwargs["explicit_base_url"] = entry["base_url"]
-                    if entry.get("api_key"):
-                        fb_kwargs["explicit_api_key"] = entry["api_key"]
-                    runtime = resolve_runtime_provider(**fb_kwargs)
+                    runtime = resolve_fallback_runtime(entry)
                     logger.info("Job '%s': fallback resolved to %s", job_id, runtime.get("provider"))
                     break
                 except Exception as fb_exc:

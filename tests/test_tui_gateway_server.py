@@ -9497,6 +9497,39 @@ class TestResolveRuntimeWithFallback:
         )
         assert result == fallback_runtime
 
+    def test_auth_fallback_honors_entry_api_mode(self, monkeypatch):
+        from hermes_cli.auth import AuthError
+
+        def fake_resolve(**kwargs):
+            if kwargs.get("requested") == "openai-codex":
+                raise AuthError("No Codex credentials stored")
+            assert kwargs.get("target_model") == "claude-sonnet-4-6"
+            return {
+                "provider": "custom",
+                "api_key": "fb-tok",
+                "api_mode": "chat_completions",
+            }
+
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            fake_resolve,
+        )
+        monkeypatch.setattr(
+            server,
+            "_load_fallback_model",
+            lambda: [{
+                "provider": "custom:krill",
+                "model": "claude-sonnet-4-6",
+                "api_mode": "anthropic_messages",
+            }],
+        )
+
+        result = server._resolve_runtime_with_fallback(
+            {"requested": "openai-codex"},
+        )
+
+        assert result["api_mode"] == "anthropic_messages"
+
     def test_auth_error_all_fallbacks_fail_raises(self, monkeypatch):
         """When all fallbacks also fail, re-raise the original AuthError."""
         from hermes_cli.auth import AuthError

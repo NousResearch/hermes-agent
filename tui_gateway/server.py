@@ -4482,6 +4482,7 @@ def _resolve_runtime_with_fallback(
     ``fallback_model`` chain before giving up.
     """
     from hermes_cli.auth import AuthError
+    from hermes_cli.fallback_config import resolve_fallback_runtime
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     kwargs = resolve_kwargs or {}
@@ -4496,12 +4497,7 @@ def _resolve_runtime_with_fallback(
             if not fb_provider:
                 continue
             try:
-                fb_kwargs: dict = {"requested": fb_provider}
-                if entry.get("base_url"):
-                    fb_kwargs["explicit_base_url"] = entry["base_url"]
-                if entry.get("api_key"):
-                    fb_kwargs["explicit_api_key"] = entry["api_key"]
-                runtime = resolve_runtime_provider(**fb_kwargs)
+                runtime = resolve_fallback_runtime(entry)
                 import logging
 
                 logging.getLogger(__name__).warning(

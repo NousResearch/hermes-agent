@@ -5,6 +5,11 @@ from unittest.mock import patch, MagicMock
 from run_agent import AIAgent
 
 
+@pytest.fixture(autouse=True)
+def _isolate_agent_logs(tmp_path, monkeypatch):
+    monkeypatch.setattr("run_agent._hermes_home", tmp_path)
+
+
 def _make_tool_defs():
     return [{"type": "function", "function": {"name": "web_search",
              "description": "search", "parameters": {"type": "object", "properties": {}}}}]
@@ -67,3 +72,96 @@ def test_init_raises_when_no_fallback_configured():
                 skip_memory=True,
                 fallback_model=None,
             )
+
+
+def test_init_fallback_selects_explicit_anthropic_transport():
+    fb = _mock_client(base_url="https://proxy.example/anthropic")
+    calls = []
+
+    def fake_resolve(provider, model=None, raw_codex=False, **kwargs):
+        calls.append((provider, kwargs))
+        if provider == "custom:krill":
+            return fb, "claude-sonnet-4-6"
+        return None, None
+
+    with patch(
+        "agent.auxiliary_client.resolve_provider_client",
+        side_effect=fake_resolve,
+    ), patch(
+        "agent.anthropic_adapter.build_anthropic_client",
+        return_value=MagicMock(),
+    ), patch(
+        "run_agent.get_tool_definitions",
+        return_value=_make_tool_defs(),
+    ), patch(
+        "run_agent.check_toolset_requirements",
+        return_value={},
+    ):
+        agent = AIAgent(
+            provider="alibaba-coding-plan",
+            model="qwen3.6-plus",
+            api_key=None,
+            base_url=None,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            fallback_model=[{
+                "provider": "custom:krill",
+                "model": "claude-sonnet-4-6",
+                "api_mode": "anthropic_messages",
+            }],
+        )
+
+    fallback_kwargs = next(kwargs for provider, kwargs in calls if provider == "custom:krill")
+    assert fallback_kwargs["api_mode"] == "anthropic_messages"
+    assert agent.api_mode == "anthropic_messages"
+    assert agent._anthropic_client is not None
+    assert agent.client is None
+    assert agent._use_prompt_caching is True
+    assert agent._use_native_cache_layout is True
+
+
+def test_init_invalid_fallback_mode_uses_endpoint_heuristic():
+    fb = _mock_client(base_url="https://api.anthropic.com/v1")
+    calls = []
+
+    def fake_resolve(provider, model=None, raw_codex=False, **kwargs):
+        calls.append((provider, kwargs))
+        if provider == "custom:krill":
+            return fb, "claude-sonnet-4-6"
+        return None, None
+
+    with patch(
+        "agent.auxiliary_client.resolve_provider_client",
+        side_effect=fake_resolve,
+    ), patch(
+        "agent.anthropic_adapter.build_anthropic_client",
+        return_value=MagicMock(),
+    ), patch(
+        "run_agent.get_tool_definitions",
+        return_value=_make_tool_defs(),
+    ), patch(
+        "run_agent.check_toolset_requirements",
+        return_value={},
+    ):
+        agent = AIAgent(
+            provider="alibaba-coding-plan",
+            model="qwen3.6-plus",
+            api_key=None,
+            base_url=None,
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            fallback_model=[{
+                "provider": "custom:krill",
+                "model": "claude-sonnet-4-6",
+                "base_url": "https://api.anthropic.com/v1",
+                "api_mode": "anthropic_message",
+            }],
+        )
+
+    fallback_kwargs = next(kwargs for provider, kwargs in calls if provider == "custom:krill")
+    assert "api_mode" not in fallback_kwargs
+    assert agent.api_mode == "anthropic_messages"
+    assert agent._anthropic_client is not None
+    assert agent.client is None

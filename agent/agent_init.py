@@ -770,6 +770,120 @@ def init_agent(
     # Claude uses its own timeout path and is not covered here.
     _provider_timeout = get_provider_request_timeout(agent.provider, agent.model)
 
+    # Resolve the OpenAI-wire primary before selecting the transport-specific
+    # initialization branch.  If its credentials are unavailable, a fallback
+    # entry may select a different transport (notably anthropic_messages), so
+    # that selection must happen before the branch below rather than inside
+    # the OpenAI client setup block.
+    _pre_resolved_client = None
+    if (
+        agent.api_mode not in {"anthropic_messages", "bedrock_converse"}
+        and agent.provider != "moa"
+        and not (api_key and base_url)
+    ):
+        from agent.auxiliary_client import resolve_provider_client
+
+        _pre_resolved_client, _ = resolve_provider_client(
+            agent.provider or "auto",
+            model=agent.model,
+            raw_codex=True,
+        )
+        if _pre_resolved_client is None:
+            _explicit = (agent.provider or "").strip().lower()
+            if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
+                _env_hint = f"{_explicit.upper()}_API_KEY"
+                try:
+                    from hermes_cli.auth import PROVIDER_REGISTRY
+
+                    _pcfg = PROVIDER_REGISTRY.get(_explicit)
+                    if _pcfg and _pcfg.api_key_env_vars:
+                        _env_hint = _pcfg.api_key_env_vars[0]
+                except Exception:
+                    pass
+
+                if isinstance(fallback_model, list):
+                    _fb_entries = [
+                        entry
+                        for entry in fallback_model
+                        if isinstance(entry, dict)
+                        and entry.get("provider")
+                        and entry.get("model")
+                    ]
+                elif (
+                    isinstance(fallback_model, dict)
+                    and fallback_model.get("provider")
+                    and fallback_model.get("model")
+                ):
+                    _fb_entries = [fallback_model]
+                else:
+                    _fb_entries = []
+
+                from hermes_cli.fallback_config import (
+                    resolve_fallback_client,
+                    resolve_fallback_transport,
+                )
+
+                for _fb in _fb_entries:
+                    _fb_client, _fb_model, _fb_api_mode = (
+                        resolve_fallback_client(_fb, raw_codex=True)
+                    )
+                    if _fb_client is None:
+                        continue
+
+                    agent.provider = str(_fb["provider"]).strip().lower()
+                    agent.model = _fb_model or str(_fb["model"]).strip()
+                    agent.base_url = str(_fb_client.base_url)
+                    agent.api_mode = resolve_fallback_transport(
+                        validated_api_mode=_fb_api_mode,
+                        provider=agent.provider,
+                        model_requires_responses=(
+                            agent._provider_model_requires_responses_api(
+                                agent.model,
+                                provider=agent.provider,
+                            )
+                        ),
+                        base_url=agent.base_url,
+                        is_azure=agent._is_azure_openai_url(agent.base_url),
+                    )
+                    # The initial policy was computed for the unavailable
+                    # primary. Re-evaluate it before any request so a native
+                    # Anthropic fallback keeps the same cache-control contract
+                    # as a fallback activated during a live conversation.
+                    (
+                        agent._use_prompt_caching,
+                        agent._use_native_cache_layout,
+                    ) = agent._anthropic_prompt_cache_policy(
+                        provider=agent.provider,
+                        base_url=agent.base_url,
+                        api_mode=agent.api_mode,
+                        model=agent.model,
+                    )
+                    agent._fallback_activated = True
+                    _provider_timeout = get_provider_request_timeout(
+                        agent.provider,
+                        agent.model,
+                    )
+                    _pre_resolved_client = _fb_client
+
+                    # Native transports initialize below from the selected
+                    # fallback's credentials and endpoint. OpenAI-wire modes
+                    # reuse the already-resolved client in the implicit-auth
+                    # branch so provider-specific headers survive.
+                    if agent.api_mode in {
+                        "anthropic_messages",
+                        "bedrock_converse",
+                    }:
+                        api_key = _fb_client.api_key
+                        base_url = str(_fb_client.base_url)
+                    break
+
+                if _pre_resolved_client is None:
+                    raise RuntimeError(
+                        f"Provider '{_explicit}' is set in config.yaml but no API key "
+                        f"was found. Set the {_env_hint} environment "
+                        f"variable, or switch to a different provider with `hermes model`."
+                    )
+
     if agent.api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client, resolve_anthropic_token
         # Bedrock + Claude → use AnthropicBedrock SDK for full feature parity
@@ -983,10 +1097,9 @@ def init_agent(
                 except Exception:
                     pass
         else:
-            # No explicit creds — use the centralized provider router
-            from agent.auxiliary_client import resolve_provider_client
-            _routed_client, _ = resolve_provider_client(
-                agent.provider or "auto", model=agent.model, raw_codex=True)
+            # No explicit creds — reuse the preflight router result. Fallback
+            # selection already happened before transport branching above.
+            _routed_client = _pre_resolved_client
             if _routed_client is not None:
                 client_kwargs = {
                     "api_key": _routed_client.api_key,
@@ -1006,75 +1119,12 @@ def init_agent(
                 if _routed_headers:
                     client_kwargs["default_headers"] = dict(_routed_headers)
             else:
-                # When the user explicitly chose a non-OpenRouter provider
-                # but no credentials were found, fail fast with a clear
-                # message instead of silently routing through OpenRouter.
-                _explicit = (agent.provider or "").strip().lower()
-                if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
-                    # Look up the actual env var name from the provider
-                    # config — some providers use non-standard names
-                    # (e.g. alibaba → DASHSCOPE_API_KEY, not ALIBABA_API_KEY).
-                    _env_hint = f"{_explicit.upper()}_API_KEY"
-                    try:
-                        from hermes_cli.auth import PROVIDER_REGISTRY
-                        _pcfg = PROVIDER_REGISTRY.get(_explicit)
-                        if _pcfg and _pcfg.api_key_env_vars:
-                            _env_hint = _pcfg.api_key_env_vars[0]
-                    except Exception:
-                        pass
-                    # --- Init-time fallback (#17929) ---
-                    _fb_entries = []
-                    if isinstance(fallback_model, list):
-                        _fb_entries = [
-                            f for f in fallback_model
-                            if isinstance(f, dict) and f.get("provider") and f.get("model")
-                        ]
-                    elif isinstance(fallback_model, dict) and fallback_model.get("provider") and fallback_model.get("model"):
-                        _fb_entries = [fallback_model]
-                    _fb_resolved = False
-                    for _fb in _fb_entries:
-                        _fb_explicit_key = (_fb.get("api_key") or "").strip() or None
-                        if not _fb_explicit_key:
-                            _fb_key_env = (_fb.get("key_env") or _fb.get("api_key_env") or "").strip()
-                            if _fb_key_env:
-                                _fb_explicit_key = os.getenv(_fb_key_env, "").strip() or None
-                        _fb_client, _fb_model = resolve_provider_client(
-                            _fb["provider"], model=_fb["model"], raw_codex=True,
-                            explicit_base_url=_fb.get("base_url"),
-                            explicit_api_key=_fb_explicit_key,
-                        )
-                        if _fb_client is not None:
-                            agent.provider = _fb["provider"]
-                            agent.model = _fb_model or _fb["model"]
-                            agent._fallback_activated = True
-                            client_kwargs = {
-                                "api_key": _fb_client.api_key,
-                                "base_url": str(_fb_client.base_url),
-                            }
-                            if _provider_timeout is not None:
-                                client_kwargs["timeout"] = _provider_timeout
-                            _fb_headers = getattr(_fb_client, "_custom_headers", None)
-                            if not _fb_headers:
-                                _fb_headers = getattr(_fb_client, "default_headers", None)
-                            if not _fb_headers:
-                                _fb_headers = getattr(_fb_client, "_default_headers", None)
-                            if _fb_headers:
-                                client_kwargs["default_headers"] = dict(_fb_headers)
-                            _fb_resolved = True
-                            break
-                    if not _fb_resolved:
-                        raise RuntimeError(
-                            f"Provider '{_explicit}' is set in config.yaml but no API key "
-                            f"was found. Set the {_env_hint} environment "
-                            f"variable, or switch to a different provider with `hermes model`."
-                        )
-                if not getattr(agent, "_fallback_activated", False):
-                    # No provider configured — reject with a clear message.
-                    raise RuntimeError(
-                        "No LLM provider configured. Run `hermes model` to "
-                        "select a provider, or run `hermes setup` for first-time "
-                        "configuration."
-                    )
+                # No provider configured — reject with a clear message.
+                raise RuntimeError(
+                    "No LLM provider configured. Run `hermes model` to "
+                    "select a provider, or run `hermes setup` for first-time "
+                    "configuration."
+                )
         
         agent._client_kwargs = client_kwargs  # stored for rebuilding after interrupt
 

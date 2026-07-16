@@ -2822,6 +2822,66 @@ class TestResponsesStreaming:
         assert stored["response"]["status"] == "incomplete"
 
 
+    @pytest.mark.asyncio
+    async def test_stream_reasoning_delta_in_responses_sse(self, adapter):
+        """reasoning_callback fires → response.reasoning.delta events appear in SSE,
+        NOT inside response.output_text.delta."""
+        app = _create_app(adapter)
+        reasoning_text = "I need to analyze this carefully."
+        content_text = "The answer is 42."
+
+        async def _mock_run_agent(**kwargs):
+            reasoning_cb = kwargs.get("reasoning_callback")
+            cb = kwargs.get("stream_delta_callback")
+            if reasoning_cb:
+                reasoning_cb(reasoning_text)
+            if cb:
+                await asyncio.sleep(0.05)
+                cb(content_text)
+            return (
+                {"final_response": content_text, "messages": [], "api_calls": 1},
+                {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+            )
+
+        with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "test", "input": "answer", "stream": True},
+                )
+
+                assert resp.status == 200
+                body = await resp.text()
+
+        # Standard Responses SSE events must be present
+        assert "event: response.created" in body
+        assert "event: response.output_text.delta" in body
+        assert "event: response.completed" in body
+
+        # Reasoning delta event must be present
+        assert "event: response.reasoning.delta" in body
+
+        # Reasoning text must NOT leak into output_text.delta content
+        assert reasoning_text in body
+        for line in body.splitlines():
+            if "event: response.output_text.delta" in line:
+                continue
+            if line.startswith("data: "):
+                import json as _json
+                try:
+                    parsed = _json.loads(line[len("data: "):])
+                except _json.JSONDecodeError:
+                    continue
+                if isinstance(parsed, dict) and parsed.get("type") == "response.output_text.delta":
+                    delta_content = parsed.get("delta", "")
+                    assert reasoning_text not in delta_content, (
+                        "Reasoning leaked into output_text.delta"
+                    )
+
+        # Content text must appear in output_text.delta events
+        assert content_text in body
+
+
 # ---------------------------------------------------------------------------
 # Auth on endpoints
 # ---------------------------------------------------------------------------

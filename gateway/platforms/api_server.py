@@ -3416,13 +3416,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     "item": output_item,
                 })
 
-            # Accumulated reasoning text for inclusion in terminal message
-            reasoning_parts: List[str] = []
-
             async def _emit_reasoning_delta(text: str) -> None:
-                """Emit a response.reasoning.delta event."""
-                nonlocal reasoning_parts
-                reasoning_parts.append(text)
                 await _write_event("response.reasoning.delta", {
                     "type": "response.reasoning.delta",
                     "delta": text,

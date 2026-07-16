@@ -571,10 +571,14 @@ class MattermostAdapter(BasePlatformAdapter):
 
         p = Path(file_path)
         if not p.exists():
+            safe_name = p.name or "attachment"
             logger.warning(
-                "Mattermost: local file not found, skipping: %s", file_path
+                "Mattermost: local file not found, skipping: %s", safe_name
             )
-            return SendResult(success=True, message_id=None)
+            return SendResult(
+                success=False,
+                error=f"Local file not found: {safe_name}",
+            )
 
         fname = file_name or p.name
         ct = mimetypes.guess_type(fname)[0] or "application/octet-stream"

@@ -1,0 +1,92 @@
+{
+  "cases": [
+    {
+      "name": "direct tool is unchanged",
+      "kind": "unwrap",
+      "agent": {"enabled_toolsets": null, "disabled_toolsets": null},
+      "function_name": "terminal",
+      "function_args": {"command": "pwd"}
+    },
+    {
+      "name": "tool_call unwraps cached in-scope tool",
+      "kind": "unwrap",
+      "agent": {
+        "enabled_toolsets": ["custom"],
+        "disabled_toolsets": null,
+        "scope_names": ["golden_lookup"]
+      },
+      "function_name": "tool_call",
+      "function_args": {"name": "golden_lookup", "arguments": "{\"q\":\"x\"}"}
+    },
+    {
+      "name": "tool_call blocks cached out-of-scope tool",
+      "kind": "unwrap",
+      "agent": {
+        "enabled_toolsets": ["custom"],
+        "disabled_toolsets": null,
+        "scope_names": ["allowed_tool"]
+      },
+      "function_name": "tool_call",
+      "function_args": {"name": "golden_lookup", "arguments": {"q": "x"}}
+    },
+    {
+      "name": "tool_call parse error leaves bridge unchanged",
+      "kind": "unwrap",
+      "agent": {"enabled_toolsets": null, "disabled_toolsets": null},
+      "function_name": "tool_call",
+      "function_args": {"name": "tool_search", "arguments": {}}
+    },
+    {
+      "name": "scope cache hit returns cached names",
+      "kind": "scope",
+      "agent": {
+        "enabled_toolsets": ["custom"],
+        "disabled_toolsets": ["terminal"],
+        "scope_names": ["cached_tool", "other_tool"]
+      }
+    },
+    {
+      "name": "tool scope message",
+      "kind": "scope_message",
+      "tool_name": "golden_lookup"
+    },
+    {
+      "name": "tool scope result json",
+      "kind": "scope_result",
+      "tool_name": "golden_lookup"
+    },
+    {
+      "name": "budget grace blocks side effect",
+      "kind": "pre_block",
+      "agent": {"_in_budget_grace": true},
+      "function_name": "terminal",
+      "tool_scope_block": null
+    },
+    {
+      "name": "budget grace allows readonly",
+      "kind": "pre_block",
+      "agent": {"_in_budget_grace": true},
+      "function_name": "read_file",
+      "tool_scope_block": null
+    },
+    {
+      "name": "tool scope outranks plugin path after grace",
+      "kind": "pre_block",
+      "agent": {"_in_budget_grace": false},
+      "function_name": "golden_lookup",
+      "tool_scope_block": "'golden_lookup' is not available in this session. Use tool_search to find tools you can call."
+    },
+    {
+      "name": "no pre block",
+      "kind": "pre_block",
+      "agent": {"_in_budget_grace": false},
+      "function_name": "read_file",
+      "tool_scope_block": null
+    },
+    {
+      "name": "strip blocked toolsets keeps code execution",
+      "kind": "strip_toolsets",
+      "toolsets": ["terminal", "delegation", "cronjob", "code_execution", "skills"]
+    }
+  ]
+}

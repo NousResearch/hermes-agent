@@ -12,12 +12,14 @@ diagnostic accessor) — not the wiring into compression.
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from pathlib import Path
 
 import pytest
 
+import hermes_state
 from hermes_state import SessionDB
 
 
@@ -97,6 +99,53 @@ def test_non_expired_lock_is_held(db: SessionDB) -> None:
     db.try_acquire_compression_lock("sess1", "holder1", ttl_seconds=60)
     # Immediately after, still held
     assert db.try_acquire_compression_lock("sess1", "holder2") is False
+
+
+def test_non_expired_lock_from_dead_pid_is_reclaimed(
+    db: SessionDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    dead_holder = "pid=424242:tid=1:agent=abc:nonce=deadbeef"
+    assert db.try_acquire_compression_lock(
+        "sess1", dead_holder, ttl_seconds=300
+    ) is True
+
+    def process_is_gone(pid: int, signal: int) -> None:
+        assert pid == 424242
+        assert signal == 0
+        raise ProcessLookupError
+
+    monkeypatch.setattr(hermes_state.os, "kill", process_is_gone)
+
+    assert db.try_acquire_compression_lock(
+        "sess1", "pid=525252:tid=2:agent=def:nonce=fresh", ttl_seconds=300
+    ) is True
+
+
+def test_non_expired_lock_from_live_pid_is_not_reclaimed(db: SessionDB) -> None:
+    live_holder = f"pid={os.getpid()}:tid=1:agent=abc:nonce=live"
+    assert db.try_acquire_compression_lock(
+        "sess1", live_holder, ttl_seconds=300
+    ) is True
+    assert db.try_acquire_compression_lock(
+        "sess1", "pid=525252:tid=2:agent=def:nonce=other", ttl_seconds=300
+    ) is False
+
+
+def test_unstructured_holder_waits_for_ttl(
+    db: SessionDB, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    assert db.try_acquire_compression_lock(
+        "sess1", "legacy_holder", ttl_seconds=300
+    ) is True
+    kill = monkeypatch.setattr(
+        hermes_state.os,
+        "kill",
+        lambda *_args: pytest.fail("unstructured holder must not probe a PID"),
+    )
+    assert kill is None
+    assert db.try_acquire_compression_lock(
+        "sess1", "pid=525252:tid=2:agent=def:nonce=other", ttl_seconds=300
+    ) is False
 
 
 # ----------------------------------------------------------------------

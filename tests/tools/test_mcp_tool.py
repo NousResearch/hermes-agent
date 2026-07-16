@@ -885,6 +885,35 @@ class TestRunOnMCPLoopInterrupts:
             mcp_mod._mcp_loop = old_loop
             mcp_mod._mcp_thread = old_thread
 
+    def test_session_ready_wait_uses_async_event_instead_of_sleep_polling(self):
+        import tools.mcp_tool as mcp_mod
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+        old_loop = mcp_mod._mcp_loop
+        old_session = object()
+        ready = asyncio.Event()
+        server = SimpleNamespace(session=old_session, _ready=ready)
+        fresh_session = object()
+
+        def mark_ready():
+            server.session = fresh_session
+            ready.set()
+
+        mcp_mod._mcp_loop = loop
+        loop.call_soon_threadsafe(lambda: loop.call_later(0.05, mark_ready))
+        try:
+            with patch("tools.mcp_tool.time.sleep", side_effect=AssertionError("polled")):
+                assert mcp_mod._wait_for_server_session_ready(
+                    server, old_session=old_session, timeout=1
+                ) is True
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            loop.close()
+            mcp_mod._mcp_loop = old_loop
+
     def test_timeout_reports_elapsed_and_configured_timeout(self):
         import tools.mcp_tool as mcp_mod
 

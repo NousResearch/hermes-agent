@@ -3226,6 +3226,26 @@ def _wait_for_server_session_ready(
     # Iteration-bounded rather than deadline-bounded: several tests (and the
     # circuit-breaker cooldown logic) monkeypatch time.monotonic to a frozen
     # clock, which would make a monotonic-deadline loop spin forever.
+    ready = getattr(srv, "_ready", None)
+    loop = _mcp_loop
+    if (
+        isinstance(ready, asyncio.Event)
+        and loop is not None
+        and loop.is_running()
+        and not ready.is_set()
+    ):
+        waiter = asyncio.run_coroutine_threadsafe(ready.wait(), loop)
+        try:
+            waiter.result(timeout=max(float(timeout), 0.0))
+        except concurrent.futures.TimeoutError:
+            waiter.cancel()
+            return False
+        session = getattr(srv, "session", None)
+        if session is not None and session is not old_session:
+            return True
+        if ready.is_set():
+            return False
+
     poll_interval = 0.25
     iterations = max(1, int(max(float(timeout), 0.0) / poll_interval))
     for i in range(iterations):
@@ -3810,12 +3830,29 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
     # scopes don't interfere). No-op when no override is active.
     coro = _wrap_with_home_override(coro)
 
+    async def _run_with_bounded_cancel_cleanup():
+        task = asyncio.create_task(coro)
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            task.cancel()
+            done, _ = await asyncio.wait({task}, timeout=0.5)
+            if not done:
+                logger.warning("MCP coroutine cleanup exceeded 0.5s cancellation grace")
+                task.add_done_callback(_consume_cancelled_mcp_task)
+            else:
+                _consume_cancelled_mcp_task(task)
+            raise
+
+    tracked_coro = _run_with_bounded_cancel_cleanup()
+
     future = safe_schedule_threadsafe(
-        coro, loop,
+        tracked_coro, loop,
         logger=logger,
         log_message="MCP scheduling failed",
     )
     if future is None:
+        coro.close()
         raise RuntimeError("MCP event loop unavailable (failed to schedule)")
     start_time = time.monotonic()
     deadline = None if timeout is None else start_time + timeout
@@ -3841,6 +3878,16 @@ def _run_on_mcp_loop(coro_or_factory, timeout: float = 30):
             return future.result(timeout=wait_timeout)
         except concurrent.futures.TimeoutError:
             continue
+
+
+def _consume_cancelled_mcp_task(task: "asyncio.Task") -> None:
+    """Observe a cancelled MCP task so late cleanup failures are never orphaned."""
+    try:
+        task.result()
+    except asyncio.CancelledError:
+        pass
+    except Exception:
+        logger.warning("MCP coroutine failed during cancellation cleanup", exc_info=True)
 
 
 def _interrupted_call_result() -> str:

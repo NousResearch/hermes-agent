@@ -795,17 +795,38 @@ class TelegramAdapter(BasePlatformAdapter):
         if not normalized_user_id:
             return False
 
+        normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
+        if normalized_chat_type == "private":
+            normalized_chat_type = "dm"
+        elif normalized_chat_type == "supergroup":
+            normalized_chat_type = "forum" if thread_id is not None else "group"
+
+        # Preferred path: the auth callback GatewayRunner injects at
+        # connection time (set_authorization_check), which delegates to the
+        # full _is_user_authorized chain -- env allowlists, group allowlists,
+        # pairing store, allow-all flags. Unlike the __self__ introspection
+        # below, this also works for a secondary multiplexed adapter, whose
+        # _message_handler is a profile closure with no __self__ (the same
+        # gap the admin-tier check had -- resolved the same way). The getattr
+        # tolerates partially-constructed adapters (object.__new__ in tests)
+        # that never ran BasePlatformAdapter.__init__.
+        if getattr(self, "_authorization_check", None) is not None:
+            injected = self._is_sender_authorized(
+                normalized_user_id,
+                chat_type=normalized_chat_type,
+                chat_id=str(chat_id or normalized_user_id),
+            )
+            if injected is not None:
+                return injected
+
+        # Legacy path: resolve the runner off the bound message handler.
+        # Still reachable for adapters wired without set_authorization_check
+        # (bare-adapter tests, direct embedding).
         runner = getattr(getattr(self, "_message_handler", None), "__self__", None)
         auth_fn = getattr(runner, "_is_user_authorized", None)
         if callable(auth_fn):
             try:
                 from gateway.session import SessionSource
-
-                normalized_chat_type = str(chat_type or "dm").strip().lower() or "dm"
-                if normalized_chat_type == "private":
-                    normalized_chat_type = "dm"
-                elif normalized_chat_type == "supergroup":
-                    normalized_chat_type = "forum" if thread_id is not None else "group"
 
                 source = SessionSource(
                     platform=Platform.TELEGRAM,

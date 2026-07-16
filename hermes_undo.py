@@ -12,13 +12,27 @@ event-loop thread (or adds an ``await`` inside it) must add a per-session lock.
 """
 
 from __future__ import annotations
-
 from collections import OrderedDict
 from dataclasses import dataclass, field
+import logging
 import re
 from typing import Any, Dict, List, Optional
-
 from hermes_state import SessionDB
+
+logger = logging.getLogger(__name__)
+
+
+def _is_transient_redo_error(exc: BaseException) -> bool:
+    """True for a transient/retryable failure of a redo op's write (a DB
+    lock/busy). Mirrors gateway.session._is_transient_db_busy. A non-transient
+    failure (schema error, real bug) returns False so the partial is reported as
+    non-retryable rather than telling the user to '/redo again' into an infinite
+    identical re-fail."""
+    import sqlite3
+    if isinstance(exc, sqlite3.OperationalError):
+        msg = str(exc).lower()
+        return "locked" in msg or "busy" in msg
+    return False
 
 
 @dataclass(frozen=True)
@@ -231,10 +245,15 @@ def undo(session_id: str, n: int) -> Dict[str, Any]:
     msgs = db.get_messages(session_id, include_inactive=False)
     target_id = compute_half_turn_target(msgs, n)
     if target_id is None:
+        # Genuine empty: no half-turn boundary to rewind to. Carry diagnostics
+        # so the caller's breadcrumb can record WHAT was seen (B2/RC2) — the
+        # flagship "said nothing but rows existed" case needs active-count+target.
         return {
             "rewound_ids": [],
             "prefill_text": None,
             "message": "nothing to undo",
+            "active_count": len(msgs),
+            "target_id": None,
         }
 
     tail = _tail_before_target(msgs, target_id)
@@ -252,19 +271,34 @@ def undo(session_id: str, n: int) -> Dict[str, Any]:
     if not rewound_ids:
         # Nothing was actually deactivated (degenerate/raced rewind). Don't push
         # an empty op or clobber a pending redo — match the None-path contract of
-        # touching neither stack.
+        # touching neither stack. Carry diagnostics (B2/RC2): a computed target
+        # that deactivated 0 rows is exactly the "rows existed but undo did
+        # nothing" signature.
         return {
             "rewound_ids": [],
             "prefill_text": None,
             "message": "nothing to undo",
+            "active_count": len(msgs),
+            "target_id": target_id,
         }
     state.undo_stack.append(UndoOp(n=n, rewound_ids=rewound_ids))
     state.redo_stack.clear()
 
-    active_after = db.get_messages(session_id, include_inactive=False)
+    # 🔴 The rewind has COMMITTED (rewound_ids non-empty). This trailing prefill
+    # read must fail SOFT — a raise here would unwind into rewind_session as
+    # "error/nothing changed" for a rewind that DID happen (double-undo on retry).
+    try:
+        active_after = db.get_messages(session_id, include_inactive=False)
+        prefill = _prefill_from_tail(_new_tail(active_after))
+    except Exception as exc:
+        logger.warning(
+            "undo: post-commit prefill read failed for %s "
+            "(rewind already committed): %r", session_id, exc,
+        )
+        prefill = None
     return {
         "rewound_ids": rewound_ids,
-        "prefill_text": _prefill_from_tail(_new_tail(active_after)),
+        "prefill_text": prefill,
     }
 
 
@@ -295,9 +329,40 @@ def redo(session_id: str, m: int) -> Dict[str, Any]:
     reactivated_total = 0
     ops_redone = 0
     transcript_changed = False
+    transient_partial = False
+    partial_hard_error = False
     for _ in range(k):
         op = state.undo_stack.pop()
-        reactivated = db.restore_ids(session_id, op.rewound_ids)
+        try:
+            reactivated = db.restore_ids(session_id, op.rewound_ids)
+        except Exception as exc:
+            # 🔴 A write for THIS op raised. redo() does one DB write PER op,
+            # so if an EARLIER op already committed, its rows are live in the DB —
+            # we must NOT let the exception unwind into restore_session as
+            # "nothing changed" (that would desync the screen and let a retry
+            # double-redo the earlier ops). Push the FAILED op back onto the stack
+            # (it did NOT commit, so it stays recoverable) and, if prior ops did
+            # real work, return the honest partial WITHOUT clearing the stack.
+            # If nothing committed yet (first op failed), re-raise so the caller's
+            # classifier reports busy/error.
+            #
+            # 🔴 Classify HERE too (not just at the top-level classifier): a
+            # transient lock → "run /redo again" (retryable); a real bug → a
+            # partial that must NOT promise retry (retrying re-fails identically,
+            # an infinite loop). See _is_transient_redo_error.
+            state.undo_stack.append(op)
+            if reactivated_total > 0:
+                if _is_transient_redo_error(exc):
+                    transient_partial = True
+                else:
+                    partial_hard_error = True
+                    logger.error(
+                        "redo: op failed with a non-transient error after %s row(s) "
+                        "already reactivated for %s (partial, not retryable): %r",
+                        reactivated_total, session_id, exc, exc_info=True,
+                    )
+                break
+            raise
         if reactivated == 0 and op.rewound_ids:
             # NONE of this op's rows could be restored — the transcript was
             # rewritten out from under the stack (/compress, /retry, and any
@@ -344,19 +409,60 @@ def redo(session_id: str, m: int) -> Dict[str, Any]:
     # Counter asymmetry is intentional: rewind_count increments per low-level
     # rewind_to_message call; redo_count increments once per /redo command that
     # did real work (regardless of M).
-    db.bump_redo_count(session_id)
+    # 🔴 By here the reactivation writes have COMMITTED. These trailing ops
+    # (counter bump + tail read) must fail SOFT — a raise here would unwind into
+    # restore_session as "nothing changed" for a redo that DID happen (double-redo
+    # on retry). The reactivated rows are durable; the counter/tail are cosmetic.
+    try:
+        db.bump_redo_count(session_id)
+    except Exception as exc:
+        logger.warning(
+            "redo: post-commit redo_count bump failed for %s "
+            "(reactivation already committed): %r", session_id, exc,
+        )
 
-    active_after = db.get_messages(session_id, include_inactive=False)
-    tail = _new_tail(active_after)
+    try:
+        active_after = db.get_messages(session_id, include_inactive=False)
+        tail = _new_tail(active_after)
+        new_tail_id = tail["id"] if tail else None
+    except Exception as exc:
+        logger.warning(
+            "redo: post-commit tail read failed for %s "
+            "(reactivation already committed): %r", session_id, exc,
+        )
+        new_tail_id = None
     result: Dict[str, Any] = {
         "reactivated_count": reactivated_total,
-        "new_tail_id": tail["id"] if tail else None,
+        "new_tail_id": new_tail_id,
         "prefill_text": None,
     }
     if transcript_changed:
+        result["partial"] = True
+        result["partial_retryable"] = False  # transcript rewrite: the rest can't be redone
         result["message"] = (
             f"redid {ops_redone} operation(s); the rest can't be redone "
             "(transcript changed since undo)"
+        )
+    elif transient_partial:
+        # Earlier ops committed; a later op hit a TRANSIENT error and was pushed
+        # back onto the stack (recoverable). Report the partial honestly and flag
+        # it retryable so the caller can tell the user "the rest can be retried".
+        result["partial"] = True
+        result["partial_retryable"] = True
+        result["message"] = (
+            f"redid {ops_redone} operation(s); the rest hit a transient error — "
+            "run /redo again to continue"
+        )
+    elif partial_hard_error:
+        # Earlier ops committed; a later op hit a NON-transient error (a real
+        # bug). The failed op is on the stack but retrying would re-fail
+        # identically — do NOT promise retryability. Report the partial + that
+        # the rest failed and was logged (RC1: don't mislabel a bug as transient).
+        result["partial"] = True
+        result["partial_retryable"] = False
+        result["message"] = (
+            f"redid {ops_redone} operation(s); the rest hit an error and was "
+            "logged (not retryable)"
         )
     return result
 

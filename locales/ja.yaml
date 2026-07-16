@@ -381,6 +381,8 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   undo:
     nothing:               "Nothing to undo."
+    busy:                  "⏳ The database was busy — nothing was changed. Try /undo again in a moment."
+    error:                 "⚠️ Couldn't complete /undo (internal error — nothing was changed). It's been logged."
     removed:               "↩️ Undid {turns} half-turn(s) ({count} message(s))."
     invalid_count:         "Invalid count \"{arg}\" — use /undo or /undo N."
     draining:              "⏳ 直前のターンは停止されましたが、現在のステップをまだ完了中です — /undo はまだ実行できません。少し待ってから再試行してください。"
@@ -395,6 +397,8 @@ Future messages in this room will use that transcript until `/reset` or another 
 
   redo:
     nothing:               "Nothing to redo."
+    busy:                  "⏳ The database was busy — nothing was changed. Try /redo again in a moment."
+    error:                 "⚠️ Couldn't complete /redo (internal error — nothing was changed). It's been logged."
     restart_lost:          "Nothing to redo — redo history does not survive a restart."
     restored:              "↪️ Redid {ops} undo operation(s) ({count} message(s) restored)."
     invalid_count:         "Invalid count \"{arg}\" — use /redo or /redo N."

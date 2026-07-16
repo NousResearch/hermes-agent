@@ -2831,6 +2831,15 @@ class GatewaySlashCommandsMixin:
 
         if result is None:
             return t("gateway.undo.nothing")
+        # Honest reporting of a non-empty failure (2026-07-15 fix): distinguish a
+        # transient DB-busy from a real internal error — never render either as
+        # "Nothing to undo." Both mean the rewind did NOT happen (validation +
+        # orphan-guard run before the write).
+        status = result.get("status") if isinstance(result, dict) else None
+        if status == "busy":
+            return t("gateway.undo.busy")
+        if status == "error":
+            return t("gateway.undo.error")
 
         # Reset stored token count — transcript was truncated.
         session_entry.last_prompt_tokens = 0
@@ -2900,6 +2909,13 @@ class GatewaySlashCommandsMixin:
         result = await self.async_session_store.restore_session(session_entry.session_id, n)
         if result is None:
             return t("gateway.redo.nothing")
+        # Honest reporting of a non-empty failure (2026-07-15 fix): a transient
+        # DB-busy or a real internal error must not read as "nothing to redo".
+        status = result.get("status") if isinstance(result, dict) else None
+        if status == "busy":
+            return t("gateway.redo.busy")
+        if status == "error":
+            return t("gateway.redo.error")
 
         reactivated = int(result.get("reactivated_count") or 0)
         if reactivated <= 0:
@@ -2915,11 +2931,19 @@ class GatewaySlashCommandsMixin:
         except Exception as e:
             logger.debug("redo: cached-agent eviction skipped: %s", e)
 
-        return t(
+        base = t(
             "gateway.redo.restored",
             ops=n,
             count=reactivated,
-        ) + self._undo_tail_suffix(session_entry.session_id)
+        )
+        # If only SOME ops were redone (a transcript rewrite or a mid-loop
+        # transient/hard error), surface the honest partial note the undo core
+        # produced instead of implying a full redo. Detect via the language-
+        # neutral ``partial`` flag, not the (English) message text.
+        partial_note = str(result.get("message") or "")
+        if result.get("partial") and partial_note:
+            base = f"{base}\n⚠️ {partial_note}"
+        return base + self._undo_tail_suffix(session_entry.session_id)
 
     async def _handle_set_home_command(self, event: MessageEvent) -> str:
         """Handle /sethome command -- set the current chat as the platform's home channel."""

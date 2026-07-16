@@ -13,6 +13,7 @@ import hashlib
 import logging
 import os
 import json
+import sqlite3
 import threading
 import uuid
 from pathlib import Path
@@ -21,6 +22,21 @@ from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Any, Literal, NamedTuple
 
 logger = logging.getLogger(__name__)
+
+
+def _is_transient_db_busy(exc: BaseException) -> bool:
+    """True for the SQLite lock/busy class — a transient, retryable condition.
+
+    Mirrors the discrimination in ``SessionDB._execute_write`` (and its sibling
+    ``hermes_undo._is_transient_redo_error``): only a ``sqlite3.OperationalError``
+    whose message names ``locked``/``busy`` is transient. Anything else (schema
+    errors, logic bugs, non-DB exceptions) is a real fault and must NOT be
+    reported to the user as a transient "try again".
+    """
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    msg = str(exc).lower()
+    return "locked" in msg or "busy" in msg
 
 
 def _now() -> datetime:
@@ -95,6 +111,7 @@ from .whatsapp_identity import (
     normalize_whatsapp_identifier,  # noqa: F401 - re-exported for gateway.session callers
 )
 from utils import atomic_replace
+from hermes_state import RewindWouldOrphanError
 
 # Session keys/ids flow into filesystem paths downstream (e.g.
 # ``sessions_dir / f"{session_id}.json"`` in hermes_state, request-dump
@@ -2937,7 +2954,23 @@ class SessionStore:
             return []
 
     def rewind_session(self, session_id: str, n: int = 1) -> Optional[Dict[str, Any]]:
-        """Back up ``n`` half-turns via the shared undo core."""
+        """Back up ``n`` half-turns via the shared undo core.
+
+        Returns one of four outcomes so the caller can report HONESTLY (the
+        2026-07-15 false-"Nothing to undo" bug was this method collapsing EVERY
+        exception into ``None`` → "Nothing to undo." with only a DEBUG log):
+        - a real result dict (has ``rewound_ids``) — success.
+        - ``None`` — a genuine, healthy empty (nothing to rewind).
+        - ``{"status": "busy"}`` — a RETRYABLE condition: a transient lock/busy
+          DB error, OR the orphan-guard ``RewindWouldOrphanError`` (a mid-flush
+          race that self-heals); render "try again", never "nothing to undo".
+        - ``{"status": "error"}`` — any OTHER exception (a genuine bug, a
+          non-lock ``OperationalError``); render a distinct internal-error
+          message, logged at ERROR, never "nothing to undo".
+        Every non-success outcome is safe to call "nothing was changed" because
+        ``rewind_to_message`` validates + orphan-guards BEFORE its single write,
+        so a raise from that path means no mutation occurred.
+        """
         if not self._db:
             return None
         try:
@@ -2945,15 +2978,73 @@ class SessionStore:
 
             hermes_undo._session_db = self._db
             result = hermes_undo.undo(session_id, n)
+        except RewindWouldOrphanError as e:
+            # A concurrent turn is mid-flush (an assistant(tool_calls)→tool pair
+            # is being written) so the rewind would transiently orphan a tool
+            # row. Self-heals once the flush completes → RETRYABLE, WARNING (not
+            # an ERROR-logged permanent fault). The 2026-07-15 incident's most
+            # likely trigger; the whole point is to stop reporting it as "nothing
+            # to undo" or a hard error.
+            logger.warning(
+                "rewind_session: transient orphan-guard (mid-flush) for %s: %r",
+                session_id, e,
+            )
+            return {"status": "busy"}
+        except sqlite3.OperationalError as e:
+            if _is_transient_db_busy(e):
+                logger.warning(
+                    "rewind_session: transient DB busy for %s: %r", session_id, e
+                )
+                return {"status": "busy"}
+            logger.error(
+                "rewind_session: DB error for %s: %r", session_id, e, exc_info=True
+            )
+            return {"status": "error"}
         except Exception as e:
-            logger.debug("rewind_session: %s", e)
-            return None
+            logger.error(
+                "rewind_session: undo failed for %s: %r", session_id, e, exc_info=True
+            )
+            return {"status": "error"}
         if not result.get("rewound_ids"):
+            # Genuine empty — nothing rewound. Record the active-row count + the
+            # computed target the undo core saw (B2/RC2).
+            active_count = result.get("active_count")
+            target_id = result.get("target_id")
+            if active_count:
+                # 🔴 The incident signature: rows PRESENT but /undo rewound
+                # NOTHING — whether because no half-turn target was found OR a
+                # target was found but deactivated 0 rows (RC3: both are "rows
+                # existed, undo said nothing"). This is NOT a healthy empty —
+                # surface at WARNING so a recurrence is visible at prod log level
+                # (DEBUG is invisible there).
+                logger.warning(
+                    "rewind_session: /undo rewound NOTHING for %s despite "
+                    "%s active row(s) (n=%s target_id=%s) — possible "
+                    "transient/mid-flush state; reporting 'nothing to undo'",
+                    session_id, active_count, n, target_id,
+                )
+            else:
+                logger.debug(
+                    "rewind_session: nothing to undo for %s "
+                    "(healthy empty; n=%s active_count=%s target_id=%s)",
+                    session_id, n, active_count, target_id,
+                )
             return None
         return result
 
     def restore_session(self, session_id: str, n: int = 1) -> Optional[Dict[str, Any]]:
-        """Redo ``n`` undo operations via the shared undo core."""
+        """Redo ``n`` undo operations via the shared undo core.
+
+        Honesty contract (parallels :meth:`rewind_session` but note: ``redo()``
+        never returns ``None`` for a healthy empty — it returns a real dict with
+        ``reactivated_count == 0``, which the caller renders as "nothing to
+        redo"). Outcomes:
+        - a real result dict (``reactivated_count`` present) — success OR a
+          healthy empty (count 0) OR an honest partial (``partial_retryable``).
+        - ``{"status": "busy"}`` — a RETRYABLE lock/busy DB error.
+        - ``{"status": "error"}`` — a genuine bug / non-lock error (logged ERROR).
+        - ``None`` — only when there is no DB handle at all.
+        """
         if not self._db:
             return None
         try:
@@ -2961,9 +3052,21 @@ class SessionStore:
 
             hermes_undo._session_db = self._db
             result = hermes_undo.redo(session_id, n)
+        except sqlite3.OperationalError as e:
+            if _is_transient_db_busy(e):
+                logger.warning(
+                    "restore_session: transient DB busy for %s: %r", session_id, e
+                )
+                return {"status": "busy"}
+            logger.error(
+                "restore_session: DB error for %s: %r", session_id, e, exc_info=True
+            )
+            return {"status": "error"}
         except Exception as e:
-            logger.debug("restore_session: %s", e)
-            return None
+            logger.error(
+                "restore_session: redo failed for %s: %r", session_id, e, exc_info=True
+            )
+            return {"status": "error"}
         return result
 
 

@@ -1030,6 +1030,19 @@ END;
 """
 
 
+class RewindWouldOrphanError(ValueError):
+    """A rewind target would orphan an active tool row (deactivate an
+    ``assistant(tool_calls)`` while its ``tool`` result stays active).
+
+    Subclasses ``ValueError`` so existing ``except ValueError`` callers still
+    catch it. This is a TRANSIENT, self-healing condition: it fires when a
+    concurrent turn is mid-flush (the ``assistant(tool_calls)``→``tool`` pair
+    is being written), and clears once the flush completes. Callers should
+    report it as retryable ("try again in a moment"), NOT a permanent internal
+    error — see the 2026-07-15 false-"Nothing to undo" incident.
+    """
+
+
 class SessionDB:
     """
     SQLite-backed session storage with FTS5 search.
@@ -5684,12 +5697,25 @@ class SessionDB:
         rewound = self._execute_write(_do)
 
         # 2) Compute new head id (largest still-active row id in session).
-        with self._lock:
-            head_row = self._conn.execute(
-                "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1",
-                (session_id,),
-            ).fetchone()
-        new_head_id = head_row[0] if head_row and head_row[0] is not None else None
+        #    🔴 This runs AFTER the write committed. A failure here must NOT
+        #    raise into the caller — that would let rewind_session report
+        #    "error/nothing changed" for a rewind that DID happen, and a retry
+        #    would double-undo (pass-1 B1). Fail SOFT: the rewind is durable, the
+        #    head id is a cosmetic display value — return None head on any error.
+        try:
+            with self._lock:
+                head_row = self._conn.execute(
+                    "SELECT MAX(id) FROM messages WHERE session_id = ? AND active = 1",
+                    (session_id,),
+                ).fetchone()
+            new_head_id = head_row[0] if head_row and head_row[0] is not None else None
+        except Exception as exc:
+            logger.warning(
+                "rewind_to_message: post-commit head-id read failed for %s "
+                "(rewind already committed; returning None head): %r",
+                session_id, exc,
+            )
+            new_head_id = None
 
         return {
             "rewound_count": len(rewound),
@@ -5736,7 +5762,7 @@ class SessionDB:
                 continue
             call_id = row["tool_call_id"]
             if call_id and str(call_id) in assistant_call_ids:
-                raise ValueError(
+                raise RewindWouldOrphanError(
                     "rewind would orphan active tool row "
                     f"id={row['id']} by deactivating its assistant owner "
                     f"at or after target id={target_message_id}"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hmac
 import ipaddress
 import json
@@ -164,7 +165,36 @@ class MSGraphWebhookAdapter(BasePlatformAdapter):
         self._runner = web.AppRunner(app)
         await self._runner.setup()
         site = web.TCPSite(self._runner, self._host, self._port)
-        await site.start()
+        try:
+            await site.start()
+        except OSError as exc:
+            # site.start() was previously unguarded, so any bind failure
+            # propagated out of connect() as an exception. The reconnect
+            # watcher in gateway.run treats that (like a bare False) as a
+            # transient failure and retries forever at the backoff cap.
+            await self._runner.cleanup()
+            self._runner = None
+            if getattr(exc, "errno", None) == errno.EADDRINUSE:
+                # A port conflict is a configuration error, not a transient
+                # blip — another process holds the port for its lifetime.
+                # Mark it non-retryable so the platform drops from the
+                # reconnect queue; recover with `/platform resume
+                # msgraph_webhook` after changing the port (mirrors the
+                # api_server / webhook direct-bind hardening).
+                self._set_fatal_error(
+                    "msgraph_webhook_port_in_use",
+                    f"Port {self._port} already in use. Set a different "
+                    f"host/port for the msgraph_webhook platform in "
+                    f"config.yaml, then `/platform resume msgraph_webhook`.",
+                    retryable=False,
+                )
+            logger.error(
+                "[msgraph_webhook] Could not bind %s:%d: %s",
+                self._host,
+                self._port,
+                exc,
+            )
+            return False
         self._mark_connected()
         logger.info(
             "[msgraph_webhook] Listening on %s:%d%s",

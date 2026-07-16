@@ -1,7 +1,9 @@
 """Tests for the Microsoft Graph webhook adapter."""
 
 import asyncio
+import errno
 import json
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
@@ -116,6 +118,55 @@ class TestMSGraphValidationHandshake:
             assert adapter.is_connected is True
         finally:
             await adapter.disconnect()
+
+    @pytest.mark.anyio
+    async def test_port_conflict_sets_non_retryable_fatal_error(self):
+        """A port conflict (EADDRINUSE) must set a non-retryable fatal error so
+        the reconnect watcher drops the platform from the retry queue instead
+        of looping indefinitely.
+
+        Previously ``site.start()`` was unguarded, so the bind OSError
+        propagated out of connect(); gateway.run's reconnect watcher treats an
+        exception (like a bare ``False``) as transient and retries forever at
+        the backoff cap. The failure is injected so the branch is exercised
+        deterministically regardless of the OS's rebinding semantics.
+        """
+        if not AIOHTTP_AVAILABLE:
+            pytest.skip("aiohttp not installed")
+        adapter = _make_adapter(host="127.0.0.1", port=8646, allowed_source_cidrs=[])
+        eaddrinuse = OSError(errno.EADDRINUSE, "address already in use")
+        with patch(
+            "gateway.platforms.msgraph_webhook.web.TCPSite"
+        ) as mock_site_cls:
+            mock_site_cls.return_value.start = AsyncMock(side_effect=eaddrinuse)
+            connected = await adapter.connect()
+        assert connected is False
+        assert adapter.is_connected is False
+        assert adapter.has_fatal_error is True
+        assert adapter.fatal_error_retryable is False
+        assert adapter.fatal_error_code == "msgraph_webhook_port_in_use"
+        assert "8646" in (adapter.fatal_error_message or "")
+        # The runner must be cleaned up on the failure path, not leaked.
+        assert adapter._runner is None
+
+    @pytest.mark.anyio
+    async def test_transient_bind_error_stays_retryable(self):
+        """A non-EADDRINUSE bind failure (e.g. a transient OSError) must NOT be
+        marked fatal — connect() returns a bare ``False`` so the watcher keeps
+        retrying. Only a genuine port conflict is a configuration error.
+        """
+        if not AIOHTTP_AVAILABLE:
+            pytest.skip("aiohttp not installed")
+        adapter = _make_adapter(host="127.0.0.1", port=8646, allowed_source_cidrs=[])
+        transient = OSError(errno.EADDRNOTAVAIL, "cannot assign requested address")
+        with patch(
+            "gateway.platforms.msgraph_webhook.web.TCPSite"
+        ) as mock_site_cls:
+            mock_site_cls.return_value.start = AsyncMock(side_effect=transient)
+            connected = await adapter.connect()
+        assert connected is False
+        assert adapter.has_fatal_error is False
+        assert adapter._runner is None
 
     @pytest.mark.anyio
     async def test_validation_token_echo_on_get(self):

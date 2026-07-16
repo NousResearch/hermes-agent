@@ -126,6 +126,31 @@ _DEFAULT_PAYLOADS = {
         "result": '{"output": "hello"}',
         "duration_ms": 42,
     },
+    # Mirrors tools/terminal_tool.py invoke_hook("transform_terminal_output")
+    # — note: no session_id kwarg at runtime, so the top-level session_id a
+    # script sees is "" there too.
+    "transform_terminal_output": {
+        "command": "echo hello",
+        "output": "hello\n",
+        "returncode": 0,
+        "task_id": "test-task",
+        "env_type": "local",
+    },
+    # Mirrors model_tools.py invoke_hook("transform_tool_result").
+    "transform_tool_result": {
+        "tool_name": "terminal",
+        "args": {"command": "echo hello"},
+        "result": '{"output": "hello"}',
+        "task_id": "test-task",
+        "session_id": "test-session",
+        "tool_call_id": "test-call",
+        "turn_id": "test-turn",
+        "api_request_id": "test-request",
+        "duration_ms": 42,
+        "status": "ok",
+        "error_type": None,
+        "error_message": None,
+    },
     "pre_llm_call": {
         "session_id": "test-session",
         "user_message": "What is the weather?",
@@ -135,6 +160,13 @@ _DEFAULT_PAYLOADS = {
         "platform": "cli",
     },
     "post_llm_call": {
+        "session_id": "test-session",
+        "model": "gpt-4",
+        "platform": "cli",
+    },
+    # Mirrors agent/turn_finalizer.py invoke_hook("transform_llm_output").
+    "transform_llm_output": {
+        "response_text": "Synthetic response for hooks test",
         "session_id": "test-session",
         "model": "gpt-4",
         "platform": "cli",
@@ -184,12 +216,122 @@ _DEFAULT_PAYLOADS = {
         "assistant_content_chars": 1200,
         "assistant_tool_call_count": 0,
     },
+    # Mirrors run_agent.py _invoke_api_request_error_hook().
+    "api_request_error": {
+        "task_id": "test-task",
+        "turn_id": "test-turn",
+        "api_request_id": "test-request",
+        "session_id": "test-session",
+        "platform": "cli",
+        "model": "claude-sonnet-4-6",
+        "provider": "anthropic",
+        "base_url": "https://api.anthropic.com",
+        "api_mode": "anthropic_messages",
+        "api_call_count": 1,
+        "api_duration": 1.234,
+        "started_at": 1700000000.0,
+        "ended_at": 1700000001.234,
+        "status_code": 500,
+        "retry_count": 0,
+        "max_retries": 2,
+        "retryable": True,
+        "reason": "server_error",
+        "error": {
+            "type": "APIError",
+            "message": "Synthetic API error for hooks test",
+        },
+        "request": {
+            "method": "POST",
+            "body": {"model": "claude-sonnet-4-6", "max_tokens": 4096},
+        },
+    },
+    # Mirrors tools/delegate_tool.py invoke_hook("subagent_start").
+    "subagent_start": {
+        "parent_session_id": "parent-sess",
+        "parent_turn_id": "test-turn",
+        "parent_subagent_id": None,
+        "child_session_id": "child-sess",
+        "child_subagent_id": "test-subagent",
+        "child_role": None,
+        "child_goal": "Synthetic goal for hooks test",
+    },
+    # Mirrors tools/delegate_tool.py invoke_hook("subagent_stop").
     "subagent_stop": {
         "parent_session_id": "parent-sess",
+        "parent_turn_id": "test-turn",
+        "child_session_id": "child-sess",
         "child_role": None,
         "child_summary": "Synthetic summary for hooks test",
         "child_status": "completed",
         "duration_ms": 1234,
+    },
+    # Mirrors gateway/run.py invoke_hook("pre_gateway_dispatch"), which
+    # passes LIVE objects: event (a MessageEvent dataclass), gateway (the
+    # GatewayRunner) and session_store.  None of them is JSON-serialisable,
+    # so _serialize_payload's json.dumps(..., default=str) reduces each to
+    # its str()/repr() — that is genuinely what a shell script sees on
+    # stdin at runtime.  The stand-ins below are repr-style strings so the
+    # synthetic shape (strings, not objects) matches production.
+    "pre_gateway_dispatch": {
+        "event": (
+            "MessageEvent(text='hello', "
+            "message_type=<MessageType.TEXT: 'text'>, "
+            "source=SessionSource(...), ...)"
+        ),
+        "gateway": "<gateway.run.GatewayRunner object at 0x0>",
+        "session_store": "<gateway.session.SessionStore object at 0x0>",
+    },
+    # Mirrors tools/approval.py _fire_approval_hook("pre_approval_request");
+    # the wrapper always adds turn_id + tool_call_id from context vars.
+    "pre_approval_request": {
+        "command": "rm -rf /tmp/scratch",
+        "description": "Recursive file deletion",
+        "pattern_key": "rm -rf",
+        "pattern_keys": ["rm -rf"],
+        "session_key": "test-session",
+        "surface": "cli",
+        "turn_id": "test-turn",
+        "tool_call_id": "test-call",
+    },
+    # Same kwargs plus choice.  (decided_by is only added on surface="smart"
+    # firings, so it is deliberately absent from this surface="cli" payload.)
+    "post_approval_response": {
+        "command": "rm -rf /tmp/scratch",
+        "description": "Recursive file deletion",
+        "pattern_key": "rm -rf",
+        "pattern_keys": ["rm -rf"],
+        "session_key": "test-session",
+        "surface": "cli",
+        "choice": "once",
+        "turn_id": "test-turn",
+        "tool_call_id": "test-call",
+    },
+    # Mirror hermes_cli/kanban_db.py _fire_kanban_lifecycle_hook() call
+    # sites; the wrapper always adds profile_name.  No session_id kwarg at
+    # runtime, so the top-level session_id a script sees is "" there too.
+    "kanban_task_claimed": {
+        "task_id": "test-task",
+        "profile_name": "default",
+        "board": "test-board",
+        "assignee": "test-agent",
+        "run_id": 1,
+    },
+    "kanban_task_completed": {
+        "task_id": "test-task",
+        "profile_name": "default",
+        "board": "test-board",
+        "assignee": "test-agent",
+        "run_id": 1,
+        "summary": "Synthetic completion summary for hooks test",
+    },
+    # Both block_task dispatch sites pass identical fields.
+    "kanban_task_blocked": {
+        "task_id": "test-task",
+        "profile_name": "default",
+        "board": "test-board",
+        "assignee": "test-agent",
+        "run_id": 1,
+        "reason": "Synthetic block reason for hooks test",
     },
 }
 

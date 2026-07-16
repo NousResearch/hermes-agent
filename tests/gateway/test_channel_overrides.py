@@ -156,6 +156,55 @@ class TestResolveModelForChannel:
         assert model == "global-model/default"
 
 
+class TestWebhookRouteLevelOverride:
+    """Webhook chat ids are per-delivery (webhook:<route>:<delivery_id>); a
+    static channel_overrides entry for the route must match every delivery."""
+
+    def test_route_level_key_matches_delivery_chat_id(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.WEBHOOK: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "webhook:mission-complete": ChannelOverride(model="route/model"),
+                    },
+                ),
+            },
+        )
+        ov = _get_channel_override(
+            config, Platform.WEBHOOK, "webhook:mission-complete:1784209310746"
+        )
+        assert ov is not None
+        assert ov.model == "route/model"
+
+    def test_exact_delivery_key_still_wins_over_route_key(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.WEBHOOK: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={
+                        "webhook:mission-complete": ChannelOverride(model="route/model"),
+                        "webhook:mission-complete:42": ChannelOverride(model="delivery/model"),
+                    },
+                ),
+            },
+        )
+        ov = _get_channel_override(config, Platform.WEBHOOK, "webhook:mission-complete:42")
+        assert ov is not None
+        assert ov.model == "delivery/model"
+
+    def test_non_webhook_ids_gain_no_extra_keys(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.DISCORD: PlatformConfig(
+                    enabled=True,
+                    channel_overrides={"chan": ChannelOverride(model="m")},
+                ),
+            },
+        )
+        assert _get_channel_override(config, Platform.DISCORD, "chan:sub:42") is None
+
+
 class TestGetSystemPromptForChannel:
     def test_uses_channel_override_when_present(self):
         config = GatewayConfig(

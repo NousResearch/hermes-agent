@@ -2507,6 +2507,17 @@ def _channel_override_lookup_keys(
             continue
         seen.add(sk)
         keys.append(sk)
+    # Webhook sessions use per-delivery chat ids ("webhook:<route>:<delivery>");
+    # also try the route-level "webhook:<route>" key so a static
+    # channel_overrides entry can target every delivery on a route.
+    for key in list(keys):
+        if key.startswith("webhook:"):
+            parts = key.split(":")
+            if len(parts) >= 3:
+                route_key = ":".join(parts[:2])
+                if route_key not in seen:
+                    seen.add(route_key)
+                    keys.append(route_key)
     return keys
 
 

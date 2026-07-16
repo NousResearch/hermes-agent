@@ -3620,6 +3620,52 @@ def test_config_set_model_uses_live_switch_path(monkeypatch):
     assert seen["args"] == ("sid", "session-key", "new/model")
 
 
+def test_apply_model_switch_marks_slash_worker_stale_without_inline_restart(monkeypatch):
+    class _Agent:
+        model = "old/model"
+        provider = "old-provider"
+        base_url = ""
+        api_key = ""
+
+        def switch_model(self, **kwargs):
+            self.model = kwargs["new_model"]
+            self.provider = kwargs["new_provider"]
+
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="anthropic/claude-sonnet-4.6",
+        target_provider="anthropic",
+        api_key="key",
+        base_url="https://api.anthropic.com",
+        api_mode="anthropic_messages",
+        warning_message="",
+        model_info=None,
+    )
+    restart_calls = []
+    session = _session(agent=_Agent())
+    session["slash_worker"] = types.SimpleNamespace(model="old/model")
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", lambda **_kwargs: result)
+    monkeypatch.setattr(
+        server, "_restart_slash_worker", lambda sid, target: restart_calls.append((sid, target))
+    )
+    monkeypatch.setattr(server, "_persist_live_session_runtime", lambda _session: None)
+    monkeypatch.setattr(server, "_persist_live_session_system_prompt", lambda _session: None)
+    monkeypatch.setattr(server, "_append_model_switch_marker", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(server, "_emit", lambda *_args, **_kwargs: None)
+
+    response = server._apply_model_switch(
+        "sid",
+        session,
+        "anthropic/claude-sonnet-4.6 --provider anthropic",
+        confirm_expensive_model=True,
+    )
+
+    assert response["value"] == "anthropic/claude-sonnet-4.6"
+    assert session["slash_worker_stale"] is True
+    assert restart_calls == []
+
+
 def test_config_set_model_requires_confirmation_for_expensive_model(monkeypatch):
     class _Agent:
         provider = "openrouter"
@@ -8499,6 +8545,82 @@ def test_restart_slash_worker_stores_on_live_session(monkeypatch):
         assert isinstance(live["slash_worker"], _FakeWorker)
     finally:
         server._sessions.pop("live-restart", None)
+
+
+def test_concurrent_slash_exec_replaces_stale_worker_once_and_serializes_runs(monkeypatch):
+    state_lock = threading.Lock()
+    run_state = {"active": 0, "max_active": 0}
+    created_workers = []
+
+    class _FakeWorker:
+        def __init__(self, session_key, model, profile_home=None):
+            self.session_key = session_key
+            self.model = model
+            self.closed = False
+            self.runs = []
+            created_workers.append(self)
+
+        def run(self, command):
+            with state_lock:
+                run_state["active"] += 1
+                run_state["max_active"] = max(
+                    run_state["max_active"], run_state["active"]
+                )
+            time.sleep(0.05)
+            self.runs.append(command)
+            with state_lock:
+                run_state["active"] -= 1
+            return f"ran:{self.model}:{command}"
+
+        def close(self):
+            time.sleep(0.05)
+            self.closed = True
+
+    stale_worker = _FakeWorker("session-key", "old/model")
+    created_workers.clear()
+    session = _session(agent=types.SimpleNamespace(model="new/model"))
+    session["slash_worker"] = stale_worker
+    session["slash_worker_stale"] = True
+    server._sessions["concurrent-slash"] = session
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+
+    requests = [
+        {
+            "id": str(index),
+            "method": "slash.exec",
+            "params": {
+                "session_id": "concurrent-slash",
+                "command": f"help-{index}",
+            },
+        }
+        for index in range(2)
+    ]
+    start = threading.Barrier(3)
+    responses = []
+
+    def _run(request):
+        start.wait()
+        responses.append(server.handle_request(request))
+
+    threads = [threading.Thread(target=_run, args=(request,)) for request in requests]
+    try:
+        for thread in threads:
+            thread.start()
+        start.wait()
+        for thread in threads:
+            thread.join(timeout=2)
+
+        assert all(not thread.is_alive() for thread in threads)
+        assert len(responses) == 2
+        assert all("result" in response for response in responses)
+        assert stale_worker.closed is True
+        assert len(created_workers) == 1
+        assert session["slash_worker"] is created_workers[0]
+        assert session["slash_worker"].model == "new/model"
+        assert session["slash_worker_stale"] is False
+        assert run_state["max_active"] == 1
+    finally:
+        server._sessions.pop("concurrent-slash", None)
 
 
 def test_session_close_rpc_delegates_to_close_session_by_id(monkeypatch):

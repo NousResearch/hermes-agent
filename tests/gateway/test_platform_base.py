@@ -631,12 +631,15 @@ class TestMediaExtensionAllowlistParity:
 
     def test_unknown_extension_not_black_holed_by_cleanup(self):
         """A MEDIA: tag with an unknown extension is NOT stripped from the
-        body — it survives so extract_local_files can still see the bare path,
-        rather than vanishing entirely (the core of issue #34517)."""
+        body by the extension-anchored cleanup — and when the path does not
+        validate (nonexistent file here), it is not delivered either, so the
+        tag survives visibly instead of vanishing (the core of issue #34517).
+        Validated unknown-extension paths DO deliver — see
+        TestUniversalMediaEgress (#36060)."""
         from gateway.platforms.base import MEDIA_TAG_CLEANUP_RE
         text = "Saved to MEDIA:/tmp/data.weirdext done"
         media, _ = BasePlatformAdapter.extract_media(text)
-        assert media == []  # unknown extension is not a deliverable MEDIA tag
+        assert media == []  # nonexistent path fails validation, not delivered
         stripped = MEDIA_TAG_CLEANUP_RE.sub("", text)
         assert "/tmp/data.weirdext" in stripped  # path preserved, not dropped
 
@@ -710,6 +713,104 @@ class TestExtensionlessMediaDelivery:
         assert "[[as_document]]" not in (
             BasePlatformAdapter.strip_media_directives_for_display(text)
         )
+
+
+class TestUniversalMediaEgress:
+    """#36060: every MEDIA: path is deliverable regardless of file type.
+
+    Known extensions extract unconditionally (MEDIA_TAG_CLEANUP_RE); unknown
+    extensions and extension-less files extract via the validated pass —
+    delivered when validate_media_delivery_path accepts them, left visible
+    when it does not (nonexistent, denylisted).
+    """
+
+    def _patch_allow_root(self, monkeypatch, root):
+        monkeypatch.setattr(
+            "gateway.platforms.base.MEDIA_DELIVERY_SAFE_ROOTS",
+            (str(root),),
+        )
+        monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
+
+    @pytest.mark.parametrize("name", [
+        "script.py", "server.log", "notes.weirdext", "app.ts", "run.sh",
+        "config.toml", "styles.css", "contract.sol",
+    ])
+    def test_unknown_extension_delivered_when_file_validates(
+        self, tmp_path, monkeypatch, name,
+    ):
+        root = tmp_path / "output"
+        root.mkdir()
+        f = root / name
+        f.write_text("content", encoding="utf-8")
+        self._patch_allow_root(monkeypatch, root)
+
+        content = f"Here you go:\nMEDIA:{f}\nDone."
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert len(media) == 1
+        assert media[0][0] == str(f.resolve())
+        assert "MEDIA:" not in cleaned
+        assert "Done." in cleaned
+
+    def test_unknown_extension_left_visible_when_not_on_disk(
+        self, tmp_path, monkeypatch,
+    ):
+        root = tmp_path / "output"
+        root.mkdir()
+        self._patch_allow_root(monkeypatch, root)
+
+        content = "MEDIA:/nonexistent/script.py"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:/nonexistent/script.py" in cleaned
+
+    def test_denylisted_paths_still_rejected_regardless_of_extension(
+        self, tmp_path, monkeypatch,
+    ):
+        # A denylisted path must not deliver even though .py/.log/etc now
+        # route through the validated pass. _media_delivery_denied_paths()
+        # reads _MEDIA_DELIVERY_DENIED_PREFIXES at call time, so patching the
+        # tuple exercises the real denylist logic.
+        secret_dir = tmp_path / "secrets"
+        secret_dir.mkdir()
+        f = secret_dir / "creds.py"
+        f.write_text("TOKEN = 'x'", encoding="utf-8")
+        monkeypatch.setattr(
+            "gateway.platforms.base._MEDIA_DELIVERY_DENIED_PREFIXES",
+            (str(secret_dir),),
+        )
+        monkeypatch.delenv("HERMES_MEDIA_DELIVERY_STRICT", raising=False)
+
+        content = f"MEDIA:{f}"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == []
+        assert "MEDIA:" in cleaned  # rejected tag stays visible
+
+    def test_strip_for_display_strips_validated_unknown_extension(
+        self, tmp_path, monkeypatch,
+    ):
+        root = tmp_path / "output"
+        root.mkdir()
+        f = root / "server.log"
+        f.write_text("x", encoding="utf-8")
+        self._patch_allow_root(monkeypatch, root)
+
+        text = f"MEDIA:{f}"
+        stripped = BasePlatformAdapter.strip_media_directives_for_display(text)
+        assert "MEDIA:" not in stripped
+
+    def test_strip_for_display_keeps_unvalidated_unknown_extension(self):
+        text = "MEDIA:/nonexistent/server.log"
+        stripped = BasePlatformAdapter.strip_media_directives_for_display(text)
+        assert "MEDIA:/nonexistent/server.log" in stripped
+
+    def test_known_extension_still_unconditional(self):
+        # Known extensions keep the pre-#36060 behavior: extracted (and the
+        # tag stripped) even when the file does not exist — downstream
+        # delivery surfaces the failure.
+        content = "MEDIA:/nonexistent/report.pdf"
+        media, cleaned = BasePlatformAdapter.extract_media(content)
+        assert media == [("/nonexistent/report.pdf", False)]
+        assert "MEDIA:" not in cleaned
 
 
 class TestMediaDeliveryPathValidation:

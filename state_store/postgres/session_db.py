@@ -1,4 +1,4 @@
-"""Composed PostgreSQL SessionDB shell; operation mixins are added separately."""
+"""Composed PostgreSQL SessionDB implementation."""
 
 from __future__ import annotations
 
@@ -11,37 +11,22 @@ from state_store.postgres.core import (
     PostgresSchemaValidationError,
     PostgresStateStore,
 )
+from state_store.postgres.ops_messages import PostgresSessionDBMessageOperations
+from state_store.postgres.ops_search import PostgresSearchOperations
+from state_store.postgres.ops_sessions import PostgresSessionOperations
 from state_store.postgres.session_db_base import PostgresSessionDBBase
 from state_store.spec import StateStoreSpec
-
-
-class _SessionLifecycleOperations:
-    """Temporary composition placeholder for future lifecycle SQL operations."""
-
-
-class _SessionMessageOperations:
-    """Temporary composition placeholder for future message SQL operations."""
-
-
-class _SessionSearchOperations:
-    """Temporary composition placeholder for future search SQL operations."""
-
-
-class _SessionMaintenanceOperations:
-    """Temporary composition placeholder for future maintenance SQL operations."""
 
 
 StateStoreFactory = Callable[..., PostgresStateStore]
 
 
 class PostgresSessionDB(
-    _SessionLifecycleOperations,
-    _SessionMessageOperations,
-    _SessionSearchOperations,
-    _SessionMaintenanceOperations,
-    PostgresSessionDBBase,
+    PostgresSessionOperations,
+    PostgresSessionDBMessageOperations,
+    PostgresSearchOperations,
 ):
-    """Factory-composed PostgreSQL SessionDB without operation SQL yet."""
+    """PostgreSQL implementation of the public durable SessionDB contract."""
 
     @classmethod
     def from_spec(

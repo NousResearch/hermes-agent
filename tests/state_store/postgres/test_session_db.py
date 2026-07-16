@@ -141,6 +141,31 @@ def test_shared_api_contract_is_immutable_and_used_by_sqlite() -> None:
         manifest.signatures["create_session"] = "changed"  # type: ignore[index]
 
 
+def test_postgres_session_db_matches_sqlite_public_api_contract() -> None:
+    sqlite_names = set(session_api_signature_manifest(SessionDB).signatures)
+    postgres_names = set(session_api_signature_manifest(PostgresSessionDB).signatures)
+
+    # Backend selection remains the neutral entry point, while from_spec is the
+    # PostgreSQL-only factory called after resolution.
+    assert sqlite_names - {"for_home"} == postgres_names - {"from_spec"}
+
+    for name in sorted(sqlite_names - {"for_home"}):
+        def call_signature(method: Any) -> inspect.Signature:
+            signature = inspect.signature(method)
+            parameters = [
+                parameter.replace(annotation=inspect.Parameter.empty)
+                for parameter in signature.parameters.values()
+            ]
+            return signature.replace(
+                parameters=parameters,
+                return_annotation=inspect.Signature.empty,
+            )
+
+        sqlite_signature = call_signature(getattr(SessionDB, name))
+        postgres_signature = call_signature(getattr(PostgresSessionDB, name))
+        assert postgres_signature == sqlite_signature, name
+
+
 def test_postgres_base_normalizes_mapping_and_tuple_rows_without_cursor_escape() -> None:
     store = FakeBaseStore(
         spec=_spec(),

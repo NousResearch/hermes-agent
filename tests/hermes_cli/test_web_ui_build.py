@@ -335,3 +335,43 @@ class TestBuildWebUIRetryAndStaleFallback:
         assert "Web UI build failed" in out
         assert "vite ENOMEM" in out
         assert "Run manually" in out
+
+
+class TestLooksLikeInstallScriptFailure:
+    """Tests for _looks_like_install_script_failure — detection heuristic."""
+
+    def _result(self, stderr: str = "", returncode: int = 1):
+        import subprocess
+        return subprocess.CompletedProcess([], returncode, stdout="", stderr=stderr)
+
+    def test_info_run_pattern(self):
+        from hermes_cli.main import _looks_like_install_script_failure as check
+        assert check(self._result('info run electron-winstaller@5.4.0 install')) is True
+
+    def test_eagain_spawn_pattern(self):
+        from hermes_cli.main import _looks_like_install_script_failure as check
+        assert check(self._result('npm error spawn sh EAGAIN')) is True
+
+    def test_err_script_pattern(self):
+        from hermes_cli.main import _looks_like_install_script_failure as check
+        assert check(self._result('npm ERR! command sh -c node-gyp rebuild')) is True
+
+    def test_network_error_returns_false(self):
+        from hermes_cli.main import _looks_like_install_script_failure as check
+        assert check(self._result('npm ERR! code ECONNRESET')) is False
+
+    def test_auth_failure_returns_false(self):
+        from hermes_cli.main import _looks_like_install_script_failure as check
+        assert check(self._result('npm ERR! code E401\nnpm ERR! Unable to authenticate')) is False
+
+    def test_lockfile_mismatch_returns_false(self):
+        from hermes_cli.main import _looks_like_install_script_failure as check
+        assert check(self._result('npm ERR! code E405\nnpm ERR! Lockfile has conflict entries')) is False
+
+    def test_empty_stderr_returns_false(self):
+        from hermes_cli.main import _looks_like_install_script_failure as check
+        assert check(self._result()) is False
+
+    def test_successful_result_returns_false(self):
+        from hermes_cli.main import _looks_like_install_script_failure as check
+        assert check(self._result(returncode=0)) is False

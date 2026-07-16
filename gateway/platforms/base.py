@@ -5661,7 +5661,10 @@ class BasePlatformAdapter(ABC):
             # a potential closing fence, and the chunk indicator.
             headroom = max_length - INDICATOR_RESERVE - _len(prefix) - _len(FENCE_CLOSE)
             if headroom < 1:
-                headroom = max_length // 2
+                # Floor at 1 so a pathologically small max_length (0 or 1 —
+                # e.g. a relay capability descriptor whose max_message_length
+                # is 0/1) can't make headroom 0 and stall the loop below.
+                headroom = max(1, max_length // 2)
 
             # Everything remaining fits in one final chunk
             if _len(prefix) + _len(remaining) <= max_length - INDICATOR_RESERVE:
@@ -5685,7 +5688,13 @@ class BasePlatformAdapter(ABC):
             if split_at < _cp_limit // 2:
                 split_at = region.rfind(" ")
             if split_at < 1:
-                split_at = _cp_limit
+                # Consume at least one codepoint. Without the max(1, …) floor,
+                # a zero _cp_limit — reachable when max_length is 0/1, or under
+                # utf16_len when the next char is a surrogate pair wider than
+                # the whole budget — leaves split_at at 0, so ``remaining``
+                # never shrinks and the while-loop spins forever appending
+                # empty chunks (an unbounded hang / OOM).
+                split_at = max(1, _cp_limit)
 
             # Avoid splitting inside an inline code span (`...`).
             # If the text before split_at has an odd number of unescaped

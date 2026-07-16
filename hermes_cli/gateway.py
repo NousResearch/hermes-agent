@@ -7212,6 +7212,13 @@ def _gateway_command_inner(args):
         restart_all = getattr(args, "all", False)
         service_configured = False
 
+        # ``--all`` has host-wide blast radius: s6 dispatch, service stop, and
+        # process sweeping can affect every profile. Validate before any of
+        # those mutations so an unusable deployment contract cannot take down
+        # otherwise-running gateways.
+        if restart_all:
+            _require_runtime_code_root_match()
+
         # Phase 4: inside a container with s6, dispatch via the service
         # manager (s6-svc -t restarts the supervised process). ``--all``
         # iterates every registered profile gateway through s6; without

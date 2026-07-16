@@ -2136,6 +2136,52 @@ class TestGatewaySystemServiceRouting:
         assert "nohup hermes gateway" in out
         assert "install as user service" not in out
 
+    def test_gateway_restart_all_validates_before_host_wide_mutation(
+        self, monkeypatch
+    ):
+        calls = []
+        monkeypatch.delenv("_HERMES_GATEWAY", raising=False)
+
+        def reject_runtime():
+            calls.append("validate-runtime")
+            raise RuntimeError("runtime mismatch")
+
+        monkeypatch.setattr(
+            gateway_cli, "_require_runtime_code_root_match", reject_runtime
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_dispatch_all_via_service_manager_if_s6",
+            lambda action: calls.append("s6-dispatch") or False,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "systemd_stop",
+            lambda system=False: calls.append("stop-service"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "launchd_stop",
+            lambda: calls.append("stop-launchd"),
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "kill_gateway_processes",
+            lambda **kwargs: calls.append("kill-all-profiles") or 0,
+        )
+        monkeypatch.setattr(
+            gateway_cli,
+            "_wait_for_gateway_exit",
+            lambda **kwargs: calls.append("wait-exit") or True,
+        )
+
+        with pytest.raises(RuntimeError, match="runtime mismatch"):
+            gateway_cli.gateway_command(
+                SimpleNamespace(gateway_command="restart", system=False, all=True)
+            )
+
+        assert calls == ["validate-runtime"]
+
     def test_gateway_restart_does_not_fallback_to_foreground_when_launchd_restart_fails(self, tmp_path, monkeypatch):
         plist_path = tmp_path / "ai.hermes.gateway.plist"
         plist_path.write_text("plist\n", encoding="utf-8")

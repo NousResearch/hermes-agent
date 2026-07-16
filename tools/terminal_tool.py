@@ -2371,19 +2371,35 @@ def terminal_tool(
                     "status": "error",
                 }, ensure_ascii=False)
 
-        # Hard-block: git commands that rewrite the working tree of the
-        # source checkout this hermes process runs from (editable/source
-        # installs only — packaged installs have no .git and the guard is
-        # inert). Swapping code on disk under the live interpreter causes
-        # version skew: already-imported modules stay old while later lazy
-        # imports load the new code, crashing long after the command that
-        # caused it. Like the gateway lifecycle guard above, this applies
-        # unconditionally — force=True cannot make the command safe. Local
-        # backend only: sandboxed backends can't reach the host checkout.
+        # Validate before the source guard resolves an explicit workdir.
+        if workdir:
+            workdir_error = _validate_workdir(workdir)
+            if workdir_error:
+                logger.warning("Blocked dangerous workdir: %s (command: %s)",
+                               workdir[:200], _safe_command_preview(command))
+                return json.dumps({
+                    "output": "",
+                    "exit_code": -1,
+                    "error": workdir_error,
+                    "status": "blocked"
+                }, ensure_ascii=False)
+
+        from tools.approval import get_current_session_key
+
+        session_key = get_current_session_key(default="") or (task_id or "")
+
+        # Non-bypassable: rewriting the local checkout backing this interpreter
+        # can mix module versions. Remote backends cannot reach that checkout.
         if env_type == "local":
             from tools.self_repo_guard import detect_self_repo_git_mutation
+
+            guard_cwd = _resolve_command_cwd(
+                workdir=workdir,
+                default_cwd=cwd,
+                session_key=session_key,
+            )
             _self_repo_hit, _self_repo_msg = detect_self_repo_git_mutation(
-                command, workdir or cwd
+                command, guard_cwd
             )
             if _self_repo_hit:
                 logger.warning(
@@ -2446,19 +2462,6 @@ def terminal_tool(
                 desc = approval.get("description", "flagged as dangerous")
                 approval_note = f"Command was flagged ({desc}) and auto-approved by smart approval."
 
-        # Validate workdir against shell injection
-        if workdir:
-            workdir_error = _validate_workdir(workdir)
-            if workdir_error:
-                logger.warning("Blocked dangerous workdir: %s (command: %s)",
-                               workdir[:200], _safe_command_preview(command))
-                return json.dumps({
-                    "output": "",
-                    "exit_code": -1,
-                    "error": workdir_error,
-                    "status": "blocked"
-                }, ensure_ascii=False)
-
         # Prepare command for execution
         pty_disabled_reason = None
         effective_pty = pty
@@ -2470,14 +2473,6 @@ def terminal_tool(
                 "processes, call process(action='close') after writing so it receives "
                 "EOF."
             )
-
-        # The session key that drives cwd records: get_current_session_key()'s
-        # contextvar doesn't cross tool-worker threads, so fall back to the raw
-        # task_id (which IS the session_key for the top-level agent) — a
-        # stable, thread-safe anchor.
-        from tools.approval import get_current_session_key
-
-        session_key = get_current_session_key(default="") or (task_id or "")
 
         if background:
             # Spawn a tracked background process via the process registry.

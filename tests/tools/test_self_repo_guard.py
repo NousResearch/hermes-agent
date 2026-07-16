@@ -1,5 +1,6 @@
 """Tests for tools/self_repo_guard.py — the running-source-checkout git guard."""
 
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -12,9 +13,9 @@ from tools.self_repo_guard import (
 
 @pytest.fixture
 def repo(tmp_path):
-    """A fake source checkout acting as the running install's repo root."""
     root = tmp_path / "hermes-agent"
-    (root / ".git").mkdir(parents=True)
+    root.mkdir()
+    subprocess.run(["git", "init", "-q", str(root)], check=True)
     (root / "agent").mkdir()
     return root.resolve()
 
@@ -24,20 +25,24 @@ def _detect(command, cwd, root):
 
 
 class TestBlocksMutationsInSourceRepo:
-    @pytest.mark.parametrize("sub", [
-        "checkout pr-51020",
-        "switch main",
-        "reset --hard origin/main",
-        "rebase origin/main",
-        "merge origin/main",
-        "pull",
-        "restore .",
-        "stash",
-        "stash pop",
-        "clean -fd",
-        "cherry-pick abc123",
-        "revert HEAD",
-    ])
+    @pytest.mark.parametrize(
+        "sub",
+        [
+            "checkout pr-51020",
+            "switch main",
+            "reset --hard origin/main",
+            "reset --har origin/main",
+            "rebase origin/main",
+            "merge origin/main",
+            "pull",
+            "restore .",
+            "stash",
+            "stash pop",
+            "clean -fd",
+            "cherry-pick abc123",
+            "revert HEAD",
+        ],
+    )
     def test_cwd_inside_repo(self, repo, sub):
         hit, msg = _detect(f"git {sub}", repo, repo)
         assert hit is True
@@ -67,6 +72,74 @@ class TestBlocksMutationsInSourceRepo:
         hit, _ = _detect("sudo env GIT_PAGER=cat git checkout main", repo, repo)
         assert hit is True
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "sudo -u root git checkout main",
+            "env -u GIT_PAGER git switch main",
+            "/usr/bin/git checkout main",
+            "sh -c 'git checkout main'",
+            "bash -lc 'git switch main'",
+        ],
+    )
+    def test_wrappers_and_nested_shells(self, repo, command):
+        hit, _ = _detect(command, repo, repo)
+        assert hit is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "gh pr checkout 51020",
+            "hub pr checkout 51020",
+        ],
+    )
+    def test_pr_checkout_clients(self, repo, command):
+        hit, _ = _detect(command, repo, repo)
+        assert hit is True
+
+    def test_explicit_work_tree_targeting_repo(self, repo, tmp_path):
+        command = f"git --git-dir={repo / '.git'} --work-tree={repo} checkout main"
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    def test_git_environment_targeting_repo(self, repo, tmp_path):
+        command = f"GIT_DIR={repo / '.git'} GIT_WORK_TREE={repo} git checkout main"
+        hit, _ = _detect(command, tmp_path, repo)
+        assert hit is True
+
+    def test_inline_git_alias(self, repo):
+        hit, _ = _detect("git -c alias.co=checkout co main", repo, repo)
+        assert hit is True
+
+    def test_configured_git_alias(self, repo):
+        subprocess.run(
+            ["git", "-C", str(repo), "config", "alias.co", "checkout"],
+            check=True,
+        )
+        hit, _ = _detect("git co main", repo, repo)
+        assert hit is True
+
+    def test_mutation_in_command_substitution(self, repo):
+        hit, _ = _detect('echo "$(git checkout main)"', repo, repo)
+        assert hit is True
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'echo "$(echo ready && git checkout main)"',
+            "echo `git checkout main`",
+            'echo "`git checkout main`"',
+        ],
+    )
+    def test_nested_command_lists(self, repo, command):
+        hit, _ = _detect(command, repo, repo)
+        assert hit is True
+
+    def test_shell_heredoc_is_executed(self, repo):
+        command = "bash <<'EOF'\ngit checkout main\nEOF\n"
+        hit, _ = _detect(command, repo, repo)
+        assert hit is True
+
     def test_tilde_dash_c_path(self, repo, monkeypatch, tmp_path):
         monkeypatch.setenv("HOME", str(repo.parent))
         hit, _ = _detect("git -C ~/hermes-agent checkout main", tmp_path, repo)
@@ -74,21 +147,33 @@ class TestBlocksMutationsInSourceRepo:
 
 
 class TestAllowsSafeCommands:
-    @pytest.mark.parametrize("cmd", [
-        "git status",
-        "git log --oneline -5",
-        "git diff main...HEAD",
-        "git branch --show-current",
-        "git stash list",
-        "git stash show -p",
-        "git commit -m 'msg'",
-        "git add -A",
-        "git fetch origin main",
-        "git worktree add /tmp/wt feature-branch",
-        "git push fork feature-branch",
-        "ls -la",
-        "grep -rn checkout tools/",
-    ])
+    @pytest.mark.parametrize(
+        "cmd",
+        [
+            "git status",
+            "git log --oneline -5",
+            "git diff main...HEAD",
+            "git branch --show-current",
+            "git stash list",
+            "git stash show -p",
+            "git stash create",
+            "git stash store abc123",
+            "git stash drop",
+            "git stash clear",
+            "git reset --soft HEAD~1",
+            "git reset --mixed HEAD~1",
+            "git restore --staged pyproject.toml",
+            "git clean --dry-run -fd",
+            "git clean -nd",
+            "git commit -m 'msg'",
+            "git add -A",
+            "git fetch origin main",
+            "git worktree add /tmp/wt feature-branch",
+            "git push fork feature-branch",
+            "ls -la",
+            "grep -rn checkout tools/",
+        ],
+    )
     def test_read_only_and_dev_loop_in_repo(self, repo, cmd):
         hit, _ = _detect(cmd, repo, repo)
         assert hit is False
@@ -115,12 +200,55 @@ class TestAllowsSafeCommands:
         hit, _ = _detect("grep checkout file.txt", repo, repo)
         assert hit is False
 
+    def test_pr_checkout_words_in_other_gh_command_are_safe(self, repo):
+        hit, _ = _detect("gh api /repos/example/pr/checkout", repo, repo)
+        assert hit is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            'echo "safe | git checkout main"',
+            "echo '$(git checkout main)'",
+            "printf '%s\\n' 'git checkout main'",
+        ],
+    )
+    def test_quoted_git_text_is_not_executed(self, repo, command):
+        hit, _ = _detect(command, repo, repo)
+        assert hit is False
+
+    @pytest.mark.parametrize(
+        "command",
+        [
+            "cat > script.sh <<'EOF'\ngit checkout main\nEOF\n",
+            "python - <<'PY'\nprint('git checkout main')\nPY\n",
+        ],
+    )
+    def test_data_heredoc_is_not_executed_as_shell(self, repo, command):
+        hit, _ = _detect(command, repo, repo)
+        assert hit is False
+
+    def test_subshell_cd_does_not_leak(self, repo):
+        command = f"(cd {repo} && git status); git checkout main"
+        hit, _ = _detect(command, repo.parent, repo)
+        assert hit is False
+
+    def test_pipeline_cd_does_not_leak(self, repo):
+        command = f"cd {repo} | cat; git checkout main"
+        hit, _ = _detect(command, repo.parent, repo)
+        assert hit is False
+
+    def test_successful_cd_or_branch_does_not_run(self, repo):
+        command = f"cd {repo} || git checkout main"
+        hit, _ = _detect(command, repo.parent, repo)
+        assert hit is False
+
     def test_empty_command(self, repo):
         hit, _ = _detect("", repo, repo)
         assert hit is False
 
     def test_packaged_install_is_inert(self, monkeypatch, tmp_path):
         import tools.self_repo_guard as mod
+
         monkeypatch.setattr(mod, "get_running_source_root", lambda: None)
         hit, msg = mod.detect_self_repo_git_mutation("git checkout main", str(tmp_path))
         assert hit is False
@@ -129,14 +257,13 @@ class TestAllowsSafeCommands:
 
 class TestSourceRootResolution:
     def test_resolves_to_repo_when_git_dir_present(self):
-        # The test suite itself runs from a source checkout, so the resolver
-        # must find a root whose .git exists.
         root = get_running_source_root()
         if root is not None:
             assert (root / ".git").exists()
 
     def test_worktree_git_file_counts(self, tmp_path, monkeypatch):
         import tools.self_repo_guard as mod
+
         root = tmp_path / "wt"
         root.mkdir()
         (root / ".git").write_text("gitdir: /somewhere/.git/worktrees/wt\n")

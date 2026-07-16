@@ -65,10 +65,8 @@ from agent.retry_utils import (
     zai_coding_overload_retry_ceiling,
 )
 from agent.trajectory import has_incomplete_scratchpad
-# Bound at import time deliberately: a lazy end-of-turn import reads the
-# module fresh from disk, so a mid-session git switch/pull in a source
-# checkout loads a version-skewed finalizer and kills the finished turn.
-# Safe to hoist: turn_finalizer defers its own conversation_loop import.
+# Bind before the turn starts so a source-tree swap cannot load a skewed
+# finalizer at turn end.
 from agent.turn_finalizer import finalize_turn
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID

@@ -1256,74 +1256,70 @@ def _deobfuscate_shell_word_for_detection(word: str) -> str:
 
 def _iter_shell_command_starts(command: str):
     starts = [0]
-    quote: str | None = None
-    i = 0
-    while i < len(command):
-        ch = command[i]
-        if quote == "'":
-            if ch == "'":
-                quote = None
-            i += 1
-            continue
-        if quote == '"':
-            if ch == "\\" and i + 1 < len(command):
-                i += 2
-                continue
-            if ch == '"':
-                quote = None
+
+    def scan(start: int, end: int) -> None:
+        quote: str | None = None
+        i = start
+        while i < end:
+            ch = command[i]
+            if quote == "'":
+                if ch == "'":
+                    quote = None
                 i += 1
+                continue
+            if quote == '"':
+                if ch == "\\" and i + 1 < end:
+                    i += 2
+                    continue
+                if ch == '"':
+                    quote = None
+                    i += 1
+                    continue
+                if command.startswith("$(", i):
+                    nested_end = _scan_dollar_paren_end(command, i)
+                    starts.append(i + 2)
+                    scan(i + 2, nested_end - 1 if nested_end is not None else end)
+                    i = nested_end if nested_end is not None else end
+                    continue
+                if ch == "`":
+                    nested_end = _scan_backtick_end(command, i)
+                    starts.append(i + 1)
+                    scan(i + 1, nested_end - 1 if nested_end is not None else end)
+                    i = nested_end if nested_end is not None else end
+                    continue
+                i += 1
+                continue
+            if ch in ("'", '"'):
+                quote = ch
+                i += 1
+                continue
+            if ch == "\\" and i + 1 < end:
+                i += 2
                 continue
             if command.startswith("$(", i):
+                nested_end = _scan_dollar_paren_end(command, i)
                 starts.append(i + 2)
-                i += 2
+                scan(i + 2, nested_end - 1 if nested_end is not None else end)
+                i = nested_end if nested_end is not None else end
                 continue
-            i += 1
-            continue
-        if ch in ("'", '"'):
-            quote = ch
-            i += 1
-            continue
-        if ch == "\\" and i + 1 < len(command):
-            i += 2
-            continue
-        if command.startswith("$(", i):
-            starts.append(i + 2)
-            i += 2
-            continue
-        # Bare subshell `(cmd)` and brace group `{ cmd; }` openers begin a new
-        # command context, just like `;` or `$(`. We only reach this branch
-        # OUTSIDE any quote (the quote arms above `continue` first), so a `(`
-        # or `{` sitting inside a quoted argument — `--title "block (reboot)"`,
-        # `echo "{ reboot; }"` — never registers a command start. That is the
-        # whole reason this lives in the quote-aware tokenizer instead of the
-        # flat `_CMDPOS` regex, which cannot tell quoted text from real syntax.
-        if ch in ("(", "{"):
-            starts.append(i + 1)
-            i += 1
-            continue
-        if ch == ";":
-            starts.append(i + 1)
-            i += 1
-            continue
-        if ch == "&":
-            if i + 1 < len(command) and command[i + 1] == "&":
-                starts.append(i + 2)
-                i += 2
-            else:
+            if ch == "`":
+                nested_end = _scan_backtick_end(command, i)
                 starts.append(i + 1)
-                i += 1
-            continue
-        if ch == "|":
-            if i + 1 < len(command) and command[i + 1] == "|":
-                starts.append(i + 2)
-                i += 2
-            else:
+                scan(i + 1, nested_end - 1 if nested_end is not None else end)
+                i = nested_end if nested_end is not None else end
+                continue
+            if ch in ("(", "{"):
                 starts.append(i + 1)
-                i += 1
-            continue
-        if ch == "\n":
-            starts.append(i + 1)
-        i += 1
+            elif ch in ";\n":
+                starts.append(i + 1)
+            elif ch in "&|":
+                repeated = i + 1 < end and command[i + 1] == ch
+                starts.append(i + 2 if repeated else i + 1)
+                if repeated:
+                    i += 1
+            i += 1
+
+    scan(0, len(command))
 
     seen: set[int] = set()
     for start in starts:

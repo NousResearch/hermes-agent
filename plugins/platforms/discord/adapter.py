@@ -2471,6 +2471,23 @@ class DiscordAdapter(BasePlatformAdapter):
         if not channel:
             return SendResult(success=False, error=f"Channel {chat_id} not found")
 
+        max_bytes = self._discord_max_attachment_bytes()
+        if max_bytes:
+            try:
+                file_size = os.path.getsize(file_path)
+            except OSError as exc:
+                return SendResult(success=False, error=f"Cannot inspect attachment: {exc}")
+            if file_size > max_bytes:
+                limit_mib = max_bytes / (1024 * 1024)
+                logger.warning(
+                    "[%s] Refusing outbound attachment %s: %d bytes exceeds %.1f MiB cap",
+                    self.name, file_path, file_size, limit_mib,
+                )
+                return SendResult(
+                    success=False,
+                    error=f"Attachment exceeds Discord safety cap ({limit_mib:.1f} MiB)",
+                )
+
         filename = file_name or os.path.basename(file_path)
         with open(file_path, "rb") as fh:
             file = discord.File(fh, filename=filename)
@@ -3696,6 +3713,17 @@ class DiscordAdapter(BasePlatformAdapter):
                         raise Exception(f"Failed to download image: HTTP {resp.status}")
 
                     image_data = await resp.read()
+                    max_bytes = self._discord_max_attachment_bytes()
+                    if max_bytes and len(image_data) > max_bytes:
+                        limit_mib = max_bytes / (1024 * 1024)
+                        logger.warning(
+                            "[%s] Refusing downloaded image: %d bytes exceeds %.1f MiB cap",
+                            self.name, len(image_data), limit_mib,
+                        )
+                        return SendResult(
+                            success=False,
+                            error=f"Image exceeds Discord safety cap ({limit_mib:.1f} MiB)",
+                        )
 
                     # Determine filename from URL or content type
                     content_type = resp.headers.get("content-type", "image/png")

@@ -43,6 +43,7 @@ import logging
 import mimetypes
 import os
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -452,6 +453,147 @@ def decide_image_input_mode(
     return "text"
 
 
+# ---------------------------------------------------------------------------
+# Image processing feedback layer
+#
+# When the main model can't accept images and we fall back to describing them
+# via the auxiliary vision backend, the gateway prepends a single status line
+# to the agent's final reply so the user understands what happened and why.
+# The line is *prepended* to the reply that was already going to be sent — it
+# never triggers an extra gateway message (IMG-003 red line).
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class ImageFeedbackStatus:
+    """Per-session record of image processing outcome for one inbound turn.
+
+    Populated as a side-effect of ``Runner._enrich_message_with_vision`` and
+    consumed at the prepend injection point. Lifecycle: created/reset at
+    image-routing time, read-and-popped when the final response is assembled.
+    """
+
+    mode: str = "text"  # "native" (main model sees pixels) | "text" (vision-described)
+    total: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    reasons: List[str] = field(default_factory=list)
+
+
+def _classify_vision_failure(exc: Optional[BaseException], result: Any = None) -> str:
+    """Map a vision-analyze failure to a short reason category.
+
+    Categories: timeout / format / auth / empty / exception. Used in the
+    failure status line so users see *why* the image couldn't be read.
+    """
+    if isinstance(exc, BaseException):
+        msg = str(exc).lower()
+        name = type(exc).__name__.lower()
+        if "timeout" in msg or "timed out" in msg or "timeout" in name:
+            return "timeout"
+        if "401" in msg or "403" in msg or "unauthorized" in msg or "forbidden" in msg or "auth" in name:
+            return "auth"
+        if "json" in msg or "decode" in msg or "format" in msg:
+            return "format"
+        return "exception"
+    # Non-exception soft failure: vision_analyze returned success=False.
+    if isinstance(result, dict):
+        analysis = str(result.get("analysis") or "").strip()
+        if not analysis:
+            return "empty"
+    return "empty"
+
+
+def _read_main_model_name(cfg: Optional[Dict[str, Any]]) -> str:
+    """Resolve the configured main model name for display, without hardcoding.
+
+    Mirrors ``auxiliary_client._read_main_model`` but reads purely from cfg so
+    the feedback line reflects the persisted config at feedback-build time.
+    Falls back to ``""`` (caller prints "this model") when unresolved.
+    """
+    try:
+        from agent.auxiliary_client import _RUNTIME_MAIN_MODEL
+
+        override = _RUNTIME_MAIN_MODEL
+        if isinstance(override, str) and override.strip():
+            return override.strip()
+    except Exception:
+        pass
+    if not isinstance(cfg, dict):
+        return ""
+    model_cfg_raw = cfg.get("model")
+    if isinstance(model_cfg_raw, str) and model_cfg_raw.strip():
+        return model_cfg_raw.strip()
+    if isinstance(model_cfg_raw, dict):
+        # Mirror run.py's single-source-of-truth model resolver: try
+        # "default" then "model" so all three legal cfg forms resolve
+        # (cfg["model"] str / ["model"]["default"] / ["model"]["model"]).
+        # IMG-004: never hardcode, read dynamically.
+        for _key in ("default", "model"):
+            _val = model_cfg_raw.get(_key, "")
+            if isinstance(_val, str) and _val.strip():
+                return _val.strip()
+    return ""
+
+
+def _read_vision_model_name(cfg: Optional[Dict[str, Any]]) -> str:
+    """Resolve the auxiliary vision model name for display, without hardcoding."""
+    if not isinstance(cfg, dict):
+        return ""
+    aux = cfg.get("auxiliary")
+    if not isinstance(aux, dict):
+        return ""
+    vision = aux.get("vision")
+    if not isinstance(vision, dict):
+        return ""
+    model = str(vision.get("model") or "").strip()
+    return model
+
+
+def build_image_feedback_line(status: ImageFeedbackStatus, cfg: Optional[Dict[str, Any]]) -> str:
+    """Build the single-line image-processing feedback for the user reply.
+
+    Returns ``""`` (no line added) when:
+      * mode == "native" (main model sees pixels — no fallback happened), or
+      * total == 0 (no images were processed this turn).
+
+    Otherwise returns a single status line. See the design's IMG-001..008
+    scenarios. Model names are read dynamically from ``cfg`` so this never
+    hardcodes a provider/model literal (IMG-004).
+    """
+    if status is None:
+        return ""
+    if status.mode == "native" or status.total <= 0:
+        return ""
+
+    main_model = _read_main_model_name(cfg) or "this model"
+    vision_model = _read_vision_model_name(cfg) or "vision model"
+
+    # All images failed to describe.
+    if status.succeeded == 0:
+        primary_reason = status.reasons[0] if status.reasons else "exception"
+        return (
+            f"⚠ Image recognition failed ({primary_reason}) — try again or "
+            f"switch to a vision-capable model."
+        )
+
+    # Single image, fully succeeded.
+    if status.total == 1 and status.succeeded == 1:
+        return (
+            f"📎 Image described via vision ({vision_model}) — main model "
+            f"({main_model}) doesn't accept images."
+        )
+
+    # Multiple images: aggregate ok/total, append failures if any.
+    line = f"📎 {status.succeeded}/{status.total} images described via vision ({vision_model})"
+    if status.failed > 0 and status.reasons:
+        # Deduplicate reasons while keeping order.
+        seen: set = set()
+        uniq = [r for r in status.reasons if not (r in seen or seen.add(r))]
+        line += f" ({status.failed} failed: {', '.join(uniq)})"
+    return line
+
+
 # Image size handling is REACTIVE rather than proactive: we attempt native
 # attachment at full size regardless of provider, and rely on
 # ``run_agent._try_shrink_image_parts_in_messages`` to shrink + retry if
@@ -764,4 +906,6 @@ __all__ = [
     "decide_image_input_mode",
     "build_native_content_parts",
     "extract_image_refs",
+    "ImageFeedbackStatus",
+    "build_image_feedback_line",
 ]

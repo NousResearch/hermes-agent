@@ -3217,6 +3217,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         # preserve the queue.
         self._queued_events: Dict[str, List[MessageEvent]] = {}
         self._pending_native_image_paths_by_session: Dict[str, List[str]] = {}
+        # Image-processing feedback layer: per-session record of the vision
+        # fallback outcome for the current turn. Populated as a side-effect
+        # of image routing + vision enrichment; read-and-popped at the final
+        # response prepend point so it never leaks across turns (IMG-011).
+        self._image_feedback_status_by_session: Dict[str, "ImageFeedbackStatus"] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
         # Startup restore gate: while restart-interrupted sessions are being
@@ -11533,6 +11538,21 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     source=source,
                     session_key=session_key,
                 )
+                # Image-feedback layer: record this turn's routing decision so
+                # the final reply can prepend a single status line (IMG-001..011).
+                # Side-effect only — does not alter the routing return value or
+                # control flow (contract C7). Reset on every new image turn to
+                # prevent cross-turn leakage (IMG-011).
+                try:
+                    from agent.image_routing import ImageFeedbackStatus as _ImgFbStatus
+
+                    store = getattr(self, "_image_feedback_status_by_session", None)
+                    if isinstance(store, dict):
+                        store[session_key] = _ImgFbStatus(
+                            mode=_img_mode, total=len(image_paths),
+                        )
+                except Exception:
+                    pass
                 if _img_mode == "native":
                     # Defer attachment to the run_conversation call site.
                     pending_native = getattr(self, "_pending_native_image_paths_by_session", None)
@@ -11572,6 +11592,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         message_text = await self._enrich_message_with_vision(
                             message_text,
                             image_paths,
+                            session_key=session_key,
                         )
 
             if audio_paths:
@@ -12901,6 +12922,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     )
                 elif _stale_adapter and hasattr(_stale_adapter, "_post_delivery_callbacks"):
                     _stale_adapter._post_delivery_callbacks.pop(_quick_key, None)
+                # Stale generation: this turn's image-feedback record is void.
+                self._pop_image_feedback_status(session_key)
                 return None
 
             response = agent_result.get("final_response") or ""
@@ -13082,6 +13105,24 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 _footer_line = ""
             if _footer_line and response and not agent_result.get("already_sent") and not _intentional_silence:
                 response = f"{response}\n\n{_footer_line}"
+
+            # Image-feedback layer (IMG-001..011): prepend a single status line
+            # when this turn's user images were vision-described for a text-only
+            # main model. The line is prepended to the reply that was already
+            # going to be sent — it never triggers an extra adapter.send
+            # (contract C1/C2, IMG-003 red line). Pop reads-and-clears so the
+            # record cannot leak into the next turn (IMG-011).
+            _img_status = self._pop_image_feedback_status(session_key)
+            if _img_status is not None:
+                try:
+                    from agent.image_routing import build_image_feedback_line as _bfl
+                    from hermes_cli.config import load_config
+
+                    _img_line = _bfl(_img_status, load_config())
+                except Exception:
+                    _img_line = ""
+                if _img_line:
+                    response = f"{_img_line}\n{response}"
 
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
@@ -13448,11 +13489,18 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                             )
                     except Exception as _e:
                         logger.debug("trailing footer send failed: %s", _e)
+                # Streaming already delivered the body; the feedback line is
+                # not surfaced (IMG-010 known limitation) — still clear the
+                # record so it can't leak into the next turn (IMG-011).
+                self._pop_image_feedback_status(session_key)
                 return None
 
             return response
-            
+
         except Exception as e:
+            # Turn errored; clear any image-feedback record so it can't leak
+            # into the next turn (IMG-011).
+            self._pop_image_feedback_status(session_key)
             # Stop typing indicator on error too, retaining Slack thread/workspace
             # routing so a failed turn cannot leave its status visible.
             try:
@@ -16366,6 +16414,20 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         except TypeError:
             executor.shutdown(wait=False)
 
+    def _pop_image_feedback_status(self, session_key: Optional[str]):
+        """Read-and-clear the per-session image-feedback record.
+
+        Defensive against missing ``__init__`` (some test paths construct the
+        runner via ``object.__new__`` and set only a subset of attributes):
+        when the dict is absent, returns ``None`` instead of raising. This
+        keeps the cleanup sites in ``_handle_message_with_agent`` safe even
+        on partially-constructed instances.
+        """
+        store = getattr(self, "_image_feedback_status_by_session", None)
+        if not isinstance(store, dict) or not session_key:
+            return None
+        return store.pop(session_key, None)
+
     def _decide_image_input_mode(
         self,
         *,
@@ -16430,6 +16492,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         self,
         user_text: str,
         image_paths: List[str],
+        *,
+        session_key: Optional[str] = None,
     ) -> str:
         """
         Auto-analyze user-attached images with the vision tool and prepend
@@ -16443,18 +16507,41 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         Args:
             user_text:   The user's original caption / message text.
             image_paths: List of local file paths to cached images.
+            session_key: When provided, the per-image success/failure outcome
+              is recorded as a side-effect into
+              ``self._image_feedback_status_by_session`` so the final reply
+              can prepend a status line. Does not affect the return value
+              or control flow (contract C7).
 
         Returns:
             The enriched message string with vision descriptions prepended.
         """
         from tools.vision_tools import vision_analyze_tool
         from agent.memory_manager import sanitize_context
+        from agent.image_routing import _classify_vision_failure
 
         analysis_prompt = (
             "Describe everything visible in this image in thorough detail. "
             "Include any text, code, data, objects, people, layout, colors, "
             "and any other notable visual information."
         )
+
+        def _record_outcome(succeeded: bool, reason: str = "") -> None:
+            # Side-effect only; never raises into the enrichment path.
+            if not session_key:
+                return
+            try:
+                status = self._image_feedback_status_by_session.get(session_key)
+                if status is None:
+                    return  # routing didn't initialize it — nothing to update.
+                if succeeded:
+                    status.succeeded += 1
+                else:
+                    status.failed += 1
+                    if reason:
+                        status.reasons.append(reason)
+            except Exception:
+                pass
 
         enriched_parts = []
         for path in image_paths:
@@ -16473,12 +16560,14 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                         f"[If you need a closer look, use vision_analyze with "
                         f"image_url: {path} ~]"
                     )
+                    _record_outcome(True)
                 else:
                     enriched_parts.append(
                         "[The user sent an image but I couldn't quite see it "
                         "this time (>_<) You can try looking at it yourself "
                         f"with vision_analyze using image_url: {path}]"
                     )
+                    _record_outcome(False, _classify_vision_failure(None, result))
             except Exception as e:
                 logger.error("Vision auto-analysis error: %s", e)
                 enriched_parts.append(
@@ -16486,6 +16575,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                     f"tried to look at it~ You can try examining it yourself "
                     f"with vision_analyze using image_url: {path}]"
                 )
+                _record_outcome(False, _classify_vision_failure(e))
 
         # Combine: vision descriptions first, then the user's original text
         if enriched_parts:

@@ -113,6 +113,9 @@ _MODEL_CACHE_TTL = 3600
 _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
+_profile_model_metadata_cache: Dict[tuple[str, str], list[dict[str, Any]]] = {}
+_profile_model_metadata_cache_time: Dict[tuple[str, str], float] = {}
+_PROFILE_MODEL_METADATA_CACHE_TTL = 300
 # Bounded-lifetime cache: after the first successful probe we remember the
 # server type so subsequent refreshes skip the full waterfall (no more 404
 # spam every 5 minutes on non-matching endpoints like /api/v1/models on vllm).
@@ -1142,18 +1145,53 @@ def _resolve_profile_context_length(
     api_key: str = "",
 ) -> Optional[int]:
     """Resolve context length through a provider profile's catalog hook."""
-    try:
-        entries = profile.fetch_model_metadata(
-            api_key=api_key,
-            base_url=base_url or None,
+    profile_name = str(getattr(profile, "name", "unknown"))
+    effective_base_url = (
+        base_url
+        or str(getattr(profile, "models_url", "") or "")
+        or str(getattr(profile, "base_url", "") or "")
+    )
+    cache_key = (profile_name, effective_base_url.rstrip("/"))
+    now = time.time()
+    cached = _profile_model_metadata_cache.get(cache_key)
+    cached_at = _profile_model_metadata_cache_time.get(cache_key, 0)
+    if cached is not None and (now - cached_at) < _PROFILE_MODEL_METADATA_CACHE_TTL:
+        entries = cached
+    else:
+        try:
+            fetched = profile.fetch_model_metadata(
+                api_key=api_key,
+                base_url=base_url or None,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Provider %s live metadata lookup failed: %s",
+                profile_name,
+                exc,
+            )
+            fetched = None
+
+        valid_fetched = (
+            [entry for entry in fetched if isinstance(entry, dict)]
+            if fetched
+            else []
         )
-    except Exception as exc:
-        logger.debug(
-            "Provider %s live metadata lookup failed: %s",
-            getattr(profile, "name", "unknown"),
-            exc,
-        )
-        return None
+        if valid_fetched:
+            entries = valid_fetched
+            _profile_model_metadata_cache[cache_key] = entries
+        elif cached:
+            logger.debug(
+                "Provider %s live metadata refresh failed; using stale in-memory catalog",
+                profile_name,
+            )
+            entries = cached
+        else:
+            entries = []
+            _profile_model_metadata_cache[cache_key] = entries
+        # Cache both successful and failed refreshes. This prevents an unavailable
+        # catalog from turning every context lookup into blocking remote I/O.
+        _profile_model_metadata_cache_time[cache_key] = now
+
     if not entries:
         return None
 
@@ -1166,7 +1204,7 @@ def _resolve_profile_context_length(
         None,
     )
     if matched is None:
-        valid_entries = [entry for entry in entries if isinstance(entry, dict)]
+        valid_entries = entries
         if len(valid_entries) == 1:
             matched = valid_entries[0]
         else:

@@ -937,6 +937,12 @@ class TestNousPortalContextResolution:
 # =========================================================================
 
 class TestProviderProfileLiveMetadataContextResolution:
+    def setup_method(self):
+        import agent.model_metadata as mm
+
+        mm._profile_model_metadata_cache.clear()
+        mm._profile_model_metadata_cache_time.clear()
+
     def test_opted_in_profile_uses_its_catalog_when_base_url_is_omitted(self):
         profile = MagicMock(use_live_model_metadata=True)
         profile.fetch_model_metadata.return_value = [
@@ -1034,8 +1040,9 @@ class TestProviderProfileLiveMetadataContextResolution:
         assert context_length == 262_144
         mock_metadata.assert_not_called()
 
-    def test_live_probe_failure_preserves_provider_fallback_chain(self):
+    def test_live_probe_failure_is_cached_and_preserves_provider_fallback_chain(self):
         profile = MagicMock(use_live_model_metadata=True)
+        profile.name = "fallback-vendor"
         profile.fetch_model_metadata.return_value = None
 
         with (
@@ -1050,8 +1057,72 @@ class TestProviderProfileLiveMetadataContextResolution:
                 base_url="https://api.vendor.test/v1",
                 provider="vendor",
             )
+            repeated_context_length = get_model_context_length(
+                model="vendor/model",
+                base_url="https://api.vendor.test/v1",
+                provider="vendor",
+            )
 
-        assert context_length == 202_752
+        assert context_length == repeated_context_length == 202_752
+        profile.fetch_model_metadata.assert_called_once()
+
+    def test_repeated_resolution_reuses_profile_metadata_within_ttl(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.name = "cached-vendor"
+        profile.fetch_model_metadata.return_value = [
+            {"id": "vendor/model", "context_length": 65_536},
+        ]
+
+        with patch("providers.get_provider_profile", return_value=profile):
+            first = get_model_context_length("vendor/model", provider="cached-vendor")
+            second = get_model_context_length("vendor/model", provider="cached-vendor")
+
+        assert first == second == 65_536
+        profile.fetch_model_metadata.assert_called_once()
+
+    def test_expired_profile_metadata_refreshes(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.name = "refreshing-vendor"
+        profile.fetch_model_metadata.side_effect = [
+            [{"id": "vendor/model", "context_length": 65_536}],
+            [{"id": "vendor/model", "context_length": 131_072}],
+        ]
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch("agent.model_metadata.time.time", side_effect=[1_000, 1_301]),
+        ):
+            first = get_model_context_length("vendor/model", provider="refreshing-vendor")
+            refreshed = get_model_context_length("vendor/model", provider="refreshing-vendor")
+
+        assert first == 65_536
+        assert refreshed == 131_072
+        assert profile.fetch_model_metadata.call_count == 2
+
+    def test_failed_refresh_reuses_stale_metadata_and_negative_caches_failure(self):
+        profile = MagicMock(use_live_model_metadata=True)
+        profile.name = "stale-vendor"
+        profile.fetch_model_metadata.side_effect = [
+            [{"id": "vendor/model", "context_length": 65_536}],
+            None,
+        ]
+
+        with (
+            patch("providers.get_provider_profile", return_value=profile),
+            patch(
+                "agent.model_metadata.time.time",
+                side_effect=[1_000, 1_301, 1_302],
+            ),
+        ):
+            first = get_model_context_length("vendor/model", provider="stale-vendor")
+            stale = get_model_context_length("vendor/model", provider="stale-vendor")
+            cached_stale = get_model_context_length(
+                "vendor/model",
+                provider="stale-vendor",
+            )
+
+        assert first == stale == cached_stale == 65_536
+        assert profile.fetch_model_metadata.call_count == 2
 
 
 class TestGetModelContextLength:

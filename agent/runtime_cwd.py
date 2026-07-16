@@ -77,15 +77,16 @@ def resolve_context_cwd() -> Path | None:
     # None means "no configured cwd": build_context_files_prompt then falls back
     # to the launch dir (os.getcwd()), correct for a local CLI launched inside a
     # real project. A configured path is validated here (previously it was passed
-    # through unchecked, diverging from resolve_agent_cwd), and the Hermes install
-    # tree is never returned, since its AGENTS.md would take over the system prompt.
+    # through unchecked, diverging from resolve_agent_cwd). An explicitly
+    # configured path is otherwise honored verbatim — including the Hermes
+    # source tree itself, which is a legitimate workspace when the user is
+    # developing Hermes (per-surface policy for fallback-picked directories
+    # lives in build_context_files_prompt; see #64590).
     override = _session_cwd_override()
     if override:
         p = Path(override).expanduser()
         if not p.is_dir():
             logger.warning("configured working directory does not exist: %s", override)
-        elif _is_install_tree(p):
-            logger.warning("not loading context files from the Hermes install tree: %s", p)
         else:
             return p
         return None
@@ -94,8 +95,6 @@ def resolve_context_cwd() -> Path | None:
         p = Path(raw).expanduser()
         if not p.is_dir():
             logger.warning("TERMINAL_CWD does not exist: %s", raw)
-        elif _is_install_tree(p):
-            logger.warning("not loading context files from the Hermes install tree: %s", p)
         else:
             return p
     return None

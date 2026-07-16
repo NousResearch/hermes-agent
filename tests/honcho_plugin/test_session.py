@@ -399,6 +399,28 @@ class TestPeerLookupHelpers:
             "session_id": session.honcho_session_id,
         }])
 
+    def test_create_conclusion_falls_back_to_peer_card_when_backend_rejects(self):
+        mgr, session = self._make_cached_manager()
+        assistant_peer = MagicMock()
+        user_peer = MagicMock()
+        scope = MagicMock()
+        scope.create.side_effect = RuntimeError("OpenAI API key is required")
+        assistant_peer.conclusions_of.return_value = scope
+        user_peer.get_card.return_value = ["Existing fact"]
+        mgr._get_or_create_peer = MagicMock(side_effect=[assistant_peer, user_peer, user_peer])
+
+        ok = mgr.create_conclusion(session.key, "User prefers Korean casual tone")
+
+        assert ok is True
+        user_peer.get_card.assert_called_once_with(target=session.user_peer_id)
+        user_peer.set_card.assert_called_once_with(
+            [
+                "Existing fact",
+                "User prefers Korean casual tone",
+            ],
+            target=session.user_peer_id,
+        )
+
 
 class TestConcludeToolDispatch:
     def test_conclude_schema_has_no_anyof(self):
@@ -592,6 +614,37 @@ class TestConcludeToolDispatch:
 
         assert session.add_message.call_args_list[0].args == ("user", "hello")
         assert session.add_message.call_args_list[1].args == ("assistant", "Visible answer")
+
+    def test_sync_turn_normalizes_multimodal_list_content(self):
+        provider = HonchoMemoryProvider()
+        provider._session_key = "telegram:123"
+        provider._manager = MagicMock()
+        provider._cron_skipped = False
+        provider._config = SimpleNamespace(message_max_chars=25000)
+
+        session = MagicMock()
+        provider._manager.get_or_create.return_value = session
+
+        provider.sync_turn(
+            [
+                {"type": "text", "text": "look at this"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            ],
+            [
+                {"type": "output_text", "text": "I inspected it."},
+                {"type": "input_audio"},
+            ],
+        )
+        provider._sync_thread.join(timeout=1.0)
+
+        assert session.add_message.call_args_list[0].args == (
+            "user",
+            "look at this\n[image attachment]",
+        )
+        assert session.add_message.call_args_list[1].args == (
+            "assistant",
+            "I inspected it.\n[audio attachment]",
+        )
 
 
 # ---------------------------------------------------------------------------

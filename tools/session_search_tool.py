@@ -121,8 +121,33 @@ def _resolve_lineage(db, session_id: str) -> str:
     return _resolve_to_parent(db, session_id)[0]
 
 
+def _is_compression_ended(db, session_id: str) -> bool:
+    """Return True if *session_id* itself ended with ``end_reason='compression'``.
+
+    Unlike the ``has_compression_hop`` flag from :func:`_resolve_to_parent`
+    (which is True for any descendant of a compression-ended ancestor), this
+    checks only the session's own ``end_reason``. A delegation child created
+    under a compression continuation has ``parent_session_id`` set but its own
+    ``end_reason`` is ``None`` — its content is still live to the parent agent,
+    so it must stay excluded from discovery.
+    """
+    if not session_id:
+        return False
+    try:
+        s = db.get_session(session_id)
+        if not s:
+            return False
+        return s.get("end_reason") == "compression"
+    except Exception:
+        return False
+
+
 def _is_compacted_message(db, message_id) -> bool:
-    """Return True if *message_id* is a soft-archived compaction row (active=0).
+    """Return True if *message_id* is a compaction-archived row.
+
+    Compaction archives are ``active=0, compacted=1`` — the content was
+    summarised away from live context by :meth:`archive_and_compact`.
+    Rewind/undo rows are ``active=0, compacted=0`` and must stay hidden.
 
     Used by ``_discover`` to distinguish a compaction-archived FTS hit on the
     current session (pre-compaction content no longer in live context — should
@@ -135,13 +160,13 @@ def _is_compacted_message(db, message_id) -> bool:
     try:
         with db._lock:
             cursor = db._conn.execute(
-                "SELECT active FROM messages WHERE id = ?", (message_id,)
+                "SELECT active, compacted FROM messages WHERE id = ?", (message_id,)
             )
             row = cursor.fetchone()
     except Exception:
         logging.debug("is_compacted_message lookup failed for %s", message_id, exc_info=True)
         return False
-    return row is not None and row["active"] == 0
+    return row is not None and row["active"] == 0 and row["compacted"] == 1
 
 
 def _order_for_recall(raw_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -547,9 +572,7 @@ def _discover(
 ) -> str:
     """Discovery shape: FTS5 + anchored window + bookends per hit. Single call."""
     role_list = role_filter if role_filter else ["user", "assistant"]
-    current_lineage_root, current_has_compression = (
-        _resolve_to_parent(db, current_session_id) if current_session_id else (None, False)
-    )
+    current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     title_result = _title_match_result(db, query, current_lineage_root)
 
     try:
@@ -599,23 +622,26 @@ def _discover(
         if len(seen_sessions) >= limit:
             break
         raw_sid = r["session_id"]
-        resolved_sid, has_compression = _resolve_to_parent(db, raw_sid)
+        resolved_sid, _ = _resolve_to_parent(db, raw_sid)
         # Skip the current session lineage — UNLESS the content has been
         # compression-summarised out of the live context (memory black hole
         # after compression). Two sub-cases:
         #
-        # Legacy rotation: the FTS hit lives in a session whose lineage chain
-        # has a compression edge (end_reason='compression' on an ancestor).
-        # The parent's pre-compaction content is gone from the active context,
-        # so it must stay discoverable.
+        # Legacy rotation: the FTS hit lives in a session that itself ended
+        # with end_reason='compression'. That session's content has been
+        # replaced by a summary in the continuation child, so it must stay
+        # discoverable. A delegation child living under a compression
+        # continuation does NOT have end_reason='compression' itself, so it
+        # stays excluded.
         #
         # In-place compaction: the FTS hit lives on the SAME session_id as the
         # current session, but the matched message row is an archived
         # (active=0, compacted=1) row. The live-context load filters active=1,
         # so that content is no longer in context — let it through.
         is_compacted_hit = _is_compacted_message(db, r.get("id"))
+        is_ended_session = _is_compression_ended(db, raw_sid)
         if current_lineage_root and resolved_sid == current_lineage_root:
-            if not (has_compression or current_has_compression or is_compacted_hit):
+            if not (is_ended_session or is_compacted_hit):
                 continue
         if current_session_id and raw_sid == current_session_id:
             # Same-session hit: only skip if the matched message is still live

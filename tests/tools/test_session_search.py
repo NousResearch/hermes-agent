@@ -18,6 +18,7 @@ from tools.session_search_tool import (
     _HIDDEN_SESSION_SOURCES,
     _format_timestamp,
     _is_compacted_message,
+    _is_compression_ended,
     _resolve_to_parent,
     session_search,
 )
@@ -878,3 +879,132 @@ class TestDelegationExclusion:
             query="stellar forge", db=db, current_session_id="s_parent",
         ))
         assert result["count"] == 0
+
+
+# =========================================================================
+# Teknium review round 2: rewind exclusion + delegation-under-compression
+# =========================================================================
+
+class TestRewindExclusion:
+    """Rewind/undo rows (active=0, compacted=0) must STAY hidden — only
+    compaction archives (active=0, compacted=1) should surface."""
+
+    def test_rewind_rows_stay_hidden(self, db):
+        """A rewound (active=0, compacted=0) message must not appear in
+        discovery, even though it's on the current session."""
+        db.create_session("s_rewind", source="cli")
+        mid = db.append_message("s_rewind", role="user",
+                                content="secret rewind content alpha")
+        # Simulate a rewind: active=0, compacted=0 (NOT compaction)
+        db._conn.execute(
+            "UPDATE messages SET active = 0, compacted = 0 WHERE id = ?",
+            (mid,),
+        )
+        db._conn.commit()
+
+        result = json.loads(session_search(
+            query="secret rewind content alpha", db=db,
+            current_session_id="s_rewind",
+        ))
+        assert result["count"] == 0
+
+    def test_compacted_messages_still_surface_alongside_rewind(self, db):
+        """On the same session: compacted rows surface, rewind rows don't."""
+        db.create_session("s_mixed", source="cli")
+        # Message that will be compacted
+        db.append_message("s_mixed", role="user",
+                          content="compaction archived content beta")
+        db.archive_and_compact("s_mixed", [
+            {"role": "assistant", "content": "Summary of beta"},
+        ])
+        # Now add a post-compaction message and rewind it
+        mid2 = db.append_message("s_mixed", role="user",
+                                 content="rewound content gamma")
+        db._conn.execute(
+            "UPDATE messages SET active = 0, compacted = 0 WHERE id = ?",
+            (mid2,),
+        )
+        db._conn.commit()
+
+        # Compacted content should be discoverable
+        result_compact = json.loads(session_search(
+            query="compaction archived content beta", db=db,
+            current_session_id="s_mixed",
+        ))
+        assert result_compact["count"] >= 1
+
+        # Rewound content should NOT be discoverable
+        result_rewind = json.loads(session_search(
+            query="rewound content gamma", db=db,
+            current_session_id="s_mixed",
+        ))
+        assert result_rewind["count"] == 0
+
+
+class TestCompressionEndedHelper:
+    """Unit tests for _is_compression_ended."""
+
+    def test_compression_ended_session(self, db):
+        db.create_session("s1", source="cli")
+        db.end_session("s1", "compression")
+        assert _is_compression_ended(db, "s1") is True
+
+    def test_active_session_not_ended(self, db):
+        db.create_session("s1", source="cli")
+        assert _is_compression_ended(db, "s1") is False
+
+    def test_delegation_child_not_ended(self, db):
+        """A delegation child under a compression continuation does NOT have
+        end_reason='compression' itself."""
+        db.create_session("s_parent", source="cli")
+        db.end_session("s_parent", "compression")
+        db.create_session("s_continuation", source="cli", parent_session_id="s_parent")
+        db.create_session("s_delegate_child", source="cli", parent_session_id="s_continuation")
+        assert _is_compression_ended(db, "s_delegate_child") is False
+
+    def test_empty_and_nonexistent(self, db):
+        assert _is_compression_ended(db, "") is False
+        assert _is_compression_ended(db, "nonexistent") is False
+
+
+class TestLegacyContinuationPlusDelegation:
+    """Regression: a delegation child created under a compression continuation
+    must stay excluded — its content is still live to the parent agent.
+    Only the compression-ended ancestor's content should surface."""
+
+    def test_compression_parent_surfaces_but_delegate_child_excluded(self, db):
+        """Setup: grandparent (compression) → parent (compression) → child
+        (active, current session). A delegation grandchild is created under
+        the parent. Searching from the child should find grandparent/parent
+        content but NOT the delegation grandchild's content."""
+        # Grandparent: compression-ended, has searchable content
+        db.create_session("s_gp", source="cli")
+        db.append_message("s_gp", role="user",
+                          content="grandparent cosmic anomaly research data")
+        db.end_session("s_gp", "compression")
+
+        # Parent: compression-ended continuation
+        db.create_session("s_p", source="cli", parent_session_id="s_gp")
+        db.append_message("s_p", role="user",
+                          content="parent cosmic anomaly follow-up notes")
+        db.end_session("s_p", "compression")
+
+        # Current session: active child
+        db.create_session("s_current", source="cli", parent_session_id="s_p")
+
+        # Delegation child under s_p (not compression-ended)
+        db.create_session("s_delegate", source="cli", parent_session_id="s_p")
+        db.append_message("s_delegate", role="assistant",
+                          content="delegated cosmic anomaly subtask results")
+
+        result = json.loads(session_search(
+            query="cosmic anomaly", db=db,
+            current_session_id="s_current",
+        ))
+
+        # Compression-ended ancestors should be discoverable
+        sids = [r["session_id"] for r in result["results"]]
+        assert "s_gp" in sids or "s_p" in sids
+
+        # Delegation child must NOT appear
+        assert "s_delegate" not in sids

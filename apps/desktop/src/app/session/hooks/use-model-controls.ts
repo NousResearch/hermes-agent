@@ -13,26 +13,30 @@ interface ModelSelection {
 }
 
 interface ModelControlsOptions {
-  activeSessionId: string | null
   queryClient: QueryClient
   requestGateway: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>
 }
 
-export function useModelControls({ activeSessionId, queryClient, requestGateway }: ModelControlsOptions) {
+export function useModelControls({ queryClient, requestGateway }: ModelControlsOptions) {
   const { t } = useI18n()
   const copy = t.desktop
 
+  // All callbacks here read reactive session state from the store (.get())
+  // rather than capturing it as a prop. The actions bag in wiring.tsx mutates
+  // in place to keep a stable identity, so memoized surfaces capture these
+  // callbacks once and never re-evaluate — a captured prop would be stale
+  // forever. The store read is always current.
   const updateModelOptionsCache = useCallback(
     (provider: string, model: string, includeGlobal: boolean) => {
       const patch = (prev: ModelOptionsResponse | undefined) => ({ ...(prev ?? {}), provider, model })
 
-      queryClient.setQueryData<ModelOptionsResponse>(['model-options', activeSessionId || 'global'], patch)
+      queryClient.setQueryData<ModelOptionsResponse>(['model-options', $activeSessionId.get() || 'global'], patch)
 
       if (includeGlobal) {
         queryClient.setQueryData<ModelOptionsResponse>(['model-options', 'global'], patch)
       }
     },
-    [activeSessionId, queryClient]
+    [queryClient]
   )
 
   // Seed the composer's model state from the profile default. `force` reseeds
@@ -82,36 +86,38 @@ export function useModelControls({ activeSessionId, queryClient, requestGateway 
       const prevModel = $currentModel.get()
       const prevProvider = $currentProvider.get()
 
+      const liveSessionId = $activeSessionId.get()
+
       setCurrentModel(selection.model)
       setCurrentProvider(selection.provider)
-      updateModelOptionsCache(selection.provider, selection.model, !activeSessionId)
+      updateModelOptionsCache(selection.provider, selection.model, !liveSessionId)
 
       // No live session yet: the pick is pure UI state. session.create reads
       // $currentModel/$currentProvider and applies it as that session's override.
-      if (!activeSessionId) {
+      if (!liveSessionId) {
         return true
       }
 
       try {
         await requestGateway('config.set', {
-          session_id: activeSessionId,
+          session_id: liveSessionId,
           key: 'model',
           value: `${selection.model} --provider ${selection.provider} --session`
         })
 
-        void queryClient.invalidateQueries({ queryKey: ['model-options', activeSessionId] })
+        void queryClient.invalidateQueries({ queryKey: ['model-options', liveSessionId] })
 
         return true
       } catch (err) {
         setCurrentModel(prevModel)
         setCurrentProvider(prevProvider)
-        updateModelOptionsCache(prevProvider, prevModel, !activeSessionId)
+        updateModelOptionsCache(prevProvider, prevModel, !liveSessionId)
         notifyError(err, copy.modelSwitchFailed)
 
         return false
       }
     },
-    [activeSessionId, copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
+    [copy.modelSwitchFailed, queryClient, requestGateway, updateModelOptionsCache]
   )
 
   return { refreshCurrentModel, selectModel, updateModelOptionsCache }

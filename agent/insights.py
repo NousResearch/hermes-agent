@@ -439,6 +439,18 @@ class InsightsEngine:
 
         if models:
             total_cost = sum(float(m.get("cost") or 0.0) for m in models)
+            # Token totals likewise: the per-model breakdown includes
+            # auxiliary usage rows (vision/compression/titles — task
+            # dimension in session_model_usage, #23270) plus reconciled
+            # residuals, while the sessions counters carry main-loop usage
+            # only. Summing the breakdown keeps overview totals consistent
+            # with the per-model table and stops `hermes insights`
+            # undercounting aux spend (#58592, #9979).
+            total_input = sum(int(m.get("input_tokens") or 0) for m in models)
+            total_output = sum(int(m.get("output_tokens") or 0) for m in models)
+            total_cache_read = sum(int(m.get("cache_read_tokens") or 0) for m in models)
+            total_cache_write = sum(int(m.get("cache_write_tokens") or 0) for m in models)
+            total_tokens = total_input + total_output + total_cache_read + total_cache_write
 
         # Session duration stats (guard against negative durations from clock drift)
         durations = []

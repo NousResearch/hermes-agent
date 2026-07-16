@@ -2715,9 +2715,17 @@ def _configured_runtime_code_root() -> Path | None:
         return None
     if not isinstance(raw, str):
         raise ValueError("runtime.code_root must be an absolute path string")
-    if any(char in raw for char in ("\x00", "\n", "\r")):
+    if any(
+        ord(char) != 0x09
+        and not (
+            0x20 <= ord(char) <= 0xD7FF
+            or 0xE000 <= ord(char) <= 0xFFFD
+            or 0x10000 <= ord(char) <= 0x10FFFF
+        )
+        for char in raw
+    ):
         raise ValueError(
-            "runtime.code_root contains control characters unsupported by service managers"
+            "runtime.code_root contains characters unsupported by service managers"
         )
 
     path = Path(raw).expanduser()
@@ -3619,6 +3627,15 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
             )
         print()
 
+    runtime_actions_blocked = bool(
+        runtime_config_error
+        or (
+            runtime_info
+            and runtime_info["configured"] is not None
+            and not runtime_info["matches"]
+        )
+    )
+
     status_cmd = ["status", get_service_name(), "--no-pager"]
     if full:
         status_cmd.append("-l")
@@ -3648,7 +3665,8 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print(
             f"✗ {_service_scope_label(system).capitalize()} gateway service is stopped"
         )
-        print(f"  Run: {'sudo ' if system else ''}hermes gateway start{scope_flag}")
+        if not runtime_actions_blocked:
+            print(f"  Run: {'sudo ' if system else ''}hermes gateway start{scope_flag}")
 
     configured_user = _read_systemd_user_from_unit(unit_path) if system else None
     if configured_user:
@@ -3670,19 +3688,21 @@ def systemd_status(deep: bool = False, system: bool = False, full: bool = False)
         print("  ⏳ Restart pending: systemd is waiting to relaunch the gateway")
     elif _systemd_unit_is_start_limited(unit_props):
         print("  ⏳ Restart pending: systemd is temporarily rate-limiting starts")
-        print(
-            f"  Run after the start-limit window expires: {'sudo ' if system else ''}hermes gateway restart{scope_flag}"
-        )
-        print(
-            f"  Or clear it manually: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()}"
-        )
+        if not runtime_actions_blocked:
+            print(
+                f"  Run after the start-limit window expires: {'sudo ' if system else ''}hermes gateway restart{scope_flag}"
+            )
+            print(
+                f"  Or clear it manually: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()}"
+            )
     elif active_state == "failed" and exec_main_status == str(
         GATEWAY_SERVICE_RESTART_EXIT_CODE
     ):
         print("  ⚠ Planned restart is stuck in systemd failed state (exit 75)")
-        print(
-            f"  Run: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()} && {'sudo ' if system else ''}hermes gateway start{scope_flag}"
-        )
+        if not runtime_actions_blocked:
+            print(
+                f"  Run: systemctl {'--user ' if not system else ''}reset-failed {get_service_name()} && {'sudo ' if system else ''}hermes gateway start{scope_flag}"
+            )
     elif active_state == "failed" and result_code:
         print(f"  ⚠ Systemd unit result: {result_code}")
 
@@ -4670,10 +4690,13 @@ def launchd_status(deep: bool = False):
             print("✗ Running Hermes code does not match runtime.code_root")
             print("  Hold restart/promotion until the interpreter is bound to the configured runtime")
 
-    runtime_mismatch = bool(
-        runtime_info
-        and runtime_info["configured"] is not None
-        and not runtime_info["matches"]
+    runtime_actions_blocked = bool(
+        runtime_config_error
+        or (
+            runtime_info
+            and runtime_info["configured"] is not None
+            and not runtime_info["matches"]
+        )
     )
 
     if service_listed:
@@ -4690,7 +4713,7 @@ def launchd_status(deep: bool = False):
                 print("  Cron jobs will fire. Stop with: hermes gateway stop")
             else:
                 print("✗ No fallback process is running")
-                if not runtime_mismatch:
+                if not runtime_actions_blocked:
                     print("  Run: hermes gateway start")
             print("  ⚠ Auto-start at login and auto-restart on crash are NOT available.")
         else:
@@ -4701,7 +4724,7 @@ def launchd_status(deep: bool = False):
     else:
         print("✗ Gateway service is not loaded")
         print("  Service definition exists locally but launchd has not loaded it.")
-        if not runtime_mismatch:
+        if not runtime_actions_blocked:
             print("  Run: hermes gateway start")
         if fallback_pid:
             print(f"  Note: a detached gateway process is running (PID {fallback_pid})")

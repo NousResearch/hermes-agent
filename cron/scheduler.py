@@ -1108,6 +1108,9 @@ def _resolve_single_delivery_target(job: dict, deliver_value: str) -> Optional[d
                 "chat_id": str(origin["chat_id"]),
                 "thread_id": origin.get("thread_id"),
             }
+            # Feishu needs both values: thread_id identifies the conversation
+            # lane, while message_id is the API reply anchor. Keeping this only
+            # on origin delivery avoids inventing anchors for explicit targets.
             if str(origin["platform"]).lower() == "feishu" and origin.get("message_id"):
                 target["reply_to_message_id"] = str(origin["message_id"])
             return target
@@ -1682,6 +1685,10 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 route_metadata = {"job_id": job["id"]}
                 if route_thread_id:
                     route_metadata["thread_id"] = route_thread_id
+                # Unlike Telegram/Slack, Feishu cannot send directly to an
+                # omt_* thread. The adapter must receive the original om_* anchor
+                # and call message.reply(reply_in_thread=True). Propagate the same
+                # metadata to media so mixed cron reports stay in one topic.
                 if reply_to_message_id:
                     route_metadata["reply_to_message_id"] = str(reply_to_message_id)
                 media_metadata = {"thread_id": thread_id} if thread_id else {}
@@ -1821,6 +1828,11 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                                 )
                                 target_errors.append(msg)
                                 adapter_ok = False  # fall through to standalone path
+                            # Telegram adapters use a dict raw_response to report
+                            # a deliberate thread fallback. Feishu returns an SDK
+                            # Create/ReplyMessageResponse object instead; calling
+                            # .get() on it caused a false live-send failure and a
+                            # duplicate/misrouted standalone retry.
                             elif (
                                 isinstance(send_raw_response, dict)
                                 and thread_id

@@ -306,9 +306,11 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
             "user_id": get_session_env("HERMES_SESSION_USER_ID") or None,
         }
         if origin_platform.lower() == "feishu":
-            # Feishu topics can only be entered through message.reply; thread_id
-            # alone is not a valid create-message receive_id_type. Preserve the
-            # triggering message as the durable reply anchor for cron delivery.
+            # Feishu's create-message API cannot target thread_id (omt_*); topic
+            # delivery must call message.reply on an om_* message anchor with
+            # reply_in_thread=true. Cron runs after the inbound event is gone, so
+            # persist that anchor now. We scope this extra origin field to Feishu
+            # rather than changing every platform's stored-job schema.
             origin["message_id"] = get_session_env("HERMES_SESSION_MESSAGE_ID") or None
         return origin
     return None

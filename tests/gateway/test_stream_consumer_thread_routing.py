@@ -249,7 +249,6 @@ class TestFeishuFallbackThreadRouting:
     async def test_create_uses_chat_id_when_no_thread(self):
         """When reply_to=None and metadata has no thread_id, message.create
         should use receive_id_type='chat_id' (original behavior)."""
-        from gateway.config import PlatformConfig
         from plugins.platforms.feishu.adapter import FeishuAdapter
 
         mock_client = MagicMock()
@@ -260,7 +259,6 @@ class TestFeishuFallbackThreadRouting:
         mock_client.im.v1.message.create = MagicMock(return_value=mock_create_response)
 
         adapter = MagicMock(spec=FeishuAdapter)
-        adapter.config = PlatformConfig()
         adapter._client = mock_client
         adapter._build_create_message_body = FeishuAdapter._build_create_message_body
         adapter._build_create_message_request = FeishuAdapter._build_create_message_request

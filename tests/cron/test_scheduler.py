@@ -1,10 +1,12 @@
 """Tests for cron/scheduler.py — origin resolution, delivery routing, and error logging."""
 
 import contextlib
+import gc
 import itertools
 import json
 import logging
 import os
+import warnings
 from unittest.mock import AsyncMock, patch, MagicMock
 
 import pytest
@@ -614,6 +616,78 @@ class TestDeliverResultWrapping:
 
         sent_content = send_mock.call_args.kwargs.get("content") or send_mock.call_args[0][-1]
         assert "Cronjob Response: abc-123" in sent_content
+
+    @pytest.mark.parametrize(
+        ("reject_submit", "expected_coroutines", "expected_error"),
+        [
+            (True, 1, "interpreter is shutting down"),
+            (False, 2, "worker asyncio.run rejected coroutine"),
+        ],
+    )
+    def test_fresh_loop_rejection_does_not_leak_coroutine(
+        self, reject_submit, expected_coroutines, expected_error
+    ):
+        from gateway.config import Platform
+
+        pconfig = MagicMock(enabled=True)
+        mock_cfg = MagicMock(platforms={Platform.TELEGRAM: pconfig})
+        constructed = []
+
+        async def send_result():
+            return {"success": True}
+
+        def fake_send(*_args, **_kwargs):
+            coro = send_result()
+            constructed.append(coro)
+            return coro
+
+        future = MagicMock()
+        pool = MagicMock()
+        if reject_submit:
+            pool.submit.side_effect = RuntimeError(
+                "cannot schedule new futures after interpreter shutdown"
+            )
+            run_errors = [RuntimeError(
+                "asyncio.run() cannot be called from a running event loop"
+            )]
+        else:
+            pool.submit.return_value = future
+
+            def run_worker(timeout):
+                assert timeout == 30
+                return pool.submit.call_args.args[0]()
+
+            future.result.side_effect = run_worker
+            run_errors = [
+                RuntimeError("asyncio.run() cannot be called from a running event loop"),
+                RuntimeError("worker asyncio.run rejected coroutine"),
+            ]
+        job = {
+            "id": "shutdown-race",
+            "deliver": "origin",
+            "origin": {"platform": "telegram", "chat_id": "123"},
+        }
+
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always", RuntimeWarning)
+            with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+                 patch("tools.send_message_tool._send_to_platform", new=fake_send), \
+                 patch("cron.scheduler.asyncio.run", side_effect=run_errors), \
+                 patch("cron.scheduler.concurrent.futures.ThreadPoolExecutor", return_value=pool):
+                error = _deliver_result(job, "Output.")
+
+            assert len(constructed) == expected_coroutines
+            assert all(coro.cr_frame is None for coro in constructed)
+            pool.submit.assert_called_once()
+            assert len(pool.submit.call_args.args) == 1
+            pool.shutdown.assert_called_once_with(wait=False)
+            constructed.clear()
+            pool.reset_mock(return_value=True, side_effect=True)
+            future.reset_mock(side_effect=True)
+            gc.collect()
+
+        assert not [warning for warning in caught if "was never awaited" in str(warning.message)]
+        assert expected_error in error
 
     def test_delivery_skips_wrapping_when_config_disabled(self):
         """When cron.wrap_response is false, deliver raw content without header/footer."""

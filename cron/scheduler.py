@@ -1929,7 +1929,29 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
                 try:
                     pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
                     try:
-                        future = pool.submit(asyncio.run, _send_to_platform(platform, pconfig, chat_id, cleaned_delivery_content, thread_id=thread_id, media_files=media_files))
+                        def _send_in_fresh_loop(
+                            _platform=platform,
+                            _pconfig=pconfig,
+                            _chat_id=chat_id,
+                            _content=cleaned_delivery_content,
+                            _thread_id=thread_id,
+                            _media_files=media_files,
+                        ):
+                            fresh_coro = _send_to_platform(
+                                _platform,
+                                _pconfig,
+                                _chat_id,
+                                _content,
+                                thread_id=_thread_id,
+                                media_files=_media_files,
+                            )
+                            try:
+                                return asyncio.run(fresh_coro)
+                            except BaseException:
+                                fresh_coro.close()
+                                raise
+
+                        future = pool.submit(_send_in_fresh_loop)
                         result = future.result(timeout=30)
                     finally:
                         pool.shutdown(wait=False)

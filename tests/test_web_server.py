@@ -17,6 +17,11 @@ def _stub_uvicorn(monkeypatch):
     immediately.  Returns a dict with captured Config kwargs."""
     captured: dict = {}
 
+    monkeypatch.setattr(
+        "hermes_cli.nous_auth_keepalive.start_nous_auth_keepalive",
+        lambda: None,
+    )
+
     class _FakeConfig:
         loaded = True
         host = "127.0.0.1"

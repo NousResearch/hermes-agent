@@ -641,6 +641,11 @@ def _content_from_choice(choice: dict[str, Any]) -> str:
 
 def generate(values: dict[str, Any] | None = None) -> dict[str, Any]:
     values = values or {}
+    try:
+        messages = _messages(values)
+    except ValueError as error:
+        return {"success": False, "status": "invalid_request", "error": str(error)}
+
     entry = _load_entry()
     if not bool(entry.get("allow_network", False)):
         return {
@@ -654,10 +659,6 @@ def generate(values: dict[str, Any] | None = None) -> dict[str, Any]:
             "status": "blocked",
             "error": "Generation requires acknowledge_side_effects=true.",
         }
-    try:
-        messages = _messages(values)
-    except ValueError as error:
-        return {"success": False, "status": "invalid_request", "error": str(error)}
 
     current = status_payload({})
     if not current["healthy"]:

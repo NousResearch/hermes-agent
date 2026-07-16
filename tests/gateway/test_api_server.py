@@ -2063,6 +2063,217 @@ class TestResponsesEndpoint:
         assert stored_history == compressed_history
 
     @pytest.mark.asyncio
+    async def test_rotation_compression_exercises_detection_and_persists_rotated_session_id(
+        self, adapter
+    ):
+        """Fake-agent rotation: _run_agent detects session_id change, sets
+        _compressed, and the Responses handler persists the rotated session_id
+        so subsequent previous_response_id chaining loads the compressed child."""
+        prior_history = [
+            {"role": "user", "content": "What is 1+1?"},
+            {"role": "assistant", "content": "2"},
+        ] * 10
+
+        adapter._response_store.put(
+            "resp_prev_rot",
+            {
+                "response": {"id": "resp_prev_rot", "status": "completed"},
+                "conversation_history": list(prior_history),
+                "session_id": "api-test-session",
+            },
+        )
+
+        compressed_history = [
+            {"role": "user", "content": "[Compressed summary]"},
+            {"role": "user", "content": "Now add 1 more"},
+            {"role": "assistant", "content": "3"},
+        ]
+
+        # Fake agent whose session_id was rotated by compression
+        mock_agent = MagicMock()
+        mock_agent.session_id = "rotated-child-session"
+        mock_agent._last_compaction_in_place = False
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        mock_agent.run_conversation.return_value = {
+            "final_response": "3",
+            "messages": list(compressed_history),
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Now add 1 more",
+                        "previous_response_id": "resp_prev_rot",
+                    },
+                )
+            assert resp.status == 200
+            data = await resp.json()
+
+        # The detection path in _run_agent must have set _compressed
+        # _run_agent mutates the result dict in place -- verify via stored data
+        stored = adapter._response_store.get(data["id"])
+        assert stored is not None
+
+        # Stored history must be the compressed transcript, not prior + compressed
+        stored_history = stored["conversation_history"]
+        for msg in prior_history:
+            assert msg not in stored_history
+        assert stored_history == compressed_history
+
+        # Stored session_id must be the rotated child, not the original
+        assert stored["session_id"] == "rotated-child-session"
+
+        # Response header must also reflect the rotated session
+        assert resp.headers.get("X-Hermes-Session-Id") == "rotated-child-session"
+
+    @pytest.mark.asyncio
+    async def test_inplace_compression_exercises_detection_and_persists_compressed_history(
+        self, adapter
+    ):
+        """Fake-agent in-place: _run_agent detects _last_compaction_in_place,
+        sets _compressed, and the Responses handler persists compressed history
+        WITHOUT rotating the session_id."""
+        prior_history = [
+            {"role": "user", "content": "What is 1+1?"},
+            {"role": "assistant", "content": "2"},
+        ] * 10
+
+        adapter._response_store.put(
+            "resp_prev_inplace",
+            {
+                "response": {"id": "resp_prev_inplace", "status": "completed"},
+                "conversation_history": list(prior_history),
+                "session_id": "api-test-session",
+            },
+        )
+
+        compressed_history = [
+            {"role": "user", "content": "[Compressed summary in-place]"},
+            {"role": "user", "content": "Continue"},
+            {"role": "assistant", "content": "42"},
+        ]
+
+        # Fake agent: in-place compaction, session_id unchanged
+        mock_agent = MagicMock()
+        mock_agent.session_id = "api-test-session"  # same as input -- no rotation
+        mock_agent._last_compaction_in_place = True
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+        mock_agent.run_conversation.return_value = {
+            "final_response": "42",
+            "messages": list(compressed_history),
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Continue",
+                        "previous_response_id": "resp_prev_inplace",
+                    },
+                )
+            assert resp.status == 200
+            data = await resp.json()
+
+        stored = adapter._response_store.get(data["id"])
+        assert stored is not None
+
+        # Stored history must be the compressed transcript
+        stored_history = stored["conversation_history"]
+        for msg in prior_history:
+            assert msg not in stored_history
+        assert stored_history == compressed_history
+
+        # Session_id must NOT change for in-place compaction
+        assert stored["session_id"] == "api-test-session"
+        assert resp.headers.get("X-Hermes-Session-Id") == "api-test-session"
+
+    @pytest.mark.asyncio
+    async def test_chained_rotation_propagates_effective_session_id(self, adapter):
+        """Two-request chain: first request triggers rotation, second request
+        loads history using the rotated session_id stored by the first."""
+        # First request -- no previous_response_id, establishes the conversation
+        mock_agent_1 = MagicMock()
+        mock_agent_1.session_id = "child-session-after-rotation"
+        mock_agent_1._last_compaction_in_place = False
+        mock_agent_1.session_prompt_tokens = 0
+        mock_agent_1.session_completion_tokens = 0
+        mock_agent_1.session_total_tokens = 0
+        compressed_msg_1 = [
+            {"role": "user", "content": "[Summary of turn 1]"},
+            {"role": "assistant", "content": "Hello back"},
+        ]
+        mock_agent_1.run_conversation.return_value = {
+            "final_response": "Hello back",
+            "messages": list(compressed_msg_1),
+            "api_calls": 1,
+        }
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_create_agent", return_value=mock_agent_1):
+                resp1 = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "Hello"},
+                )
+            assert resp1.status == 200
+            data1 = await resp1.json()
+            response_id_1 = data1["id"]
+
+            # Verify the rotated session_id was persisted
+            stored_1 = adapter._response_store.get(response_id_1)
+            assert stored_1["session_id"] == "child-session-after-rotation"
+            assert stored_1["conversation_history"] == compressed_msg_1
+
+            # Second request -- chains via previous_response_id
+            # _run_agent is called with the session_id from the stored response
+            mock_agent_2 = MagicMock()
+            mock_agent_2.session_id = "child-session-after-rotation"
+            mock_agent_2._last_compaction_in_place = False
+            mock_agent_2.session_prompt_tokens = 0
+            mock_agent_2.session_completion_tokens = 0
+            mock_agent_2.session_total_tokens = 0
+            mock_agent_2.run_conversation.return_value = {
+                "final_response": "Goodbye",
+                "messages": [
+                    {"role": "user", "content": "[Summary of turn 1]"},
+                    {"role": "assistant", "content": "Hello back"},
+                    {"role": "user", "content": "Goodbye"},
+                    {"role": "assistant", "content": "See you!"},
+                ],
+                "api_calls": 1,
+            }
+
+            with patch.object(adapter, "_create_agent", return_value=mock_agent_2):
+                resp2 = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Goodbye",
+                        "previous_response_id": response_id_1,
+                    },
+                )
+            assert resp2.status == 200
+
+            # The second _run_agent call must receive the rotated session_id
+            # (from the stored response), not the original request session_id
+            call_kwargs = mock_agent_2.run_conversation.call_args.kwargs
+            # conversation_history loaded from store should be the compressed transcript
+            assert call_kwargs["conversation_history"] == compressed_msg_1
+
+    @pytest.mark.asyncio
     async def test_previous_response_id_outputs_only_current_turn_items(self, adapter):
         """Response output must not replay previous tool artifacts."""
         prior_history = [

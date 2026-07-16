@@ -1788,7 +1788,14 @@ class TestRegisterSessionMcpServers:
 
     @pytest.mark.asyncio
     async def test_refreshes_agent_tool_surface(self, agent, mock_manager):
-        """After MCP registration, agent.tools and valid_tool_names are refreshed."""
+        """After MCP registration, the shared full-surface rebuild runs.
+
+        #47119 review: this path must route through refresh_agent_mcp_tools
+        (the same rebuild the TUI/gateway/late-binding refresh use), not a
+        hand-rolled get_tool_definitions() assignment — so memory-provider
+        reinjection and the finalized Tool Search surface can't diverge from
+        the session surface.
+        """
         from acp.schema import McpServerStdio
 
         state = mock_manager.create_session(cwd="/tmp")
@@ -1820,13 +1827,17 @@ class TestRegisterSessionMcpServers:
              patch("model_tools.get_tool_definitions", return_value=fake_tools) as mock_defs:
             await agent._register_session_mcp_servers(state, [server])
 
+        # The shared rebuild re-derives with the expanded toolsets and defers
+        # Tool Search assembly to its own atomic finalize step.
         mock_defs.assert_called_once_with(
             enabled_toolsets=["hermes-acp", "mcp-srv"],
             disabled_toolsets=None,
             quiet_mode=True,
+            skip_tool_search_assembly=True,
         )
         assert state.agent.enabled_toolsets == ["hermes-acp", "mcp-srv"]
-        assert state.agent.tools is fake_tools
+        # The rebuild publishes a fresh finalized snapshot (not the raw
+        # registry list), with the memory-provider schema reinjected.
         assert state.agent.tools[-1] == {
             "type": "function",
             "function": {
@@ -1841,6 +1852,8 @@ class TestRegisterSessionMcpServers:
             "mcp_srv_search",
             "terminal",
         }
+        # The visible surface and the name guard stay in lockstep.
+        assert {t["function"]["name"] for t in state.agent.tools} == state.agent.valid_tool_names
         # _invalidate_system_prompt should have been called
         state.agent._invalidate_system_prompt.assert_called_once()
 

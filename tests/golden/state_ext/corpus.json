@@ -14,6 +14,12 @@
       "configs": [false, true]
     },
     {
+      "name": "session list denorm config read failure",
+      "kind": "denorm_flag",
+      "config_error": "boom",
+      "configs": [true]
+    },
+    {
       "name": "title search platform alias boosts source",
       "kind": "title_search",
       "query": "general tg",
@@ -24,6 +30,20 @@
       "name": "title search exact title outranks channel",
       "kind": "title_search",
       "query": "deploy",
+      "limit": 5,
+      "include_archived": true
+    },
+    {
+      "name": "title search exact whole title",
+      "kind": "title_search",
+      "query": "general chatter",
+      "limit": 5,
+      "include_archived": true
+    },
+    {
+      "name": "title search substring whole phrase",
+      "kind": "title_search",
+      "query": "coverage",
       "limit": 5,
       "include_archived": true
     },

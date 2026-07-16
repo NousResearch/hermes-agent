@@ -29,9 +29,23 @@ def _run_denorm_case(case: dict):
     helper = _helper("_session_list_denorm_enabled")
     out = []
     with _patched_env(case.get("env") or {}):
-        for enabled in case["configs"]:
-            _write_dashboard_flag(bool(enabled))
-            out.append(helper())
+        if "config_error" in case:
+            import hermes_cli.config as config
+
+            old_read_raw_config = config.read_raw_config
+            try:
+                config.read_raw_config = lambda: (_ for _ in ()).throw(
+                    RuntimeError(case["config_error"])
+                )
+                for enabled in case["configs"]:
+                    _write_dashboard_flag(bool(enabled))
+                    out.append(helper())
+            finally:
+                config.read_raw_config = old_read_raw_config
+        else:
+            for enabled in case["configs"]:
+                _write_dashboard_flag(bool(enabled))
+                out.append(helper())
     return {"return": out, "messages": [], "db": []}
 
 

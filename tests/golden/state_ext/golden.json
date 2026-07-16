@@ -88,6 +88,24 @@
       ]
     }
   },
+  "560702536394d9864fd9ec7f0be69b5be8da0c83baec99606150e2cd14b1edeb": {
+    "input": {
+      "config_error": "boom",
+      "configs": [
+        true
+      ],
+      "kind": "denorm_flag",
+      "name": "session list denorm config read failure"
+    },
+    "name": "session list denorm config read failure",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        false
+      ]
+    }
+  },
   "630ea362ca0517c889385e47f7ea78ed0ae95f62ae252082d2580279bc89d64f": {
     "input": {
       "include_archived": true,
@@ -294,6 +312,66 @@
       ]
     }
   },
+  "c223e99cb4c96eb3aee2606292b98e871884adaeefcc3d3a638cdb6f1fc42cbe": {
+    "input": {
+      "include_archived": true,
+      "kind": "title_search",
+      "limit": 5,
+      "name": "title search substring whole phrase",
+      "query": "coverage"
+    },
+    "name": "title search substring whole phrase",
+    "output": {
+      "db": [
+        {
+          "display_name": "Daemonarchy / #general / Deploy Notes",
+          "id": "dc",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "plain",
+          "source": "cli",
+          "title": "No platform words here"
+        },
+        {
+          "display_name": null,
+          "id": "tg",
+          "source": "telegram",
+          "title": "General chatter"
+        },
+        {
+          "display_name": null,
+          "id": "titled",
+          "source": "cli",
+          "title": "Deploy pipeline"
+        },
+        {
+          "display_name": null,
+          "id": "untitled-discord",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "wild",
+          "source": "cli",
+          "title": "100% coverage plan"
+        }
+      ],
+      "messages": [],
+      "return": [
+        {
+          "display_name": null,
+          "id": "wild",
+          "preview": "wildcard preview",
+          "source": "cli",
+          "title": "100% coverage plan"
+        }
+      ]
+    }
+  },
   "ca1eeb5204618bb81e3a2b02c7f84cf847fbbf618e710e9db588b2a423e0432a": {
     "input": {
       "include_archived": true,
@@ -350,6 +428,73 @@
           "preview": "wildcard preview",
           "source": "cli",
           "title": "100% coverage plan"
+        }
+      ]
+    }
+  },
+  "cd579637bf7778a8dc6da46b354dba73051cd21861f146914a45892d0ae9e6c9": {
+    "input": {
+      "include_archived": true,
+      "kind": "title_search",
+      "limit": 5,
+      "name": "title search exact whole title",
+      "query": "general chatter"
+    },
+    "name": "title search exact whole title",
+    "output": {
+      "db": [
+        {
+          "display_name": "Daemonarchy / #general / Deploy Notes",
+          "id": "dc",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "plain",
+          "source": "cli",
+          "title": "No platform words here"
+        },
+        {
+          "display_name": null,
+          "id": "tg",
+          "source": "telegram",
+          "title": "General chatter"
+        },
+        {
+          "display_name": null,
+          "id": "titled",
+          "source": "cli",
+          "title": "Deploy pipeline"
+        },
+        {
+          "display_name": null,
+          "id": "untitled-discord",
+          "source": "discord",
+          "title": null
+        },
+        {
+          "display_name": null,
+          "id": "wild",
+          "source": "cli",
+          "title": "100% coverage plan"
+        }
+      ],
+      "messages": [],
+      "return": [
+        {
+          "display_name": null,
+          "id": "tg",
+          "preview": "telegram preview",
+          "source": "telegram",
+          "title": "General chatter"
+        },
+        {
+          "display_name": "Daemonarchy / #general / Deploy Notes",
+          "id": "dc",
+          "preview": "discord preview",
+          "source": "discord",
+          "title": null
         }
       ]
     }

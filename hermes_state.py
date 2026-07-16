@@ -27,30 +27,16 @@ from pathlib import Path
 
 from agent.memory_manager import sanitize_context
 from hermes_constants import get_hermes_home
+from hermes_state_ext import (
+    _session_list_denorm_enabled,
+    _session_title_search_like,
+    _session_title_search_platform_sources,
+    _session_title_search_score,
+    _sql_placeholders,
+)
 from typing import Any, Callable, Dict, List, Optional, Tuple, TypeVar
 
 logger = logging.getLogger(__name__)
-
-def _sql_placeholders(values) -> str:
-    return ",".join("?" for _ in values)
-
-
-def _session_list_denorm_enabled() -> bool:
-    """Lazy config.yaml-only gate for the dormant session.list denorm path."""
-    try:
-        from hermes_cli.config import cfg_get, read_raw_config
-
-        value = cfg_get(
-            read_raw_config(),
-            "dashboard",
-            "session_list_denorm",
-            default=False,
-        )
-    except Exception as exc:
-        logger.debug("dashboard.session_list_denorm read failed: %s", exc)
-        return False
-    return value is True
-
 
 def workspace_key(row: Dict[str, Any]) -> Optional[str]:
     """A session's workspace grouping key: its git repo root when known, else
@@ -97,37 +83,6 @@ _COMPRESSION_CHILD_SQL = (
 # Rows that surface in pickers: roots + branch children (subagent runs and
 # compression continuations stay hidden).
 _LISTABLE_CHILD_SQL = f"(s.parent_session_id IS NULL OR {_BRANCH_CHILD_SQL.format(a='s')})"
-
-# Platform names + common aliases → sessions.source values, so cross-surface
-# search understands "discord" / "tg" / "imessage" as platform intent. Kept in
-# sync with the desktop sidebar's SOURCE_LABELS/SOURCE_ALIASES
-# (apps/desktop/src/lib/session-source.ts).
-_PLATFORM_SEARCH_ALIASES: Dict[str, str] = {
-    "bluebubbles": "bluebubbles",
-    "imessage": "bluebubbles",
-    "cli": "cli",
-    "codex": "codex",
-    "desktop": "desktop",
-    "discord": "discord",
-    "email": "email",
-    "matrix": "matrix",
-    "mattermost": "mattermost",
-    "qq": "qqbot",
-    "qqbot": "qqbot",
-    "signal": "signal",
-    "slack": "slack",
-    "sms": "sms",
-    "telegram": "telegram",
-    "tg": "telegram",
-    "tui": "tui",
-    "webhook": "webhook",
-    "wechat": "weixin",
-    "weixin": "weixin",
-    "whatsapp": "whatsapp",
-    "wa": "whatsapp",
-    "yuanbao": "yuanbao",
-}
-
 
 def _effective_last_active_visible_clause(alias: str = "s") -> Tuple[str, List[str]]:
     """SQL predicate for rows whose denormalized recency should be non-NULL."""
@@ -6772,32 +6727,22 @@ class SessionDB:
 
         tokens = [t for t in needle.split() if t]
 
-        def _like(term: str) -> str:
-            return (
-                "%"
-                + term.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                + "%"
-            )
-
         # Candidate fetch: any token substring-hits title or display_name, or
         # names a platform. Python does the real ranking; SQL just narrows.
         or_clauses: List[str] = []
         params: List[Any] = []
-        platform_sources: set = set()
         for tok in tokens:
             or_clauses.append("LOWER(COALESCE(s.title, '')) LIKE ? ESCAPE '\\'")
-            params.append(_like(tok))
+            params.append(_session_title_search_like(tok))
             or_clauses.append(
                 "LOWER(COALESCE(s.display_name, '')) LIKE ? ESCAPE '\\'"
             )
-            params.append(_like(tok))
-            src = _PLATFORM_SEARCH_ALIASES.get(tok)
-            if src:
-                platform_sources.add(src)
+            params.append(_session_title_search_like(tok))
+        platform_sources = _session_title_search_platform_sources(tokens)
         if platform_sources:
             marks = ",".join("?" for _ in platform_sources)
             or_clauses.append(f"s.source IN ({marks})")
-            params.extend(sorted(platform_sources))
+            params.extend(platform_sources)
 
         where = [
             f"({' OR '.join(or_clauses)})",
@@ -6823,39 +6768,16 @@ class SessionDB:
                 params + [max(limit * 8, 80)],
             ).fetchall()
 
-        def score(row) -> tuple:
-            title = (row["title"] or "").strip().lower()
-            display = (row["display_name"] or "").strip().lower()
-            source = (row["source"] or "").strip().lower()
-            matched = 0
-            best_tier = 6
-            for tok in tokens:
-                tiers = []
-                if tok in title:
-                    tiers.append(3)
-                if tok in display:
-                    tiers.append(4)
-                if _PLATFORM_SEARCH_ALIASES.get(tok) == source:
-                    tiers.append(5)
-                if tiers:
-                    matched += 1
-                    best_tier = min(best_tier, *tiers)
-            # Whole-phrase title tiers preserve the historical contract that
-            # an exact/prefix title hit beats everything else.
-            if title == needle:
-                best_tier = 0
-            elif title.startswith(needle):
-                best_tier = 1
-            elif needle in title:
-                best_tier = 2
-            return (-matched, best_tier)
-
         ranked = sorted(
-            enumerate(rows), key=lambda item: (*score(item[1]), item[0])
+            enumerate(rows),
+            key=lambda item: (
+                *_session_title_search_score(item[1], tokens, needle),
+                item[0],
+            ),
         )
         out: List[Dict[str, Any]] = []
         for _, row in ranked[:limit]:
-            if score(row)[0] == 0:
+            if _session_title_search_score(row, tokens, needle)[0] == 0:
                 continue  # candidate row that no token actually scored on
             d = dict(row)
             preview = (d.get("preview") or "").strip()

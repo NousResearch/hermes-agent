@@ -1388,6 +1388,7 @@ def _model_flow_named_custom(config, provider_info):
     key_env = provider_info.get("key_env", "")
     saved_model = provider_info.get("model", "")
     provider_key = (provider_info.get("provider_key") or "").strip()
+    models_url = (provider_info.get("models_url") or "").strip()
 
     # Resolve key from env var if api_key not set directly
     if not api_key and key_env:
@@ -1428,6 +1429,8 @@ def _model_flow_named_custom(config, provider_info):
         fetch_kwargs = {"timeout": 8.0}
         if api_mode:
             fetch_kwargs["api_mode"] = api_mode
+        if models_url:
+            fetch_kwargs["models_url"] = models_url
         models = fetch_api_models(api_key, base_url, **fetch_kwargs)
         # If the probe came back empty but the operator configured an explicit
         # list, fall back to it rather than forcing manual entry.

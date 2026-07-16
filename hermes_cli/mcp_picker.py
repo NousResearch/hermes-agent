@@ -148,12 +148,10 @@ def _remove_custom(name: str) -> None:
         return
     if not prompt_yes_no(f"Remove '{name}' from mcp_servers?", default=False):
         return
-    del servers[name]
-    if not servers:
-        cfg.pop("mcp_servers", None)
-    else:
-        cfg["mcp_servers"] = servers
-    save_config(cfg)
+
+    from hermes_cli.mcp_config import _remove_mcp_server
+
+    _remove_mcp_server(name)
     print(color(f"  ✓ Removed '{name}'", Colors.GREEN))
 
 

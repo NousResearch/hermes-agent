@@ -102,6 +102,17 @@ def _entry(name: str):
     return e
 
 
+def _seed_oauth_cache(hermes_home: Path, name: str) -> Path:
+    from tools.mcp_oauth_manager import reset_manager_for_tests
+
+    reset_manager_for_tests()
+    token_dir = hermes_home / "mcp-tokens"
+    token_dir.mkdir(exist_ok=True)
+    for suffix in (".json", ".client.json", ".meta.json"):
+        (token_dir / f"{name}{suffix}").write_text("{}")
+    return token_dir
+
+
 
 # ---------------------------------------------------------------------------
 # Manifest parsing
@@ -375,6 +386,30 @@ class TestUninstall:
 
         assert uninstall_entry("nonexistent") is False
 
+    def test_uninstall_cleans_oauth_state(
+        self,
+        catalog_dir,
+        _isolate_hermes_home,
+    ):
+        _write_manifest(
+            catalog_dir,
+            "demo",
+            _basic_manifest(
+                transport={
+                    "type": "http",
+                    "url": "https://mcp.example.com/mcp",
+                },
+                auth={"type": "oauth"},
+            ),
+        )
+        from hermes_cli.mcp_catalog import install_entry, uninstall_entry
+
+        install_entry(_entry("demo"), enable=True)
+        token_dir = _seed_oauth_cache(_isolate_hermes_home, "demo")
+
+        assert uninstall_entry("demo") is True
+        assert not any(token_dir.iterdir())
+
 
 # ---------------------------------------------------------------------------
 # Picker (non-TTY paths only — interactive curses is integration-tested)
@@ -397,6 +432,30 @@ class TestPicker:
         out = capsys.readouterr().out
         assert "demo" in out
         assert "available" in out
+
+    def test_remove_custom_cleans_oauth_state(
+        self,
+        _isolate_hermes_home,
+        monkeypatch,
+    ):
+        from hermes_cli.config import load_config
+        from hermes_cli.mcp_config import _save_mcp_server
+        from hermes_cli.mcp_picker import _remove_custom
+
+        _save_mcp_server(
+            "oauth-custom",
+            {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+        )
+        token_dir = _seed_oauth_cache(_isolate_hermes_home, "oauth-custom")
+        monkeypatch.setattr(
+            "hermes_cli.mcp_picker.prompt_yes_no",
+            lambda *args, **kwargs: True,
+        )
+
+        _remove_custom("oauth-custom")
+
+        assert "oauth-custom" not in load_config().get("mcp_servers", {})
+        assert not any(token_dir.iterdir())
 
     def test_install_by_name_unknown(self, catalog_dir, capsys):
         from hermes_cli.mcp_picker import install_by_name

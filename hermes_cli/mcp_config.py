@@ -671,16 +671,6 @@ def cmd_mcp_remove(args):
     _remove_mcp_server(name)
     _success(f"Removed '{name}' from config")
 
-    # Clean up OAuth tokens if they exist — route through MCPOAuthManager so
-    # any provider instance cached in the current process (e.g. from an
-    # earlier `hermes mcp test` in the same session) is evicted too.
-    try:
-        from tools.mcp_oauth_manager import get_manager
-        get_manager().remove(name)
-        _success("Cleaned up OAuth tokens")
-    except Exception:
-        pass
-
 
 # ─── hermes mcp list ──────────────────────────────────────────────────────────
 

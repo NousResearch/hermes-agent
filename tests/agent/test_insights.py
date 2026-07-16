@@ -138,6 +138,125 @@ def populated_db(db):
     return db
 
 
+def test_generate_uses_public_sessiondb_insights_contract():
+    """Insights must not require a SQLite connection from the state backend."""
+    calls = []
+
+    class ContractOnlyStore:
+        def get_insights_sessions(self, cutoff, source=None):
+            calls.append(("sessions", cutoff, source))
+            return []
+
+        def get_insights_tool_name_counts(self, cutoff, source=None):
+            calls.append(("tool_counts", cutoff, source))
+            return []
+
+        def get_insights_assistant_tool_calls_page(
+            self,
+            cutoff,
+            source=None,
+            *,
+            after_message_id=0,
+            limit=200,
+            include_timestamp=False,
+        ):
+            calls.append(
+                (
+                    "tool_calls_page",
+                    cutoff,
+                    source,
+                    after_message_id,
+                    limit,
+                    include_timestamp,
+                )
+            )
+            return []
+
+        def get_insights_message_stats(self, cutoff, source=None):
+            calls.append(("message_stats", cutoff, source))
+            return {}
+
+    report = InsightsEngine(ContractOnlyStore()).generate(days=7, source="cli")
+
+    assert report["empty"] is True
+    assert [call[0] for call in calls] == [
+        "sessions",
+        "tool_counts",
+        "tool_calls_page",
+        "tool_calls_page",
+        "message_stats",
+    ]
+    assert calls[2][-1] is False
+    assert calls[3][-1] is True
+
+
+def test_tool_and_skill_insights_process_assistant_calls_in_pages():
+    calls = []
+
+    class PagedStore:
+        def get_insights_tool_name_counts(self, cutoff, source=None):
+            return []
+
+        def get_insights_assistant_tool_calls_page(
+            self,
+            cutoff,
+            source=None,
+            *,
+            after_message_id=0,
+            limit=200,
+            include_timestamp=False,
+        ):
+            calls.append((after_message_id, limit, include_timestamp))
+            rows = [
+                {
+                    "id": 1,
+                    "tool_calls": '[{"function":{"name":"search"}}]',
+                    "timestamp": 1.0,
+                },
+                {
+                    "id": 2,
+                    "tool_calls": (
+                        '[{"function":{"name":"skill_view",'
+                        '"arguments":"{\\"name\\":\\"debugging\\"}"}}]'
+                    ),
+                    "timestamp": 2.0,
+                },
+                {
+                    "id": 3,
+                    "tool_calls": '[{"function":{"name":"search"}}]',
+                    "timestamp": 3.0,
+                },
+            ]
+            if after_message_id == 0:
+                return rows[:2]
+            if after_message_id == 2:
+                return rows[2:]
+            return []
+
+    engine = InsightsEngine(PagedStore())
+
+    assert engine._get_tool_usage(0) == [
+        {"tool_name": "search", "count": 2},
+        {"tool_name": "skill_view", "count": 1},
+    ]
+    assert engine._get_skill_usage(0) == [
+        {
+            "skill": "debugging",
+            "view_count": 1,
+            "manage_count": 0,
+            "last_used_at": 2.0,
+        }
+    ]
+    assert calls == [
+        (0, 200, False),
+        (2, 200, False),
+        (3, 200, False),
+        (0, 200, True),
+        (2, 200, True),
+        (3, 200, True),
+    ]
+
+
 class TestHasKnownPricing:
     def test_known_commercial_model(self):
         assert _has_known_pricing("gpt-4o", provider="openai") is True

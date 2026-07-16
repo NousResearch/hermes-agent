@@ -11,7 +11,6 @@ Layers under test:
 4. An owner with a matching session_key still receives its restored event.
 """
 
-import json
 import queue
 
 from tools.process_registry import ProcessRegistry
@@ -53,7 +52,7 @@ def test_restore_stamps_restored_flag(tmp_path, monkeypatch):
     """Every durable completion re-enqueued at startup carries restored=True."""
     import tools.async_delegation as ad
 
-    monkeypatch.setattr(ad, "_db_path", lambda: tmp_path / "async_delegations.db")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     record = {
         "delegation_id": "d-old",
         "goal": "old goal",
@@ -81,11 +80,14 @@ def test_restore_stamps_restored_flag(tmp_path, monkeypatch):
     assert got["session_key"] == "OLD_SESSION_A"
 
     # The stamp is in-memory only — the durable payload is unchanged.
-    with ad._connect() as conn:
-        row = conn.execute(
-            "SELECT event_json FROM async_delegations WHERE delegation_id='d-old'"
-        ).fetchone()
-    assert "restored" not in json.loads(row[0])
+    from hermes_state import SessionDB
+
+    db = SessionDB.for_home(tmp_path)
+    try:
+        persisted = db.list_pending_async_delegation_events()
+    finally:
+        db.close()
+    assert persisted == [evt]
 
 
 def test_unfiltered_drain_never_consumes_restored_events():

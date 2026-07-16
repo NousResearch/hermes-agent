@@ -36,16 +36,20 @@ logic stays in one place.
 
 from __future__ import annotations
 
+import atexit
 import json
 import logging
-import sqlite3
+import os
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Callable, Dict, List, Optional
+from pathlib import Path
+from typing import Any, Callable, Dict, Iterator, List, Optional
 
 from hermes_constants import get_hermes_home
+from hermes_state import SessionDB
 from tools.daemon_pool import DaemonThreadPoolExecutor
 from tools.thread_context import propagate_context_to_thread
 
@@ -77,143 +81,127 @@ _DEFAULT_MAX_ASYNC_CHILDREN = 3
 _MAX_RETAINED_COMPLETED = 50
 _DURABLE_RETENTION_SECONDS = 7 * 24 * 60 * 60
 _MAX_DURABLE_PENDING = 1000
-_DB_LOCK = threading.Lock()
+
+_state_stores_lock = threading.RLock()
+_state_stores: Dict[str, SessionDB] = {}
+_state_store_keys_by_home: Dict[str, str] = {}
 
 
-def _db_path():
-    return get_hermes_home() / "state.db"
+def _state_home_key(home: Path) -> str:
+    return str(Path(home).expanduser().resolve())
 
 
-def _connect() -> sqlite3.Connection:
-    path = _db_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(path, timeout=10)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute(
-        """CREATE TABLE IF NOT EXISTS async_delegations (
-            delegation_id TEXT PRIMARY KEY,
-            origin_session TEXT NOT NULL,
-            origin_ui_session_id TEXT NOT NULL DEFAULT '',
-            parent_session_id TEXT,
-            state TEXT NOT NULL,
-            dispatched_at REAL NOT NULL,
-            completed_at REAL,
-            updated_at REAL NOT NULL,
-            event_json TEXT,
-            result_json TEXT,
-            delivery_state TEXT NOT NULL DEFAULT 'pending',
-            delivery_attempts INTEGER NOT NULL DEFAULT 0,
-            delivered_at REAL,
-            owner_pid INTEGER,
-            owner_started_at INTEGER,
-            task_json TEXT,
-            delivery_claim TEXT,
-            delivery_claimed_at REAL
-        )"""
-    )
-    columns = {row[1] for row in conn.execute("PRAGMA table_info(async_delegations)")}
-    for name, sql_type in (
-        ("owner_pid", "INTEGER"),
-        ("owner_started_at", "INTEGER"),
-        ("task_json", "TEXT"),
-        ("delivery_claim", "TEXT"),
-        ("delivery_claimed_at", "REAL"),
-    ):
-        if name not in columns:
-            conn.execute(f"ALTER TABLE async_delegations ADD COLUMN {name} {sql_type}")
-    return conn
+def _resolve_configured_state_store(home: Path):
+    """Load and resolve one explicit home's non-secret store identity."""
+    from hermes_cli.config import load_config_for_home
+    from state_store import resolve_state_store
+
+    config = load_config_for_home(home)
+    return config, resolve_state_store(home, config)
+
+
+def close_cached_state_stores() -> None:
+    """Close configured durable stores after detaching them from the cache."""
+    with _state_stores_lock:
+        stores = list(_state_stores.values())
+        _state_stores.clear()
+        _state_store_keys_by_home.clear()
+    for store in stores:
+        try:
+            store.close()
+        except Exception:
+            logger.debug("Failed to close async delegation state store", exc_info=True)
+
+
+@atexit.register
+def _close_cached_state_stores_at_exit() -> None:
+    close_cached_state_stores()
+
+
+@contextmanager
+def _state_db() -> Iterator[SessionDB]:
+    """Yield the cached configured durable store for this home's current spec.
+
+    Durable delegation paths are synchronous worker/control paths. Async API
+    callers reach the backend through AsyncSessionDB instead of using this
+    synchronous repository directly.
+    """
+    home = Path(get_hermes_home()).expanduser().resolve()
+    home_key = _state_home_key(home)
+    with _state_stores_lock:
+        config, spec = _resolve_configured_state_store(home)
+        store_key = spec.store_key
+        previous_key = _state_store_keys_by_home.get(home_key)
+        if previous_key and previous_key != store_key:
+            stale_store = _state_stores.pop(previous_key, None)
+            if stale_store is not None:
+                try:
+                    # The lock is held through the yielded operation, so a
+                    # cutover cannot close an old store while it is writing.
+                    stale_store.close()
+                except Exception:
+                    logger.debug(
+                        "Failed to close stale async delegation state store",
+                        exc_info=True,
+                    )
+        _state_store_keys_by_home[home_key] = store_key
+        db = _state_stores.get(store_key)
+        if db is None:
+            db = SessionDB.for_home(home, config=config)
+            _state_stores[store_key] = db
+        yield db
 
 
 def _persist_dispatch(record: Dict[str, Any]) -> None:
     now = time.time()
     try:
         from gateway.status import get_process_start_time
-        owner_started_at = get_process_start_time(__import__("os").getpid())
+        owner_started_at = get_process_start_time(os.getpid())
     except Exception:
         owner_started_at = None
-    task_payload = {
-        key: record.get(key)
-        for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch")
-        if key in record
-    }
-    with _DB_LOCK, _connect() as conn:
-        conn.execute(
-            """INSERT OR REPLACE INTO async_delegations
-               (delegation_id, origin_session, origin_ui_session_id,
-                parent_session_id, state, dispatched_at, updated_at,
-                delivery_state, delivery_attempts, owner_pid,
-                owner_started_at, task_json)
-               VALUES (?, ?, ?, ?, 'running', ?, ?, 'pending', 0, ?, ?, ?)""",
-            (record["delegation_id"], record.get("session_key", ""),
-             record.get("origin_ui_session_id", ""), record.get("parent_session_id"),
-             record["dispatched_at"], now, __import__("os").getpid(),
-             owner_started_at, json.dumps(task_payload)),
+    with _state_db() as db:
+        db.persist_async_delegation(
+            record,
+            owner_pid=os.getpid(),
+            owner_started_at=owner_started_at,
+            updated_at=now,
         )
     _prune_durable_records()
 
 
 def _delete_durable_delegation(delegation_id: str) -> None:
-    with _DB_LOCK, _connect() as conn:
-        conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
+    with _state_db() as db:
+        db.delete_async_delegation(delegation_id)
+
+
+def _delete_durable_delegation_best_effort(delegation_id: str) -> None:
+    try:
+        _delete_durable_delegation(delegation_id)
+    except Exception:
+        logger.exception(
+            "Async delegation %s could not remove its durable dispatch record",
+            delegation_id,
+        )
 
 
 def _prune_durable_records() -> None:
     """Bound terminal history, preferring delivered records for deletion."""
-    now = time.time()
-    cutoff = now - _DURABLE_RETENTION_SECONDS
-    with _DB_LOCK, _connect() as conn:
-        conn.execute(
-            "DELETE FROM async_delegations WHERE delivery_state='delivered' AND updated_at < ?",
-            (cutoff,),
+    with _state_db() as db:
+        db.prune_async_delegations(
+            retention_seconds=_DURABLE_RETENTION_SECONDS,
+            max_retained_completed=_MAX_RETAINED_COMPLETED,
+            max_pending=_MAX_DURABLE_PENDING,
         )
-        terminal_count = conn.execute(
-            "SELECT COUNT(*) FROM async_delegations WHERE state NOT IN ('running','finalizing')"
-        ).fetchone()[0]
-        excess = max(0, terminal_count - _MAX_RETAINED_COMPLETED)
-        if excess:
-            conn.execute(
-                """DELETE FROM async_delegations WHERE delegation_id IN (
-                     SELECT delegation_id FROM async_delegations
-                     WHERE state NOT IN ('running','finalizing')
-                     ORDER BY CASE delivery_state WHEN 'delivered' THEN 0 ELSE 1 END,
-                              updated_at ASC LIMIT ?
-                   )""",
-                (excess,),
-            )
-        pending_count = conn.execute(
-            """SELECT COUNT(*) FROM async_delegations
-               WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'"""
-        ).fetchone()[0]
-        overflow = max(0, pending_count - _MAX_DURABLE_PENDING)
-        if overflow:
-            conn.execute(
-                """DELETE FROM async_delegations WHERE delegation_id IN (
-                     SELECT delegation_id FROM async_delegations
-                     WHERE state NOT IN ('running','finalizing') AND delivery_state='pending'
-                     ORDER BY updated_at ASC LIMIT ?
-                   )""",
-                (overflow,),
-            )
 
 
 def _persist_completion(event: Dict[str, Any], result: Dict[str, Any]) -> None:
-    now = time.time()
-    with _DB_LOCK, _connect() as conn:
-        conn.execute(
-            """UPDATE async_delegations SET state=?, completed_at=?, updated_at=?,
-               event_json=?, result_json=?, delivery_state='pending'
-               WHERE delegation_id=?""",
-            (event.get("status", "completed"), event.get("completed_at", now), now,
-             json.dumps(event), json.dumps(result), event["delegation_id"]),
-        )
+    with _state_db() as db:
+        db.complete_async_delegation(event, result)
 
 
 def _note_delivery_attempt(delegation_id: str) -> None:
-    with _DB_LOCK, _connect() as conn:
-        conn.execute(
-            "UPDATE async_delegations SET delivery_attempts=delivery_attempts+1, updated_at=? WHERE delegation_id=?",
-            (time.time(), delegation_id),
-        )
+    with _state_db() as db:
+        db.note_async_delegation_delivery_attempt(delegation_id)
 
 
 def recover_abandoned_delegations() -> int:
@@ -224,15 +212,16 @@ def recover_abandoned_delegations() -> int:
         return 0
     now = time.time()
     recovered = 0
-    with _DB_LOCK, _connect() as conn:
-        rows = conn.execute(
-            """SELECT delegation_id, origin_session, origin_ui_session_id,
-                      parent_session_id, dispatched_at, owner_pid,
-                      owner_started_at, task_json
-               FROM async_delegations WHERE state IN ('running','finalizing')"""
-        ).fetchall()
+    with _state_db() as db:
+        rows = db.list_recoverable_async_delegations()
         for row in rows:
-            delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json = row
+            delegation_id = row["delegation_id"]
+            session_key = row["origin_session"]
+            origin_ui = row["origin_ui_session_id"]
+            parent_id = row["parent_session_id"]
+            dispatched_at = row["dispatched_at"]
+            pid = row["owner_pid"]
+            started = row["owner_started_at"]
             live = False
             if pid:
                 live = _pid_exists(int(pid))
@@ -240,7 +229,7 @@ def recover_abandoned_delegations() -> int:
                     live = get_process_start_time(int(pid)) == int(started)
             if live:
                 continue
-            task = json.loads(task_json or "{}")
+            task = row["task"]
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id,
                 "session_key": session_key, "origin_ui_session_id": origin_ui,
@@ -253,13 +242,10 @@ def recover_abandoned_delegations() -> int:
                 "dispatched_at": dispatched_at, "completed_at": now,
             }
             result = {"status": "unknown", "summary": None, "error": event["error"]}
-            conn.execute(
-                """UPDATE async_delegations SET state='unknown', completed_at=?,
-                   updated_at=?, event_json=?, result_json=?, delivery_state='pending'
-                   WHERE delegation_id=?""",
-                (now, now, json.dumps(event), json.dumps(result), delegation_id),
-            )
-            recovered += 1
+            if db.mark_async_delegation_unknown(
+                delegation_id, event, result, updated_at=now
+            ):
+                recovered += 1
     return recovered
 
 
@@ -276,50 +262,25 @@ def restore_undelivered_completions(target_queue) -> int:
     results seconds after boot (#64484).
     """
     recover_abandoned_delegations()
-    with _DB_LOCK, _connect() as conn:
-        rows = conn.execute(
-            """SELECT delegation_id, event_json FROM async_delegations
-               WHERE state != 'running' AND delivery_state='pending' AND event_json IS NOT NULL
-               ORDER BY completed_at, delegation_id"""
-        ).fetchall()
-        for _delegation_id, payload in rows:
-            evt = json.loads(payload)
+    with _state_db() as db:
+        events = db.list_pending_async_delegation_events()
+        for evt in events:
             if isinstance(evt, dict):
                 evt["restored"] = True
             target_queue.put(evt)
-    return len(rows)
+    return len(events)
 
 
 def mark_completion_delivered(delegation_id: str) -> bool:
     """Atomically acknowledge successful injection of a durable completion."""
-    now = time.time()
-    with _DB_LOCK, _connect() as conn:
-        cur = conn.execute(
-            """UPDATE async_delegations SET delivery_state='delivered', delivered_at=?, updated_at=?
-               WHERE delegation_id=? AND delivery_state!='delivered'""",
-            (now, now, delegation_id),
-        )
-        return cur.rowcount == 1
+    with _state_db() as db:
+        return db.mark_async_delegation_delivered(delegation_id)
 
 
 def claim_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Claim one pending completion across competing consumers/processes."""
-    now = time.time()
-    with _DB_LOCK, _connect() as conn:
-        row = conn.execute(
-            "SELECT delivery_state FROM async_delegations WHERE delegation_id=?",
-            (delegation_id,),
-        ).fetchone()
-        if row is None:
-            return True  # legacy event created before durable dispatch
-        cur = conn.execute(
-            """UPDATE async_delegations SET delivery_claim=?, delivery_claimed_at=?,
-                      delivery_attempts=delivery_attempts+1, updated_at=?
-               WHERE delegation_id=? AND delivery_state='pending'
-                 AND (delivery_claim IS NULL OR delivery_claimed_at < ?)""",
-            (claim_id, now, now, delegation_id, now - 300),
-        )
-        return cur.rowcount == 1
+    with _state_db() as db:
+        return db.claim_async_delegation_delivery(delegation_id, claim_id)
 
 
 def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
@@ -329,36 +290,20 @@ def claim_event_delivery(evt: Dict[str, Any], consumer: str) -> Optional[str]:
     delegation_id = str(evt.get("delegation_id") or "")
     if not delegation_id:
         return ""
-    claim_id = f"{consumer}:{__import__('os').getpid()}:{uuid.uuid4().hex}"
+    claim_id = f"{consumer}:{os.getpid()}:{uuid.uuid4().hex}"
     return claim_id if claim_completion_delivery(delegation_id, claim_id) else None
 
 
 def release_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Release a failed delivery claim so another consumer may retry."""
-    with _DB_LOCK, _connect() as conn:
-        cur = conn.execute(
-            """UPDATE async_delegations SET delivery_claim=NULL,
-                      delivery_claimed_at=NULL, updated_at=?
-               WHERE delegation_id=? AND delivery_state='pending'
-                 AND delivery_claim=?""",
-            (time.time(), delegation_id, claim_id),
-        )
-        return cur.rowcount == 1
+    with _state_db() as db:
+        return db.release_async_delegation_delivery(delegation_id, claim_id)
 
 
 def complete_completion_delivery(delegation_id: str, claim_id: str) -> bool:
     """Acknowledge acceptance for the consumer holding this claim."""
-    now = time.time()
-    with _DB_LOCK, _connect() as conn:
-        cur = conn.execute(
-            """UPDATE async_delegations SET delivery_state='delivered',
-                      delivered_at=?, updated_at=?, delivery_claim=NULL,
-                      delivery_claimed_at=NULL
-               WHERE delegation_id=? AND delivery_state='pending'
-                 AND delivery_claim=?""",
-            (now, now, delegation_id, claim_id),
-        )
-        return cur.rowcount == 1
+    with _state_db() as db:
+        return db.complete_async_delegation_delivery(delegation_id, claim_id)
 
 
 def complete_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
@@ -372,20 +317,8 @@ def release_event_delivery(evt: Dict[str, Any], claim_id: str) -> None:
 
 
 def get_durable_delegation(delegation_id: str) -> Optional[Dict[str, Any]]:
-    with _DB_LOCK, _connect() as conn:
-        row = conn.execute(
-            """SELECT origin_session, state, dispatched_at, completed_at,
-                      result_json, delivery_state, delivery_attempts
-               FROM async_delegations WHERE delegation_id=?""", (delegation_id,),
-        ).fetchone()
-    if row is None:
-        return None
-    return {
-        "delegation_id": delegation_id, "origin_session": row[0], "state": row[1],
-        "dispatched_at": row[2], "completed_at": row[3],
-        "result": json.loads(row[4]) if row[4] else None,
-        "delivery_state": row[5], "delivery_attempts": row[6],
-    }
+    with _state_db() as db:
+        return db.get_async_delegation(delegation_id)
 
 
 def _get_executor(max_workers: int) -> ThreadPoolExecutor:
@@ -410,11 +343,20 @@ def _get_executor(max_workers: int) -> ThreadPoolExecutor:
 def active_count() -> int:
     """Number of async delegations currently running."""
     with _records_lock:
-        return sum(1 for r in _records.values() if r.get("status") in {"running", "finalizing"})
+        return _admission_count_locked()
 
 
 def _new_delegation_id() -> str:
     return f"deleg_{uuid.uuid4().hex[:8]}"
+
+
+def _admission_count_locked() -> int:
+    """Count records that still occupy an async execution slot."""
+    return sum(
+        1
+        for record in _records.values()
+        if record.get("status") in {"running", "finalizing"}
+    )
 
 
 def _prune_completed_locked() -> None:
@@ -425,7 +367,7 @@ def _prune_completed_locked() -> None:
     completed = [
         (rid, r)
         for rid, r in _records.items()
-        if r.get("status") != "running"
+        if r.get("status") not in {"running", "finalizing"}
     ]
     if len(completed) <= _MAX_RETAINED_COMPLETED:
         return
@@ -433,6 +375,20 @@ def _prune_completed_locked() -> None:
     completed.sort(key=lambda kv: kv[1].get("completed_at") or kv[1].get("dispatched_at") or 0)
     for rid, _ in completed[: len(completed) - _MAX_RETAINED_COMPLETED]:
         _records.pop(rid, None)
+
+
+def _discard_record(delegation_id: str) -> None:
+    with _records_lock:
+        _records.pop(delegation_id, None)
+
+
+def _finish_record(delegation_id: str, status: str) -> None:
+    """Always leave the in-memory lifecycle in a terminal state."""
+    with _records_lock:
+        record = _records.get(delegation_id)
+        if record is not None:
+            record["status"] = status
+        _prune_completed_locked()
 
 
 def dispatch_async_delegation(
@@ -504,10 +460,8 @@ def dispatch_async_delegation(
     # active_count() separately would let two concurrent dispatches (e.g.
     # from different gateway sessions) both pass the check and exceed the cap.
     with _records_lock:
-        running = sum(
-            1 for r in _records.values() if r.get("status") == "running"
-        )
-        if running >= max_async_children:
+        occupied = _admission_count_locked()
+        if occupied >= max_async_children:
             return {
                 "status": "rejected",
                 "error": (
@@ -520,7 +474,18 @@ def dispatch_async_delegation(
             }
         _records[delegation_id] = record
 
-    _persist_dispatch(record)
+    try:
+        _persist_dispatch(record)
+    except Exception:
+        logger.exception(
+            "Async delegation %s could not persist its dispatch", delegation_id
+        )
+        _discard_record(delegation_id)
+        _delete_durable_delegation_best_effort(delegation_id)
+        return {
+            "status": "rejected",
+            "error": "Failed to persist async delegation dispatch.",
+        }
     executor = _get_executor(max_async_children)
 
     def _worker() -> None:
@@ -547,9 +512,8 @@ def dispatch_async_delegation(
         # get_hermes_home() under the right profile.
         executor.submit(propagate_context_to_thread(_worker))
     except Exception as exc:  # pragma: no cover — pool submit failure is rare
-        with _records_lock:
-            _records.pop(delegation_id, None)
-        _delete_durable_delegation(delegation_id)
+        _discard_record(delegation_id)
+        _delete_durable_delegation_best_effort(delegation_id)
         return {
             "status": "rejected",
             "error": f"Failed to schedule async delegation: {exc}",
@@ -576,12 +540,14 @@ def _finalize(delegation_id: str, result: Dict[str, Any], status: str) -> None:
         record["interrupt_fn"] = None  # drop the closure; child is done
         event_record = dict(record)
 
-    _push_completion_event(event_record, result, status)
-    with _records_lock:
-        record = _records.get(delegation_id)
-        if record is not None:
-            record["status"] = status
-        _prune_completed_locked()
+    try:
+        _push_completion_event(event_record, result, status)
+    except Exception:
+        logger.exception(
+            "Async delegation %s could not finalize its completion", delegation_id
+        )
+    finally:
+        _finish_record(delegation_id, status)
 
 
 def _push_completion_event(
@@ -631,7 +597,13 @@ def _push_completion_event(
         "completed_at": completed_at,
         "exit_reason": result.get("exit_reason"),
     }
-    _persist_completion(evt, result)
+    try:
+        _persist_completion(evt, result)
+    except Exception:
+        logger.exception(
+            "Async delegation %s could not persist its completion",
+            record.get("delegation_id"),
+        )
     try:
         process_registry.completion_queue.put(evt)
     except Exception as exc:  # pragma: no cover
@@ -701,10 +673,8 @@ def dispatch_async_delegation_batch(
         "is_batch": True,
     }
     with _records_lock:
-        running = sum(
-            1 for r in _records.values() if r.get("status") == "running"
-        )
-        if running >= max_async_children:
+        occupied = _admission_count_locked()
+        if occupied >= max_async_children:
             return {
                 "status": "rejected",
                 "error": (
@@ -716,7 +686,19 @@ def dispatch_async_delegation_batch(
             }
         _records[delegation_id] = record
 
-    _persist_dispatch(record)
+    try:
+        _persist_dispatch(record)
+    except Exception:
+        logger.exception(
+            "Async delegation batch %s could not persist its dispatch",
+            delegation_id,
+        )
+        _discard_record(delegation_id)
+        _delete_durable_delegation_best_effort(delegation_id)
+        return {
+            "status": "rejected",
+            "error": "Failed to persist async delegation batch dispatch.",
+        }
     executor = _get_executor(max_async_children)
 
     def _worker() -> None:
@@ -748,9 +730,8 @@ def dispatch_async_delegation_batch(
         # Propagate the dispatching profile to the detached batch children.
         executor.submit(propagate_context_to_thread(_worker))
     except Exception as exc:  # pragma: no cover
-        with _records_lock:
-            _records.pop(delegation_id, None)
-        _delete_durable_delegation(delegation_id)
+        _discard_record(delegation_id)
+        _delete_durable_delegation_best_effort(delegation_id)
         return {
             "status": "rejected",
             "error": f"Failed to schedule async delegation batch: {exc}",
@@ -778,53 +759,53 @@ def _finalize_batch(
 
     try:
         from tools.process_registry import process_registry
-    except Exception as exc:  # pragma: no cover
-        logger.error(
-            "Async delegation batch %s finished but process_registry import "
-            "failed; result lost: %s",
-            delegation_id, exc,
-        )
-        return
 
-    dispatched_at = event_record.get("dispatched_at") or time.time()
-    completed_at = event_record.get("completed_at") or time.time()
-    evt = {
-        "type": "async_delegation",
-        "delegation_id": delegation_id,
-        "session_key": event_record.get("session_key", ""),
-        "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
-        "parent_session_id": event_record.get("parent_session_id"),
-        "goal": event_record.get("goal", ""),
-        "goals": event_record.get("goals"),
-        "context": event_record.get("context"),
-        "toolsets": event_record.get("toolsets"),
-        "role": event_record.get("role"),
-        "model": event_record.get("model"),
-        "status": status,
-        "is_batch": True,
-        # The full per-task results list — the formatter renders a
-        # consolidated multi-task block from this.
-        "results": combined.get("results") or [],
-        "error": combined.get("error"),
-        "total_duration_seconds": combined.get("total_duration_seconds"),
-        "dispatched_at": dispatched_at,
-        "completed_at": completed_at,
-    }
-    _persist_completion(evt, combined)
-    try:
-        process_registry.completion_queue.put(evt)
-    except Exception as exc:  # pragma: no cover
-        logger.error(
-            "Async delegation batch %s: failed to enqueue completion event; "
-            "result lost: %s",
-            delegation_id, exc,
+        dispatched_at = event_record.get("dispatched_at") or time.time()
+        completed_at = event_record.get("completed_at") or time.time()
+        evt = {
+            "type": "async_delegation",
+            "delegation_id": delegation_id,
+            "session_key": event_record.get("session_key", ""),
+            "origin_ui_session_id": event_record.get("origin_ui_session_id", ""),
+            "parent_session_id": event_record.get("parent_session_id"),
+            "goal": event_record.get("goal", ""),
+            "goals": event_record.get("goals"),
+            "context": event_record.get("context"),
+            "toolsets": event_record.get("toolsets"),
+            "role": event_record.get("role"),
+            "model": event_record.get("model"),
+            "status": status,
+            "is_batch": True,
+            # The full per-task results list — the formatter renders a
+            # consolidated multi-task block from this.
+            "results": combined.get("results") or [],
+            "error": combined.get("error"),
+            "total_duration_seconds": combined.get("total_duration_seconds"),
+            "dispatched_at": dispatched_at,
+            "completed_at": completed_at,
+        }
+        try:
+            _persist_completion(evt, combined)
+        except Exception:
+            logger.exception(
+                "Async delegation batch %s could not persist its completion",
+                delegation_id,
+            )
+        try:
+            process_registry.completion_queue.put(evt)
+        except Exception as exc:  # pragma: no cover
+            logger.error(
+                "Async delegation batch %s: failed to enqueue completion event; "
+                "result lost: %s",
+                delegation_id, exc,
+            )
+    except Exception:
+        logger.exception(
+            "Async delegation batch %s could not finalize its completion",
+            delegation_id,
         )
     finally:
-        with _records_lock:
-            record = _records.get(delegation_id)
-            if record is not None:
-                record["status"] = status
-            _prune_completed_locked()
+        _finish_record(delegation_id, status)
 
 
 def list_async_delegations() -> List[Dict[str, Any]]:
@@ -933,3 +914,4 @@ def _reset_for_tests() -> None:
         _executor_max_workers = 0
     with _records_lock:
         _records.clear()
+    close_cached_state_stores()

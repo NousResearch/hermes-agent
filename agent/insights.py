@@ -17,7 +17,6 @@ Usage:
 """
 
 import json
-import sqlite3
 import time
 from collections import Counter, defaultdict
 from datetime import datetime
@@ -86,8 +85,8 @@ class InsightsEngine:
     """
     Analyzes session history and produces usage insights.
 
-    Works directly with a SessionDB instance (or raw sqlite3 connection)
-    to query session and message data.
+    Uses the public SessionDB insights query contract to query session and
+    message data.
     """
 
     def __init__(self, db):
@@ -98,7 +97,6 @@ class InsightsEngine:
             db: A SessionDB instance (from hermes_state.py)
         """
         self.db = db
-        self._conn = db._conn
 
     def generate(self, days: int = 30, source: str = None) -> Dict[str, Any]:
         """
@@ -165,36 +163,37 @@ class InsightsEngine:
         }
 
     # =========================================================================
-    # Data gathering (SQL queries)
+    # Data gathering
     # =========================================================================
-
-    # Columns we actually need (skip system_prompt, model_config blobs)
-    _SESSION_COLS = ("id, source, model, started_at, ended_at, "
-                     "message_count, tool_call_count, input_tokens, output_tokens, "
-                     "cache_read_tokens, cache_write_tokens, billing_provider, "
-                     "billing_base_url, billing_mode, estimated_cost_usd, "
-                     "actual_cost_usd, cost_status, cost_source, api_call_count")
-
-    # Pre-computed query strings — f-string evaluated once at class definition,
-    # not at runtime, so no user-controlled value can alter the query structure.
-    _GET_SESSIONS_WITH_SOURCE = (
-        f"SELECT {_SESSION_COLS} FROM sessions"
-        " WHERE started_at >= ? AND source = ?"
-        " ORDER BY started_at DESC"
-    )
-    _GET_SESSIONS_ALL = (
-        f"SELECT {_SESSION_COLS} FROM sessions"
-        " WHERE started_at >= ?"
-        " ORDER BY started_at DESC"
-    )
 
     def _get_sessions(self, cutoff: float, source: str = None) -> List[Dict]:
         """Fetch sessions within the time window."""
-        if source:
-            cursor = self._conn.execute(self._GET_SESSIONS_WITH_SOURCE, (cutoff, source))
-        else:
-            cursor = self._conn.execute(self._GET_SESSIONS_ALL, (cutoff,))
-        return [dict(row) for row in cursor.fetchall()]
+        return self.db.get_insights_sessions(cutoff, source)
+
+    def _iter_assistant_tool_calls(
+        self, cutoff: float, source: str = None, *, include_timestamp: bool = False
+    ):
+        """Yield bounded assistant tool-call pages without retaining history."""
+        after_message_id = 0
+        while True:
+            page = self.db.get_insights_assistant_tool_calls_page(
+                cutoff,
+                source,
+                after_message_id=after_message_id,
+                limit=200,
+                include_timestamp=include_timestamp,
+            )
+            if not page:
+                return
+            for row in page:
+                yield row
+            try:
+                next_after_message_id = int(page[-1]["id"])
+            except (KeyError, TypeError, ValueError):
+                return
+            if next_after_message_id <= after_message_id:
+                return
+            after_message_id = next_after_message_id
 
     def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
         """Get tool call counts from messages.
@@ -207,54 +206,13 @@ class InsightsEngine:
         tool_counts = Counter()
 
         # Source 1: explicit tool_name on tool response messages
-        if source:
-            cursor = self._conn.execute(
-                """SELECT m.tool_name, COUNT(*) as count
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ? AND s.source = ?
-                     AND m.role = 'tool' AND m.tool_name IS NOT NULL
-                   GROUP BY m.tool_name
-                   ORDER BY count DESC""",
-                (cutoff, source),
-            )
-        else:
-            cursor = self._conn.execute(
-                """SELECT m.tool_name, COUNT(*) as count
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ?
-                     AND m.role = 'tool' AND m.tool_name IS NOT NULL
-                   GROUP BY m.tool_name
-                   ORDER BY count DESC""",
-                (cutoff,),
-            )
-        for row in cursor.fetchall():
+        for row in self.db.get_insights_tool_name_counts(cutoff, source):
             tool_counts[row["tool_name"]] += row["count"]
 
         # Source 2: extract from tool_calls JSON on assistant messages
         # (covers CLI sessions where tool_name is NULL on tool responses)
-        if source:
-            cursor2 = self._conn.execute(
-                """SELECT m.tool_calls
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ? AND s.source = ?
-                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
-                (cutoff, source),
-            )
-        else:
-            cursor2 = self._conn.execute(
-                """SELECT m.tool_calls
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ?
-                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
-                (cutoff,),
-            )
-
         tool_calls_counts = Counter()
-        for row in cursor2.fetchall():
+        for row in self._iter_assistant_tool_calls(cutoff, source):
             try:
                 calls = row["tool_calls"]
                 if isinstance(calls, str):
@@ -292,26 +250,9 @@ class InsightsEngine:
         """Extract per-skill usage from assistant tool calls."""
         skill_counts: Dict[str, Dict[str, Any]] = {}
 
-        if source:
-            cursor = self._conn.execute(
-                """SELECT m.tool_calls, m.timestamp
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ? AND s.source = ?
-                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
-                (cutoff, source),
-            )
-        else:
-            cursor = self._conn.execute(
-                """SELECT m.tool_calls, m.timestamp
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ?
-                     AND m.role = 'assistant' AND m.tool_calls IS NOT NULL""",
-                (cutoff,),
-            )
-
-        for row in cursor.fetchall():
+        for row in self._iter_assistant_tool_calls(
+            cutoff, source, include_timestamp=True
+        ):
             try:
                 calls = row["tool_calls"]
                 if isinstance(calls, str):
@@ -366,35 +307,7 @@ class InsightsEngine:
 
     def _get_message_stats(self, cutoff: float, source: str = None) -> Dict:
         """Get aggregate message statistics."""
-        if source:
-            cursor = self._conn.execute(
-                """SELECT
-                     COUNT(*) as total_messages,
-                     SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) as user_messages,
-                     SUM(CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END) as assistant_messages,
-                     SUM(CASE WHEN m.role = 'tool' THEN 1 ELSE 0 END) as tool_messages
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ? AND s.source = ?""",
-                (cutoff, source),
-            )
-        else:
-            cursor = self._conn.execute(
-                """SELECT
-                     COUNT(*) as total_messages,
-                     SUM(CASE WHEN m.role = 'user' THEN 1 ELSE 0 END) as user_messages,
-                     SUM(CASE WHEN m.role = 'assistant' THEN 1 ELSE 0 END) as assistant_messages,
-                     SUM(CASE WHEN m.role = 'tool' THEN 1 ELSE 0 END) as tool_messages
-                   FROM messages m
-                   JOIN sessions s ON s.id = m.session_id
-                   WHERE s.started_at >= ?""",
-                (cutoff,),
-            )
-        row = cursor.fetchone()
-        return dict(row) if row else {
-            "total_messages": 0, "user_messages": 0,
-            "assistant_messages": 0, "tool_messages": 0,
-        }
+        return self.db.get_insights_message_stats(cutoff, source)
 
     # =========================================================================
     # Computation
@@ -494,27 +407,6 @@ class InsightsEngine:
             "included_cost_sessions": included_cost_sessions,
         }
 
-    _GET_MODEL_USAGE_WITH_SOURCE = (
-        "SELECT u.session_id, u.model, u.billing_provider, u.billing_base_url,"
-        " u.api_call_count, u.input_tokens, u.output_tokens,"
-        " u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,"
-        " u.estimated_cost_usd, u.actual_cost_usd, u.cost_status,"
-        " u.cost_source, u.billing_mode"
-        " FROM session_model_usage u"
-        " JOIN sessions s ON s.id = u.session_id"
-        " WHERE s.started_at >= ? AND s.source = ?"
-    )
-    _GET_MODEL_USAGE_ALL = (
-        "SELECT u.session_id, u.model, u.billing_provider, u.billing_base_url,"
-        " u.api_call_count, u.input_tokens, u.output_tokens,"
-        " u.cache_read_tokens, u.cache_write_tokens, u.reasoning_tokens,"
-        " u.estimated_cost_usd, u.actual_cost_usd, u.cost_status,"
-        " u.cost_source, u.billing_mode"
-        " FROM session_model_usage u"
-        " JOIN sessions s ON s.id = u.session_id"
-        " WHERE s.started_at >= ?"
-    )
-
     def _get_model_usage(self, cutoff: float, source: str = None) -> List[Dict]:
         """Fetch per-model usage rows within the window (issue #51607).
 
@@ -522,16 +414,7 @@ class InsightsEngine:
         older code that never created it) so the caller can fall back to the
         per-session aggregate.
         """
-        try:
-            if source:
-                cursor = self._conn.execute(
-                    self._GET_MODEL_USAGE_WITH_SOURCE, (cutoff, source)
-                )
-            else:
-                cursor = self._conn.execute(self._GET_MODEL_USAGE_ALL, (cutoff,))
-            return [dict(row) for row in cursor.fetchall()]
-        except sqlite3.OperationalError:
-            return []
+        return self.db.get_insights_model_usage(cutoff, source)
 
     def _compute_model_breakdown(
         self, sessions: List[Dict], cutoff: float, source: str = None

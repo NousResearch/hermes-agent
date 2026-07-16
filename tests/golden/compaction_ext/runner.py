@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from agent.compaction_stats import CompactionStats
 from agent.conversation_compression import (
+    _abbrev_tokens,
+    _compaction_window_label,
     _fmt_gross_frac,
     _format_compaction_announce,
     _format_granular_announce,
@@ -9,9 +11,16 @@ from agent.conversation_compression import (
 )
 
 
+class _RaisingStats:
+    def validate(self):
+        raise RuntimeError("synthetic validate failure")
+
+
 def _stats(value):
     if value is None or isinstance(value, CompactionStats):
         return value
+    if isinstance(value, str) and value in {"__raise_validate", "__raise_validate__"}:
+        return _RaisingStats()
     return CompactionStats(**value)
 
 
@@ -40,6 +49,10 @@ def run_case(case: dict):
         ]
     elif kind == "gross":
         value = [_fmt_gross_frac(gross, pre) for gross, pre in case["items"]]
+    elif kind == "window":
+        value = [_compaction_window_label(item) for item in case["items"]]
+    elif kind == "abbrev":
+        value = [_abbrev_tokens(item) for item in case["items"]]
     else:
         raise AssertionError(f"unknown case kind: {kind}")
     return {

@@ -38,6 +38,60 @@
       }
     },
     {
+      "name": "builtin same session without in-place is gated",
+      "kind": "format",
+      "kwargs": {
+        "engine_name": null,
+        "status": null,
+        "old_session_id": "same",
+        "new_session_id": "same",
+        "old_messages": 3,
+        "new_messages": 3,
+        "pre_tokens": 1000,
+        "post_tokens": 900,
+        "model": "m",
+        "provider": "p"
+      }
+    },
+    {
+      "name": "builtin after fallback two-line includes window",
+      "kind": "format",
+      "kwargs": {
+        "engine_name": null,
+        "status": null,
+        "old_session_id": "old",
+        "new_session_id": "new",
+        "old_messages": 12,
+        "new_messages": 5,
+        "pre_tokens": null,
+        "post_tokens": 800,
+        "model": "m",
+        "provider": "p",
+        "after_fallback": true,
+        "window_from": 1000000,
+        "window_to": 272000,
+        "trigger_reason": "hygiene_tokens",
+        "trigger_value": 123456
+      }
+    },
+    {
+      "name": "builtin overflow context reason without value",
+      "kind": "format",
+      "kwargs": {
+        "engine_name": null,
+        "status": null,
+        "old_session_id": "old",
+        "new_session_id": "new",
+        "old_messages": 12,
+        "new_messages": 5,
+        "pre_tokens": 1000,
+        "post_tokens": 800,
+        "model": "m",
+        "provider": "p",
+        "trigger_reason": "overflow_context"
+      }
+    },
+    {
       "name": "lcm compacted announces raw store",
       "kind": "format",
       "kwargs": {
@@ -57,6 +111,23 @@
       }
     },
     {
+      "name": "lcm compacted no model no raw count",
+      "kind": "format",
+      "kwargs": {
+        "engine_name": "lcm",
+        "status": "compacted",
+        "old_session_id": "old",
+        "new_session_id": "new",
+        "old_messages": 10,
+        "new_messages": 5,
+        "pre_tokens": 1000,
+        "post_tokens": 500,
+        "model": null,
+        "provider": null,
+        "raw_store_count": null
+      }
+    },
+    {
       "name": "lcm conditional status without token drop is gated",
       "kind": "format",
       "kwargs": {
@@ -68,6 +139,22 @@
         "new_messages": 10,
         "pre_tokens": 5000,
         "post_tokens": 5000,
+        "model": "m",
+        "provider": "p"
+      }
+    },
+    {
+      "name": "lcm unknown status is gated",
+      "kind": "format",
+      "kwargs": {
+        "engine_name": "lcm",
+        "status": "idle",
+        "old_session_id": "old",
+        "new_session_id": "new",
+        "old_messages": 10,
+        "new_messages": 10,
+        "pre_tokens": 1000,
+        "post_tokens": 500,
         "model": "m",
         "provider": "p"
       }
@@ -87,6 +174,141 @@
         "model": "m",
         "provider": "p",
         "recovery_hint": "recover through the test path"
+      }
+    },
+    {
+      "name": "lcm degraded fallback default summary unavailable",
+      "kind": "format",
+      "kwargs": {
+        "engine_name": "lcm",
+        "status": "degraded_fallback_compressed",
+        "old_session_id": "old",
+        "new_session_id": "new",
+        "old_messages": 8,
+        "new_messages": 6,
+        "pre_tokens": 1000,
+        "post_tokens": 900,
+        "model": "m",
+        "provider": "p",
+        "raw_store_count": null
+      }
+    },
+    {
+      "name": "manual and overflow reason variants",
+      "kind": "format",
+      "kwargs": {
+        "engine_name": null,
+        "status": null,
+        "old_session_id": "old",
+        "new_session_id": "new",
+        "old_messages": 9,
+        "new_messages": 4,
+        "pre_tokens": 900,
+        "post_tokens": 400,
+        "model": "m",
+        "provider": "p",
+        "trigger_reason": "manual"
+      }
+    },
+    {
+      "name": "tier reduction reason variant",
+      "kind": "format",
+      "kwargs": {
+        "engine_name": null,
+        "status": null,
+        "old_session_id": "old",
+        "new_session_id": "new",
+        "old_messages": 9,
+        "new_messages": 4,
+        "pre_tokens": 900,
+        "post_tokens": 400,
+        "model": "m",
+        "provider": "p",
+        "trigger_reason": "tier_reduction"
+      }
+    },
+    {
+      "name": "overflow 413 reason variant",
+      "kind": "format",
+      "kwargs": {
+        "engine_name": null,
+        "status": null,
+        "old_session_id": "old",
+        "new_session_id": "new",
+        "old_messages": 9,
+        "new_messages": 4,
+        "pre_tokens": 900,
+        "post_tokens": 400,
+        "model": "m",
+        "provider": "p",
+        "trigger_reason": "overflow_413"
+      }
+    },
+    {
+      "name": "hygiene token reason without value",
+      "kind": "format",
+      "kwargs": {
+        "engine_name": null,
+        "status": null,
+        "old_session_id": "old",
+        "new_session_id": "new",
+        "old_messages": 9,
+        "new_messages": 4,
+        "pre_tokens": 900,
+        "post_tokens": 400,
+        "model": "m",
+        "provider": "p",
+        "trigger_reason": "hygiene_tokens"
+      }
+    },
+    {
+      "name": "invalid stats degrades to two-line",
+      "kind": "format",
+      "kwargs": {
+        "engine_name": null,
+        "status": null,
+        "old_session_id": "old",
+        "new_session_id": "new",
+        "old_messages": 5,
+        "new_messages": 2,
+        "pre_tokens": 1000,
+        "post_tokens": 500,
+        "model": "m",
+        "provider": "p",
+        "stats": {
+          "pre_messages": 5,
+          "post_messages": 99,
+          "eligible_count": 5,
+          "kept_messages": 1,
+          "summary_messages": 1,
+          "anchor_messages": 0,
+          "cleared_count": 0,
+          "folded_count": 4,
+          "pre_tokens": 1000,
+          "post_tokens": 500,
+          "kept_tokens": 200,
+          "summary_tokens": 300,
+          "anchor_tokens": 0,
+          "cleared_tokens": 0,
+          "folded_tokens": 800
+        }
+      }
+    },
+    {
+      "name": "raising stats degrades defensively",
+      "kind": "format",
+      "kwargs": {
+        "engine_name": null,
+        "status": null,
+        "old_session_id": "old",
+        "new_session_id": "new",
+        "old_messages": 5,
+        "new_messages": 2,
+        "pre_tokens": 1000,
+        "post_tokens": 500,
+        "model": "m",
+        "provider": "p",
+        "stats": "__raise_validate"
       }
     },
     {
@@ -160,6 +382,58 @@
       }
     },
     {
+      "name": "granular stored wire mode no net reduction",
+      "kind": "granular",
+      "head": "Context compacted",
+      "model_part": "",
+      "after_fallback": false,
+      "basis": "stored",
+      "wire_before": 80000,
+      "wire_after": 90000,
+      "stats": {
+        "pre_messages": 10,
+        "post_messages": 3,
+        "eligible_count": 10,
+        "kept_messages": 2,
+        "summary_messages": 1,
+        "anchor_messages": 0,
+        "cleared_count": 0,
+        "folded_count": 8,
+        "pre_tokens": 5000,
+        "post_tokens": 1000,
+        "kept_tokens": 500,
+        "summary_tokens": 500,
+        "anchor_tokens": 0,
+        "cleared_tokens": 0,
+        "folded_tokens": 4000
+      }
+    },
+    {
+      "name": "granular no net token reduction and coarse cleared",
+      "kind": "granular",
+      "head": "Context compacted",
+      "model_part": "",
+      "after_fallback": false,
+      "stats": {
+        "pre_messages": 5,
+        "post_messages": 5,
+        "eligible_count": 4,
+        "kept_messages": 4,
+        "summary_messages": 1,
+        "anchor_messages": 0,
+        "cleared_count": 1,
+        "folded_count": 0,
+        "pre_tokens": 1000,
+        "post_tokens": 1000,
+        "kept_tokens": 500,
+        "summary_tokens": 500,
+        "anchor_tokens": 0,
+        "cleared_tokens": 0,
+        "folded_tokens": 0,
+        "kept_pre_tokens": 1000
+      }
+    },
+    {
       "name": "eligibility matrix",
       "kind": "eligible",
       "items": [
@@ -176,6 +450,26 @@
         [75378, 74447],
         [7000, 100000],
         [5, 0]
+      ]
+    },
+    {
+      "name": "window labels",
+      "kind": "window",
+      "items": [
+        null,
+        512,
+        272000,
+        1200000
+      ]
+    },
+    {
+      "name": "token labels",
+      "kind": "abbrev",
+      "items": [
+        null,
+        512,
+        272000,
+        1200000
       ]
     }
   ]

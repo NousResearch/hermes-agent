@@ -312,6 +312,7 @@ class PluginManifest:
     # category plugin at ``plugins/image_gen/openai/`` the key is
     # ``image_gen/openai``. When empty, falls back to ``name``.
     key: str = ""
+    config_defaults: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -1640,6 +1641,7 @@ class PluginManager:
                 requires_env=data.get("requires_env", []),
                 provides_tools=data.get("provides_tools", []),
                 provides_hooks=data.get("provides_hooks", []),
+                config_defaults=data.get("config_defaults", {}),
                 source=source,
                 path=str(plugin_dir),
                 kind=kind,

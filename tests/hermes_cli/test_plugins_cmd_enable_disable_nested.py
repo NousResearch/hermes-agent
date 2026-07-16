@@ -102,6 +102,33 @@ class TestResolvePluginKey:
 class TestEnableDisableNested:
     @patch("hermes_cli.plugins.get_bundled_plugins_dir")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
+    def test_enable_applies_discovered_manifest_defaults(
+        self, mock_user, mock_bundled, nested_plugin_env
+    ):
+        from hermes_cli.plugins_cmd import cmd_enable
+
+        mock_user.return_value = nested_plugin_env
+        mock_bundled.return_value = nested_plugin_env / "nonexistent"
+        manifest = {
+            "name": "configured",
+            "version": "1.0.0",
+            "config_defaults": {"timeout": 30},
+        }
+        _make_plugin_dir(nested_plugin_env, "configured", manifest)
+
+        with (
+            patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set()),
+            patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set()),
+            patch("hermes_cli.plugins_cmd._save_enabled_set"),
+            patch("hermes_cli.plugins_cmd._save_disabled_set"),
+            patch("hermes_cli.plugins_cmd._apply_plugin_config_defaults") as apply_defaults,
+        ):
+            cmd_enable("configured", allow_tool_override=False)
+
+        assert apply_defaults.call_args.args[:2] == ("configured", manifest)
+
+    @patch("hermes_cli.plugins.get_bundled_plugins_dir")
+    @patch("hermes_cli.plugins_cmd._plugins_dir")
     @patch("hermes_cli.plugins_cmd._save_disabled_set")
     @patch("hermes_cli.plugins_cmd._save_enabled_set")
     @patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set())

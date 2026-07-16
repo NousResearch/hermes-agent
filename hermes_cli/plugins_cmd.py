@@ -9,11 +9,13 @@ rendered with Rich Markdown.  Otherwise a default confirmation is shown.
 
 from __future__ import annotations
 
+import copy
 import functools
 import importlib.metadata
 import json
 import logging
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -67,9 +69,9 @@ class PluginOperationError(Exception):
 
 
 # Minimum manifest version this installer understands.
-# Plugins may declare ``manifest_version: 1`` in plugin.yaml;
+# Plugins may declare ``manifest_version: 2`` in plugin.yaml;
 # future breaking changes to the manifest schema bump this.
-_SUPPORTED_MANIFEST_VERSION = 1
+_SUPPORTED_MANIFEST_VERSION = 2
 
 
 def _plugins_dir() -> Path:
@@ -273,6 +275,118 @@ def _read_manifest(plugin_dir: Path) -> dict:
     except Exception as e:
         logger.warning("Failed to read plugin.yaml in %s: %s", plugin_dir, e)
         return {}
+
+
+def _resolve_config_default(value: Any, hermes_home: Path) -> Any:
+    if isinstance(value, dict):
+        if set(value) == {"$profile_path"}:
+            relative = value["$profile_path"]
+            if not isinstance(relative, str) or not relative or Path(relative).is_absolute():
+                raise ValueError("$profile_path must be a non-empty relative path")
+            resolved = (hermes_home / relative).resolve()
+            if not resolved.is_relative_to(hermes_home.resolve()):
+                raise ValueError("$profile_path must stay inside the active profile")
+            return str(resolved)
+        if set(value) == {"$random_digits"}:
+            length = value["$random_digits"]
+            if isinstance(length, bool) or not isinstance(length, int) or not 1 <= length <= 64:
+                raise ValueError("$random_digits must be an integer from 1 to 64")
+            lower = 1 if length == 1 else 10 ** (length - 1)
+            return str(secrets.randbelow(9 * lower) + lower)
+        return {
+            key: _resolve_config_default(nested, hermes_home)
+            for key, nested in value.items()
+        }
+    if isinstance(value, list):
+        return [_resolve_config_default(item, hermes_home) for item in value]
+    return copy.deepcopy(value)
+
+
+def _default_leaf_count(value: Any) -> int:
+    if isinstance(value, dict) and not any(
+        isinstance(key, str) and key.startswith("$") for key in value
+    ):
+        return max(1, sum(_default_leaf_count(nested) for nested in value.values()))
+    return 1
+
+
+def _merge_missing_config_defaults(
+    target: dict[str, Any], defaults: dict[str, Any], hermes_home: Path
+) -> int:
+    changed = 0
+    for key, default in defaults.items():
+        if not isinstance(key, str):
+            raise ValueError("config_defaults keys must be strings")
+        if key not in target:
+            target[key] = _resolve_config_default(default, hermes_home)
+            changed += _default_leaf_count(default)
+        elif (
+            isinstance(target[key], dict)
+            and isinstance(default, dict)
+            and not any(
+                isinstance(nested, str) and nested.startswith("$")
+                for nested in default
+            )
+        ):
+            changed += _merge_missing_config_defaults(
+                target[key], default, hermes_home
+            )
+    return changed
+
+
+def _apply_plugin_config_defaults(
+    plugin_id: str, manifest: dict, console: Any = None
+) -> int:
+    """Fill missing namespaced config values declared by a plugin manifest."""
+    defaults = manifest.get("config_defaults")
+    if defaults is None:
+        return 0
+    if not isinstance(defaults, dict):
+        logger.warning("Plugin %s has non-mapping config_defaults", plugin_id)
+        return 0
+
+    try:
+        from hermes_cli.config import is_managed, read_raw_config, save_config
+
+        if is_managed():
+            return 0
+        raw = read_raw_config()
+        if not isinstance(raw, dict):
+            raise ValueError("Hermes config is not a mapping")
+        updated = copy.deepcopy(raw)
+
+        plugins = updated.setdefault("plugins", {})
+        if not isinstance(plugins, dict):
+            raise ValueError("plugins config is not a mapping")
+        entries = plugins.setdefault("entries", {})
+        if not isinstance(entries, dict):
+            raise ValueError("plugins.entries config is not a mapping")
+        entry = entries.setdefault(plugin_id, {})
+        if not isinstance(entry, dict):
+            raise ValueError(f"plugins.entries.{plugin_id} is not a mapping")
+        plugin_config = entry.setdefault("config", {})
+        if not isinstance(plugin_config, dict):
+            raise ValueError(f"plugins.entries.{plugin_id}.config is not a mapping")
+
+        changed = _merge_missing_config_defaults(
+            plugin_config, defaults, get_hermes_home().resolve()
+        )
+        if not changed:
+            return 0
+        save_config(updated)
+        if console is not None:
+            console.print(
+                f"[dim]  Initialized {changed} config default(s) for {plugin_id}.[/dim]"
+            )
+        return changed
+    except Exception as exc:
+        logger.warning("Could not initialize config defaults for %s: %s", plugin_id, exc)
+        if console is not None:
+            console.print(
+                f"[yellow]Warning:[/yellow] Could not initialize config defaults "
+                f"for {plugin_id}: {exc}"
+            )
+        return 0
 
 
 def _copy_example_files(plugin_dir: Path, console) -> None:
@@ -619,6 +733,7 @@ def cmd_install(
         disabled.discard(installed_name)
         _save_enabled_set(enabled)
         _save_disabled_set(disabled)
+        _apply_plugin_config_defaults(installed_name, installed_manifest, console)
         console.print(
             f"[green]✓[/green] Plugin [bold]{installed_name}[/bold] enabled.",
         )
@@ -662,6 +777,13 @@ def cmd_update(name: str) -> None:
 
     # Copy any new .example files
     _copy_example_files(target, console)
+
+    updated_manifest = _read_manifest(target)
+    updated_name = updated_manifest.get("name") or target.name
+    updated_key = _resolve_plugin_key(name) or updated_name
+    enabled = _get_enabled_set()
+    if updated_key in enabled or updated_name in enabled:
+        _apply_plugin_config_defaults(updated_key, updated_manifest, console)
 
     out = output.strip()
     if "Already up to date" in out:
@@ -791,6 +913,13 @@ def _resolve_plugin_key_and_source(name: str) -> Optional[tuple]:
     return None
 
 
+def _manifest_for_plugin_key(plugin_key: str) -> dict:
+    for entry in _discover_all_plugins():
+        if entry[5] == plugin_key:
+            return _read_manifest(Path(entry[4]))
+    return {}
+
+
 def _set_plugin_entry_flag(plugin_id: str, key: str, value: bool) -> None:
     """Write ``plugins.entries.<plugin_id>.<key> = value`` into config.yaml."""
     from hermes_cli.config import load_config, save_config
@@ -863,6 +992,8 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         )
     else:
         console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
+
+    _apply_plugin_config_defaults(key, _manifest_for_plugin_key(key), console)
 
     # Built-in tool override is a privileged grant. Bundled plugins ship with
     # Hermes core and are trusted; every other source needs operator opt-in.

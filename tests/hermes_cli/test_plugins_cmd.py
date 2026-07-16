@@ -394,8 +394,143 @@ class TestReadManifest:
 # ── cmd_install tests ─────────────────────────────────────────────────────────
 
 
+class TestPluginConfigDefaults:
+    def test_applies_profile_defaults_and_preserves_existing_values(self, tmp_path):
+        from hermes_cli.plugins_cmd import _apply_plugin_config_defaults
+
+        plugin_config = {"headless": True, "nested": {"explicit": "keep"}}
+        raw = {
+            "plugins": {
+                "entries": {"example": {"config": plugin_config}}
+            }
+        }
+        manifest = {
+            "config_defaults": {
+                "headless": False,
+                "humanize": True,
+                "user_data_dir": {
+                    "$profile_path": "browser-profiles/example"
+                },
+                "fingerprint_seed": {"$random_digits": 5},
+                "nested": {"explicit": "replace", "added": 42},
+            }
+        }
+
+        with (
+            patch("hermes_cli.plugins_cmd.get_hermes_home", return_value=tmp_path),
+            patch("hermes_cli.config.read_raw_config", return_value=raw),
+            patch("hermes_cli.config.save_config") as save_config,
+            patch("hermes_cli.config.is_managed", return_value=False),
+        ):
+            changed = _apply_plugin_config_defaults("example", manifest)
+
+        assert changed == 4
+        persisted = save_config.call_args.args[0]
+        persisted_config = persisted["plugins"]["entries"]["example"]["config"]
+        assert persisted_config["headless"] is True
+        assert persisted_config["humanize"] is True
+        assert persisted_config["user_data_dir"] == str(
+            (tmp_path / "browser-profiles" / "example").resolve()
+        )
+        assert len(persisted_config["fingerprint_seed"]) == 5
+        assert persisted_config["fingerprint_seed"].isdigit()
+        assert persisted_config["nested"] == {"explicit": "keep", "added": 42}
+        assert plugin_config == {"headless": True, "nested": {"explicit": "keep"}}
+
+    def test_is_idempotent_and_does_not_regenerate_values(self, tmp_path):
+        from hermes_cli.plugins_cmd import _apply_plugin_config_defaults
+
+        raw = {"plugins": {"entries": {}}}
+        manifest = {
+            "config_defaults": {
+                "fingerprint_seed": {"$random_digits": 5},
+            }
+        }
+
+        with (
+            patch("hermes_cli.plugins_cmd.get_hermes_home", return_value=tmp_path),
+            patch("hermes_cli.config.read_raw_config", return_value=raw) as read_raw_config,
+            patch("hermes_cli.config.save_config") as save_config,
+            patch("hermes_cli.config.is_managed", return_value=False),
+        ):
+            assert _apply_plugin_config_defaults("example", manifest) == 1
+            persisted = save_config.call_args.args[0]
+            seed = persisted["plugins"]["entries"]["example"]["config"]["fingerprint_seed"]
+            read_raw_config.return_value = persisted
+            assert _apply_plugin_config_defaults("example", manifest) == 0
+
+        assert persisted["plugins"]["entries"]["example"]["config"]["fingerprint_seed"] == seed
+        assert save_config.call_count == 1
+
+    def test_rejects_unsafe_profile_path_without_writing(self, tmp_path):
+        from hermes_cli.plugins_cmd import _apply_plugin_config_defaults
+
+        raw = {"plugins": {"entries": {}}}
+        manifest = {
+            "config_defaults": {
+                "user_data_dir": {"$profile_path": "../other-profile"},
+            }
+        }
+
+        with (
+            patch("hermes_cli.plugins_cmd.get_hermes_home", return_value=tmp_path),
+            patch("hermes_cli.config.read_raw_config", return_value=raw),
+            patch("hermes_cli.config.save_config") as save_config,
+            patch("hermes_cli.config.is_managed", return_value=False),
+        ):
+            assert _apply_plugin_config_defaults("example", manifest) == 0
+
+        assert raw == {"plugins": {"entries": {}}}
+        save_config.assert_not_called()
+
+    def test_skips_managed_configuration(self):
+        from hermes_cli.plugins_cmd import _apply_plugin_config_defaults
+
+        manifest = {"config_defaults": {"enabled": True}}
+        with (
+            patch("hermes_cli.config.is_managed", return_value=True),
+            patch("hermes_cli.config.read_raw_config") as read_raw_config,
+            patch("hermes_cli.config.save_config") as save_config,
+        ):
+            assert _apply_plugin_config_defaults("example", manifest) == 0
+
+        read_raw_config.assert_not_called()
+        save_config.assert_not_called()
+
+
 class TestCmdInstall:
     """Test the install command."""
+
+    def test_install_with_enable_applies_manifest_config_defaults(self, tmp_path):
+        from hermes_cli.plugins_cmd import cmd_install
+
+        target = tmp_path / "example"
+        target.mkdir()
+        (target / "plugin.yaml").write_text("name: example\n", encoding="utf-8")
+        manifest = {
+            "name": "example",
+            "config_defaults": {"timeout": 30},
+        }
+        with (
+            patch(
+                "hermes_cli.plugins_cmd._resolve_git_url",
+                return_value=("https://example.test/plugin.git", None),
+            ),
+            patch(
+                "hermes_cli.plugins_cmd._install_plugin_core",
+                return_value=(target, manifest, "example"),
+            ),
+            patch("hermes_cli.plugins_cmd._prompt_plugin_env_vars"),
+            patch("hermes_cli.plugins_cmd._display_after_install"),
+            patch("hermes_cli.plugins_cmd._get_enabled_set", return_value=set()),
+            patch("hermes_cli.plugins_cmd._get_disabled_set", return_value=set()),
+            patch("hermes_cli.plugins_cmd._save_enabled_set"),
+            patch("hermes_cli.plugins_cmd._save_disabled_set"),
+            patch("hermes_cli.plugins_cmd._apply_plugin_config_defaults") as apply_defaults,
+        ):
+            cmd_install("owner/repo", enable=True)
+
+        assert apply_defaults.call_args.args[:2] == ("example", manifest)
 
     def test_install_requires_identifier(self):
         from hermes_cli.plugins_cmd import cmd_install

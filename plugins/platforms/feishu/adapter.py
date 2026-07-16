@@ -1901,40 +1901,41 @@ class FeishuAdapter(BasePlatformAdapter):
 
         try:
             for chunk in chunks:
-                msg_type, payload = self._build_outbound_payload(chunk)
-                try:
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type=msg_type,
-                        payload=payload,
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
-                except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
-                        raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
-                if (
-                    msg_type == "post"
-                    and not self._response_succeeded(response)
-                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
-                ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
-                    response = await self._feishu_send_with_retry(
-                        chat_id=chat_id,
-                        msg_type="text",
-                        payload=json.dumps({"text": _strip_markdown_to_plain_text(chunk)}, ensure_ascii=False),
-                        reply_to=reply_to,
-                        metadata=metadata,
-                    )
-                last_response = response
+                payloads = self._build_outbound_payloads(chunk)
+                for msg_type, segment_text, payload in payloads:
+                    try:
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type=msg_type,
+                            payload=payload,
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    except Exception as exc:
+                        if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                            raise
+                        logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(segment_text)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    if (
+                        msg_type == "post"
+                        and not self._response_succeeded(response)
+                        and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
+                    ):
+                        logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+                        response = await self._feishu_send_with_retry(
+                            chat_id=chat_id,
+                            msg_type="text",
+                            payload=json.dumps({"text": _strip_markdown_to_plain_text(segment_text)}, ensure_ascii=False),
+                            reply_to=reply_to,
+                            metadata=metadata,
+                        )
+                    last_response = response
 
             return self._finalize_send_result(last_response, "send failed")
         except Exception as exc:
@@ -4532,6 +4533,106 @@ class FeishuAdapter(BasePlatformAdapter):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
+
+    @staticmethod
+    def _is_table_line(line: str) -> bool:
+        """Check if a line looks like part of a pipe table (starts and ends with |)."""
+        stripped = line.strip() if line else ""
+        return bool(stripped) and stripped.startswith("|") and stripped.endswith("|")
+
+    @staticmethod
+    def _is_table_separator(line: str) -> bool:
+        """Check if a line is a table separator (|---|---| etc)."""
+        stripped = line.strip() if line else ""
+        if not (stripped.startswith("|") and stripped.endswith("|")):
+            return False
+        interior = stripped[1:-1].strip()
+        return bool(re.match(r"^[-|: ]+$", interior))
+
+    def _split_content_at_tables(self, content: str) -> List[str]:
+        """Split content at pipe-table boundaries into alternating segments.
+
+        Pipe tables need to be sent as text type because Feishu post-type 'md'
+        elements don't render them. By splitting at table boundaries, we can
+        send each table as text and surrounding markdown content as post.
+        Returns [content] unchanged when no tables are found.
+        """
+        if not _MARKDOWN_TABLE_RE.search(content):
+            return [content]
+
+        lines = content.split("\n")
+        segments: List[str] = []
+        current: List[str] = []
+        i = 0
+
+        while i < len(lines):
+            line = lines[i]
+            # Detect table start: pipe line followed by separator line
+            if (
+                self._is_table_line(line)
+                and i + 1 < len(lines)
+                and self._is_table_separator(lines[i + 1])
+            ):
+                # Flush any accumulated non-table content
+                if current:
+                    segments.append("\n".join(current))
+                    current = []
+
+                # Collect the entire table block (all consecutive pipe lines)
+                table_lines: List[str] = []
+                while i < len(lines) and self._is_table_line(lines[i]):
+                    table_lines.append(lines[i])
+                    i += 1
+
+                joined = "\n".join(table_lines)
+                if joined.strip():
+                    segments.append(joined)
+            else:
+                current.append(line)
+                i += 1
+
+        if current:
+            segments.append("\n".join(current))
+
+        return segments
+
+    def _build_outbound_payloads(self, content: str) -> List[tuple[str, str, str]]:
+        """Build outbound payloads, splitting content at table boundaries.
+
+        Each segment's type is decided independently by its markdown content.
+        Table segments are NOT forced to text type — Feishu's current API
+        handles markdown tables in post-type messages correctly.
+
+        Returns list of (msg_type, original_segment_text, payload_json) tuples
+        so callers can fall back gracefully when the API rejects a post payload.
+        """
+        segments = self._split_content_at_tables(content)
+        results: List[tuple[str, str, str]] = []
+
+        for seg in segments:
+            seg_stripped = seg.strip()
+            if not seg_stripped:
+                continue
+            if _MARKDOWN_HINT_RE.search(seg):
+                results.append((
+                    "post",
+                    seg_stripped,
+                    _build_markdown_post_payload(seg_stripped),
+                ))
+            else:
+                text_payload = {"text": seg_stripped}
+                results.append((
+                    "text",
+                    seg_stripped,
+                    json.dumps(text_payload, ensure_ascii=False),
+                ))
+
+        # Fallback: if splitting produced nothing, use original single-payload logic
+        if not results:
+            msg_type, payload = self._build_outbound_payload(content)
+            return [(msg_type, content.strip(), payload)]
+
+        return results
 
     async def _send_uploaded_file_message(
         self,

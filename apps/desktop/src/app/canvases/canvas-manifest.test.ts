@@ -81,4 +81,27 @@ describe('parseCanvasManifest', () => {
 
     expect(manifest.blocks.map(block => block.type)).toEqual(['line-chart', 'area-chart'])
   })
+
+  it('renders flat document sections produced by Hermes', () => {
+    const manifest = parseCanvasManifest(
+      JSON.stringify({
+        schema: 'hermes.canvas/v1',
+        id: 'fruits',
+        title: 'Fruits',
+        source: {},
+        document: {
+          sections: [
+            { type: 'text', content: 'Fruit report' },
+            { type: 'chart', chartType: 'donut', labels: ['Green', 'Red'], series: [{ data: [4, 6] }] },
+            { type: 'stackedBar', labels: ['Jan', 'Feb'], series: [{ data: [2, 3] }] },
+            { type: 'list', items: ['Apple', 'Pear'] },
+            { type: 'table', rows: [{ fruit: 'Apple', color: 'Green' }] }
+          ]
+        }
+      }),
+      'default'
+    )
+
+    expect(manifest.blocks.map(block => block.type)).toEqual(['insight', 'pie-chart', 'bar-chart', 'list', 'table'])
+  })
 })

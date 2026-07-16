@@ -97,12 +97,18 @@ function documentBlocks(payload: JsonObject): CanvasBlock[] {
   const blocks: CanvasBlock[] = []
   document.forEach((section, sectionIndex) => {
     const group = object(section)
+    const directKind = string(group?.kind, string(group?.type))
     const title = string(group?.title, `Section ${sectionIndex + 1}`)
-    const children = Array.isArray(group?.children)
-      ? group.children
-      : Array.isArray(group?.elements)
-        ? group.elements
-        : []
+    // Hermes may write `document.sections` as either section containers with
+    // `elements`, or as the actual flat sequence of visual elements. Support
+    // both forms so a valid Canvas never silently loses its visuals.
+    const children = directKind
+      ? [group]
+      : Array.isArray(group?.children)
+        ? group.children
+        : Array.isArray(group?.elements)
+          ? group.elements
+          : []
     const kpis = children.flatMap(child => {
       const item = object(child)
       const kind = string(item?.kind, string(item?.type))
@@ -125,10 +131,10 @@ function documentBlocks(payload: JsonObject): CanvasBlock[] {
           type: 'insight',
           id: `${sectionIndex}-${index}`,
           title: string(item?.title, title),
-          body: string(item?.text)
+          body: string(item?.text, string(item?.content))
         })
       if (kind === 'table') {
-        const table = tableRows(item?.rows)
+        const table = tableRows(item?.rows ?? item?.data)
         const columns = Array.isArray(item?.columns)
           ? item.columns.map(value => display(object(value)?.label ?? value))
           : table?.columns || []
@@ -161,12 +167,13 @@ function documentBlocks(payload: JsonObject): CanvasBlock[] {
           })
       }
       if (kind === 'divider') blocks.push({ type: 'divider', id: `${sectionIndex}-${index}` })
-      if (kind === 'chart') {
+      const directChartType = ['bar', 'line', 'area', 'pie', 'donut', 'stackedBar'].includes(kind) ? kind : ''
+      if (kind === 'chart' || directChartType) {
         const labels = Array.isArray(item?.labels) ? item.labels.map(value => String(value)) : []
         const series = Array.isArray(item?.series) ? object(item.series[0]) : null
         const values = Array.isArray(series?.data) ? series.data : []
         const chartData = labels.map((label, valueIndex) => ({ label, value: number(values[valueIndex]) }))
-        const chartType = string(item?.chartType, string(item?.variant))
+        const chartType = string(item?.chartType, string(item?.variant, directChartType))
         const blockType =
           chartType === 'pie' || chartType === 'donut'
             ? 'pie-chart'

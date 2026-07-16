@@ -2381,10 +2381,55 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         )
         return 2
 
-    # Legacy path — same logic as before, kept behind --force.
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        kanban_config = config.get("kanban", {}) if isinstance(config, dict) else {}
+        if not isinstance(kanban_config, dict):
+            kanban_config = {}
+    except Exception:
+        print(
+            "hermes kanban daemon: dispatcher admission is unavailable; refusing standalone dispatch.",
+            file=sys.stderr,
+        )
+        return 2
+    if kanban_config.get("dispatch_in_gateway", True):
+        print(
+            "hermes kanban daemon: refusing --force while "
+            "kanban.dispatch_in_gateway=true; use the gateway dispatcher or set it false first.",
+            file=sys.stderr,
+        )
+        return 2
+
+    try:
+        from gateway.kanban_watchers import (
+            _acquire_singleton_lock,
+            _release_singleton_lock,
+        )
+
+        lock_handle, lock_state = _acquire_singleton_lock(
+            kb.kanban_home() / "kanban" / ".dispatcher.lock"
+        )
+    except Exception:
+        lock_handle, lock_state = None, "unavailable"
+    if lock_state != "held":
+        print(
+            "hermes kanban daemon: dispatcher singleton lock is unavailable; "
+            "refusing standalone dispatch.",
+            file=sys.stderr,
+        )
+        return 2
+
+    # Legacy path — same logic as before, kept behind --force and the
+    # gateway's machine-global singleton lock.
     # Make sure the DB exists before printing "started" so the user sees the
     # correct DB path and any init error surfaces immediately.
-    kb.init_db()
+    try:
+        kb.init_db()
+    except Exception:
+        _release_singleton_lock(lock_handle)
+        raise
 
     pidfile = getattr(args, "pidfile", None)
     if pidfile:
@@ -2481,6 +2526,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                 Path(pidfile).unlink()
             except OSError:
                 pass
+        _release_singleton_lock(lock_handle)
     print("(dispatcher stopped)")
     return 0
 

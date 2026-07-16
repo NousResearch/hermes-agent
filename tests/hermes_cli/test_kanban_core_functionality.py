@@ -3573,6 +3573,86 @@ def test_cli_daemon_without_force_prints_deprecation_exits_2(kanban_home, capsys
     assert "hermes gateway start" in err
 
 
+def test_cli_daemon_force_refuses_gateway_owned_dispatch(kanban_home, monkeypatch, capsys):
+    """--force must not start a second dispatcher while gateway mode is on."""
+    from hermes_cli import kanban as kb_cli
+
+    calls = []
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True}},
+    )
+    monkeypatch.setattr(kb, "run_daemon", lambda **kwargs: calls.append(kwargs))
+    ns = argparse.Namespace(
+        force=True, interval=60.0, max=None, failure_limit=3,
+        pidfile=None, verbose=False,
+    )
+
+    assert kb_cli._cmd_daemon(ns) == 2
+    assert calls == []
+    assert "dispatch_in_gateway=true" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("lock_state", ["contended", "unavailable"])
+def test_cli_daemon_force_refuses_when_singleton_lock_is_unavailable(
+    kanban_home, monkeypatch, capsys, lock_state,
+):
+    """Standalone daemon mode never runs without the gateway singleton lock."""
+    from gateway import kanban_watchers
+    from hermes_cli import kanban as kb_cli
+
+    calls = []
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": False}},
+    )
+    monkeypatch.setattr(
+        kanban_watchers, "_acquire_singleton_lock", lambda path: (None, lock_state),
+    )
+    monkeypatch.setattr(kb, "run_daemon", lambda **kwargs: calls.append(kwargs))
+    ns = argparse.Namespace(
+        force=True, interval=60.0, max=None, failure_limit=3,
+        pidfile=None, verbose=False,
+    )
+
+    assert kb_cli._cmd_daemon(ns) == 2
+    assert calls == []
+    assert "singleton lock" in capsys.readouterr().err
+
+
+def test_cli_daemon_force_holds_gateway_singleton_lock(kanban_home, monkeypatch):
+    """The intentional standalone path holds the same machine-global lock."""
+    from gateway import kanban_watchers
+    from hermes_cli import kanban as kb_cli
+
+    handle = object()
+    acquired = []
+    released = []
+    calls = []
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": False}},
+    )
+    monkeypatch.setattr(
+        kanban_watchers,
+        "_acquire_singleton_lock",
+        lambda path: acquired.append(path) or (handle, "held"),
+    )
+    monkeypatch.setattr(
+        kanban_watchers, "_release_singleton_lock", released.append,
+    )
+    monkeypatch.setattr(kb, "run_daemon", lambda **kwargs: calls.append(kwargs))
+    ns = argparse.Namespace(
+        force=True, interval=60.0, max=None, failure_limit=3,
+        pidfile=None, verbose=False,
+    )
+
+    assert kb_cli._cmd_daemon(ns) == 0
+    assert acquired == [kb.kanban_home() / "kanban" / ".dispatcher.lock"]
+    assert calls
+    assert released == [handle]
+
+
 def test_cli_daemon_help_marks_deprecated():
     """The argparse help string on `daemon` mentions deprecation so users
     scanning `--help` see the migration before running the stub."""

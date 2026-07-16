@@ -752,6 +752,110 @@ def test_add_link_cycle_rejected(client):
 # ---------------------------------------------------------------------------
 
 
+def test_dispatch_refuses_mutation_while_gateway_owns_dispatch(client, monkeypatch):
+    """Dashboard POST must not bypass the gateway-owned dispatcher."""
+    from hermes_cli import config
+
+    calls = []
+    monkeypatch.setattr(
+        config, "load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True}},
+    )
+    monkeypatch.setattr(
+        kb, "dispatch_once", lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    response = client.post("/api/plugins/kanban/dispatch?max=4")
+
+    assert response.status_code == 409
+    assert calls == []
+
+
+def test_dispatch_dry_run_remains_available_while_gateway_owns_dispatch(client, monkeypatch):
+    """A dry run is a preview, not a competing dispatcher mutation."""
+    from hermes_cli import config
+
+    calls = []
+    monkeypatch.setattr(
+        config, "load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": True}},
+    )
+    monkeypatch.setattr(
+        kb,
+        "dispatch_once",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or kb.DispatchResult(),
+    )
+
+    response = client.post("/api/plugins/kanban/dispatch?dry_run=true&max=4")
+
+    assert response.status_code == 200
+    assert calls and calls[0][1]["dry_run"] is True
+
+
+@pytest.mark.parametrize(
+    ("lock_state", "status_code"),
+    [("contended", 409), ("unavailable", 503)],
+)
+def test_dispatch_refuses_standalone_mutation_without_singleton_lock(
+    client, monkeypatch, lock_state, status_code,
+):
+    """Standalone dashboard dispatch fails closed before touching the DB."""
+    from gateway import kanban_watchers
+    from hermes_cli import config
+
+    calls = []
+    monkeypatch.setattr(
+        config, "load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": False}},
+    )
+    monkeypatch.setattr(
+        kanban_watchers, "_acquire_singleton_lock", lambda path: (None, lock_state),
+    )
+    monkeypatch.setattr(
+        kb, "dispatch_once", lambda *args, **kwargs: calls.append((args, kwargs)),
+    )
+
+    response = client.post("/api/plugins/kanban/dispatch?max=4")
+
+    assert response.status_code == status_code
+    assert calls == []
+
+
+def test_dispatch_standalone_mutation_holds_singleton_lock(client, monkeypatch):
+    """The only standalone path shares and releases the gateway lock."""
+    from gateway import kanban_watchers
+    from hermes_cli import config
+
+    handle = object()
+    acquired = []
+    released = []
+    calls = []
+    monkeypatch.setattr(
+        config, "load_config",
+        lambda: {"kanban": {"dispatch_in_gateway": False}},
+    )
+    monkeypatch.setattr(
+        kanban_watchers,
+        "_acquire_singleton_lock",
+        lambda path: acquired.append(path) or (handle, "held"),
+    )
+    monkeypatch.setattr(
+        kanban_watchers, "_release_singleton_lock", released.append,
+    )
+    monkeypatch.setattr(
+        kb,
+        "dispatch_once",
+        lambda *args, **kwargs: calls.append((args, kwargs)) or kb.DispatchResult(),
+    )
+
+    response = client.post("/api/plugins/kanban/dispatch?max=4")
+
+    assert response.status_code == 200
+    assert acquired == [kb.kanban_home() / "kanban" / ".dispatcher.lock"]
+    assert calls
+    assert released == [handle]
+
+
 def test_dispatch_dry_run(client):
     client.post(
         "/api/plugins/kanban/tasks",

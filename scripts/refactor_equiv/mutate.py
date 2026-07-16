@@ -185,6 +185,36 @@ def tool_gate_mutations() -> list[Mutation]:
     ]
 
 
+def restart_codec_mutations() -> list[Mutation]:
+    """Mutations over restart failure entry decode/encode outputs."""
+    return [
+        Mutation(
+            "return-value: allow negative decoded counts",
+            lambda p: replace_once(
+                p,
+                'return {\n            "count": max(0, count),\n            "replay_marks": clean_marks,',
+                'return {\n            "count": count,\n            "replay_marks": clean_marks,',
+            ),
+        ),
+        Mutation(
+            "message-emit: keep falsey replay request ids",
+            lambda p: replace_once(
+                p,
+                '"replay_request_ids": [str(item) for item in request_ids if item],',
+                '"replay_request_ids": [str(item) for item in request_ids],',
+            ),
+        ),
+        Mutation(
+            "branch-classification: force compact encoding for armed entries",
+            lambda p: replace_once(
+                p,
+                "if replay_marks or replay_request_ids or armed:",
+                "if replay_marks or replay_request_ids:",
+            ),
+        ),
+    ]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--module", required=True)
@@ -199,6 +229,8 @@ def main(argv: list[str] | None = None) -> int:
         mutations = compaction_ext_mutations()
     elif module.endswith("tool_gate.py"):
         mutations = tool_gate_mutations()
+    elif module.endswith("restart_codec.py"):
+        mutations = restart_codec_mutations()
     else:
         mutations = []
     if not mutations:

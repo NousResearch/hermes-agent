@@ -1,0 +1,172 @@
+{
+  "07e2f7570ba771112f32f09ed74545c5700850ba6a62625cf32502be45bc4126": {
+    "input": {
+      "kind": "decode",
+      "name": "malformed structured entry",
+      "value": {
+        "armed": false,
+        "count": -2,
+        "replay_marks": "oops",
+        "replay_request_ids": "oops"
+      }
+    },
+    "name": "malformed structured entry",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "armed": false,
+        "count": 0,
+        "replay_marks": [],
+        "replay_request_ids": []
+      }
+    }
+  },
+  "1a5e785269b5da335e09876e7a8f2bcbd00a2045d0439eeccbd81ecb9acbe3b5": {
+    "input": {
+      "kind": "decode",
+      "name": "invalid scalar count",
+      "value": "not-a-count"
+    },
+    "name": "invalid scalar count",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "armed": false,
+        "count": 0,
+        "replay_marks": [],
+        "replay_request_ids": []
+      }
+    }
+  },
+  "272401ac1f537c7903c8e610c0075689c404f6290d4549458b8c5a19e8495429": {
+    "input": {
+      "entry": {
+        "armed": true,
+        "count": 2,
+        "replay_marks": [
+          10.5
+        ],
+        "replay_request_ids": [
+          "req-1"
+        ]
+      },
+      "kind": "encode",
+      "name": "encode structured replay state"
+    },
+    "name": "encode structured replay state",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "armed": true,
+        "count": 2,
+        "replay_marks": [
+          10.5
+        ],
+        "replay_request_ids": [
+          "req-1"
+        ]
+      }
+    }
+  },
+  "3a84741850deaada2d6bea40a79696369264ce04a65c3823374df10ea5d3cd1c": {
+    "input": {
+      "entry": {
+        "armed": true,
+        "count": 1,
+        "replay_marks": [],
+        "replay_request_ids": []
+      },
+      "kind": "encode",
+      "name": "encode armed only remains structured"
+    },
+    "name": "encode armed only remains structured",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "armed": true,
+        "count": 1,
+        "replay_marks": [],
+        "replay_request_ids": []
+      }
+    }
+  },
+  "6a595245d53a0b01911e84fb21ed4a21b9ddb14e3258caa21b3e7727a8d0b3b8": {
+    "input": {
+      "entry": {
+        "armed": false,
+        "count": 5,
+        "replay_marks": [],
+        "replay_request_ids": []
+      },
+      "kind": "encode",
+      "name": "encode compact count only"
+    },
+    "name": "encode compact count only",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": 5
+    }
+  },
+  "b2fbb855d81ddd322e60fb7d24e6035eb4d82333c892ecabfd9cc2427385ec81": {
+    "input": {
+      "kind": "decode",
+      "name": "legacy integer count",
+      "value": 3
+    },
+    "name": "legacy integer count",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "armed": false,
+        "count": 3,
+        "replay_marks": [],
+        "replay_request_ids": []
+      }
+    }
+  },
+  "de31d7bfc9f0bfad5d214921993d4926cb7f404c6cc4c454290d88f5051c7215": {
+    "input": {
+      "kind": "decode",
+      "name": "full structured entry",
+      "value": {
+        "armed": 1,
+        "count": "4",
+        "replay_marks": [
+          1,
+          "2.5",
+          "bad",
+          null
+        ],
+        "replay_request_ids": [
+          "req-1",
+          7,
+          "",
+          null
+        ]
+      }
+    },
+    "name": "full structured entry",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "armed": true,
+        "count": 4,
+        "replay_marks": [
+          1.0,
+          2.5
+        ],
+        "replay_request_ids": [
+          "req-1",
+          "7"
+        ]
+      }
+    }
+  }
+}

@@ -88,6 +88,20 @@
     "why": "Claude API proxy pool requests must keep per-session affinity and classify interactive versus background relay lanes without stamping third-party providers."
   },
   {
+    "feature": "gateway restart failure count entry codec",
+    "tests": [
+      "tests/gateway/test_stuck_loop.py",
+      "tests/gateway/test_restart_resume_pending.py",
+      "tests/gateway/test_restart_cascade.py",
+      "tests/gateway/test_deferred_restart_taxonomy.py"
+    ],
+    "paths": [
+      "gateway/fork_ext/restart_codec.py",
+      "tests/golden/restart_codec/"
+    ],
+    "why": "Restart-loop failure counts must continue decoding legacy scalar entries and structured replay-breaker state byte-identically after extraction."
+  },
+  {
     "feature": "tool-search unwrap scope gate and delegate code_execution inheritance exemption",
     "tests": [
       "tests/run_agent/test_tool_call_guardrail_runtime.py",

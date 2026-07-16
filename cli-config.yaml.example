@@ -366,6 +366,10 @@ browser:
   # after this period of no activity between agent loops (default: 120 = 2 minutes)
   inactivity_timeout: 120
 
+  # Retry user-supplied external CDP transport/backend failures on the local
+  # browser engine. Semantic page/tool errors are never retried (default: false).
+  cdp_fallback_to_local: false
+
 # =============================================================================
 # Tool Loop Guardrails
 # =============================================================================

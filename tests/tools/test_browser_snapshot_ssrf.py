@@ -63,14 +63,16 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
         monkeypatch.setattr(browser_tool, "_is_safe_url", lambda url: False)
 
-        call_count = {"n": 0}
+        commands = []
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
-            call_count["n"] += 1
+            commands.append((command, kwargs))
             if command == "snapshot":
                 return _make_snapshot_result()
-            elif command == "eval":
+            if command == "eval":
                 return _make_eval_result(self.PRIVATE_URL)
+            if command == "open":
+                return {"success": True, "data": {"url": "about:blank"}}
             return {"success": False, "error": "unknown command"}
 
         monkeypatch.setattr(
@@ -81,8 +83,9 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         assert result["success"] is False
         assert "private or internal address" in result["error"]
         assert self.PRIVATE_URL in result["error"]
-        # Must have called eval to check URL
-        assert call_count["n"] == 2  # snapshot + eval
+        assert [command for command, _ in commands] == ["snapshot", "eval", "open"]
+        assert commands[1][1]["_allow_fallback"] is False
+        assert commands[2][1]["_allow_fallback"] is False
 
     def test_allows_public_url_after_eval_navigation(self, monkeypatch):
         """Snapshot must succeed when current page URL is public."""
@@ -161,16 +164,19 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         assert result["success"] is True
         assert "snapshot" in result
 
-    def test_handles_eval_failure_gracefully(self, monkeypatch):
-        """If URL eval fails, snapshot should still succeed (fail-open)."""
+    def test_handles_eval_failure_fail_closed(self, monkeypatch):
+        """If URL eval fails, snapshot content is withheld."""
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
         monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        secret = "METADATA_SECRET_CONTENT"
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
             if command == "snapshot":
-                return _make_snapshot_result()
-            elif command == "eval":
+                return _make_snapshot_result(snapshot=secret)
+            if command == "eval":
                 return {"success": False, "error": "eval failed"}
+            if command == "open":
+                return {"success": True, "data": {"url": "about:blank"}}
             return {"success": False, "error": "unknown"}
 
         monkeypatch.setattr(
@@ -178,19 +184,23 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         )
 
         result = json.loads(browser_browser_snapshot(task_id="test"))
-        # Should succeed — eval failure means we can't determine URL, fail-open
-        assert result["success"] is True
+        assert result["success"] is False
+        assert "unable to verify" in result["error"]
+        assert secret not in json.dumps(result)
 
-    def test_handles_empty_url_result(self, monkeypatch):
-        """If URL eval returns empty string, snapshot should succeed."""
+    def test_handles_empty_url_result_fail_closed(self, monkeypatch):
+        """An empty URL probe cannot release snapshot content."""
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
         monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        secret = "METADATA_SECRET_CONTENT"
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
             if command == "snapshot":
-                return _make_snapshot_result()
-            elif command == "eval":
+                return _make_snapshot_result(snapshot=secret)
+            if command == "eval":
                 return _make_eval_result("")
+            if command == "open":
+                return {"success": True, "data": {"url": "about:blank"}}
             return {"success": False, "error": "unknown"}
 
         monkeypatch.setattr(
@@ -198,18 +208,23 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         )
 
         result = json.loads(browser_browser_snapshot(task_id="test"))
-        assert result["success"] is True
+        assert result["success"] is False
+        assert "unable to verify" in result["error"]
+        assert secret not in json.dumps(result)
 
-    def test_handles_eval_exception(self, monkeypatch):
-        """If URL eval raises an exception, snapshot should succeed."""
+    def test_handles_eval_exception_fail_closed(self, monkeypatch):
+        """An eval exception withholds snapshot content."""
         monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
         monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+        secret = "METADATA_SECRET_CONTENT"
 
         def mock_run_browser_command(task_id, command, args=None, **kwargs):
             if command == "snapshot":
-                return _make_snapshot_result()
-            elif command == "eval":
+                return _make_snapshot_result(snapshot=secret)
+            if command == "eval":
                 raise RuntimeError("CDP connection lost")
+            if command == "open":
+                return {"success": True, "data": {"url": "about:blank"}}
             return {"success": False, "error": "unknown"}
 
         monkeypatch.setattr(
@@ -217,7 +232,9 @@ class TestBrowserSnapshotPrivateNetworkGuard:
         )
 
         result = json.loads(browser_browser_snapshot(task_id="test"))
-        assert result["success"] is True
+        assert result["success"] is False
+        assert "unable to verify" in result["error"]
+        assert secret not in json.dumps(result)
 
     def test_blocks_loopback_url(self, monkeypatch):
         """Loopback URLs (localhost) must be blocked."""
@@ -436,3 +453,214 @@ class TestBrowserVisionPrivateNetworkGuard:
         result_raw = browser_browser_vision(question="what", task_id="test")
         result = json.loads(result_raw)
         assert "private or internal address" not in result.get("error", "")
+
+
+@pytest.mark.parametrize(
+    "tool_name",
+    ["snapshot", "eval-cli", "images", "vision", "console"],
+)
+def test_actual_served_fallback_session_is_guarded_on_every_content_path(
+    monkeypatch, tmp_path, tool_name
+):
+    """Content is discarded when the exact fallback serving session is unsafe."""
+    task_id = f"served-guard-{tool_name}"
+    local_session_key = f"{task_id}::local"
+    secret = "METADATA_SECRET_CONTENT"
+    screenshot_path = tmp_path / f"{tool_name}.png"
+    events = []
+    href_probes = 0
+
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+    monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+    monkeypatch.setattr(browser_tool, "_get_browser_engine", lambda: "auto")
+    monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: None)
+    monkeypatch.setattr(
+        browser_tool,
+        "_get_session_info",
+        lambda session_key: {
+            "session_key": session_key,
+            "owner_task_id": task_id,
+            "session_name": f"s_{session_key}",
+            "features": {},
+            "_first_nav": False,
+        },
+    )
+
+    fallback_meta = {
+        "browser_session_key": local_session_key,
+        "browser_backend_fallback": {"from": "cdp", "to": "local"},
+    }
+
+    def run_command(session_key, command, args=None, timeout=None, **kwargs):
+        nonlocal href_probes
+        args = args or []
+        events.append((session_key, command, args, kwargs))
+        if command == "eval" and args == ["window.location.href"]:
+            href_probes += 1
+            url = (
+                "https://example.com/"
+                if session_key == task_id
+                else "http://169.254.169.254/latest/meta-data"
+            )
+            return {"success": True, "data": {"result": url}}
+        if command == "snapshot":
+            return {
+                "success": True,
+                "data": {"snapshot": secret, "refs": {"e1": {}}},
+                **fallback_meta,
+            }
+        if command == "eval":
+            payload = (
+                json.dumps([{"src": secret, "alt": secret}])
+                if tool_name == "images"
+                else secret
+            )
+            return {"success": True, "data": {"result": payload}, **fallback_meta}
+        if command == "console":
+            return {
+                "success": True,
+                "data": {"messages": [{"type": "log", "text": secret}]},
+                **fallback_meta,
+            }
+        if command == "errors":
+            return {"success": False, "error": "no error buffer"}
+        if command == "screenshot":
+            screenshot_path.write_bytes(secret.encode())
+            return {
+                "success": True,
+                "data": {"path": str(screenshot_path)},
+                **fallback_meta,
+            }
+        if command == "open" and args == ["about:blank"]:
+            return {"success": True, "data": {"url": "about:blank"}}
+        raise AssertionError((session_key, command, args, timeout, kwargs))
+
+    monkeypatch.setattr(browser_tool, "_run_browser_command", run_command)
+
+    if tool_name == "snapshot":
+        raw_response = browser_tool.browser_snapshot(task_id=task_id)
+    elif tool_name == "eval-cli":
+        raw_response = browser_tool.browser_console(
+            expression="document.body.innerText",
+            task_id=task_id,
+        )
+    elif tool_name == "images":
+        raw_response = browser_tool.browser_get_images(task_id=task_id)
+    elif tool_name == "vision":
+        raw_response = browser_tool.browser_vision("what is visible?", task_id=task_id)
+    else:
+        raw_response = browser_tool.browser_console(task_id=task_id)
+
+    response = raw_response if isinstance(raw_response, dict) else json.loads(raw_response)
+    assert response["success"] is False
+    assert "metadata endpoint" in response["error"]
+    assert secret not in json.dumps(response)
+    assert href_probes >= 1
+    if tool_name == "vision":
+        assert not screenshot_path.exists()
+
+
+def test_navigate_auto_snapshot_guards_the_actual_serving_session(monkeypatch):
+    """A safe open proof cannot authorize snapshot bytes from a later unsafe page."""
+    task_id = "served-guard-navigate"
+    local_session_key = f"{task_id}::local"
+    secret = "METADATA_SECRET_CONTENT"
+    probe_count = 0
+
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+    monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+    monkeypatch.setattr(browser_tool, "check_website_access", lambda _url: None)
+    monkeypatch.setattr(
+        browser_tool,
+        "_get_session_info",
+        lambda session_key: {
+            "session_key": session_key,
+            "owner_task_id": task_id,
+            "session_name": f"s_{session_key}",
+            "features": {"cdp_override": True},
+            "_first_nav": False,
+        },
+    )
+
+    def run_command(session_key, command, args=None, **kwargs):
+        nonlocal probe_count
+        args = args or []
+        if command == "open" and args == ["https://example.com"]:
+            return {
+                "success": True,
+                "data": {"title": "safe", "url": "https://example.com/"},
+                "browser_session_key": local_session_key,
+                "browser_backend_fallback": {"from": "cdp", "to": "local"},
+            }
+        if command == "eval":
+            assert session_key == local_session_key
+            probe_count += 1
+            url = (
+                "https://example.com/"
+                if probe_count == 1
+                else "http://169.254.169.254/latest/meta-data"
+            )
+            return {"success": True, "data": {"result": url}}
+        if command == "snapshot":
+            assert session_key == local_session_key
+            return {
+                "success": True,
+                "data": {"snapshot": secret, "refs": {"e1": {}}},
+            }
+        if command == "open" and args == ["about:blank"]:
+            return {"success": True, "data": {"url": "about:blank"}}
+        raise AssertionError((session_key, command, args, kwargs))
+
+    monkeypatch.setattr(browser_tool, "_run_browser_command", run_command)
+    response = json.loads(
+        browser_tool.browser_navigate("https://example.com", task_id=task_id)
+    )
+
+    assert response["success"] is False
+    assert "metadata endpoint" in response["error"]
+    assert secret not in json.dumps(response)
+    assert probe_count == 2
+
+
+def test_supervisor_eval_result_uses_actual_served_url_guard(monkeypatch):
+    """The CDP-supervisor eval branch cannot bypass the common post-result guard."""
+    task_id = "served-guard-supervisor"
+    secret = "METADATA_SECRET_CONTENT"
+
+    monkeypatch.setattr(browser_tool, "_is_camofox_mode", lambda: False)
+    monkeypatch.setattr(browser_tool, "_is_local_backend", lambda: False)
+    monkeypatch.setattr(browser_tool, "_allow_private_urls", lambda: False)
+
+    from tools import browser_supervisor
+
+    class FakeSupervisor:
+        def evaluate_runtime(self, _expression):
+            return {"ok": True, "result": secret}
+
+    monkeypatch.setattr(
+        browser_supervisor,
+        "SUPERVISOR_REGISTRY",
+        {task_id: FakeSupervisor()},
+    )
+
+    def run_command(session_key, command, args=None, **kwargs):
+        assert session_key == task_id
+        if command == "eval":
+            return {
+                "success": True,
+                "data": {"result": "http://169.254.169.254/latest/meta-data"},
+            }
+        if command == "open":
+            return {"success": True, "data": {"url": "about:blank"}}
+        raise AssertionError((session_key, command, args, kwargs))
+
+    monkeypatch.setattr(browser_tool, "_run_browser_command", run_command)
+    response = json.loads(
+        browser_tool.browser_console(expression="document.body.innerText", task_id=task_id)
+    )
+
+    assert response["success"] is False
+    assert "metadata endpoint" in response["error"]
+    assert secret not in json.dumps(response)

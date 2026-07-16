@@ -17,8 +17,29 @@ from tools import browser_tool
 
 
 def _make_browser_result(url="https://example.com"):
-    """Return a mock successful browser command result."""
-    return {"success": True, "data": {"title": "OK", "url": url}}
+    """Return a mock successful browser command result for the given URL."""
+    return {"success": True, "data": {"title": "OK", "url": url, "result": url}}
+
+
+def _browser_command_mock(url="https://example.com"):
+    """Mock `_run_browser_command` that preserves post-nav URL proof probes."""
+
+    def _run(task_id, command, args=None, **kwargs):
+        if command == "eval" and args == ["window.location.href"]:
+            return {"success": True, "data": {"result": url}}
+        if command == "snapshot":
+            return {
+                "success": True,
+                "data": {
+                    "snapshot": f'- heading \"OK\" [ref=e1] ({url})',
+                    "refs": {"e1": {}},
+                },
+            }
+        if command == "open" and args == ["about:blank"]:
+            return {"success": True, "data": {"url": "about:blank"}}
+        return _make_browser_result(url)
+
+    return _run
 
 
 # ---------------------------------------------------------------------------
@@ -48,7 +69,7 @@ class TestPreNavigationSsrf:
         monkeypatch.setattr(
             browser_tool,
             "_run_browser_command",
-            lambda *a, **kw: _make_browser_result(),
+            _browser_command_mock(),
         )
 
     # -- Cloud mode: SSRF active -----------------------------------------------
@@ -262,13 +283,16 @@ class TestPostRedirectSsrf:
         monkeypatch.setattr(
             browser_tool,
             "_run_browser_command",
-            lambda *a, **kw: _make_browser_result(url=self.PRIVATE_FINAL_URL),
+            _browser_command_mock(url=self.PRIVATE_FINAL_URL),
         )
 
         result = json.loads(browser_tool.browser_navigate(self.PUBLIC_URL))
 
         assert result["success"] is False
-        assert "redirect landed on a private/internal address" in result["error"]
+        assert (
+            "redirect landed on a private/internal address" in result["error"]
+            or "private or internal address" in result["error"]
+        )
 
     def test_cloud_allows_redirect_to_private_when_setting_true(self, monkeypatch, _common_patches):
         """Redirects to private addresses pass in cloud mode with allow_private_urls."""
@@ -280,7 +304,7 @@ class TestPostRedirectSsrf:
         monkeypatch.setattr(
             browser_tool,
             "_run_browser_command",
-            lambda *a, **kw: _make_browser_result(url=self.PRIVATE_FINAL_URL),
+            _browser_command_mock(url=self.PRIVATE_FINAL_URL),
         )
 
         result = json.loads(browser_tool.browser_navigate(self.PUBLIC_URL))
@@ -300,7 +324,7 @@ class TestPostRedirectSsrf:
         monkeypatch.setattr(
             browser_tool,
             "_run_browser_command",
-            lambda *a, **kw: _make_browser_result(url=self.PRIVATE_FINAL_URL),
+            _browser_command_mock(url=self.PRIVATE_FINAL_URL),
         )
 
         result = json.loads(browser_tool.browser_navigate(self.PUBLIC_URL))
@@ -317,7 +341,7 @@ class TestPostRedirectSsrf:
         monkeypatch.setattr(
             browser_tool,
             "_run_browser_command",
-            lambda *a, **kw: _make_browser_result(url=final),
+            _browser_command_mock(url=final),
         )
 
         result = json.loads(browser_tool.browser_navigate(self.PUBLIC_URL))
@@ -343,7 +367,7 @@ class TestPostRedirectSsrf:
         monkeypatch.setattr(
             browser_tool,
             "_run_browser_command",
-            lambda *a, **kw: _make_browser_result(url=imds_final),
+            _browser_command_mock(url=imds_final),
         )
 
         result = json.loads(browser_tool.browser_navigate(self.PUBLIC_URL))

@@ -24,6 +24,8 @@ export interface LinkTitleCurlRequestOptions {
 
 export function linkTitleCurlRequestArgs(url: string, options: LinkTitleCurlRequestOptions): string[] {
   return [
+    '--disable',
+    '--no-location',
     '--silent',
     '--show-error',
     '--max-time',

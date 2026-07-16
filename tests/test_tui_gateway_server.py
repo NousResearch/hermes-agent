@@ -5252,6 +5252,81 @@ def test_config_set_personality_integration_with_real_lookup_and_write(
         reset_hermes_home_override(token)
 
 
+def test_config_set_personality_invalid_integration_does_not_persist_or_mutate(
+    tmp_path, monkeypatch
+):
+    import yaml
+
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    cfg_file = home / "config.yaml"
+    cfg = {
+        "agent": {
+            "system_prompt": "before prompt",
+            "personalities": {
+                "broken": {
+                    "tone": 42
+                }
+            }
+        },
+        "display": {
+            "personality": "helper"
+        }
+    }
+    cfg_file.write_text(yaml.safe_dump(cfg), encoding="utf-8")
+
+    token = set_hermes_home_override(home)
+    monkeypatch.setattr(server, "_hermes_home", home)
+    try:
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+
+        agent = types.SimpleNamespace(
+            ephemeral_system_prompt="before overlay", _cached_system_prompt="old cached prompt"
+        )
+        session = _session(
+            agent=agent,
+            history=[],
+            history_version=1,
+        )
+        server._sessions["sid"] = session
+
+        monkeypatch.setattr(server, "_session_info", lambda _agent, *a: {"model": "?"})
+
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "personality",
+                    "value": "broken",
+                },
+            }
+        )
+
+        assert "error" in resp
+        error_msg = resp["error"]["message"].lower()
+        assert "invalid" in error_msg or "configuration" in error_msg or "personality" in error_msg
+
+        assert agent.ephemeral_system_prompt == "before overlay"
+        assert agent._cached_system_prompt == "old cached prompt"
+
+        written_cfg = yaml.safe_load(cfg_file.read_text(encoding="utf-8"))
+        assert written_cfg["display"]["personality"] == "helper"
+        assert written_cfg["agent"]["system_prompt"] == "before prompt"
+
+    finally:
+        server._sessions.pop("sid", None)
+        server._cfg_cache = None
+        server._cfg_mtime = None
+        server._cfg_path = None
+        reset_hermes_home_override(token)
+
+
 def test_session_compress_uses_compress_helper(monkeypatch):
     agent = types.SimpleNamespace()
     server._sessions["sid"] = _session(agent=agent)

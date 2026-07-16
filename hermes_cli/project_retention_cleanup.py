@@ -21,7 +21,6 @@ from hermes_cli.project_finalization_contract import (
     TERMINAL_OUTCOMES,
     get_project_finalization,
     list_project_members,
-    record_cleanup_journal,
 )
 
 
@@ -206,13 +205,21 @@ def _existing_plan_applied(conn: sqlite3.Connection, *, board_id: str, root_task
     return row is not None
 
 
-def _journal_for_plan(conn: sqlite3.Connection, plan_sha256: str) -> Any:
+def _journal_for_plan(
+    conn: sqlite3.Connection,
+    *,
+    board_id: str,
+    root_task_id: str,
+    generation: int,
+    plan_sha256: str,
+) -> Any:
     """Return an existing applied journal row for an exact plan, if present."""
     try:
         return conn.execute(
-            "SELECT * FROM project_cleanup_journal WHERE plan_sha256 = ? "
+            "SELECT * FROM project_cleanup_journal WHERE board_id = ? "
+            "AND root_task_id = ? AND generation = ? AND plan_sha256 = ? "
             "AND status = 'applied' ORDER BY id LIMIT 1",
-            (plan_sha256,),
+            (board_id, root_task_id, generation, plan_sha256),
         ).fetchone()
     except sqlite3.OperationalError:
         return None
@@ -330,6 +337,120 @@ def plan_project_cleanup(
     )
 
 
+def _validate_untrusted_plan_shape(plan: CleanupPlan) -> None:
+    """Reject malformed plan input before reading or mutating durable state."""
+    if not isinstance(plan, CleanupPlan):
+        raise ValueError("cleanup plan must be a CleanupPlan")
+    if not isinstance(plan.board_id, str) or not plan.board_id:
+        raise ValueError("cleanup plan board_id is required")
+    if not isinstance(plan.root_task_id, str) or not plan.root_task_id:
+        raise ValueError("cleanup plan root_task_id is required")
+    if not isinstance(plan.generation, int) or plan.generation < 1:
+        raise ValueError("cleanup plan generation is invalid")
+    if not isinstance(plan.eligible_task_ids, tuple) or any(
+        not isinstance(task_id, str) or not task_id for task_id in plan.eligible_task_ids
+    ):
+        raise ValueError("cleanup plan eligible_task_ids are invalid")
+    if len(set(plan.eligible_task_ids)) != len(plan.eligible_task_ids):
+        raise ValueError("cleanup plan eligible_task_ids are duplicated")
+    if not isinstance(plan.actions, tuple) or any(
+        not isinstance(action, CleanupAction)
+        or not isinstance(action.task_id, str)
+        or not action.task_id
+        or not isinstance(action.action, str)
+        for action in plan.actions
+    ):
+        raise ValueError("cleanup plan actions are invalid")
+    action_ids = tuple(action.task_id for action in plan.actions)
+    if len(set(action_ids)) != len(action_ids):
+        raise ValueError("cleanup plan actions are duplicated")
+    if not isinstance(plan.plan_sha256, str) or plan.plan_sha256 != _plan_hash(plan.canonical_payload()):
+        raise ValueError("cleanup plan hash is invalid")
+
+
+def _require_current_generation(conn: sqlite3.Connection, plan: CleanupPlan) -> None:
+    """Require the supplied identity to name the durable current generation."""
+    current = get_project_finalization(
+        conn,
+        board_id=plan.board_id,
+        root_task_id=plan.root_task_id,
+    )
+    expected = get_project_finalization(
+        conn,
+        board_id=plan.board_id,
+        root_task_id=plan.root_task_id,
+        generation=plan.generation,
+    )
+    if current is None or expected is None or _value(current, "generation") != plan.generation:
+        raise ValueError("cleanup plan does not name the current finalization generation")
+
+
+def _require_current_canonical_plan(conn: sqlite3.Connection, plan: CleanupPlan) -> CleanupPlan:
+    """Replan under the write lock and reject stale or caller-authored input."""
+    canonical = plan_project_cleanup(
+        conn,
+        board_id=plan.board_id,
+        root_task_id=plan.root_task_id,
+        generation=plan.generation,
+        now=_aware_now(None),
+    )
+    if not canonical.eligible:
+        raise ValueError(
+            "cleanup plan is not eligible and is not currently authorized: "
+            + "; ".join(canonical.refusal_reasons)
+        )
+    if (
+        canonical.already_applied
+        or plan.canonical_payload() != canonical.canonical_payload()
+        or plan.plan_sha256 != canonical.plan_sha256
+    ):
+        raise ValueError("cleanup plan is stale or tampered")
+    return canonical
+
+
+def _archive_current_terminal_task(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Archive a task only if its status remains terminal inside this transaction."""
+    cur = conn.execute(
+        "UPDATE tasks SET status = 'archived', "
+        "    claim_lock = NULL, claim_expires = NULL, worker_pid = NULL "
+        "WHERE id = ? AND status IN ('cancelled', 'done', 'failed')",
+        (task_id,),
+    )
+    if cur.rowcount != 1:
+        return False
+    run_id = kanban_db._end_run(
+        conn,
+        task_id,
+        outcome="reclaimed",
+        status="reclaimed",
+        summary="task archived with run still active",
+    )
+    kanban_db._append_event(conn, task_id, "archived", None, run_id=run_id)
+    return True
+
+
+def _record_cleanup_journal_in_txn(conn: sqlite3.Connection, **kwargs: Any) -> sqlite3.Row:
+    """Write the existing journal schema without opening a nested transaction."""
+    cur = conn.execute(
+        """
+        INSERT INTO project_cleanup_journal
+        (board_id, root_task_id, generation, plan_sha256, mode, status,
+         retention_cutoff, eligible_task_count, excluded_task_count,
+         deleted_task_count, archived_task_count, evidence_path, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            kwargs["board_id"], kwargs["root_task_id"], kwargs["generation"],
+            kwargs["plan_sha256"], kwargs["mode"], kwargs["status"],
+            kwargs["retention_cutoff"], kwargs["eligible_task_count"],
+            kwargs["excluded_task_count"], kwargs["deleted_task_count"],
+            kwargs["archived_task_count"], kwargs["evidence_path"],
+            int(datetime.now(timezone.utc).timestamp()),
+        ),
+    )
+    return conn.execute("SELECT * FROM project_cleanup_journal WHERE id = ?", (cur.lastrowid,)).fetchone()
+
+
 def apply_cleanup_plan(
     conn: sqlite3.Connection,
     plan: CleanupPlan,
@@ -346,46 +467,52 @@ def apply_cleanup_plan(
     """
     if dry_run:
         return CleanupResult(plan=plan, dry_run=True)
-    if not plan.eligible:
-        raise ValueError("cleanup plan is not eligible: " + "; ".join(plan.refusal_reasons))
-    if plan.already_applied:
-        return CleanupResult(plan=plan, dry_run=False)
-    existing_journal = _journal_for_plan(conn, plan.plan_sha256)
-    if existing_journal is not None:
-        return CleanupResult(plan=plan, dry_run=False, journal=existing_journal)
-    if plan.actions:
-        current_tasks = [kanban_db.get_task(conn, action.task_id) for action in plan.actions]
-        if any(task is None for task in current_tasks):
-            raise ValueError("cleanup plan member disappeared before apply")
-        current_statuses = [_value(task, "status") for task in current_tasks]
-        if current_statuses and all(status == "archived" for status in current_statuses):
-            return CleanupResult(plan=plan, dry_run=False)
-    archive = archive_action or kanban_db.archive_task
+    _validate_untrusted_plan_shape(plan)
     applied: list[str] = []
-    for action in plan.actions:
-        if action.action != "archive":
-            raise ValueError(f"unsupported cleanup action: {action.action!r}")
-        if archive(conn, action.task_id):
+    journal: Any = None
+    with kanban_db.write_txn(conn):
+        _require_current_generation(conn, plan)
+        existing_journal = _journal_for_plan(
+            conn,
+            board_id=plan.board_id,
+            root_task_id=plan.root_task_id,
+            generation=plan.generation,
+            plan_sha256=plan.plan_sha256,
+        )
+        if existing_journal is not None:
+            return CleanupResult(plan=plan, dry_run=False, journal=existing_journal)
+        canonical = _require_current_canonical_plan(conn, plan)
+        archive = archive_action or _archive_current_terminal_task
+        for action in canonical.actions:
+            if action.action != "archive":
+                raise ValueError(f"unsupported cleanup action: {action.action!r}")
+            if not archive(conn, action.task_id):
+                raise ValueError("cleanup plan member changed before archive")
             applied.append(action.task_id)
-    writer = journal_writer or record_cleanup_journal
-    journal = writer(
-        conn,
-        board_id=plan.board_id,
-        root_task_id=plan.root_task_id,
-        generation=plan.generation,
-        plan_sha256=plan.plan_sha256,
-        mode="apply",
-        status="applied",
-        retention_cutoff=(
-            int(datetime.fromisoformat(plan.retention_cutoff).timestamp())
-            if plan.retention_cutoff else None
-        ),
-        eligible_task_count=len(plan.eligible_task_ids),
-        excluded_task_count=len(plan.excluded_task_ids),
-        deleted_task_count=0,
-        archived_task_count=len(applied),
-        evidence_path=plan.evidence_paths[0] if plan.evidence_paths else None,
-    )
+        journal_kwargs = {
+            "board_id": canonical.board_id,
+            "root_task_id": canonical.root_task_id,
+            "generation": canonical.generation,
+            "plan_sha256": canonical.plan_sha256,
+            "mode": "apply",
+            "status": "applied",
+            "retention_cutoff": (
+                int(datetime.fromisoformat(canonical.retention_cutoff).timestamp())
+                if canonical.retention_cutoff else None
+            ),
+            "eligible_task_count": len(canonical.eligible_task_ids),
+            "excluded_task_count": len(canonical.excluded_task_ids),
+            "deleted_task_count": 0,
+            "archived_task_count": len(applied),
+            "evidence_path": canonical.evidence_paths[0] if canonical.evidence_paths else None,
+        }
+        journal = (
+            journal_writer(conn, **journal_kwargs)
+            if journal_writer is not None
+            else _record_cleanup_journal_in_txn(conn, **journal_kwargs)
+        )
+    if applied:
+        kanban_db.recompute_ready(conn)
     return CleanupResult(plan=plan, dry_run=False, applied_task_ids=tuple(applied), journal=journal)
 
 

@@ -1,5 +1,7 @@
 """Focused tests for safe project retention planning and application."""
+from dataclasses import replace
 import hashlib
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 
@@ -15,6 +17,7 @@ from hermes_cli.project_finalization_contract import (
     schedule_project_cleanup,
 )
 from hermes_cli.project_retention_cleanup import (
+    CleanupAction,
     apply_cleanup_plan,
     plan_project_cleanup,
 )
@@ -63,6 +66,18 @@ def _finalized(tmp_path, *, cleanup_after=None, include_artifacts=True, delivery
     return conn, root, child, unrelated
 
 
+def _rehash(plan):
+    payload = json.dumps(plan.canonical_payload(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return replace(plan, plan_sha256=hashlib.sha256(payload.encode("utf-8")).hexdigest())
+
+
+def _mutation_snapshot(conn):
+    return (
+        conn.execute("SELECT id, status FROM tasks ORDER BY id").fetchall(),
+        conn.execute("SELECT COUNT(*) FROM project_cleanup_journal").fetchone()[0],
+    )
+
+
 def test_early_cleanup_and_dry_run_are_refused_and_mutation_free(tmp_path):
     conn, root, child, unrelated = _finalized(tmp_path, cleanup_after=NOW + timedelta(hours=1))
     before = conn.execute("SELECT id, status FROM tasks ORDER BY id").fetchall()
@@ -108,6 +123,56 @@ def test_apply_archives_only_explicit_members_and_is_idempotent(tmp_path):
     second = apply_cleanup_plan(conn, plan)
     assert second.applied_task_ids == ()
     assert conn.execute("SELECT COUNT(*) FROM project_cleanup_journal").fetchone()[0] == 1
+
+
+def test_forged_eligible_plan_for_unrelated_task_is_refused_without_mutation(tmp_path):
+    conn, root, child, unrelated = _finalized(tmp_path)
+    plan = plan_project_cleanup(conn, board_id="board", root_task_id=root, now=NOW)
+    forged = _rehash(replace(
+        plan,
+        eligible_task_ids=(unrelated,),
+        actions=(CleanupAction(unrelated),),
+    ))
+    before = _mutation_snapshot(conn)
+    with pytest.raises(ValueError, match="stale or tampered"):
+        apply_cleanup_plan(conn, forged)
+    assert _mutation_snapshot(conn) == before
+
+
+@pytest.mark.parametrize("status", ("running", "ready", "blocked"))
+def test_stale_member_that_becomes_active_is_refused_without_mutation(tmp_path, status):
+    conn, root, child, unrelated = _finalized(tmp_path)
+    plan = plan_project_cleanup(conn, board_id="board", root_task_id=root, now=NOW)
+    conn.execute("UPDATE tasks SET status=? WHERE id=?", (status, child))
+    before = _mutation_snapshot(conn)
+    with pytest.raises(ValueError, match="currently authorized"):
+        apply_cleanup_plan(conn, plan)
+    assert _mutation_snapshot(conn) == before
+
+
+@pytest.mark.parametrize("field", ("eligible_task_ids", "actions"))
+def test_tampered_plan_actions_or_eligible_ids_are_refused_without_mutation(tmp_path, field):
+    conn, root, child, unrelated = _finalized(tmp_path)
+    plan = plan_project_cleanup(conn, board_id="board", root_task_id=root, now=NOW)
+    tampered = replace(plan, **{
+        field: (root,) if field == "eligible_task_ids" else (CleanupAction(root),),
+    })
+    before = _mutation_snapshot(conn)
+    with pytest.raises(ValueError, match="stale or tampered"):
+        apply_cleanup_plan(conn, _rehash(tampered))
+    assert _mutation_snapshot(conn) == before
+
+
+def test_generation_or_hash_mismatch_is_refused_without_mutation(tmp_path):
+    conn, root, child, unrelated = _finalized(tmp_path)
+    plan = plan_project_cleanup(conn, board_id="board", root_task_id=root, now=NOW)
+    before = _mutation_snapshot(conn)
+    with pytest.raises(ValueError, match="current finalization generation"):
+        apply_cleanup_plan(conn, _rehash(replace(plan, generation=2)))
+    assert _mutation_snapshot(conn) == before
+    with pytest.raises(ValueError, match="hash is invalid"):
+        apply_cleanup_plan(conn, replace(plan, plan_sha256="0" * 64))
+    assert _mutation_snapshot(conn) == before
 
 
 def test_timezone_aware_retention_duration_is_required_when_unscheduled(tmp_path):

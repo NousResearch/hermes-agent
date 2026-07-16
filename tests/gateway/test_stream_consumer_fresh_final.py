@@ -12,16 +12,20 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 
 from gateway.stream_consumer import GatewayStreamConsumer, StreamConsumerConfig
 
 
-def _make_adapter(*, supports_delete: bool = True) -> MagicMock:
-    """Build a minimal MagicMock adapter wired for send/edit/delete."""
-    adapter = MagicMock()
+class _Adapter:
+    """Concrete test double with no implicit optional adapter hooks."""
+
+
+def _make_adapter(*, supports_delete: bool = True) -> _Adapter:
+    """Build a minimal adapter wired for send/edit and optional delete."""
+    adapter = _Adapter()
     adapter.REQUIRES_EDIT_FINALIZE = False
     adapter.MAX_MESSAGE_LENGTH = 4096
     adapter.send = AsyncMock(return_value=SimpleNamespace(
@@ -32,10 +36,6 @@ def _make_adapter(*, supports_delete: bool = True) -> MagicMock:
     ))
     if supports_delete:
         adapter.delete_message = AsyncMock(return_value=True)
-    else:
-        # Adapter without the optional delete_message method — fresh-final
-        # should still work, it just leaves the stale preview in place.
-        del adapter.delete_message  # type: ignore[attr-defined]
     return adapter
 
 

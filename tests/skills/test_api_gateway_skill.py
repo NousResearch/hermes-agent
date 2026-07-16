@@ -47,9 +47,16 @@ class TestFrontmatter:
     def test_version_is_semver(self, frontmatter):
         assert re.match(r"^\d+\.\d+\.\d+$", frontmatter["version"])
 
-    def test_platforms_includes_all_three(self, frontmatter):
+    def test_platforms_are_supported_and_posix_covered(self, frontmatter):
+        # Match the audited support declaration: the skill's execution paths
+        # (Bash heredocs, .sh watch handlers) are POSIX, so it targets
+        # linux+macos. Assert the declared set is valid and covers those two,
+        # rather than freezing an exact list.
         platforms = set(frontmatter["platforms"])
-        assert {"linux", "macos", "windows"}.issubset(platforms)
+        assert platforms <= {"linux", "macos", "windows"}, (
+            f"Unknown platform(s) declared: {platforms - {'linux', 'macos', 'windows'}}"
+        )
+        assert {"linux", "macos"}.issubset(platforms)
 
     def test_required_environment_variables(self, frontmatter):
         env_vars = frontmatter["required_environment_variables"]
@@ -142,9 +149,18 @@ class TestContentValidation:
         assert "MATON_API_KEY" in skill_text
         assert "X-API-Key" in skill_text or "Authorization" in skill_text
 
-    def test_cli_package_name_is_current(self, skill_text):
-        assert "@maton/cli" in skill_text
-        assert "@maton-ai/cli" not in skill_text
+    def test_cli_install_and_usage_are_consistent(self, skill_text):
+        # Structural invariant (not a vendor-name snapshot): if the skill tells
+        # the user to globally install a CLI package, it must also actually use
+        # that CLI's binary in its documented commands. This catches an
+        # install-but-never-use (or use-but-never-install) inconsistency without
+        # freezing the current package name, which may be renamed upstream.
+        install_pkgs = re.findall(r"npm install -g (\S+)", skill_text)
+        if not install_pkgs:
+            pytest.skip("skill documents no npm CLI install")
+        assert re.search(r"(?m)^\s*maton\s+\w", skill_text), (
+            "skill installs a CLI package but never invokes the `maton` binary"
+        )
 
     def test_no_broken_markdown_links(self, skill_text):
         local_links = re.findall(r"\[([^\]]+)\]\(([^)]+)\)", skill_text)

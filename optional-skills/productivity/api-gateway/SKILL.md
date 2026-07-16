@@ -2,12 +2,11 @@
 name: api-gateway
 description: Managed API proxy for 140+ services via single auth token.
 version: 1.0.0
-author: Maton (maton)
+author: Byungkyu Park (byungkyu), Maton (maton)
 license: MIT
 platforms:
   - linux
   - macos
-  - windows
 required_environment_variables:
   - name: MATON_API_KEY
     prompt: Maton API key for authenticating gateway requests
@@ -1311,7 +1310,7 @@ EOF
 maton trigger create --source google-mail --event-type email.received \
   --connection-id {connection_id} \
   --parameter labels=INBOX \
-  --destination '{"url":"https://api.maton.ai/slack/api/chat.postMessage","method":"POST","name":"slack","headers":{"Authorization":"Bearer '"$MATON_API_KEY"'","Content-Type":"application/json"},"body_template":"{\"channel\": \"C0123456789\", \"text\": \"New email: {{ payload.snippet }}\"}"}'
+  --destination '{"url":"https://api.maton.ai/slack/api/chat.postMessage","method":"POST","name":"slack","headers":{"Content-Type":"application/json"},"body_template":"{\"channel\": \"C0123456789\", \"text\": \"New email: {{ payload.snippet }}\"}"}'
 ```
 
 ### Code Examples

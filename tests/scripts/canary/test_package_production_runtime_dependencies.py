@@ -322,6 +322,187 @@ def test_root_sealed_config_requires_exact_owner_group_mode_and_one_link(
         )
 
 
+def test_tree_identity_hashes_zero_byte_regular_files_canonically(
+    tmp_path: Path,
+) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    empty = tree / "empty"
+    value = tree / "value"
+    empty.write_bytes(b"")
+    value.write_bytes(b"x")
+
+    records = [
+        {
+            "path": "empty",
+            "kind": "file",
+            "mode": empty.stat().st_mode & 0o7777,
+            "size": 0,
+            "sha256": package._sha256(b""),
+        },
+        {
+            "path": "value",
+            "kind": "file",
+            "mode": value.stat().st_mode & 0o7777,
+            "size": 1,
+            "sha256": package._sha256(b"x"),
+        },
+    ]
+
+    assert package._tree_identity(
+        tree,
+        maximum_files=2,
+        maximum_bytes=1,
+    ) == {
+        "file_count": 2,
+        "total_bytes": 1,
+        "tree_sha256": package._sha256(_canonical(records)),
+    }
+    with pytest.raises(
+        package.RuntimeDependencyError,
+        match="runtime_dependency_source_invalid",
+    ):
+        package._read_regular(empty, maximum=1)
+
+
+def test_tree_identity_rejects_hardlinks(tmp_path: Path) -> None:
+    hardlinked = tmp_path / "hardlinked"
+    hardlinked.mkdir()
+    first = hardlinked / "first"
+    first.write_bytes(b"")
+    os.link(first, hardlinked / "second")
+    with pytest.raises(
+        package.RuntimeDependencyError,
+        match="runtime_dependency_tree_invalid",
+    ):
+        package._tree_identity(
+            hardlinked,
+            maximum_files=2,
+            maximum_bytes=1,
+        )
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="FIFO creation is unavailable")
+def test_tree_identity_rejects_special_files(tmp_path: Path) -> None:
+    special = tmp_path / "special"
+    special.mkdir()
+    os.mkfifo(special / "pipe")
+    with pytest.raises(
+        package.RuntimeDependencyError,
+        match="runtime_dependency_tree_invalid",
+    ):
+        package._tree_identity(
+            special,
+            maximum_files=1,
+            maximum_bytes=1,
+        )
+
+
+def test_tree_identity_rejects_zero_byte_read_races(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    empty = tree / "empty"
+    empty.write_bytes(b"")
+    original = Path.read_bytes
+
+    def raced(path: Path) -> bytes:
+        payload = original(path)
+        if path == empty:
+            path.write_bytes(b"changed")
+        return payload
+
+    monkeypatch.setattr(Path, "read_bytes", raced)
+    with pytest.raises(
+        package.RuntimeDependencyError,
+        match="runtime_dependency_source_raced",
+    ):
+        package._tree_identity(
+            tree,
+            maximum_files=1,
+            maximum_bytes=1,
+        )
+
+
+def test_distribution_identity_hashes_zero_byte_files_canonically(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    release = tmp_path / "release"
+    interpreter = release / "venv/bin/python"
+    site_packages = release / "venv/lib/python3.11/site-packages"
+    empty = site_packages / "example/py.typed"
+    value = site_packages / "example/__init__.py"
+    empty.parent.mkdir(parents=True)
+    empty.write_bytes(b"")
+    value.write_bytes(b"x")
+
+    class Distribution:
+        version = package.DDGS_LOCKED_DISTRIBUTIONS["certifi"]
+        files = (Path("example/__init__.py"), Path("example/py.typed"))
+
+        @staticmethod
+        def locate_file(entry: Path) -> Path:
+            return site_packages / entry
+
+    monkeypatch.setattr(
+        package.importlib.metadata,
+        "distribution",
+        lambda _name: Distribution(),
+    )
+    monkeypatch.setattr(package, "_release_interpreter", lambda _release: interpreter)
+    records = [
+        {
+            "path": "lib/python3.11/site-packages/example/__init__.py",
+            "size": 1,
+            "sha256": package._sha256(b"x"),
+        },
+        {
+            "path": "lib/python3.11/site-packages/example/py.typed",
+            "size": 0,
+            "sha256": package._sha256(b""),
+        },
+    ]
+
+    assert package._distribution_identity("certifi", release) == {
+        "version": Distribution.version,
+        "file_count": 2,
+        "files_sha256": package._sha256(_canonical(records)),
+    }
+
+
+def test_distribution_identity_normalizes_missing_file_races(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    release = tmp_path / "release"
+    interpreter = release / "venv/bin/python"
+    site_packages = release / "venv/lib/python3.11/site-packages"
+
+    class Distribution:
+        version = package.DDGS_LOCKED_DISTRIBUTIONS["certifi"]
+        files = (Path("missing"),)
+
+        @staticmethod
+        def locate_file(entry: Path) -> Path:
+            return site_packages / entry
+
+    monkeypatch.setattr(
+        package.importlib.metadata,
+        "distribution",
+        lambda _name: Distribution(),
+    )
+    monkeypatch.setattr(package, "_release_interpreter", lambda _release: interpreter)
+
+    with pytest.raises(
+        package.RuntimeDependencyError,
+        match="runtime_dependency_source_unavailable",
+    ):
+        package._distribution_identity("certifi", release)
+
+
 def test_verify_manifest_is_observational_and_rejects_drift(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,

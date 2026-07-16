@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 import threading
@@ -189,6 +190,30 @@ def _env_float(name: str, default: float) -> float:
         return float(os.getenv(name, str(default)))
     except (TypeError, ValueError):
         return default
+
+
+def _codex_wait_notice_recovery(
+    *,
+    stale_timeout: float,
+    ttfb_enabled: bool,
+    ttfb_timeout: float,
+    last_event_ts: Optional[float],
+    call_start: float,
+    idle_enabled: bool,
+    idle_timeout: float,
+) -> str:
+    """Describe the earliest enabled Codex watchdog on the call timeline."""
+    deadlines: list[float] = []
+    if math.isfinite(stale_timeout):
+        deadlines.append(stale_timeout)
+    if last_event_ts is None:
+        if ttfb_enabled and math.isfinite(ttfb_timeout):
+            deadlines.append(ttfb_timeout)
+    elif idle_enabled and math.isfinite(idle_timeout):
+        deadlines.append(max(0.0, last_event_ts - call_start) + idle_timeout)
+    if not deadlines:
+        return ""
+    return f"; auto-reconnect at {int(min(deadlines))}s"
 
 
 # ── Cross-turn stale-call circuit breaker (#58962) ─────────────────────
@@ -611,16 +636,19 @@ def interruptible_api_call(agent, api_kwargs: dict):
         # usually a slow/overloaded provider, but the UI never said so).
         if _poll_count % 100 == 0:  # 100 × 0.3s = 30s
             _elapsed = time.time() - _call_start
-            _deadline = _stale_timeout
-            if (
-                _ttfb_enabled
-                and getattr(agent, "_codex_stream_last_event_ts", None) is None
-            ):
-                _deadline = min(_deadline, _ttfb_timeout)
+            _recovery = _codex_wait_notice_recovery(
+                stale_timeout=_stale_timeout,
+                ttfb_enabled=_ttfb_enabled,
+                ttfb_timeout=_ttfb_timeout,
+                last_event_ts=getattr(agent, "_codex_stream_last_event_ts", None),
+                call_start=_call_start,
+                idle_enabled=_codex_idle_enabled,
+                idle_timeout=_codex_idle_timeout,
+            )
             agent._emit_wait_notice(
                 f"⏳ waiting on {api_kwargs.get('model', 'the provider')} — "
                 f"{int(_elapsed)}s with no response yet (provider may be slow "
-                f"or overloaded; auto-reconnect at {int(_deadline)}s)"
+                f"or overloaded{_recovery})"
             )
 
         _elapsed = time.time() - _call_start

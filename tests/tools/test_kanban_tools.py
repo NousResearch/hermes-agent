@@ -112,9 +112,10 @@ def test_worker_with_kanban_toolset_still_hides_board_routing(monkeypatch, tmp_p
     assert {
         "kanban_list",
         "kanban_unblock",
+        "kanban_unlink",
     }.isdisjoint(kanban), (
         f"Board-routing tools leaked into worker schema: "
-        f"{kanban & {'kanban_list', 'kanban_unblock'}}"
+        f"{kanban & {'kanban_list', 'kanban_unblock', 'kanban_unlink'}}"
     )
 
 
@@ -138,7 +139,7 @@ def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
         "kanban_list",
         "kanban_show", "kanban_complete", "kanban_block", "kanban_heartbeat",
         "kanban_comment", "kanban_create", "kanban_link",
-        "kanban_unblock",
+        "kanban_unblock", "kanban_unlink",
         "kanban_attach", "kanban_attach_url", "kanban_attachments",
     }
     assert kanban == expected, f"expected {expected}, got {kanban}"
@@ -1307,6 +1308,149 @@ def test_link_rejects_cycle(worker_env):
     assert json.loads(out).get("error")
 
 
+def test_unlink_is_orchestrator_only_at_runtime(worker_env):
+    """A stale schema/dispatch path must not let a task worker unlink edges."""
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        child = kb.create_task(conn, title="child", parents=[worker_env])
+
+    out = json.loads(kt._handle_unlink({
+        "parent_id": worker_env,
+        "child_id": child,
+    }))
+    assert "orchestrator-only" in out["error"]
+
+    with kb.connect() as conn:
+        assert kb.parent_ids(conn, child) == [worker_env]
+
+
+def test_unlink_rejects_missing_self_unknown_and_duplicate(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        parent = kb.create_task(conn, title="parent")
+        child = kb.create_task(conn, title="child", parents=[parent])
+
+    assert json.loads(kt._handle_unlink({"parent_id": parent})).get("error")
+    assert json.loads(kt._handle_unlink({"child_id": child})).get("error")
+    assert json.loads(kt._handle_unlink({
+        "parent_id": parent, "child_id": parent,
+    })).get("error")
+    assert "unknown task" in json.loads(kt._handle_unlink({
+        "parent_id": "t_missing", "child_id": child,
+    }))["error"]
+
+    first = json.loads(kt._handle_unlink({
+        "parent_id": parent, "child_id": child,
+    }))
+    assert first == {"ok": True, "parent_id": parent, "child_id": child}
+
+    duplicate = json.loads(kt._handle_unlink({
+        "parent_id": parent, "child_id": child,
+    }))
+    assert "does not exist" in duplicate["error"]
+
+
+def test_unlink_rejects_unknown_board_without_creating_it(monkeypatch, worker_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    assert not kb.board_exists("typo-board")
+    out = json.loads(kt._handle_unlink({
+        "parent_id": "t_parent",
+        "child_id": "t_child",
+        "board": "typo-board",
+    }))
+    assert "does not exist" in out["error"]
+    assert not kb.board_exists("typo-board")
+
+
+def test_unlink_routes_to_one_board_and_recomputes_child(monkeypatch, multi_board_env):
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as default_conn:
+        default_parent = kb.create_task(default_conn, title="default-parent")
+        default_child = kb.create_task(
+            default_conn, title="default-child", parents=[default_parent],
+        )
+    with kb.connect(board="alt") as alt_conn:
+        done_parent = kb.create_task(alt_conn, title="done-parent")
+        kb.complete_task(alt_conn, done_parent)
+        blocker = kb.create_task(alt_conn, title="blocker")
+        alt_child = kb.create_task(
+            alt_conn, title="alt-child", parents=[done_parent, blocker],
+        )
+        assert kb.get_task(alt_conn, alt_child).status == "todo"
+
+    out = json.loads(kt._handle_unlink({
+        "parent_id": blocker,
+        "child_id": alt_child,
+        "board": "alt",
+    }))
+    assert out["ok"] is True
+
+    with kb.connect() as default_conn:
+        assert kb.parent_ids(default_conn, default_child) == [default_parent]
+    with kb.connect(board="alt") as alt_conn:
+        assert kb.parent_ids(alt_conn, alt_child) == [done_parent]
+        assert kb.get_task(alt_conn, alt_child).status == "ready"
+
+
+def test_unlink_rewires_oversized_macro_graph_without_collateral_changes(
+    monkeypatch, worker_env,
+):
+    """A 76-parent macro gate can be reduced without changing its final gate."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from tools import kanban_tools as kt
+
+    with kb.connect() as conn:
+        parents = [kb.create_task(conn, title=f"parent-{i}") for i in range(76)]
+        for task_id in parents[:-1]:
+            kb.complete_task(conn, task_id)
+        blocker = parents[-1]
+        kb.claim_task(conn, blocker, claimer="macro-test")
+        macro = kb.create_task(conn, title="macro", parents=parents)
+        final_gate = kb.create_task(conn, title="final", parents=[macro])
+        aggregator = kb.create_task(conn, title="aggregator", parents=parents[:-1])
+        unrelated_parent = kb.create_task(conn, title="unrelated-parent")
+        unrelated_child = kb.create_task(
+            conn, title="unrelated-child", parents=[unrelated_parent],
+        )
+        kb.add_comment(conn, macro, "tester", "preserve me")
+        blocker_runs = len(kb.list_runs(conn, blocker))
+        macro_comments = len(kb.list_comments(conn, macro))
+        kb.link_tasks(conn, aggregator, macro)
+
+    for parent_id in parents[:-1]:
+        result = json.loads(kt._handle_unlink({
+            "parent_id": parent_id,
+            "child_id": macro,
+        }))
+        assert result["ok"] is True
+
+    with kb.connect() as conn:
+        assert kb.parent_ids(conn, macro) == sorted([aggregator, blocker])
+        assert kb.parent_ids(conn, final_gate) == [macro]
+        assert kb.get_task(conn, macro).status == "todo"
+        assert kb.get_task(conn, final_gate).status == "todo"
+        assert kb.parent_ids(conn, unrelated_child) == [unrelated_parent]
+        assert len(kb.list_runs(conn, blocker)) == blocker_runs
+        assert len(kb.list_comments(conn, macro)) == macro_comments
+        events = [e for e in kb.list_events(conn, macro) if e.kind == "unlinked"]
+        assert len(events) == 75
+        assert {
+            (e.payload["parent"], e.payload["child"]) for e in events
+        } == {(parent_id, macro) for parent_id in parents[:-1]}
+
+
 def test_unblock_happy_path(monkeypatch, worker_env):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb
@@ -2086,6 +2230,7 @@ def test_board_param_in_all_schemas():
         kt.KANBAN_ATTACH_SCHEMA,
         kt.KANBAN_ATTACH_URL_SCHEMA,
         kt.KANBAN_ATTACHMENTS_SCHEMA,
+        kt.KANBAN_UNLINK_SCHEMA,
     ]
     for schema in schemas:
         props = schema["parameters"]["properties"]

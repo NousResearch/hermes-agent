@@ -743,6 +743,10 @@ def init_agent(
     # commentary when the provider later returns it as a completed interim
     # assistant message.
     agent._current_streamed_assistant_text = ""
+    # Completed interim messages delivered during the current user turn.
+    # Unlike token-stream tracking, this spans Codex continuation/tool calls so
+    # repeated commentary is not re-sent before normalization can deduplicate it.
+    agent._delivered_interim_texts: set[str] = set()
 
     # Optional current-turn user-message override used when the API-facing
     # user message intentionally differs from the persisted transcript

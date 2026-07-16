@@ -4754,8 +4754,11 @@ class AIAgent:
         )
         return bool(streamed) and streamed == visible_content
 
-    def _extract_codex_interim_visible_text(self, assistant_msg: Dict[str, Any]) -> str:
-        """Extract visible Codex Responses commentary text.
+    def _extract_codex_interim_visible_parts(
+        self,
+        assistant_msg: Dict[str, Any],
+    ) -> List[str]:
+        """Extract visible Codex commentary as one string per message item.
 
         Codex Responses can keep user-facing mid-turn narration as structured
         ``phase=commentary`` message items while final answer text remains in
@@ -4765,9 +4768,9 @@ class AIAgent:
         """
         items = assistant_msg.get("codex_message_items")
         if not isinstance(items, list):
-            return ""
+            return []
 
-        parts: List[str] = []
+        messages: List[str] = []
         for item in items:
             if not isinstance(item, dict):
                 continue
@@ -4779,6 +4782,7 @@ class AIAgent:
             content_parts = item.get("content")
             if not isinstance(content_parts, list):
                 continue
+            item_parts: List[str] = []
             for part in content_parts:
                 if not isinstance(part, dict):
                     continue
@@ -4786,13 +4790,20 @@ class AIAgent:
                     continue
                 text = part.get("text")
                 if isinstance(text, str) and text.strip():
-                    parts.append(text.strip())
+                    item_parts.append(text)
+            visible = "".join(item_parts).strip()
+            if visible:
+                visible = self._strip_think_blocks(visible).strip()
+                visible = redact_sensitive_text(visible)
+            if visible:
+                messages.append(visible)
+        return messages
 
-        visible = "\n\n".join(parts).strip()
-        if visible:
-            visible = self._strip_think_blocks(visible).strip()
-            visible = redact_sensitive_text(visible)
-        return visible
+    def _extract_codex_interim_visible_text(self, assistant_msg: Dict[str, Any]) -> str:
+        """Extract all visible Codex commentary for comparison/fallback."""
+        return "\n\n".join(
+            self._extract_codex_interim_visible_parts(assistant_msg)
+        ).strip()
 
     def _interim_assistant_visible_text(self, assistant_msg: Dict[str, Any]) -> str:
         """Return the exact assistant text eligible for interim delivery.
@@ -4808,17 +4819,74 @@ class AIAgent:
         content = assistant_msg.get("content")
         return self._strip_think_blocks(content or "").strip()
 
+    def _interim_text_was_delivered(self, text: str) -> bool:
+        normalized = self._normalize_interim_visible_text(text)
+        if not normalized:
+            return False
+        return normalized in getattr(self, "_delivered_interim_texts", set())
+
+    def _record_delivered_interim_text(self, text: str) -> None:
+        normalized = self._normalize_interim_visible_text(text)
+        if normalized:
+            delivered = getattr(self, "_delivered_interim_texts", None)
+            if not isinstance(delivered, set):
+                delivered = set()
+                self._delivered_interim_texts = delivered
+            delivered.add(normalized)
+
+    def _fire_streamed_codex_commentary(self, text: str) -> None:
+        """Deliver a completed live Codex commentary message immediately."""
+        cb = getattr(self, "interim_assistant_callback", None)
+        if cb is None or not isinstance(text, str):
+            return
+        visible = self._strip_think_blocks(text).strip()
+        if visible:
+            visible = redact_sensitive_text(visible)
+        if not visible or visible == "(empty)" or self._interim_text_was_delivered(visible):
+            return
+        try:
+            cb(visible, already_streamed=False)
+            self._record_delivered_interim_text(visible)
+        except Exception:
+            logger.debug("interim_assistant_callback error", exc_info=True)
+
     def _emit_interim_assistant_message(self, assistant_msg: Dict[str, Any]) -> None:
         """Surface a real mid-turn assistant commentary message to the UI layer."""
         cb = getattr(self, "interim_assistant_callback", None)
         if cb is None or not isinstance(assistant_msg, dict):
             return
-        visible = self._interim_assistant_visible_text(assistant_msg)
-        if not visible or visible == "(empty)":
+        commentary_parts = self._extract_codex_interim_visible_parts(assistant_msg)
+        undelivered_parts: List[str] = []
+        pending_keys: set[str] = set()
+        for part in commentary_parts:
+            key = self._normalize_interim_visible_text(part)
+            if (
+                not key
+                or key in pending_keys
+                or self._interim_text_was_delivered(part)
+            ):
+                continue
+            pending_keys.add(key)
+            undelivered_parts.append(part)
+        visible = (
+            "\n\n".join(undelivered_parts).strip()
+            if commentary_parts
+            else self._interim_assistant_visible_text(assistant_msg)
+        )
+        if (
+            not visible
+            or visible == "(empty)"
+            or self._interim_text_was_delivered(visible)
+        ):
             return
         already_streamed = self._interim_content_was_streamed(visible)
         try:
             cb(visible, already_streamed=already_streamed)
+            if undelivered_parts:
+                for part in undelivered_parts:
+                    self._record_delivered_interim_text(part)
+            else:
+                self._record_delivered_interim_text(visible)
         except Exception:
             logger.debug("interim_assistant_callback error", exc_info=True)
 

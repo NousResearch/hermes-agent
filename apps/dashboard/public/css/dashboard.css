@@ -816,6 +816,20 @@ a { color: inherit; }
 .evolve-rollback { padding: 3px 9px; font-size: 11px; color: var(--muted); }
 .evolve-rollback:hover { color: var(--status-warning); border-color: color-mix(in srgb, var(--status-warning) 45%, transparent); }
 
+/* ---------- model routing panel ---------- */
+.routing-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--hairline);
+}
+.routing-meta { flex: 1; min-width: 0; }
+.routing-tier { font-size: 12px; font-weight: 600; letter-spacing: 0.03em; }
+.routing-input { width: 220px; flex: 0 0 auto; font-size: 12px; }
+.routing-input:disabled { opacity: 0.5; cursor: not-allowed; }
+.routing-actions { display: flex; gap: 8px; margin-top: 14px; }
+
 /* ---------- focus timer ---------- */
 
 .focus-presets { display: flex; gap: 4px; flex-wrap: wrap; justify-content: center; margin-bottom: 6px; }

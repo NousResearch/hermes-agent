@@ -1012,6 +1012,8 @@ class Api:
         self.evolve = Reflection(self.data_dir / "proposals.json", self)
         self._ics_epoch = 0
         self._memory_lock = threading.Lock()
+        self._routing_lock = threading.Lock()
+        self.assistant.router.set_overrides(self._routing_load())
 
     # -- agent memory (a plain markdown file the agent reads/writes) --------
     @property
@@ -1278,6 +1280,42 @@ class Api:
 
     def assistant_status(self, params: dict) -> dict:
         return self.assistant.status()
+
+    # -- routing overrides (Phase 1 UI) -------------------------------------
+    @property
+    def routing_path(self) -> Path:
+        return self.data_dir / "routing.json"
+
+    def _routing_load(self) -> dict:
+        try:
+            loaded = json.loads(self.routing_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return {t: str(loaded[t]) for t in ("fast", "core", "deep")
+                if isinstance(loaded, dict) and loaded.get(t)}
+
+    def routing_get(self, params: dict) -> dict:
+        return self.assistant.router.snapshot()
+
+    def routing_set(self, body: dict) -> dict:
+        overrides = self._routing_load()
+        updates = body.get("overrides") if isinstance(body.get("overrides"), dict) else body
+        for tier in ("fast", "core", "deep"):
+            if tier not in updates:
+                continue
+            model = updates[tier]
+            if model in (None, ""):
+                overrides.pop(tier, None)  # clear → back to env/default
+                continue
+            if not isinstance(model, str) or not re.fullmatch(r"[A-Za-z0-9._-]{1,80}", model):
+                raise ApiError(400, f"invalid model id for {tier}")
+            overrides[tier] = model
+        with self._routing_lock:
+            self.routing_path.parent.mkdir(parents=True, exist_ok=True)
+            self.routing_path.write_text(json.dumps(overrides, ensure_ascii=False, indent=1),
+                                         encoding="utf-8")
+        self.assistant.router.set_overrides(overrides)
+        return self.assistant.router.snapshot()
 
     # -- automations & notifications ----------------------------------------
     def automations_list(self, params: dict) -> dict:
@@ -1547,6 +1585,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/state": "state_get",
         "/api/state/rev": "state_rev",
         "/api/assistant/status": "assistant_status",
+        "/api/assistant/routing": "routing_get",
         "/api/automations": "automations_list",
         "/api/notifications": "notifications",
         "/api/feeds": "feeds_config",
@@ -1572,6 +1611,7 @@ class HubHandler(BaseHTTPRequestHandler):
         "/api/backup/restore": "backup_restore",
         "/api/assistant/telemetry": "telemetry_post",
         "/api/killswitch": "killswitch_set",
+        "/api/assistant/routing": "routing_set",
         "/api/evolve/reflect": "evolve_reflect",
         "/api/evolve/proposal": "evolve_proposal",
     }

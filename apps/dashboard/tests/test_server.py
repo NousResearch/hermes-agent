@@ -1107,6 +1107,43 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(status["mode"], "local")
         self.assertIsNone(status["routing"])
 
+    def test_file_override_applies_when_no_env(self):
+        r = router_mod.Router(overrides={"core": "claude-custom-core"})
+        self.assertEqual(r.tiers["core"], "claude-custom-core")
+        self.assertEqual(r.route("chat", "hi")["model"], "claude-custom-core")
+        # untouched tiers keep their defaults
+        self.assertEqual(r.tiers["fast"], router_mod._TIER_DEFAULTS["fast"])
+
+    def test_env_beats_file_override(self):
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {"HERMES_HUB_MODEL_DEEP": "claude-from-env"}):
+            r = router_mod.Router(overrides={"deep": "claude-from-file"})
+            self.assertEqual(r.tiers["deep"], "claude-from-env")
+            self.assertTrue(r.env_locked()["deep"])
+
+    def test_set_overrides_updates_live(self):
+        r = router_mod.Router()
+        r.set_overrides({"fast": "claude-x"})
+        self.assertEqual(r.tiers["fast"], "claude-x")
+        r.set_overrides({})  # cleared → default returns
+        self.assertEqual(r.tiers["fast"], router_mod._TIER_DEFAULTS["fast"])
+
+    def test_routing_set_persists_and_validates(self):
+        api = server.Api(offline=True, data_dir=Path(tempfile.mkdtemp()))
+        snap = api.routing_set({"overrides": {"core": "claude-sonnet-x"}})
+        self.assertEqual(snap["tiers"]["core"], "claude-sonnet-x")
+        self.assertEqual(snap["overrides"]["core"], "claude-sonnet-x")
+        # persisted: a fresh Api on the same dir picks it up
+        api2 = server.Api(offline=True, data_dir=api.data_dir)
+        self.assertEqual(api2.assistant.router.tiers["core"], "claude-sonnet-x")
+        # clearing removes it
+        snap = api.routing_set({"overrides": {"core": ""}})
+        self.assertEqual(snap["tiers"]["core"], router_mod._TIER_DEFAULTS["core"])
+        # bad id rejected
+        with self.assertRaises(server.ApiError):
+            api.routing_set({"overrides": {"deep": "bad id!"}})
+
 
 class EvolveTests(unittest.TestCase):
     def _api(self):

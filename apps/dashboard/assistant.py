@@ -479,7 +479,7 @@ class Assistant:
             "mode": self.mode,
             # In tiered mode there's no single model; report the pin or the
             # default core tier as the headline, with the full table alongside.
-            "model": (self.router.pin or TIERS["core"]) if claude else None,
+            "model": (self.router.pin or self.router.tiers["core"]) if claude else None,
             "routing": self.router.snapshot() if claude else None,
             "permissions": dict(TOOL_TIERS),
             "sdk_installed": _HAVE_SDK,

@@ -690,6 +690,29 @@ await page.locator(".accent-swatch[aria-label='Accent cyan']").click();
 check("accent reset clears override", await page.evaluate(() =>
   document.documentElement.style.getPropertyValue("--accent") === ""));
 
+// ---- model routing overrides (Phase 1 UI) -----------------------------------
+await page.locator(".menu-wrap > .btn").click();
+await page.locator(".menu-item", { hasText: "Model routing" }).click();
+await page.waitForSelector(".routing-row", { timeout: 10000 });
+check("routing panel shows three tiers", (await page.locator(".routing-row").count()) === 3);
+const coreInput = page.locator(".routing-row", { hasText: "CORE" }).locator(".routing-input");
+await coreInput.fill("claude-sonnet-test");
+await page.locator(".routing-actions .btn-primary").click();
+await page.waitForFunction(() => document.querySelector(".routing-input") &&
+  [...document.querySelectorAll(".routing-row")].some((r) => r.textContent.includes("claude-sonnet-test")),
+  null, { timeout: 10000 });
+check("routing override saved and active", true);
+const routingCore = await page.evaluate(async () =>
+  (await (await fetch("/api/assistant/routing")).json()).overrides.core);
+check("routing override persisted server-side", routingCore === "claude-sonnet-test");
+await page.locator(".routing-actions .btn", { hasText: "Reset" }).click();
+await page.waitForFunction(() =>
+  [...document.querySelectorAll(".routing-input")].every((i) => !i.value),
+  null, { timeout: 10000 });
+check("routing reset clears overrides", true);
+await page.keyboard.press("Escape");
+await page.waitForSelector(".sum-pop", { state: "detached" });
+
 // ---- evolution rollback (Phase 6 audit) -------------------------------------
 // Runs last: rollback restores a snapshot, which advances the sync rev and
 // re-renders the board, so nothing downstream may depend on it.

@@ -20,11 +20,29 @@ import time
 from collections import deque
 
 # Tier → model id. Defaults track the current Claude line-up.
-TIERS = {
-    "fast": os.environ.get("HERMES_HUB_MODEL_FAST", "claude-haiku-4-5-20251001"),
-    "core": os.environ.get("HERMES_HUB_MODEL_CORE", "claude-sonnet-5"),
-    "deep": os.environ.get("HERMES_HUB_MODEL_DEEP", "claude-opus-4-8"),
+_TIER_DEFAULTS = {
+    "fast": "claude-haiku-4-5-20251001",
+    "core": "claude-sonnet-5",
+    "deep": "claude-opus-4-8",
 }
+_TIER_ENV = {"fast": "HERMES_HUB_MODEL_FAST", "core": "HERMES_HUB_MODEL_CORE",
+             "deep": "HERMES_HUB_MODEL_DEEP"}
+
+
+def env_override(tier: str) -> str | None:
+    return os.environ.get(_TIER_ENV[tier]) or None
+
+
+def effective_tiers(overrides: dict | None = None) -> dict:
+    """Resolve each tier with precedence: env var > file override > default."""
+    out = {}
+    for tier, default in _TIER_DEFAULTS.items():
+        out[tier] = env_override(tier) or (overrides or {}).get(tier) or default
+    return out
+
+
+# Back-compat: the env-or-default table (no file overrides), resolved at import.
+TIERS = effective_tiers()
 
 # Default tier per task type. Editable — this is the "routing table".
 TASK_TIERS = {
@@ -59,12 +77,26 @@ class Router:
     recording what tier *would* have been chosen, so cost analysis stays honest.
     """
 
-    def __init__(self, pin: str | None = None, max_deep_per_hour: int = 30) -> None:
+    def __init__(self, pin: str | None = None, max_deep_per_hour: int = 30,
+                 overrides: dict | None = None) -> None:
         self.pin = pin
         self.max_deep_per_hour = max_deep_per_hour
+        self._overrides = dict(overrides or {})
+        self.tiers = effective_tiers(self._overrides)
         self._deep_calls: deque[float] = deque()
         self._log: deque[dict] = deque(maxlen=MAX_LOG)
         self._lock = threading.Lock()
+
+    def set_overrides(self, overrides: dict | None) -> dict:
+        """Adopt file-level per-tier overrides (env still wins). Returns tiers."""
+        with self._lock:
+            self._overrides = dict(overrides or {})
+            self.tiers = effective_tiers(self._overrides)
+            return dict(self.tiers)
+
+    def env_locked(self) -> dict:
+        """Which tiers are pinned by an env var (file overrides can't move them)."""
+        return {tier: env_override(tier) is not None for tier in _TIER_DEFAULTS}
 
     # -- core decision -------------------------------------------------------
     def classify(self, task_type: str, text: str = "") -> tuple[str, str]:
@@ -91,7 +123,7 @@ class Router:
                 "requested_tier": requested,
                 "reason": reason,
                 "pinned": self.pin is not None,
-                "model": self.pin or TIERS[tier],
+                "model": self.pin or self.tiers[tier],
                 "at": time.time(),
             }
             self._log.append(decision)
@@ -116,7 +148,10 @@ class Router:
         with self._lock:
             recent = list(self._log)[-10:]
         return {
-            "tiers": dict(TIERS),
+            "tiers": dict(self.tiers),
+            "overrides": dict(self._overrides),
+            "env_locked": self.env_locked(),
+            "defaults": dict(_TIER_DEFAULTS),
             "pinned": self.pin,
             "deep_calls_last_hour": self.deep_calls_last_hour(),
             "deep_cap_per_hour": self.max_deep_per_hour,

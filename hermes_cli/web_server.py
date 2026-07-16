@@ -4726,9 +4726,9 @@ def _install_memory_provider_external_dependencies(
         if install_cmd:
             try:
                 install = _run_setup_command(
-                    install_cmd,
+                    shlex.split(install_cmd) if isinstance(install_cmd, str) else install_cmd,
                     display=install_cmd,
-                    shell=True,
+                    shell=False,
                     timeout=300,
                 )
             except Exception as exc:

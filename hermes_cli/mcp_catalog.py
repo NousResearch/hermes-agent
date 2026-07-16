@@ -375,16 +375,49 @@ def _install_root() -> Path:
 def _run_bootstrap(cwd: Path, commands: List[str]) -> None:
     """Execute bootstrap commands in *cwd*. Raise CatalogError on first failure.
 
-    Each command runs through the shell (so `&&` etc. work). The output is
-    streamed to the user's terminal for visibility.
+    Commands from MCP catalog JSON are split with ``shlex.split()`` and run
+    without ``shell=True`` to prevent shell metacharacter injection from
+    malicious catalog entries. Commands that contain shell operators (``&&``,
+    ``||``, ``|``, ``;``) are split into a sequence of individual commands
+    and executed separately, preserving the chaining semantics without
+    exposing a shell to the input string.
     """
+    import shlex as _shlex
+
+    _SHELL_OPERATORS = ("&&", "||", "|", ";", ">", "<", "&")
+
     for cmd in commands:
         print(color(f"  $ {cmd}", Colors.DIM))
-        proc = subprocess.run(cmd, cwd=str(cwd), shell=True)
-        if proc.returncode != 0:
-            raise CatalogError(
-                f"bootstrap step failed (exit {proc.returncode}): {cmd}"
+        # If the command contains shell operators, split on them and run
+        # each subcommand separately. This preserves the "run A then B"
+        # semantics without passing a raw string to shell=True.
+        if any(op in cmd for op in _SHELL_OPERATORS):
+            # Split on && and || — the most common chaining operators
+            parts = re.split(r"\s*(?:&&|\|\||;)\s*", cmd)
+            failed = False
+            for part in parts:
+                part = part.strip()
+                if not part:
+                    continue
+                proc = subprocess.run(
+                    _shlex.split(part), cwd=str(cwd)
+                )
+                if proc.returncode != 0:
+                    failed = True
+                    break
+            if failed:
+                raise CatalogError(
+                    f"bootstrap step failed: {cmd}"
+                )
+        else:
+            # Simple command — split and run without shell
+            proc = subprocess.run(
+                _shlex.split(cmd), cwd=str(cwd)
             )
+            if proc.returncode != 0:
+                raise CatalogError(
+                    f"bootstrap step failed (exit {proc.returncode}): {cmd}"
+                )
 
 
 def _do_git_install(entry: CatalogEntry) -> Path:

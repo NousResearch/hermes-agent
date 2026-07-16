@@ -1250,12 +1250,16 @@ def _transcribe_local_command(file_path: str, model_name: str) -> Dict[str, Any]
                 language=shlex.quote(language),
                 model=shlex.quote(normalized_model),
             )
-            # User-provided templates (env var) may contain shell syntax; auto-detected commands are safe for list mode.
-            use_shell = bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
-            if use_shell:
-                subprocess.run(command, shell=True, check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
-            else:
-                subprocess.run(shlex.split(command), check=True, capture_output=True, text=True, timeout=300, stdin=subprocess.DEVNULL, creationflags=windows_hide_flags())
+            # Always use shlex.split() and run without shell=True to prevent
+            # shell metacharacter injection from malicious templates.
+            # The individual interpolated values (input_path, output_dir,
+            # language, model) are already shlex.quote()-wrapped above, so
+            # splitting the full command is safe. See issue #65729.
+            subprocess.run(
+                shlex.split(command),
+                check=True, capture_output=True, text=True, timeout=300,
+                stdin=subprocess.DEVNULL, creationflags=windows_hide_flags()
+            )
             
 
             txt_files = sorted(Path(output_dir).glob("*.txt"))

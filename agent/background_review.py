@@ -696,6 +696,32 @@ def _run_review_in_thread(
 
     review_agent = None
     review_messages: List[Dict] = []
+
+    # P2.1: terminal dispatch must be structurally exactly-once. The success
+    # branch fires background_review_finished(status="finished") BEFORE the
+    # summary/output code below (so a plugin can extract <mv> from the full
+    # transcript and commit on this daemon thread). If that post-emit output
+    # later raises, the outer except must NOT emit a second terminal event —
+    # otherwise the plugin's counters double-count (fork_started must equal
+    # fork_finished + fork_failed). Centralize both paths through this one-shot
+    # helper so the invariant holds structurally.
+    _terminal_emitted = {"done": False}
+
+    def _emit_terminal(status: str, error: Optional[str], msgs: List[Dict]) -> None:
+        if context is None or _terminal_emitted["done"]:
+            return
+        _terminal_emitted["done"] = True
+        try:
+            from hermes_cli.plugins import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "background_review_finished",
+                context=context, messages=msgs,
+                status=status, error=error,
+            )
+        except Exception:
+            logger.warning("background_review_finished hook dispatch failed",
+                           exc_info=True)
+
     try:
         # Silence stdout/stderr for THIS worker thread only.  A process-global
         # ``contextlib.redirect_stdout(devnull)`` here would also blank
@@ -954,19 +980,10 @@ def _run_review_in_thread(
         # P2.1: background_review_finished — fired BEFORE summarize so plugins
         # (Mnemosya) extract <mv> from the full review_messages and commit on
         # the daemon thread. Replaces the summarize_background_review_actions
-        # monkey-patch seam. The host fires it exactly once per fork; on the
-        # success path here, on the failure path in the except below.
-        if context is not None:
-            try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
-                _invoke_hook(
-                    "background_review_finished",
-                    context=context, messages=review_messages,
-                    status="finished", error=None,
-                )
-            except Exception:
-                logger.warning("background_review_finished hook dispatch failed",
-                               exc_info=True)
+        # monkey-patch seam. Fired exactly once per fork (see _emit_terminal):
+        # on the success path here, on the failure path in the except below —
+        # never both.
+        _emit_terminal("finished", None, review_messages)
 
         # Scan the review agent's messages for successful tool actions
         # and surface a compact summary to the user. Tool messages
@@ -1015,18 +1032,11 @@ def _run_review_in_thread(
     except Exception as e:
         # P2.1: fire background_review_finished on the failure path too so the
         # plugin's _active_reviews entry is always retired (counters stay
-        # consistent: fork_started == fork_finished + fork_failed).
-        if context is not None:
-            try:
-                from hermes_cli.plugins import invoke_hook as _invoke_hook
-                _invoke_hook(
-                    "background_review_finished",
-                    context=context, messages=list(review_messages),
-                    status="failed", error=str(e),
-                )
-            except Exception:
-                logger.warning("background_review_finished hook dispatch failed",
-                               exc_info=True)
+        # consistent: fork_started == fork_finished + fork_failed). No-ops if
+        # the success path already emitted a terminal event (an exception raised
+        # by the post-"finished" summary/output code lands here — it must not
+        # reclassify an already-finished fork as failed).
+        _emit_terminal("failed", str(e), list(review_messages))
         logger.warning("Background memory/skill review failed: %s", e)
         agent._emit_auxiliary_failure("background review", e)
     finally:

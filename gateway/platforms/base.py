@@ -2613,6 +2613,17 @@ class BasePlatformAdapter(ABC):
             if event.text:
                 sink.on_commentary(event.text)
 
+    @property
+    def send_progress_without_edit(self) -> bool:
+        """Whether gateway tool progress may be sent as separate messages.
+
+        The default is fail-closed for adapters that inherit the base
+        ``edit_message`` implementation: draining progress avoids turning every
+        tool call into a separate chat bubble on platforms that cannot edit in
+        place. Adapters with intentionally compact progress UX may opt in.
+        """
+        return False
+
     def format_tool_event(self, event: Any, *, mode: str = "all",
                           preview_max_len: int = 40) -> Optional[str]:
         """Return the rendered chrome for a ToolCallChunk, or None to eat it.

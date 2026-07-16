@@ -221,6 +221,8 @@ Common issues:
 | `PHOTON_ALLOW_ALL_USERS`  | `false`            | Dev only — accept any sender               |
 | `PHOTON_REQUIRE_MENTION`  | `false`            | Require a wake word before responding in groups |
 | `PHOTON_MENTION_PATTERNS` | Hermes wake words  | JSON list / comma / newline regex patterns for group mentions |
+| `PHOTON_MARKDOWN`       | `true`             | Send replies as markdown so iMessage renders native formatting |
+| `PHOTON_MOBILE_CARDS`   | `true`             | Render tool progress as compact mobile supervisor cards; also opts Photon into separate progress sends despite lacking edit support |
 | `PHOTON_DASHBOARD_HOST`   | `app.photon.codes` | Override the dashboard / device-login host |
 | `PHOTON_SPECTRUM_HOST`    | `spectrum.photon.codes` | Override the Spectrum API host |
 

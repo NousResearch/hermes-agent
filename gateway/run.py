@@ -1813,6 +1813,55 @@ from gateway.whatsapp_identity import (
 logger = logging.getLogger(__name__)
 
 
+def _should_drain_progress_for_no_edit_adapter(adapter: Any) -> bool:
+    """Return True when gateway progress must stay silent for no-edit adapters.
+
+    Platforms that inherit ``BasePlatformAdapter.edit_message`` cannot update a
+    single progress bubble, so the gateway historically drains their progress
+    queue to avoid one chat message per tool call. A platform may opt into
+    separate sends only by explicitly setting ``send_progress_without_edit``.
+    """
+    if type(adapter).edit_message is not BasePlatformAdapter.edit_message:
+        return False
+    return not bool(getattr(adapter, "send_progress_without_edit", False))
+
+
+def _format_adapter_tool_progress(
+    adapter: Any,
+    *,
+    tool_name: Optional[str],
+    preview: Optional[str],
+    args: Optional[dict],
+    mode: str,
+    preview_max_len: int,
+    index: int = 0,
+) -> Optional[str]:
+    """Render a tool-start line through an adapter override when present.
+
+    The legacy gateway progress callback remains the production source of tool
+    progress events. This helper is the bridge that lets adapter-level
+    ``format_tool_event`` implementations participate in that active path while
+    leaving the historical gateway formatting untouched for adapters that do not
+    override the hook.
+    """
+    if not adapter or not tool_name:
+        return None
+    if type(adapter).format_tool_event is BasePlatformAdapter.format_tool_event:
+        return None
+    from gateway.stream_events import ToolCallChunk
+
+    return adapter.format_tool_event(
+        ToolCallChunk(
+            tool_name=tool_name,
+            preview=preview,
+            args=args,
+            index=index,
+        ),
+        mode=mode,
+        preview_max_len=preview_max_len,
+    )
+
+
 _OWN_POLICY_OPEN_ENV = {
     Platform.WECOM: ("WECOM_DM_POLICY", "WECOM_GROUP_POLICY", "WECOM_ALLOW_ALL_USERS"),
     Platform.WEIXIN: ("WEIXIN_DM_POLICY", "WEIXIN_GROUP_POLICY", "WEIXIN_ALLOW_ALL_USERS"),
@@ -17309,9 +17358,10 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
         # Queue for progress messages (thread-safe)
         progress_queue = queue.Queue() if needs_progress_queue else None
-        last_tool = [None]  # Mutable container for tracking in closure
-        last_progress_msg = [None]  # Track last message for dedup
+        last_tool: List[Optional[str]] = [None]  # Mutable container for tracking in closure
+        last_progress_msg: List[Optional[Any]] = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
+        progress_tool_index = [0]  # Tool-start ordinal for adapter render hooks
         # True when the previously enqueued progress line was a terminal
         # fenced code block — consecutive terminal calls then drop the
         # repeated "💻 terminal" header and render back-to-back blocks.
@@ -17467,6 +17517,36 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             if progress_mode == "new" and tool_name == last_tool[0]:
                 return
             last_tool[0] = tool_name
+            current_tool_index = progress_tool_index[0]
+            progress_tool_index[0] += 1
+
+            # Let platform adapters with explicit structured render hooks own
+            # their presentation on the active legacy gateway progress path.
+            try:
+                _progress_adapter = self._adapter_for_source(source)
+            except Exception:
+                _progress_adapter = None
+            from agent.display import get_tool_preview_max_len
+            _pl = get_tool_preview_max_len()
+            _adapter_msg = _format_adapter_tool_progress(
+                _progress_adapter,
+                tool_name=tool_name,
+                preview=preview,
+                args=args,
+                mode=progress_mode,
+                preview_max_len=_pl if _pl > 0 or progress_mode == "verbose" else 40,
+                index=current_tool_index,
+            )
+            if _adapter_msg:
+                last_was_terminal_block[0] = False
+                if _adapter_msg == last_progress_msg[0]:
+                    repeat_count[0] += 1
+                    progress_queue.put(("__dedup__", _adapter_msg, repeat_count[0]))
+                    return
+                last_progress_msg[0] = _adapter_msg
+                repeat_count[0] = 0
+                progress_queue.put(_adapter_msg)
+                return
 
             # Build progress message with primary argument preview
             from agent.display import get_tool_emoji
@@ -17683,9 +17763,12 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 return
 
             # Skip tool progress for platforms that don't support message
-            # editing (e.g. iMessage/BlueBubbles) — each progress update
-            # would become a separate message bubble, which is noisy.
-            if type(adapter).edit_message is BasePlatformAdapter.edit_message:
+            # editing unless the adapter explicitly opts into compact separate
+            # sends. This preserves the no-edit anti-spam guard for generic
+            # SMS/iMessage-like platforms while allowing native card UIs such as
+            # Photon mobile supervisor cards.
+            adapter_can_edit = type(adapter).edit_message is not BasePlatformAdapter.edit_message
+            if not adapter_can_edit and _should_drain_progress_for_no_edit_adapter(adapter):
                 while not progress_queue.empty():
                     try:
                         progress_queue.get_nowait()
@@ -17695,7 +17778,7 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
 
             progress_lines = []      # Accumulated tool lines for the CURRENT editable bubble
             progress_msg_id = None   # ID of the current progress message to edit
-            can_edit = progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
+            can_edit = adapter_can_edit and progress_grouping != "separate"  # "separate" = one message per tool (pre-v0.9 behavior)
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 

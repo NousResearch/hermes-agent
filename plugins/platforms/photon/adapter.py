@@ -1425,6 +1425,11 @@ class PhotonAdapter(BasePlatformAdapter):
             return content
         return strip_markdown(content)
 
+    @property
+    def send_progress_without_edit(self) -> bool:
+        """Photon opts into separate progress sends only for compact cards."""
+        return bool(self.mobile_cards)
+
     def format_tool_event(
         self,
         event: Any,

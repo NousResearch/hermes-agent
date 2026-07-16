@@ -88,7 +88,7 @@ def test_task_scoped_orchestrator_with_kanban_toolset_sees_board_routing(
     monkeypatch, tmp_path,
 ):
     """A router card keeps its admin surface when its profile explicitly
-    opts into ``toolsets: [kanban]``.
+    opts into ``platform_toolsets.cli: [kanban]``.
 
     Kanban orchestrators are themselves dispatcher-spawned tasks, so
     HERMES_KANBAN_TASK alone cannot distinguish them from focused workers.
@@ -96,7 +96,9 @@ def test_task_scoped_orchestrator_with_kanban_toolset_sees_board_routing(
     monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
     home = tmp_path / ".hermes"
     home.mkdir()
-    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     import tools.kanban_tools  # ensure registered
@@ -120,12 +122,52 @@ def test_task_scoped_orchestrator_with_kanban_toolset_sees_board_routing(
     )
 
 
-def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
-    """Orchestrator profiles with toolsets: [kanban] see all kanban tools."""
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+def test_legacy_top_level_toolsets_do_not_grant_admin_capability(
+    monkeypatch, tmp_path,
+):
+    """The deprecated top-level toolsets key is not a privilege boundary."""
+    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_fake")
     home = tmp_path / ".hermes"
     home.mkdir()
     (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    import tools.kanban_tools  # ensure registered
+    from tools.registry import invalidate_check_fn_cache, registry
+    from toolsets import resolve_toolset
+
+    invalidate_check_fn_cache()
+    schema = registry.get_definitions(set(resolve_toolset("kanban")), quiet=True)
+    names = {s["function"].get("name") for s in schema if "function" in s}
+    admin = {
+        "kanban_list",
+        "kanban_unblock",
+        "kanban_reassign",
+        "kanban_archive",
+        "kanban_notify_subscribe",
+    }
+    assert names.isdisjoint(admin)
+
+
+def test_admin_tools_are_static_kanban_members():
+    from toolsets import resolve_toolset
+
+    static = set(resolve_toolset("kanban", include_registry=False))
+    assert {
+        "kanban_reassign",
+        "kanban_archive",
+        "kanban_notify_subscribe",
+    }.issubset(static)
+
+
+def test_kanban_tools_visible_with_toolset_config(monkeypatch, tmp_path):
+    """Orchestrator profiles with platform CLI kanban see all kanban tools."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
     monkeypatch.setenv("HERMES_HOME", str(home))
 
     import tools.kanban_tools  # ensure registered
@@ -254,7 +296,9 @@ def test_task_scoped_explicit_orchestrator_can_call_admin_handler(
     from pathlib import Path
 
     home = Path(os.environ["HERMES_HOME"])
-    (home / "config.yaml").write_text("toolsets:\n  - kanban\n")
+    (home / "config.yaml").write_text(
+        "platform_toolsets:\n  cli:\n    - kanban\n"
+    )
     monkeypatch.setenv("HERMES_KANBAN_TASK", ready_task)
 
     from tools import kanban_tools as kt

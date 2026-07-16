@@ -52,14 +52,25 @@ KANBAN_ADMIN_BATCH_MAX = 100
 
 
 def _profile_has_kanban_toolset() -> bool:
-    # Uses load_config() which has mtime-based caching, so this adds
-    # negligible overhead. The check_fn results are further TTL-cached
-    # (~30s) by the tool registry.
+    """Return whether the active CLI profile explicitly enables ``kanban``.
+
+    ``platform_toolsets.cli`` is the authoritative configuration consumed by
+    worker dispatch. The deprecated top-level ``toolsets`` key is deliberately
+    not a privilege boundary. ``load_config()`` is mtime-cached and check_fn
+    results receive a further short TTL in the tool registry.
+    """
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        toolsets = cfg.get("toolsets", [])
-        return "kanban" in toolsets
+        platform_toolsets = cfg.get("platform_toolsets", {}) if isinstance(cfg, dict) else {}
+        configured = (
+            platform_toolsets.get("cli", [])
+            if isinstance(platform_toolsets, dict)
+            else []
+        )
+        if not isinstance(configured, list):
+            return False
+        return any(str(item).strip().lower() == "kanban" for item in configured)
     except Exception:
         return False
 
@@ -86,11 +97,16 @@ def _check_kanban_orchestrator_mode() -> bool:
 
     Kanban orchestrators are themselves dispatcher-spawned tasks, so
     ``HERMES_KANBAN_TASK`` cannot distinguish a router card from a focused
-    worker. The profile's configured ``toolsets: [kanban]`` is the capability
-    boundary; regular worker profiles receive lifecycle tools through the
-    dispatcher but do not carry this explicit config opt-in.
+    worker. The profile's configured ``platform_toolsets.cli: [kanban]`` is
+    the capability boundary; regular worker profiles receive lifecycle tools
+    through the dispatcher but do not carry this explicit config opt-in.
     """
     return _profile_has_kanban_toolset()
+
+
+def _is_task_scoped_worker_context() -> bool:
+    """Return True for task workers without the explicit router capability."""
+    return bool(os.environ.get("HERMES_KANBAN_TASK")) and not _check_kanban_orchestrator_mode()
 
 
 # ---------------------------------------------------------------------------
@@ -365,7 +381,7 @@ def _require_orchestrator_tool(tool_name: str) -> Optional[str]:
     structured tool_error so the model gets a clear refusal instead of
     silently mutating board state from a worker context.
     """
-    if os.environ.get("HERMES_KANBAN_TASK") and not _profile_has_kanban_toolset():
+    if _is_task_scoped_worker_context():
         return tool_error(
             f"{tool_name} is orchestrator-only; dispatcher-spawned workers "
             "must use kanban_complete, kanban_block, kanban_heartbeat, or "

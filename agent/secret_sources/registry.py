@@ -48,6 +48,11 @@ logger = logging.getLogger(__name__)
 _SOURCES: Dict[str, SecretSource] = {}
 _BUILTINS_LOADED = False
 
+# Canonical names of the deliberately-closed bundled source set. Callers
+# (e.g. the plugin-discovery re-pull) use this to distinguish plugin sources
+# from in-tree ones without hard-coding a list at each call site.
+BUILTIN_SOURCE_NAMES: frozenset = frozenset({"bitwarden", "onepassword"})
+
 
 @dataclass
 class AppliedVar:

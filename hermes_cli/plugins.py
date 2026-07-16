@@ -1316,13 +1316,21 @@ class PluginManager:
             raise
 
     def _refresh_secret_sources_after_discovery(self) -> None:
-        """If any non-bundled secret source is enabled, reset cache and re-apply.
+        """If any plugin secret source is enabled, reset cache and re-apply.
 
-        No-op when only built-in sources exist or no secrets config is enabled.
+        Enablement is delegated to each source's ``is_enabled(cfg)`` — the
+        same contract the orchestrator uses (``registry._ordered_enabled_sources``)
+        — so a source with custom activation logic is honored, not just
+        ``secrets.<name>.enabled``.
+
+        No-op when only bundled sources exist or none are enabled.
         Fail-open: never raise into discover_and_load.
         """
         try:
-            from agent.secret_sources.registry import list_sources
+            from agent.secret_sources.registry import (
+                BUILTIN_SOURCE_NAMES,
+                list_sources,
+            )
             from hermes_cli.env_loader import load_hermes_dotenv, reset_secret_source_cache
         except Exception:
             return
@@ -1330,13 +1338,13 @@ class PluginManager:
             sources = list_sources()
         except Exception:
             return
-        builtin = {"bitwarden", "onepassword", "1password"}
-        plugin_names = [
-            getattr(s, "name", "") for s in sources if getattr(s, "name", "") not in builtin
+        plugin_sources = [
+            s for s in sources if getattr(s, "name", "") not in BUILTIN_SOURCE_NAMES
         ]
-        if not plugin_names:
+        if not plugin_sources:
             return
-        # Only re-pull when at least one plugin source appears enabled in config.
+        # Load the secrets config once; hand each source its own section and
+        # let its is_enabled() decide (honours custom activation extensions).
         try:
             from hermes_cli.config import load_config
 
@@ -1344,23 +1352,26 @@ class PluginManager:
             secrets = cfg.get("secrets") or {}
         except Exception:
             secrets = {}
-        enabled_plugin = False
-        for name in plugin_names:
+        enabled_names = []
+        for source in plugin_sources:
+            name = getattr(source, "name", "")
             section = secrets.get(name)
-            if isinstance(section, dict) and section.get("enabled"):
-                enabled_plugin = True
-                break
-            if section is True:
-                enabled_plugin = True
-                break
-        if not enabled_plugin:
+            section = section if isinstance(section, dict) else {}
+            try:
+                if source.is_enabled(section):
+                    enabled_names.append(name)
+            except Exception:
+                # A source whose is_enabled() raises is skipped, mirroring
+                # the orchestrator's defensive posture.
+                continue
+        if not enabled_names:
             return
         try:
             reset_secret_source_cache()
             load_hermes_dotenv()
             logger.debug(
                 "Re-applied secret sources after plugin discovery for: %s",
-                ", ".join(sorted(plugin_names)),
+                ", ".join(sorted(enabled_names)),
             )
         except Exception as exc:
             logger.debug("secret source re-apply after discovery failed: %s", exc)

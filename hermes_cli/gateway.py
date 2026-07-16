@@ -2684,25 +2684,91 @@ def _build_service_path_dirs(project_root: Path | None = None) -> list[str]:
     return candidates
 
 
-def _stable_service_working_dir() -> str:
-    """Return a WorkingDirectory that will not disappear out from under systemd.
+def _path_is_temporary(path: Path) -> bool:
+    """Return whether *path* resolves under a system temporary directory."""
+    import tempfile
 
-    The gateway does NOT need its cwd to be the source checkout — ``ExecStart``
-    uses an absolute python interpreter and ``-m hermes_cli.main``, so module
-    resolution does not depend on cwd. Pinning ``WorkingDirectory`` to
-    ``PROJECT_ROOT`` (``Path(__file__).parent.parent``) is actively harmful:
-    when the unit is generated from a transient checkout — a ``.worktrees/``
-    dir, or a clone that ``hermes update`` later relocates/removes — the path
-    rots. systemd then fails the start at the CHDIR step (``status=200/CHDIR``,
-    "Changing to the requested working directory failed") *before* Python
-    loads, so the on-boot ``refresh_systemd_unit_if_needed()`` self-heal never
-    runs and ``Restart=always`` crash-loops forever on a dead directory.
+    resolved = path.resolve()
+    temp_roots = {
+        Path(tempfile.gettempdir()).resolve(),
+        Path("/tmp"),
+        Path("/var/tmp"),
+        Path("/private/tmp"),
+        Path("/private/var/tmp"),
+    }
+    return any(resolved == root or root in resolved.parents for root in temp_roots)
 
-    ``HERMES_HOME`` is the stable anchor: it is where config/state/logs live,
-    it never moves, and it is guaranteed to exist whenever the gateway is
-    meaningfully installed. Fall back to ``PROJECT_ROOT`` only if HERMES_HOME
-    cannot be resolved (it always can in practice).
+
+def _configured_runtime_code_root() -> Path | None:
+    """Return the declared Hermes code root for this profile, if configured.
+
+    ``runtime.code_root`` is a deployment contract, not a convenience cwd. It
+    must name an existing, absolute, non-temporary Hermes source tree. Invalid
+    declarations fail closed so service generation cannot silently point at a
+    different checkout than the operator approved.
     """
+    config = read_raw_config()
+    runtime = config.get("runtime") if isinstance(config, dict) else None
+    raw = runtime.get("code_root") if isinstance(runtime, dict) else None
+    if raw in (None, ""):
+        return None
+    if not isinstance(raw, str):
+        raise ValueError("runtime.code_root must be an absolute path string")
+
+    path = Path(raw).expanduser()
+    if not path.is_absolute():
+        raise ValueError("runtime.code_root must be an absolute path")
+    try:
+        resolved = path.resolve(strict=True)
+    except (OSError, RuntimeError) as exc:
+        raise ValueError(f"runtime.code_root does not exist: {path}") from exc
+    if not resolved.is_dir():
+        raise ValueError(f"runtime.code_root is not a directory: {resolved}")
+    if _path_is_temporary(resolved):
+        raise ValueError(f"runtime.code_root cannot be temporary: {resolved}")
+    if not (resolved / "hermes_cli" / "main.py").is_file():
+        raise ValueError(
+            f"runtime.code_root is not a Hermes source tree; missing hermes_cli/main.py: {resolved}"
+        )
+    return resolved
+
+
+def _runtime_code_root_status() -> dict[str, Path | bool | None]:
+    """Describe whether the configured deployment root matches imported code."""
+    configured = _configured_runtime_code_root()
+    imported = PROJECT_ROOT.resolve()
+    return {
+        "configured": configured,
+        "imported": imported,
+        "matches": None if configured is None else configured == imported,
+    }
+
+
+def _require_runtime_code_root_match() -> Path | None:
+    """Fail closed when service generation runs from an unapproved code tree."""
+    info = _runtime_code_root_status()
+    configured = info["configured"]
+    if configured is not None and not info["matches"]:
+        raise RuntimeError(
+            "runtime.code_root does not match the imported Hermes code: "
+            f"configured={configured}, imported={info['imported']}. "
+            "Run the profile-bound Hermes executable before installing, starting, or refreshing the service."
+        )
+    return configured if isinstance(configured, Path) else None
+
+
+def _stable_service_working_dir() -> str:
+    """Return a stable, explicitly declared service WorkingDirectory.
+
+    When ``runtime.code_root`` is configured, it is the profile's authoritative
+    deployment slot and must be used by service generation. Otherwise preserve
+    the standard Hermes behavior of anchoring at HERMES_HOME, never at a
+    transient source checkout.
+    """
+    configured = _require_runtime_code_root_match()
+    if configured is not None:
+        return str(configured)
+
     try:
         home = get_hermes_home()
         if home and Path(home).is_dir():
@@ -4512,11 +4578,32 @@ def launchd_status(deep: bool = False):
 
     # ── Report ──
     print(f"Launchd plist: {plist_path}")
-    if launchd_plist_is_current():
+    runtime_config_error = None
+    try:
+        runtime_info = _runtime_code_root_status()
+        definition_current = launchd_plist_is_current()
+    except (ValueError, RuntimeError) as exc:
+        runtime_info = None
+        definition_current = False
+        runtime_config_error = str(exc)
+
+    if definition_current:
         print("✓ Service definition matches the current Hermes install")
     else:
         print("⚠ Service definition is stale relative to the current Hermes install")
-        print("  Run: hermes gateway start")
+        if runtime_config_error:
+            print(f"  Invalid runtime deployment contract: {runtime_config_error}")
+        else:
+            print("  Run: hermes gateway start")
+
+    if runtime_info and runtime_info["configured"] is not None:
+        print(f"Configured runtime root: {runtime_info['configured']}")
+        print(f"Imported Hermes root: {runtime_info['imported']}")
+        if runtime_info["matches"]:
+            print("✓ Running Hermes code matches runtime.code_root")
+        else:
+            print("✗ Running Hermes code does not match runtime.code_root")
+            print("  Hold restart/promotion until the interpreter is bound to the configured runtime")
 
     if service_listed:
         if launchd_pid is not None:

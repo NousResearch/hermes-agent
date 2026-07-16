@@ -16,6 +16,7 @@ servers like Unreal Engine's editor MCP). Its cadence is configurable via
 Discovery gating ported from anomalyco/opencode#31271.
 """
 import asyncio
+import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
@@ -378,3 +379,77 @@ class TestKeepaliveProbeFallback:
         assert task._ping_unsupported is False
 
 
+
+
+@pytest.mark.asyncio
+class TestKeepaliveFailureLogging:
+    """The keepalive warning must name the failure it reports (#65787).
+
+    The exceptions this path actually sees — ``TimeoutError`` from the probe's
+    ``wait_for``, ``CancelledError``, ``ConnectionResetError`` — are raised with
+    no args, so ``str(exc)`` is ``""``. Under ``%s`` the warning renders as
+    "...triggering reconnect:" with nothing after the colon, which is what hid
+    the original reconnect-loop for days. ``%r`` always names the type.
+    """
+
+    async def _keepalive_failure_message(self, task, caplog):
+        """Drive one keepalive cycle whose probe fails, return the warning text.
+
+        Same ``asyncio.wait`` stub as :class:`TestKeepaliveProbe` — the probe
+        failure breaks the loop on the first cycle, so no shutdown is needed.
+        """
+        async def fake_wait(tasks, timeout=None, return_when=None):
+            return set(), set(tasks)  # keepalive timeout: nothing completed
+
+        import tools.mcp_tool as mcp_mod
+        orig = mcp_mod.asyncio.wait
+        mcp_mod.asyncio.wait = fake_wait
+        try:
+            with caplog.at_level(logging.WARNING, logger="tools.mcp_tool"):
+                reason = await task._wait_for_lifecycle_event()
+        finally:
+            mcp_mod.asyncio.wait = orig
+
+        messages = [
+            r.getMessage() for r in caplog.records if "keepalive failed" in r.getMessage()
+        ]
+        assert len(messages) == 1
+        return reason, messages[0]
+
+    def _task_whose_ping_raises(self, exc):
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(tools=SimpleNamespace())
+        # A non-(-32601) ping error is a genuine liveness failure, so the real
+        # _keepalive_probe propagates it to the loop's except branch.
+        task.session = SimpleNamespace(
+            send_ping=AsyncMock(side_effect=exc),
+            list_tools=AsyncMock(),
+        )
+        return task
+
+    async def test_timeout_failure_names_the_exception(self, caplog):
+        task = self._task_whose_ping_raises(asyncio.TimeoutError())
+
+        reason, message = await self._keepalive_failure_message(task, caplog)
+
+        assert reason == "reconnect"
+        # The regression: a blank reason after the colon.
+        assert not message.rstrip().endswith("reconnect:")
+        assert "TimeoutError()" in message
+
+    async def test_argless_connection_error_names_the_exception(self, caplog):
+        """ConnectionResetError() is equally arg-less — same blank-reason trap."""
+        task = self._task_whose_ping_raises(ConnectionResetError())
+
+        _reason, message = await self._keepalive_failure_message(task, caplog)
+
+        assert not message.rstrip().endswith("reconnect:")
+        assert "ConnectionResetError()" in message
+
+    async def test_exception_with_message_still_readable(self, caplog):
+        """%r must not degrade failures that DO carry a message."""
+        task = self._task_whose_ping_raises(Exception("session terminated"))
+
+        _reason, message = await self._keepalive_failure_message(task, caplog)
+
+        assert "session terminated" in message

@@ -98,22 +98,64 @@ describe('chatPartsEquivalent', () => {
   })
 
   it('returns true for tool-call parts with same identity and both have no result', () => {
-    const partA = { type: 'tool-call' as const, toolCallId: 'tc-1', toolName: 'read_file', args: {} as never, argsText: '{}' }
-    const partB = { type: 'tool-call' as const, toolCallId: 'tc-1', toolName: 'read_file', args: {} as never, argsText: '{}' }
+    const partA = {
+      type: 'tool-call' as const,
+      toolCallId: 'tc-1',
+      toolName: 'read_file',
+      args: {} as never,
+      argsText: '{}'
+    }
+    const partB = {
+      type: 'tool-call' as const,
+      toolCallId: 'tc-1',
+      toolName: 'read_file',
+      args: {} as never,
+      argsText: '{}'
+    }
 
     expect(chatPartsEquivalent(partA, partB)).toBe(true)
   })
 
   it('returns true for tool-call parts with same identity and both have results', () => {
-    const partA = { type: 'tool-call' as const, toolCallId: 'tc-1', toolName: 'read_file', args: {} as never, argsText: '{}', result: { content: 'file data' }, isError: false }
-    const partB = { type: 'tool-call' as const, toolCallId: 'tc-1', toolName: 'read_file', args: {} as never, argsText: '{}', result: { content: 'file data' }, isError: false }
+    const partA = {
+      type: 'tool-call' as const,
+      toolCallId: 'tc-1',
+      toolName: 'read_file',
+      args: {} as never,
+      argsText: '{}',
+      result: { content: 'file data' },
+      isError: false
+    }
+    const partB = {
+      type: 'tool-call' as const,
+      toolCallId: 'tc-1',
+      toolName: 'read_file',
+      args: {} as never,
+      argsText: '{}',
+      result: { content: 'file data' },
+      isError: false
+    }
 
     expect(chatPartsEquivalent(partA, partB)).toBe(true)
   })
 
   it('returns false when only one tool-call part has a result', () => {
-    const partA = { type: 'tool-call' as const, toolCallId: 'tc-1', toolName: 'read_file', args: {} as never, argsText: '{}' }
-    const partB = { type: 'tool-call' as const, toolCallId: 'tc-1', toolName: 'read_file', args: {} as never, argsText: '{}', result: { content: 'file data' }, isError: false }
+    const partA = {
+      type: 'tool-call' as const,
+      toolCallId: 'tc-1',
+      toolName: 'read_file',
+      args: {} as never,
+      argsText: '{}'
+    }
+    const partB = {
+      type: 'tool-call' as const,
+      toolCallId: 'tc-1',
+      toolName: 'read_file',
+      args: {} as never,
+      argsText: '{}',
+      result: { content: 'file data' },
+      isError: false
+    }
 
     expect(chatPartsEquivalent(partA, partB)).toBe(false)
   })
@@ -138,15 +180,22 @@ describe('chatMessagesEquivalent', () => {
     const messageA: ChatMessage = {
       id: 'msg-1',
       role: 'assistant',
-      parts: [
-        { type: 'tool-call', toolCallId: 'tc-1', toolName: 'read_file', args: {} as never, argsText: '{}' }
-      ]
+      parts: [{ type: 'tool-call', toolCallId: 'tc-1', toolName: 'read_file', args: {} as never, argsText: '{}' }]
     }
+
     const messageB: ChatMessage = {
       id: 'msg-1',
       role: 'assistant',
       parts: [
-        { type: 'tool-call', toolCallId: 'tc-1', toolName: 'read_file', args: {} as never, argsText: '{}', result: { content: 'data' }, isError: false }
+        {
+          type: 'tool-call',
+          toolCallId: 'tc-1',
+          toolName: 'read_file',
+          args: {} as never,
+          argsText: '{}',
+          result: { content: 'data' },
+          isError: false
+        }
       ]
     }
 
@@ -165,15 +214,32 @@ describe('chatMessagesEquivalent', () => {
       role: 'assistant',
       parts: [
         { type: 'text', text: 'Here are the images:' },
-        { type: 'tool-call', toolCallId: 'img-1', toolName: 'image_generate', args: { prompt: 'a cat' } as never, argsText: '{"prompt":"a cat"}', result: { image: 'data:image/png;base64,iVBORw0KG...(large base64)' }, isError: false }
+        {
+          type: 'tool-call',
+          toolCallId: 'img-1',
+          toolName: 'image_generate',
+          args: { prompt: 'a cat' } as never,
+          argsText: '{"prompt":"a cat"}',
+          result: { image: 'data:image/png;base64,iVBORw0KG...(large base64)' },
+          isError: false
+        }
       ]
     }
+
     const messageB: ChatMessage = {
       id: 'msg-1',
       role: 'assistant',
       parts: [
         { type: 'text', text: 'Here are the images:' },
-        { type: 'tool-call', toolCallId: 'img-1', toolName: 'image_generate', args: { prompt: 'a cat' } as never, argsText: '{"prompt":"a cat"}', result: { image: 'data:image/png;base64,iVBORw0KG...(large base64)' }, isError: false }
+        {
+          type: 'tool-call',
+          toolCallId: 'img-1',
+          toolName: 'image_generate',
+          args: { prompt: 'a cat' } as never,
+          argsText: '{"prompt":"a cat"}',
+          result: { image: 'data:image/png;base64,iVBORw0KG...(large base64)' },
+          isError: false
+        }
       ]
     }
 

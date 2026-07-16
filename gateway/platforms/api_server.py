@@ -1328,7 +1328,20 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=503,
             )
 
-        ok, code = verifier(request.headers.get("Authorization", ""))
+        auth_header = request.headers.get("Authorization", "")
+        try:
+            if asyncio.iscoroutinefunction(verifier):
+                ok, code = await verifier(auth_header)
+            else:
+                # Platform verifiers may do blocking network I/O (e.g. Google
+                # signing-cert fetches) — keep that off the event loop.
+                ok, code = await asyncio.to_thread(verifier, auth_header)
+        except Exception:
+            # Fail closed: a crashing verifier must never admit the event.
+            logger.exception(
+                "Platform HTTP event verifier failed for %s", platform_name
+            )
+            ok, code = False, "platform_event_verifier_error"
         if not ok:
             return web.json_response(
                 _openai_error(

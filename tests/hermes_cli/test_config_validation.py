@@ -169,6 +169,16 @@ class TestFallbackModelValidation:
         })
         assert any("fallback_model[0]" in i.message and "should be a dict" in i.message for i in issues)
 
+    def test_fallback_promotions_is_known_root_key(self):
+        issues = validate_config_structure({
+            "fallback_promotions": {
+                "enabled": True,
+                "providers": ["nous"],
+                "position": "prepend",
+            },
+        })
+        assert issues == []
+
 
 class TestMissingModelSection:
     """Warn when custom_providers exists but model section is missing."""

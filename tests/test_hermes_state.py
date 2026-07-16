@@ -1567,6 +1567,25 @@ class TestFTS5Search:
         assert isinstance(results[0]["context"], list)
         assert len(results[0]["context"]) > 0
 
+    def test_search_can_skip_context_enrichment(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="Tell me about Kubernetes")
+        db.append_message("s1", role="assistant", content="Kubernetes is an orchestrator.")
+
+        with_context = db.search_messages("Kubernetes")
+        statements = []
+        db._conn.set_trace_callback(statements.append)
+        results = db.search_messages("Kubernetes", include_context=False)
+
+        assert len(results) == 2
+        assert all("context" not in result for result in results)
+        fields = ("id", "session_id", "role", "snippet", "timestamp", "source", "model", "session_started")
+        assert [{field: result.get(field) for field in fields} for result in results] == [
+            {field: result.get(field) for field in fields}
+            for result in with_context
+        ]
+        assert not any("WITH target AS" in statement for statement in statements)
+
     def test_search_context_uses_session_neighbors_when_ids_are_interleaved(self, db):
         db.create_session(session_id="s1", source="cli")
         db.create_session(session_id="s2", source="cli")

@@ -7764,6 +7764,16 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
         }
         self._invalidate(min_interval=0.0)
 
+    @staticmethod
+    def _get_filtered_models(state: dict) -> list:
+        """Get filtered model list from state. Pure function for display, nav, and selection."""
+        model_list = state.get("model_list") or []
+        filter_text = state.get("filter_text", "")
+        if filter_text:
+            ft = filter_text.lower()
+            return [m for m in model_list if ft in m.lower()]
+        return model_list
+
     def _confirm_expensive_model_switch(self, result) -> bool:
         """Ask for explicit confirmation before applying costly model switches."""
         if not getattr(result, "success", False):
@@ -7994,20 +8004,21 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             provider_data = state.get("provider_data") or {}
             model_list = state.get("model_list") or []
             # Use filtered list if a search is active
-            filtered = state.get("_filtered_list")
-            back_idx = len(filtered) if filtered is not None else len(model_list)
+            filtered = self._get_filtered_models(state)
+            back_idx = len(filtered)
             cancel_idx = back_idx + 1
             if selected == back_idx:
                 state["stage"] = "provider"
+                state["filter_text"] = ""
                 state["selected"] = next((i for i, p in enumerate(state.get("providers") or []) if p.get("slug") == provider_data.get("slug")), 0)
                 self._invalidate(min_interval=0.0)
                 return
             if selected >= cancel_idx:
                 self._close_model_picker()
                 return
-            if selected < (back_idx):
+            if selected < back_idx:
                 from hermes_cli.model_switch import switch_model
-                chosen_model = (filtered or model_list)[selected]
+                chosen_model = filtered[selected]
                 result = switch_model(
                     raw_input=chosen_model,
                     current_provider=self.provider or "",
@@ -13731,9 +13742,8 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
             if state.get("stage") == "provider":
                 max_idx = len(state.get("providers") or [])
             else:
-                filtered = state.get("_filtered_list")
-                model_list = state.get("model_list") or []
-                max_idx = len(filtered) if filtered is not None else len(model_list)
+                filtered = self._get_filtered_models(state)
+                max_idx = len(filtered)
             state["selected"] = min(max_idx, state.get("selected", 0) + 1)
             event.app.invalidate()
 
@@ -14870,16 +14880,12 @@ class HermesCLI(CLIAgentSetupMixin, CLICommandsMixin):
                 provider_data = state.get("provider_data") or {}
                 model_list = state.get("model_list") or []
                 title = f"⚙ Model Picker — {provider_data.get('name', provider_data.get('slug', 'Provider'))}"
-                # Apply search filter
-                filter_text = state.get("filter_text", "")
-                if filter_text:
-                    ft = filter_text.lower()
-                    filtered = [m for m in model_list if ft in m.lower()]
-                    state["_filtered_list"] = filtered
+                # Apply search filter using pure helper
+                filtered = self._get_filtered_models(state)
+                if filtered is not model_list:
                     choices = list(filtered) + ["← Back", "Cancel"]
-                    hint = f"🔍 {filter_text}  ({len(filtered)}/{len(model_list)} matches)"
+                    hint = f"🔍 {state.get('filter_text', '')}  ({len(filtered)}/{len(model_list)} matches)"
                 else:
-                    state["_filtered_list"] = None
                     choices = list(model_list) + ["← Back", "Cancel"]
                     if model_list:
                         hint = f"Select a model ({len(model_list)} available) — type to search"

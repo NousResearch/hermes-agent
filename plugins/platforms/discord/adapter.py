@@ -5934,7 +5934,14 @@ class DiscordAdapter(BasePlatformAdapter):
                 allowed_role_ids=self._allowed_role_ids,
             )
 
-            msg = await channel.send(embed=embed, view=view)
+            # Mirror the picker payload in plain content — embeds are invisible
+            # on some clients (see send_exec_approval).
+            model_desc = f"`{current_model or 'unknown'}` on {provider_label}"
+            content = self._self_contained_prompt_content(
+                "⚙ **Select a provider**",
+                f"Current model: {model_desc}\n\nSelect a provider from the dropdown below.",
+            )
+            msg = await channel.send(content=content, embed=embed, view=view)
             view._message = msg  # store for on_timeout expiration editing
             return SendResult(success=True, message_id=str(msg.id))
 
@@ -6612,20 +6619,12 @@ class DiscordAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
 
     def _text_batch_key(self, event: MessageEvent) -> str:
-        """Session-scoped key for text message batching.
-
-        Passes ``event.source.profile`` through so routed messages batch
-        under the same namespace the agent run will use (e.g.
-        ``agent:crypto-trader`` instead of ``agent:main``). Without this,
-        the batch key would always land in ``agent:main`` even when the
-        routed profile differs.
-        """
+        """Session-scoped key for text message batching."""
         from gateway.session import build_session_key
         return build_session_key(
             event.source,
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
-            profile=event.source.profile,
         )
 
     def _enqueue_text_event(self, event: MessageEvent) -> None:

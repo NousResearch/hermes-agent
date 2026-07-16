@@ -15866,9 +15866,13 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     # Keep-alive path: the PTY outlives this socket; reattach by token.
+    # Registry key includes the resume target so that switching sessions
+    # in the dashboard sidebar spawns a fresh PTY instead of reattaching
+    # to the old one (which is still running the previous conversation).
+    _registry_key = f"{attach_token}:{resume or ''}"
     try:
         session, _created = await PTY_REGISTRY.attach_or_spawn(
-            attach_token, spawn=_spawn
+            _registry_key, spawn=_spawn
         )
     except PtyUnavailableError as exc:
         await ws.send_text(f"\r\n\x1b[31mChat unavailable: {exc}\x1b[0m\r\n")
@@ -15916,7 +15920,7 @@ async def pty_ws(ws: WebSocket) -> None:
     finally:
         # Detach only — the PTY keeps running for a reattach; the registry
         # reaper closes it after the TTL (or immediately on process exit).
-        PTY_REGISTRY.detach(attach_token, ws)
+        PTY_REGISTRY.detach(_registry_key, ws)
 
 
 # ---------------------------------------------------------------------------

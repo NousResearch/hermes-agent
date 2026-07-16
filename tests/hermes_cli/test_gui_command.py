@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import os
+import plistlib
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -11,6 +14,10 @@ from unittest.mock import patch
 import pytest
 
 from hermes_cli import main as cli_main
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+INSTALL_SH = REPO_ROOT / "scripts" / "install.sh"
 
 
 def _ns(**kw):
@@ -969,6 +976,257 @@ def test_stop_desktop_build_lock_no_release_dir(tmp_path, monkeypatch):
     with patch("psutil.process_iter") as it:
         assert cli_main._stop_desktop_processes_locking_build(desktop_dir) == []
     it.assert_not_called()
+
+
+def test_desktop_macos_relaunchable_fixup_preserves_packaged_entitlements(
+    tmp_path, monkeypatch
+):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    exe = _make_packaged_executable(root, monkeypatch)
+    app = exe.parents[2]
+    helper_app = app / "Contents" / "Frameworks" / "Hermes Helper.app"
+    helper_app.mkdir(parents=True)
+
+    main_entitlements = desktop_dir / "electron" / "entitlements.mac.plist"
+    helper_entitlements = desktop_dir / "electron" / "entitlements.mac.inherit.plist"
+    main_entitlements.parent.mkdir()
+    main_entitlements.write_text("main", encoding="utf-8")
+    helper_entitlements.write_text("inherit", encoding="utf-8")
+
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/codesign"), \
+         patch("hermes_cli.main.subprocess.run") as mock_run:
+        cli_main._desktop_macos_relaunchable_fixup(desktop_dir)
+
+    codesign_commands = [
+        call.args[0] for call in mock_run.call_args_list
+        if call.args[0][0] == "/usr/bin/codesign"
+    ]
+    assert codesign_commands == [
+        [
+            "/usr/bin/codesign", "--force", "--sign", "-", "--entitlements",
+            str(helper_entitlements), str(helper_app),
+        ],
+        [
+            "/usr/bin/codesign", "--force", "--sign", "-", "--entitlements",
+            str(main_entitlements), str(app),
+        ],
+    ]
+
+
+def test_desktop_macos_relaunchable_fixup_deep_signs_without_entitlement_plists(
+    tmp_path, monkeypatch
+):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    exe = _make_packaged_executable(root, monkeypatch)
+    app = exe.parents[2]
+
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+    with patch("hermes_cli.main.shutil.which", return_value="/usr/bin/codesign"), \
+         patch("hermes_cli.main.subprocess.run") as mock_run:
+        cli_main._desktop_macos_relaunchable_fixup(desktop_dir)
+
+    codesign_commands = [
+        call.args[0] for call in mock_run.call_args_list
+        if call.args[0][0] == "/usr/bin/codesign"
+    ]
+    assert codesign_commands == [
+        [
+            "/usr/bin/codesign", "--force", "--deep", "--sign", "-", str(app),
+        ],
+    ]
+
+
+def _make_codesignable_test_app(
+    app: Path, executable_name: str, bundle_identifier: str
+) -> Path:
+    executable = app / "Contents" / "MacOS" / executable_name
+    executable.parent.mkdir(parents=True)
+    shutil.copyfile("/usr/bin/true", executable)
+    executable.chmod(0o755)
+    info = {
+        "CFBundleExecutable": executable_name,
+        "CFBundleIdentifier": bundle_identifier,
+        "CFBundleName": executable_name,
+        "CFBundlePackageType": "APPL",
+        "CFBundleVersion": "1",
+    }
+    with (app / "Contents" / "Info.plist").open("wb") as handle:
+        plistlib.dump(info, handle)
+    return executable
+
+
+def _write_test_entitlements(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("wb") as handle:
+        plistlib.dump({"com.apple.security.device.audio-input": True}, handle)
+
+
+def _display_codesign_entitlements(app: Path) -> dict:
+    result = subprocess.run(
+        [
+            "/usr/bin/codesign",
+            "--display",
+            "--entitlements",
+            "-",
+            "--xml",
+            str(app),
+        ],
+        check=True,
+        capture_output=True,
+    )
+    return plistlib.loads(result.stdout) if result.stdout else {}
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS codesign")
+def test_desktop_macos_relaunchable_fixup_embeds_entitlements_in_real_bundles(
+    tmp_path, monkeypatch
+):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    app = desktop_dir / "release" / "mac-arm64" / "Hermes.app"
+    executable = _make_codesignable_test_app(
+        app, "Hermes", "ai.hermes.desktop.codesign-test"
+    )
+    helper_app = app / "Contents" / "Frameworks" / "Hermes Helper.app"
+    _make_codesignable_test_app(
+        helper_app, "Hermes Helper", "ai.hermes.desktop.codesign-test.helper"
+    )
+    main_entitlements = desktop_dir / "electron" / "entitlements.mac.plist"
+    helper_entitlements = desktop_dir / "electron" / "entitlements.mac.inherit.plist"
+    _write_test_entitlements(main_entitlements)
+    _write_test_entitlements(helper_entitlements)
+
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        cli_main, "_desktop_packaged_executable", lambda _desktop_dir: executable
+    )
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+
+    cli_main._desktop_macos_relaunchable_fixup(desktop_dir)
+
+    expected = {"com.apple.security.device.audio-input": True}
+    assert _display_codesign_entitlements(app) == expected
+    assert _display_codesign_entitlements(helper_app) == expected
+    subprocess.run(
+        ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)],
+        check=True,
+        capture_output=True,
+    )
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS codesign")
+def test_desktop_macos_relaunchable_fixup_missing_plists_uses_valid_deep_fallback(
+    tmp_path, monkeypatch
+):
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    app = desktop_dir / "release" / "mac-arm64" / "Hermes.app"
+    executable = _make_codesignable_test_app(
+        app, "Hermes", "ai.hermes.desktop.codesign-fallback-test"
+    )
+    helper_app = app / "Contents" / "Frameworks" / "Hermes Helper.app"
+    _make_codesignable_test_app(
+        helper_app,
+        "Hermes Helper",
+        "ai.hermes.desktop.codesign-fallback-test.helper",
+    )
+
+    monkeypatch.setattr(cli_main.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        cli_main, "_desktop_packaged_executable", lambda _desktop_dir: executable
+    )
+    monkeypatch.delenv("CSC_LINK", raising=False)
+    monkeypatch.delenv("APPLE_SIGNING_IDENTITY", raising=False)
+
+    cli_main._desktop_macos_relaunchable_fixup(desktop_dir)
+
+    assert _display_codesign_entitlements(app) == {}
+    assert _display_codesign_entitlements(helper_app) == {}
+    subprocess.run(
+        ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)],
+        check=True,
+        capture_output=True,
+    )
+
+
+def _run_installer_macos_resign(app: Path, desktop_dir: Path) -> None:
+    environment = os.environ.copy()
+    environment.pop("CSC_LINK", None)
+    environment.pop("APPLE_SIGNING_IDENTITY", None)
+    subprocess.run(
+        [
+            "/bin/bash",
+            "-c",
+            'source "$1" --manifest >/dev/null\n'
+            '_desktop_macos_adhoc_resign "$2" "$3"',
+            "hermes-installer-codesign-test",
+            str(INSTALL_SH),
+            str(app),
+            str(desktop_dir),
+        ],
+        check=True,
+        capture_output=True,
+        env=environment,
+    )
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS codesign")
+def test_installer_macos_resign_embeds_entitlements_in_real_bundles(tmp_path):
+    desktop_dir = tmp_path / "apps" / "desktop"
+    app = desktop_dir / "release" / "mac-arm64" / "Hermes.app"
+    _make_codesignable_test_app(
+        app, "Hermes", "ai.hermes.installer.codesign-test"
+    )
+    helper_app = app / "Contents" / "Frameworks" / "Hermes Helper.app"
+    _make_codesignable_test_app(
+        helper_app, "Hermes Helper", "ai.hermes.installer.codesign-test.helper"
+    )
+    _write_test_entitlements(desktop_dir / "electron" / "entitlements.mac.plist")
+    _write_test_entitlements(
+        desktop_dir / "electron" / "entitlements.mac.inherit.plist"
+    )
+
+    _run_installer_macos_resign(app, desktop_dir)
+
+    expected = {"com.apple.security.device.audio-input": True}
+    assert _display_codesign_entitlements(app) == expected
+    assert _display_codesign_entitlements(helper_app) == expected
+    subprocess.run(
+        ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)],
+        check=True,
+        capture_output=True,
+    )
+
+
+@pytest.mark.skipif(sys.platform != "darwin", reason="requires macOS codesign")
+def test_installer_macos_resign_missing_plists_uses_valid_deep_fallback(tmp_path):
+    desktop_dir = tmp_path / "apps" / "desktop"
+    app = desktop_dir / "release" / "mac-arm64" / "Hermes.app"
+    _make_codesignable_test_app(
+        app, "Hermes", "ai.hermes.installer.codesign-fallback-test"
+    )
+    helper_app = app / "Contents" / "Frameworks" / "Hermes Helper.app"
+    _make_codesignable_test_app(
+        helper_app,
+        "Hermes Helper",
+        "ai.hermes.installer.codesign-fallback-test.helper",
+    )
+
+    _run_installer_macos_resign(app, desktop_dir)
+
+    assert _display_codesign_entitlements(app) == {}
+    assert _display_codesign_entitlements(helper_app) == {}
+    subprocess.run(
+        ["/usr/bin/codesign", "--verify", "--deep", "--strict", str(app)],
+        check=True,
+        capture_output=True,
+    )
 
 
 def test_force_adhoc_signing_disables_discovery_on_local_packaged_rebuild(monkeypatch):

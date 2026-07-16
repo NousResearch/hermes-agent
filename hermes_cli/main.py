@@ -5477,11 +5477,13 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
     bundle also inherits the com.apple.quarantine flag from the downloaded
     installer process chain. Both make the relaunch fail.
 
-    Clearing the quarantine xattrs and re-applying a clean deep ad-hoc signature
+    Clearing the quarantine xattrs and re-applying clean ad-hoc signatures
     (omitting the hardened-runtime flag, which is meaningless without a real
-    Developer ID) lets the rebuilt app relaunch. No-op when a real signing
-    identity is configured (CSC_LINK / APPLE_SIGNING_IDENTITY) so a properly
-    signed/notarized build is never clobbered. Best-effort: never raises.
+    Developer ID) lets the rebuilt app relaunch. Preserve the electron-builder
+    entitlements on the main bundle and Helper apps when their plists are
+    available; otherwise retain the legacy deep-sign fallback. No-op when a real
+    signing identity is configured (CSC_LINK / APPLE_SIGNING_IDENTITY) so a
+    properly signed/notarized build is never clobbered. Best-effort: never raises.
     """
     if sys.platform != "darwin":
         return
@@ -5499,7 +5501,27 @@ def _desktop_macos_relaunchable_fixup(desktop_dir: Path) -> None:
         return
     try:
         subprocess.run(["xattr", "-cr", str(app)], check=False)
-        subprocess.run([codesign, "--force", "--deep", "--sign", "-", str(app)], check=False)
+        main_entitlements = desktop_dir / "electron" / "entitlements.mac.plist"
+        helper_entitlements = desktop_dir / "electron" / "entitlements.mac.inherit.plist"
+        if main_entitlements.is_file() and helper_entitlements.is_file():
+            frameworks_dir = app / "Contents" / "Frameworks"
+            for helper_app in sorted(frameworks_dir.glob("Hermes Helper*.app")):
+                if helper_app.is_dir():
+                    subprocess.run(
+                        [codesign, "--force", "--sign", "-", "--entitlements",
+                         str(helper_entitlements), str(helper_app)],
+                        check=False,
+                    )
+            subprocess.run(
+                [codesign, "--force", "--sign", "-", "--entitlements",
+                 str(main_entitlements), str(app)],
+                check=False,
+            )
+        else:
+            subprocess.run(
+                [codesign, "--force", "--deep", "--sign", "-", str(app)],
+                check=False,
+            )
     except Exception as exc:
         print(f"  (warning: macOS relaunch fixup skipped: {exc})")
 

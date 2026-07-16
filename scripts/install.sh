@@ -2734,6 +2734,23 @@ _restore_electron_dist_with_fallback() {
         || { [ -z "${ELECTRON_MIRROR:-}" ] && _restore_electron_dist "$install_dir" "$DESKTOP_ELECTRON_FALLBACK_MIRROR"; }
 }
 
+_desktop_macos_adhoc_resign() {
+    local app="$1"
+    local desktop_dir="$2"
+    local main_entitlements="$desktop_dir/electron/entitlements.mac.plist"
+    local helper_entitlements="$desktop_dir/electron/entitlements.mac.inherit.plist"
+
+    xattr -cr "$app" 2>/dev/null || true
+    if [ -f "$main_entitlements" ] && [ -f "$helper_entitlements" ]; then
+        while IFS= read -r -d '' helper_app; do
+            codesign --force --sign - --entitlements "$helper_entitlements" "$helper_app" >/dev/null 2>&1 || true
+        done < <(find "$app/Contents/Frameworks" -maxdepth 1 -name 'Hermes Helper*.app' -type d -print0 2>/dev/null)
+        codesign --force --sign - --entitlements "$main_entitlements" "$app" >/dev/null 2>&1 || true
+    else
+        codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
+    fi
+}
+
 # Build apps/desktop into a launchable native app. Mirrors install.ps1's
 # Install-Desktop: a root-level npm install so the apps/* workspace resolves
 # the desktop's own deps (Electron ~150MB), then `npm run pack`
@@ -2924,17 +2941,7 @@ install_desktop() {
     # usable access. Skipped when a real signing identity is configured so a
     # signed build isn't clobbered.
     if [ "$OS" = "macos" ] && [ -z "${CSC_LINK:-}" ] && [ -z "${APPLE_SIGNING_IDENTITY:-}" ] && command -v codesign >/dev/null 2>&1; then
-        xattr -cr "$app" 2>/dev/null || true
-        local main_entitlements="$desktop_dir/electron/entitlements.mac.plist"
-        local helper_entitlements="$desktop_dir/electron/entitlements.mac.inherit.plist"
-        if [ -f "$main_entitlements" ] && [ -f "$helper_entitlements" ]; then
-            while IFS= read -r -d '' helper_app; do
-                codesign --force --sign - --entitlements "$helper_entitlements" "$helper_app" >/dev/null 2>&1 || true
-            done < <(find "$app/Contents/Frameworks" -maxdepth 1 -name 'Hermes Helper*.app' -type d -print0 2>/dev/null)
-            codesign --force --sign - --entitlements "$main_entitlements" "$app" >/dev/null 2>&1 || true
-        else
-            codesign --force --deep --sign - "$app" >/dev/null 2>&1 || true
-        fi
+        _desktop_macos_adhoc_resign "$app" "$desktop_dir"
     fi
 
     # `npm install` + `npm run pack` rewrite lockfiles; restore them so the

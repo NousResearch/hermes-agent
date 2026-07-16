@@ -885,6 +885,16 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
         return None
 
     try:
+        from hermes_cli.config import load_config
+
+        anthropic_config = (load_config() or {}).get("anthropic")
+    except Exception:
+        anthropic_config = None
+    if isinstance(anthropic_config, dict) and not anthropic_config.get("use_claude_code_keychain", True):
+        logger.debug("Keychain: Claude Code macOS Keychain access disabled by config.yaml")
+        return None
+
+    try:
         # Read the "Claude Code-credentials" generic password entry
         result = subprocess.run(
             ["security", "find-generic-password",

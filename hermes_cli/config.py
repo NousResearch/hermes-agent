@@ -1508,6 +1508,12 @@ DEFAULT_CONFIG = {
         "cache_ttl": "5m",
     },
 
+    # Anthropic credential discovery settings.
+    "anthropic": {
+        # Check Claude Code's macOS Keychain entry for OAuth credentials.
+        "use_claude_code_keychain": True,
+    },
+
     # OpenRouter-specific settings.
     # response_cache: enable OpenRouter response caching (X-OpenRouter-Cache header).
     #   When enabled, identical requests return cached responses for free (zero billing).

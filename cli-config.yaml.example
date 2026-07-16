@@ -386,6 +386,19 @@ tool_loop_guardrails:
     idempotent_no_progress: 5
 
 # =============================================================================
+# Context Files and Compression
+# =============================================================================
+# Context files are loaded into the system prompt at the start of a session.
+# External files are additive and load before cwd project context.
+context:
+  engine: compressor
+  external_files: []
+  # Example:
+  # external_files:
+  #   - ~/.codex/AGENTS.md
+  #   - ~/.claude/CLAUDE.md
+
+# =============================================================================
 # Context Compression (Auto-shrinks long conversations)
 # =============================================================================
 # When conversation approaches model's context limit, middle turns are

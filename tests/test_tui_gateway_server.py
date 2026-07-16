@@ -3992,7 +3992,9 @@ def test_config_set_model_switches_agent_without_touching_env(monkeypatch):
         def update_session_meta(self, _session_id, model_config_json, _model=None):
             self.model_config = model_config_json
 
-        def update_system_prompt(self, _session_id, system_prompt):
+        def update_system_prompt(
+            self, _session_id, system_prompt, _context_file_identities=None
+        ):
             self.system_prompt = system_prompt
 
         def append_message(self, session_id, role, content=None, **_kwargs):

@@ -2219,6 +2219,10 @@ DEFAULT_CONFIG = {
     # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
+        # Additional instruction files loaded before cwd project context.
+        # Entries must be strings; paths may be absolute, ~-prefixed, or
+        # relative to the user's home directory.
+        "external_files": [],
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt
@@ -8216,6 +8220,23 @@ def _default_value_for_key(dotted_key: str):
     return node if not isinstance(node, dict) else None
 
 
+def _parse_external_context_files_cli_value(raw_value: str) -> list[str]:
+    """Parse the strict external-files list without coercing path scalars."""
+    stripped = raw_value.strip()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        try:
+            parsed = yaml.safe_load(raw_value)
+        except yaml.YAMLError:
+            parsed = None
+        if isinstance(parsed, list):
+            return [
+                item.strip()
+                for item in parsed
+                if isinstance(item, str) and item.strip()
+            ]
+    return [item.strip() for item in raw_value.split(",") if item.strip()]
+
+
 def set_config_value(key: str, value: str):
     """Set a configuration value."""
     if is_managed():
@@ -8274,10 +8295,13 @@ def set_config_value(key: str, value: str):
     # inline navigation here silently overwrote lists with dicts.
 
     # Preserve values for string-typed settings.  In particular, enum members
-    # such as approvals.mode="off" must not become YAML booleans.  Unknown keys
-    # retain the historical best-effort coercion behavior.
+    # such as approvals.mode="off" must not become YAML booleans.  The
+    # external context setting is a strict list[str], but accepts either a
+    # comma-separated CLI value or a YAML list for convenient round-tripping.
     coerced_value: Any = value
-    if not isinstance(_default_value_for_key(key), str):
+    if key == "context.external_files":
+        coerced_value = _parse_external_context_files_cli_value(value)
+    elif not isinstance(_default_value_for_key(key), str):
         if value.lower() in {'true', 'yes', 'on'}:
             coerced_value = True
         elif value.lower() in {'false', 'no', 'off'}:

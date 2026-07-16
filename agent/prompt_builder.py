@@ -7,10 +7,12 @@ assemble pieces, then combines them with memory and ephemeral prompts.
 import json
 import logging
 import os
+import stat as stat_module
 import sys
 import threading
 import contextvars
 from collections import OrderedDict
+from dataclasses import dataclass
 from pathlib import Path
 
 from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
@@ -1839,12 +1841,11 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
         logger.debug("Could not ensure HERMES_HOME before loading SOUL.md: %s", e)
 
     soul_path = get_hermes_home() / "SOUL.md"
-    if not soul_path.exists():
-        return None
     try:
-        content = soul_path.read_text(encoding="utf-8").strip()
-        if not content:
+        loaded = _read_context_file(soul_path)
+        if loaded.status != _CONTEXT_LOADED:
             return None
+        content = loaded.content.strip()
         content = _scan_context_content(content, "SOUL.md")
         content = _truncate_content(
             content, "SOUL.md", context_length=context_length,
@@ -1856,111 +1857,324 @@ def load_soul_md(context_length: Optional[int] = None) -> Optional[str]:
         return None
 
 
-def _load_hermes_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+_CONTEXT_ABSENT = "absent"
+_CONTEXT_READ_FAILURE = "read_failure"
+_CONTEXT_EMPTY = "empty"
+_CONTEXT_DUPLICATE = "duplicate"
+_CONTEXT_LOADED = "loaded"
+
+
+@dataclass(frozen=True)
+class _ContextFileRead:
+    status: str
+    content: str = ""
+    identity: object | None = None
+
+
+@dataclass(frozen=True)
+class _ContextFileLoad:
+    status: str
+    section: str = ""
+    identity: object | None = None
+
+
+def _normalized_context_path(path: Path) -> Path:
+    """Return a normalized resolved path for files without usable inodes."""
+    try:
+        return Path(os.path.realpath(os.fspath(path)))
+    except (OSError, RuntimeError):
+        return Path(os.path.abspath(os.fspath(path)))
+
+
+def _context_file_key(path: Path, file_stat) -> object:
+    """Return a filesystem identity, never treating inode zero as real."""
+    if file_stat.st_ino != 0:
+        return ("inode", file_stat.st_dev, file_stat.st_ino)
+    return ("path", _normalized_context_path(path))
+
+
+def _read_context_file(path: Path) -> _ContextFileRead:
+    """Open, validate, identify, and read a context file from one handle.
+
+    The handle is the authority for both the regular-file check and the
+    identity used for deduplication.  This keeps a path replacement between
+    identity and read from changing which bytes are scanned and loaded.
+    """
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            file_stat = os.fstat(handle.fileno())
+            if not stat_module.S_ISREG(file_stat.st_mode):
+                return _ContextFileRead(_CONTEXT_READ_FAILURE)
+            identity = _context_file_key(path, file_stat)
+            content = handle.read()
+    except FileNotFoundError:
+        return _ContextFileRead(_CONTEXT_ABSENT)
+    except (OSError, UnicodeError) as exc:
+        logger.debug("Could not read context file %s: %s", path, exc)
+        return _ContextFileRead(_CONTEXT_READ_FAILURE)
+
+    if not content.strip():
+        return _ContextFileRead(_CONTEXT_EMPTY, identity=identity)
+    return _ContextFileRead(_CONTEXT_LOADED, content=content, identity=identity)
+
+
+def _context_file_label(path: Path) -> str:
+    """Return a readable label for an external context file."""
+    try:
+        home = Path.home().resolve()
+        return "~/" + path.resolve().relative_to(home).as_posix()
+    except (OSError, ValueError):
+        return str(path)
+
+
+def _safe_context_metadata(value: str, fallback: str) -> str:
+    """Return one-line metadata that cannot inject prompt instructions."""
+    escaped = "".join(
+        f"\\x{ord(char):02x}" if ord(char) < 32 or ord(char) == 127 else char
+        for char in value
+    )
+    if not escaped or _scan_for_threats(escaped, scope="context"):
+        return fallback
+    return escaped
+
+
+def _expand_external_context_path(raw_path: str) -> Path:
+    expanded = os.path.expandvars(raw_path.strip())
+    if expanded == "~":
+        return Path.home()
+    if expanded.startswith(("~/", "~\\")):
+        return Path.home() / expanded[2:]
+    return Path(os.path.expanduser(expanded))
+
+
+def _coerce_external_context_paths(raw_paths) -> list[Path]:
+    """Normalize the strict ``context.external_files`` list[str] shape."""
+    if not isinstance(raw_paths, list):
+        return []
+
+    paths: list[Path] = []
+    for value in raw_paths:
+        if not isinstance(value, str):
+            continue
+        raw = value.strip()
+        if not raw:
+            continue
+        path = _expand_external_context_path(raw)
+        if not path.is_absolute():
+            # External paths must not change meaning when the agent cwd does.
+            path = Path.home() / path
+        paths.append(path)
+    return paths
+
+
+def _configured_external_context_paths() -> list[Path]:
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+    except Exception as exc:
+        logger.debug("Could not load config for context.external_files: %s", exc)
+        return []
+
+    context = config.get("context") if isinstance(config, dict) else None
+    if not isinstance(context, dict):
+        return []
+    return _coerce_external_context_paths(context.get("external_files"))
+
+
+def _load_context_file_result(
+    path: Path,
+    label: str,
+    *,
+    context_length: Optional[int] = None,
+    strip_frontmatter: bool = False,
+    loaded_paths: Optional[set[object]] = None,
+    truncate: bool = True,
+) -> _ContextFileLoad:
+    """Read and sanitize one context file with an explicit load outcome."""
+    loaded = _read_context_file(path)
+    if loaded.status != _CONTEXT_LOADED:
+        return _ContextFileLoad(loaded.status, identity=loaded.identity)
+    key = loaded.identity
+    if loaded_paths is not None and key in loaded_paths:
+        return _ContextFileLoad(_CONTEXT_DUPLICATE, identity=key)
+    try:
+        safe_label = _safe_context_metadata(label, "context file")
+        safe_read_path = _safe_context_metadata(str(path), safe_label)
+        content = loaded.content.strip()
+        if strip_frontmatter:
+            content = _strip_yaml_frontmatter(content)
+        content = _scan_context_content(content, safe_label)
+        if loaded_paths is not None:
+            loaded_paths.add(key)
+        result = f"## {safe_label}\n\n{content}"
+        if truncate:
+            result = _truncate_content(
+                result,
+                safe_label,
+                context_length=context_length,
+                read_path=safe_read_path,
+            )
+        return _ContextFileLoad(_CONTEXT_LOADED, result, identity=key)
+    except Exception as exc:
+        logger.debug("Could not process context file %s: %s", path, exc)
+        return _ContextFileLoad(_CONTEXT_READ_FAILURE, identity=key)
+
+
+def _load_context_file(
+    path: Path,
+    label: str,
+    *,
+    context_length: Optional[int] = None,
+    strip_frontmatter: bool = False,
+    loaded_paths: Optional[set[object]] = None,
+) -> str:
+    """Read and sanitize one context file, returning an empty section on failure."""
+    return _load_context_file_result(
+        path,
+        label,
+        context_length=context_length,
+        strip_frontmatter=strip_frontmatter,
+        loaded_paths=loaded_paths,
+    ).section
+
+
+def _load_external_context_files(
+    context_length: Optional[int] = None,
+    loaded_paths: Optional[set[object]] = None,
+) -> list[str]:
+    sections: list[str] = []
+    for path in _configured_external_context_paths():
+        loaded = _load_context_file_result(
+            path,
+            _context_file_label(path),
+            context_length=context_length,
+            loaded_paths=loaded_paths,
+        )
+        if loaded.section:
+            sections.append(loaded.section)
+    return sections
+
+
+def _load_hermes_md(
+    cwd_path: Path,
+    context_length: Optional[int] = None,
+    loaded_paths: Optional[set[object]] = None,
+) -> _ContextFileLoad:
     """.hermes.md / HERMES.md — walk to git root."""
     hermes_md_path = _find_hermes_md(cwd_path)
     if not hermes_md_path:
-        return ""
+        return _ContextFileLoad(_CONTEXT_ABSENT)
+    rel = hermes_md_path.name
     try:
-        content = hermes_md_path.read_text(encoding="utf-8").strip()
-        if not content:
-            return ""
-        content = _strip_yaml_frontmatter(content)
-        rel = hermes_md_path.name
-        try:
-            rel = str(hermes_md_path.relative_to(cwd_path))
-        except ValueError:
-            pass
-        content = _scan_context_content(content, rel)
-        result = f"## {rel}\n\n{content}"
-        return _truncate_content(
-            result, ".hermes.md", context_length=context_length,
-            read_path=str(hermes_md_path),
-        )
-    except Exception as e:
-        logger.debug("Could not read %s: %s", hermes_md_path, e)
-        return ""
+        rel = str(hermes_md_path.relative_to(cwd_path))
+    except ValueError:
+        pass
+    return _load_context_file_result(
+        hermes_md_path,
+        rel,
+        context_length=context_length,
+        strip_frontmatter=True,
+        loaded_paths=loaded_paths,
+    )
 
 
-def _load_agents_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+def _load_agents_md(
+    cwd_path: Path,
+    context_length: Optional[int] = None,
+    loaded_paths: Optional[set[object]] = None,
+) -> _ContextFileLoad:
     """AGENTS.md — top-level only (no recursive walk)."""
+    last_outcome = _ContextFileLoad(_CONTEXT_ABSENT)
     for name in ["AGENTS.md", "agents.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(
-                        result, "AGENTS.md", context_length=context_length,
-                        read_path=str(candidate),
-                    )
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
-    return ""
+        loaded = _load_context_file_result(
+            cwd_path / name,
+            name,
+            context_length=context_length,
+            loaded_paths=loaded_paths,
+        )
+        if loaded.status in {_CONTEXT_LOADED, _CONTEXT_DUPLICATE}:
+            return loaded
+        last_outcome = loaded
+    return last_outcome
 
 
-def _load_claude_md(cwd_path: Path, context_length: Optional[int] = None) -> str:
+def _load_claude_md(
+    cwd_path: Path,
+    context_length: Optional[int] = None,
+    loaded_paths: Optional[set[object]] = None,
+) -> _ContextFileLoad:
     """CLAUDE.md / claude.md — cwd only."""
+    last_outcome = _ContextFileLoad(_CONTEXT_ABSENT)
     for name in ["CLAUDE.md", "claude.md"]:
-        candidate = cwd_path / name
-        if candidate.exists():
-            try:
-                content = candidate.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, name)
-                    result = f"## {name}\n\n{content}"
-                    return _truncate_content(
-                        result, "CLAUDE.md", context_length=context_length,
-                        read_path=str(candidate),
-                    )
-            except Exception as e:
-                logger.debug("Could not read %s: %s", candidate, e)
-    return ""
+        loaded = _load_context_file_result(
+            cwd_path / name,
+            name,
+            context_length=context_length,
+            loaded_paths=loaded_paths,
+        )
+        if loaded.status in {_CONTEXT_LOADED, _CONTEXT_DUPLICATE}:
+            return loaded
+        last_outcome = loaded
+    return last_outcome
 
 
-def _load_cursorrules(cwd_path: Path, context_length: Optional[int] = None) -> str:
+def _load_cursorrules(
+    cwd_path: Path,
+    context_length: Optional[int] = None,
+    loaded_paths: Optional[set[object]] = None,
+) -> _ContextFileLoad:
     """.cursorrules + .cursor/rules/*.mdc — cwd only."""
-    cursorrules_content = ""
-    cursorrules_file = cwd_path / ".cursorrules"
-    if cursorrules_file.exists():
-        try:
-            content = cursorrules_file.read_text(encoding="utf-8").strip()
-            if content:
-                content = _scan_context_content(content, ".cursorrules")
-                cursorrules_content += f"## .cursorrules\n\n{content}\n\n"
-        except Exception as e:
-            logger.debug("Could not read .cursorrules: %s", e)
-
+    sections: list[str] = []
+    candidates = [(cwd_path / ".cursorrules", ".cursorrules")]
     cursor_rules_dir = cwd_path / ".cursor" / "rules"
-    if cursor_rules_dir.exists() and cursor_rules_dir.is_dir():
-        mdc_files = sorted(cursor_rules_dir.glob("*.mdc"))
-        for mdc_file in mdc_files:
-            try:
-                content = mdc_file.read_text(encoding="utf-8").strip()
-                if content:
-                    content = _scan_context_content(content, f".cursor/rules/{mdc_file.name}")
-                    cursorrules_content += f"## .cursor/rules/{mdc_file.name}\n\n{content}\n\n"
-            except Exception as e:
-                logger.debug("Could not read %s: %s", mdc_file, e)
+    if cursor_rules_dir.is_dir():
+        candidates.extend(
+            (path, f".cursor/rules/{path.name}")
+            for path in sorted(cursor_rules_dir.glob("*.mdc"))
+        )
 
-    if not cursorrules_content:
-        return ""
-    return _truncate_content(
-        cursorrules_content, ".cursorrules", context_length=context_length,
+    outcomes: list[_ContextFileLoad] = []
+    for path, label in candidates:
+        outcome = _load_context_file_result(
+            path,
+            label,
+            context_length=None,
+            loaded_paths=loaded_paths,
+            truncate=False,
+        )
+        outcomes.append(outcome)
+        if outcome.status == _CONTEXT_LOADED:
+            sections.append(outcome.section + "\n\n")
+
+    if not sections:
+        if any(outcome.status == _CONTEXT_DUPLICATE for outcome in outcomes):
+            return _ContextFileLoad(_CONTEXT_DUPLICATE)
+        for status in (_CONTEXT_EMPTY, _CONTEXT_READ_FAILURE):
+            if any(outcome.status == status for outcome in outcomes):
+                return _ContextFileLoad(status)
+        return _ContextFileLoad(_CONTEXT_ABSENT)
+    combined = _truncate_content(
+        "".join(sections),
+        ".cursorrules",
+        context_length=context_length,
         read_path=str(cwd_path / ".cursorrules"),
     )
+    return _ContextFileLoad(_CONTEXT_LOADED, combined)
 
 
 def build_context_files_prompt(
     cwd: Optional[str] = None,
     skip_soul: bool = False,
     context_length: Optional[int] = None,
+    loaded_paths: Optional[set[object]] = None,
 ) -> str:
     """Discover and load context files for the system prompt.
 
-    Priority (first found wins — only ONE project context type is loaded):
+    Configured external context files (``context.external_files``) are loaded
+    first, in list order. They are additive to project discovery.
+
+    Project priority (first found wins — only ONE project context type is loaded):
       1. .hermes.md / HERMES.md  (walk to git root)
       2. AGENTS.md / agents.md   (cwd only)
       3. CLAUDE.md / claude.md   (cwd only)
@@ -1980,17 +2194,17 @@ def build_context_files_prompt(
         cwd = os.getcwd()
 
     cwd_path = Path(cwd).resolve()
-    sections = []
+    if loaded_paths is None:
+        loaded_paths = set()
+    sections = _load_external_context_files(context_length, loaded_paths)
 
     # Priority-based project context: first match wins
-    project_context = (
-        _load_hermes_md(cwd_path, context_length)
-        or _load_agents_md(cwd_path, context_length)
-        or _load_claude_md(cwd_path, context_length)
-        or _load_cursorrules(cwd_path, context_length)
-    )
-    if project_context:
-        sections.append(project_context)
+    for loader in (_load_hermes_md, _load_agents_md, _load_claude_md, _load_cursorrules):
+        project_context = loader(cwd_path, context_length, loaded_paths)
+        if project_context.status in {_CONTEXT_LOADED, _CONTEXT_DUPLICATE}:
+            if project_context.section:
+                sections.append(project_context.section)
+            break
 
     # SOUL.md from HERMES_HOME only — skip when already loaded as identity
     if not skip_soul:

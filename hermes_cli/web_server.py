@@ -706,6 +706,15 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "description": "Context management engine",
         "options": ["default", "custom"],
     },
+    "context.external_files": {
+        "type": "list",
+        "editor": "lines",
+        "description": (
+            "External context files loaded before cwd project rules "
+            "(absolute, ~, or home-relative paths)"
+        ),
+        "category": "agent",
+    },
     "human_delay.mode": {
         "type": "select",
         "description": "Simulated typing delay mode",

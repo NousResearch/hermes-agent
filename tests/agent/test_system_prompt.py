@@ -31,7 +31,7 @@ def _captured_context_cwd(agent):
     """The cwd build_system_prompt_parts hands to build_context_files_prompt."""
     captured = {}
 
-    def fake_context_files(cwd=None, skip_soul=False, context_length=None):
+    def fake_context_files(cwd=None, skip_soul=False, context_length=None, loaded_paths=None):
         captured["cwd"] = cwd
         return ""
 
@@ -55,6 +55,33 @@ class TestContextFileCwd:
     def test_configured_dir_when_terminal_cwd_set(self, monkeypatch, tmp_path):
         monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
         assert _captured_context_cwd(_make_agent()) == tmp_path
+
+    def test_startup_context_identities_are_handed_to_the_agent_tracker(self):
+        class Tracker:
+            def __init__(self):
+                self.received = None
+
+            def register_loaded_context_file_identities(self, identities):
+                self.received = set(identities)
+
+        tracker = Tracker()
+        agent = _make_agent(_subdirectory_hints=tracker)
+
+        def fake_context_files(
+            cwd=None, skip_soul=False, context_length=None, loaded_paths=None
+        ):
+            loaded_paths.add(("inode", 11, 22))
+            return ""
+
+        with (
+            patch("run_agent.load_soul_md", return_value=""),
+            patch("run_agent.build_nous_subscription_prompt", return_value=""),
+            patch("run_agent.build_environment_hints", return_value=""),
+            patch("run_agent.build_context_files_prompt", side_effect=fake_context_files),
+        ):
+            build_system_prompt_parts(agent)
+
+        assert tracker.received == {("inode", 11, 22)}
 
 
 def _stable_prompt(agent):

@@ -28,6 +28,22 @@ function formatScalar(value: unknown): string {
   return JSON.stringify(value);
 }
 
+export function formatListValue(value: unknown, editor?: string): string {
+  if (!Array.isArray(value)) return String(value ?? "");
+  const separator = editor === "lines" ? "\n" : ", ";
+  return value.map((item) => String(item)).join(separator);
+}
+
+export function parseListValue(
+  raw: string,
+  editor?: string,
+  preserveEmpty = false,
+): string[] {
+  const separator = editor === "lines" ? /\r?\n/ : ",";
+  const items = raw.split(separator).map((item) => item.trim());
+  return preserveEmpty ? items : items.filter(Boolean);
+}
+
 function NestedValueEditor({
   fieldKey,
   value,
@@ -169,20 +185,32 @@ export function AutoField({
   }
 
   if (schema.type === "list") {
+    if (schema.editor === "lines") {
+      return (
+        <div className="grid gap-1.5">
+          <Label className="text-sm">{label}</Label>
+          <FieldHint schema={schema} schemaKey={schemaKey} />
+          <textarea
+            className="flex min-h-[112px] w-full border border-input bg-transparent px-3 py-2 font-mono text-xs shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+            value={formatListValue(value, "lines")}
+            onChange={(e) =>
+              onChange(parseListValue(e.target.value, "lines", true))
+            }
+            onBlur={(e) => onChange(parseListValue(e.currentTarget.value, "lines"))}
+            placeholder="one path per line"
+            rows={4}
+          />
+        </div>
+      );
+    }
+
     return (
       <div className="grid gap-1.5">
         <Label className="text-sm">{label}</Label>
         <FieldHint schema={schema} schemaKey={schemaKey} />
         <Input
-          value={Array.isArray(value) ? value.join(", ") : String(value ?? "")}
-          onChange={(e) =>
-            onChange(
-              e.target.value
-                .split(",")
-                .map((s) => s.trim())
-                .filter(Boolean),
-            )
-          }
+          value={formatListValue(value)}
+          onChange={(e) => onChange(parseListValue(e.target.value))}
           placeholder="comma-separated values"
         />
       </div>

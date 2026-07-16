@@ -65,6 +65,42 @@ cannot override, via a system-level managed directory. See
 [Managed Scope](/user-guide/managed-scope).
 :::
 
+## External context files
+
+Hermes normally discovers project rules from the session working directory
+(`.hermes.md`, `AGENTS.md`, `CLAUDE.md`, or `.cursorrules`, first match wins).
+To prepend one or more personal/shared rule files to every new session, set
+`context.external_files` in `config.yaml`:
+
+```yaml
+context:
+  engine: compressor
+  external_files:
+    - ~/.codex/AGENTS.md
+    - ~/.claude/CLAUDE.md
+```
+
+External files load before cwd project context and are additive: a project
+`AGENTS.md` can still provide repo-specific rules. Entries may be absolute,
+`~`-prefixed, or home-relative. Missing, empty, unreadable, and non-file entries
+are ignored. Changes affect new sessions.
+
+During interactive setup, Hermes offers known shared rule files when they exist:
+
+```bash
+hermes setup context
+```
+
+You can also set the list from the CLI:
+
+```bash
+hermes config set context.external_files ~/.codex/AGENTS.md
+```
+
+In the Dashboard configuration editor, `context.external_files` uses one path
+per line so commas in a legal path are preserved. Other list-valued settings
+continue to use the generic comma-separated editor.
+
 ## Environment Variable Substitution
 
 You can reference environment variables in `config.yaml` using `${VAR_NAME}` syntax:

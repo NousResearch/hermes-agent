@@ -259,6 +259,79 @@ def test_setup_syncs_custom_provider_removal_from_disk(tmp_path, monkeypatch):
     assert reloaded.get("custom_providers") == []
 
 
+def test_setup_external_context_files_adds_known_files_additively(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    codex_agents = home / ".codex" / "AGENTS.md"
+    claude_md = home / ".claude" / "CLAUDE.md"
+    codex_agents.parent.mkdir(parents=True)
+    claude_md.parent.mkdir(parents=True)
+    codex_agents.write_text("Codex rules", encoding="utf-8")
+    claude_md.write_text("Claude rules", encoding="utf-8")
+
+    config = {"context": {"engine": "custom", "external_files": []}}
+    saved = []
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: True)
+    monkeypatch.setattr(setup_mod, "save_config", lambda cfg: saved.append(dict(cfg)))
+
+    setup_mod.setup_external_context_files(config)
+
+    assert config["context"] == {
+        "engine": "custom",
+        "external_files": ["~/.codex/AGENTS.md", "~/.claude/CLAUDE.md"],
+    }
+    assert saved
+
+
+def test_setup_external_context_files_deduplicates_existing_choice(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    codex_agents = home / ".codex" / "AGENTS.md"
+    codex_agents.parent.mkdir(parents=True)
+    codex_agents.write_text("Codex rules", encoding="utf-8")
+
+    config = {
+        "context": {
+            "engine": "custom",
+            "external_files": ["~/.codex/AGENTS.md"],
+        }
+    }
+    monkeypatch.setattr("pathlib.Path.home", lambda: home)
+    monkeypatch.setenv("HOME", str(home))
+
+    def fail_prompt(*args, **kwargs):
+        raise AssertionError("already configured path should not be prompted again")
+
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", fail_prompt)
+
+    setup_mod.setup_external_context_files(config)
+
+    assert config["context"]["external_files"] == ["~/.codex/AGENTS.md"]
+    assert config["context"]["engine"] == "custom"
+
+
+def test_setup_context_identity_uses_distinct_paths_when_inode_is_zero(
+    tmp_path, monkeypatch
+):
+    first = tmp_path / "first.md"
+    second = tmp_path / "second.md"
+    zero_inode = types.SimpleNamespace(st_dev=7, st_ino=0)
+    monkeypatch.setattr(
+        setup_mod.Path,
+        "stat",
+        lambda _path, *args, **kwargs: zero_inode,
+    )
+
+    first_key = setup_mod._setup_context_file_key(first)
+    second_key = setup_mod._setup_context_file_key(second)
+
+    assert first_key[0] == "path"
+    assert second_key[0] == "path"
+    assert first_key != second_key
+    assert first_key[1] == first.resolve()
+    assert second_key[1] == second.resolve()
+
+
 def test_setup_cancel_preserves_existing_config(tmp_path, monkeypatch):
     """When the user cancels provider selection, existing config is preserved."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -539,4 +612,3 @@ def test_prompt_yes_no_keyboard_interrupt_still_exits(monkeypatch):
 
     with pytest.raises(SystemExit):
         setup_mod.prompt_yes_no("Install it now?", True)
-

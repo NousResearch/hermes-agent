@@ -761,6 +761,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     model TEXT,
     model_config TEXT,
     system_prompt TEXT,
+    context_file_identities TEXT,
     parent_session_id TEXT,
     started_at REAL NOT NULL,
     ended_at REAL,
@@ -2545,13 +2546,26 @@ class SessionDB:
             )
         self._execute_write(_do)
 
-    def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
-        """Store the full assembled system prompt snapshot."""
+    def update_system_prompt(
+        self,
+        session_id: str,
+        system_prompt: str,
+        context_file_identities: Optional[str] = None,
+    ) -> None:
+        """Store a prompt snapshot and, when supplied, its identity manifest."""
         def _do(conn):
-            conn.execute(
-                "UPDATE sessions SET system_prompt = ? WHERE id = ?",
-                (system_prompt, session_id),
-            )
+            if context_file_identities is None:
+                conn.execute(
+                    "UPDATE sessions SET system_prompt = ? WHERE id = ?",
+                    (system_prompt, session_id),
+                )
+            else:
+                conn.execute(
+                    """UPDATE sessions
+                       SET system_prompt = ?, context_file_identities = ?
+                       WHERE id = ?""",
+                    (system_prompt, context_file_identities, session_id),
+                )
         self._execute_write(_do)
 
     def update_session_model(self, session_id: str, model: str) -> None:
@@ -3296,19 +3310,21 @@ class SessionDB:
             current = child_id
         return current
 
-    # Columns excluded from compact_rows projections: only the payload-heavy
-    # blob no list consumer renders. Everything else — including gateway
+    # Columns excluded from compact_rows projections: payload/internal state
+    # no list consumer renders. Everything else — including gateway
     # routing fields and desktop sidebar fields like git_branch — stays, and
     # the projection is derived from SCHEMA_SQL so columns added later via
     # declarative reconciliation are included automatically instead of
     # silently dropping out of list rows.
-    _SESSION_COMPACT_EXCLUDED = frozenset({"system_prompt"})
+    _SESSION_COMPACT_EXCLUDED = frozenset(
+        {"system_prompt", "context_file_identities"}
+    )
     _session_compact_cols_sql: Optional[str] = None
 
     @classmethod
     def _compact_session_cols(cls) -> str:
         """SELECT list for compact_rows: every ``sessions`` column declared in
-        SCHEMA_SQL except the ``system_prompt`` blob, aliased with the ``s``
+        SCHEMA_SQL except internal prompt state, aliased with the ``s``
         prefix used by list_sessions_rich/_get_session_rich_row queries."""
         if cls._session_compact_cols_sql is None:
             declared = cls._parse_schema_columns(SCHEMA_SQL)["sessions"]

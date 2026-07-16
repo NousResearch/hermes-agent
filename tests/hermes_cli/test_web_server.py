@@ -3826,6 +3826,22 @@ class TestBuildSchemaFromConfig:
         if "agent.max_turns" in CONFIG_SCHEMA:
             assert CONFIG_SCHEMA["agent.max_turns"]["category"] == "agent"
 
+    def test_external_context_files_schema_preserves_context_engine(self):
+        from hermes_cli.web_server import CONFIG_SCHEMA
+
+        entry = CONFIG_SCHEMA["context.external_files"]
+
+        assert entry["type"] == "list"
+        assert entry["editor"] == "lines"
+        assert entry["category"] == "agent"
+        assert "external context files" in entry["description"].lower()
+        assert "context.engine" in CONFIG_SCHEMA
+        assert all(
+            "editor" not in field
+            for key, field in CONFIG_SCHEMA.items()
+            if key != "context.external_files"
+        )
+
     def test_category_merge_applied(self):
         """Small categories should be merged into larger ones."""
         from hermes_cli.web_server import CONFIG_SCHEMA

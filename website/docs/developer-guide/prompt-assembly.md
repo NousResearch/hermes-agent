@@ -185,24 +185,34 @@ Be targeted and efficient in your exploration and investigations.
 
 ## How context files are injected
 
-`build_context_files_prompt()` uses a **priority system** — only one project context type is loaded (first match wins):
+`build_context_files_prompt()` first loads configured external context files,
+then uses a **priority system** for cwd project rules — only one project context
+type is loaded (first match wins):
 
 ```python
 # From agent/prompt_builder.py (simplified)
 def build_context_files_prompt(cwd=None, skip_soul=False):
     cwd_path = Path(cwd).resolve()
+    loaded_paths = set()
+    sections = []
+
+    # Additive external rules from config.yaml, e.g. ~/.codex/AGENTS.md
+    sections.extend(_load_external_context_files(loaded_paths=loaded_paths))
 
     # Priority: first match wins — only ONE project context loaded
-    project_context = (
-        _load_hermes_md(cwd_path)       # 1. .hermes.md / HERMES.md (walks to git root)
-        or _load_agents_md(cwd_path)    # 2. AGENTS.md (cwd only)
-        or _load_claude_md(cwd_path)    # 3. CLAUDE.md (cwd only)
-        or _load_cursorrules(cwd_path)  # 4. .cursorrules / .cursor/rules/*.mdc
-    )
-
-    sections = []
-    if project_context:
-        sections.append(project_context)
+    for loader in (
+        _load_hermes_md,
+        _load_agents_md,
+        _load_claude_md,
+        _load_cursorrules,
+    ):
+        outcome = loader(cwd_path, loaded_paths=loaded_paths)
+        if outcome.status == _CONTEXT_LOADED:
+            sections.append(outcome.section)
+            break
+        if outcome.status == _CONTEXT_DUPLICATE:
+            # The highest-priority file was already loaded externally.
+            break
 
     # SOUL.md from HERMES_HOME (independent of project context)
     if not skip_soul:
@@ -225,6 +235,7 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 
 | Priority | Files | Search scope | Notes |
 |----------|-------|-------------|-------|
+| 0 | `context.external_files` | Configured paths | Additive, declared order; absolute, `~`, or home-relative |
 | 1 | `.hermes.md`, `HERMES.md` | CWD up to git root | Hermes-native project config |
 | 2 | `AGENTS.md` | CWD only | Common agent instruction file |
 | 3 | `CLAUDE.md` | CWD only | Claude Code compatibility |
@@ -234,6 +245,7 @@ All context files are:
 - **Security scanned** — checked for prompt injection patterns (invisible unicode, "ignore previous instructions", credential exfiltration attempts)
 - **Truncated** — capped at `context_file_max_chars` characters (default 20,000) using 70/20 head/tail ratio with a truncation marker
 - **YAML frontmatter stripped** — `.hermes.md` frontmatter is removed (reserved for future config overrides)
+- **De-duplicated by filesystem identity** — an external file is not loaded again when a project candidate points to the same file
 
 ## API-call-time-only layers
 
@@ -254,8 +266,11 @@ Local memory and user profile data are captured in the system prompt's **volatil
 
 ## Context files
 
-`agent/prompt_builder.py` scans and sanitizes project context files using a **priority system** — only one type is loaded (first match wins):
+`agent/prompt_builder.py` scans and sanitizes external context files, then
+scans project context files using a **priority system** — only one project type
+is loaded from the cwd (first match wins):
 
+0. `context.external_files` from `config.yaml` (additive, loaded before cwd rules)
 1. `.hermes.md` / `HERMES.md` (walks to git root)
 2. `AGENTS.md` (CWD at startup; subdirectories discovered progressively during the session via `agent/subdirectory_hints.py`)
 3. `CLAUDE.md` (CWD only)
@@ -277,6 +292,7 @@ Most users should treat `agent/prompt_builder.py` as implementation code, not a 
 
 - `~/.hermes/SOUL.md` — replace the built-in default identity block with your own agent persona and standing behavior.
 - `~/.hermes/MEMORY.md` and `~/.hermes/USER.md` — provide durable cross-session facts and user profile data that should be snapshotted into new sessions.
+- `context.external_files` in `config.yaml` — prepend shared rule files such as `~/.codex/AGENTS.md` to every new session.
 - Project context files such as `.hermes.md`, `HERMES.md`, `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` — inject repo-specific working rules.
 - Skills — package reusable workflows and references without editing core prompt code.
 - Optional system prompt config / API overrides — add deployment-specific instruction text without forking Hermes.

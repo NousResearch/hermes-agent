@@ -3,10 +3,10 @@
 
 approval:
   dangerous_header: "⚠️  NIEBEZPIECZNA KOMENDA: {description}"
-  choose_long: "      [o] raz  |  [s]esja  |  [a] zawsze  |  [d] odrzuć"
-  choose_short: "      [o] raz  |  [s]esja  |  [d] odrzuć"
-  prompt_long: "      Wybór [o/s/a/D]: "
-  prompt_short: "      Wybór [o/s/D]: "
+  choose_long: "      [o] — zezwól tylko tym razem  |  [s] — zezwól w tej sesji  |  [a] — zezwalaj zawsze  |  [d] — odrzuć"
+  choose_short: "      [o] — zezwól tylko tym razem  |  [s] — zezwól w tej sesji  |  [d] — odrzuć"
+  prompt_long: "      Wybór [o/s/a; d lub Enter = odrzuć]: "
+  prompt_short: "      Wybór [o/s; d lub Enter = odrzuć]: "
   timeout: "      ⏱ Upłynął limit czasu — komenda została odrzucona"
   allowed_once: "      ✓ Zezwolono jednorazowo"
   allowed_session: "      ✓ Zezwolono w tej sesji"

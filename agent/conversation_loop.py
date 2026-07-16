@@ -890,6 +890,7 @@ def run_conversation(
                     temperature=_preset_temperature(moa_config, "reference_temperature"),
                     aggregator_temperature=_preset_temperature(moa_config, "aggregator_temperature"),
                     max_tokens=moa_config.get("reference_max_tokens"),
+                    interrupt_check=lambda: bool(agent._interrupt_requested),
                 )
                 if _moa_context:
                     for _msg in reversed(api_messages):
@@ -1355,11 +1356,20 @@ def run_conversation(
                             allow_stream=False,
                             is_github_responses=agent._is_copilot_url(),
                         )
-                    if _use_streaming:
-                        return agent._interruptible_streaming_api_call(
-                            next_api_kwargs, on_first_delta=_stop_spinner
-                        )
-                    return agent._interruptible_api_call(next_api_kwargs)
+
+                    from agent.zai_concurrency import acquire_zai_slot
+
+                    with acquire_zai_slot(
+                        provider=agent.provider,
+                        model=agent.model,
+                        base_url=agent.base_url,
+                        interrupt_check=lambda: bool(agent._interrupt_requested),
+                    ):
+                        if _use_streaming:
+                            return agent._interruptible_streaming_api_call(
+                                next_api_kwargs, on_first_delta=_stop_spinner
+                            )
+                        return agent._interruptible_api_call(next_api_kwargs)
 
                 from hermes_cli.middleware import run_llm_execution_middleware
 

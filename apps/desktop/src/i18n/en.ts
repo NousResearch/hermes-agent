@@ -198,6 +198,7 @@ export const en: Translations = {
   keybinds: {
     title: 'Keyboard shortcuts',
     subtitle: open => `Click a shortcut to rebind it · ${open} reopens this panel.`,
+    search: 'Search shortcuts…',
     rebind: 'Rebind',
     reset: 'Reset to default',
     resetAll: 'Reset all',
@@ -315,6 +316,7 @@ export const en: Translations = {
       providerApiKeys: 'API keys',
       gateway: 'Gateway',
       apiKeys: 'Tools & Keys',
+      keybinds: 'Keyboard Shortcuts',
       keysTools: 'Tools',
       keysSettings: 'Settings',
       mcp: 'MCP',

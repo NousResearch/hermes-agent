@@ -201,12 +201,12 @@ function CronJobSidebarRow({
             so the cron dots line up with the sessions above; the caret sits next
             to the label (matching the other sidebar disclosures) and the whole
             label area toggles the run peek. */}
+        <Tip label={label}>
         <button
           aria-expanded={expanded}
           aria-label={expanded ? c.hideRuns : c.showRuns}
           className="flex min-w-0 items-center gap-1.5 bg-transparent py-0.5 pl-2 pr-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40"
           onClick={onTogglePeek}
-          title={label}
           type="button"
         >
           <span className="grid w-3.5 shrink-0 place-items-center">
@@ -230,6 +230,7 @@ function CronJobSidebarRow({
             open={expanded}
           />
         </button>
+        </Tip>
         {/* Trailing cluster: countdown by default, quick actions on hover. */}
         <div className="flex items-center gap-0.5 justify-self-end pr-1">
           <span className="text-[0.6875rem] text-(--ui-text-tertiary) tabular-nums group-hover/cron:hidden">

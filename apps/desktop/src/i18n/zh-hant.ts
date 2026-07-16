@@ -211,6 +211,7 @@ export const zhHant = defineLocale({
       providerApiKeys: 'API 金鑰',
       gateway: '閘道',
       apiKeys: '工具與金鑰',
+      keybinds: '鍵盤快捷鍵',
       keysTools: '工具',
       keysSettings: '設定',
       mcp: 'MCP',

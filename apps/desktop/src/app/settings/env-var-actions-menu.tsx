@@ -9,6 +9,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { ExternalLink, Eye, EyeOff, Trash2 } from '@/lib/icons'
@@ -119,15 +120,16 @@ export function EnvVarActionsTrigger({ className, label, ...props }: EnvVarActio
   const copy = t.settings.envActions
 
   return (
-    <Button
-      aria-label={copy.actionsFor(label)}
-      className={cn('text-muted-foreground hover:text-foreground', className)}
-      size="icon-sm"
-      title={copy.credentialActions}
-      variant="ghost"
-      {...props}
-    >
-      <Codicon name="ellipsis" size="0.875rem" />
-    </Button>
+    <Tip label={copy.credentialActions}>
+      <Button
+        aria-label={copy.actionsFor(label)}
+        className={cn('text-muted-foreground hover:text-foreground', className)}
+        size="icon-sm"
+        variant="ghost"
+        {...props}
+      >
+        <Codicon name="ellipsis" size="0.875rem" />
+      </Button>
+    </Tip>
   )
 }

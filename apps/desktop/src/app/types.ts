@@ -132,6 +132,8 @@ export interface SidebarNavItem {
   icon: React.ComponentType<{ className?: string }>
   route?: string
   action?: 'new-session'
+  /** Keybind action id — when set, the tooltip shows the keybind hint. */
+  keybindActionId?: string
 }
 
 export interface ClientSessionState {

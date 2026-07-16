@@ -2,6 +2,7 @@ import { Dialog as DialogPrimitive } from 'radix-ui'
 import * as React from 'react'
 
 import { Button } from '@/components/ui/button'
+import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { X } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -73,15 +74,17 @@ function DialogContent({
 
   const closeButton = showCloseButton ? (
     <DialogPrimitive.Close asChild data-slot="dialog-close-button">
-      <Button
-        aria-label={t.common.close}
-        className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
-        size="icon-xs"
-        variant="ghost"
-      >
-        <X className="size-4" />
-        <span className="sr-only">{t.common.close}</span>
-      </Button>
+      <Tip label={t.common.close}>
+        <Button
+          aria-label={t.common.close}
+          className="absolute right-2.5 top-2.5 z-20 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground"
+          size="icon-xs"
+          variant="ghost"
+        >
+          <X className="size-4" />
+          <span className="sr-only">{t.common.close}</span>
+        </Button>
+      </Tip>
     </DialogPrimitive.Close>
   ) : null
 

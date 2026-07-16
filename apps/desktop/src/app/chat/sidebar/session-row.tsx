@@ -130,7 +130,6 @@ export function SidebarSessionRow({
                 aria-label={r.actionsFor(title)}
                 className="size-5 rounded-[4px] bg-transparent text-transparent transition-colors duration-100 hover:bg-(--ui-control-active-background) hover:text-foreground focus-visible:bg-(--ui-control-active-background) focus-visible:text-foreground focus-visible:ring-0 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground group-hover:text-(--ui-text-tertiary) [&_svg]:size-3.5!"
                 size="icon"
-                title={r.sessionActions}
                 variant="ghost"
               >
                 <Codicon name="kebab-vertical" size="0.875rem" />

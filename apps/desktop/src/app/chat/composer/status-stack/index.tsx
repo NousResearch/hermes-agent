@@ -8,6 +8,7 @@ import { composerDockCard } from '@/components/chat/composer-dock'
 import { StatusSection } from '@/components/chat/status-section'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
 import { cn } from '@/lib/utils'
 import {
@@ -129,15 +130,17 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
         <StatusSection
           accessory={
             group.type === 'subagent' ? (
-              <Button
-                className="text-muted-foreground/75 hover:text-foreground/90"
-                onClick={openAgents}
-                size="micro"
-                type="button"
-                variant="text"
-              >
-                {t.statusStack.agents}
-              </Button>
+              <Tip label={<TipKeybindLabel actionId="nav.agents" text={t.statusStack.agents} />}>
+                <Button
+                  className="text-muted-foreground/75 hover:text-foreground/90"
+                  onClick={openAgents}
+                  size="micro"
+                  type="button"
+                  variant="text"
+                >
+                  {t.statusStack.agents}
+                </Button>
+              </Tip>
             ) : undefined
           }
           defaultCollapsed={group.type !== 'todo'}

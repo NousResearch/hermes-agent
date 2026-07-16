@@ -3,6 +3,7 @@ import { type CSSProperties, type ReactNode, useEffect } from 'react'
 import { TITLEBAR_HEIGHT } from '@/app/shell/titlebar'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { Tip } from '@/components/ui/tooltip'
 import { translateNow } from '@/i18n'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
 import { triggerHaptic } from '@/lib/haptics'
@@ -91,15 +92,17 @@ export function OverlayView({
             </div>
           )}
 
-          <Button
-            aria-label={closeLabel}
-            className="pointer-events-auto absolute right-3 top-[calc(0.1875rem+var(--titlebar-height)/2)] -translate-y-1/2 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground [-webkit-app-region:no-drag]"
-            onClick={closeOverlay}
-            size="icon-titlebar"
-            variant="ghost"
-          >
-            <Codicon name="close" size="1rem" />
-          </Button>
+          <Tip label={closeLabel}>
+            <Button
+              aria-label={closeLabel}
+              className="pointer-events-auto absolute right-3 top-[calc(0.1875rem+var(--titlebar-height)/2)] -translate-y-1/2 text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground [-webkit-app-region:no-drag]"
+              onClick={closeOverlay}
+              size="icon-titlebar"
+              variant="ghost"
+            >
+              <Codicon name="close" size="1rem" />
+            </Button>
+          </Tip>
         </div>
 
         {/* No top padding here: the split-layout columns own their own

@@ -193,6 +193,7 @@ export const zh: Translations = {
   keybinds: {
     title: '键盘快捷键',
     subtitle: open => `点击快捷键即可重新绑定 · ${open} 可重新打开此面板。`,
+    search: '搜索快捷键…',
     rebind: '重新绑定',
     reset: '恢复默认',
     resetAll: '全部重置',
@@ -306,6 +307,7 @@ export const zh: Translations = {
       providerApiKeys: 'API 密钥',
       gateway: '网关',
       apiKeys: '工具与密钥',
+      keybinds: '键盘快捷键',
       keysTools: '工具',
       keysSettings: '设置',
       mcp: 'MCP',

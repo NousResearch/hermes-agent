@@ -272,10 +272,11 @@ def _pid_exists(pid: int | None) -> bool:
     if not isinstance(pid, int) or pid <= 0:
         return False
     try:
-        os.kill(pid, 0)
-    except (OSError, ProcessLookupError):
+        import psutil
+
+        return psutil.pid_exists(pid)
+    except Exception:
         return False
-    return True
 
 
 def _process_matches(pid: int | None, expected_data_root: Path) -> bool:

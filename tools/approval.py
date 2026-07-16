@@ -2128,9 +2128,11 @@ def _run_approval_gate(
         description: Human-facing reason shown in the prompt.
         display_target: The command string or synthetic tool label shown
             to the user (redacted by ``prompt_dangerous_approval``).
-        approval_callback: Optional CLI prompt callback. When ``None`` the
+        approval_callback: Optional explicit approval callback. When ``None`` the
             per-thread callback registered via
-            ``tools.terminal_tool.set_approval_callback`` is used.
+            ``tools.terminal_tool.set_approval_callback`` is used. A callback
+            takes precedence over gateway routing, including the
+            ``HERMES_EXEC_ASK`` flag installed during gateway startup.
         cron_deny_message: Message returned when a cron job hits this gate
             under ``cron_mode: deny``.
         autoapprove_log_prefix: Log line prefix for the non-interactive
@@ -2206,7 +2208,12 @@ def _run_approval_gate(
         )
         return {"approved": True, "message": None}
 
-    if is_gateway or env_var_enabled("HERMES_EXEC_ASK"):
+    # A thread-local callback is an explicit approval policy installed by the
+    # caller.  Subagent workers use this to fail closed (or explicitly opt in
+    # to auto-approval) without borrowing the parent gateway session's queue.
+    # HERMES_EXEC_ASK is installed by gateway startup, so it cannot override
+    # a worker-local policy without recreating the parent-queue leak.
+    if (is_gateway or env_var_enabled("HERMES_EXEC_ASK")) and approval_callback is None:
         # Interactive gateway round-trip when a notify callback is
         # registered for this session (Discord/Telegram/Slack embed +
         # buttons, same mechanism as check_dangerous_command). Blocks the
@@ -2884,7 +2891,10 @@ def check_all_command_guards(command: str, env_type: str,
     # responds with /approve or /deny, mirroring the CLI's synchronous
     # input() flow.  The agent never sees "approval_required"; it either
     # gets the command output (approved) or a definitive "BLOCKED" message.
-    if is_gateway or is_ask:
+    # An explicit callback belongs to the current worker and must take
+    # precedence over the parent gateway's approval queue.  HERMES_EXEC_ASK is
+    # set by gateway startup, so it follows the same callback-precedence rule.
+    if (is_gateway or is_ask) and approval_callback is None:
         notify_cb = None
         with _lock:
             notify_cb = _gateway_notify_cbs.get(session_key)

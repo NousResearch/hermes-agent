@@ -15,6 +15,8 @@ import time
 
 from concurrent.futures.thread import _threads_queues, _worker
 
+import pytest
+
 from tools.daemon_pool import DaemonThreadPoolExecutor, _WORKER_USES_CTX
 
 
@@ -186,16 +188,21 @@ def test_py314_branch_args_tuple_shape():
                 assert call_kwargs["daemon"] is True
 
 
+@pytest.mark.skipif(
+    _WORKER_USES_CTX,
+    reason="legacy 4-arg _worker signature only exists on Python <= 3.13",
+)
 def test_py313_branch_args_tuple_shape():
     """When _WORKER_USES_CTX is False (current <= 3.13 default), the args
-    tuple must be the legacy 4-element shape with initializer/initargs."""
+    tuple must be the legacy 4-element shape with initializer/initargs.
+
+    On 3.14+ _WORKER_USES_CTX is computed True from the real _worker
+    signature, so this legacy-shape test is skipped there rather than
+    asserting which interpreter is running."""
     import unittest.mock as mock
 
     pool = DaemonThreadPoolExecutor(
         max_workers=1, initializer=lambda: None, initargs=()
-    )
-    assert not _WORKER_USES_CTX, (
-        "This test only meaningful on <= 3.13 where _WORKER_USES_CTX is False"
     )
 
     with mock.patch("tools.daemon_pool.threading.Thread") as MockThread:

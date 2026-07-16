@@ -1777,12 +1777,31 @@ class SessionDB:
                     (SCHEMA_VERSION,),
                 )
 
-        # Unique title index — always ensure it exists
+        # Unique title index — always ensure it exists. Older databases may
+        # contain duplicate aliases from before the constraint was enforced;
+        # preserve every session while letting the newest one retain the alias.
+        title_index_sql = (
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
+            "ON sessions(title) WHERE title IS NOT NULL"
+        )
         try:
+            cursor.execute(title_index_sql)
+        except sqlite3.IntegrityError:
             cursor.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
-                "ON sessions(title) WHERE title IS NOT NULL"
+                """UPDATE sessions AS older
+                   SET title = NULL
+                   WHERE title IS NOT NULL
+                     AND EXISTS (
+                         SELECT 1 FROM sessions AS newer
+                         WHERE newer.title = older.title
+                           AND newer.rowid > older.rowid
+                     )"""
             )
+            logger.warning(
+                "Cleared %d duplicate session title(s) while restoring the unique index",
+                cursor.rowcount,
+            )
+            cursor.execute(title_index_sql)
         except sqlite3.OperationalError:
             pass  # Index already exists
 

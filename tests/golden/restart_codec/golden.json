@@ -168,5 +168,23 @@
         ]
       }
     }
+  },
+  "e7cb612038a60c57429412437487a0f2b39f45cb5ca743328470604ce03d4694": {
+    "input": {
+      "kind": "decode",
+      "name": "negative scalar count clamps to zero",
+      "value": -3
+    },
+    "name": "negative scalar count clamps to zero",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "armed": false,
+        "count": 0,
+        "replay_marks": [],
+        "replay_request_ids": []
+      }
+    }
   }
 }

@@ -197,6 +197,14 @@ def restart_codec_mutations() -> list[Mutation]:
             ),
         ),
         Mutation(
+            "return-value: allow negative counts on the SCALAR branch",
+            lambda p: replace_once(
+                p,
+                'return {\n        "count": max(0, count),',
+                'return {\n        "count": count,',
+            ),
+        ),
+        Mutation(
             "message-emit: keep falsey replay request ids",
             lambda p: replace_once(
                 p,

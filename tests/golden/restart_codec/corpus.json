@@ -73,6 +73,11 @@
         "replay_request_ids": [],
         "armed": true
       }
+    },
+    {
+      "name": "negative scalar count clamps to zero",
+      "kind": "decode",
+      "value": -3
     }
   ]
 }

@@ -1277,6 +1277,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     tenant               TEXT,
     result               TEXT,
     idempotency_key      TEXT,
+    program_create_fingerprint TEXT,
     orchestration_policy TEXT,
     orchestration_root_id TEXT,
     orchestration_depth  INTEGER,
@@ -2031,6 +2032,13 @@ def _migrate_add_optional_columns(conn: sqlite3.Connection) -> None:
     if "idempotency_key" not in cols:
         _add_column_if_missing(
             conn, "tasks", "idempotency_key", "idempotency_key TEXT"
+        )
+    if "program_create_fingerprint" not in cols:
+        _add_column_if_missing(
+            conn,
+            "tasks",
+            "program_create_fingerprint",
+            "program_create_fingerprint TEXT",
         )
     # ``idx_tasks_idempotency`` is created unconditionally below alongside
     # the other additive-column indexes — see the block after the
@@ -2847,6 +2855,50 @@ def create_task(
                     max_runtime_seconds = policy.max_runtime_seconds
                     goal_max_turns = policy.goal_max_turns
 
+                program_create_fingerprint = None
+                if policy is not None:
+                    # Versioned, canonical request identity for managed program
+                    # roots and children.  This is intentionally computed from
+                    # effective values after policy/lineage/project inheritance,
+                    # never from raw argv and never logged.
+                    fingerprint_document = {
+                        "version": 1,
+                        "title": title.strip(),
+                        "body": body,
+                        "assignee": assignee,
+                        "created_by": created_by,
+                        "workspace_kind": workspace_kind,
+                        "workspace_path": workspace_path,
+                        "branch_name": branch_name,
+                        "tenant": tenant,
+                        "priority": priority,
+                        "parents": sorted(parents),
+                        "triage": bool(triage),
+                        "max_runtime_seconds": max_runtime_seconds,
+                        "skills": skills_list,
+                        "max_retries": max_retries,
+                        "goal_mode": bool(goal_mode),
+                        "goal_max_turns": goal_max_turns,
+                        "initial_status": initial_status,
+                        "session_id": session_id,
+                        "project_id": project_id,
+                        "policy": json.loads(policy.to_json()),
+                        "orchestration_root_id": (
+                            "self" if orchestration_depth == 0 else orchestration_root_id
+                        ),
+                        "orchestration_depth": orchestration_depth,
+                        "orchestration_parent_id": orchestration_parent_id,
+                    }
+                    canonical_request = json.dumps(
+                        fingerprint_document,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                        ensure_ascii=False,
+                    ).encode("utf-8")
+                    program_create_fingerprint = (
+                        "v1:" + hashlib.sha256(canonical_request).hexdigest()
+                    )
+
                 # Re-check under the write lock so concurrent replay cannot
                 # spend quota twice. A key already owned by another program is
                 # an authority mismatch, never a successful replay.
@@ -2854,12 +2906,17 @@ def create_task(
                     existing = conn.execute(
                         "SELECT id, assignee, tenant, project_id, orchestration_policy, "
                         "orchestration_root_id, orchestration_depth, orchestration_parent_id "
+                        ", program_create_fingerprint "
                         "FROM tasks "
                         "WHERE idempotency_key = ? AND status != 'archived' "
                         "ORDER BY created_at DESC LIMIT 1",
                         (idempotency_key,),
                     ).fetchone()
                     if existing:
+                        if policy is not None and existing["program_create_fingerprint"]:
+                            if existing["program_create_fingerprint"] != program_create_fingerprint:
+                                raise ValueError("idempotency key request does not match")
+                            return existing["id"]
                         if current_orchestrator_task_id is not None and policy is not None:
                             same_scope = (
                                 existing["orchestration_root_id"] == orchestration_root_id
@@ -2896,7 +2953,9 @@ def create_task(
                         int(root_created_at["created_at"])
                         if root_created_at is not None else now
                     )
-                    if now > created_at + policy.max_wall_clock_seconds:
+                    # The expiry instant is closed throughout the lifecycle:
+                    # no mutation or admission is allowed at ``now >= deadline``.
+                    if now >= created_at + policy.max_wall_clock_seconds:
                         raise ValueError("orchestration program deadline exceeded")
                     if (
                         orchestration_depth == 0
@@ -2975,11 +3034,12 @@ def create_task(
                         id, title, body, assignee, status, priority,
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
+                        program_create_fingerprint,
                         max_runtime_seconds, orchestration_policy,
                         orchestration_root_id, orchestration_depth,
                         orchestration_parent_id,
                         skills, max_retries, goal_mode, goal_max_turns, session_id
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id,
@@ -2996,6 +3056,7 @@ def create_task(
                         project_id,
                         tenant,
                         idempotency_key,
+                        program_create_fingerprint,
                         int(max_runtime_seconds) if max_runtime_seconds is not None else None,
                         policy.to_json() if policy is not None else None,
                         orchestration_root_id,
@@ -3716,6 +3777,72 @@ def recompute_ready(
 # Claim / complete / block
 # ---------------------------------------------------------------------------
 
+def _program_deadline(
+    conn: sqlite3.Connection, task_id: str, now: int,
+) -> tuple[Optional[OrchestrationPolicy], Optional[str], bool, str]:
+    """Resolve immutable program authority and its closed expiry boundary."""
+    row = conn.execute(
+        "SELECT orchestration_root_id, orchestration_policy FROM tasks WHERE id=?",
+        (task_id,),
+    ).fetchone()
+    if row is None or not row["orchestration_policy"]:
+        return None, None, False, ""
+    root_id = row["orchestration_root_id"]
+    try:
+        policy = OrchestrationPolicy.from_json(row["orchestration_policy"])
+    except ValueError:
+        return None, root_id, True, "program_authority_invalid"
+    root = conn.execute(
+        "SELECT created_at FROM tasks WHERE id=?", (root_id,),
+    ).fetchone()
+    if root is None:
+        return policy, root_id, True, "program_authority_invalid"
+    expired = now >= int(root["created_at"]) + policy.max_wall_clock_seconds
+    return policy, root_id, expired, "program_deadline" if expired else ""
+
+
+def _block_expired_program_task(
+    conn: sqlite3.Connection, task_id: str, now: int, reason: str,
+) -> bool:
+    """Park expired program work permanently; caller must hold write txn."""
+    row = conn.execute(
+        "SELECT status, current_run_id FROM tasks WHERE id=?", (task_id,),
+    ).fetchone()
+    if row is None or row["status"] in {"done", "archived", "blocked"}:
+        return False
+    cur = conn.execute(
+        "UPDATE tasks SET status='blocked', claim_lock=NULL, claim_expires=NULL, "
+        "worker_pid=NULL, last_heartbeat_at=NULL WHERE id=?",
+        (task_id,),
+    )
+    if row["status"] == "running" and row["current_run_id"] is not None:
+        _end_run(
+            conn, task_id, outcome="timed_out", status="timed_out",
+            error=reason, metadata={"reason": reason},
+        )
+    if cur.rowcount == 1:
+        _append_event(conn, task_id, "blocked", {"reason": reason})
+    return cur.rowcount == 1
+
+
+def _admit_program_run(
+    conn: sqlite3.Connection, task_id: str, now: int,
+) -> bool:
+    """Atomic managed-program admission; caller must hold BEGIN IMMEDIATE."""
+    policy, root_id, expired, reason = _program_deadline(conn, task_id, now)
+    if expired:
+        _block_expired_program_task(conn, task_id, now, reason)
+        return False
+    if policy is None:
+        return True
+    active = conn.execute(
+        "SELECT COUNT(*) FROM task_runs r JOIN tasks t ON t.id=r.task_id "
+        "WHERE t.orchestration_root_id=? AND r.status='running' "
+        "AND r.ended_at IS NULL AND r.claim_expires >= ?",
+        (root_id, now),
+    ).fetchone()[0]
+    return active < policy.max_concurrency
+
 def claim_task(
     conn: sqlite3.Connection,
     task_id: str,
@@ -3732,46 +3859,8 @@ def claim_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
-        program = conn.execute(
-            "SELECT orchestration_root_id, orchestration_policy FROM tasks WHERE id = ?",
-            (task_id,),
-        ).fetchone()
-        if program and program["orchestration_policy"]:
-            try:
-                policy = OrchestrationPolicy.from_json(program["orchestration_policy"])
-            except ValueError:
-                policy = None
-            root = conn.execute(
-                "SELECT created_at FROM tasks WHERE id = ?",
-                (program["orchestration_root_id"],),
-            ).fetchone()
-            deadline_reason = (
-                "program_authority_invalid"
-                if policy is None or root is None
-                else "program_deadline"
-            )
-            if (
-                policy is None
-                or root is None
-                or now > int(root["created_at"]) + policy.max_wall_clock_seconds
-            ):
-                parked = conn.execute(
-                    "UPDATE tasks SET status = 'blocked' "
-                    "WHERE id = ? AND status = 'ready'",
-                    (task_id,),
-                )
-                if parked.rowcount == 1:
-                    _append_event(conn, task_id, "blocked", {"reason": deadline_reason})
-                return None
-            active = conn.execute(
-                "SELECT COUNT(*) FROM task_runs r "
-                "JOIN tasks t ON t.id = r.task_id "
-                "WHERE t.orchestration_root_id = ? AND r.status = 'running' "
-                "AND r.ended_at IS NULL AND r.claim_expires >= ?",
-                (program["orchestration_root_id"], now),
-            ).fetchone()[0]
-            if active >= policy.max_concurrency:
-                return None
+        if not _admit_program_run(conn, task_id, now):
+            return None
         # Structural invariant: never transition ready -> running while any
         # parent is not yet 'done'. This is the single enforcement point
         # regardless of which writer (create_task, link_tasks, unblock_task,
@@ -3901,6 +3990,8 @@ def claim_review_task(
     lock = claimer or _claimer_id()
     expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     with write_txn(conn):
+        if not _admit_program_run(conn, task_id, now):
+            return None
         cur = conn.execute(
             """
             UPDATE tasks
@@ -3965,9 +4056,14 @@ def heartbeat_claim(
     Workers that know they'll exceed 15 minutes should call this every
     few minutes to keep ownership.
     """
-    expires = int(time.time()) + _resolve_claim_ttl_seconds(ttl_seconds)
+    now = int(time.time())
+    expires = now + _resolve_claim_ttl_seconds(ttl_seconds)
     lock = claimer or _claimer_id()
     with write_txn(conn):
+        _policy, _root_id, expired, reason = _program_deadline(conn, task_id, now)
+        if expired:
+            _block_expired_program_task(conn, task_id, now, reason)
+            return False
         cur = conn.execute(
             "UPDATE tasks SET claim_expires = ? "
             "WHERE id = ? AND status = 'running' AND claim_lock = ?",
@@ -4027,6 +4123,19 @@ def release_stale_claims(
     for row in stale:
         lock = row["claim_lock"] or ""
         host_local = lock.startswith(host_prefix)
+        _policy, _root_id, program_expired, deadline_reason = _program_deadline(
+            conn, row["id"], now
+        )
+        if program_expired:
+            _terminate_reclaimed_worker(
+                row["worker_pid"], row["claim_lock"], signal_fn=signal_fn,
+            )
+            with write_txn(conn):
+                if _block_expired_program_task(
+                    conn, row["id"], now, deadline_reason
+                ):
+                    reclaimed += 1
+            continue
         hb = row["last_heartbeat_at"]
         # Heartbeat staleness backstop: if we have a heartbeat at all
         # and it's older than the max-stale threshold, the worker is
@@ -6745,7 +6854,7 @@ def enforce_max_runtime(
                 else:
                     program_elapsed = now - int(row["root_created_at"])
                     program_limit = policy.max_wall_clock_seconds
-                    program_deadline_exceeded = program_elapsed > program_limit
+                    program_deadline_exceeded = program_elapsed >= program_limit
             except ValueError:
                 # Malformed persisted authority must not leave a worker
                 # running outside enforceable bounds.

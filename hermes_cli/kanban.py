@@ -2844,6 +2844,21 @@ def run_slash(rest: str) -> str:
     if not tokens or tokens[0] in {"help", "--help", "-h", "?"}:
         return _SLASH_KANBAN_HELP
 
+    # Program roots grant bounded delegation authority and are broker-only.
+    # Every interactive and gateway /kanban path enters through run_slash;
+    # reject before argparse dispatch so no future handler refactor can expose
+    # this mutation surface outside trusted direct OS argv.
+    command_tokens = [token for token in tokens if not token.startswith("--board=")]
+    if command_tokens[:2] == ["program", "create"] or (
+        len(command_tokens) >= 4
+        and command_tokens[0] == "--board"
+        and command_tokens[2:4] == ["program", "create"]
+    ):
+        return (
+            "⚠ /kanban program create is restricted to the trusted direct "
+            "OS argv CLI"
+        )
+
     # Single argparse tree rooted at "/kanban".  build_parser() expects a
     # subparsers action to attach to, so build a throwaway one and pull
     # the kanban_parser back out — then drive it directly so usage/error

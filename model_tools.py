@@ -386,6 +386,25 @@ def _compute_tool_definitions(
                     print(f"✅ Enabled legacy toolset '{toolset_name}': {', '.join(legacy_tools)}")
             elif not quiet_mode:
                 print(f"⚠️  Unknown toolset: {toolset_name}")
+
+        # Auto-include MCP toolsets (mcp-*) so gateway/messaging platform
+        # agents with hardcoded enabled_toolsets can still use MCP tools.
+        # MCP tools are dynamically registered into mcp-{server_name} toolsets
+        # that aren't part of any platform's enabled_toolsets list. Without
+        # this, gateway agents (QQ, Telegram, Discord, etc.) cannot see or
+        # call mcp__* tools. See issue #65662.
+        from tools.registry import registry as _registry
+        try:
+            _available = _registry.get_available_toolsets()
+            for _ts_name in _available:
+                if _ts_name.startswith("mcp-") and _available[_ts_name].get("available"):
+                    _mcp_tools = resolve_toolset(_ts_name)
+                    if _mcp_tools:
+                        tools_to_include.update(_mcp_tools)
+                        if not quiet_mode:
+                            print(f"✅ Auto-included MCP toolset '{_ts_name}': {', '.join(_mcp_tools)}")
+        except Exception:
+            pass
     else:
         # Default: start with everything
         from toolsets import get_all_toolsets

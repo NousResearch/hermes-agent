@@ -1,0 +1,279 @@
+{
+  "0f2e825e647e7033e4e13a52ce3802327d55c7ca5af184e72318781bd4db1365": {
+    "input": {
+      "agent": {
+        "_in_budget_grace": false
+      },
+      "function_name": "read_file",
+      "kind": "pre_block",
+      "name": "no pre block",
+      "tool_scope_block": null
+    },
+    "name": "no pre block",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": null
+    }
+  },
+  "1a1fb7de9d0abbb6382fc0ff62e3be4dbc86b38896f4c4c36184d9196ad1ee6e": {
+    "input": {
+      "agent": {
+        "_in_budget_grace": false
+      },
+      "function_name": "golden_lookup",
+      "kind": "pre_block",
+      "name": "tool scope outranks plugin path after grace",
+      "tool_scope_block": "'golden_lookup' is not available in this session. Use tool_search to find tools you can call."
+    },
+    "name": "tool scope outranks plugin path after grace",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "error_type": "tool_scope_block",
+        "message": "'golden_lookup' is not available in this session. Use tool_search to find tools you can call."
+      }
+    }
+  },
+  "1c60b7f97bf3e72b7a9333ebc9a3faa8cd6cbe9f3fb362d163a142a22716a32b": {
+    "input": {
+      "kind": "strip_toolsets",
+      "name": "strip blocked toolsets keeps code execution",
+      "toolsets": [
+        "terminal",
+        "delegation",
+        "cronjob",
+        "code_execution",
+        "skills"
+      ]
+    },
+    "name": "strip blocked toolsets keeps code execution",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        "terminal",
+        "code_execution",
+        "skills"
+      ]
+    }
+  },
+  "4425881163593b7f8fe4a767ba5ae1643a56f79d48cd08a9d8fc51482330e93c": {
+    "input": {
+      "kind": "scope_message",
+      "name": "tool scope message",
+      "tool_name": "golden_lookup"
+    },
+    "name": "tool scope message",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": "'golden_lookup' is not available in this session. Use tool_search to find tools you can call."
+    }
+  },
+  "5baf8ffebd63a651e4ba142bbfca93be73317a0e00ee3518bacd599265302de7": {
+    "input": {
+      "kind": "scope_result",
+      "name": "tool scope result json",
+      "tool_name": "golden_lookup"
+    },
+    "name": "tool scope result json",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": "{\"error\": \"'golden_lookup' is not available in this session. Use tool_search to find tools you can call.\"}"
+    }
+  },
+  "7f2652c1deb57e556e29a4c0868971402b5da08ef79fb85629e022d531bf7274": {
+    "input": {
+      "agent": {
+        "disabled_toolsets": null,
+        "enabled_toolsets": null
+      },
+      "function_args": {
+        "arguments": {},
+        "name": "tool_search"
+      },
+      "function_name": "tool_call",
+      "kind": "unwrap",
+      "name": "tool_call parse error leaves bridge unchanged"
+    },
+    "name": "tool_call parse error leaves bridge unchanged",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "function_args": {
+          "arguments": {},
+          "name": "tool_search"
+        },
+        "function_name": "tool_call",
+        "scope_block_message": null,
+        "scope_block_result": null
+      }
+    }
+  },
+  "95d981047ca52a81ad9a5b130d56e9085143cd4076f6f1797d6d5f12d6988c3a": {
+    "input": {
+      "agent": {
+        "_in_budget_grace": true
+      },
+      "function_name": "terminal",
+      "kind": "pre_block",
+      "name": "budget grace blocks side effect",
+      "tool_scope_block": null
+    },
+    "name": "budget grace blocks side effect",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "error_type": "budget_grace_block",
+        "message": "Refused 'terminal': the iteration budget is exhausted and this is the final grace turn. Only read-only tools may run now. Write your final summary/answer directly instead of calling side-effecting tools."
+      }
+    }
+  },
+  "a70d0db3379feb5e5527653756402b46d6e035feab21dee52fb22b79bf9a362d": {
+    "input": {
+      "agent": {
+        "_in_budget_grace": true
+      },
+      "function_name": "read_file",
+      "kind": "pre_block",
+      "name": "budget grace allows readonly",
+      "tool_scope_block": null
+    },
+    "name": "budget grace allows readonly",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": null
+    }
+  },
+  "bea7ae4cb4641e17e86966489c0a9f956843a90af94ac97ce17f3ac39e145189": {
+    "input": {
+      "agent": {
+        "disabled_toolsets": null,
+        "enabled_toolsets": [
+          "custom"
+        ],
+        "scope_names": [
+          "allowed_tool"
+        ]
+      },
+      "function_args": {
+        "arguments": {
+          "q": "x"
+        },
+        "name": "golden_lookup"
+      },
+      "function_name": "tool_call",
+      "kind": "unwrap",
+      "name": "tool_call blocks cached out-of-scope tool"
+    },
+    "name": "tool_call blocks cached out-of-scope tool",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "function_args": {
+          "arguments": {
+            "q": "x"
+          },
+          "name": "golden_lookup"
+        },
+        "function_name": "tool_call",
+        "scope_block_message": "'golden_lookup' is not available in this session. Use tool_search to find tools you can call.",
+        "scope_block_result": "{\"error\": \"'golden_lookup' is not available in this session. Use tool_search to find tools you can call.\"}"
+      }
+    }
+  },
+  "d0c89b4019bf260ab316dfe3eeff53829fd58cb0065bf690b1e12fb41a7170e1": {
+    "input": {
+      "agent": {
+        "disabled_toolsets": null,
+        "enabled_toolsets": [
+          "custom"
+        ],
+        "scope_names": [
+          "golden_lookup"
+        ]
+      },
+      "function_args": {
+        "arguments": "{\"q\":\"x\"}",
+        "name": "golden_lookup"
+      },
+      "function_name": "tool_call",
+      "kind": "unwrap",
+      "name": "tool_call unwraps cached in-scope tool"
+    },
+    "name": "tool_call unwraps cached in-scope tool",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "function_args": {
+          "q": "x"
+        },
+        "function_name": "golden_lookup",
+        "scope_block_message": null,
+        "scope_block_result": null
+      }
+    }
+  },
+  "dbdc72098405bacf02a85f850d355f8aad16725f7d99e483a4a94cc8604eda5d": {
+    "input": {
+      "agent": {
+        "disabled_toolsets": null,
+        "enabled_toolsets": null
+      },
+      "function_args": {
+        "command": "pwd"
+      },
+      "function_name": "terminal",
+      "kind": "unwrap",
+      "name": "direct tool is unchanged"
+    },
+    "name": "direct tool is unchanged",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": {
+        "function_args": {
+          "command": "pwd"
+        },
+        "function_name": "terminal",
+        "scope_block_message": null,
+        "scope_block_result": null
+      }
+    }
+  },
+  "f01767a95fd58dd947b450cb99a98dc16d1bebc75b49b46baae7910d7f1d33d3": {
+    "input": {
+      "agent": {
+        "disabled_toolsets": [
+          "terminal"
+        ],
+        "enabled_toolsets": [
+          "custom"
+        ],
+        "scope_names": [
+          "cached_tool",
+          "other_tool"
+        ]
+      },
+      "kind": "scope",
+      "name": "scope cache hit returns cached names"
+    },
+    "name": "scope cache hit returns cached names",
+    "output": {
+      "db": [],
+      "messages": [],
+      "return": [
+        "cached_tool",
+        "other_tool"
+      ]
+    }
+  }
+}

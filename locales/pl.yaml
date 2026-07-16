@@ -361,6 +361,8 @@ gateway:
     label_estimated_context: "Szacowany kontekst — tokeny: ~{count}"
     detailed_after_first: "_(Szczegółowe dane o użyciu będą dostępne po pierwszej odpowiedzi agenta)_"
     no_data: "Brak danych o użyciu dla tej sesji."
+    reset_wrong_provider: "Reset wykorzystanego limitu jest dostępny tylko dla dostawcy openai-codex. Najpierw przełącz go przez `/model`."
+    unknown_subcommand: "Nieznana podkomenda /usage: `{args}`. Spróbuj `/usage` lub `/usage reset [--force]`."
 
   credits:
     not_logged_in: "Nie zalogowano do Nous Portal. Zaloguj się, aby sprawdzić saldo i doładować środki."

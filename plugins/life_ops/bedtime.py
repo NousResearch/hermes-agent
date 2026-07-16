@@ -25,7 +25,7 @@ import urllib.request
 from pathlib import Path
 from typing import Optional
 
-from services.hermes.config import get_commander_api_url
+from plugins.life_ops.config import get_commander_api_url
 
 _log = logging.getLogger(__name__)
 _audit_write_lock = threading.Lock()

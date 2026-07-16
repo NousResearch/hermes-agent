@@ -22,10 +22,10 @@ import pytest
 
 pytest.importorskip("discord", reason="discord.py not installed")
 
-import plugins.platforms.discord.adapter as adapter_mod
+import plugins.life_ops.discord_adapter as adapter_mod
 from gateway.config import Platform
-from services.hermes import away_mode
-from services.hermes import todo_store as ts
+from plugins.life_ops import away_mode
+from plugins.life_ops import todo_store as ts
 
 discord = adapter_mod.discord
 if not hasattr(adapter_mod, "TodoClosureView"):
@@ -128,7 +128,7 @@ class TestButtonAuthGate:
         view.selected = {"k1"}
 
         mock_close = MagicMock(return_value={"ok": True, "status": "done"})
-        monkeypatch.setattr("services.hermes.todo_store.close_todo", mock_close)
+        monkeypatch.setattr("plugins.life_ops.todo_store.close_todo", mock_close)
 
         interaction = _make_interaction(user_id="999")
         await _buttons(view)["Mark Done"].callback(interaction)
@@ -144,7 +144,7 @@ class TestButtonAuthGate:
         view.selected = {"k1"}
 
         mock_close = MagicMock(return_value={"ok": True, "status": "dismissed"})
-        monkeypatch.setattr("services.hermes.todo_store.close_todo", mock_close)
+        monkeypatch.setattr("plugins.life_ops.todo_store.close_todo", mock_close)
 
         interaction = _make_interaction(user_id="999")
         await _buttons(view)["Dismiss"].callback(interaction)
@@ -157,7 +157,7 @@ class TestButtonAuthGate:
         view.selected = {"k1"}
 
         mock_close = MagicMock(return_value={"ok": True, "status": "snoozed"})
-        monkeypatch.setattr("services.hermes.todo_store.close_todo", mock_close)
+        monkeypatch.setattr("plugins.life_ops.todo_store.close_todo", mock_close)
 
         interaction = _make_interaction(user_id="999")
         await _buttons(view)["Snooze 1 week"].callback(interaction)
@@ -255,7 +255,7 @@ class TestApplyActionsAgainstRealStore:
 # ---------------------------------------------------------------------------
 
 
-def _bare_adapter() -> "adapter_mod.DiscordAdapter":
+def _bare_adapter() -> "adapter_mod.LifeOpsDiscordAdapter":
     """A DiscordAdapter instance with __init__ bypassed.
 
     _bedtime_scheduler_loop only touches self.name (a property derived from
@@ -264,7 +264,7 @@ def _bare_adapter() -> "adapter_mod.DiscordAdapter":
     state, thread trackers, etc.) is unnecessary — same "construct the bare
     minimum" approach as instantiating a dataclass-like test double.
     """
-    adapter = object.__new__(adapter_mod.DiscordAdapter)
+    adapter = object.__new__(adapter_mod.LifeOpsDiscordAdapter)
     adapter.platform = Platform.DISCORD
     adapter._client = None
     return adapter
@@ -285,7 +285,7 @@ class TestBedtimeAwayModeGate:
             return None
 
         with patch("asyncio.sleep", side_effect=_fake_sleep), \
-             patch("services.hermes.bedtime.fetch_backlog_count") as mock_fetch:
+             patch("plugins.life_ops.bedtime.fetch_backlog_count") as mock_fetch:
             await adapter._bedtime_scheduler_loop({"hour": 3, "minute": 0})
 
         mock_fetch.assert_not_called()
@@ -307,7 +307,7 @@ class TestBedtimeAwayModeGate:
             return None
 
         with patch("asyncio.sleep", side_effect=_fake_sleep), \
-             patch("services.hermes.bedtime.fetch_backlog_count", return_value=3) as mock_fetch:
+             patch("plugins.life_ops.bedtime.fetch_backlog_count", return_value=3) as mock_fetch:
             await adapter._bedtime_scheduler_loop({"hour": 3, "minute": 0})
 
         mock_fetch.assert_called_once()

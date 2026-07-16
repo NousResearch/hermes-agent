@@ -26,7 +26,7 @@ import pytest
 
 pytest.importorskip("discord", reason="discord.py not installed")
 
-import plugins.platforms.discord.adapter as adapter_mod
+import plugins.life_ops.discord_adapter as adapter_mod
 
 discord = adapter_mod.discord
 if not hasattr(adapter_mod, "JournalApproveView"):
@@ -270,7 +270,7 @@ class TestApproveUsesSelectedProject:
             return_value={"success": True, "duplicate": False, "ticket_number": 5}
         )
         monkeypatch.setattr(
-            "services.hermes.journal_approve.handle_journal_approve", mock_handle
+            "plugins.life_ops.journal_approve.handle_journal_approve", mock_handle
         )
 
         approve_interaction = _make_interaction(user_id="111")
@@ -288,7 +288,7 @@ class TestApproveUsesSelectedProject:
             return_value={"success": True, "duplicate": False, "ticket_number": 9}
         )
         monkeypatch.setattr(
-            "services.hermes.journal_approve.handle_journal_approve", mock_handle
+            "plugins.life_ops.journal_approve.handle_journal_approve", mock_handle
         )
 
         interaction = _make_interaction(user_id="111")
@@ -303,7 +303,7 @@ class TestApproveUsesSelectedProject:
 
         mock_handle = MagicMock()
         monkeypatch.setattr(
-            "services.hermes.journal_approve.handle_journal_approve", mock_handle
+            "plugins.life_ops.journal_approve.handle_journal_approve", mock_handle
         )
 
         interaction = _make_interaction(user_id="999")

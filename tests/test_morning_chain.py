@@ -314,7 +314,7 @@ class TestDryRun:
 
 class TestFiveStepDryRun:
     """Step 1/3 became the todo_store_sync export/ingest reconciliation
-    (services/hermes/todo_store_sync.py); the chain grew from three steps to
+    (plugins/life_ops/todo_store_sync.py); the chain grew from three steps to
     five: export -> journal -> ingest -> perf-coach brief -> composer. This
     pins down that --dry-run still prints all five, in the right order, when
     every step is overridden with a simple stub command.

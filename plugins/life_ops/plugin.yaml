@@ -1,0 +1,5 @@
+name: life_ops
+kind: standalone
+version: 1.0.0
+description: "Personal life-ops overlay (fork-owned): persistent todo store with Discord closure UI, morning brief composer, bedtime overnight-sprint prompt, journal-approvals dispatch, away mode, and /rpe. Replaces the bundled Discord adapter with a subclass so upstream files stay pristine."
+author: "@zealchaiwut"

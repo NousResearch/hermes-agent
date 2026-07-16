@@ -2,7 +2,7 @@
 
 A single global flag (there is exactly one row, id=1) stored in the
 ``away_state`` table of the same ``todos.db`` used by
-:mod:`services.hermes.todo_store` — see that module's docstring for the
+:mod:`plugins.life_ops.todo_store` — see that module's docstring for the
 broader persistent-todo-store context. When away mode is active, the caller
 (a later integration step) is expected to skip the todo-nagging parts of the
 brief.
@@ -16,7 +16,7 @@ import sqlite3
 from pathlib import Path
 
 from hermes_cli.sqlite_util import write_txn
-from services.hermes.todo_store import todos_db_path
+from plugins.life_ops.todo_store import todos_db_path
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS away_state (
@@ -31,7 +31,7 @@ CREATE TABLE IF NOT EXISTS away_state (
 def connect(db_path: Path | None = None) -> sqlite3.Connection:
     """Open (and initialize if needed) the ``away_state`` table.
 
-    Shares ``todos.db`` with :mod:`services.hermes.todo_store` but only ever
+    Shares ``todos.db`` with :mod:`plugins.life_ops.todo_store` but only ever
     touches its own table — schema init here is scoped to ``away_state`` so
     the two modules stay independently owned.
     """

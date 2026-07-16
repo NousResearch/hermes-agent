@@ -1,4 +1,4 @@
-"""Tests for services.hermes.todo_store_seed — the generic one-off seed script.
+"""Tests for plugins.life_ops.todo_store_seed — the generic one-off seed script.
 
 Covers derive_key's determinism/shape and seed_from_contract's insert/skip
 counting, idempotency, error handling, and the "closing a seeded key then
@@ -17,8 +17,8 @@ import re
 
 import pytest
 
-from services.hermes import todo_store
-from services.hermes import todo_store_seed as seed
+from plugins.life_ops import todo_store
+from plugins.life_ops import todo_store_seed as seed
 
 
 @pytest.fixture(autouse=True)

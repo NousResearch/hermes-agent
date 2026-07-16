@@ -1,11 +1,11 @@
-"""Tests for services.hermes.discord's /done, /dismiss, /snooze, /away-on,
+"""Tests for plugins.life_ops.discord_commands's /done, /dismiss, /snooze, /away-on,
 /away-off handlers and the shared todo-key autocomplete.
 
 These are the pure-logic ``handle_x()`` functions (same shape as /rpe's
 ``handle_rpe``) that the thin Discord-facing ``register_x_command()``
-wrappers call into — see services/hermes/discord.py's module docstring.
-Exercised here against a real (tmp HERMES_HOME) services.hermes.todo_store /
-services.hermes.away_mode, following the explicit
+wrappers call into — see plugins/life_ops/discord_commands.py's module docstring.
+Exercised here against a real (tmp HERMES_HOME) plugins.life_ops.todo_store /
+plugins.life_ops.away_mode, following the explicit
 ``monkeypatch.setenv("HERMES_HOME", ...)`` pattern used in
 tests/hermes/test_todo_store.py and tests/hermes/test_away_mode.py.
 """
@@ -15,9 +15,9 @@ import json
 
 import pytest
 
-from services.hermes import discord as hdiscord
-from services.hermes import away_mode
-from services.hermes import todo_store as ts
+from plugins.life_ops import discord_commands as hdiscord
+from plugins.life_ops import away_mode
+from plugins.life_ops import todo_store as ts
 
 try:
     import discord as _discord_check  # noqa: F401
@@ -68,7 +68,7 @@ class TestHandleDone:
 
     def test_unknown_key_returns_friendly_error_not_exception(self):
         # todo_store.close_todo()'s unknown-key error dict has no "status"
-        # key at all (see services/hermes/todo_store.py close_todo) —
+        # key at all (see plugins/life_ops/todo_store.py close_todo) —
         # handle_done() forwards it verbatim rather than raising.
         result = hdiscord.handle_done("does-not-exist")
         assert result == {"ok": False, "error": "unknown key: does-not-exist"}

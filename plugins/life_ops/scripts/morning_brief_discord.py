@@ -2,7 +2,7 @@
 """Morning brief delivery script for Discord.
 
 No-agent cron job: reads config, composes the four-section morning brief
-via scripts.morning_brief_composer, and posts it to the configured Discord
+via plugins.life_ops.scripts.morning_brief_composer, and posts it to the configured Discord
 channel.
 
 Config keys (config.yaml):
@@ -40,7 +40,7 @@ from pathlib import Path
 
 # Ensure the repo root is on sys.path so hermes_cli.config is importable
 # whether the script is invoked directly or via cron's subprocess runner.
-_REPO_ROOT = Path(__file__).parent.parent.parent
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 # logging.basicConfig at import time, and basicConfig is a no-op once a
 # handler is already installed — importing it after our own call keeps this
 # script's INFO-level logging intact.
-from scripts.morning_brief_composer import (
+from plugins.life_ops.scripts.morning_brief_composer import (
     DEFAULT_COMMANDER_PATH,
     DEFAULT_JOURNAL_PATH,
     DEFAULT_PERFCOACH_PATH,

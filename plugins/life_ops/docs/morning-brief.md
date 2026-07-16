@@ -4,7 +4,7 @@ Scheduled-job engine for Hermes Agent. Jobs run on a 60-second tick loop inside 
 
 ## Morning Brief — Discord Delivery
 
-Delivers a daily morning brief to a Discord channel at 06:00 Asia/Bangkok via `cron/scripts/morning_brief_discord.py`.
+Delivers a daily morning brief to a Discord channel at 06:00 Asia/Bangkok via `plugins/life_ops/scripts/morning_brief_discord.py`.
 
 ### Required config
 
@@ -68,7 +68,7 @@ MORNING_BRIEF_DRY_RUN=1 python -m cron.scheduler --run-job morning_brief_discord
 Or run the script directly:
 
 ```bash
-MORNING_BRIEF_DRY_RUN=1 HERMES_HOME=~/.hermes python cron/scripts/morning_brief_discord.py
+MORNING_BRIEF_DRY_RUN=1 HERMES_HOME=~/.hermes python plugins/life_ops/scripts/morning_brief_discord.py
 ```
 
 ### Error handling

@@ -51,7 +51,7 @@ def _make_todo(
 
 def _reload_modules():
     for mod in list(sys.modules):
-        if "services.hermes" in mod:
+        if "plugins.life_ops" in mod:
             del sys.modules[mod]
 
 
@@ -71,7 +71,7 @@ class TestLoadDevTodos:
             _make_todo("t2", "Task 2", category="fitness"),
             _make_todo("t3", "Task 3", category="dev"),
         ])
-        from services.hermes.journal_approve import load_dev_todos
+        from plugins.life_ops.journal_approve import load_dev_todos
         todos = load_dev_todos(str(brief_file))
         ids = [t["id"] for t in todos]
         assert "t1" in ids
@@ -82,12 +82,12 @@ class TestLoadDevTodos:
         """AC1 — no todos → empty list, no error."""
         brief_file = tmp_path / "journal_brief.latest.json"
         _write_brief(brief_file, [])
-        from services.hermes.journal_approve import load_dev_todos
+        from plugins.life_ops.journal_approve import load_dev_todos
         assert load_dev_todos(str(brief_file)) == []
 
     def test_missing_file_returns_empty_list(self, tmp_path):
         """AC1 — missing file returns [] without raising."""
-        from services.hermes.journal_approve import load_dev_todos
+        from plugins.life_ops.journal_approve import load_dev_todos
         result = load_dev_todos(str(tmp_path / "nonexistent.json"))
         assert result == []
 
@@ -95,7 +95,7 @@ class TestLoadDevTodos:
         """AC1 — corrupt file returns [] without raising."""
         brief_file = tmp_path / "journal_brief.latest.json"
         brief_file.write_text("not valid json", encoding="utf-8")
-        from services.hermes.journal_approve import load_dev_todos
+        from plugins.life_ops.journal_approve import load_dev_todos
         assert load_dev_todos(str(brief_file)) == []
 
     def test_no_dev_category_todos_returns_empty(self, tmp_path):
@@ -105,14 +105,14 @@ class TestLoadDevTodos:
             _make_todo("t1", category="fitness"),
             _make_todo("t2", category="mindset"),
         ])
-        from services.hermes.journal_approve import load_dev_todos
+        from plugins.life_ops.journal_approve import load_dev_todos
         assert load_dev_todos(str(brief_file)) == []
 
     def test_todo_has_required_fields(self, tmp_path):
         """AC1 — returned todos carry id, title, body."""
         brief_file = tmp_path / "journal_brief.latest.json"
         _write_brief(brief_file, [_make_todo("t1", "My Title", "My Body")])
-        from services.hermes.journal_approve import load_dev_todos
+        from plugins.life_ops.journal_approve import load_dev_todos
         todo = load_dev_todos(str(brief_file))[0]
         assert todo["id"] == "t1"
         assert todo["title"] == "My Title"
@@ -148,7 +148,7 @@ class TestHandleJournalApprove:
         mock_resp.read.return_value = resp_data
 
         with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
-            from services.hermes.journal_approve import handle_journal_approve
+            from plugins.life_ops.journal_approve import handle_journal_approve
             result = handle_journal_approve(
                 todo_id=todo_id,
                 title=title,
@@ -206,7 +206,7 @@ class TestHandleJournalApprove:
         monkeypatch.delenv("COMMANDER_API_URL", raising=False)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         with patch("urllib.request.urlopen") as mock_urlopen:
-            from services.hermes.journal_approve import handle_journal_approve
+            from plugins.life_ops.journal_approve import handle_journal_approve
             result = handle_journal_approve(
                 todo_id="t1", title="T", body="B", project="o/r", user_id="u1"
             )
@@ -220,7 +220,7 @@ class TestHandleJournalApprove:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         exc = urllib.error.HTTPError("url", 502, "Bad Gateway", {}, None)
         with patch("urllib.request.urlopen", side_effect=exc):
-            from services.hermes.journal_approve import handle_journal_approve
+            from plugins.life_ops.journal_approve import handle_journal_approve
             result = handle_journal_approve(
                 todo_id="t1", title="T", body="B", project="o/r", user_id="u1"
             )
@@ -233,7 +233,7 @@ class TestHandleJournalApprove:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         exc = urllib.error.URLError("Connection refused")
         with patch("urllib.request.urlopen", side_effect=exc):
-            from services.hermes.journal_approve import handle_journal_approve
+            from plugins.life_ops.journal_approve import handle_journal_approve
             result = handle_journal_approve(
                 todo_id="t1", title="T", body="B", project="o/r", user_id="u1"
             )
@@ -257,14 +257,14 @@ class TestNoSideEffectsWhenNotApproved:
         brief_file = tmp_path / "journal_brief.latest.json"
         _write_brief(brief_file, [_make_todo("t1")])
         with patch("urllib.request.urlopen") as mock_urlopen:
-            from services.hermes.journal_approve import load_dev_todos
+            from plugins.life_ops.journal_approve import load_dev_todos
             load_dev_todos(str(brief_file))
         mock_urlopen.assert_not_called()
 
     def test_unapproved_todo_leaves_no_approval_record(self, tmp_path, monkeypatch):
         """AC5 — an unapproved todo has no entry in the idempotency store."""
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from services.hermes.journal_approve import is_todo_approved
+        from plugins.life_ops.journal_approve import is_todo_approved
         assert is_todo_approved("todo-xyz") is False
 
 
@@ -289,7 +289,7 @@ class TestIdempotency:
         mock_resp.read.return_value = resp_data
 
         with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
-            from services.hermes.journal_approve import handle_journal_approve
+            from plugins.life_ops.journal_approve import handle_journal_approve
             # First approval — should succeed
             r1 = handle_journal_approve(
                 todo_id="dup-id", title="T", body="B", project="o/r", user_id="u1"
@@ -300,7 +300,7 @@ class TestIdempotency:
 
         with patch("urllib.request.urlopen") as mock_urlopen2:
             monkeypatch.setenv("COMMANDER_API_URL", "http://localhost:8000")
-            from services.hermes.journal_approve import handle_journal_approve
+            from plugins.life_ops.journal_approve import handle_journal_approve
             # Second approval — must be a no-op
             r2 = handle_journal_approve(
                 todo_id="dup-id", title="T", body="B", project="o/r", user_id="u1"
@@ -322,7 +322,7 @@ class TestIdempotency:
         mock_resp.read.return_value = resp_data
 
         with patch("urllib.request.urlopen", return_value=mock_resp):
-            from services.hermes.journal_approve import handle_journal_approve, is_todo_approved
+            from plugins.life_ops.journal_approve import handle_journal_approve, is_todo_approved
             handle_journal_approve(
                 todo_id="store-test", title="T", body="B", project="o/r", user_id="u1"
             )
@@ -330,7 +330,7 @@ class TestIdempotency:
         _reload_modules()
 
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from services.hermes.journal_approve import is_todo_approved
+        from plugins.life_ops.journal_approve import is_todo_approved
         assert is_todo_approved("store-test") is True
 
     def test_different_todo_ids_are_independent(self, monkeypatch, tmp_path):
@@ -346,14 +346,14 @@ class TestIdempotency:
         mock_resp.read.return_value = resp_data
 
         with patch("urllib.request.urlopen", return_value=mock_resp):
-            from services.hermes.journal_approve import handle_journal_approve, is_todo_approved
+            from plugins.life_ops.journal_approve import handle_journal_approve, is_todo_approved
             handle_journal_approve(
                 todo_id="todo-A", title="T", body="B", project="o/r", user_id="u1"
             )
 
         _reload_modules()
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        from services.hermes.journal_approve import is_todo_approved
+        from plugins.life_ops.journal_approve import is_todo_approved
         assert is_todo_approved("todo-B") is False
 
 
@@ -378,7 +378,7 @@ class TestAuditLog:
         mock_resp.read.return_value = resp_data
 
         with patch("urllib.request.urlopen", return_value=mock_resp):
-            from services.hermes.journal_approve import handle_journal_approve
+            from plugins.life_ops.journal_approve import handle_journal_approve
             handle_journal_approve(
                 todo_id="t-audit-1", title="T", body="B", project="o/r", user_id="actor-u1"
             )
@@ -404,7 +404,7 @@ class TestAuditLog:
         mock_resp.read.return_value = resp_data
 
         with patch("urllib.request.urlopen", return_value=mock_resp):
-            from services.hermes.journal_approve import handle_journal_approve
+            from plugins.life_ops.journal_approve import handle_journal_approve
             handle_journal_approve(
                 todo_id="t-dup-audit", title="T", body="B", project="o/r", user_id="u1"
             )
@@ -414,7 +414,7 @@ class TestAuditLog:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
         with patch("urllib.request.urlopen") as mock_urlopen2:
-            from services.hermes.journal_approve import handle_journal_approve
+            from plugins.life_ops.journal_approve import handle_journal_approve
             handle_journal_approve(
                 todo_id="t-dup-audit", title="T", body="B", project="o/r", user_id="u2"
             )
@@ -440,7 +440,7 @@ class TestAuditLog:
 
         with patch("urllib.request.urlopen", return_value=mock_resp):
             with patch("builtins.open", side_effect=OSError("disk full")):
-                from services.hermes.journal_approve import handle_journal_approve
+                from plugins.life_ops.journal_approve import handle_journal_approve
                 # Must not raise
                 handle_journal_approve(
                     todo_id="t-err", title="T", body="B", project="o/r", user_id="u1"
@@ -459,7 +459,7 @@ class TestAuditLog:
         mock_resp.read.return_value = resp_data
 
         with patch("urllib.request.urlopen", return_value=mock_resp):
-            from services.hermes.journal_approve import handle_journal_approve
+            from plugins.life_ops.journal_approve import handle_journal_approve
             handle_journal_approve(
                 todo_id="t-fields", title="T", body="B", project="o/r", user_id="u-actor"
             )
@@ -494,7 +494,7 @@ class TestOriginJournalLabel:
         mock_resp.read.return_value = resp_data
 
         with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
-            from services.hermes.journal_approve import handle_journal_approve
+            from plugins.life_ops.journal_approve import handle_journal_approve
             handle_journal_approve(
                 todo_id="label-test", title="T", body="B", project="o/r", user_id="u1"
             )
@@ -517,7 +517,7 @@ class TestOriginJournalLabel:
         mock_resp.read.return_value = resp_data
 
         with patch("urllib.request.urlopen", return_value=mock_resp) as mock_urlopen:
-            from services.hermes.journal_approve import handle_journal_approve
+            from plugins.life_ops.journal_approve import handle_journal_approve
             handle_journal_approve(
                 todo_id="lbl-test", title="T", body="B", project="o/r", user_id="u1"
             )
@@ -539,12 +539,12 @@ class TestCommanderConfig:
 
     def test_get_commander_api_url_from_env(self, monkeypatch):
         monkeypatch.setenv("COMMANDER_API_URL", "http://localhost:9999")
-        from services.hermes.config import get_commander_api_url
+        from plugins.life_ops.config import get_commander_api_url
         assert get_commander_api_url() == "http://localhost:9999"
 
     def test_get_commander_api_url_missing_returns_none(self, monkeypatch):
         monkeypatch.delenv("COMMANDER_API_URL", raising=False)
-        from services.hermes.config import get_commander_api_url
+        from plugins.life_ops.config import get_commander_api_url
         assert get_commander_api_url() is None
 
 
@@ -563,25 +563,25 @@ class TestGetApproveProjects:
     def test_comma_list_parsed_into_multiple_projects(self, monkeypatch):
         self._clear(monkeypatch)
         monkeypatch.setenv("JOURNAL_APPROVE_PROJECTS", "owner/repo1,owner/repo2,owner/repo3")
-        from services.hermes.config import get_approve_projects
+        from plugins.life_ops.config import get_approve_projects
         assert get_approve_projects() == ["owner/repo1", "owner/repo2", "owner/repo3"]
 
     def test_comma_list_entries_are_stripped(self, monkeypatch):
         self._clear(monkeypatch)
         monkeypatch.setenv("JOURNAL_APPROVE_PROJECTS", " owner/repo1 , owner/repo2 ,  owner/repo3  ")
-        from services.hermes.config import get_approve_projects
+        from plugins.life_ops.config import get_approve_projects
         assert get_approve_projects() == ["owner/repo1", "owner/repo2", "owner/repo3"]
 
     def test_comma_list_drops_empty_entries(self, monkeypatch):
         self._clear(monkeypatch)
         monkeypatch.setenv("JOURNAL_APPROVE_PROJECTS", "owner/repo1,,owner/repo2,  ,owner/repo3,")
-        from services.hermes.config import get_approve_projects
+        from plugins.life_ops.config import get_approve_projects
         assert get_approve_projects() == ["owner/repo1", "owner/repo2", "owner/repo3"]
 
     def test_single_entry_in_plural_var_returns_single_item_list(self, monkeypatch):
         self._clear(monkeypatch)
         monkeypatch.setenv("JOURNAL_APPROVE_PROJECTS", "owner/repo1")
-        from services.hermes.config import get_approve_projects
+        from plugins.life_ops.config import get_approve_projects
         assert get_approve_projects() == ["owner/repo1"]
 
     def test_plural_var_all_commas_and_whitespace_returns_empty_list(self, monkeypatch):
@@ -590,37 +590,37 @@ class TestGetApproveProjects:
         is present/non-empty and takes precedence)."""
         self._clear(monkeypatch)
         monkeypatch.setenv("JOURNAL_APPROVE_PROJECTS", " , , ")
-        from services.hermes.config import get_approve_projects
+        from plugins.life_ops.config import get_approve_projects
         assert get_approve_projects() == []
 
     def test_fallback_to_singular_when_plural_unset(self, monkeypatch):
         self._clear(monkeypatch)
         monkeypatch.setenv("JOURNAL_APPROVE_PROJECT", "owner/legacy-repo")
-        from services.hermes.config import get_approve_projects
+        from plugins.life_ops.config import get_approve_projects
         assert get_approve_projects() == ["owner/legacy-repo"]
 
     def test_fallback_singular_is_stripped(self, monkeypatch):
         self._clear(monkeypatch)
         monkeypatch.setenv("JOURNAL_APPROVE_PROJECT", "  owner/legacy-repo  ")
-        from services.hermes.config import get_approve_projects
+        from plugins.life_ops.config import get_approve_projects
         assert get_approve_projects() == ["owner/legacy-repo"]
 
     def test_plural_takes_precedence_over_singular_when_both_set(self, monkeypatch):
         self._clear(monkeypatch)
         monkeypatch.setenv("JOURNAL_APPROVE_PROJECTS", "owner/new1,owner/new2")
         monkeypatch.setenv("JOURNAL_APPROVE_PROJECT", "owner/old")
-        from services.hermes.config import get_approve_projects
+        from plugins.life_ops.config import get_approve_projects
         assert get_approve_projects() == ["owner/new1", "owner/new2"]
 
     def test_both_unset_returns_empty_list(self, monkeypatch):
         self._clear(monkeypatch)
-        from services.hermes.config import get_approve_projects
+        from plugins.life_ops.config import get_approve_projects
         assert get_approve_projects() == []
 
     def test_plural_unset_and_singular_empty_string_returns_empty_list(self, monkeypatch):
         self._clear(monkeypatch)
         monkeypatch.setenv("JOURNAL_APPROVE_PROJECT", "")
-        from services.hermes.config import get_approve_projects
+        from plugins.life_ops.config import get_approve_projects
         assert get_approve_projects() == []
 
     def test_plural_empty_string_falls_back_to_singular(self, monkeypatch):
@@ -629,12 +629,12 @@ class TestGetApproveProjects:
         self._clear(monkeypatch)
         monkeypatch.setenv("JOURNAL_APPROVE_PROJECTS", "")
         monkeypatch.setenv("JOURNAL_APPROVE_PROJECT", "owner/legacy-repo")
-        from services.hermes.config import get_approve_projects
+        from plugins.life_ops.config import get_approve_projects
         assert get_approve_projects() == ["owner/legacy-repo"]
 
     def test_return_type_is_list(self, monkeypatch):
         self._clear(monkeypatch)
         monkeypatch.setenv("JOURNAL_APPROVE_PROJECTS", "owner/repo1,owner/repo2")
-        from services.hermes.config import get_approve_projects
+        from plugins.life_ops.config import get_approve_projects
         result = get_approve_projects()
         assert isinstance(result, list)

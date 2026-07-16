@@ -42,12 +42,12 @@ from zoneinfo import ZoneInfo
 logging.basicConfig(level=logging.WARNING, format="%(levelname)s %(message)s", stream=sys.stderr)
 logger = logging.getLogger(__name__)
 
-# Ensure the repo root is on sys.path so services.hermes.{todo_store,away_mode}
+# Ensure the repo root is on sys.path so plugins.life_ops.{todo_store,away_mode}
 # are importable whether this module is invoked directly (``python3
-# scripts/morning_brief_composer.py``) or imported as a package (tests, the
-# cron delivery script). Mirrors cron/scripts/morning_brief_discord.py's own
-# bootstrap.
-_REPO_ROOT = Path(__file__).parent.parent
+# plugins/life_ops/scripts/morning_brief_composer.py``) or imported as a
+# package (tests, the cron delivery script). Mirrors morning_brief_discord.py's
+# own bootstrap.
+_REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 
@@ -56,7 +56,7 @@ _BKK = ZoneInfo("Asia/Bangkok")
 _HERMES_HOME = Path(os.environ.get("HERMES_HOME", Path.home() / ".hermes"))
 _CONTRACTS_DIR = _HERMES_HOME / "contracts"
 
-DEFAULT_BRIEF_RENDER_CONFIG_PATH = str(_REPO_ROOT / "config" / "brief_render.yaml")
+DEFAULT_BRIEF_RENDER_CONFIG_PATH = str(Path(__file__).resolve().parents[1] / "brief_render.yaml")
 
 _DEFAULT_RENDER_CONFIG = {
     "todo_section": {
@@ -238,7 +238,7 @@ def _get_open_todos_safe() -> list:
     error) degrades to an empty list rather than crashing the scheduled brief.
     """
     try:
-        from services.hermes import todo_store
+        from plugins.life_ops import todo_store
     except Exception as exc:
         logger.warning("todo_store unavailable; rendering empty todo section (%s)", exc)
         return []
@@ -457,7 +457,7 @@ def _render_away_marker(for_date: str) -> str:
     error) is treated as "not away" rather than crashing the scheduled brief.
     """
     try:
-        from services.hermes import away_mode
+        from plugins.life_ops import away_mode
     except Exception:
         return ""
     try:

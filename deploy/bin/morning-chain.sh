@@ -10,7 +10,7 @@
 # to ensure at most one invocation of each step runs at a time.
 # Lock files: logs/morning-chain-step{1,2,3,4,5}.lock (in MORNING_CHAIN_LOCK_DIR)
 #
-# Step order (see services/hermes/todo_store_sync.py for why export runs
+# Step order (see plugins/life_ops/todo_store_sync.py for why export runs
 # before journal rather than after it): the freshest correct OPEN_KEYS/
 # CLOSED_KEYS state going into journal's run is whatever the store looked
 # like after YESTERDAY's ingest — there is no chicken-and-egg fix for that,
@@ -24,7 +24,7 @@
 #   MORNING_CHAIN_STEP2      override step-2 command (default: bin/journal-morning-run.sh)
 #   MORNING_CHAIN_STEP3      override step-3 command (default: todo_store_sync ingest)
 #   MORNING_CHAIN_STEP4      override step-4 command (default: python3 .../export_brief.py)
-#   MORNING_CHAIN_STEP5      override step-5 command (default: cron/scripts/morning_brief_discord.py — compose+deliver to Discord)
+#   MORNING_CHAIN_STEP5      override step-5 command (default: plugins/life_ops/scripts/morning_brief_discord.py — compose+deliver to Discord)
 #   MORNING_CHAIN_LOG_DIR    override log directory   (default: <repo>/logs)
 #   MORNING_CHAIN_LOCK_DIR   override lock directory  (default: <repo>/logs)
 
@@ -68,11 +68,11 @@ fi
 # ---------------------------------------------------------------------------
 # Step commands (overridable for tests)
 # ---------------------------------------------------------------------------
-STEP1_CMD="${MORNING_CHAIN_STEP1:-cd ${REPO_ROOT} && python3 -m services.hermes.todo_store_sync export}"
+STEP1_CMD="${MORNING_CHAIN_STEP1:-cd ${REPO_ROOT} && python3 -m plugins.life_ops.todo_store_sync export}"
 STEP2_CMD="${MORNING_CHAIN_STEP2:-${REPO_ROOT}/bin/journal-morning-run.sh}"
-STEP3_CMD="${MORNING_CHAIN_STEP3:-cd ${REPO_ROOT} && python3 -m services.hermes.todo_store_sync ingest}"
+STEP3_CMD="${MORNING_CHAIN_STEP3:-cd ${REPO_ROOT} && python3 -m plugins.life_ops.todo_store_sync ingest}"
 STEP4_CMD="${MORNING_CHAIN_STEP4:-python3 ${HOME}/perf-coach/scripts/export_brief.py}"
-STEP5_CMD="${MORNING_CHAIN_STEP5:-python3 ${REPO_ROOT}/cron/scripts/morning_brief_discord.py}"
+STEP5_CMD="${MORNING_CHAIN_STEP5:-python3 ${REPO_ROOT}/plugins/life_ops/scripts/morning_brief_discord.py}"
 
 STEP1_LOCK="${LOCK_DIR}/morning-chain-step1.lock"
 STEP2_LOCK="${LOCK_DIR}/morning-chain-step2.lock"

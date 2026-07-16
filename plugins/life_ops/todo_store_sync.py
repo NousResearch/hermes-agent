@@ -1,7 +1,7 @@
-"""Wires :mod:`services.hermes.todo_store` into the deterministic scheduled path.
+"""Wires :mod:`plugins.life_ops.todo_store` into the deterministic scheduled path.
 
 Nothing in the morning-chain previously called the store's reconciliation
-API — the one-time seed (:mod:`services.hermes.todo_store_seed`) populated it
+API — the one-time seed (:mod:`plugins.life_ops.todo_store_seed`) populated it
 once, but tomorrow's fresh journal contract never reached it. This module is
 the fix: two operations, run as steps 1 and 3 of ``deploy/bin/morning-chain.sh``
 (see that script), that close the loop every day.
@@ -23,11 +23,11 @@ the fix: two operations, run as steps 1 and 3 of ``deploy/bin/morning-chain.sh``
       :func:`todo_store.upsert_from_contract`, then closes out anything
       ``resolved_keys`` says journal already resolved on its own.
 
-Both are callable as a CLI (``python -m services.hermes.todo_store_sync
+Both are callable as a CLI (``python -m plugins.life_ops.todo_store_sync
 export`` / ``... ingest [--contract PATH] [--dry-run]``) and as plain
 functions for testing.
 
-No LLM/agent-client imports: stdlib + services.hermes.todo_store + this
+No LLM/agent-client imports: stdlib + plugins.life_ops.todo_store + this
 repo's ``utils.atomic_json_write`` only -- part of the deterministic
 scheduled path.
 """
@@ -41,7 +41,7 @@ import os
 import sys
 from pathlib import Path
 
-from services.hermes import todo_store
+from plugins.life_ops import todo_store
 from utils import atomic_json_write
 
 _log = logging.getLogger(__name__)
@@ -232,7 +232,7 @@ def _dry_run_ingest(contract_path: str) -> dict:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Sync services.hermes.todo_store with the scheduled morning-chain "
+            "Sync plugins.life_ops.todo_store with the scheduled morning-chain "
             "path: 'export' writes OPEN_KEYS/CLOSED_KEYS for journal, 'ingest' "
             "reconciles journal's contract back into the store."
         )

@@ -26,9 +26,9 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _MODULES = [
-    _REPO_ROOT / "services" / "hermes" / "todo_store.py",
-    _REPO_ROOT / "services" / "hermes" / "away_mode.py",
-    _REPO_ROOT / "services" / "hermes" / "todo_store_seed.py",
+    _REPO_ROOT / "plugins" / "life_ops" / "todo_store.py",
+    _REPO_ROOT / "plugins" / "life_ops" / "away_mode.py",
+    _REPO_ROOT / "plugins" / "life_ops" / "todo_store_seed.py",
 ]
 
 _FORBIDDEN_TOP_LEVEL_PACKAGES = {"agent", "providers"}
@@ -65,7 +65,7 @@ def test_no_agent_or_providers_import(module_path):
 @pytest.mark.parametrize("module_path", _MODULES, ids=lambda p: p.name)
 def test_only_expected_import_surface(module_path):
     """Belt-and-braces: every top-level import package is stdlib, sqlite3,
-    hermes_cli, or services.hermes (self-references between the three
+    hermes_cli, or plugins.life_ops (self-references between the three
     modules, e.g. away_mode importing todo_store's todos_db_path)."""
     allowed = {
         "__future__",
@@ -77,7 +77,7 @@ def test_only_expected_import_surface(module_path):
         "re",
         "sqlite3",
         "hermes_cli",
-        "services",
+        "plugins",
         "pathlib",
         "typing",
     }

@@ -595,7 +595,7 @@ DEFAULT_MAX_SUMMARY_CHARS = 24000
 _SUMMARY_HEADROOM_FRACTION = 0.5
 # Floor so a single summary always gets a usable slice even when the parent is
 # already nearly full — below this we'd be truncating to noise.
-_MIN_SUMMARY_CHARS = 2000
+_MIN_SUMMARY_CHARS = 20000  # PROMPT-235: raised from 2000 — long sessions had headroom→0
 # No default wall-clock cap on child agents: legitimate heavy subagent work
 # (deep reviews, research fan-outs, slow reasoning models) was being killed
 # mid-task. Errors should come from what the child actually does; stuck-child
@@ -1735,6 +1735,14 @@ def _apply_summary_budget(results: List[Dict[str, Any]], parent_agent) -> None:
         static_ceiling = int(cfg.get("max_summary_chars", DEFAULT_MAX_SUMMARY_CHARS))
     except (TypeError, ValueError):
         static_ceiling = DEFAULT_MAX_SUMMARY_CHARS
+    # PROMPT-235: configurable floor override
+    try:
+        min_floor = int(cfg.get("min_summary_chars", 0))
+        if min_floor > 0:
+            global _MIN_SUMMARY_CHARS
+            _MIN_SUMMARY_CHARS = min_floor
+    except (TypeError, ValueError):
+        pass
 
     dynamic_budget = _parent_summary_char_budget(parent_agent, len(summaries))
 

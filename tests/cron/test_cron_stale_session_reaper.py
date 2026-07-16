@@ -6,7 +6,7 @@ Covers the ownership-lease + reaper salvaged from PR #62663:
 * Stale dead owner is reaped.
 * PID reuse / start-time mismatch handled as dead only after stale heartbeat.
 * Fresh heartbeat preserved even if PID probe says dead.
-* Missing / malformed / uncertain lease preserved.
+* Missing / malformed ownerless leases are reaped after the grace window.
 * Another current process's active session preserved.
 * Lease cleanup ordering on end_session failure.
 * No duplicate final assistant message (regression).
@@ -20,6 +20,7 @@ import hashlib
 import importlib
 import json
 import os
+import threading
 import time
 from unittest.mock import patch
 
@@ -206,8 +207,8 @@ class TestReaperFailClosed:
         assert db.get_session(sid)["ended_at"] is None
         db.close()
 
-    def test_missing_lease_preserved(self, hermes_env):
-        """No lease sidecar → do not reap (uncertainty = fail closed)."""
+    def test_missing_lease_reaped_after_grace(self, hermes_env):
+        """A legacy session with no lease has no live ownership evidence."""
         from hermes_state import SessionDB
         from cron.scheduler import _reap_stale_cron_sessions
 
@@ -216,17 +217,16 @@ class TestReaperFailClosed:
         _make_old_cron_session(db, sid, age_seconds=7200)
         db.close()
 
-        # No lease written.
-        with patch("gateway.status._pid_exists", return_value=False):
-            count = _reap_stale_cron_sessions()
+        assert _reap_stale_cron_sessions() == 1
 
-        assert count == 0
         db = SessionDB()
-        assert db.get_session(sid)["ended_at"] is None
+        session = db.get_session(sid)
+        assert session["end_reason"] == "stale_reaped"
+        assert session["ended_at"] is not None
         db.close()
 
-    def test_malformed_lease_preserved(self, hermes_env):
-        """Malformed (non-JSON) lease → do not reap."""
+    def test_malformed_lease_reaped_after_grace(self, hermes_env):
+        """An unreadable legacy lease carries no live ownership evidence."""
         from hermes_state import SessionDB
         from cron.scheduler import _reap_stale_cron_sessions
 
@@ -237,13 +237,44 @@ class TestReaperFailClosed:
 
         _write_lease(hermes_env, sid, raw="{not valid json")
 
-        with patch("gateway.status._pid_exists", return_value=False), \
-             patch("cron.scheduler._cron_local_host_id", return_value="testhost"):
-            count = _reap_stale_cron_sessions()
+        assert _reap_stale_cron_sessions() == 1
 
-        assert count == 0
         db = SessionDB()
-        assert db.get_session(sid)["ended_at"] is None
+        session = db.get_session(sid)
+        assert session["end_reason"] == "stale_reaped"
+        assert session["ended_at"] is not None
+        db.close()
+
+    def test_null_runner_fields_reaped_after_grace(self, hermes_env):
+        """A structured but ownerless lease must not make a row immortal."""
+        from hermes_state import SessionDB
+        from cron.scheduler import _reap_stale_cron_sessions
+
+        sid = "cron_ownerless_job_20240101_120000"
+        db = SessionDB()
+        _make_old_cron_session(db, sid, age_seconds=7200)
+        db.close()
+
+        _write_lease(
+            hermes_env,
+            sid,
+            raw=json.dumps(
+                {
+                    "session_id": sid,
+                    "job_id": "ownerless-job",
+                    "runner_pid": None,
+                    "runner_id": None,
+                    "heartbeat_at": time.time() - 7200,
+                }
+            ),
+        )
+
+        assert _reap_stale_cron_sessions() == 1
+
+        db = SessionDB()
+        session = db.get_session(sid)
+        assert session["end_reason"] == "stale_reaped"
+        assert session["ended_at"] is not None
         db.close()
 
     def test_mismatched_session_id_lease_preserved(self, hermes_env):
@@ -320,6 +351,39 @@ class TestReaperFailClosed:
             count = _reap_stale_cron_sessions()
 
         assert count == 0
+        db = SessionDB()
+        assert db.get_session(sid)["ended_at"] is None
+        db.close()
+
+    def test_active_runner_identity_preserved(self, hermes_env):
+        """New-format runner evidence fences a live owner after the grace."""
+        from hermes_state import SessionDB
+        from cron.scheduler import _reap_stale_cron_sessions
+
+        sid = "cron_active_runner_20240101_120000"
+        db = SessionDB()
+        _make_old_cron_session(db, sid, age_seconds=7200)
+        db.close()
+        _write_lease(
+            hermes_env,
+            sid,
+            raw=json.dumps(
+                {
+                    "session_id": sid,
+                    "job_id": "active-runner",
+                    "runner_pid": 12345,
+                    "runner_id": "runner-abc",
+                    "host": "testhost",
+                    "heartbeat_at": time.time() - 7200,
+                }
+            ),
+        )
+
+        with patch("gateway.status._pid_exists", return_value=True), patch(
+            "cron.scheduler._cron_local_host_id", return_value="testhost"
+        ):
+            assert _reap_stale_cron_sessions() == 0
+
         db = SessionDB()
         assert db.get_session(sid)["ended_at"] is None
         db.close()
@@ -561,3 +625,39 @@ class TestTickIntegration:
         assert count == 0
         reap.assert_called_once_with()
         get_due_jobs.assert_not_called()
+
+
+class TestStartupIntegration:
+    def test_restart_reaps_before_first_tick(self, hermes_env):
+        """Startup recovers a crash leftover even when scheduling never ticks."""
+        import cron.scheduler as sched
+        from cron.scheduler_provider import InProcessCronScheduler
+        from hermes_state import SessionDB
+
+        sid = "cron_crash_leftover_20240101_120000"
+        db = SessionDB()
+        _make_old_cron_session(db, sid, age_seconds=7200)
+        db.close()
+        _write_lease(
+            hermes_env,
+            sid,
+            owner_pid=99999,
+            owner_start_time=11111,
+            heartbeat_at=time.time() - 7200,
+        )
+
+        stop = threading.Event()
+        stop.set()
+        with patch("gateway.status._pid_exists", return_value=False), patch.object(
+            sched, "_cron_local_host_id", return_value="testhost"
+        ), patch.object(sched, "tick") as tick, patch(
+            "cron.jobs.record_ticker_heartbeat"
+        ):
+            InProcessCronScheduler().start(stop)
+
+        tick.assert_not_called()
+        db = SessionDB()
+        session = db.get_session(sid)
+        assert session["end_reason"] == "stale_reaped"
+        assert session["ended_at"] is not None
+        db.close()

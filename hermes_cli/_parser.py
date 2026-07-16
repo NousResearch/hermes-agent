@@ -219,6 +219,21 @@ def build_top_level_parser():
     )
     _inherited_flag(
         parser,
+        "--edge-mode",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Enable edge-native mode for local SLM execution",
+    )
+    _inherited_flag(
+        parser,
+        "--local-context-budget",
+        type=int,
+        default=argparse.SUPPRESS,
+        metavar="N",
+        help="Token budget floor for compression when edge mode is active (default: 4000, or agent.local_context_budget in config)",
+    )
+    _inherited_flag(
+        parser,
         "--ignore-user-config",
         action="store_true",
         default=False,
@@ -397,6 +412,21 @@ def build_top_level_parser():
         action="store_true",
         default=argparse.SUPPRESS,
         help="Include the session ID in the agent's system prompt",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--edge-mode",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Enable edge-native mode for local SLM execution",
+    )
+    _inherited_flag(
+        chat_parser,
+        "--local-context-budget",
+        type=int,
+        default=argparse.SUPPRESS,
+        metavar="N",
+        help="Token budget floor for compression when edge mode is active (default: 4000, or agent.local_context_budget in config)",
     )
     _inherited_flag(
         chat_parser,

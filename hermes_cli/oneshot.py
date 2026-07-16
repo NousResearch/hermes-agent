@@ -172,6 +172,8 @@ def run_oneshot(
     provider: Optional[str] = None,
     toolsets: object = None,
     usage_file: Optional[str] = None,
+    edge_mode: Optional[bool] = None,
+    local_context_budget: Optional[int] = None,
 ) -> int:
     """Execute a single prompt and print only the final content block.
 
@@ -238,6 +240,8 @@ def run_oneshot(
                     provider=provider,
                     toolsets=explicit_toolsets,
                     use_config_toolsets=use_config_toolsets,
+                    edge_mode=edge_mode,
+                    local_context_budget=local_context_budget,
                 )
             except BaseException as exc:  # noqa: BLE001
                 # Capture anything that escapes the agent (including OSError
@@ -306,6 +310,8 @@ def _run_agent(
     provider: Optional[str] = None,
     toolsets: object = None,
     use_config_toolsets: bool = True,
+    edge_mode: Optional[bool] = None,
+    local_context_budget: Optional[int] = None,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns ``(final_response, run_result)``."""
@@ -318,6 +324,22 @@ def _run_agent(
     from run_agent import AIAgent
 
     cfg = load_config()
+    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+    _edge = (
+        bool(edge_mode)
+        if edge_mode is not None
+        else bool(agent_cfg.get("edge_mode", False))
+    )
+    if local_context_budget is not None:
+        try:
+            _local_budget = int(local_context_budget)
+        except (TypeError, ValueError):
+            _local_budget = 4000
+    else:
+        try:
+            _local_budget = int(agent_cfg.get("local_context_budget", 4000))
+        except (TypeError, ValueError):
+            _local_budget = 4000
 
     # Resolve effective model: explicit arg → env var → config.
     model_cfg = cfg.get("model") or {}
@@ -414,6 +436,8 @@ def _run_agent(
         #   - dangerous-command approval → bypassed via HERMES_YOLO_MODE=1
         #   - skill secret capture → returns gracefully when no callback set
         clarify_callback=_oneshot_clarify_callback,
+        edge_mode=_edge,
+        local_context_budget=_local_budget,
     )
 
     # Belt-and-braces: make sure AIAgent doesn't invoke any streaming

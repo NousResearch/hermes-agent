@@ -1355,6 +1355,8 @@ def _build_child_agent(
         openrouter_min_coding_score=child_openrouter_min_coding_score,
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
+        edge_mode=getattr(parent_agent, "edge_mode", False),
+        local_context_budget=int(getattr(parent_agent, "local_context_budget", 4000)),
         **child_optional_kwargs,
     )
     child._print_fn = getattr(parent_agent, "_print_fn", None)

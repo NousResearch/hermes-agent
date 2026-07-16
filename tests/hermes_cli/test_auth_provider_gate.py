@@ -171,3 +171,24 @@ def test_env_pool_entry_counts_when_var_still_resolves(tmp_path, monkeypatch):
 
     from hermes_cli.auth import is_provider_explicitly_configured
     assert is_provider_explicitly_configured("deepseek") is True
+
+
+def test_provider_not_in_registry_but_in_models_dev(tmp_path, monkeypatch):
+    """Providers absent from PROVIDER_REGISTRY but present in the models.dev
+    catalog (e.g. openrouter) must still be detected via their env vars.
+
+    Regression: is_provider_explicitly_configured() only checked
+    PROVIDER_REGISTRY for env-var names, so providers that exist solely in
+    the models.dev catalog were never recognised as explicitly configured -
+    hiding them from the desktop model picker even when their API key was
+    set in .env.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-key-12345678")
+    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    (tmp_path / "hermes").mkdir(parents=True, exist_ok=True)
+
+    from hermes_cli.auth import is_provider_explicitly_configured, PROVIDER_REGISTRY
+    # Sanity: openrouter is not in the manual registry
+    assert "openrouter" not in PROVIDER_REGISTRY
+    assert is_provider_explicitly_configured("openrouter") is True
